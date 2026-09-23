@@ -15,8 +15,8 @@ rules for changing the repository.
 - Build the smallest thing that meets the spec. No speculative abstractions,
   compatibility paths, or speedups that haven't been measured to matter.
   Delete rather than keep.
-- The controls in ARCHITECTURE.md (Always applied, the proxy rules, git
-  handoff, trust) are exact. Weakening one is a spec change, never an
+- The controls in ARCHITECTURE.md (Always applied, the proxy rules, the
+  threat model's controls, trust) are exact. Weakening one is a spec change, never an
   implementation detail.
 - Security lives in the pinfold binary. Nothing in an image, the profile or
   a pi extension is security-relevant.

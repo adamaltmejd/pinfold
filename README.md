@@ -15,7 +15,7 @@ run: on macOS each box is its own VM; on Linux, boxes share the host kernel.
 
 ## Roadmap
 
-1. Core, proxy, pi layer with git handoff, and CLI, in Rust. Parity with
+1. Core, proxy, pi layer, and CLI, in Rust. Parity with
    agentbox for interactive use on macOS. Done when it has been used daily
    for a week.
 2. Linux podman end-to-end suite in GitHub CI, and a real README. Then

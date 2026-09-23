@@ -5,22 +5,45 @@ micro-VM on macOS, a rootless podman container on Linux. The box sees its
 mounts and nothing else of the host. Its only way out is its own allowlisting
 proxy.
 
-- **Interactive:** `pi` on the host is a shim for `pinfold run`.
+- **Interactive:** `pi` on the host is a shim for `pinfold pi`.
 - **Programmatic:** Switchyard drives boxes through `pinfold box`, JSON on
   stdio.
 
 This is the current spec. Evidence and rationale are in `docs/archive/`.
 
+## Terms
+
+**Box**: one disposable container or micro-VM, described by a box spec and
+owned by one `box up` process.
+_Avoid_: sandbox, container, VM, run
+
+**Box spec**: the JSON a caller gives `box up`. It is the whole box: nothing
+is added that the spec does not name.
+
+**Project**: a checkout, identified by the path of its root. A moved
+checkout is a new project.
+_Avoid_: repo, workspace
+
+**Profile**: data that shapes a box: an image, seeds, read-only shared
+files, and config defaults.
+
+**Project home**: a project's `$HOME`, a host directory outside the
+checkout. It belongs to the project from its first start.
+
+**Seed**: a profile file copied into a project home only when missing.
+Deleting it there reseeds it at the next start.
+
 ## Layers
 
 | Layer | Owns | Used by |
 |---|---|---|
-| core | runtimes, box lifecycle, transport, proxy, forwards, images, profiles, pinned artifacts, maintenance | Switchyard, pi layer |
-| pi | shim, per-project state, git handoff, herdr | the `pinfold` CLI |
-| profiles | box defaults, an image, pi's user-level config | applied by core, as data |
+| core | runtimes, box lifecycle, transport, proxy, images, profiles, pinned artifacts, maintenance | Switchyard, pi layer |
+| pi | shim, per-project state, config, trust, `.git` protection, herdr | the `pinfold` CLI |
+| profiles | box defaults, an image, pi's user-level config | applied as data |
 
 Core knows nothing of pi or git; to core, a profile's pi config is files.
-Profiles hold no code except pi packages.
+Core never reads a profile's `pinfold.toml`; the pi layer does, when it
+writes a box spec. Profiles hold no code except pi packages.
 
 ## Threat model
 
@@ -33,10 +56,16 @@ running on the host.
 | Egress proxy | Default deny, allowlist by name, every decision logged. |
 | Kernel boundary | A VM per box on macOS. On Linux, boxes share the host kernel. |
 | No privilege | Empty capability bounding set, nothing long-lived as uid 0, read-only rootfs, no setuid files. |
-| Git handoff | The box never writes the host's `.git`. |
+| Read-only `.git` | The box never writes the host's `.git`. |
+| Protected editor config | `protect` directories, which the host runs on open, are read-only. |
+| Profiles | Nothing a box can write maps to a profile. Only host-side commands change one. |
 
 Not protected:
 - Project contents: an agent with a model API can put them in a prompt.
+- Files the host runs by explicit command: build scripts, tests, package
+  scripts.
+- A planted nested repo (`sub/.git`) runs code if a host tool runs git in
+  it (VS Code does by default).
 - CDN fronting beyond the SNI check (Host-header fronting needs TLS
   interception).
 - Allowlisted services that accept writes (GitHub with a token, registries).
@@ -107,8 +136,8 @@ pinfold box prune                 # remove boxes whose `up` is gone
   the caller's environment and passed as `--env NAME`, so values never reach
   argv.
 - `profile` applies the profile's `home/` and `share/` (see Profiles), and
-  its image if `image` is absent. Egress, env and resources never come from
-  a profile.
+  its image if `image` is absent. Core never reads the profile's
+  `pinfold.toml`: egress, env and resources come only from the spec.
 - Apple: mounts are directories. Nested read-only mounts protect subpaths.
 
 ### Always applied
@@ -146,8 +175,8 @@ Runtime command lines are built as data.
   `/var/host-services/ssh-auth.sock`, root-owned and not connectable by the
   box user; the root exec in step 3 chmods it. This is off-label use of
   `--ssh`.
-- Every connection starts with a one-line header naming its target: the
-  proxy or a forward. One socket carries everything.
+- The socket carries only proxy connections. Init and the CLI come from one
+  build (see Pinned artifacts), so this protocol has no versioning.
 - Fallback if `--ssh` breaks: a per-box internal network with the proxy on
   the gateway and a root init that deletes routes (needs NET_ADMIN, SETUID,
   SETGID).
@@ -174,26 +203,21 @@ network listener, no token: the socket identifies the box.
   tunnels.
 - **Log:** one JSON line per decision in the box's egress log.
 
-## Forwards
-
-A host unix socket exposed at a guest path. `pinfold init` listens there and
-relays each connection with a header naming the forward; the host side
-connects to the host socket. Bytes pass raw.
-
-- Opt-in, in config, covered by trust, printed at every start.
-- A filter can front a forward: pinfold serves its own host socket and passes
-  only allowed messages to the real one.
-
-| Forward | Grants | Default |
-|---|---|---|
-| Switchyard `daemon.sock` | full board control, including approve and land | off; opt-in per project; a filter can restrict it |
-| herdr socket | `pane.run`, i.e. host command execution | never raw; the filter passes only `pane.report_agent` for the box's own pane |
-
 ## Images
 
 An image is a toolchain; the harness is not baked in. The default comes from
 the profile's Containerfile. A project can name its own, typically `FROM` the
 profile image.
+
+- Images are built only by `pinfold build`. `pinfold pi` refuses when the
+  image is missing and names the command.
+- A project build gets an empty context: the Containerfile alone, so trust
+  covers every input. Files come in by `ADD --checksum` or from the profile
+  image.
+- A project image records the digest of the profile image it was built
+  from. `pinfold pi` prints one line when that is no longer the current
+  profile image.
+- A build never touches project homes.
 
 The default profile's image:
 - `debian:trixie-slim` by tag, `apt-get upgrade` at every build. The
@@ -208,7 +232,11 @@ The default profile's image:
 
 Checksummed release binaries in
 `~/.cache/pinfold/artifacts/<name>/<version>/<os-arch>/`, mounted read-only:
-pi, the Linux `pinfold` (as the init), and Switchyard's codex and claude.
+pi, and Switchyard's codex and claude.
+
+The init is not an artifact: it always comes from the CLI's own build. The
+macOS CLI embeds the `aarch64-unknown-linux-musl` build and writes it to the
+cache once; a Linux CLI mounts its own executable.
 
 ## Profiles
 
@@ -227,8 +255,13 @@ TTY.
 - `default` is built into the binary (from `profile/` in this repo) unless
   the user has their own. User profiles are the user's files and need no
   trust.
+- `pinfold profile new NAME [--from PROFILE]` writes a copy of `default`
+  (or another profile) to be edited as files.
 - Selected by `profile` in config or `"profile"` in a box spec.
-- `home/` needs `$HOME` on a read-write mount.
+- `home/` needs `$HOME` on a read-write mount. Seeds are copied at start,
+  never at build. To reseed a file, delete it from the project home.
+- pinfold does not manage pi settings: `pi install` in a box changes that
+  project home only.
 
 pi's two config levels both load in every run:
 - **User level:** pi's agent dir under `$HOME`, seeded from `home/`, with
@@ -240,9 +273,16 @@ The default profile's seed settings name its `share/pi` package, rtk and
 ponytail, and set `defaultProjectTrust: "always"`: the box, not pi's prompt,
 is the boundary, and without it pi's non-interactive modes silently skip
 project config. Its `share/pi` holds skills and the operating-context
-extension, which writes the box's facts (the live allowlist; a 403 is final)
-into the system prompt. Extensions run in the box; nothing
-security-relevant lives in one.
+extension, which writes the box's facts into the system prompt: the
+allowlist from `PINFOLD_ALLOW`, that a 403 is final, and that commits are
+made on the host. Extensions run in the box; nothing security-relevant
+lives in one.
+
+The default profile's `pinfold.toml` allows the model APIs and npm:
+`api.anthropic.com`, `platform.claude.com`, `api.openai.com`,
+`auth.openai.com`, `chatgpt.com`, `openrouter.ai`, `opencode.ai`,
+`registry.npmjs.org`. `PI_OFFLINE` is unset, so pi's package installs go
+through the proxy.
 
 ## Shared files
 
@@ -274,8 +314,8 @@ Automatic, never prompting:
   project), the second for rollback. Remove older ones and their dangling
   layers.
 - At most once a day, at the start of any command: prune boxes whose owner
-  is gone, leftover sockets and run git dirs, artifact versions no pin
-  names, and egress logs older than 14 days.
+  is gone, leftover sockets, artifact versions no pin names, and egress
+  logs older than 14 days.
 
 `pinfold clean` lists sizes, then removes:
 - everything automatic, now
@@ -292,61 +332,49 @@ Automatic, never prompting:
 
 - **Harness:** pi, a pinned artifact at `/opt/pinfold/pi`.
 - **State:** `~/.local/state/pinfold/projects/<name>-<hash>/home`, mounted as
-  `$HOME`. pi's agent dir, sessions, `~/.config` and caches sit at their
-  default paths. One per project, outside the checkout.
+  `$HOME`, where the hash is of the canonical project root path. pi's agent
+  dir, sessions, `~/.config` and caches sit at their default paths. One per
+  project, outside the checkout.
 - **Arguments** pass through unchanged. The project is mounted at its own
   absolute path; the box starts in the invoking directory. Paths outside the
   project fail, and pi reports them.
 - **Environment:** `PI_TELEMETRY=0`, `PI_SKIP_VERSION_CHECK=1`, the core's
-  proxy variables, and `PINFOLD_ENV_*`.
+  proxy variables, `PINFOLD_ALLOW` (the effective allowlist, for the
+  operating-context extension), and `PINFOLD_ENV_*`.
 - **TTY** whenever the host has one; otherwise pi runs in print mode.
 - **Auth:** OAuth `/login` once per project; API keys through the
   environment.
-- **`protect`:** extra read-only directory mounts, e.g. `.claude/`,
-  `.vscode/`.
+- **`protect`:** read-only directory mounts for editor config the host runs
+  on open. Always `.vscode/`, `.claude/` and `.idea/` when present, plus
+  the configured list.
 - **herdr:** no socket in v1. The TTY passes through, so screen detection
-  works, and the shim sets `HERDR_AGENT=pi`. Later: herdr's pi integration in
-  the box plus the filtered forward.
+  works, and the shim sets `HERDR_AGENT=pi`.
+- **Attach:** `pinfold attach [cmd…]` execs bash (or cmd) in this project's
+  running pi box. It fails if none is running and asks for a box name if
+  several are. Its processes end with the box.
 
-### Git handoff
+### Git
 
-The box never writes the host's `.git`. Host git never runs in a git dir the
-box could write.
+The box never writes the host's `.git`. `<root>/.git` is mounted read-only
+at its own path, and the mount point cannot be renamed. The agent reads
+history and diffs; commits are made on the host.
 
-1. **Host, before the run.** Read branch, HEAD, remotes and objects dir with
-   host git. Build a fresh git dir for this run under project state:
-   - config: remote URLs; `!gh auth git-credential` for
-     `https://github.com`; identity; `core.checkStat=minimal`; the host's
-     `core.ignorecase` and `core.precomposeunicode`
-   - HEAD, refs, a copy of the index
-   - `objects/info/alternates` to the host objects, mounted read-only
-
-   Record a hash of the host index.
-2. **Run.** The git dir is mounted read-write at `<repo>/.git`.
-3. **After pi exits.** `git bundle create` in the box, for everything new
-   since the start refs. If the box is gone, in a fresh box on the same git
-   dir.
-4. **Host.** `git -c transfer.fsckObjects=true fetch <bundle>` into
-   `refs/pinfold/<run>/*`. If host HEAD and index are unchanged, fast-forward
-   with a compare-and-swap `update-ref` and reset the index. Otherwise move
-   nothing and print the refs to merge. Delete the run's git dir.
-
-One git dir per run, so concurrent runs don't collide. Residual risk: a
-planted nested repo (`sub/.git`) runs code if a host tool runs git in it
-(VS Code does by default).
+Worktrees are refused: their `.git` is a file whose `gitdir:` line host git
+follows, and Apple `container` cannot mount a file read-only.
 
 ## Configuration
 
-Precedence: environment > `.pinfold.toml` > the profile's `pinfold.toml` >
-defaults.
+Layers: environment > `.pinfold.toml` > the profile's `pinfold.toml` >
+defaults. Scalar keys take the highest layer. `allow`, `routes` and
+`protect` are the union of all layers, so a layer never removes what
+another adds.
 
 | Key | Env | Default | Meaning |
 |---|---|---|---|
 | `profile` | `PINFOLD_PROFILE` | `default` | Profile name |
 | `allow` | `PINFOLD_ALLOW` | `[]` | Domains added to the allowlist |
 | `routes` | `PINFOLD_ROUTES` | `{}` | Proxy routes to host services |
-| `forwards` | `PINFOLD_FORWARDS` | `{}` | Host sockets at guest paths |
-| `protect` | `PINFOLD_PROTECT` | `[]` | Read-only directories in the box |
+| `protect` | `PINFOLD_PROTECT` | `[]` | Read-only directories in the box, beyond the always-protected ones |
 | `image` | `PINFOLD_IMAGE` | profile image | Image ref, or a Containerfile path relative to the project |
 | `cpus` | `PINFOLD_CPUS` | 4 | |
 | `memory` | `PINFOLD_MEMORY` | `8G` | |
@@ -354,7 +382,8 @@ defaults.
 
 **Trust.** `.pinfold.toml` and the Containerfile it names are used only if
 their hashes match those `pinfold allow` recorded in
-`~/.local/state/pinfold/trust`. A change stops the run until allowed again.
+`~/.local/state/pinfold/trust` for this project. A change stops the run
+until allowed again.
 
 **Credentials** need no pinfold code: `op run -- pi …` for 1Password;
 `PINFOLD_ENV_GH_TOKEN` for gh and git; direnv for per-repo tokens;
@@ -363,10 +392,11 @@ their hashes match those `pinfold allow` recorded in
 ## CLI
 
 ```
-pinfold run [pi args…]           pi in a box for this project; `pi` is a symlink to this
-pinfold shell [cmd…]             bash (or cmd) in a fresh box with the same mounts, no pi
+pinfold pi [pi args…]            pi in a box for this project; `pi` is a symlink to this
+pinfold attach [cmd…]            bash (or cmd) in this project's running pi box
 pinfold build [--profile NAME]   build this project's image, or a profile's; prints the ref
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
+pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim disk (see Maintenance)
 pinfold doctor                   runtime, kernel, image, artifacts, trust, config, disk use
 pinfold box …                    the process interface
@@ -381,10 +411,10 @@ Uses core only: `box up`/`exec`/`down`, label-based
 `list`/`prune` for reconcile, no-egress boxes for gates, a proxy per worker
 with a route to its MCP listener, profiles for its workers' pi config
 (`pinfold build --profile` for the image), and pinned pi, codex and claude.
-No git handoff: lanes are clones.
+No `.git` protection: lanes are clones.
 
-Reviews run as a pi review extension in a box with the candidate read-only,
-no forwards, and egress to the model API only.
+Reviews run as a pi review extension in a box with the candidate read-only
+and egress to the model API only.
 
 ## Guarantees
 
@@ -402,13 +432,11 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, the box has no egress, and `box prune` removes it. |
 | 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code; `list` finds by label; `down` removes. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. A read-only mount rejects writes. |
-| 11 | The box cannot plant code for host git | A hook, `core.fsmonitor` and `commondir` written in the box leave host `.git` unchanged; host `git status` runs nothing. |
-| 12 | Commits come home | A pi turn through the shim, against a fake model, edits and commits; the commit lands on the host branch. |
-| 13 | A moved host branch is never overwritten | The host commits during the run; the branch is untouched and the box's commit waits under `refs/pinfold/`. |
-| 14 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`; the next run refuses until `pinfold allow`. |
-| 15 | Project state persists and stays separate | Settings are seeded once and survive runs; two projects don't see each other's state. |
-| 16 | Both pi config levels load without a TTY | `pi -p` through the shim: the fake model's request carries a skill from the profile and one from the project's `.pi/`. |
-| 17 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain. An unlabeled image, a live box and a project's state survive `pinfold clean`. |
+| 11 | The box cannot write `.git` or protected config | Writing a hook, `core.fsmonitor`, `commondir`, renaming `.git`, or writing `.vscode/` fails; host `git status` runs nothing. Control: a project file is writable. |
+| 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`; the next run refuses until `pinfold allow`. |
+| 13 | Project state persists and stays separate | Settings are seeded once and survive runs; a deleted seed returns; two projects don't see each other's state. |
+| 14 | Both pi config levels load without a TTY | `pi -p` through the shim: the fake model's request carries a skill from the profile and one from the project's `.pi/`. |
+| 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain. An unlabeled image, a live box and a project's state survive `pinfold clean`. |
 
 Linux (podman) runs in GitHub CI on `ubuntu-26.04` and `ubuntu-26.04-arm` as
 the required gate. macOS (Apple `container`) runs as a Switchyard host gate
@@ -425,8 +453,8 @@ Rust. Each Linux build is a static musl binary and doubles as `pinfold init`.
 | `aarch64-unknown-linux-musl` | Linux arm64 CLI; init on Macs and arm64 hosts |
 | `x86_64-unknown-linux-musl` | Linux x64 CLI; init on x64 hosts |
 
-Linux targets build on a Mac with `cargo zigbuild`. The default profile is
-embedded with `include_bytes!`.
+Linux targets build on a Mac with `cargo zigbuild`. The default profile and,
+in the macOS CLI, the arm64 Linux init are embedded with `include_bytes!`.
 
 Dependencies: `tokio`, `httparse`, `serde`, `serde_json`, `toml`, `nix`,
 `directories`. SNI comes from a small ClientHello parser.
@@ -453,8 +481,8 @@ profile/   the built-in default profile
   `container`, a client through the init relay, the socket and the proxy;
   PID 1 as the host uid with the transient root chmod exec; the SNI check.
   On podman, `--no-hosts` and `--dns none`.
-- Git worktrees: `.git` is a file, which Apple `container` cannot mount
-  over. `--read-only-path` plus `GIT_DIR`, or refuse in v1.
+- A read-only `.git` mount on Apple `container`: writes fail and the mount
+  point cannot be renamed, as on podman.
 - `198.18/15` blocking breaks fake-IP DNS proxies (Surge, Clash).
   Configurable, or documented.
 - Nested user namespaces in the Apple `container` guest kernel: can they be
