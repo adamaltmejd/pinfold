@@ -1,10 +1,11 @@
 //! End-to-end tests for the guarantees in docs/ARCHITECTURE.md.
 //!
-//! They run on a macOS host with the Apple `container` CLI. The harness
-//! builds the `pinfold` binary, builds the default profile image once, and
-//! drives pinfold as a user would: the CLI, environment variables and the
-//! box spec are its only seams.
+//! They run on a macOS host with the Apple `container` CLI, or a Linux host
+//! with rootless podman. The harness builds the `pinfold` binary, builds the
+//! default profile image once, and drives pinfold as a user would: the CLI,
+//! environment variables and the box spec are its only seams.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -12,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
 
-use e2e::HttpFixture;
+use e2e::{HttpFixture, pinfold};
 
 #[test]
 fn box_lifecycle_works_for_a_caller() {
@@ -70,7 +71,7 @@ fn box_lifecycle_works_for_a_caller() {
 
 #[test]
 fn box_shares_files_with_the_host() {
-    // Sabotage: drop `readonly` from the Apple adapter's bind mounts; the
+    // Sabotage: drop `readonly` from the adapter's bind mounts; the
     // write to /readonly/new then succeeds and its assertion fails. The
     // write to /workspace is the positive control that the same operation
     // works on a writable mount.
@@ -190,9 +191,8 @@ fn box_shares_files_with_the_host() {
 fn nothing_can_gain_privileges() {
     // Sabotage: drop `find / -xdev -perm /6000 -type f -exec chmod a-s {} +`
     // from profile/Containerfile; the setuid/setgid scan then lists files and
-    // fails. Sabotage: drop `--read-only` from the Apple adapter's
-    // `container run` argv; the rootfs write then succeeds and its assertion
-    // fails.
+    // fails. Sabotage: drop `--read-only` from the adapter's `run` argv;
+    // the rootfs write then succeeds and its assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("privileges");
     let image = default_image(binary, &env);
@@ -284,6 +284,30 @@ fn nothing_can_gain_privileges() {
         workspace.stderr
     );
     assert!(dir.path().join("pinfold-write-test").is_file());
+
+    // On Linux, the podman seccomp profile must also block nested user
+    // namespaces. Sabotage: prepend the ERRNO rules for clone and unshare
+    // instead of removing `clone`, `clone3` and `unshare` from the default
+    // profile's unconditional SCMP_ACT_ALLOW entry; the allow wins,
+    // `unshare -U true` succeeds, and this assertion fails. Nested user
+    // namespaces on Apple `container` are an open question in the spec, so
+    // assert nothing there.
+    if cfg!(target_os = "linux") {
+        let unshare = box_exec(binary, &env, &name, &["unshare", "-U", "true"]);
+        assert_ne!(unshare.code, 0, "unshare -U succeeded in the box");
+        assert!(
+            unshare.stderr.contains("Operation not permitted"),
+            "unshare -U failed for another reason: {}",
+            unshare.stderr
+        );
+        // Positive control: the same box still runs a plain child process.
+        let child = box_exec(binary, &env, &name, &["true"]);
+        assert_eq!(
+            child.code, 0,
+            "a plain child process failed: {}",
+            child.stderr
+        );
+    }
 
     let status = box_down(binary, &env, &name);
     assert!(status.success(), "box down failed: {status}");
@@ -777,78 +801,154 @@ struct ImageCleanup {
 impl Drop for ImageCleanup {
     fn drop(&mut self) {
         // Best effort: a Drop during unwinding must not panic.
-        let Ok(output) = Command::new("container")
-            .args(["image", "list", "--quiet"])
-            .output()
-        else {
+        let Ok(images) = runtime_images() else {
             return;
         };
-        if !output.status.success() {
-            return;
-        }
         // Every build tags the image `pinfold/profile-<source>:<build>`, and
         // the reference remains even when the label sabotage drops the source
         // label.
         let prefix = format!("pinfold/profile-{}:", self.source);
-        let references = String::from_utf8_lossy(&output.stdout);
-        for reference in references.lines() {
-            if !reference.contains(&prefix) {
-                continue;
+        for image in images {
+            for reference in image.names {
+                if reference.contains(&prefix) {
+                    remove_runtime_image(&reference);
+                }
             }
-            let _ = Command::new("container")
-                .args(["image", "delete", reference])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
         }
     }
 }
 
-/// The `(digest, reference)` of every image carrying `label = value`, from
-/// the runtime itself: `container image list` is the ground truth for what
-/// remains.
-fn labeled_images(label: &str, value: &str) -> Vec<(String, String)> {
-    let output = Command::new("container")
+/// Remove one image by reference from the runtime, best effort.
+fn remove_runtime_image(reference: &str) {
+    let mut command = Command::new(image_cli());
+    if cfg!(target_os = "linux") {
+        command.args(["image", "rm", reference]);
+    } else {
+        command.args(["image", "delete", reference]);
+    }
+    let _ = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// The image CLI this host uses: `podman` on Linux, Apple `container` on
+/// macOS.
+fn image_cli() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "podman"
+    } else {
+        "container"
+    }
+}
+
+/// One runtime image, normalized across podman and Apple `container`.
+struct RuntimeImage {
+    id: String,
+    names: Vec<String>,
+    labels: BTreeMap<String, String>,
+}
+
+/// Every image the runtime knows, from its own image list.
+fn runtime_images() -> Result<Vec<RuntimeImage>, String> {
+    let output = Command::new(image_cli())
         .args(["image", "list", "--format", "json"])
         .output()
-        .expect("run container image list");
-    assert!(
-        output.status.success(),
-        "container image list failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let images: Vec<serde_json::Value> =
-        serde_json::from_slice(&output.stdout).expect("image list is JSON");
+        .map_err(|error| format!("run {} image list: {error}", image_cli()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{} image list failed: {}",
+            image_cli(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let images: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("image list is not JSON: {error}"))?;
+    Ok(images.iter().map(normalize_image).collect())
+}
+
+/// One image list entry, whatever the runtime's schema.
+fn normalize_image(image: &serde_json::Value) -> RuntimeImage {
+    // podman: `Id`, `Names` and `Labels`, the last two null when empty.
+    if let Some(id) = image["Id"].as_str() {
+        return RuntimeImage {
+            id: id.to_string(),
+            names: image["Names"]
+                .as_array()
+                .map(|names| {
+                    names
+                        .iter()
+                        .filter_map(|name| Some(name.as_str()?.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            labels: image["Labels"]
+                .as_object()
+                .map(|labels| {
+                    labels
+                        .iter()
+                        .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+    }
+    // Apple `container`: build labels are OCI image config labels; a locally
+    // built image also carries name annotations on its index descriptor.
+    let mut labels: BTreeMap<String, String> = image["configuration"]["descriptor"]["annotations"]
+        .as_object()
+        .map(|labels| {
+            labels
+                .iter()
+                .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(variants) = image["variants"].as_array() {
+        for variant in variants {
+            if let Some(config) = variant["config"]["config"]["Labels"].as_object() {
+                for (key, value) in config {
+                    if let Some(value) = value.as_str() {
+                        labels.insert(key.clone(), value.to_string());
+                    }
+                }
+            }
+        }
+    }
+    RuntimeImage {
+        id: image["id"].as_str().unwrap_or_default().to_string(),
+        names: image["configuration"]["name"]
+            .as_str()
+            .map(|name| vec![name.to_string()])
+            .unwrap_or_default(),
+        labels,
+    }
+}
+
+/// The `(digest, reference)` of every image carrying `label = value`, from
+/// the runtime itself: its image list is the ground truth for what remains.
+fn labeled_images(label: &str, value: &str) -> Vec<(String, String)> {
+    let images = runtime_images().unwrap_or_else(|error| panic!("{error}"));
     images
         .into_iter()
-        .filter(|image| image_has_label(image, label, value))
-        .filter_map(|image| {
-            Some((
-                image["id"].as_str()?.to_string(),
-                image["configuration"]["name"].as_str()?.to_string(),
-            ))
+        .filter(|image| image.labels.get(label).map(String::as_str) == Some(value))
+        .flat_map(|image| {
+            let id = image.id;
+            let names = if image.names.is_empty() {
+                vec![id.clone()]
+            } else {
+                image.names
+            };
+            names.into_iter().map(move |name| (id.clone(), name))
         })
         .collect()
 }
 
-/// Whether one `container image list` entry carries `label = value`, as an
-/// OCI image config label or an index descriptor annotation.
-fn image_has_label(image: &serde_json::Value, label: &str, value: &str) -> bool {
-    if image["configuration"]["descriptor"]["annotations"][label] == value {
-        return true;
-    }
-    image["variants"].as_array().is_some_and(|variants| {
-        variants
-            .iter()
-            .any(|variant| variant["config"]["config"]["Labels"][label] == value)
-    })
-}
-
 #[test]
 fn box_has_no_network_but_loopback() {
-    // Sabotage: drop `--network none` from the Apple adapter's `container
-    // run` argv; the box gains an interface and reaches `1.1.1.1`, so the
+    // Sabotage: drop `--network none` from the adapter's `run` argv;
+    // the box gains an interface and reaches `1.1.1.1`, so the
     // interface and unreachable assertions fail. The route to the fixture is
     // the positive control that the same box still has its one way out.
     let binary = pinfold();
@@ -903,8 +1003,8 @@ fn box_has_no_network_but_loopback() {
         public.stderr
     );
 
-    // The vmnet gateway is the host's address on the box's network; with
-    // --network none it has no route either.
+    // An address on the host's network is unreachable too; with --network
+    // none the box has no route to it.
     let gateway = box_exec(
         binary,
         &env,
@@ -1202,28 +1302,6 @@ fn host_id(flag: &str) -> String {
         .expect("id output is UTF-8")
         .trim()
         .to_string()
-}
-
-/// The built `pinfold` binary. The test executable lives in
-/// `<target>/<profile>/deps`, so the binary is its sibling.
-fn pinfold() -> &'static Path {
-    static BINARY: OnceLock<PathBuf> = OnceLock::new();
-    BINARY.get_or_init(|| {
-        let status = Command::new(env!("CARGO"))
-            .args(["build", "-p", "pinfold", "--locked"])
-            .status()
-            .expect("run cargo build -p pinfold");
-        assert!(status.success(), "cargo build -p pinfold failed");
-        let exe = std::env::current_exe().expect("test executable path");
-        let target = exe
-            .parent()
-            .and_then(Path::parent)
-            .and_then(Path::parent)
-            .expect("target dir");
-        let binary = target.join("debug").join("pinfold");
-        assert!(binary.is_file(), "{} is missing", binary.display());
-        binary
-    })
 }
 
 /// The stable ref of the built-in default profile's image, built once per
