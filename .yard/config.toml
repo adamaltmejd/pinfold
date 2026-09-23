@@ -1,0 +1,217 @@
+# Yard project configuration.
+# Most keys that have a default are written out below, set to that default.
+# The rest of what is written is this scaffold's own choice for a key that has
+# none: the agent harnesses, models and efforts, the default workflow's
+# implementer and its context window, the whole conflict job, and the review
+# panel with its one seat.
+# Commented lines are examples: a key, an agent, a job, or a workflow this
+# project turns on by uncommenting it.
+# Unknown keys are errors.
+
+# max_lanes limits how many ready tickets run at once. It is one project-wide
+# answer and belongs to no table, so it is written before the first one. On a
+# machine that opted its containers into a memory share
+# (YARD_CONTAINER_MEMORY=share in the machine's own operator.env), it also
+# divides the Docker engine's memory between them: a share below the 512 MiB a
+# worker needs is refused.
+max_lanes = 1
+
+# max_batch is the most approved candidates one merge batch verifies together.
+# They are merged in approval order onto the target and gated once as one ref;
+# a red batch is split in half and each half verified on its own, so a batch
+# larger than the queue's usual depth costs nothing when it is green and one
+# extra run per halving when it is not. A candidate that changes .yard is always
+# verified alone.
+max_batch = 8
+
+# approve says whether a clean candidate needs a human to enqueue it. Under
+# "manual" every candidate waits for your yes; under "auto" a candidate whose
+# review is clean and whose changed paths are not protected is enqueued in the
+# transaction that verifies it, and the merge queue gates it before it lands.
+# A protected path, a residual acceptance and any change under .yard are always
+# yours to answer.
+approve = "auto"
+
+[target]
+# ref is the branch finished work lands on.
+ref = "main"
+# protected_paths names the paths that always take an operator's own decision,
+# whatever approve says.
+# .yard/ is protected whatever this list holds: a project can only add to that.
+# The spec and the working rules: a design change is always the operator's.
+protected_paths = ["docs/ARCHITECTURE.md", "AGENTS.md"]
+
+[isolation]
+# dockerfile names the Dockerfile lanes and container gates are built from, as a
+# path relative to the repository root.
+dockerfile = ".yard/Dockerfile"
+
+# An [agents.<name>] table is one reusable way of running a model, selected by
+# name from the job tables below and from a workflow. Two of them selecting one
+# agent share how the model is run and nothing else: what a job may write, what
+# it is told, and how long it may run are keys of the job.
+# This project trials open models on the pi harness through OpenCode Go. The
+# key that pays for them is OPENCODE_API_KEY in operator.env. The pi CLI has no
+# subagents, so each agent declares them off.
+[agents.kimi]
+harness = "pi"
+provider = "opencode-go"
+model = "kimi-k2.7-code"
+effort = "high"
+tools = { subagents = false }
+
+[agents.muse]
+harness = "pi"
+provider = "opencode-go"
+model = "muse-spark-1.3-contributor"
+effort = "max"
+tools = { subagents = false }
+
+# The planning job plans a plan-first ticket; without it, such a ticket waits
+# for the operator. It takes the same keys as the conflict job below, and its
+# instructions state what is true of this project only: Yard's own planning
+# prompt carries the rest.
+[planning]
+agent = "kimi"
+access = "read-only"
+instructions = "Plan against docs/ARCHITECTURE.md and the roadmap in README.md, and name the roadmap phase each ticket serves."
+
+# The conflict job resolves a conflicted retarget; without it, the lane stops
+# for the operator. Every job table selects an agent by name and states what
+# belongs to the job rather than to the agent.
+[conflict]
+# agent names one of the agents above.
+agent = "kimi"
+# access grants the worker's workspace access: "writable" or "read-only".
+access = "writable"
+# inactivity_timeout_minutes restarts a generation that has emitted no event for
+# that many minutes, in a fresh generation of the same session. The default, 0,
+# disables it; a value is this project's longest legitimate silence.
+inactivity_timeout_minutes = 0
+# total_work_timeout_minutes is the attempt's whole budget in minutes, across
+# every automatic restart, and nothing renews it.
+total_work_timeout_minutes = 360
+
+# Each [gates.<name>] section declares a gate every candidate must pass. Give
+# each one a name of your own in place of "test".
+# command is the gate, a shell command run as /bin/sh -c. A container gate runs
+# it under env -i on a fixed floor, so none of the image's own ENV lines and no
+# network reach it, and a toolchain installed off that floor's PATH, or one
+# reading variables of its own, names them in the command itself: there is no
+# environment key for a gate. See yard help daemon for that floor.
+# timeout_minutes limits one run of the gate; the default is 30.
+# stage is "batch", the default, or "candidate". Every gate runs on the merge
+# queue's batch, against the tree that is about to land. A "candidate" gate runs
+# on the worker's own head as well, before the review, so a cheap check answers
+# before a reviewer is paid for.
+# environment is "container", the default, or "host". A host gate must also name
+# the platform ("darwin" or "linux") and the architecture ("arm64" or "x64") it
+# needs.
+# test_report is "junit", for a gate that writes JUnit XML to the
+# $YARD_TEST_REPORT path Yard sets for it; left out, only the exit status is
+# read.
+# artifacts names the files the gate writes into the $YARD_ARTIFACT_DIR
+# directory Yard sets for it and keeps in the execution's evidence, so they
+# outlive the container and the view. Plain file names only, at most 16, and a
+# declared file Yard cannot keep is a gate error naming it.
+# [gates.test]
+# command = "bun test"
+# timeout_minutes = 30
+# environment = "host"
+# platform = "darwin"
+# architecture = "arm64"
+# test_report = "junit"
+# artifacts = ["screenshot.png"]
+
+# The Rust toolchain is installed under /usr/local, on the gate floor's PATH.
+# CARGO_HOME falls to /tmp/.cargo, which is empty: once the workspace has
+# dependencies, the image must pre-fetch them and these commands must name
+# where.
+[gates.fmt]
+command = "cargo fmt --check"
+timeout_minutes = 5
+stage = "candidate"
+
+[gates.clippy]
+command = "cargo clippy --all-targets --locked --offline -- -D warnings"
+timeout_minutes = 20
+stage = "candidate"
+
+# The end-to-end suite on Apple container, once it exists. It runs on this Mac,
+# so it is batch-stage only: code reaches the host after the exact head is
+# approved, never from an unreviewed candidate.
+# [gates.e2e-macos]
+# command = "cargo test -p e2e --locked"
+# timeout_minutes = 15
+# stage = "batch"
+# environment = "host"
+# platform = "darwin"
+# architecture = "arm64"
+
+# Review runs on every candidate whose workflow selects a panel of seats.
+[review]
+# blocking is the priority at which a finding sends the candidate back for
+# repair: "P0", "P1", "P2", or "P3", most severe first. It is this project's one
+# truth about what blocks a candidate, whatever seats a workflow selects.
+blocking = "P1"
+# max_priority is the least severe finding reported, and must include blocking.
+max_priority = "P3"
+# max_rounds limits the autoreview rounds one attempt spends automatically: 1 to
+# 5. A gate failure's repair round is not spent from it.
+max_rounds = 5
+# timeout_minutes limits one review run.
+timeout_minutes = 30
+
+# Each [review.reviewers.<name>] section declares one review seat: one reviewer,
+# under a name a workflow selects it by. Name seats as you like.
+[review.reviewers.code]
+# engine, model and effort are the reviewer that fills the seat; a seat from a
+# different engine family than the implementer is recommended.
+engine = "pi"
+model = "opencode-go/deepseek-v4.1-flash"
+effort = "high"
+instructions = "Judge the change against docs/ARCHITECTURE.md and AGENTS.md. Blocking: a weakened or missing security control, a secret that can reach argv or a log, a unit test or mock, and an end-to-end test that cannot fail (no positive control, or a pass on timeout)."
+context = ["docs/ARCHITECTURE.md", "AGENTS.md"]
+# instructions are one seat's own, appended verbatim to that seat's prompt and
+# to no other's, up to 4096 bytes; changing them invalidates the review evidence
+# recorded under the old text. A seat is given the change bundle -- the
+# candidate's diff and the evidence Yard bundles with it -- and Yard runs
+# neither this project nor its tooling for a review, so state a discipline the
+# seat can judge from the diff:
+#     instructions = "Judge changed interface code against the design system: spacing scale, color tokens, and a visible focus state on every interactive element."
+# context lists the repository files this seat's reviewer is given beside the
+# diff, up to 8, read as the candidate has them. Name the contract the
+# instructions judge against -- a design system, a schema, a skill -- and
+# nothing else. It is a list of files: never a directory, never a glob, and
+# never anything under .yard/, which stays outside what a reviewer may read. A
+# path the candidate does not track, or that its own ignore rules cover even
+# where it does, is refused when the review starts, and changing the list
+# invalidates the review evidence recorded under the old one:
+#     context = ["docs/design-system.md", ".claude/skills/design-review/SKILL.md"]
+
+# A workflow is a named binding of the knobs above, never a step language. A
+# ticket selects one with yard ticket new --workflow NAME, and a ticket that
+# names none runs "default"; yard help workflow says what one binds and how it
+# is shown. Every workflow runs every gate, so none of them names a gate.
+[workflows.default]
+# implementer names the agent this workflow's lanes run their worker as.
+implementer = "muse"
+# review is a list of the seat names above, in panel order, or "none", for which
+# no review execution is ever started -- its gates still run, and a review of
+# "none" is as clean at the approval decision as a pass is.
+review = ["code"]
+# access grants the worker's workspace access: "writable" or "read-only".
+access = "writable"
+# inactivity_timeout_minutes and total_work_timeout_minutes are the job keys
+# above, and mean the same here.
+inactivity_timeout_minutes = 0
+total_work_timeout_minutes = 360
+# instructions adds your own standing guidance to every prompt this workflow's
+# lanes carry, up to 16384 bytes.
+# instructions = "Match the conventions of the code you are changing."
+
+[workspace]
+# build_artifacts names the directories ordinary build activity fills with
+# output your .gitignore already covers: each a directory path relative to the
+# repository root, not a pattern.
+build_artifacts = ["target"]
