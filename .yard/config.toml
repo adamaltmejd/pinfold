@@ -30,7 +30,7 @@ max_batch = 8
 # transaction that verifies it, and the merge queue gates it before it lands.
 # A protected path, a residual acceptance and any change under .yard are always
 # yours to answer.
-approve = "auto"
+approve = "manual"
 
 [target]
 # ref is the branch finished work lands on.
@@ -74,7 +74,7 @@ tools = { subagents = false }
 [planning]
 agent = "kimi"
 access = "read-only"
-instructions = "Plan against docs/ARCHITECTURE.md and the roadmap in README.md, and name the roadmap phase each ticket serves."
+instructions = "Plan against docs/ARCHITECTURE.md and the roadmap in README.md, and name the roadmap phase each ticket serves. Lanes are Linux containers without Apple container or podman, so no child can run the end-to-end suite; the operator runs it on the macOS host. Size each child to one module or one CLI verb plus the tests of the guarantees it completes, and name those guarantee numbers. A child that completes no guarantee names the child whose test exercises it."
 
 # The conflict job resolves a conflicted retarget; without it, the lane stops
 # for the operator. Every job table selects an agent by name and states what
@@ -124,16 +124,15 @@ total_work_timeout_minutes = 360
 # artifacts = ["screenshot.png"]
 
 # The Rust toolchain is installed under /usr/local, on the gate floor's PATH.
-# CARGO_HOME falls to /tmp/.cargo, which is empty: once the workspace has
-# dependencies, the image must pre-fetch them and these commands must name
-# where.
+# The image pre-fetches the workspace's crates into /usr/local/cargo, which
+# the gate floor does not name, so each command does.
 [gates.fmt]
-command = "cargo fmt --check"
+command = "CARGO_HOME=/usr/local/cargo cargo fmt --check"
 timeout_minutes = 5
 stage = "candidate"
 
 [gates.clippy]
-command = "cargo clippy --all-targets --locked --offline -- -D warnings"
+command = "CARGO_HOME=/usr/local/cargo cargo clippy --all-targets --locked --offline -- -D warnings"
 timeout_minutes = 20
 stage = "candidate"
 
@@ -222,7 +221,17 @@ inactivity_timeout_minutes = 0
 total_work_timeout_minutes = 360
 # instructions adds your own standing guidance to every prompt this workflow's
 # lanes carry, up to 16384 bytes.
-# instructions = "Match the conventions of the code you are changing."
+instructions = """
+Lanes run in a Linux container with no Apple container and no podman, so the
+end-to-end suite cannot run here. cargo build, cargo fmt --check and
+cargo clippy --all-targets are your checks. Write the end-to-end tests your
+ticket names anyway, as AGENTS.md says; the operator runs them on the macOS
+host before approving, against the sabotage each test's comment names.
+
+Keep macOS-only code compiling on Linux, so clippy here checks it: choose the
+runtime with cfg!(target_os = ...) in one place, and put code behind #[cfg]
+only when it cannot compile elsewhere.
+"""
 
 [workspace]
 # build_artifacts names the directories ordinary build activity fills with

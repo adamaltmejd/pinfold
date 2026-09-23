@@ -31,4 +31,16 @@ RUN set -eu; \
     rm -rf /tmp/rust-*; \
     cargo --version; cargo fmt --version; cargo clippy --version
 
+# Gates have no network, so the workspace's crates are fetched here into a
+# fixed CARGO_HOME that the gate commands name. The build context is the
+# candidate's own tree, so a dependency a candidate adds is fetched with it.
+# Writable by any uid: cargo takes a lock file in CARGO_HOME even offline.
+COPY Cargo.toml Cargo.lock /tmp/fetch/
+COPY crates /tmp/fetch/crates
+RUN set -eu; \
+    cd /tmp/fetch; \
+    CARGO_HOME=/usr/local/cargo cargo fetch --locked; \
+    chmod -R a+rwX /usr/local/cargo; \
+    rm -rf /tmp/fetch
+
 WORKDIR /workspace
