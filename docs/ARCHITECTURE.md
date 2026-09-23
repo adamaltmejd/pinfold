@@ -1,9 +1,9 @@
 # pinfold architecture
 
 pinfold runs a coding agent in a disposable box: an Apple `container`
-micro-VM or a podman container on macOS, a rootless podman container on
-Linux. The box sees its mounts and nothing else of the host. Its only way out
-is its own allowlisting proxy.
+micro-VM on macOS, a rootless podman container on Linux. The box sees its
+mounts and nothing else of the host. Its only way out is its own allowlisting
+proxy.
 
 - **Interactive:** `pi` on the host is a shim for `pinfold run`.
 - **Programmatic:** Switchyard drives boxes through `pinfold box`, JSON on
@@ -31,7 +31,7 @@ running on the host.
 |---|---|
 | No network | Loopback only. One unix socket to the box's own proxy. |
 | Egress proxy | Default deny, allowlist by name, every decision logged. |
-| Kernel boundary | A VM per box on Apple `container`. podman boxes share a kernel: the host's on Linux, the machine VM's on macOS. |
+| Kernel boundary | A VM per box on macOS. On Linux, boxes share the host kernel. |
 | No privilege | Empty capability bounding set, nothing long-lived as uid 0, read-only rootfs, no setuid files. |
 | Git handoff | The box never writes the host's `.git`. |
 
@@ -44,20 +44,19 @@ Not protected:
 
 ## Runtimes
 
-| Runtime | Host | Kernel |
-|---|---|---|
-| Apple `container` | macOS 26+ | one VM per box |
-| rootless podman machine | macOS | one VM shared by all boxes |
-| rootless podman | Linux | the host's, shared |
+One runtime per OS, not configurable:
 
-Anything else is refused: rootful podman, a rootful podman machine, docker.
-On macOS, Apple `container` is used when installed, else podman.
-`PINFOLD_RUNTIME` picks one. `doctor` and the ready event report the kernel
-column; nothing warns at run time.
+| Host | Runtime | Kernel |
+|---|---|---|
+| macOS 26+ | Apple `container` | one VM per box |
+| Linux | rootless podman | the host's, shared |
+
+Anything else is refused: podman on macOS, rootful podman, docker. Nothing
+warns at run time; `doctor` reports the runtime.
 
 podman preflight requires `rootless=true` and `cgroupManager=systemd`; under
-cgroupfs, `--cpus` and `--memory` are silently not enforced. On Linux,
-long-lived boxes need `loginctl enable-linger`.
+cgroupfs, `--cpus` and `--memory` are silently not enforced. Long-lived boxes
+need `loginctl enable-linger`.
 
 ## Box
 
@@ -81,7 +80,7 @@ leftovers by label. The CLI runs the same code in-process.
 ### Process interface
 
 ```
-pinfold box up < spec.json        # prints {"event":"ready","box":…,"kernel":…}; holds the box
+pinfold box up < spec.json        # prints {"event":"ready","box":…}; holds the box
 pinfold box exec BOX [--tty] [--workdir D] -- argv…   # stdio through, exit code back
 pinfold box down BOX              # same as closing up's stdin
 pinfold box list --label k=v      # JSON lines
@@ -141,11 +140,7 @@ Runtime command lines are built as data.
 
 ## Transport
 
-- **podman on Linux:** the socket is bind-mounted, mode 0600 in a 0700 dir.
-- **podman on macOS:** the machine VM cannot reach host unix sockets through
-  its file share. pinfold opens an SSH reverse forward of the socket into the
-  VM (`ssh -R`, with the machine's own identity from
-  `podman machine inspect`) and bind-mounts the VM-side socket.
+- **podman:** the socket is bind-mounted, mode 0600 in a 0700 dir.
 - **Apple `container`:** `--ssh` with `SSH_AUTH_SOCK` set to the proxy socket
   for that one `container run`. It appears at
   `/var/host-services/ssh-auth.sock`, root-owned and not connectable by the
@@ -254,10 +249,9 @@ security-relevant lives in one.
 Ownership needs no work. Box-created files land on the host as the user's,
 644 or 755; the exec bit and symlinks survive; git needs no
 `safe.directory`. The box user can do whatever the host user can. Rootless
-podman on Linux with keep-id is the same, and also shares inotify and locks.
+podman with keep-id is the same, and also shares inotify and locks.
 
-Apple `container` limitations, documented for users. podman on macOS shares
-files through its VM too; its limitations are unmeasured.
+Apple `container` limitations, documented for users:
 
 | Limitation | Handling |
 |---|---|
@@ -356,7 +350,6 @@ defaults.
 | `image` | `PINFOLD_IMAGE` | profile image | Image ref, or a Containerfile path relative to the project |
 | `cpus` | `PINFOLD_CPUS` | 4 | |
 | `memory` | `PINFOLD_MEMORY` | `8G` | |
-| — | `PINFOLD_RUNTIME` | detected | `container` or `podman` |
 | — | `PINFOLD_ENV_<NAME>` | — | `<NAME>` in the box; the only way host env enters |
 
 **Trust.** `.pinfold.toml` and the Containerfile it names are used only if
@@ -384,7 +377,7 @@ The project root is the git top level, else `$PWD`.
 
 ## Switchyard
 
-Uses core only: runtime detection, `box up`/`exec`/`down`, label-based
+Uses core only: `box up`/`exec`/`down`, label-based
 `list`/`prune` for reconcile, no-egress boxes for gates, a proxy per worker
 with a route to its MCP listener, profiles for its workers' pi config
 (`pinfold build --profile` for the image), and pinned pi, codex and claude.
@@ -418,9 +411,9 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 17 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain. An unlabeled image, a live box and a project's state survive `pinfold clean`. |
 
 Linux (podman) runs in GitHub CI on `ubuntu-26.04` and `ubuntu-26.04-arm` as
-the required gate. macOS runs as a Switchyard host gate at
-`stage = "batch"`, never `"candidate"`, once per installed runtime: code runs
-on the host only after the exact head is approved.
+the required gate. macOS (Apple `container`) runs as a Switchyard host gate
+at `stage = "batch"`, never `"candidate"`: code runs on the host only after
+the exact head is approved.
 
 ## Code
 
@@ -442,7 +435,7 @@ Portability (Windows later means the Linux build in WSL2):
 - Host-to-guest paths map in one function, the identity on Unix.
 - Platform dirs come from `directories`.
 - Unix-only host code (signals, process groups, TTY, modes) is one module.
-- Runtimes are adapters behind a trait, each declaring its kernel.
+- Runtimes are adapters behind a trait, chosen by target OS.
 
 ```
 crates/pinfold/src/
@@ -460,9 +453,6 @@ profile/   the built-in default profile
   `container`, a client through the init relay, the socket and the proxy;
   PID 1 as the host uid with the transient root chmod exec; the SNI check.
   On podman, `--no-hosts` and `--dns none`.
-- podman on macOS is untried (no podman on the dev Mac): the SSH reverse
-  forward, keep-id ownership through the machine's file share, and its
-  file-sharing limitations.
 - Git worktrees: `.git` is a file, which Apple `container` cannot mount
   over. `--read-only-path` plus `GIT_DIR`, or refuse in v1.
 - `198.18/15` blocking breaks fake-IP DNS proxies (Surge, Clash).

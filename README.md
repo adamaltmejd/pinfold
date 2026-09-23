@@ -1,13 +1,11 @@
 # pinfold
 
-Run a coding agent in a disposable box: an Apple `container` micro-VM or
-podman on macOS, rootless podman on Linux. The box sees the project and
-nothing else of the host. Its only way out is an allowlisting proxy.
+Run a coding agent in a disposable box: an Apple `container` micro-VM on
+macOS, rootless podman on Linux. The box sees the project and nothing else
+of the host. Its only way out is an allowlisting proxy.
 
-Isolation differs by runtime, and pinfold says so here rather than on every
-run. Apple `container` gives each box its own VM. podman boxes share a
-kernel: the host's on Linux, and on macOS the podman machine's VM, which
-mounts your home directory by default.
+Isolation differs by platform, and pinfold says so here rather than on every
+run: on macOS each box is its own VM; on Linux, boxes share the host kernel.
 
 **Status:** design only; nothing works yet. pinfold will replace agentbox.
 

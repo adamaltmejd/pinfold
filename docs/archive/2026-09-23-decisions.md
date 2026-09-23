@@ -182,3 +182,7 @@ These supersede entries above; the entries are kept as they were decided.
   own leftovers daily, and offers `pinfold clean` for build cache, project
   caches and abandoned project state. It only touches what it labeled or
   owns.
+- **podman on macOS dropped again, the same day.** The SSH reverse forward
+  would be a second transport to build and test, for a runtime that is
+  worse on isolation and no faster. The runtime is fixed by OS: Apple
+  `container` on macOS, rootless podman on Linux. `PINFOLD_RUNTIME` is gone.
