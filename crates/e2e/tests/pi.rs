@@ -249,8 +249,10 @@ fn the_box_cannot_write_git_or_protected_config() {
     // writable); the hook, `core.fsmonitor` and `commondir` writes and the
     // rename then succeed, and host `git status` runs the planted fsmonitor,
     // so those assertions fail. Sabotage: skip the absent protect
-    // directories; the box creates `.vscode/` in a project without one and
-    // writes settings.json, so those assertions fail.
+    // directories; the "pinfold did not create the absent .vscode" assertion
+    // fails before the box starts. Sabotage: classify protected paths with
+    // fs::metadata instead of the symlink check; a symlinked `.vscode` is
+    // followed, the run starts, and the refusal assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("pi-git");
     default_image(binary, &env);
@@ -474,6 +476,26 @@ fn the_box_cannot_write_git_or_protected_config() {
     assert!(
         with.path().join(".vscode").is_dir(),
         "the existing .vscode was removed"
+    );
+
+    // A protected path the host planted as a symlink is refused: the runtime
+    // resolves a bind-mount source on the host, so following it would mount
+    // the target into the box.
+    let outside = TestDir::new(&env, "outside");
+    let symlinked = TestDir::new(&env, "symlinked");
+    git_init(symlinked.path());
+    let link = symlinked.path().join(".vscode");
+    std::os::unix::fs::symlink(outside.path(), &link).expect("create .vscode symlink");
+    let refused = pi_version_output(binary, &env, symlinked.path());
+    assert!(
+        !refused.status.success(),
+        "pinfold pi started with a symlinked .vscode"
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("not a real directory") && stderr.contains(&link.display().to_string()),
+        "the refusal did not name {} as not a real directory: {stderr}",
+        link.display()
     );
 }
 

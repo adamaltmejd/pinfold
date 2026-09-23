@@ -4,7 +4,9 @@
 //! `commondir`) and editors run `.vscode/`, `.claude/` and `.idea/` config
 //! when the project is opened, so the box gets those paths read-only. A
 //! worktree's `.git` is a file, which the runtimes cannot mount read-only,
-//! so a worktree is refused.
+//! so a worktree is refused. A protected path that is a symlink, or is
+//! reached through one, is refused too: the runtime resolves a bind-mount
+//! source on the host, and the box can write the project.
 
 use std::fs;
 use std::io;
@@ -36,8 +38,10 @@ impl Git {
     pub fn prepare(root: &Path, protect: &[String]) -> io::Result<Git> {
         let dot_git = root.join(".git");
         let mut paths = Vec::new();
-        match fs::metadata(&dot_git) {
-            Ok(metadata) if metadata.is_file() => {
+        match path_kind(&dot_git)? {
+            PathKind::Absent => {}
+            PathKind::Directory => paths.push(dot_git),
+            PathKind::File => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
@@ -46,15 +50,7 @@ impl Git {
                     ),
                 ));
             }
-            Ok(metadata) if metadata.is_dir() => paths.push(dot_git),
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(io::Error::new(
-                    error.kind(),
-                    format!("stat {}: {error}", dot_git.display()),
-                ));
-            }
+            PathKind::Other => return Err(not_real_dir(&dot_git)),
         }
         for name in ALWAYS_PROTECT {
             paths.push(root.join(name));
@@ -69,15 +65,15 @@ impl Git {
             if readonly.iter().any(|mount: &Mount| mount.guest == path) {
                 continue;
             }
-            match fs::metadata(&path) {
-                Ok(metadata) if metadata.is_dir() => {}
-                Ok(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("protected path {} is not a directory", path.display()),
-                    ));
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            match path_kind(&path)? {
+                PathKind::Directory => {}
+                PathKind::Absent => {
+                    // create_dir follows a symlinked parent, so the parent
+                    // must be a real directory before anything is created.
+                    let parent = path.parent().expect("protected paths have a parent");
+                    if !matches!(path_kind(parent)?, PathKind::Directory) {
+                        return Err(not_real_dir(&path));
+                    }
                     fs::create_dir(&path).map_err(|error| {
                         io::Error::new(
                             error.kind(),
@@ -86,12 +82,7 @@ impl Git {
                     })?;
                     created.push(path.clone());
                 }
-                Err(error) => {
-                    return Err(io::Error::new(
-                        error.kind(),
-                        format!("stat {}: {error}", path.display()),
-                    ));
-                }
+                PathKind::File | PathKind::Other => return Err(not_real_dir(&path)),
             }
             readonly.push(Mount {
                 host: path.clone(),
@@ -139,4 +130,57 @@ fn protected_path(root: &Path, entry: &str) -> io::Result<PathBuf> {
         ));
     }
     Ok(path)
+}
+
+/// What is at a protected path.
+enum PathKind {
+    /// Nothing.
+    Absent,
+    /// A real directory with no symlink in any component.
+    Directory,
+    /// A regular file, the worktree `.git` case.
+    File,
+    /// A symlink, or anything else that is not a real directory.
+    Other,
+}
+
+/// Classify `path` without following a symlink at its final component. The
+/// project root is canonical, so an existing directory whose canonical path
+/// differs from `path` has a symlink in some component.
+fn path_kind(path: &Path) -> io::Result<PathKind> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(PathKind::File),
+        Ok(metadata) if metadata.is_dir() => {
+            let real = fs::canonicalize(path).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("canonicalize {}: {error}", path.display()),
+                )
+            })?;
+            Ok(if real.as_path() == path {
+                PathKind::Directory
+            } else {
+                PathKind::Other
+            })
+        }
+        Ok(_) => Ok(PathKind::Other),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(PathKind::Absent),
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!("stat {}: {error}", path.display()),
+        )),
+    }
+}
+
+/// The refusal for a protected path or `.git` that is not a real directory
+/// under the project root. The runtime resolves a bind-mount source on the
+/// host, so following a symlink the box planted would mount its target.
+fn not_real_dir(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "refusing to run: {} is not a real directory under the project root",
+            path.display()
+        ),
+    )
 }
