@@ -14,7 +14,7 @@
 # (YARD_CONTAINER_MEMORY=share in the machine's own operator.env), it also
 # divides the Docker engine's memory between them: a share below the 512 MiB a
 # worker needs is refused.
-max_lanes = 1
+max_lanes = 2
 
 # max_batch is the most approved candidates one merge batch verifies together.
 # They are merged in approval order onto the target and gated once as one ref;
