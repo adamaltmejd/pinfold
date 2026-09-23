@@ -155,8 +155,8 @@ fn a_changed_project_file_stops_the_run() {
     // Sabotage: drop the trust::check call from pi::launch; the created and
     // the changed `.pinfold.toml` then run and both refusal assertions fail.
     // Sabotage: hash an absent `.pinfold.toml` as the empty file instead of
-    // recording its absence; the live run after `pinfold allow` refuses and
-    // never answers get_state.
+    // recording its absence; the first run, with no `.pinfold.toml` and no
+    // record, refuses as "not trusted" and the bare-run control fails.
     let binary = pinfold();
     let env = TestEnv::new("pi-trust");
     default_image(binary, &env);
