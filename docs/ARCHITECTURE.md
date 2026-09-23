@@ -225,9 +225,12 @@ profile image.
   unique `dev.pinfold.build` label. Images carry `dev.pinfold.profile=<name>`
   and `dev.pinfold.base=<digest>` (the resolved base) so Maintenance can find
   them.
-- A project image records the digest of the profile image it was built
-  from. `pinfold pi` prints one line when that is no longer the current
-  profile image.
+- A project build is tagged uniquely `pinfold/project-<id>:<build>` and
+  moves the stable `pinfold/project-<id>:latest` to it, where `<id>` is the
+  project's state id. A project image carries `dev.pinfold.project=<id>`,
+  and records the digest of the profile image it was built from as
+  `dev.pinfold.base`. `pinfold pi` prints one line when that is no longer
+  the current profile image.
 - A build never touches project homes.
 
 The default profile's image:
@@ -391,6 +394,10 @@ another adds.
 | `cpus` | `PINFOLD_CPUS` | 4 | |
 | `memory` | `PINFOLD_MEMORY` | `8G` | |
 | — | `PINFOLD_ENV_<NAME>` | — | `<NAME>` in the box; the only way host env enters |
+
+An `image` value that is a relative path to an existing file in the project
+is that project's Containerfile; any other value is an image ref, used as
+is.
 
 The list keys take comma-separated values in the environment:
 

@@ -97,3 +97,14 @@ pub trait Runtime: Sync {
 pub fn guest_path(host: &Path) -> PathBuf {
     host.to_path_buf()
 }
+
+/// The content digest of the image `reference` names, from the runtime's
+/// image list. `None` when no image carries the reference. Unlike
+/// [`Runtime::image_digest`], this never pulls: the reference is local.
+pub fn local_image_id(runtime: &dyn Runtime, reference: &str) -> io::Result<Option<String>> {
+    Ok(runtime
+        .list_images()?
+        .into_iter()
+        .find(|image| image.reference == reference)
+        .map(|image| image.id))
+}

@@ -93,6 +93,11 @@ impl Profile {
         ))
     }
 
+    /// The stable ref of this profile's image.
+    pub fn image_ref(&self) -> String {
+        format!("pinfold/profile-{}:latest", self.name)
+    }
+
     /// The image the Containerfile's first `FROM` builds on, when it is a
     /// plain reference. A `FROM` that names a variable has none.
     pub fn base_image(&self) -> Option<&str> {

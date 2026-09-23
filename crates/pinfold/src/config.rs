@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 
@@ -55,8 +55,10 @@ pub struct Config {
 pub enum Containerfile {
     /// The selected profile's Containerfile, held in memory.
     Profile(Vec<u8>),
-    /// A Containerfile path relative to the project root.
-    Project(PathBuf),
+    /// The project's Containerfile, read once at load time. Trust hashes
+    /// these bytes and the build uses them, so a live box cannot swap the
+    /// file in between.
+    Project(Vec<u8>),
 }
 
 impl Config {
@@ -77,11 +79,16 @@ impl Config {
         let merged = profile_layer.over(project).over(environment);
         let image = merged.image.clone();
         // The config cannot tell a bare image name from a bare file name, so
-        // a value that names an existing project file is the Containerfile;
-        // anything else is an image ref. Y-9 builds a project Containerfile.
+        // a relative path naming an existing project file is the
+        // Containerfile; anything else is an image ref. The bytes are read
+        // here so trust and the build see the same ones.
         let containerfile = match image.as_deref() {
             Some(image) if Path::new(image).is_relative() && root.join(image).is_file() => {
-                Containerfile::Project(PathBuf::from(image))
+                let path = root.join(image);
+                let bytes = fs::read(&path).map_err(|error| {
+                    io::Error::new(error.kind(), format!("read {}: {error}", path.display()))
+                })?;
+                Containerfile::Project(bytes)
             }
             _ => Containerfile::Profile(profile.containerfile.clone()),
         };
