@@ -23,6 +23,12 @@ pub fn cache_dir() -> io::Result<PathBuf> {
     xdg("XDG_CACHE_HOME", ".cache")
 }
 
+/// `$XDG_CACHE_HOME/pinfold/artifacts`: pinned release binaries and the
+/// embedded init.
+pub fn artifacts_dir() -> io::Result<PathBuf> {
+    Ok(cache_dir()?.join("artifacts"))
+}
+
 fn xdg(variable: &str, fallback: &str) -> io::Result<PathBuf> {
     match std::env::var_os(variable) {
         Some(value) if Path::new(&value).is_absolute() => Ok(PathBuf::from(value).join("pinfold")),

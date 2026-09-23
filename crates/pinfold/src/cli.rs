@@ -278,8 +278,7 @@ fn embedded_init() -> io::Result<PathBuf> {
     const INIT: &[u8] = include_bytes!(env!("PINFOLD_INIT"));
     let mut hasher = DefaultHasher::new();
     INIT.hash(&mut hasher);
-    let dir = dirs::cache_dir()?
-        .join("artifacts")
+    let dir = dirs::artifacts_dir()?
         .join("init")
         .join(format!("{:016x}", hasher.finish()))
         .join("linux-arm64");

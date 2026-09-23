@@ -457,7 +457,7 @@ Rust. Each Linux build is a static musl binary and doubles as `pinfold init`.
 Linux targets build on a Mac with `cargo zigbuild`. The default profile and,
 in the macOS CLI, the arm64 Linux init are embedded with `include_bytes!`.
 
-Dependencies: `tokio`, `httparse`, `serde`, `serde_json`, `toml`, `nix`.
+Dependencies: `tokio`, `httparse`, `serde`, `serde_json`, `sha2`, `toml`, `nix`.
 SNI comes from a small ClientHello parser.
 
 Portability (Windows later means the Linux build in WSL2):
