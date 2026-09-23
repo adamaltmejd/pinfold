@@ -492,4 +492,3 @@ fn record(log: &Path, host: &str, decision: &str, reason: &str) {
         let _ = file.write_all(line.as_bytes());
     }
 }
-
