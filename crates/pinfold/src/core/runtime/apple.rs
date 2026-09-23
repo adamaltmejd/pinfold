@@ -40,10 +40,12 @@ impl Runtime for Apple {
         if let Some(socket) = proxy_socket {
             command.env("SSH_AUTH_SOCK", socket);
         }
-        // Always applied: Node's fetch reads HTTPS_PROXY only with this set.
+        // Always applied: Node's fetch reads the proxy variables only with
+        // this set.
         command.env("NODE_USE_ENV_PROXY", "1");
         if plan.egress.is_some() {
             command.env("HTTPS_PROXY", PROXY_URL);
+            command.env("HTTP_PROXY", PROXY_URL);
         }
         command.spawn()
     }
@@ -362,12 +364,15 @@ pub fn up_argv(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> Vec<OsS
         argv.push("--env".into());
         argv.push(name.into());
     }
-    // Always applied: Node's fetch reads HTTPS_PROXY only with this set.
+    // Always applied: Node's fetch reads the proxy variables only with this
+    // set.
     argv.push("--env".into());
     argv.push("NODE_USE_ENV_PROXY".into());
     if plan.egress.is_some() {
         argv.push("--env".into());
         argv.push("HTTPS_PROXY".into());
+        argv.push("--env".into());
+        argv.push("HTTP_PROXY".into());
     }
     for mount in &plan.mounts {
         argv.push("--mount".into());

@@ -1,4 +1,4 @@
-//! End-to-end tests for guarantees 5, 9 and 10 in docs/ARCHITECTURE.md.
+//! End-to-end tests for the guarantees in docs/ARCHITECTURE.md.
 //!
 //! They run on a macOS host with the Apple `container` CLI. The harness
 //! builds the `pinfold` binary, builds the default profile image once, and
@@ -11,6 +11,8 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
+
+use e2e::HttpFixture;
 
 #[test]
 fn box_lifecycle_works_for_a_caller() {
@@ -587,6 +589,331 @@ fn image_has_label(image: &serde_json::Value, label: &str, value: &str) -> bool 
             .any(|variant| variant["config"]["config"]["Labels"][label] == value)
     })
 }
+
+#[test]
+fn box_has_no_network_but_loopback() {
+    // Sabotage: drop `--network none` from the Apple adapter's `container
+    // run` argv; the box gains an interface and reaches `1.1.1.1`, so the
+    // interface and unreachable assertions fail. The route to the fixture is
+    // the positive control that the same box still has its one way out.
+    let binary = pinfold();
+    let env = TestEnv::new("network");
+    let fixture = HttpFixture::start();
+    let name = format!("pinfold-e2e-{}-network", std::process::id());
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(binary, &env),
+        "egress": {
+            "routes": { "fixture.internal": format!("127.0.0.1:{}", fixture.port()) },
+        },
+    });
+    let up = box_up(binary, &env, &spec, &name);
+
+    // Only loopback exists.
+    let dev = box_exec(binary, &env, &name, &["cat", "/proc/net/dev"]);
+    assert_eq!(dev.code, 0, "reading /proc/net/dev failed: {}", dev.stderr);
+    let interfaces: Vec<&str> = dev
+        .stdout
+        .lines()
+        .filter_map(|line| {
+            let (name, _) = line.split_once(':')?;
+            let name = name.trim();
+            (!name.is_empty() && !name.contains('|')).then_some(name)
+        })
+        .collect();
+    assert_eq!(interfaces, ["lo"], "the box has a network: {}", dev.stdout);
+
+    // Named addresses fail at once with the kernel's reason, not a timeout.
+    // The short --max-time turns a hang into a failure; -v carries the
+    // kernel's reason, which curl's summary line omits.
+    let public = box_exec(
+        binary,
+        &env,
+        &name,
+        &["curl", "-sS", "-v", "--max-time", "5", "http://1.1.1.1/"],
+    );
+    assert_eq!(public.code, 7, "1.1.1.1 answered: {}", public.stdout);
+    assert!(
+        public.stderr.contains("Network is unreachable"),
+        "1.1.1.1 failed for another reason: {}",
+        public.stderr
+    );
+
+    let dns = box_exec(
+        binary,
+        &env,
+        &name,
+        &["bash", "-c", "exec 3<>/dev/tcp/100.100.100.100/53"],
+    );
+    assert_eq!(dns.code, 1, "100.100.100.100:53 answered");
+    assert!(
+        dns.stderr.contains("Network is unreachable"),
+        "100.100.100.100:53 failed for another reason: {}",
+        dns.stderr
+    );
+
+    // Positive control: the route answers through the proxy while the box
+    // has no network.
+    let route = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "5",
+            "-x",
+            "http://127.0.0.1:3128",
+            "http://fixture.internal/",
+        ],
+    );
+    assert_eq!(route.code, 0, "the route failed: {}", route.stderr);
+    assert!(
+        route.stdout.contains("fixture host=fixture.internal"),
+        "the route answered: {}",
+        route.stdout
+    );
+    assert_eq!(
+        fixture.requests(),
+        1,
+        "the fixture did not answer the route"
+    );
+
+    let status = box_down(binary, &env, &name);
+    assert!(status.success(), "box down failed: {status}");
+    drop(up);
+}
+
+#[test]
+fn a_route_reaches_exactly_one_host_service() {
+    // Sabotage: forward the client's Host header unchanged; the evil-Host
+    // request then reaches the fixture as evil.example and its assertion
+    // fails. The route reaches the fixture through the proxy; the fixture's
+    // loopback port is not reachable from the box without it.
+    let binary = pinfold();
+    let env = TestEnv::new("route");
+    let fixture = HttpFixture::start();
+    let name = format!("pinfold-e2e-{}-route", std::process::id());
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(binary, &env),
+        "egress": {
+            "routes": { "fixture.internal": format!("127.0.0.1:{}", fixture.port()) },
+        },
+    });
+    let up = box_up(binary, &env, &spec, &name);
+
+    // The route reaches the fixture.
+    let route = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "5",
+            "-x",
+            "http://127.0.0.1:3128",
+            "http://fixture.internal/",
+        ],
+    );
+    assert_eq!(route.code, 0, "the route failed: {}", route.stderr);
+    assert!(
+        route.stdout.contains("fixture host=fixture.internal"),
+        "the route answered: {}",
+        route.stdout
+    );
+
+    // The Host header is rewritten from the absolute-form target, not passed
+    // through from the client.
+    let rewritten = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "5",
+            "-x",
+            "http://127.0.0.1:3128",
+            "-H",
+            "Host: evil.example",
+            "http://fixture.internal/",
+        ],
+    );
+    assert_eq!(rewritten.code, 0, "the route failed: {}", rewritten.stderr);
+    assert!(
+        rewritten.stdout.contains("fixture host=fixture.internal"),
+        "the Host header was not rewritten: {}",
+        rewritten.stdout
+    );
+
+    // The fixture's loopback port is unreachable without the route: the
+    // box's own loopback has no listener.
+    let direct = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "-v",
+            "--max-time",
+            "5",
+            "--noproxy",
+            "*",
+            &format!("http://127.0.0.1:{}/", fixture.port()),
+        ],
+    );
+    assert_eq!(
+        direct.code, 7,
+        "the fixture answered directly: {}",
+        direct.stdout
+    );
+    assert!(
+        direct.stderr.contains("Connection refused"),
+        "the direct request failed for another reason: {}",
+        direct.stderr
+    );
+    assert_eq!(
+        fixture.requests(),
+        2,
+        "the fixture answered a direct request"
+    );
+
+    // Every decision is logged, and the proxy variables reach exec'd work.
+    let lines = egress_log_lines(&env, &name);
+    assert!(
+        lines.iter().any(|line| line["host"] == "fixture.internal"
+            && line["decision"] == "allowed"
+            && line["reason"] == "route"),
+        "no route decision: {lines:?}"
+    );
+    for variable in ["HTTP_PROXY", "HTTPS_PROXY"] {
+        let value = box_exec(binary, &env, &name, &["printenv", variable]);
+        assert_eq!(value.code, 0, "{variable} is not set: {}", value.stderr);
+        assert_eq!(value.stdout.trim(), "http://127.0.0.1:3128", "{variable}");
+    }
+
+    let status = box_down(binary, &env, &name);
+    assert!(status.success(), "box down failed: {status}");
+    drop(up);
+}
+
+#[test]
+fn no_egress_means_no_way_out() {
+    // Sabotage: start the proxy and relay even without `egress` in the spec;
+    // the explicit-proxy request then succeeds, the fixture answers, and the
+    // refusal assertions fail. The same request with the route in the spec is
+    // the positive control.
+    let binary = pinfold();
+    let env = TestEnv::new("no-egress");
+    let fixture = HttpFixture::start();
+    let name = format!("pinfold-e2e-{}-no-egress", std::process::id());
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(binary, &env),
+    });
+    let up = box_up(binary, &env, &spec, &name);
+
+    // No proxy variables and no relay to use them.
+    for variable in ["HTTP_PROXY", "HTTPS_PROXY"] {
+        let found = box_exec(binary, &env, &name, &["printenv", variable]);
+        assert_ne!(
+            found.code, 0,
+            "{variable} is set without egress: {}",
+            found.stdout
+        );
+    }
+    let proxied = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "-v",
+            "--max-time",
+            "5",
+            "-x",
+            "http://127.0.0.1:3128",
+            "http://fixture.internal/",
+        ],
+    );
+    assert_eq!(proxied.code, 7, "the box had a proxy: {}", proxied.stdout);
+    assert!(
+        proxied.stderr.contains("Connection refused"),
+        "the proxied request failed for another reason: {}",
+        proxied.stderr
+    );
+
+    // A route name is nothing without egress.
+    let direct = box_exec(
+        binary,
+        &env,
+        &name,
+        &["curl", "-sS", "--max-time", "5", "http://fixture.internal/"],
+    );
+    assert_eq!(direct.code, 6, "the box reached a route: {}", direct.stdout);
+    assert!(
+        direct.stderr.contains("Could not resolve host"),
+        "the direct request failed for another reason: {}",
+        direct.stderr
+    );
+    assert_eq!(
+        fixture.requests(),
+        0,
+        "the fixture answered a no-egress box"
+    );
+
+    let status = box_down(binary, &env, &name);
+    assert!(status.success(), "box down failed: {status}");
+    drop(up);
+
+    // Positive control: the same request with the route in the spec answers.
+    let name = format!("pinfold-e2e-{}-no-egress-control", std::process::id());
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(binary, &env),
+        "egress": {
+            "routes": { "fixture.internal": format!("127.0.0.1:{}", fixture.port()) },
+        },
+    });
+    let up = box_up(binary, &env, &spec, &name);
+    let route = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "5",
+            "-x",
+            "http://127.0.0.1:3128",
+            "http://fixture.internal/",
+        ],
+    );
+    assert_eq!(route.code, 0, "the control route failed: {}", route.stderr);
+    assert!(
+        route.stdout.contains("fixture host=fixture.internal"),
+        "the control route answered: {}",
+        route.stdout
+    );
+    assert_eq!(
+        fixture.requests(),
+        1,
+        "the fixture did not answer the control"
+    );
+
+    let status = box_down(binary, &env, &name);
+    assert!(status.success(), "box down failed: {status}");
+    drop(up);
+}
+
 
 /// One `/proc/<pid>/status` field's value.
 fn status_field(status: &str, key: &str) -> String {
