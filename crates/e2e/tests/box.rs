@@ -285,6 +285,30 @@ fn nothing_can_gain_privileges() {
     );
     assert!(dir.path().join("pinfold-write-test").is_file());
 
+    // On Linux, the podman seccomp profile must also block nested user
+    // namespaces. Sabotage: prepend the ERRNO rules for clone and unshare
+    // instead of removing `clone`, `clone3` and `unshare` from the default
+    // profile's unconditional SCMP_ACT_ALLOW entry; the allow wins,
+    // `unshare -U true` succeeds, and this assertion fails. Nested user
+    // namespaces on Apple `container` are an open question in the spec, so
+    // assert nothing there.
+    if cfg!(target_os = "linux") {
+        let unshare = box_exec(binary, &env, &name, &["unshare", "-U", "true"]);
+        assert_ne!(unshare.code, 0, "unshare -U succeeded in the box");
+        assert!(
+            unshare.stderr.contains("Operation not permitted"),
+            "unshare -U failed for another reason: {}",
+            unshare.stderr
+        );
+        // Positive control: the same box still runs a plain child process.
+        let child = box_exec(binary, &env, &name, &["true"]);
+        assert_eq!(
+            child.code, 0,
+            "a plain child process failed: {}",
+            child.stderr
+        );
+    }
+
     let status = box_down(binary, &env, &name);
     assert!(status.success(), "box down failed: {status}");
     drop(up);

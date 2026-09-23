@@ -45,7 +45,8 @@ impl Runtime for Podman {
         }
         let info = preflight()?;
         let seccomp = seccomp_profile(&info)?;
-        let argv = up_argv(plan, init, proxy_socket, &seccomp);
+        let resolv_conf = empty_resolv_conf()?;
+        let argv = up_argv(plan, init, proxy_socket, &seccomp, &resolv_conf);
         let (program, arguments) = argv.split_first().expect("argv is never empty");
         let mut command = Command::new(program);
         command
@@ -284,11 +285,13 @@ fn docker_present() -> bool {
 
 /// Podman's default seccomp profile with nested user namespaces blocked.
 ///
-/// The default allows `CLONE_NEWUSER`; the box shares the host kernel, so
-/// that is kernel attack surface. `clone3` takes a pointer and its flags
-/// cannot be filtered, so it is refused with ENOSYS and callers fall back to
-/// `clone`, where the flag is visible. The rules go first so they win over
-/// the default's allow rules.
+/// The default allows `clone`, `clone3` and `unshare` unconditionally in one
+/// large allow rule, so a conditional rule placed before it never runs.
+/// Those names are removed from every allow rule, then `clone` and `unshare`
+/// are allowed only when their flags do not include `CLONE_NEWUSER`. `clone3`
+/// takes a pointer and its flags cannot be filtered, so it falls to the
+/// profile's default action (`ENOSYS` in podman's profile) and callers fall
+/// back to `clone`, where the flag is visible.
 fn seccomp_profile(info: &Info) -> io::Result<PathBuf> {
     let source = Path::new(&info.host.security.seccomp_profile_path);
     let text = fs::read_to_string(source).map_err(|error| {
@@ -306,35 +309,6 @@ fn seccomp_profile(info: &Info) -> io::Result<PathBuf> {
             source.display()
         ))
     })?;
-    let rules = [
-        serde_json::json!({
-            "names": ["clone"],
-            "action": "SCMP_ACT_ERRNO",
-            "errnoRet": 1,
-            "args": [{
-                "index": 0,
-                "value": CLONE_NEWUSER,
-                "valueTwo": CLONE_NEWUSER,
-                "op": "SCMP_CMP_MASKED_EQ",
-            }],
-        }),
-        serde_json::json!({
-            "names": ["unshare"],
-            "action": "SCMP_ACT_ERRNO",
-            "errnoRet": 1,
-            "args": [{
-                "index": 0,
-                "value": CLONE_NEWUSER,
-                "valueTwo": CLONE_NEWUSER,
-                "op": "SCMP_CMP_MASKED_EQ",
-            }],
-        }),
-        serde_json::json!({
-            "names": ["clone3"],
-            "action": "SCMP_ACT_ERRNO",
-            "errnoRet": 38,
-        }),
-    ];
     let syscalls = profile
         .get_mut("syscalls")
         .and_then(serde_json::Value::as_array_mut)
@@ -344,8 +318,48 @@ fn seccomp_profile(info: &Info) -> io::Result<PathBuf> {
                 source.display()
             ))
         })?;
-    for rule in rules.into_iter().rev() {
-        syscalls.insert(0, rule);
+    for rule in syscalls.iter_mut() {
+        if rule.get("action").and_then(serde_json::Value::as_str) != Some("SCMP_ACT_ALLOW") {
+            continue;
+        }
+        let Some(names) = rule
+            .get_mut("names")
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            continue;
+        };
+        names.retain(|name| !matches!(name.as_str(), Some("clone" | "clone3" | "unshare")));
+    }
+    // An allow rule whose names were all removed is dead; drop it.
+    syscalls.retain(|rule| {
+        rule.get("action").and_then(serde_json::Value::as_str) != Some("SCMP_ACT_ALLOW")
+            || rule
+                .get("names")
+                .and_then(serde_json::Value::as_array)
+                .is_none_or(|names| !names.is_empty())
+    });
+    for name in ["clone", "unshare"] {
+        syscalls.push(serde_json::json!({
+            "names": [name],
+            "action": "SCMP_ACT_ALLOW",
+            "args": [{
+                "index": 0,
+                "value": CLONE_NEWUSER,
+                "valueTwo": 0,
+                "op": "SCMP_CMP_MASKED_EQ",
+            }],
+        }));
+        syscalls.push(serde_json::json!({
+            "names": [name],
+            "action": "SCMP_ACT_ERRNO",
+            "errnoRet": 1,
+            "args": [{
+                "index": 0,
+                "value": CLONE_NEWUSER,
+                "valueTwo": CLONE_NEWUSER,
+                "op": "SCMP_CMP_MASKED_EQ",
+            }],
+        }));
     }
     let dir = dirs::cache_dir()?.join("seccomp");
     fs::create_dir_all(&dir)?;
@@ -359,6 +373,26 @@ fn seccomp_profile(info: &Info) -> io::Result<PathBuf> {
     )?;
     fs::rename(&temp, &path)?;
     Ok(path)
+}
+
+/// The empty `/etc/resolv.conf` every box sees, owned by pinfold under the
+/// cache dir and created once. `--dns none` cannot be combined with
+/// `--network none` on podman 5.4.2; without this bind podman writes a
+/// resolver of its own.
+fn empty_resolv_conf() -> io::Result<PathBuf> {
+    let path = dirs::cache_dir()?.join("resolv.conf");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(_) => Ok(path),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(path),
+        Err(error) => Err(error),
+    }
 }
 
 /// Keep the proxy socket 0600 in its 0700 state directory. The box user is
@@ -487,6 +521,7 @@ pub fn up_argv(
     init: &Path,
     proxy_socket: Option<&Path>,
     seccomp: &Path,
+    resolv_conf: &Path,
 ) -> Vec<OsString> {
     let mut argv: Vec<OsString> = vec![
         "podman".into(),
@@ -509,8 +544,11 @@ pub fn up_argv(
         "--security-opt".into(),
         format!("seccomp={}", seccomp.display()).into(),
         "--no-hosts".into(),
-        "--dns".into(),
-        "none".into(),
+        // `--dns none` conflicts with `--network none` on podman 5.4.2. An
+        // empty read-only file leaves the box with no resolvers either way,
+        // and podman's own generated resolv.conf never appears.
+        "--mount".into(),
+        bind(resolv_conf, Path::new("/etc/resolv.conf"), true),
         "--pids-limit".into(),
         PIDS_LIMIT.to_string().into(),
     ];

@@ -147,9 +147,9 @@ pinfold box prune                 # remove boxes whose `up` is gone
 - PID 1 and all work run as the host uid:gid.
 - `NODE_USE_ENV_PROXY=1`: Node's fetch ignores `HTTPS_PROXY` without it.
 - podman adds: `--userns=keep-id`, `--security-opt no-new-privileges`, a
-  seccomp profile that also blocks `CLONE_NEWUSER`, `--no-hosts`,
-  `--dns none`, `--memory-swap` equal to `--memory`, `--pids-limit`, an
-  explicit `HOME`, and `rm -f -t 0` at teardown.
+  seccomp profile that also blocks `CLONE_NEWUSER`, `--no-hosts`, an empty
+  read-only `/etc/resolv.conf`, `--memory-swap` equal to `--memory`,
+  `--pids-limit`, an explicit `HOME`, and `rm -f -t 0` at teardown.
 
 Runtime command lines are built as data.
 
@@ -507,7 +507,6 @@ profile/   the built-in default profile
 - Not yet run end to end, so phase 1 proves them first: on Apple
   `container`, a client through the init relay, the socket and the proxy;
   PID 1 as the host uid with the transient root chmod exec; the SNI check.
-  On podman, `--no-hosts` and `--dns none`.
 - A read-only `.git` mount on Apple `container`: writes fail and the mount
   point cannot be renamed, as on podman.
 - `198.18/15` blocking breaks fake-IP DNS proxies (Surge, Clash).
