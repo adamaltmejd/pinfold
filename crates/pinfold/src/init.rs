@@ -36,9 +36,12 @@ pub fn run() -> ! {
         if TERMINATE.load(Ordering::SeqCst) {
             break;
         }
-        // TERM, INT and CHLD are blocked, so one that arrives between the
-        // reap and this wait stays pending and wakes it immediately.
-        unblocked.suspend().expect("sigsuspend");
+        // sigsuspend returns when any unblocked signal is delivered; a
+        // signal is the normal wakeup, not an error.
+        if let Err(error) = unblocked.suspend() {
+            eprintln!("pinfold init: sigsuspend: {error}");
+            break;
+        }
     }
     process::exit(0);
 }

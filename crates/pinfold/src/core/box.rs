@@ -26,6 +26,8 @@ pub enum Shutdown {
     StdinEof,
     /// SIGTERM or SIGINT arrived.
     Signal,
+    /// The attached `container run` process exited on its own.
+    BoxExited,
 }
 
 impl Box {
@@ -45,7 +47,7 @@ impl Box {
         }
 
         let runtime = runtime()?;
-        let state_dir = dirs::state_dir().join("boxes").join(&plan.name);
+        let state_dir = dirs::state_dir()?.join("boxes").join(&plan.name);
         tokio::fs::create_dir_all(&state_dir).await?;
         tokio::fs::write(state_dir.join("pid"), std::process::id().to_string()).await?;
 
@@ -70,6 +72,9 @@ impl Box {
             }
         };
         if let Some(failure) = failure {
+            // The container exists by name even when readiness failed; remove
+            // it before the state dir that names it.
+            let _ = runtime.down(&plan.name);
             let _ = child.start_kill();
             let status = child.wait().await;
             let _ = tokio::fs::remove_dir_all(&state_dir).await;
@@ -89,10 +94,13 @@ impl Box {
         })
     }
 
-    /// Wait until stdin closes or a termination signal arrives, then stop and
-    /// remove the box.
+    /// Wait until the box exits, stdin closes, or a termination signal
+    /// arrives, then stop and remove the box.
     pub async fn hold(&mut self) -> io::Result<Shutdown> {
-        let reason = wait_for_shutdown().await?;
+        let reason = tokio::select! {
+            reason = wait_for_shutdown() => reason?,
+            _ = self.child.wait() => Shutdown::BoxExited,
+        };
         self.down().await?;
         Ok(reason)
     }

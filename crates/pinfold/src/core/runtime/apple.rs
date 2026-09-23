@@ -23,6 +23,13 @@ impl Runtime for Apple {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
+        // Exact values go through the child's environment, so argv holds only
+        // names and `ps` cannot read a secret.
+        for (name, value) in &plan.env {
+            if let Env::Exact(value) = value {
+                command.env(name, value);
+            }
+        }
         command.spawn()
     }
 
@@ -77,13 +84,10 @@ pub fn up_argv(plan: &Plan, init: &Path) -> Vec<OsString> {
         argv.push("--label".into());
         argv.push(format!("{key}={value}").into());
     }
-    for (name, value) in &plan.env {
+    for name in plan.env.keys() {
+        // Names only: `container` reads the value from our environment.
         argv.push("--env".into());
-        match value {
-            // The value stays out of argv; `container` reads it from us.
-            Env::Exact(value) => argv.push(format!("{name}={value}").into()),
-            Env::From { .. } => argv.push(name.into()),
-        }
+        argv.push(name.into());
     }
     for mount in &plan.mounts {
         argv.push("--mount".into());
