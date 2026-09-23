@@ -74,6 +74,34 @@ pub fn pi() -> io::Result<PathBuf> {
     }
 }
 
+/// Remove artifact versions no pin names. The embedded init lives under
+/// `init/` and is named by no pin, so it is never touched.
+pub fn prune_unpinned() -> io::Result<()> {
+    let pi = dirs::artifacts_dir()?.join("pi");
+    let entries = match fs::read_dir(&pi) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_name().to_str() == Some(PI_VERSION) {
+            continue;
+        }
+        remove(&entry.path())?;
+    }
+    Ok(())
+}
+
+fn remove(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// The `os-arch` of a box on this host. Apple `container` and podman run
 /// native images.
 fn box_os_arch() -> io::Result<&'static str> {
