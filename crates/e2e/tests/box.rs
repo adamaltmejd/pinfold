@@ -11,9 +11,14 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use e2e::{HttpFixture, pinfold};
+
+/// The two owner-gone tests share one hazard: either one's removal can take
+/// the other's dead box before the other expects it. Hold this from killing
+/// an owner until that test's removal has run.
+static DEAD_BOX_RACE: Mutex<()> = Mutex::new(());
 
 #[test]
 fn box_lifecycle_works_for_a_caller() {
@@ -692,6 +697,11 @@ fn losing_the_owner_fails_closed() {
         allowed.stderr
     );
 
+    // Hold the race against the cleanup test's `clean`, which removes any
+    // dead pinfold box, through this test's `box prune`.
+    let _race = DEAD_BOX_RACE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     up.kill();
     up.wait();
 
@@ -750,9 +760,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // of only pinfold's own; the unlabeled image assertion fails. Sabotage:
     // drop the live-box check from `clean`; the live project's marker is
     // deleted and the marker-survives assertion fails. Sabotage: make
-    // `clean` remove every box or every project state; the live box or the
-    // surviving project state assertion fails. Sabotage: make `clean`
-    // skip boxes whose owner is gone; the dead box assertion fails.
+    // `clean` remove every project state instead of only the stale ones;
+    // the other project's state assertion fails. Sabotage: make `clean`
+    // remove every box; the live box assertion fails. Sabotage: make
+    // `clean` skip boxes whose owner is gone; the dead box assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("cleanup");
     // `clean` deletes the runtime's builder, so wait for the suite's shared
@@ -895,6 +906,11 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "labels": { "dev.pinfold.project": "e2e-cleanup-dead" },
     });
     let mut dead_up = box_up(binary, &env, &dead_spec, &dead);
+    // Hold the race against the owner-gone test's `box prune` through this
+    // test's `clean`.
+    let _race = DEAD_BOX_RACE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     dead_up.kill();
     dead_up.wait();
 
@@ -968,6 +984,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert!(
         live_state.is_dir(),
         "clean removed a project state whose checkout exists"
+    );
+    assert!(
+        other_state.is_dir(),
+        "clean removed the other project's state"
     );
     assert!(
         live_marker.is_file(),

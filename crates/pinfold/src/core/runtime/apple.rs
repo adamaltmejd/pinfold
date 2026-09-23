@@ -85,12 +85,16 @@ impl Runtime for Apple {
             .stdout(Stdio::null())
             .status()?;
         if status.success() {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!(
-                "container rm -f {name}: {status}"
-            )))
+            return Ok(());
         }
+        // Another process may have removed the box between the list and this
+        // call; a box the runtime no longer lists counts as removed.
+        if self.list()?.iter().all(|box_| box_.id != name) {
+            return Ok(());
+        }
+        Err(io::Error::other(format!(
+            "container rm -f {name}: {status}"
+        )))
     }
 
     fn exec(
