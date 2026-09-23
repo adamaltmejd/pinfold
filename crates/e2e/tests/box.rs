@@ -748,8 +748,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // the `dev.pinfold.profile` label from the build; no image matches and
     // the count is zero. Sabotage: make `clean` remove every image instead
     // of only pinfold's own; the unlabeled image assertion fails. Sabotage:
-    // make `clean` remove every box or every project state; the live box or
-    // the surviving project state assertion fails. Sabotage: make `clean`
+    // drop the live-box check from `clean`; the live project's marker is
+    // deleted and the marker-survives assertion fails. Sabotage: make
+    // `clean` remove every box or every project state; the live box or the
+    // surviving project state assertion fails. Sabotage: make `clean`
     // skip boxes whose owner is gone; the dead box assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("cleanup");
@@ -822,7 +824,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
 
     // A project's state: a refused `pinfold pi` creates it before it names
     // the missing image. The profile is never built, so this part downloads
-    // no pi artifact.
+    // no pi artifact. Two projects get a cache marker: one runs a live box,
+    // the other does not.
     let missing = format!("{profile}-missing");
     let missing_containerfile = env
         .config
@@ -832,26 +835,51 @@ fn cleanup_removes_only_pinfolds_garbage() {
         .join("Containerfile");
     fs::create_dir_all(missing_containerfile.parent().unwrap()).unwrap();
     fs::write(&missing_containerfile, b"FROM scratch\n").unwrap();
-    let project = TestDir::new(&env, "project");
+
+    let live_project = TestDir::new(&env, "live-project");
     let refused = env
         .command(binary)
         .args(["pi", "--version"])
         .env("PINFOLD_PROFILE", &missing)
-        .current_dir(project.path())
+        .current_dir(live_project.path())
         .stdin(Stdio::null())
         .output()
         .expect("run pinfold pi");
     assert!(!refused.status.success(), "pi ran a profile with no image");
-    let state = project_state_dir(&env, project.path());
-    assert!(state.is_dir(), "the refused run created no project state");
+    let live_state = project_state_dir(&env, live_project.path());
+    let live_id = live_state
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let live_marker = live_state.join("home").join(".cache").join("marker");
+    fs::create_dir_all(live_marker.parent().unwrap()).unwrap();
+    fs::write(&live_marker, b"live\n").unwrap();
 
-    // A live pinfold box and a dead one, both on this run's tiny image.
-    let live_label = "dev.pinfold.project=e2e-cleanup-live";
+    let other_project = TestDir::new(&env, "other-project");
+    let refused = env
+        .command(binary)
+        .args(["pi", "--version"])
+        .env("PINFOLD_PROFILE", &missing)
+        .current_dir(other_project.path())
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold pi");
+    assert!(!refused.status.success(), "pi ran a profile with no image");
+    let other_state = project_state_dir(&env, other_project.path());
+    let other_marker = other_state.join("home").join(".cache").join("marker");
+    fs::create_dir_all(other_marker.parent().unwrap()).unwrap();
+    fs::write(&other_marker, b"other\n").unwrap();
+
+    // A live pinfold box for the live project, and a dead box that names
+    // no project.
+    let live_label = format!("dev.pinfold.project={live_id}");
     let live = format!("pinfold-e2e-{}-cleanup-live", std::process::id());
     let live_spec = serde_json::json!({
         "name": live,
         "image": format!("pinfold/profile-{profile}:latest"),
-        "labels": { "dev.pinfold.project": "e2e-cleanup-live" },
+        "labels": { "dev.pinfold.project": live_id },
     });
     let _live = box_up(binary, &env, &live_spec, &live);
 
@@ -868,12 +896,20 @@ fn cleanup_removes_only_pinfolds_garbage() {
 
     // Positive controls: everything `clean` sorts out exists before it runs.
     assert!(
-        !box_list(binary, &env, live_label).is_empty(),
+        !box_list(binary, &env, &live_label).is_empty(),
         "the live box is missing before clean"
     );
     assert!(
         !box_list(binary, &env, dead_label).is_empty(),
         "the dead box is missing before clean"
+    );
+    assert!(
+        live_marker.is_file(),
+        "the live project's marker is missing before clean"
+    );
+    assert!(
+        other_marker.is_file(),
+        "the other project's marker is missing before clean"
     );
 
     // `--dry-run` only lists: nothing it lists may disappear.
@@ -892,7 +928,12 @@ fn cleanup_removes_only_pinfolds_garbage() {
         !box_list(binary, &env, dead_label).is_empty(),
         "--dry-run removed the dead box"
     );
-    assert!(state.is_dir(), "--dry-run removed the project state");
+    assert!(live_state.is_dir(), "--dry-run removed the project state");
+    assert!(
+        live_marker.is_file(),
+        "--dry-run removed the live project's marker"
+    );
+    assert!(other_marker.is_file(), "--dry-run removed a project cache");
 
     // The real clean removes the dead box and only the dead box.
     let clean = env
@@ -913,12 +954,20 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "clean removed an unlabeled image"
     );
     assert!(
-        !box_list(binary, &env, live_label).is_empty(),
+        !box_list(binary, &env, &live_label).is_empty(),
         "clean removed a live box"
     );
     assert!(
-        state.is_dir(),
+        live_state.is_dir(),
         "clean removed a project state whose checkout exists"
+    );
+    assert!(
+        live_marker.is_file(),
+        "clean removed a live box's project cache"
+    );
+    assert!(
+        !other_marker.exists(),
+        "clean kept a project cache with no live box"
     );
     assert!(
         box_list(binary, &env, dead_label).is_empty(),

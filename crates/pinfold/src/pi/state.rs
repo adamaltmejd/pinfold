@@ -107,6 +107,8 @@ fn sanitize(name: &str) -> String {
 
 /// One project state dir, as Maintenance sees it.
 pub struct StateDir {
+    /// The id under `projects/`, which box labels name.
+    pub id: String,
     /// The dir under `projects/`, holding `state.json` and `home`.
     pub dir: PathBuf,
     /// The `$HOME` mounted into the project's boxes.
@@ -145,6 +147,9 @@ pub fn state_dirs() -> io::Result<Vec<StateDir>> {
     for entry in entries {
         let entry = entry?;
         let dir = entry.path();
+        let Some(id) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
         let Ok(json) = fs::read(dir.join("state.json")) else {
             continue;
         };
@@ -152,6 +157,7 @@ pub fn state_dirs() -> io::Result<Vec<StateDir>> {
             continue;
         };
         dirs.push(StateDir {
+            id,
             home: dir.join("home"),
             dir,
             root: state.root,

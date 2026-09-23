@@ -289,9 +289,13 @@ fn run_clean(args: &[OsString]) -> io::Result<()> {
 
     // Measure everything before removing anything, so `--dry-run` lists the
     // sizes a real `clean` reclaims.
-    let dead = clean::dead_boxes(runtime)?;
+    let boxes = clean::boxes(runtime)?;
     let sockets = clean::leftover_socket_dirs()?;
-    let mut box_dirs: BTreeSet<PathBuf> = dead.iter().map(|dead| dead.state_dir.clone()).collect();
+    let mut box_dirs: BTreeSet<PathBuf> = boxes
+        .dead
+        .iter()
+        .map(|dead| dead.state_dir.clone())
+        .collect();
     box_dirs.extend(sockets);
     let artifacts = artifacts::unpinned_versions()?;
     let egress = clean::old_egress_logs()?;
@@ -300,6 +304,10 @@ fn run_clean(args: &[OsString]) -> io::Result<()> {
     let mut caches = Vec::new();
     let mut stale = Vec::new();
     for project in &projects {
+        // A live box holds this project's home; leave it all alone.
+        if boxes.live_projects.contains(&project.id) {
+            continue;
+        }
         if project.stale(unused) {
             // The whole state dir goes; its cache is part of its size.
             stale.push(project.dir.clone());
@@ -331,7 +339,9 @@ fn run_clean(args: &[OsString]) -> io::Result<()> {
         return Ok(());
     }
 
-    clean::prune_boxes(runtime)?;
+    for dead in &boxes.dead {
+        dead.remove(runtime)?;
+    }
     clean::prune_sockets()?;
     artifacts::prune_unpinned()?;
     clean::prune_egress_logs()?;

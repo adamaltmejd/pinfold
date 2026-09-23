@@ -6,7 +6,7 @@
 //! and egress logs older than 14 days. The pass reports a problem on stderr
 //! and never fails the command it runs before.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -108,10 +108,30 @@ pub struct DeadBox {
     pub state_dir: PathBuf,
 }
 
-/// The pinfold boxes whose owning `box up` process is gone.
-pub fn dead_boxes(runtime: &dyn Runtime) -> io::Result<Vec<DeadBox>> {
-    let boxes = dirs::state_dir()?.join("boxes");
+impl DeadBox {
+    /// Take the box down and remove its state dir.
+    pub fn remove(&self, runtime: &dyn Runtime) -> io::Result<()> {
+        runtime.down(&self.id)?;
+        let _ = fs::remove_dir_all(&self.state_dir);
+        Ok(())
+    }
+}
+
+/// One runtime box list, split into the work for Maintenance: the pinfold
+/// boxes whose owner is gone, and the projects whose box is live.
+pub struct Boxes {
+    /// The pinfold boxes whose owning `box up` process is gone.
+    pub dead: Vec<DeadBox>,
+    /// The `dev.pinfold.project` ids of pinfold boxes whose owner is alive.
+    pub live_projects: BTreeSet<String>,
+}
+
+/// Read the runtime's box list once. A pinfold box with no owner label
+/// counts as gone: nothing holds it.
+pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
+    let state = dirs::state_dir()?.join("boxes");
     let mut dead = Vec::new();
+    let mut live_projects = BTreeSet::new();
     for box_ in runtime.list()? {
         if !box_
             .labels
@@ -125,22 +145,27 @@ pub fn dead_boxes(runtime: &dyn Runtime) -> io::Result<Vec<DeadBox>> {
             .get(OWNER_LABEL)
             .and_then(|pid| pid.parse::<i32>().ok());
         if owner.is_some_and(alive) {
+            if let Some(project) = box_.labels.get(PROJECT_LABEL) {
+                live_projects.insert(project.clone());
+            }
             continue;
         }
         dead.push(DeadBox {
-            state_dir: boxes.join(&box_.id),
+            state_dir: state.join(&box_.id),
             id: box_.id,
         });
     }
-    Ok(dead)
+    Ok(Boxes {
+        dead,
+        live_projects,
+    })
 }
 
 /// Remove boxes pinfold labeled whose owning `box up` process is gone, and
 /// the state dirs that name them.
 pub fn prune_boxes(runtime: &dyn Runtime) -> io::Result<()> {
-    for box_ in dead_boxes(runtime)? {
-        runtime.down(&box_.id)?;
-        let _ = fs::remove_dir_all(&box_.state_dir);
+    for dead in boxes(runtime)?.dead {
+        dead.remove(runtime)?;
     }
     Ok(())
 }
