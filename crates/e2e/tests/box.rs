@@ -1,11 +1,11 @@
 //! End-to-end tests for the guarantees in docs/ARCHITECTURE.md.
 //!
-//! They run on a macOS host with the Apple `container` CLI, or a Linux host
-//! with rootless podman. The harness builds the `pinfold` binary, builds the
-//! default profile image once, and drives pinfold as a user would: the CLI,
+//! They run on a macOS host with the Apple `container` CLI. The raw runtime
+//! commands below pick the host's CLI (Apple `container`, else podman); the
+//! rest of the harness builds the `pinfold` binary, builds the default
+//! profile image once, and drives pinfold as a user would: the CLI,
 //! environment variables and the box spec are its only seams.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -802,7 +802,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // Its tag shares the profile prefix, so the guard above deletes it.
     let context = containerfile.parent().unwrap();
     let unlabeled = format!("pinfold/profile-{profile}:unlabeled");
-    let status = Command::new("container")
+    let status = runtime_cli()
         .args(["build", "--file"])
         .arg(&containerfile)
         .args(["--tag", &unlabeled])
@@ -811,12 +811,12 @@ fn cleanup_removes_only_pinfolds_garbage() {
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .status()
-        .expect("run container build");
+        .expect("run the runtime's build");
     assert!(status.success(), "building the unlabeled image failed");
     assert!(
         image_references()
             .iter()
-            .any(|reference| reference == &unlabeled),
+            .any(|reference| reference.contains(unlabeled.as_str())),
         "the unlabeled image is missing before clean"
     );
 
@@ -909,7 +909,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert!(
         image_references()
             .iter()
-            .any(|reference| reference == &unlabeled),
+            .any(|reference| reference.contains(unlabeled.as_str())),
         "clean removed an unlabeled image"
     );
     assert!(
@@ -935,172 +935,120 @@ struct ImageCleanup {
 impl Drop for ImageCleanup {
     fn drop(&mut self) {
         // Best effort: a Drop during unwinding must not panic.
-        let Ok(images) = runtime_images() else {
+        let Ok(output) = runtime_cli().args(image_references_argv()).output() else {
             return;
         };
+        if !output.status.success() {
+            return;
+        }
         // Every build tags the image `pinfold/profile-<source>:<build>`, and
         // the reference remains even when the label sabotage drops the source
         // label.
         let prefix = format!("pinfold/profile-{}:", self.source);
-        for image in images {
-            for reference in image.names {
-                if reference.contains(&prefix) {
-                    remove_runtime_image(&reference);
-                }
+        let references = String::from_utf8_lossy(&output.stdout);
+        for reference in references.lines() {
+            if !reference.contains(&prefix) {
+                continue;
             }
+            let _ = runtime_cli()
+                .args(["image", "delete", reference])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
         }
-    }
-}
-
-/// Remove one image by reference from the runtime, best effort.
-fn remove_runtime_image(reference: &str) {
-    let mut command = Command::new(image_cli());
-    if cfg!(target_os = "linux") {
-        command.args(["image", "rm", reference]);
-    } else {
-        command.args(["image", "delete", reference]);
-    }
-    let _ = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
-
-/// The image CLI this host uses: `podman` on Linux, Apple `container` on
-/// macOS.
-fn image_cli() -> &'static str {
-    if cfg!(target_os = "linux") {
-        "podman"
-    } else {
-        "container"
-    }
-}
-
-/// One runtime image, normalized across podman and Apple `container`.
-struct RuntimeImage {
-    id: String,
-    names: Vec<String>,
-    labels: BTreeMap<String, String>,
-}
-
-/// Every image the runtime knows, from its own image list.
-fn runtime_images() -> Result<Vec<RuntimeImage>, String> {
-    let output = Command::new(image_cli())
-        .args(["image", "list", "--format", "json"])
-        .output()
-        .map_err(|error| format!("run {} image list: {error}", image_cli()))?;
-    if !output.status.success() {
-        return Err(format!(
-            "{} image list failed: {}",
-            image_cli(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let images: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("image list is not JSON: {error}"))?;
-    Ok(images.iter().map(normalize_image).collect())
-}
-
-/// One image list entry, whatever the runtime's schema.
-fn normalize_image(image: &serde_json::Value) -> RuntimeImage {
-    // podman: `Id`, `Names` and `Labels`, the last two null when empty.
-    if let Some(id) = image["Id"].as_str() {
-        return RuntimeImage {
-            id: id.to_string(),
-            names: image["Names"]
-                .as_array()
-                .map(|names| {
-                    names
-                        .iter()
-                        .filter_map(|name| Some(name.as_str()?.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            labels: image["Labels"]
-                .as_object()
-                .map(|labels| {
-                    labels
-                        .iter()
-                        .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
-                        .collect()
-                })
-                .unwrap_or_default(),
-        };
-    }
-    // Apple `container`: build labels are OCI image config labels; a locally
-    // built image also carries name annotations on its index descriptor.
-    let mut labels: BTreeMap<String, String> = image["configuration"]["descriptor"]["annotations"]
-        .as_object()
-        .map(|labels| {
-            labels
-                .iter()
-                .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
-    if let Some(variants) = image["variants"].as_array() {
-        for variant in variants {
-            if let Some(config) = variant["config"]["config"]["Labels"].as_object() {
-                for (key, value) in config {
-                    if let Some(value) = value.as_str() {
-                        labels.insert(key.clone(), value.to_string());
-                    }
-                }
-            }
-        }
-    }
-    RuntimeImage {
-        id: image["id"].as_str().unwrap_or_default().to_string(),
-        names: image["configuration"]["name"]
-            .as_str()
-            .map(|name| vec![name.to_string()])
-            .unwrap_or_default(),
-        labels,
     }
 }
 
 /// The `(digest, reference)` of every image carrying `label = value`, from
 /// the runtime itself: its image list is the ground truth for what remains.
 fn labeled_images(label: &str, value: &str) -> Vec<(String, String)> {
-    let images = runtime_images().unwrap_or_else(|error| panic!("{error}"));
+    let output = runtime_cli()
+        .args(["image", "list", "--format", "json"])
+        .output()
+        .expect("run the runtime's image list");
+    assert!(
+        output.status.success(),
+        "image list failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let images: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).expect("image list is JSON");
     images
         .into_iter()
-        .filter(|image| image.labels.get(label).map(String::as_str) == Some(value))
-        .flat_map(|image| {
-            let id = image.id;
-            let names = if image.names.is_empty() {
-                vec![id.clone()]
-            } else {
-                image.names
-            };
-            names.into_iter().map(move |name| (id.clone(), name))
-        })
+        .filter(|image| image_has_label(image, label, value))
+        .filter_map(image_id_and_reference)
         .collect()
 }
 
-/// Whether one `container image list` entry carries `label = value`, as an
-/// OCI image config label or an index descriptor annotation.
-fn image_has_label(image: &serde_json::Value, label: &str, value: &str) -> bool {
-    if image["configuration"]["descriptor"]["annotations"][label] == value {
-        return true;
+/// The `(digest, reference)` of one image list entry: Apple `container`'s
+/// shape or podman's.
+fn image_id_and_reference(image: serde_json::Value) -> Option<(String, String)> {
+    if cfg!(target_os = "macos") {
+        Some((
+            image["id"].as_str()?.to_string(),
+            image["configuration"]["name"].as_str()?.to_string(),
+        ))
+    } else {
+        // podman's `image list --format json` nils the redundant `RepoTags`
+        // and carries one `Repository` and `Tag` per entry.
+        Some((
+            image["Id"].as_str()?.to_string(),
+            format!(
+                "{}:{}",
+                image["Repository"].as_str()?,
+                image["Tag"].as_str()?
+            ),
+        ))
     }
-    image["variants"].as_array().is_some_and(|variants| {
-        variants
-            .iter()
-            .any(|variant| variant["config"]["config"]["Labels"][label] == value)
-    })
+}
+
+/// Whether one image list entry carries `label = value`. Apple `container`
+/// records build labels as OCI image config labels or index descriptor
+/// annotations; podman records them in `Labels`.
+fn image_has_label(image: &serde_json::Value, label: &str, value: &str) -> bool {
+    if cfg!(target_os = "macos") {
+        if image["configuration"]["descriptor"]["annotations"][label] == value {
+            return true;
+        }
+        return image["variants"].as_array().is_some_and(|variants| {
+            variants
+                .iter()
+                .any(|variant| variant["config"]["config"]["Labels"][label] == value)
+        });
+    }
+    image["Labels"][label] == value
+}
+
+/// A command for this host's container runtime: Apple `container` on macOS,
+/// rootless podman on Linux.
+fn runtime_cli() -> Command {
+    if cfg!(target_os = "macos") {
+        Command::new("container")
+    } else {
+        Command::new("podman")
+    }
+}
+
+/// The argv that prints one image reference per line. podman's `--quiet`
+/// prints ids, not references.
+fn image_references_argv() -> &'static [&'static str] {
+    if cfg!(target_os = "macos") {
+        &["image", "list", "--quiet"]
+    } else {
+        &["image", "list", "--format", "{{.Repository}}:{{.Tag}}"]
+    }
 }
 
 /// Every image reference the runtime holds.
 fn image_references() -> Vec<String> {
-    let output = Command::new("container")
-        .args(["image", "list", "--quiet"])
+    let output = runtime_cli()
+        .args(image_references_argv())
         .output()
-        .expect("run container image list");
+        .expect("run the runtime's image list");
     assert!(
         output.status.success(),
-        "container image list failed: {}",
+        "image list failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout)
