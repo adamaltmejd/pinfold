@@ -3,3 +3,9 @@ name = "pinfold"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+
+[dependencies]
+nix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
