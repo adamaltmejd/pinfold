@@ -64,8 +64,8 @@ pub struct Profile {
 
 impl Profile {
     /// The profile named `name`. A user directory under
-    /// `~/.config/pinfold/profiles/<name>/` wins; `default` falls back to
-    /// the embedded copy for each file the user does not have.
+    /// `~/.config/pinfold/profiles/<name>/` wins whole; only when no such
+    /// directory exists does `default` fall back to the embedded copy.
     pub fn load(name: &str) -> io::Result<Profile> {
         if !valid_name(name) {
             return Err(io::Error::new(
@@ -124,9 +124,6 @@ fn load_dir(name: &str, root: &Path) -> io::Result<Profile> {
     let containerfile_path = root.join("Containerfile");
     let containerfile = match fs::read(&containerfile_path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound && name == "default" => {
-            DEFAULT_CONTAINERFILE.to_vec()
-        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -143,9 +140,6 @@ fn load_dir(name: &str, root: &Path) -> io::Result<Profile> {
     let config_path = root.join("pinfold.toml");
     let config = match fs::read(&config_path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound && name == "default" => {
-            DEFAULT_CONFIG.to_vec()
-        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
         Err(error) => {
             return Err(io::Error::new(
@@ -157,16 +151,12 @@ fn load_dir(name: &str, root: &Path) -> io::Result<Profile> {
     let home_dir = root.join("home");
     let home = if home_dir.is_dir() {
         read_seeds(&home_dir)?
-    } else if name == "default" {
-        embedded_home()
     } else {
         Vec::new()
     };
     let share_dir = root.join("share");
     let share = if share_dir.is_dir() {
         Some(share_dir)
-    } else if name == "default" {
-        Some(embedded_share()?)
     } else {
         None
     };
