@@ -630,13 +630,50 @@ fn box_has_no_network_but_loopback() {
         binary,
         &env,
         &name,
-        &["curl", "-sS", "-v", "--max-time", "5", "http://1.1.1.1/"],
+        &[
+            "curl",
+            "-sS",
+            "-v",
+            "--max-time",
+            "5",
+            "--noproxy",
+            "*",
+            "http://1.1.1.1/",
+        ],
     );
     assert_eq!(public.code, 7, "1.1.1.1 answered: {}", public.stdout);
     assert!(
         public.stderr.contains("Network is unreachable"),
         "1.1.1.1 failed for another reason: {}",
         public.stderr
+    );
+
+    // The vmnet gateway is the host's address on the box's network; with
+    // --network none it has no route either.
+    let gateway = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "-v",
+            "--max-time",
+            "5",
+            "--noproxy",
+            "*",
+            "http://192.168.64.1/",
+        ],
+    );
+    assert_eq!(
+        gateway.code, 7,
+        "the vmnet gateway answered: {}",
+        gateway.stdout
+    );
+    assert!(
+        gateway.stderr.contains("Network is unreachable"),
+        "the vmnet gateway failed for another reason: {}",
+        gateway.stderr
     );
 
     let dns = box_exec(
@@ -658,15 +695,7 @@ fn box_has_no_network_but_loopback() {
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "5",
-            "-x",
-            "http://127.0.0.1:3128",
-            "http://fixture.internal/",
-        ],
+        &["curl", "-sS", "--max-time", "5", "http://fixture.internal/"],
     );
     assert_eq!(route.code, 0, "the route failed: {}", route.stderr);
     assert!(
@@ -709,15 +738,7 @@ fn a_route_reaches_exactly_one_host_service() {
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "5",
-            "-x",
-            "http://127.0.0.1:3128",
-            "http://fixture.internal/",
-        ],
+        &["curl", "-sS", "--max-time", "5", "http://fixture.internal/"],
     );
     assert_eq!(route.code, 0, "the route failed: {}", route.stderr);
     assert!(
@@ -737,8 +758,6 @@ fn a_route_reaches_exactly_one_host_service() {
             "-sS",
             "--max-time",
             "5",
-            "-x",
-            "http://127.0.0.1:3128",
             "-H",
             "Host: evil.example",
             "http://fixture.internal/",
@@ -784,7 +803,7 @@ fn a_route_reaches_exactly_one_host_service() {
         "the fixture answered a direct request"
     );
 
-    // Every decision is logged, and the proxy variables reach exec'd work.
+    // Every decision is logged.
     let lines = egress_log_lines(&env, &name);
     assert!(
         lines.iter().any(|line| line["host"] == "fixture.internal"
@@ -792,11 +811,6 @@ fn a_route_reaches_exactly_one_host_service() {
             && line["reason"] == "route"),
         "no route decision: {lines:?}"
     );
-    for variable in ["HTTP_PROXY", "HTTPS_PROXY"] {
-        let value = box_exec(binary, &env, &name, &["printenv", variable]);
-        assert_eq!(value.code, 0, "{variable} is not set: {}", value.stderr);
-        assert_eq!(value.stdout.trim(), "http://127.0.0.1:3128", "{variable}");
-    }
 
     let status = box_down(binary, &env, &name);
     assert!(status.success(), "box down failed: {status}");
@@ -820,7 +834,7 @@ fn no_egress_means_no_way_out() {
     let up = box_up(binary, &env, &spec, &name);
 
     // No proxy variables and no relay to use them.
-    for variable in ["HTTP_PROXY", "HTTPS_PROXY"] {
+    for variable in ["http_proxy", "HTTPS_PROXY"] {
         let found = box_exec(binary, &env, &name, &["printenv", variable]);
         assert_ne!(
             found.code, 0,
@@ -887,15 +901,7 @@ fn no_egress_means_no_way_out() {
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "5",
-            "-x",
-            "http://127.0.0.1:3128",
-            "http://fixture.internal/",
-        ],
+        &["curl", "-sS", "--max-time", "5", "http://fixture.internal/"],
     );
     assert_eq!(route.code, 0, "the control route failed: {}", route.stderr);
     assert!(

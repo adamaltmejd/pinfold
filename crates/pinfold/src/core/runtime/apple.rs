@@ -45,7 +45,7 @@ impl Runtime for Apple {
         command.env("NODE_USE_ENV_PROXY", "1");
         if plan.egress.is_some() {
             command.env("HTTPS_PROXY", PROXY_URL);
-            command.env("HTTP_PROXY", PROXY_URL);
+            command.env("http_proxy", PROXY_URL);
         }
         command.spawn()
     }
@@ -372,7 +372,7 @@ pub fn up_argv(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> Vec<OsS
         argv.push("--env".into());
         argv.push("HTTPS_PROXY".into());
         argv.push("--env".into());
-        argv.push("HTTP_PROXY".into());
+        argv.push("http_proxy".into());
     }
     for mount in &plan.mounts {
         argv.push("--mount".into());
