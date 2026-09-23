@@ -60,10 +60,10 @@ model = "kimi-k2.7-code"
 effort = "high"
 tools = { subagents = false }
 
-[agents.muse]
+[agents.deepseek]
 harness = "pi"
 provider = "opencode-go"
-model = "muse-spark-1.3-contributor"
+model = "deepseek-v4.1-flash"
 effort = "max"
 tools = { subagents = false }
 
@@ -168,8 +168,9 @@ timeout_minutes = 30
 # engine, model and effort are the reviewer that fills the seat; a seat from a
 # different engine family than the implementer is recommended.
 engine = "pi"
-model = "opencode-go/deepseek-v4.1-flash"
-effort = "high"
+# A pi seat takes effort up to "xhigh"; the review tool refuses "max".
+model = "opencode-go/muse-spark-1.3-contributor"
+effort = "xhigh"
 instructions = "Judge the change against docs/ARCHITECTURE.md and AGENTS.md. Blocking: a weakened or missing security control, a secret that can reach argv or a log, a unit test or mock, and an end-to-end test that cannot fail (no positive control, or a pass on timeout)."
 context = ["docs/ARCHITECTURE.md", "AGENTS.md"]
 # instructions are one seat's own, appended verbatim to that seat's prompt and
@@ -189,13 +190,23 @@ context = ["docs/ARCHITECTURE.md", "AGENTS.md"]
 # invalidates the review evidence recorded under the old one:
 #     context = ["docs/design-system.md", ".claude/skills/design-review/SKILL.md"]
 
+# Triage asks TypeSafe Jev, a pinned judgment model, for advice only; it needs
+# TYPESAFE_API_KEY in operator.env. filing: at yard ticket new, whether the
+# ticket fits its workflow, spans more than one subsystem, or asks to
+# investigate rather than change. shape: at each candidate head, whether the
+# diff edits unrelated files or adds a module, option or fallback the ticket
+# did not ask for. Neither selects, repairs or refuses anything.
+[triage]
+filing = true
+shape = "advise"
+
 # A workflow is a named binding of the knobs above, never a step language. A
 # ticket selects one with yard ticket new --workflow NAME, and a ticket that
 # names none runs "default"; yard help workflow says what one binds and how it
 # is shown. Every workflow runs every gate, so none of them names a gate.
 [workflows.default]
 # implementer names the agent this workflow's lanes run their worker as.
-implementer = "muse"
+implementer = "deepseek"
 # review is a list of the seat names above, in panel order, or "none", for which
 # no review execution is ever started -- its gates still run, and a review of
 # "none" is as clean at the approval decision as a pass is.
