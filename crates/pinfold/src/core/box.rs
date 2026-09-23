@@ -1,9 +1,16 @@
 //! The box lifecycle: one attached `container run` process owns one box.
 
+use std::ffi::OsStr;
 use std::fs;
+use std::fs::File;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::os::fd::OwnedFd;
+use std::path::{Component, Path, PathBuf};
 
+use nix::errno::Errno;
+use nix::fcntl::{OFlag, openat};
+use nix::sys::stat::{Mode, mkdirat};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Child;
 use tokio::signal::unix::{SignalKind, signal};
@@ -238,7 +245,15 @@ fn home_host_dir(plan: &Plan, name: &str, home: &Path) -> io::Result<PathBuf> {
             mount.guest.components().count() > best.guest.components().count()
         });
         if deeper {
-            best = Some((mount, mount.host.join(relative)));
+            // `join("")` would leave a trailing slash, which turns a
+            // symlinked `$HOME` into an intermediate component that
+            // `O_NOFOLLOW` no longer guards.
+            let dir = if relative.as_os_str().is_empty() {
+                mount.host.clone()
+            } else {
+                mount.host.join(relative)
+            };
+            best = Some((mount, dir));
         }
     }
     let Some((mount, dir)) = best else {
@@ -263,18 +278,100 @@ fn home_host_dir(plan: &Plan, name: &str, home: &Path) -> io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// Copy seeds into the host `$HOME`, skipping anything already there. A
-/// dangling symlink counts as there: the project home is the box's.
+/// Copy seeds into the host `$HOME`, skipping anything already there. The
+/// walk follows no symlink at or below `$HOME`: the box can write the home,
+/// so a planted symlink must not redirect a seed outside it.
 fn seed_home(home: &Path, seeds: &[Seed]) -> io::Result<()> {
+    let dir = open_seed_root(home)?;
     for seed in seeds {
-        let destination = home.join(&seed.path);
-        if fs::symlink_metadata(&destination).is_ok() {
-            continue;
-        }
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&destination, &seed.contents)?;
+        seed_file(&dir, home, &seed.path, &seed.contents)?;
     }
     Ok(())
+}
+
+/// Open `$HOME` itself without following a symlink, creating it when it is
+/// missing.
+fn open_seed_root(home: &Path) -> io::Result<OwnedFd> {
+    let flags = OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    match nix::fcntl::open(home, flags, Mode::empty()) {
+        Ok(fd) => Ok(fd),
+        Err(Errno::ENOENT) => {
+            fs::create_dir_all(home)?;
+            nix::fcntl::open(home, flags, Mode::empty())
+                .map_err(|error| seed_error(error, &format!("open {}", home.display())))
+        }
+        Err(error) => Err(seed_error(error, &format!("open {}", home.display()))),
+    }
+}
+
+/// Write one seed with `openat` and `mkdirat`, following no symlink. Anything
+/// already at the destination, a dangling symlink included, is left alone.
+fn seed_file(root: &OwnedFd, home: &Path, relative: &Path, contents: &[u8]) -> io::Result<()> {
+    let mut dir = root.try_clone()?;
+    let mut current = home.to_path_buf();
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("seed path {} is not a plain file path", relative.display()),
+            ));
+        };
+        current.push(name);
+        if components.peek().is_some() {
+            dir = open_seed_dir(&dir, name, &current)?;
+            continue;
+        }
+        let fd = match openat(
+            &dir,
+            name,
+            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            Mode::from_bits_truncate(0o666),
+        ) {
+            Ok(fd) => fd,
+            // Present, whatever it is; a seed is copied only when missing.
+            Err(Errno::EEXIST | Errno::ELOOP) => return Ok(()),
+            Err(error) => return Err(seed_error(error, &format!("create {}", current.display()))),
+        };
+        File::from(fd).write_all(contents).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("write {}: {error}", current.display()),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Open a seed's parent directory, creating it when missing. `O_NOFOLLOW`
+/// refuses a symlink planted at any component below `$HOME`.
+fn open_seed_dir(dir: &OwnedFd, name: &OsStr, path: &Path) -> io::Result<OwnedFd> {
+    let flags = OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    match openat(dir, name, flags, Mode::empty()) {
+        Ok(fd) => Ok(fd),
+        Err(Errno::ENOENT) => {
+            match mkdirat(dir, name, Mode::from_bits_truncate(0o777)) {
+                Ok(()) | Err(Errno::EEXIST) => {}
+                Err(error) => {
+                    return Err(seed_error(
+                        error,
+                        &format!("create directory {}", path.display()),
+                    ));
+                }
+            }
+            // Open the directory just made; a symlink swapped in meanwhile
+            // is refused here.
+            openat(dir, name, flags, Mode::empty())
+                .map_err(|error| seed_error(error, &format!("open directory {}", path.display())))
+        }
+        Err(error) => Err(seed_error(
+            error,
+            &format!("open directory {}", path.display()),
+        )),
+    }
+}
+
+fn seed_error(error: Errno, context: &str) -> io::Error {
+    let kind = io::Error::from(error).kind();
+    io::Error::new(kind, format!("{context}: {error}"))
 }
