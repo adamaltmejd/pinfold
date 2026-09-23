@@ -240,9 +240,20 @@ fn run_box(plan: &Plan, cwd: &Path, argv: &[String]) -> io::Result<i32> {
         // during startup is caught and the box is removed once it is up.
         let mut shutdown = Shutdown::new(tty)?;
         let mut box_ = Box::up(plan, &init).await?;
-        let code = exec_pi(&mut box_, &plan.name, tty, cwd, argv, &mut shutdown).await?;
-        box_.down().await?;
-        Ok(code)
+        let code = exec_pi(&plan.name, tty, cwd, argv, &mut shutdown).await;
+        // Remove the box exactly once, whatever ended the run. A failed
+        // removal must not hide the error that ended pi.
+        let down = box_.down().await;
+        match code {
+            Ok(code) => {
+                down?;
+                Ok(code)
+            }
+            Err(error) => {
+                let _ = down;
+                Err(error)
+            }
+        }
     });
     // The exec runs on the blocking pool. A removed box makes it return, but
     // a hung exec must not hold the process after teardown.
@@ -256,10 +267,9 @@ enum Stop {
     Signal(Signal),
 }
 
-/// Run pi with this process's stdio and return its exit code. A signal that
-/// ends the run removes the box before this returns.
+/// Run pi with this process's stdio and return its exit code. The caller
+/// removes the box; a signal that ends the run reports `128+n`.
 async fn exec_pi(
-    box_: &mut Box,
     name: &str,
     tty: bool,
     cwd: &Path,
@@ -279,7 +289,6 @@ async fn exec_pi(
         ),
         signal = shutdown.recv() => Stop::Signal(signal),
     };
-    box_.down().await?;
     Ok(match stop {
         Stop::Exited(status) => cli::exit_code(status),
         Stop::Signal(signal) => 128 + signal as i32,

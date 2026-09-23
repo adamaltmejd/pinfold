@@ -18,9 +18,10 @@ fn main() -> ExitCode {
         .and_then(|name| name.to_str())
         == Some("pi");
     let verb = rest.first().and_then(|verb| verb.to_str());
-    // The daily pass runs before any command but never as PID 1 in a box,
-    // which has the project home for state and no runtime to prune.
-    if !shim && verb != Some("init") {
+    // The daily pass runs before any command, the `pi` shim included, but
+    // never as PID 1 in a box, which has the project home for state and no
+    // runtime to prune.
+    if verb != Some("init") {
         pinfold::core::clean::maintain();
     }
     if shim {

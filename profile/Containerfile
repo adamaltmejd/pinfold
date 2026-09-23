@@ -44,7 +44,8 @@ ADD --checksum=sha256:e684031df0aa3ac68a55829f13702de53934b1b06d52f1ae8da9954c4c
 
 # Bun and rtk on PATH; rtk's pi extension and the ponytail pi package outside
 # $HOME, which is a mount at run time, for the profile's seed settings to
-# name as packages.
+# name as packages. rtk init writes its extension 0600, so make the packages
+# readable and traversable for the box user.
 RUN set -eux; \
     case "${TARGETARCH}" in \
         arm64) bun=/tmp/bun-aarch64.zip; rtk=/tmp/rtk-aarch64.tar.gz ;; \
@@ -62,6 +63,7 @@ RUN set -eux; \
     mkdir -p "${HOME}"; \
     rtk init -g --agent pi; \
     mv "${HOME}/.pi/agent/extensions/rtk.ts" /opt/pinfold/packages/rtk.ts; \
+    chmod -R a+rX /opt/pinfold/packages; \
     rm -rf /tmp/bun /tmp/rtk /tmp/package /tmp/ponytail.tgz /tmp/bun-*.zip /tmp/rtk-*.tar.gz "${HOME}"
 
 # no-new-privileges already disables them; stripping is the second layer.
