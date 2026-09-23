@@ -57,7 +57,7 @@ fn up(args: &[OsString]) -> io::Result<i32> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(async {
+    let result = runtime.block_on(async {
         let mut box_ = Box::up(&plan, &init).await?;
         println!(
             "{}",
@@ -66,7 +66,13 @@ fn up(args: &[OsString]) -> io::Result<i32> {
         io::stdout().flush()?;
         box_.hold().await?;
         Ok(0)
-    })
+    });
+    // `Box::hold` watches stdin through tokio's blocking pool. A caller that
+    // keeps stdin open leaves that read parked, and dropping the runtime
+    // waits for it forever. Teardown is done, so leak the read and let the
+    // process exit.
+    runtime.shutdown_background();
+    result
 }
 
 /// Run a command in a running box with this process's stdio and return its

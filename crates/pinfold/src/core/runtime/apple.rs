@@ -126,6 +126,8 @@ pub fn up_argv(plan: &Plan, init: &Path) -> Vec<OsString> {
         "container".into(),
         "run".into(),
         "-i".into(),
+        "--progress".into(),
+        "none".into(),
         "--name".into(),
         plan.name.clone().into(),
         "--network".into(),

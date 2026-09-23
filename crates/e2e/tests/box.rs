@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
 
-const IMAGE: &str = "debian:trixie-slim";
+const IMAGE: &str =
+    "debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a";
 
 #[test]
 fn box_lifecycle_works_for_a_caller() {
