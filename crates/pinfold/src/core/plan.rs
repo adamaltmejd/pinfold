@@ -13,8 +13,13 @@ use serde::Deserialize;
 pub struct Plan {
     /// The box's name; also its state directory name.
     pub name: String,
-    /// The image to run.
-    pub image: String,
+    /// The image to run. When absent, the profile's image is used.
+    #[serde(default)]
+    pub image: Option<String>,
+    /// The profile to apply: its image when `image` is absent, its `home/`
+    /// seeds and its `share/`.
+    #[serde(default)]
+    pub profile: Option<String>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
     #[serde(default)]
@@ -94,8 +99,13 @@ impl Plan {
                 self.name
             )));
         }
-        if self.image.is_empty() {
+        if self.image.as_deref() == Some("") {
             return Err(PlanError::Invalid("image must not be empty".into()));
+        }
+        if self.image.is_none() && self.profile.is_none() {
+            return Err(PlanError::Invalid(
+                "a box spec needs an image or a profile".into(),
+            ));
         }
         for mount in &self.mounts {
             if !mount.host.is_absolute() || !mount.guest.is_absolute() {

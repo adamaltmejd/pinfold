@@ -1,5 +1,6 @@
 //! The box lifecycle: one attached `container run` process owns one box.
 
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -7,7 +8,8 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Child;
 use tokio::signal::unix::{SignalKind, signal};
 
-use crate::core::plan::Plan;
+use crate::core::plan::{Env, Mount, Plan};
+use crate::core::profile::{Profile, Seed};
 use crate::core::proxy::Proxy;
 use crate::core::runtime::{Runtime, runtime};
 use crate::dirs;
@@ -48,6 +50,11 @@ impl Box {
             ));
         }
 
+        // The profile's image, share and home seeds are the box's to apply;
+        // the runtime sees the resolved plan.
+        let mut plan = plan.clone();
+        apply_profile(&mut plan)?;
+
         let runtime = runtime()?;
         let state_dir = dirs::state_dir()?.join("boxes").join(&plan.name);
         let log = match &plan.egress {
@@ -72,7 +79,7 @@ impl Box {
             _ => None,
         };
 
-        let mut child = match runtime.up(plan, init, proxy.as_ref().map(Proxy::socket)) {
+        let mut child = match runtime.up(&plan, init, proxy.as_ref().map(Proxy::socket)) {
             Ok(child) => child,
             Err(error) => {
                 if let Some(proxy) = proxy {
@@ -176,4 +183,98 @@ async fn wait_for_shutdown() -> io::Result<Shutdown> {
             },
         }
     }
+}
+
+/// Apply the spec's profile before the box starts: its image when the spec
+/// names none, its `share/` mounted read-only at `/opt/pinfold/profile`, and
+/// its `home/` seeds copied into the host directory behind `$HOME`.
+fn apply_profile(plan: &mut Plan) -> io::Result<()> {
+    let Some(name) = plan.profile.clone() else {
+        return Ok(());
+    };
+    let profile = Profile::load(&name)?;
+    if plan.image.is_none() {
+        plan.image = Some(format!("pinfold/profile-{name}:latest"));
+    }
+    if let Some(share) = &profile.share {
+        plan.mounts.push(Mount {
+            host: share.clone(),
+            guest: PathBuf::from("/opt/pinfold/profile"),
+            readonly: true,
+        });
+    }
+    if profile.home.is_empty() {
+        return Ok(());
+    }
+    let home = plan
+        .env
+        .get("HOME")
+        .and_then(|value| match value {
+            Env::Exact(value) => Some(PathBuf::from(value)),
+            Env::From { .. } => None,
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "profile {name:?} seeds $HOME, but the box spec has no exact HOME env entry"
+                ),
+            )
+        })?;
+    let host_home = home_host_dir(plan, &name, &home)?;
+    seed_home(&host_home, &profile.home)?;
+    Ok(())
+}
+
+/// The host directory behind a guest `$HOME`: the deepest mount containing
+/// it, which must be writable.
+fn home_host_dir(plan: &Plan, name: &str, home: &Path) -> io::Result<PathBuf> {
+    let mut best: Option<(&Mount, PathBuf)> = None;
+    for mount in &plan.mounts {
+        let Ok(relative) = home.strip_prefix(&mount.guest) else {
+            continue;
+        };
+        let deeper = best.as_ref().is_none_or(|(best, _)| {
+            mount.guest.components().count() > best.guest.components().count()
+        });
+        if deeper {
+            best = Some((mount, mount.host.join(relative)));
+        }
+    }
+    let Some((mount, dir)) = best else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "profile {name:?} seeds $HOME, but $HOME={} is not on a mount",
+                home.display()
+            ),
+        ));
+    };
+    if mount.readonly {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "profile {name:?} seeds $HOME, but $HOME={} is on the read-only mount {}",
+                home.display(),
+                mount.guest.display()
+            ),
+        ));
+    }
+    Ok(dir)
+}
+
+/// Copy seeds into the host `$HOME`, skipping anything already there. A
+/// dangling symlink counts as there: the project home is the box's.
+fn seed_home(home: &Path, seeds: &[Seed]) -> io::Result<()> {
+    for seed in seeds {
+        let destination = home.join(&seed.path);
+        if fs::symlink_metadata(&destination).is_ok() {
+            continue;
+        }
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&destination, &seed.contents)?;
+    }
+    Ok(())
 }

@@ -278,7 +278,12 @@ pub fn up_argv(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> Vec<OsS
     argv.push(bind(init_dir, &guest_path(init_dir), true));
     argv.push("--entrypoint".into());
     argv.push(guest_path(init).into_os_string());
-    argv.push(plan.image.clone().into());
+    argv.push(
+        plan.image
+            .clone()
+            .expect("box up resolves the profile's image before the runtime runs")
+            .into(),
+    );
     argv.push("init".into());
     if proxy_socket.is_some() {
         argv.push(GUEST_PROXY_SOCKET.into());

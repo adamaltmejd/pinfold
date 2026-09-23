@@ -1,0 +1,12 @@
+# The default profile's config defaults. The pi layer merges these under a
+# project's .pinfold.toml when it writes a box spec; core never reads them.
+allow = [
+    "api.anthropic.com",
+    "platform.claude.com",
+    "api.openai.com",
+    "auth.openai.com",
+    "chatgpt.com",
+    "openrouter.ai",
+    "opencode.ai",
+    "registry.npmjs.org",
+]

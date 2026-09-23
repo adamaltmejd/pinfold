@@ -1,0 +1,8 @@
+{
+    "name": "pinfold-default-profile-pi",
+    "private": true,
+    "pi": {
+        "extensions": ["extensions/operating-context.ts"],
+        "skills": ["skills"]
+    }
+}

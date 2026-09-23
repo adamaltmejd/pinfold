@@ -17,12 +17,13 @@ use nix::unistd::Pid;
 
 use crate::core::r#box::Box;
 use crate::core::plan::Plan;
-use crate::core::profile::Profile;
+use crate::core::profile::{Profile, valid_name};
 use crate::core::runtime::{BuildRequest, runtime};
 use crate::dirs;
 
 const USAGE: &str = "usage: pinfold box up|exec BOX [--tty] [--workdir DIR] -- argv|down BOX|list --label k=v|prune";
 const BUILD_USAGE: &str = "usage: pinfold build [--profile NAME]";
+const PROFILE_USAGE: &str = "usage: pinfold profile new NAME [--from PROFILE]";
 
 /// Run a `pinfold box` invocation and return its process exit code.
 pub fn run(args: &[OsString]) -> i32 {
@@ -390,5 +391,121 @@ fn build_usage(message: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
         format!("{message}\n{BUILD_USAGE}"),
+    )
+}
+
+/// Run a `pinfold profile` invocation and return its process exit code.
+pub fn profile(args: &[OsString]) -> i32 {
+    match run_profile(args) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("pinfold profile: {error}");
+            1
+        }
+    }
+}
+
+fn run_profile(args: &[OsString]) -> io::Result<()> {
+    match args.first().and_then(|arg| arg.to_str()) {
+        Some("new") => profile_new(&args[1..]),
+        Some(verb) => Err(profile_usage(&format!("unknown profile verb {verb:?}"))),
+        None => Err(profile_usage("a profile verb is required")),
+    }
+}
+
+/// Copy a profile's files to `~/.config/pinfold/profiles/NAME/`, refusing to
+/// overwrite an existing profile.
+fn profile_new(args: &[OsString]) -> io::Result<()> {
+    let (name, from) = parse_profile_new(args)?;
+    if !valid_name(&name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("profile name {name:?} must start alphanumeric and hold only [a-z0-9._-]"),
+        ));
+    }
+    let source = Profile::load(&from);
+    let target = dirs::config_dir()?.join("profiles").join(&name);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::create_dir(&target).map_err(|error| {
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("profile {name:?} already exists at {}", target.display()),
+            )
+        } else {
+            error
+        }
+    })?;
+    let result = source.and_then(|source| write_profile(&source, &target));
+    if result.is_err() {
+        // Do not leave a half-written profile behind to load or block a retry.
+        let _ = fs::remove_dir_all(&target);
+    }
+    result
+}
+
+fn write_profile(source: &Profile, target: &Path) -> io::Result<()> {
+    fs::write(target.join("Containerfile"), &source.containerfile)?;
+    fs::write(target.join("pinfold.toml"), &source.config)?;
+    for seed in &source.home {
+        let path = target.join("home").join(&seed.path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, &seed.contents)?;
+    }
+    if let Some(share) = &source.share {
+        copy_tree(share, &target.join("share"))?;
+    }
+    Ok(())
+}
+
+fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else if file_type.is_file() {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+fn parse_profile_new(args: &[OsString]) -> io::Result<(String, String)> {
+    let mut name = None;
+    let mut from = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--from") => {
+                from = Some(
+                    args.next()
+                        .and_then(|value| value.to_str())
+                        .ok_or_else(|| profile_usage("--from needs a profile name"))?
+                        .to_string(),
+                );
+            }
+            Some(option) if option.starts_with("--") => {
+                return Err(profile_usage(&format!("unknown profile option {option:?}")));
+            }
+            Some(value) if name.is_none() => name = Some(value.to_string()),
+            Some(_) => return Err(profile_usage("profile new takes one name")),
+            None => return Err(profile_usage("profile names must be valid UTF-8")),
+        }
+    }
+    let name = name.ok_or_else(|| profile_usage("profile new needs a name"))?;
+    Ok((name, from.unwrap_or_else(|| "default".to_string())))
+}
+
+fn profile_usage(message: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("{message}\n{PROFILE_USAGE}"),
     )
 }

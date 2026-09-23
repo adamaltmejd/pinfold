@@ -10,6 +10,7 @@ fn main() -> ExitCode {
         Some("init") => init::run(&args.collect::<Vec<_>>()),
         Some("box") => ExitCode::from(cli::run(&args.collect::<Vec<_>>()) as u8),
         Some("build") => ExitCode::from(cli::build(&args.collect::<Vec<_>>()) as u8),
+        Some("profile") => ExitCode::from(cli::profile(&args.collect::<Vec<_>>()) as u8),
         _ => {
             println!("pinfold {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
