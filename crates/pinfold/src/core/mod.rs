@@ -1,6 +1,7 @@
-//! pinfold's core: box specs, runtimes and the box lifecycle.
+//! pinfold's core: box specs, profiles, runtimes and the box lifecycle.
 
 pub mod artifacts;
 pub mod r#box;
 pub mod plan;
+pub mod profile;
 pub mod runtime;

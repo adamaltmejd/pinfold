@@ -11,7 +11,7 @@ use serde::Deserialize;
 use tokio::process::{Child, Command};
 
 use crate::core::plan::{Env, Plan};
-use crate::core::runtime::{BoxInfo, Runtime, guest_path};
+use crate::core::runtime::{BoxInfo, BuildRequest, Runtime, guest_path};
 
 /// Apple `container`.
 pub struct Apple;
@@ -88,6 +88,43 @@ impl Runtime for Apple {
         }
         parse_list(&output.stdout)
     }
+
+    fn build(&self, request: &BuildRequest) -> io::Result<()> {
+        let argv = build_argv(request);
+        let (program, arguments) = argv.split_first().expect("argv is never empty");
+        let status = std::process::Command::new(program)
+            .args(arguments)
+            .stdin(Stdio::null())
+            // The build prints the tags on stdout; pinfold prints the ref
+            // itself, so the caller's stdout holds only the ref.
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!("container build: {status}")))
+        }
+    }
+
+    fn image_digest(&self, reference: &str) -> io::Result<Option<String>> {
+        // A floating tag must be pulled for its digest to be current and
+        // present to inspect. `scratch` and other non-registry references
+        // cannot be pulled; they simply have no digest.
+        let _ = std::process::Command::new("container")
+            .args(["image", "pull", reference])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .status();
+        let output = std::process::Command::new("container")
+            .args(["image", "inspect", reference])
+            .output()?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        parse_digest(&output.stdout)
+    }
 }
 
 /// One `container list --format json` entry, as much as pinfold needs.
@@ -115,6 +152,34 @@ fn parse_list(json: &[u8]) -> io::Result<Vec<BoxInfo>> {
             labels: container.configuration.labels,
         })
         .collect())
+}
+
+/// One `container image inspect` entry, as much as pinfold needs.
+#[derive(Deserialize)]
+struct InspectedImage {
+    configuration: InspectedConfiguration,
+}
+
+#[derive(Deserialize)]
+struct InspectedConfiguration {
+    descriptor: InspectedDescriptor,
+}
+
+#[derive(Deserialize)]
+struct InspectedDescriptor {
+    digest: String,
+}
+
+fn parse_digest(json: &[u8]) -> io::Result<Option<String>> {
+    let images: Vec<InspectedImage> = serde_json::from_slice(json).map_err(|error| {
+        io::Error::other(format!(
+            "container image inspect returned invalid JSON: {error}"
+        ))
+    })?;
+    Ok(images
+        .into_iter()
+        .next()
+        .map(|image| image.configuration.descriptor.digest))
 }
 
 /// The `container run` argv for a no-egress box, as data.
@@ -171,6 +236,26 @@ pub fn up_argv(plan: &Plan, init: &Path) -> Vec<OsString> {
     argv.push(guest_path(init).into_os_string());
     argv.push(plan.image.clone().into());
     argv.push("init".into());
+    argv
+}
+
+/// The `container build` argv for one build, as data.
+pub fn build_argv(request: &BuildRequest) -> Vec<OsString> {
+    let mut argv: Vec<OsString> = vec![
+        "container".into(),
+        "build".into(),
+        "--file".into(),
+        request.containerfile.into(),
+    ];
+    for tag in request.tags {
+        argv.push("--tag".into());
+        argv.push(tag.into());
+    }
+    for (key, value) in request.labels {
+        argv.push("--label".into());
+        argv.push(format!("{key}={value}").into());
+    }
+    argv.push(request.context.into());
     argv
 }
 

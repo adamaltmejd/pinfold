@@ -211,9 +211,16 @@ profile image.
 
 - Images are built only by `pinfold build`. `pinfold pi` refuses when the
   image is missing and names the command.
-- A project build gets an empty context: the Containerfile alone, so trust
-  covers every input. Files come in by `ADD --checksum` or from the profile
-  image.
+- Every build gets an empty context: the Containerfile alone. For a project
+  build, trust then covers every input. Files come in by `ADD --checksum` or
+  from the profile image.
+- A profile build is tagged uniquely `pinfold/profile-<name>:<build>` and
+  moves the stable `pinfold/profile-<name>:latest` to it. The stable ref is
+  what a project Containerfile `FROM`s and what `doctor` compares against.
+  Every build is a distinct image even on a full cache hit, through the
+  unique `dev.pinfold.build` label. Images carry `dev.pinfold.profile=<name>`
+  and `dev.pinfold.base=<digest>` (the resolved base) so Maintenance can find
+  them.
 - A project image records the digest of the profile image it was built
   from. `pinfold pi` prints one line when that is no longer the current
   profile image.
