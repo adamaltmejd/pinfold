@@ -470,14 +470,18 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // the count is zero.
     let binary = pinfold();
     let env = TestEnv::new("cleanup");
-    // A profile of this test's own, so the operator's default profile images
-    // and the other tests do not share the source.
-    let profile = "e2e-maintenance";
+    // A profile of this test's own, named for this run, so the operator's
+    // default profile images, the other tests and a failed run's leftovers
+    // cannot share the source.
+    let profile = format!("e2e-maintenance-{}", std::process::id());
+    let _images = ImageCleanup {
+        source: profile.clone(),
+    };
     let containerfile = env
         .config
         .join("pinfold")
         .join("profiles")
-        .join(profile)
+        .join(&profile)
         .join("Containerfile");
     fs::create_dir_all(containerfile.parent().unwrap()).unwrap();
     // `FROM scratch` keeps the test off the network and fast.
@@ -486,7 +490,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     for _ in 0..3 {
         let output = env
             .command(binary)
-            .args(["build", "--profile", profile])
+            .args(["build", "--profile", &profile])
             .output()
             .expect("run pinfold build");
         assert!(
@@ -496,7 +500,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         );
     }
 
-    let images = labeled_images("dev.pinfold.profile", profile);
+    let images = labeled_images("dev.pinfold.profile", &profile);
     let mut digests: Vec<&str> = images.iter().map(|(digest, _)| digest.as_str()).collect();
     digests.sort_unstable();
     digests.dedup();
@@ -505,15 +509,42 @@ fn cleanup_removes_only_pinfolds_garbage() {
         2,
         "after three builds of one source, two images should remain: {images:?}"
     );
+}
 
-    // Leave the operator's image store as the test found it.
-    for (_, reference) in &images {
-        let _ = Command::new("container")
-            .args(["image", "delete", reference])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+/// Removes the run's images from the runtime store on drop, so a failing run
+/// does not leave them for the next run to count or for the operator's disk.
+struct ImageCleanup {
+    source: String,
+}
+
+impl Drop for ImageCleanup {
+    fn drop(&mut self) {
+        // Best effort: a Drop during unwinding must not panic.
+        let Ok(output) = Command::new("container")
+            .args(["image", "list", "--quiet"])
+            .output()
+        else {
+            return;
+        };
+        if !output.status.success() {
+            return;
+        }
+        // Every build tags the image `pinfold/profile-<source>:<build>`, and
+        // the reference remains even when the label sabotage drops the source
+        // label.
+        let prefix = format!("pinfold/profile-{}:", self.source);
+        let references = String::from_utf8_lossy(&output.stdout);
+        for reference in references.lines() {
+            if !reference.contains(&prefix) {
+                continue;
+            }
+            let _ = Command::new("container")
+                .args(["image", "delete", reference])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
     }
 }
 
