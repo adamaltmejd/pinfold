@@ -503,7 +503,6 @@ fn the_box_cannot_write_git_or_protected_config() {
     );
 }
 
-
 #[test]
 fn both_pi_config_levels_load_behind_a_route() {
     // Sabotage: drop the route (leave PINFOLD_ROUTES empty, or point it at
@@ -600,7 +599,6 @@ fn both_pi_config_levels_load_behind_a_route() {
         "the project skill never reached the model; the project config level did not load"
     );
 }
-
 
 /// A `pinfold pi --mode rpc` process with a live box.
 struct PiRpc {
