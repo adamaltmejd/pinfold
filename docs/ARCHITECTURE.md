@@ -364,9 +364,10 @@ Automatic, never prompting:
   the box cannot create it, and removed after the run if still empty.
 - **herdr:** no socket in v1. The TTY passes through, so screen detection
   works, and the shim sets `HERDR_AGENT=pi`.
-- **Attach:** `pinfold attach [cmd…]` execs bash (or cmd) in this project's
-  running pi box. It fails if none is running and asks for a box name if
-  several are. Its processes end with the box.
+- **Attach:** `pinfold attach [--box NAME] [cmd…]` execs bash (or cmd) in
+  this project's running pi box. It fails if none is running and asks for a
+  box name if several are; `--box NAME` selects one. Its processes end with
+  the box.
 
 ### Git
 
@@ -418,7 +419,7 @@ until allowed again.
 
 ```
 pinfold pi [pi args…]            pi in a box for this project; `pi` is a symlink to this
-pinfold attach [cmd…]            bash (or cmd) in this project's running pi box
+pinfold attach [--box NAME] [cmd…]   bash (or cmd) in this project's running pi box
 pinfold build [--profile NAME]   build this project's image, or a profile's; prints the ref
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
 pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files

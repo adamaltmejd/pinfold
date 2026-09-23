@@ -20,7 +20,7 @@ use crate::core::r#box::Box;
 use crate::core::clean;
 use crate::core::plan::Plan;
 use crate::core::profile::{Profile, valid_name};
-use crate::core::runtime::{BuildRequest, local_image_id, runtime};
+use crate::core::runtime::{BoxInfo, BuildRequest, local_image_id, runtime};
 use crate::dirs;
 use crate::trust;
 
@@ -28,6 +28,7 @@ const USAGE: &str = "usage: pinfold box up|exec BOX [--tty] [--workdir DIR] -- a
 const BUILD_USAGE: &str = "usage: pinfold build [--profile NAME]";
 const PROFILE_USAGE: &str = "usage: pinfold profile new NAME [--from PROFILE]";
 const ALLOW_USAGE: &str = "usage: pinfold allow";
+const ATTACH_USAGE: &str = "usage: pinfold attach [--box NAME] [cmd...]";
 
 /// Run a `pinfold pi` invocation and return its process exit code.
 pub fn pi(args: &[OsString]) -> i32 {
@@ -51,6 +52,108 @@ fn run_allow(args: &[OsString]) -> io::Result<()> {
     }
     let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
     crate::trust::allow(&root)
+}
+
+/// Run a `pinfold attach` invocation: bash, or the given command, in this
+/// project's running pi box. The box's owner keeps its lifetime; attach
+/// streams one exec and adds none of its own.
+pub fn attach(args: &[OsString]) -> i32 {
+    match run_attach(args) {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("pinfold attach: {error}");
+            1
+        }
+    }
+}
+
+fn run_attach(args: &[OsString]) -> io::Result<i32> {
+    let (box_name, mut argv) = parse_attach(args)?;
+    if argv.is_empty() {
+        argv.push("bash".to_string());
+    }
+    let cwd = fs::canonicalize(std::env::current_dir()?)?;
+    let root = crate::pi::launch::project_root(&cwd)?;
+    let id = crate::pi::state::project_id(&root)?;
+    let runtime = runtime()?;
+    let boxes: Vec<BoxInfo> = runtime
+        .list()?
+        .into_iter()
+        .filter(|box_| box_.labels.get(crate::core::clean::PROJECT_LABEL) == Some(&id))
+        .collect();
+    let name = select_box(&boxes, box_name.as_deref())?;
+    let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
+    let status = runtime.exec(&name, tty, Some(&cwd), &argv)?;
+    Ok(exit_code(status))
+}
+
+/// The box to attach to: the named one, or the project's only one. Several
+/// without a name is the caller's to resolve.
+fn select_box(boxes: &[BoxInfo], requested: Option<&str>) -> io::Result<String> {
+    if let Some(name) = requested {
+        return boxes
+            .iter()
+            .find(|box_| box_.id == name)
+            .map(|box_| box_.id.clone())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no running pi box named {name:?} for this project"),
+                )
+            });
+    }
+    match boxes {
+        [] => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no running pi box for this project; start one with `pinfold pi`",
+        )),
+        [only] => Ok(only.id.clone()),
+        several => {
+            let mut names: Vec<&str> = several.iter().map(|box_| box_.id.as_str()).collect();
+            names.sort_unstable();
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "several pi boxes are running for this project; select one with `--box NAME`: {}",
+                    names.join(", ")
+                ),
+            ))
+        }
+    }
+}
+
+/// `attach`'s options and command. Options end at the first command word or
+/// `--`, so a command keeps every argument after it.
+fn parse_attach(args: &[OsString]) -> io::Result<(Option<String>, Vec<String>)> {
+    let mut name = None;
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        match arg.to_str() {
+            Some("--box") => {
+                name = Some(
+                    args.get(index + 1)
+                        .and_then(|value| value.to_str())
+                        .ok_or_else(|| attach_usage("--box needs a box name"))?
+                        .to_string(),
+                );
+                index += 2;
+            }
+            Some("--") => {
+                index += 1;
+                break;
+            }
+            _ => break,
+        }
+    }
+    let mut argv = Vec::new();
+    for arg in &args[index..] {
+        argv.push(
+            arg.to_str()
+                .ok_or_else(|| attach_usage("attach arguments must be valid UTF-8"))?
+                .to_string(),
+        );
+    }
+    Ok((name, argv))
 }
 
 /// Run a `pinfold box` invocation and return its process exit code.
@@ -591,5 +694,12 @@ fn allow_usage(message: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
         format!("{message}\n{ALLOW_USAGE}"),
+    )
+}
+
+fn attach_usage(message: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("{message}\n{ATTACH_USAGE}"),
     )
 }
