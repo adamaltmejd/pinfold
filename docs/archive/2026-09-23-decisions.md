@@ -154,3 +154,31 @@ socket forwarding with socat; pi-wrapper settings seeding; the session lock;
 the `--continue`, provider and model defaults; retired settings; the builder
 subnet and DNS settings; `AGENTBOX_ISOLATION`; the shared squid; most of
 `doctor` and `clean`; the static `AGENTS.md` copied on every run.
+
+## Revisions later on 2026-09-23
+
+These supersede entries above; the entries are kept as they were decided.
+
+- **podman is supported on macOS too**, beside Apple `container`, for users
+  who don't want Apple's runtime. This reverses "Apple `container` on macOS,
+  not podman everywhere" as a choice of one runtime; Apple `container` stays
+  the default when installed. The transport concern is answered with an SSH
+  reverse forward of the proxy socket into the podman machine VM. Untried: no
+  podman on the dev Mac.
+- **No isolation warning at run time.** The difference between a VM per box
+  and a shared kernel is stated once in the README and reported by `doctor`
+  and the ready event, instead of cluttering every run.
+- **Profiles move into core as data** so Switchyard's pi workers get the
+  same pi config as interactive runs. A profile is box defaults, an image,
+  `home/` seeds and a read-only `share/`. User profiles live in
+  `~/.config/pinfold/profiles/`; `default` is built into the binary, which
+  also settles where an installed binary finds it. pi's project level stays
+  pi-native (`.pi/`); the seed sets `defaultProjectTrust: "always"`,
+  because pi's non-interactive modes otherwise skip project config
+  silently (pi 0.86 docs, `docs/security.md`).
+- **Maintenance is built in.** Rebuilds with `apt-get upgrade` make a new
+  image each time, and the Apple builder's cache and per-project caches grow
+  without bound. pinfold keeps two images per source, garbage-collects its
+  own leftovers daily, and offers `pinfold clean` for build cache, project
+  caches and abandoned project state. It only touches what it labeled or
+  owns.
