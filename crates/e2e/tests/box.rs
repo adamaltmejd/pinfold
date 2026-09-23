@@ -372,6 +372,261 @@ fn only_allowlisted_hosts_get_through() {
 }
 
 #[test]
+fn the_proxy_refuses_the_tricks() {
+    // Guarantee 3. Each trick has its control in the same box.
+    //
+    // Sabotage: delete the IP literal check; both 127.0.0.1 requests then
+    // log "not allowlisted" (or reach the box's own loopback), so the
+    // "ip literal" assertions fail.
+    // Sabotage: delete the loopback address check; localhost resolves to
+    // 127.0.0.1, the proxy dials it, and the 403 and "loopback" assertions
+    // fail.
+    // Sabotage: skip the SNI comparison; the --connect-to request finishes
+    // its TLS handshake against api.github.com, so the exit-35 and "sni
+    // mismatch" assertions fail.
+    // Sabotage: check the allowlist before the routes; CONNECT to
+    // fixture.internal logs "not allowlisted" and the "route" assertion
+    // fails.
+    // Sabotage: drop the duplicate-Content-Length check in parse_plain; the
+    // raw request reaches api.github.com, so the 400 and "ambiguous
+    // framing" assertions fail.
+    let binary = pinfold();
+    let env = TestEnv::new("tricks");
+    let fixture = HttpFixture::start();
+    let name = format!("pinfold-e2e-{}-tricks", std::process::id());
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(binary, &env),
+        "egress": {
+            "allow": ["api.github.com", "localhost"],
+            "routes": { "fixture.internal": format!("127.0.0.1:{}", fixture.port()) },
+        },
+    });
+    let up = box_up(binary, &env, &spec, &name);
+
+    // Controls: the same paths work when the trick is not played.
+    let connect = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "30",
+            "-o",
+            "/dev/null",
+            "https://api.github.com/",
+        ],
+    );
+    assert_eq!(
+        connect.code, 0,
+        "allowlisted CONNECT failed: {}",
+        connect.stderr
+    );
+    let plain = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "30",
+            "-o",
+            "/dev/null",
+            "http://api.github.com/",
+        ],
+    );
+    assert_eq!(
+        plain.code, 0,
+        "allowlisted plain HTTP failed: {}",
+        plain.stderr
+    );
+    let route = box_exec(
+        binary,
+        &env,
+        &name,
+        &["curl", "-sS", "--max-time", "5", "http://fixture.internal/"],
+    );
+    assert_eq!(route.code, 0, "route control failed: {}", route.stderr);
+    assert!(
+        route.stdout.contains("fixture host=fixture.internal"),
+        "route control answered: {}",
+        route.stdout
+    );
+
+    // An IP literal, in both request forms.
+    let literal_connect = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "30",
+            "-o",
+            "/dev/null",
+            "https://127.0.0.1/",
+        ],
+    );
+    assert_ne!(
+        literal_connect.code, 0,
+        "CONNECT to an IP literal succeeded"
+    );
+    assert!(
+        literal_connect.stderr.contains("403"),
+        "CONNECT to an IP literal got no 403: {}",
+        literal_connect.stderr
+    );
+    let literal_plain = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "-f",
+            "--max-time",
+            "30",
+            "-o",
+            "/dev/null",
+            "http://127.0.0.1/",
+        ],
+    );
+    assert_ne!(
+        literal_plain.code, 0,
+        "plain HTTP to an IP literal succeeded"
+    );
+    assert!(
+        literal_plain.stderr.contains("403"),
+        "plain HTTP to an IP literal got no 403: {}",
+        literal_plain.stderr
+    );
+
+    // A name that resolves to loopback.
+    let loopback = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "30",
+            "-o",
+            "/dev/null",
+            "https://localhost/",
+        ],
+    );
+    assert_ne!(loopback.code, 0, "a name resolving to loopback succeeded");
+    assert!(
+        loopback.stderr.contains("403"),
+        "the loopback name got no 403: {}",
+        loopback.stderr
+    );
+
+    // A ClientHello whose SNI names another host. The proxy answers the
+    // CONNECT with 200 and then refuses on the ClientHello, so curl fails
+    // the TLS handshake (35) rather than reading an HTTP status.
+    let sni = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "30",
+            "-o",
+            "/dev/null",
+            "--connect-to",
+            "example.com:443:api.github.com:443",
+            "https://example.com/",
+        ],
+    );
+    assert_eq!(
+        sni.code, 35,
+        "the mismatched SNI did not fail the handshake: {}",
+        sni.stderr
+    );
+    assert!(
+        sni.stderr.contains("SSL"),
+        "the mismatched SNI failed for another reason: {}",
+        sni.stderr
+    );
+
+    // CONNECT to a route name.
+    let route_connect = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "30",
+            "-o",
+            "/dev/null",
+            "https://fixture.internal/",
+        ],
+    );
+    assert_ne!(route_connect.code, 0, "CONNECT to a route succeeded");
+    assert!(
+        route_connect.stderr.contains("403"),
+        "CONNECT to a route got no 403: {}",
+        route_connect.stderr
+    );
+
+    // Ambiguous framing: two Content-Length headers, sent raw because curl
+    // will not.
+    let framing = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "bash",
+            "-c",
+            "exec 3<>/dev/tcp/127.0.0.1/3128; \
+             printf 'GET http://api.github.com/ HTTP/1.1\\r\\nHost: api.github.com\\r\\nContent-Length: 0\\r\\nContent-Length: 0\\r\\n\\r\\n' >&3; \
+             cat <&3",
+        ],
+    );
+    assert!(
+        framing.stdout.contains("400"),
+        "ambiguous framing got no 400: {}",
+        framing.stdout
+    );
+
+    // Every refusal names its own reason, distinct from "not allowlisted".
+    let lines = egress_log_lines(&env, &name);
+    for (host, reason) in [
+        ("127.0.0.1", "ip literal"),
+        ("localhost", "loopback"),
+        ("api.github.com", "sni mismatch"),
+        ("fixture.internal", "route"),
+    ] {
+        assert!(
+            lines.iter().any(|line| line["host"] == host
+                && line["decision"] == "refused"
+                && line["reason"] == reason),
+            "no {reason} refusal for {host}: {lines:?}"
+        );
+    }
+    assert!(
+        lines
+            .iter()
+            .any(|line| line["decision"] == "refused" && line["reason"] == "ambiguous framing"),
+        "no ambiguous framing refusal: {lines:?}"
+    );
+
+    let status = box_down(binary, &env, &name);
+    assert!(status.success(), "box down failed: {status}");
+    drop(up);
+}
+
+#[test]
 fn losing_the_owner_fails_closed() {
     // Sabotage: make `box prune` skip boxes whose owner is gone; the box
     // survives prune and the post-prune list assertion fails. Sabotage: start

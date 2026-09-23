@@ -3,7 +3,7 @@
 //! It lives in the `box up` process and listens only on the box's unix
 //! socket, so it has no network listener. CONNECT is port 443 to an
 //! allowlisted host; plain HTTP is port 80 to an allowlisted host or to a
-//! route. The address checks come later.
+//! route.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -12,10 +12,12 @@ use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
+use std::time::Duration;
 
 use crate::core::plan::Egress;
+use crate::core::{network, tls};
 
 /// The loopback URL clients reach through `pinfold init`'s relay.
 pub const PROXY_URL: &str = "http://127.0.0.1:3128";
@@ -29,6 +31,17 @@ const MAX_HEAD: usize = 8 * 1024;
 
 /// More headers than this get a 400.
 const MAX_HEADERS: usize = 64;
+
+/// How long the proxy waits for the next bytes of a request head or
+/// ClientHello.
+const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long a tunnel or forwarded body may go without data before the
+/// proxy closes it.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The most connections one box may have open at once.
+const MAX_CONNECTIONS: usize = 64;
 
 /// A running proxy, owned by the `box up` process.
 pub struct Proxy {
@@ -147,15 +160,26 @@ impl Allow {
 }
 
 fn serve(listener: UnixListener, stop: Arc<AtomicBool>, rules: Arc<Rules>, log: PathBuf) {
+    let active = Arc::new(AtomicUsize::new(0));
     loop {
         match listener.accept() {
-            Ok((client, _)) => {
+            Ok((mut client, _)) => {
                 if stop.load(Ordering::SeqCst) {
                     break;
                 }
+                if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    record(&log, "", "refused", "connection cap");
+                    let _ = respond(&mut client, 503);
+                    continue;
+                }
                 let rules = Arc::clone(&rules);
                 let log = log.clone();
-                thread::spawn(move || handle(client, &rules, &log));
+                let active = Arc::clone(&active);
+                thread::spawn(move || {
+                    handle(client, &rules, &log);
+                    active.fetch_sub(1, Ordering::SeqCst);
+                });
             }
             Err(_) => {
                 if stop.load(Ordering::SeqCst) {
@@ -167,10 +191,19 @@ fn serve(listener: UnixListener, stop: Arc<AtomicBool>, rules: Arc<Rules>, log: 
 }
 
 fn handle(mut client: UnixStream, rules: &Rules, log: &Path) {
-    let Some(head) = read_head(&mut client) else {
+    if client.set_read_timeout(Some(HEADER_TIMEOUT)).is_err() {
         return;
+    }
+    let head = match read_head(&mut client) {
+        Ok(head) => head,
+        Err(HeadError::Timeout) => {
+            record(log, "", "refused", "header timeout");
+            return;
+        }
+        Err(HeadError::Closed) => return,
     };
     if !head_well_formed(&head) {
+        record(log, "", "refused", "ambiguous framing");
         let _ = respond(&mut client, 400);
         return;
     }
@@ -179,10 +212,12 @@ fn handle(mut client: UnixStream, rules: &Rules, log: &Path) {
     let mut parts = request_line.split(' ');
     let (Some(method), Some(target), Some(_version)) = (parts.next(), parts.next(), parts.next())
     else {
+        record(log, "", "refused", "malformed request");
         let _ = respond(&mut client, 400);
         return;
     };
     if parts.next().is_some() {
+        record(log, "", "refused", "malformed request");
         let _ = respond(&mut client, 400);
         return;
     }
@@ -193,7 +228,8 @@ fn handle(mut client: UnixStream, rules: &Rules, log: &Path) {
     }
 }
 
-/// Handle one CONNECT: an allowlisted host on port 443 only.
+/// Handle one CONNECT: an allowlisted host on port 443 only, with the
+/// ClientHello's SNI checked before the server is dialed.
 fn connect(client: &mut UnixStream, rules: &Rules, log: &Path, target: &str) {
     let Some((host, port)) = target.rsplit_once(':') else {
         let _ = respond(client, 400);
@@ -201,6 +237,16 @@ fn connect(client: &mut UnixStream, rules: &Rules, log: &Path, target: &str) {
     };
     if host.is_empty() {
         let _ = respond(client, 400);
+        return;
+    }
+    if network::literal(host).is_some() {
+        record(log, host, "refused", "ip literal");
+        let _ = respond(client, 403);
+        return;
+    }
+    if rules.routes.contains_key(&host.to_ascii_lowercase()) {
+        record(log, host, "refused", "route");
+        let _ = respond(client, 403);
         return;
     }
     if !rules.allow.allows(host) {
@@ -213,46 +259,109 @@ fn connect(client: &mut UnixStream, rules: &Rules, log: &Path, target: &str) {
         let _ = respond(client, 403);
         return;
     }
-    record(log, host, "allowed", "allowlisted");
-    // Resolve once and dial the address that was resolved.
-    let Some(server) = dial(host, 443) else {
-        let _ = respond(client, 502);
-        return;
+    // Resolve once and check every address before anything is dialed.
+    let address = match network::resolve(host, 443) {
+        Ok(address) => address,
+        Err(network::ResolveError::Forbidden(reason)) => {
+            record(log, host, "refused", reason);
+            let _ = respond(client, 403);
+            return;
+        }
+        Err(network::ResolveError::Unresolved) => {
+            record(log, host, "refused", "resolve failed");
+            let _ = respond(client, 502);
+            return;
+        }
     };
     if respond(client, 200).is_err() {
         return;
     }
-    tunnel(client, server);
+    // The client sends its ClientHello only after the 200, so it is read
+    // here and forwarded unchanged once the SNI checks out.
+    let hello = match tls::read_client_hello(client) {
+        Ok(hello) => hello,
+        Err(error) => {
+            record(log, host, "refused", error.reason());
+            return;
+        }
+    };
+    match hello.sni.as_deref() {
+        None => {
+            record(log, host, "refused", "sni missing");
+            return;
+        }
+        Some(sni) if !sni.eq_ignore_ascii_case(host) => {
+            record(log, host, "refused", "sni mismatch");
+            return;
+        }
+        Some(_) => {}
+    }
+    record(log, host, "allowed", "allowlisted");
+    if let Ok(mut server) = TcpStream::connect(address) {
+        if server.write_all(&hello.bytes).is_err() {
+            return;
+        }
+        tunnel(client, server);
+    }
 }
 
 /// Handle one plain HTTP request: an allowlisted host or a route, port 80
 /// only, framed by Content-Length, one request per connection.
 fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, head: &[u8]) {
-    let Some(request) = parse_plain(head) else {
-        let _ = respond(client, 400);
-        return;
+    let request = match parse_plain(head) {
+        Ok(request) => request,
+        Err(reason) => {
+            record(log, "", "refused", reason);
+            let _ = respond(client, 400);
+            return;
+        }
     };
     if request.port != 80 {
         record(log, &request.host, "refused", "port not allowed");
         let _ = respond(client, 403);
         return;
     }
+    if network::literal(&request.host).is_some() {
+        record(log, &request.host, "refused", "ip literal");
+        let _ = respond(client, 403);
+        return;
+    }
     let host = request.host.to_ascii_lowercase();
-    let (server, reason) = if let Some(target) = rules.routes.get(&host) {
-        (dial_address(target), "route")
-    } else if rules.allow.allows(&host) {
-        (dial(&host, 80), "allowlisted")
-    } else {
+    if let Some(target) = rules.routes.get(&host) {
+        record(log, &request.host, "allowed", "route");
+        let Some(mut server) = dial_address(target) else {
+            let _ = respond(client, 502);
+            return;
+        };
+        let _ = forward(client, &mut server, &request);
+        return;
+    }
+    if !rules.allow.allows(&host) {
         record(log, &request.host, "refused", "not allowlisted");
         let _ = respond(client, 403);
         return;
-    };
-    record(log, &request.host, "allowed", reason);
-    let Some(mut server) = server else {
-        let _ = respond(client, 502);
-        return;
-    };
-    let _ = forward(client, &mut server, &request);
+    }
+    match network::resolve(&host, 80) {
+        Ok(address) => {
+            record(log, &request.host, "allowed", "allowlisted");
+            match TcpStream::connect(address) {
+                Ok(mut server) => {
+                    let _ = forward(client, &mut server, &request);
+                }
+                Err(_) => {
+                    let _ = respond(client, 502);
+                }
+            }
+        }
+        Err(network::ResolveError::Forbidden(reason)) => {
+            record(log, &request.host, "refused", reason);
+            let _ = respond(client, 403);
+        }
+        Err(network::ResolveError::Unresolved) => {
+            record(log, &request.host, "refused", "resolve failed");
+            let _ = respond(client, 502);
+        }
+    }
 }
 
 /// One parsed plain HTTP request head.
@@ -273,42 +382,36 @@ struct Plain {
     content_length: u64,
 }
 
-/// Parse and check a plain HTTP request head. `None` is a 400: not
-/// absolute-form, `https`, userinfo, ambiguous framing or an invalid header.
-fn parse_plain(head: &[u8]) -> Option<Plain> {
+/// Parse and check a plain HTTP request head. The error is the 400's log
+/// reason: not absolute-form, `https`, userinfo, ambiguous framing or an
+/// invalid header.
+fn parse_plain(head: &[u8]) -> Result<Plain, &'static str> {
     let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
     let mut request = httparse::Request::new(&mut headers);
-    if !request.parse(head).ok()?.is_complete() {
-        return None;
+    match request.parse(head) {
+        Ok(httparse::Status::Complete(_)) => {}
+        _ => return Err("malformed request"),
     }
-    let method = request.method?.to_string();
-    let version = match request.version? {
+    let method = request.method.ok_or("malformed request")?.to_string();
+    let version = match request.version.ok_or("malformed request")? {
         0 => "HTTP/1.0",
         1 => "HTTP/1.1",
-        _ => return None,
+        _ => return Err("malformed request"),
     };
-    let raw_target = request.path?;
-    let (scheme, rest) = raw_target.split_once("://")?;
+    let raw_target = request.path.ok_or("malformed request")?;
+    let (scheme, rest) = raw_target.split_once("://").ok_or("malformed request")?;
     if !scheme.eq_ignore_ascii_case("http") {
-        return None;
+        return Err("malformed request");
     }
-    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .ok_or("malformed request")?;
     // Userinfo would make the authority ambiguous.
     if authority.is_empty() || authority.contains('@') {
-        return None;
+        return Err("malformed request");
     }
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((host, port)) => {
-            if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
-                return None;
-            }
-            (host, port.parse::<u16>().ok()?)
-        }
-        None => (authority, 80),
-    };
-    if host.is_empty() {
-        return None;
-    }
+    let (host, port) = authority_host(authority).ok_or("malformed request")?;
     let path = &rest[authority.len()..];
     // A fragment is client-side only; a query without a path still needs the
     // origin-form's leading slash.
@@ -322,24 +425,24 @@ fn parse_plain(head: &[u8]) -> Option<Plain> {
     let mut forwarded = Vec::new();
     for header in request.headers.iter() {
         if header.name.eq_ignore_ascii_case("transfer-encoding") {
-            return None;
+            return Err("ambiguous framing");
         }
         if header.name.eq_ignore_ascii_case("content-length") {
             if content_length.is_some() {
-                return None;
+                return Err("ambiguous framing");
             }
-            let value = std::str::from_utf8(header.value).ok()?;
-            content_length = Some(value.parse::<u64>().ok()?);
+            let value = std::str::from_utf8(header.value).map_err(|_| "malformed request")?;
+            content_length = Some(value.parse::<u64>().map_err(|_| "malformed request")?);
             forwarded.push((header.name.to_string(), value.to_string()));
             continue;
         }
         if header.name.eq_ignore_ascii_case("host") || hop_by_hop(header.name) {
             continue;
         }
-        let value = std::str::from_utf8(header.value).ok()?;
+        let value = std::str::from_utf8(header.value).map_err(|_| "malformed request")?;
         forwarded.push((header.name.to_string(), value.to_string()));
     }
-    Some(Plain {
+    Ok(Plain {
         method,
         version,
         target,
@@ -351,9 +454,43 @@ fn parse_plain(head: &[u8]) -> Option<Plain> {
     })
 }
 
+/// Split an authority into its host and port, handling a bracketed IPv6
+/// host. The default port is 80.
+fn authority_host(authority: &str) -> Option<(&str, u16)> {
+    if let Some(rest) = authority.strip_prefix('[') {
+        let (host, rest) = rest.split_once(']')?;
+        if host.is_empty() {
+            return None;
+        }
+        let port = match rest {
+            "" => 80,
+            rest => {
+                let port = rest.strip_prefix(':')?;
+                if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return None;
+                }
+                port.parse().ok()?
+            }
+        };
+        return Some((host, port));
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) => {
+            if host.is_empty() || port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return None;
+            }
+            Some((host, port.parse().ok()?))
+        }
+        None => Some((authority, 80)),
+    }
+}
+
 /// Forward one parsed request and its Content-Length body, then stream the
 /// response back until the upstream closes. One request per connection.
 fn forward(client: &mut UnixStream, server: &mut TcpStream, request: &Plain) -> io::Result<()> {
+    let _ = client.set_read_timeout(Some(IDLE_TIMEOUT));
+    let _ = server.set_read_timeout(Some(IDLE_TIMEOUT));
     let mut head = Vec::with_capacity(256);
     write!(
         head,
@@ -395,24 +532,38 @@ fn hop_by_hop(name: &str) -> bool {
 
 /// Read one request head, ending at the blank line. A bare-LF blank line
 /// also ends the read, so the caller can refuse it instead of blocking.
-fn read_head(client: &mut UnixStream) -> Option<Vec<u8>> {
+fn read_head(client: &mut UnixStream) -> Result<Vec<u8>, HeadError> {
     let mut head = Vec::with_capacity(1024);
     let mut byte = [0u8; 1];
     loop {
         match client.read(&mut byte) {
-            Ok(0) => return None,
+            Ok(0) => return Err(HeadError::Closed),
             Ok(_) => {
                 head.push(byte[0]);
                 if head.ends_with(b"\r\n\r\n") || head.ends_with(b"\n\n") {
-                    return Some(head);
+                    return Ok(head);
                 }
                 if head.len() > MAX_HEAD {
-                    return None;
+                    return Err(HeadError::Closed);
                 }
             }
-            Err(_) => return None,
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock
+                    || error.kind() == io::ErrorKind::TimedOut =>
+            {
+                return Err(HeadError::Timeout);
+            }
+            Err(_) => return Err(HeadError::Closed),
         }
     }
+}
+
+/// Why the request head could not be read.
+enum HeadError {
+    /// The peer closed or the socket failed.
+    Closed,
+    /// The header timeout expired.
+    Timeout,
 }
 
 /// A head with only CRLF line endings and no folded header. httparse accepts
@@ -433,13 +584,8 @@ fn head_well_formed(head: &[u8]) -> bool {
         .all(|line| !matches!(line.first(), Some(b' ' | b'\t')))
 }
 
-/// Resolve `host` once and connect to the first address on `port`.
-fn dial(host: &str, port: u16) -> Option<TcpStream> {
-    let address = (host, port).to_socket_addrs().ok()?.next()?;
-    TcpStream::connect(address).ok()
-}
-
-/// Resolve a route's `host:port` once and connect to the first address.
+/// Resolve a route's `host:port` once and connect to the first address. A
+/// route's target is a host service, so its address is not checked.
 fn dial_address(address: &str) -> Option<TcpStream> {
     let address = address.to_socket_addrs().ok()?.next()?;
     TcpStream::connect(address).ok()
@@ -448,6 +594,8 @@ fn dial_address(address: &str) -> Option<TcpStream> {
 /// Copy both directions for the life of the tunnel.
 fn tunnel(client: &mut UnixStream, server: TcpStream) {
     let mut server = server;
+    let _ = client.set_read_timeout(Some(IDLE_TIMEOUT));
+    let _ = server.set_read_timeout(Some(IDLE_TIMEOUT));
     let Ok(mut client_reader) = client.try_clone() else {
         return;
     };
@@ -471,6 +619,7 @@ fn respond(client: &mut UnixStream, code: u16) -> io::Result<()> {
                 400 => "Bad Request",
                 403 => "Forbidden",
                 502 => "Bad Gateway",
+                503 => "Service Unavailable",
                 _ => "Error",
             };
             format!("HTTP/1.1 {code} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
