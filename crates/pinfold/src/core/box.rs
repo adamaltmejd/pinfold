@@ -1,7 +1,6 @@
 //! The box lifecycle: one attached `container run` process owns one box.
 
 use std::ffi::OsStr;
-use std::fs;
 use std::fs::File;
 use std::io;
 use std::io::Write;
@@ -228,15 +227,16 @@ fn apply_profile(plan: &mut Plan) -> io::Result<()> {
                 ),
             )
         })?;
-    let host_home = home_host_dir(plan, &name, &home)?;
-    seed_home(&host_home, &profile.home)?;
+    let (mount, relative) = home_mount(plan, &name, &home)?;
+    seed_home(mount, &relative, &profile.home)?;
     Ok(())
 }
 
-/// The host directory behind a guest `$HOME`: the deepest mount containing
-/// it, which must be writable.
-fn home_host_dir(plan: &Plan, name: &str, home: &Path) -> io::Result<PathBuf> {
-    let mut best: Option<(&Mount, PathBuf)> = None;
+/// The mount behind a guest `$HOME` and the plain path from its guest root
+/// to `$HOME`. The mount must be writable and the path must not step out of
+/// it.
+fn home_mount<'a>(plan: &'a Plan, name: &str, home: &Path) -> io::Result<(&'a Mount, PathBuf)> {
+    let mut best: Option<(&'a Mount, &Path)> = None;
     for mount in &plan.mounts {
         let Ok(relative) = home.strip_prefix(&mount.guest) else {
             continue;
@@ -245,18 +245,10 @@ fn home_host_dir(plan: &Plan, name: &str, home: &Path) -> io::Result<PathBuf> {
             mount.guest.components().count() > best.guest.components().count()
         });
         if deeper {
-            // `join("")` would leave a trailing slash, which turns a
-            // symlinked `$HOME` into an intermediate component that
-            // `O_NOFOLLOW` no longer guards.
-            let dir = if relative.as_os_str().is_empty() {
-                mount.host.clone()
-            } else {
-                mount.host.join(relative)
-            };
-            best = Some((mount, dir));
+            best = Some((mount, relative));
         }
     }
-    let Some((mount, dir)) = best else {
+    let Some((mount, relative)) = best else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
@@ -275,33 +267,67 @@ fn home_host_dir(plan: &Plan, name: &str, home: &Path) -> io::Result<PathBuf> {
             ),
         ));
     }
-    Ok(dir)
+    // The walk below handles normal components only; `..` would step out of
+    // the mount and `.` is noise.
+    if relative
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "profile {name:?} seeds $HOME, but $HOME={} is not a plain path under the mount {}",
+                home.display(),
+                mount.guest.display()
+            ),
+        ));
+    }
+    Ok((mount, relative.to_path_buf()))
 }
 
 /// Copy seeds into the host `$HOME`, skipping anything already there. The
-/// walk follows no symlink at or below `$HOME`: the box can write the home,
-/// so a planted symlink must not redirect a seed outside it.
-fn seed_home(home: &Path, seeds: &[Seed]) -> io::Result<()> {
-    let dir = open_seed_root(home)?;
+/// walk starts at the mount's host directory and follows no symlink: the box
+/// can write the mount, so a planted symlink must not redirect a seed
+/// outside it.
+fn seed_home(mount: &Mount, relative: &Path, seeds: &[Seed]) -> io::Result<()> {
+    let root = open_mount_dir(&mount.host)?;
+    let (home, home_path) = open_seed_path(&root, relative, &mount.host)?;
     for seed in seeds {
-        seed_file(&dir, home, &seed.path, &seed.contents)?;
+        seed_file(&home, &home_path, &seed.path, &seed.contents)?;
     }
     Ok(())
 }
 
-/// Open `$HOME` itself without following a symlink, creating it when it is
-/// missing.
-fn open_seed_root(home: &Path) -> io::Result<OwnedFd> {
-    let flags = OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-    match nix::fcntl::open(home, flags, Mode::empty()) {
-        Ok(fd) => Ok(fd),
-        Err(Errno::ENOENT) => {
-            fs::create_dir_all(home)?;
-            nix::fcntl::open(home, flags, Mode::empty())
-                .map_err(|error| seed_error(error, &format!("open {}", home.display())))
-        }
-        Err(error) => Err(seed_error(error, &format!("open {}", home.display()))),
+/// Open the mount's host directory. The spec names it and the runtime mounts
+/// it, so it is the seed walk's trust root.
+fn open_mount_dir(host: &Path) -> io::Result<OwnedFd> {
+    nix::fcntl::open(host, OFlag::O_DIRECTORY | OFlag::O_CLOEXEC, Mode::empty())
+        .map_err(|error| seed_error(error, &format!("open mount {}", host.display())))
+}
+
+/// Walk `relative` from `dir`, creating missing directories with `mkdirat`
+/// and refusing a symlink at any component. `display` names `dir` in errors.
+fn open_seed_path(
+    dir: &OwnedFd,
+    relative: &Path,
+    display: &Path,
+) -> io::Result<(OwnedFd, PathBuf)> {
+    let mut dir = dir.try_clone()?;
+    let mut current = display.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "seed path {} is not a plain directory path",
+                    relative.display()
+                ),
+            ));
+        };
+        current.push(name);
+        dir = open_seed_dir(&dir, name, &current)?;
     }
+    Ok((dir, current))
 }
 
 /// Write one seed with `openat` and `mkdirat`, following no symlink. Anything
