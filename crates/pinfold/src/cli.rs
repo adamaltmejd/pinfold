@@ -1,5 +1,5 @@
 //! `pinfold box`: the JSON-on-stdio process interface Switchyard uses, and
-//! `pinfold build`: the profile image build.
+//! `pinfold build`: the profile and project image build.
 //!
 //! The verbs are parsed by hand: the set is small, and ARCHITECTURE.md's
 //! dependency list has no argument parser.
@@ -15,12 +15,14 @@ use std::time::Duration;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
+use crate::config::{Config, Containerfile};
 use crate::core::r#box::Box;
 use crate::core::clean;
 use crate::core::plan::Plan;
 use crate::core::profile::{Profile, valid_name};
-use crate::core::runtime::{BuildRequest, runtime};
+use crate::core::runtime::{BuildRequest, local_image_id, runtime};
 use crate::dirs;
+use crate::trust;
 
 const USAGE: &str = "usage: pinfold box up|exec BOX [--tty] [--workdir DIR] -- argv|down BOX|list --label k=v|prune";
 const BUILD_USAGE: &str = "usage: pinfold build [--profile NAME]";
@@ -318,8 +320,28 @@ pub fn build(args: &[OsString]) -> i32 {
 }
 
 fn run_build(args: &[OsString]) -> io::Result<()> {
-    let name = parse_profile(args)?;
-    let profile = Profile::load(&name)?;
+    match parse_profile(args)? {
+        Some(name) => build_profile(&Profile::load(&name)?),
+        None => build_configured(),
+    }
+}
+
+/// `pinfold build` without `--profile`: build the project's own image when
+/// its config names a Containerfile, else the configured profile's image.
+fn build_configured() -> io::Result<()> {
+    let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
+    let config = Config::load(&root)?;
+    // A project build is a run of its config: an untrusted change stops it
+    // like it stops `pinfold pi`.
+    trust::check(&root, &config)?;
+    match &config.containerfile {
+        Containerfile::Project(bytes) => build_project(&root, &config, bytes),
+        Containerfile::Profile(_) => build_profile(&config.profile),
+    }
+}
+
+/// Build `profile`'s image from an empty context holding its Containerfile.
+fn build_profile(profile: &Profile) -> io::Result<()> {
     let id = build_id();
     // The build gets the Containerfile alone: a profile directory's other
     // files are not build inputs, and an embedded default has no directory.
@@ -327,12 +349,12 @@ fn run_build(args: &[OsString]) -> io::Result<()> {
     fs::create_dir_all(&context)?;
     let containerfile = context.join("Containerfile");
     fs::write(&containerfile, &profile.containerfile)?;
-    let result = build_image(&profile, &context, &containerfile, &id);
+    let result = build_profile_image(profile, &context, &containerfile, &id);
     let _ = fs::remove_dir_all(&context);
     result
 }
 
-fn build_image(
+fn build_profile_image(
     profile: &Profile,
     context: &Path,
     containerfile: &Path,
@@ -347,9 +369,9 @@ fn build_image(
     if let Some(base) = profile.base_image()
         && let Some(digest) = runtime.image_digest(base)?
     {
-        labels.insert("dev.pinfold.base".to_string(), digest);
+        labels.insert(clean::BASE_LABEL.to_string(), digest);
     }
-    let stable = format!("pinfold/profile-{}:latest", profile.name);
+    let stable = profile.image_ref();
     let unique = format!("pinfold/profile-{}:{id}", profile.name);
     runtime.build(&BuildRequest {
         context,
@@ -366,17 +388,66 @@ fn build_image(
     Ok(())
 }
 
-fn parse_profile(args: &[OsString]) -> io::Result<String> {
-    let mut name = "default".to_string();
+/// Build this project's image from the Containerfile bytes trust checked.
+fn build_project(root: &Path, config: &Config, bytes: &[u8]) -> io::Result<()> {
+    let id = build_id();
+    // The build gets the Containerfile alone, so trust covers every input.
+    let context = dirs::cache_dir()?.join("build").join(&id);
+    fs::create_dir_all(&context)?;
+    let containerfile = context.join("Containerfile");
+    fs::write(&containerfile, bytes)?;
+    let result = build_project_image(root, config, &context, &containerfile, &id);
+    let _ = fs::remove_dir_all(&context);
+    result
+}
+
+fn build_project_image(
+    root: &Path,
+    config: &Config,
+    context: &Path,
+    containerfile: &Path,
+    id: &str,
+) -> io::Result<()> {
+    let runtime = runtime()?;
+    let project = crate::pi::state::project_id(root)?;
+    let mut labels = BTreeMap::new();
+    labels.insert(clean::PROJECT_LABEL.to_string(), project.clone());
+    labels.insert(clean::BUILD_LABEL.to_string(), id.to_string());
+    // The digest of the profile image this project image was built from;
+    // `pinfold pi` warns when the profile image moves past it.
+    if let Some(digest) = local_image_id(runtime, &config.profile.image_ref())? {
+        labels.insert(clean::BASE_LABEL.to_string(), digest);
+    }
+    let prefix = format!("pinfold/project-{project}");
+    let stable = format!("{prefix}:latest");
+    let unique = format!("{prefix}:{id}");
+    runtime.build(&BuildRequest {
+        context,
+        containerfile,
+        tags: &[stable.clone(), unique],
+        labels: &labels,
+    })?;
+    // Keep the two newest images of this project, the second for rollback.
+    // A failure here is reported but never fails the build that succeeded.
+    if let Err(error) = clean::keep_two_images(runtime, clean::PROJECT_LABEL, &project) {
+        eprintln!("pinfold build: maintenance: {error}");
+    }
+    println!("{stable}");
+    Ok(())
+}
+
+fn parse_profile(args: &[OsString]) -> io::Result<Option<String>> {
+    let mut name = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--profile") => {
-                name = args
-                    .next()
-                    .and_then(|value| value.to_str())
-                    .ok_or_else(|| build_usage("--profile needs a name"))?
-                    .to_string();
+                name = Some(
+                    args.next()
+                        .and_then(|value| value.to_str())
+                        .ok_or_else(|| build_usage("--profile needs a name"))?
+                        .to_string(),
+                );
             }
             Some(option) => return Err(build_usage(&format!("unknown build option {option:?}"))),
             None => return Err(build_usage("build options must be valid UTF-8")),

@@ -37,7 +37,7 @@ struct Trust {
 /// Record the current hashes for the project rooted at `root`.
 pub fn allow(root: &Path) -> io::Result<()> {
     let config = Config::load(root)?;
-    let trust = current(root, &config)?;
+    let trust = current(&config);
     let dir = dirs::state_dir()?.join("trust");
     fs::create_dir_all(&dir)?;
     let json = serde_json::to_vec(&trust).map_err(io::Error::other)?;
@@ -48,7 +48,7 @@ pub fn allow(root: &Path) -> io::Result<()> {
 /// project with no `.pinfold.toml` and no project Containerfile has nothing
 /// to trust.
 pub fn check(root: &Path, config: &Config) -> io::Result<()> {
-    let current = current(root, config)?;
+    let current = current(config);
     let Some(stored) = read(root)? else {
         // Nothing recorded: a project with no `.pinfold.toml` and no project
         // Containerfile has nothing to trust.
@@ -79,16 +79,16 @@ pub fn check(root: &Path, config: &Config) -> io::Result<()> {
 }
 
 /// The hashes of the project's config inputs as they are now.
-fn current(root: &Path, config: &Config) -> io::Result<Trust> {
-    Ok(Trust {
-        // Hash the bytes `Config` parsed, not a second read a live box could
+fn current(config: &Config) -> Trust {
+    Trust {
+        // Hash the bytes `Config` read, not a second read a live box could
         // rewrite in between.
         toml: config.project_toml.as_deref().map(hash),
         containerfile: match &config.containerfile {
             Containerfile::Profile(_) => None,
-            Containerfile::Project(path) => hash_file(&root.join(path))?,
+            Containerfile::Project(bytes) => Some(hash(bytes)),
         },
-    })
+    }
 }
 
 /// The recorded hashes for `root`, or `None` when nothing was recorded.
@@ -117,18 +117,6 @@ fn record_path(root: &Path) -> io::Result<PathBuf> {
     Ok(dirs::state_dir()?
         .join("trust")
         .join(format!("{}.json", state::project_id(root)?)))
-}
-
-/// The sha256 of a file, hex-encoded; `None` when the file is absent.
-fn hash_file(path: &Path) -> io::Result<Option<String>> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(hash(&bytes))),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(io::Error::new(
-            error.kind(),
-            format!("read {}: {error}", path.display()),
-        )),
-    }
 }
 
 /// The sha256 of `bytes`, hex-encoded.

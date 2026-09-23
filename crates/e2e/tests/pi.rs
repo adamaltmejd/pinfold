@@ -161,6 +161,9 @@ fn a_changed_project_file_stops_the_run() {
     // Sabotage: hash an absent `.pinfold.toml` as the empty file instead of
     // recording its absence; the first run, with no `.pinfold.toml` and no
     // record, refuses as "not trusted" and the bare-run control fails.
+    // Sabotage: record no Containerfile hash in trust::current
+    // (`Containerfile::Project(_) => None`); the changed Containerfile then
+    // runs and builds, and the two refusal assertions after the change fail.
     let binary = pinfold();
     let env = TestEnv::new("pi-trust");
     default_image(binary, &env);
@@ -244,6 +247,69 @@ fn a_changed_project_file_stops_the_run() {
         "the refusal did not name `pinfold allow`: {stderr}"
     );
     allow(binary, &env, project.path());
+    pi_version(binary, &env, project.path());
+
+    // The project's own Containerfile is trusted the same way: the
+    // unchanged file builds and runs, and a change to it stops both the run
+    // and the build until `pinfold allow` records the new bytes.
+    let _images = ProjectImageCleanup { id: id.clone() };
+    let containerfile = project.path().join("Containerfile.pinfold");
+    fs::write(
+        &config,
+        "image = \"Containerfile.pinfold\"\nallow = [\"example.com\"]\n",
+    )
+    .expect("point .pinfold.toml at the project Containerfile");
+    fs::write(&containerfile, "FROM pinfold/profile-default:latest\n")
+        .expect("write the project Containerfile");
+    allow(binary, &env, project.path());
+    build(binary, &env, project.path());
+    // Control: with the Containerfile unchanged, the project image runs.
+    pi_version(binary, &env, project.path());
+
+    // The agent changes the Containerfile in a live box.
+    let run = PiRpc::start(binary, &env, project.path());
+    let name = run.ready_box(binary, &env, &id);
+    let changed = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!(
+                "printf 'FROM pinfold/profile-default:latest\\n# changed\\n' > '{}'",
+                containerfile.display()
+            ),
+        ],
+    );
+    assert_eq!(
+        changed.code, 0,
+        "changing the Containerfile in the box failed: {}",
+        changed.stderr
+    );
+    assert!(
+        run.finish().success(),
+        "the trusted run did not exit cleanly"
+    );
+
+    // The change stops the run and the build until `pinfold allow` records
+    // the new bytes.
+    let refused = pi_version_output(binary, &env, project.path());
+    assert!(!refused.status.success(), "the changed Containerfile ran");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("pinfold allow"),
+        "the refusal did not name `pinfold allow`: {stderr}"
+    );
+    let refused = build_output(binary, &env, project.path());
+    assert!(!refused.status.success(), "the changed Containerfile built");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("pinfold allow"),
+        "the build refusal did not name `pinfold allow`: {stderr}"
+    );
+    allow(binary, &env, project.path());
+    build(binary, &env, project.path());
     pi_version(binary, &env, project.path());
 }
 
@@ -705,6 +771,61 @@ fn allow(binary: &Path, env: &TestEnv, project: &Path) {
         "pinfold allow failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// Run `pinfold build` in `project` and assert it exits cleanly.
+fn build(binary: &Path, env: &TestEnv, project: &Path) {
+    let output = build_output(binary, env, project);
+    assert!(
+        output.status.success(),
+        "pinfold build failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Run `pinfold build` in `project` and return its output.
+fn build_output(binary: &Path, env: &TestEnv, project: &Path) -> Output {
+    env.command(binary)
+        .arg("build")
+        .current_dir(project)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold build")
+}
+
+/// Removes this project's images from the runtime store on drop, so a
+/// repeated run does not accumulate one project image per test project.
+struct ProjectImageCleanup {
+    id: String,
+}
+
+impl Drop for ProjectImageCleanup {
+    fn drop(&mut self) {
+        // Best effort: a Drop during unwinding must not panic.
+        let Ok(output) = Command::new("container")
+            .args(["image", "list", "--quiet"])
+            .output()
+        else {
+            return;
+        };
+        if !output.status.success() {
+            return;
+        }
+        // Every build tags the image `pinfold/project-<id>:<build>` and
+        // moves the stable `pinfold/project-<id>:latest` to it.
+        let prefix = format!("pinfold/project-{}:", self.id);
+        for reference in String::from_utf8_lossy(&output.stdout).lines() {
+            if !reference.contains(&prefix) {
+                continue;
+            }
+            let _ = Command::new("container")
+                .args(["image", "delete", reference])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
 }
 
 /// The project id of the state dir whose recorded root is `project`.

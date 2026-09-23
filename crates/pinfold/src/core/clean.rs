@@ -20,6 +20,10 @@ use crate::dirs;
 
 /// The label naming a profile source on an image.
 pub const PROFILE_LABEL: &str = "dev.pinfold.profile";
+/// The label naming a project source on an image, and the project on a box.
+pub const PROJECT_LABEL: &str = "dev.pinfold.project";
+/// The label recording the digest of the image an image was built from.
+pub const BASE_LABEL: &str = "dev.pinfold.base";
 /// The label naming the build that produced an image. Its value starts with
 /// the build's nanoseconds since the epoch in hex, so it orders builds.
 pub const BUILD_LABEL: &str = "dev.pinfold.build";

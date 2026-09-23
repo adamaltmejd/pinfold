@@ -23,13 +23,10 @@ use crate::core::artifacts;
 use crate::core::r#box::Box;
 use crate::core::clean;
 use crate::core::plan::{Egress, Env, Mount, Plan};
-use crate::core::runtime::runtime;
+use crate::core::runtime::{local_image_id, runtime};
 use crate::pi::git::Git;
 use crate::pi::state::ProjectState;
 use crate::trust;
-
-/// The label naming a box's project.
-pub const PROJECT_LABEL: &str = "dev.pinfold.project";
 
 /// Where the pinned pi artifact is mounted in the box.
 const GUEST_PI: &str = "/opt/pinfold/pi";
@@ -51,8 +48,8 @@ fn launch(args: &[OsString]) -> io::Result<i32> {
     let config = Config::load(&root)?;
     trust::check(&root, &config)?;
     let state = ProjectState::load_or_create(&root)?;
-    let image = resolve_image(&config);
-    ensure_profile_image(&config, &image)?;
+    let image = resolve_image(&config, &state.id);
+    ensure_image(&config, &image)?;
     let pi = artifacts::pi()?;
     let pi_dir = pi.parent().ok_or_else(|| {
         io::Error::other(format!("pi artifact {} has no directory", pi.display()))
@@ -113,27 +110,31 @@ fn canonical(path: &Path) -> io::Result<PathBuf> {
     })
 }
 
-/// The stable ref of the selected profile's image.
-fn profile_image(config: &Config) -> String {
-    format!("pinfold/profile-{}:latest", config.profile.name)
-}
-
-/// The image ref the box runs. A project Containerfile is Y-9's; until then
-/// the profile image runs in its place.
-fn resolve_image(config: &Config) -> String {
+/// The image ref the box runs. A project Containerfile runs the project's
+/// image; a named image ref is the user's to provide.
+fn resolve_image(config: &Config, project: &str) -> String {
     match &config.containerfile {
-        Containerfile::Project(_) => profile_image(config),
+        Containerfile::Project(_) => format!("pinfold/project-{project}:latest"),
         Containerfile::Profile(_) => config
             .image
             .clone()
-            .unwrap_or_else(|| profile_image(config)),
+            .unwrap_or_else(|| config.profile.image_ref()),
+    }
+}
+
+/// Refuse when the image the box runs has not been built. A named image ref
+/// is the user's to provide.
+fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
+    match &config.containerfile {
+        Containerfile::Project(_) => ensure_project_image(config, image),
+        Containerfile::Profile(_) => ensure_profile_image(config, image),
     }
 }
 
 /// Refuse when the profile image has not been built. A named image ref is
 /// the user's to provide.
 fn ensure_profile_image(config: &Config, image: &str) -> io::Result<()> {
-    if image != profile_image(config) {
+    if image != config.profile.image_ref() {
         return Ok(());
     }
     let built = runtime()?
@@ -150,6 +151,29 @@ fn ensure_profile_image(config: &Config, image: &str) -> io::Result<()> {
             config.profile.name
         ),
     ))
+}
+
+/// Refuse when the project image has not been built, and report when the
+/// profile image it records is no longer the current one.
+fn ensure_project_image(config: &Config, image: &str) -> io::Result<()> {
+    let runtime = runtime()?;
+    let images = runtime.list_images()?;
+    let Some(built) = images.iter().find(|info| info.reference == image) else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("image {image} is missing; run `pinfold build`"),
+        ));
+    };
+    let recorded = built.labels.get(clean::BASE_LABEL).map(String::as_str);
+    let current = local_image_id(runtime, &config.profile.image_ref())?;
+    if recorded != current.as_deref() {
+        eprintln!(
+            "pinfold: project image {image} was built from profile image {}; the current profile image is {}; run `pinfold build`",
+            recorded.unwrap_or("(none)"),
+            current.as_deref().unwrap_or("(none)")
+        );
+    }
+    Ok(())
 }
 
 /// pi's argv in the box: the mounted artifact and the caller's arguments,
@@ -187,7 +211,7 @@ fn build_plan(
         )
     })?;
     let mut labels = BTreeMap::new();
-    labels.insert(PROJECT_LABEL.to_string(), state.id.clone());
+    labels.insert(clean::PROJECT_LABEL.to_string(), state.id.clone());
     // Maintenance prunes boxes whose owning process is gone; without the
     // owner label a live pi box would look like a leftover.
     labels.insert(
