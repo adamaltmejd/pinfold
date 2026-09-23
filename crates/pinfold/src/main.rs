@@ -1,22 +1,37 @@
+use std::ffi::OsString;
+use std::path::Path;
 use std::process::ExitCode;
 
 use pinfold::{cli, init};
 
 fn main() -> ExitCode {
-    // The one binary doubles as PID 1 in a box on Linux.
+    // The one binary doubles as PID 1 in a box on Linux and as the `pi` shim.
     let mut args = std::env::args_os();
-    args.next();
-    let verb = args.next();
+    let program = args.next();
+    let rest: Vec<OsString> = args.collect();
+    // A symlink named `pi` makes argv[0] the shim; every argument after it is
+    // pi's.
+    let shim = program
+        .as_deref()
+        .map(Path::new)
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        == Some("pi");
+    let verb = rest.first().and_then(|verb| verb.to_str());
     // The daily pass runs before any command but never as PID 1 in a box,
     // which has the project home for state and no runtime to prune.
-    if verb.as_deref().and_then(|verb| verb.to_str()) != Some("init") {
+    if !shim && verb != Some("init") {
         pinfold::core::clean::maintain();
     }
-    match verb.as_deref().and_then(|verb| verb.to_str()) {
-        Some("init") => init::run(&args.collect::<Vec<_>>()),
-        Some("box") => ExitCode::from(cli::run(&args.collect::<Vec<_>>()) as u8),
-        Some("build") => ExitCode::from(cli::build(&args.collect::<Vec<_>>()) as u8),
-        Some("profile") => ExitCode::from(cli::profile(&args.collect::<Vec<_>>()) as u8),
+    if shim {
+        return ExitCode::from(cli::pi(&rest) as u8);
+    }
+    match verb {
+        Some("init") => init::run(&rest[1..]),
+        Some("box") => ExitCode::from(cli::run(&rest[1..]) as u8),
+        Some("build") => ExitCode::from(cli::build(&rest[1..]) as u8),
+        Some("profile") => ExitCode::from(cli::profile(&rest[1..]) as u8),
+        Some("pi") => ExitCode::from(cli::pi(&rest[1..]) as u8),
         _ => {
             println!("pinfold {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS

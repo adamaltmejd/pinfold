@@ -45,7 +45,8 @@ pub struct Egress {
     /// Exact host names, or `.suffix` for a name and its subdomains.
     #[serde(default)]
     pub allow: Vec<String>,
-    /// Route names mapped to host services, `name -> host:port`.
+    /// Route names mapped to host services, `name -> host:port`, served over
+    /// plain HTTP.
     #[serde(default)]
     pub routes: BTreeMap<String, String>,
 }

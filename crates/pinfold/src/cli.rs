@@ -26,6 +26,11 @@ const USAGE: &str = "usage: pinfold box up|exec BOX [--tty] [--workdir DIR] -- a
 const BUILD_USAGE: &str = "usage: pinfold build [--profile NAME]";
 const PROFILE_USAGE: &str = "usage: pinfold profile new NAME [--from PROFILE]";
 
+/// Run a `pinfold pi` invocation and return its process exit code.
+pub fn pi(args: &[OsString]) -> i32 {
+    crate::pi::launch::run(args)
+}
+
 /// Run a `pinfold box` invocation and return its process exit code.
 pub fn run(args: &[OsString]) -> i32 {
     match dispatch(args) {
@@ -230,7 +235,7 @@ fn read_pid(state: &Path) -> Option<i32> {
         .ok()
 }
 
-fn exit_code(status: ExitStatus) -> i32 {
+pub(crate) fn exit_code(status: ExitStatus) -> i32 {
     use std::os::unix::process::ExitStatusExt;
     match status.code() {
         Some(code) => code,
@@ -243,7 +248,7 @@ fn exit_code(status: ExitStatus) -> i32 {
 /// On macOS the CLI embeds the `aarch64-unknown-linux-musl` build and
 /// extracts it once per content into the artifact cache. On Linux the CLI
 /// is itself a static Linux binary and mounts its own executable.
-fn init_path() -> io::Result<PathBuf> {
+pub(crate) fn init_path() -> io::Result<PathBuf> {
     if cfg!(target_os = "macos") {
         embedded_init()
     } else {

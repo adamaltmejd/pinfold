@@ -30,11 +30,19 @@ impl Runtime for Apple {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
-        // Exact values go through the child's environment, so argv holds only
-        // names and `ps` cannot read a secret.
+        // Values go through the child's environment, so argv holds only names
+        // and `ps` cannot read a secret. A `from` entry names a host variable
+        // the box sees under the entry's key; the two need not match.
         for (name, value) in &plan.env {
-            if let Env::Exact(value) = value {
-                command.env(name, value);
+            match value {
+                Env::Exact(value) => {
+                    command.env(name, value);
+                }
+                Env::From { from } => {
+                    if let Some(value) = std::env::var_os(from) {
+                        command.env(name, value);
+                    }
+                }
             }
         }
         if let Some(socket) = proxy_socket {
