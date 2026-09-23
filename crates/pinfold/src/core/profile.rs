@@ -1,11 +1,12 @@
 //! Profile lookup: the user's copy under the config dir, else the embedded
 //! default.
 
-use std::collections::hash_map::DefaultHasher;
+use std::fmt::Write as _;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
+
+use sha2::{Digest, Sha256};
 
 use crate::dirs;
 
@@ -183,15 +184,18 @@ fn embedded_home() -> Vec<Seed> {
 /// The embedded default's `share/`, written under the cache. The content
 /// hash in the path keeps a new binary from mounting an old extraction.
 fn embedded_share() -> io::Result<PathBuf> {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = Sha256::new();
     for (path, contents) in DEFAULT_SHARE {
-        path.hash(&mut hasher);
-        contents.hash(&mut hasher);
+        hasher.update(path.as_bytes());
+        // A separator, so a path and contents cannot run together.
+        hasher.update([0]);
+        hasher.update(contents);
     }
-    let dir = dirs::cache_dir()?
-        .join("profiles")
-        .join(format!("{:016x}", hasher.finish()))
-        .join("share");
+    let mut id = String::with_capacity(64);
+    for byte in hasher.finalize() {
+        write!(id, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    let dir = dirs::cache_dir()?.join("profiles").join(id).join("share");
     if dir.is_dir() {
         return Ok(dir);
     }

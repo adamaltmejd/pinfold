@@ -10,6 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use nix::errno::Errno;
 use nix::fcntl::{OFlag, openat};
 use nix::sys::stat::{Mode, mkdirat};
+use nix::unistd::{UnlinkatFlags, unlinkat};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Child;
 use tokio::signal::unix::{SignalKind, signal};
@@ -359,12 +360,16 @@ fn seed_file(root: &OwnedFd, home: &Path, relative: &Path, contents: &[u8]) -> i
             Err(Errno::EEXIST | Errno::ELOOP) => return Ok(()),
             Err(error) => return Err(seed_error(error, &format!("create {}", current.display()))),
         };
-        File::from(fd).write_all(contents).map_err(|error| {
-            io::Error::new(
+        let mut file = File::from(fd);
+        if let Err(error) = file.write_all(contents) {
+            // A partial seed must not look present to the next start.
+            drop(file);
+            let _ = unlinkat(&dir, name, UnlinkatFlags::NoRemoveDir);
+            return Err(io::Error::new(
                 error.kind(),
                 format!("write {}: {error}", current.display()),
-            )
-        })?;
+            ));
+        }
     }
     Ok(())
 }
