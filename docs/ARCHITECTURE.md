@@ -108,7 +108,7 @@ pinfold box prune                 # remove boxes whose `up` is gone
 
 - `--network none`, `--cap-drop ALL`, `--read-only` with a tmpfs `/tmp`.
 - PID 1 and all work run as the host uid:gid.
-- `NODE_USE_ENV_PROXY=1`, `GIT_HTTP_PROXY_AUTHMETHOD=basic`.
+- `NODE_USE_ENV_PROXY=1`: Node's fetch ignores `HTTPS_PROXY` without it.
 - podman adds: `--userns=keep-id`, `--security-opt no-new-privileges`, a
   seccomp profile that also blocks `CLONE_NEWUSER`, `--no-hosts`,
   `--dns none`, `--memory-swap` equal to `--memory`, `--pids-limit`, an
@@ -136,8 +136,9 @@ Runtime command lines are built as data.
 - **podman:** the socket is bind-mounted, mode 0600 in a 0700 dir.
 - **Apple `container`:** `--ssh` with `SSH_AUTH_SOCK` set to the proxy socket
   for that one `container run`. It appears at
-  `/var/host-services/ssh-auth.sock`, root-owned, mode 000; the root exec in
-  step 3 chmods it. This is off-label use of `--ssh`.
+  `/var/host-services/ssh-auth.sock`, root-owned and not connectable by the
+  box user; the root exec in step 3 chmods it. This is off-label use of
+  `--ssh`.
 - Every connection starts with a one-line header naming its target: the
   proxy or a forward. One socket carries everything.
 - Fallback if `--ssh` breaks: a per-box internal network with the proxy on
@@ -278,7 +279,7 @@ planted nested repo (`sub/.git`) runs code if a host tool runs git in it
 profile/
   pinfold.toml    same schema as .pinfold.toml
   Containerfile   the default image
-  settings.json   seed for a new project's pi settings
+  settings.json   seed for a new project's pi settings; names rtk and ponytail by path
   pi/             pi package: operating-context extension, skills
 ```
 
@@ -395,6 +396,10 @@ profile/
 
 ## Open questions
 
+- Not yet run end to end, so phase 1 proves them first: on Apple
+  `container`, a client through the init relay, the socket and the proxy;
+  PID 1 as the host uid with the transient root chmod exec; the SNI check.
+  On podman, `--no-hosts` and `--dns none`.
 - Git worktrees: `.git` is a file, which Apple `container` cannot mount
   over. `--read-only-path` plus `GIT_DIR`, or refuse in v1.
 - `198.18/15` blocking breaks fake-IP DNS proxies (Surge, Clash).

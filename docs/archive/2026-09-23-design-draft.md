@@ -1,6 +1,7 @@
 > Historical: the design draft as of 2026-09-23, before it was cut down to
-> `docs/ARCHITECTURE.md`. Kept verbatim; it has known slips (it says
-> "rootful podman" in places where rootless was decided). The spec wins.
+> `docs/ARCHITECTURE.md`. Kept verbatim; it has known slips ("rootful" where
+> rootless was decided, `refs/agentbox/` in test 13) and some claims the
+> evidence in `2026-09-22-spikes.md` does not support. The spec wins.
 
 # pinfold design
 
