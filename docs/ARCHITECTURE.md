@@ -345,8 +345,9 @@ Automatic, never prompting:
 - **Auth:** OAuth `/login` once per project; API keys through the
   environment.
 - **`protect`:** read-only directory mounts for editor config the host runs
-  on open. Always `.vscode/`, `.claude/` and `.idea/` when present, plus
-  the configured list.
+  on open. Always `.vscode/`, `.claude/` and `.idea/`, plus the configured
+  list. One that is absent is created empty on the host before the run, so
+  the box cannot create it, and removed after the run if still empty.
 - **herdr:** no socket in v1. The TTY passes through, so screen detection
   works, and the shim sets `HERDR_AGENT=pi`.
 - **Attach:** `pinfold attach [cmd…]` execs bash (or cmd) in this project's
@@ -432,7 +433,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, the box has no egress, and `box prune` removes it. |
 | 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code; `list` finds by label; `down` removes. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. A read-only mount rejects writes. |
-| 11 | The box cannot write `.git` or protected config | Writing a hook, `core.fsmonitor`, `commondir`, renaming `.git`, or writing `.vscode/` fails; host `git status` runs nothing. Control: a project file is writable. |
+| 11 | The box cannot write `.git` or protected config | Writing a hook, `core.fsmonitor`, `commondir`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails; host `git status` runs nothing. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`; the next run refuses until `pinfold allow`. |
 | 13 | Project state persists and stays separate | Settings are seeded once and survive runs; a deleted seed returns; two projects don't see each other's state. |
 | 14 | Both pi config levels load without a TTY | `pi -p` through the shim: the fake model's request carries a skill from the profile and one from the project's `.pi/`. |
