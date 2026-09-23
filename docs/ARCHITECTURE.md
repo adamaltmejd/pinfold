@@ -391,6 +391,12 @@ another adds.
 | `memory` | `PINFOLD_MEMORY` | `8G` | |
 | — | `PINFOLD_ENV_<NAME>` | — | `<NAME>` in the box; the only way host env enters |
 
+The list keys take comma-separated values in the environment:
+
+- `PINFOLD_ALLOW`: host names; a leading `.` makes a suffix entry.
+- `PINFOLD_ROUTES`: `name=host:port` pairs.
+- `PINFOLD_PROTECT`: project-relative directory paths.
+
 **Trust.** `.pinfold.toml` and the Containerfile it names are used only if
 their hashes match those `pinfold allow` recorded in
 `~/.local/state/pinfold/trust` for this project. A change stops the run
