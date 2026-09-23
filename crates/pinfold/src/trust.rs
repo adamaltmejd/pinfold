@@ -1,11 +1,12 @@
-//! Project trust: the project's `.pinfold.toml` and the effective
-//! Containerfile are used only when `pinfold allow` recorded their hashes.
+//! Project trust: the project's `.pinfold.toml` and the project Containerfile
+//! it names are used only when `pinfold allow` recorded their hashes.
 //!
 //! The record is one JSON file per project at
 //! `~/.local/state/pinfold/trust/<project-id>.json`, keyed by the same id
 //! the project state uses. An absent `.pinfold.toml` is recorded as an
 //! absence, so creating one later is a change. A project with no
-//! `.pinfold.toml` and no record has nothing to trust and runs.
+//! `.pinfold.toml` and no project Containerfile has nothing to trust and
+//! runs; the profile's Containerfile is the user's file and is not trusted.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -28,7 +29,8 @@ const TOML_FILE: &str = ".pinfold.toml";
 struct Trust {
     /// sha256 of the project's `.pinfold.toml`.
     toml: Option<String>,
-    /// sha256 of the effective Containerfile.
+    /// sha256 of the project Containerfile, `None` when the project names
+    /// none.
     containerfile: Option<String>,
 }
 
@@ -43,16 +45,25 @@ pub fn allow(root: &Path) -> io::Result<()> {
 }
 
 /// Refuse when the project's config inputs no longer match the record. A
-/// project with no `.pinfold.toml` and no record has nothing to trust.
+/// project with no `.pinfold.toml` and no project Containerfile has nothing
+/// to trust.
 pub fn check(root: &Path, config: &Config) -> io::Result<()> {
     let current = current(root, config)?;
     let Some(stored) = read(root)? else {
-        if current.toml.is_none() {
-            return Ok(());
-        }
-        return Err(refused(format!(
-            "{TOML_FILE} is not trusted; run `pinfold allow`"
-        )));
+        // Nothing recorded: a project with no `.pinfold.toml` and no project
+        // Containerfile has nothing to trust.
+        return match (&current.toml, &current.containerfile) {
+            (None, None) => Ok(()),
+            (Some(_), Some(_)) => Err(refused(format!(
+                "{TOML_FILE} and the project Containerfile are not trusted; run `pinfold allow`"
+            ))),
+            (Some(_), None) => Err(refused(format!(
+                "{TOML_FILE} is not trusted; run `pinfold allow`"
+            ))),
+            (None, Some(_)) => Err(refused(
+                "the project Containerfile is not trusted; run `pinfold allow`",
+            )),
+        };
     };
     if stored.toml != current.toml {
         return Err(refused(format!(
@@ -61,7 +72,7 @@ pub fn check(root: &Path, config: &Config) -> io::Result<()> {
     }
     if stored.containerfile != current.containerfile {
         return Err(refused(
-            "the effective Containerfile changed since `pinfold allow`; run `pinfold allow` to trust it",
+            "the project Containerfile changed since `pinfold allow`; run `pinfold allow` to trust it",
         ));
     }
     Ok(())
@@ -70,9 +81,11 @@ pub fn check(root: &Path, config: &Config) -> io::Result<()> {
 /// The hashes of the project's config inputs as they are now.
 fn current(root: &Path, config: &Config) -> io::Result<Trust> {
     Ok(Trust {
-        toml: hash_file(&root.join(TOML_FILE))?,
+        // Hash the bytes `Config` parsed, not a second read a live box could
+        // rewrite in between.
+        toml: config.project_toml.as_deref().map(hash),
         containerfile: match &config.containerfile {
-            Containerfile::Profile(bytes) => Some(hash(bytes)),
+            Containerfile::Profile(_) => None,
             Containerfile::Project(path) => hash_file(&root.join(path))?,
         },
     })

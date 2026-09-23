@@ -32,6 +32,9 @@ pub struct Config {
     /// The Containerfile whose bytes decide the effective image: the
     /// project's when `image` names one, else the profile's.
     pub containerfile: Containerfile,
+    /// The raw bytes of the project's `.pinfold.toml` that were parsed,
+    /// `None` when the file is absent. Trust hashes these bytes.
+    pub project_toml: Option<Vec<u8>>,
     /// The effective allowlist: the union of every layer.
     pub allow: Vec<String>,
     /// The effective routes: the union of every layer. A higher layer wins
@@ -59,7 +62,7 @@ pub enum Containerfile {
 impl Config {
     /// Load and merge the layers for the project rooted at `root`.
     pub fn load(root: &Path) -> io::Result<Config> {
-        let project = Layer::read(&root.join(".pinfold.toml"))?;
+        let (project, project_toml) = Layer::read(&root.join(".pinfold.toml"))?;
         let environment = Layer::from_env()?;
         let profile_name = environment
             .profile
@@ -86,6 +89,7 @@ impl Config {
             profile,
             image,
             containerfile,
+            project_toml,
             allow: merged.allow,
             routes: merged.routes,
             protect: merged.protect,
@@ -117,11 +121,15 @@ struct Layer {
 }
 
 impl Layer {
-    /// Read a `.pinfold.toml`; an absent file is an empty layer.
-    fn read(path: &Path) -> io::Result<Layer> {
+    /// Read a `.pinfold.toml`; an absent file is an empty layer and `None`.
+    /// The bytes are returned so trust hashes exactly what was parsed.
+    fn read(path: &Path) -> io::Result<(Layer, Option<Vec<u8>>)> {
         match fs::read(path) {
-            Ok(bytes) => Layer::parse(&bytes, &path.display().to_string()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Layer::default()),
+            Ok(bytes) => {
+                let layer = Layer::parse(&bytes, &path.display().to_string())?;
+                Ok((layer, Some(bytes)))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok((Layer::default(), None)),
             Err(error) => Err(io::Error::new(
                 error.kind(),
                 format!("read {}: {error}", path.display()),
