@@ -288,6 +288,159 @@ fn nothing_can_gain_privileges() {
     drop(up);
 }
 
+#[test]
+fn only_allowlisted_hosts_get_through() {
+    // Sabotage: make the proxy's allowlist check accept every host; example.com
+    // then answers and the 403 and "not allowlisted" log assertions fail. The
+    // api.github.com request is the positive control that the same path lets
+    // an allowlisted host through.
+    let binary = pinfold();
+    let env = TestEnv::new("egress");
+    let name = format!("pinfold-e2e-{}-egress", std::process::id());
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(binary, &env),
+        "egress": { "allow": ["api.github.com"] },
+    });
+    let up = box_up(binary, &env, &spec, &name);
+
+    let allowed = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "30",
+            "-o",
+            "/dev/null",
+            "https://api.github.com/",
+        ],
+    );
+    assert_eq!(
+        allowed.code, 0,
+        "allowlisted host failed: {}",
+        allowed.stderr
+    );
+
+    let denied = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "30",
+            "-o",
+            "/dev/null",
+            "https://example.com/",
+        ],
+    );
+    assert_ne!(denied.code, 0, "example.com was allowed through");
+    assert!(
+        denied.stderr.contains("403"),
+        "expected a proxy 403: {}",
+        denied.stderr
+    );
+
+    // The log names the host, the decision and its reason.
+    let log = fs::read_to_string(egress_log(&env, &name)).expect("read egress log");
+    let lines: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("log line is JSON"))
+        .collect();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line["host"] == "api.github.com" && line["decision"] == "allowed"),
+        "no allowed decision for api.github.com: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line["host"] == "example.com"
+            && line["decision"] == "refused"
+            && line["reason"] == "not allowlisted"),
+        "no not-allowlisted refusal for example.com: {lines:?}"
+    );
+
+    let status = box_down(binary, &env, &name);
+    assert!(status.success(), "box down failed: {status}");
+    drop(up);
+}
+
+#[test]
+fn losing_the_owner_fails_closed() {
+    // Sabotage: make `box prune` skip boxes whose owner is gone; the box
+    // survives prune and the post-prune list assertion fails. Sabotage: start
+    // the proxy outside the `box up` process; egress survives the SIGKILL and
+    // the fail-closed assertion fails.
+    let binary = pinfold();
+    let env = TestEnv::new("owner-gone");
+    let name = format!("pinfold-e2e-{}-owner-gone", std::process::id());
+    let label = "dev.yard.lane=e2e-owner-gone";
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(binary, &env),
+        "labels": { "dev.yard.lane": "e2e-owner-gone" },
+        "egress": { "allow": ["api.github.com"] },
+    });
+    let mut up = box_up(binary, &env, &spec, &name);
+
+    // Positive control: the box has egress while its owner lives.
+    let allowed = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "30",
+            "-o",
+            "/dev/null",
+            "https://api.github.com/",
+        ],
+    );
+    assert_eq!(
+        allowed.code, 0,
+        "positive control failed: {}",
+        allowed.stderr
+    );
+
+    up.kill();
+    up.wait();
+
+    // The socket died with `box up`, so the box has no way out.
+    let denied = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "30",
+            "-o",
+            "/dev/null",
+            "https://api.github.com/",
+        ],
+    );
+    assert_ne!(
+        denied.code, 0,
+        "the box still had egress after the owner died"
+    );
+
+    // `box prune` removes the leftover by label.
+    let status = box_prune(binary, &env);
+    assert!(status.success(), "box prune failed: {status}");
+    let listed = box_list(binary, &env, label);
+    assert!(
+        !listed.iter().any(|box_| box_["name"] == name),
+        "prune left the box: {listed:?}"
+    );
+}
+
 /// One `/proc/<pid>/status` field's value.
 fn status_field(status: &str, key: &str) -> String {
     status
@@ -377,9 +530,13 @@ impl TestEnv {
         let root = fs::canonicalize(std::env::temp_dir())
             .unwrap_or(std::env::temp_dir())
             .join(format!("pinfold-e2e-{}-{test}", std::process::id()));
-        let state = root.join("state");
+        // The box's proxy socket lives under the state dir, and macOS caps
+        // unix socket paths at 104 bytes. `$TMPDIR` is too long for that, so
+        // the state dir gets its own short path under /tmp.
+        let state = PathBuf::from("/tmp").join(format!("pf-e2e-{}-{test}", std::process::id()));
         let cache = root.join("cache");
         let config = root.join("config");
+        fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&state).unwrap();
         fs::create_dir_all(&cache).unwrap();
         fs::create_dir_all(&config).unwrap();
@@ -403,6 +560,7 @@ impl TestEnv {
 impl Drop for TestEnv {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
+        let _ = fs::remove_dir_all(&self.state);
     }
 }
 
@@ -442,6 +600,10 @@ struct Up {
 impl Up {
     fn wait(&mut self) -> ExitStatus {
         self.child.wait().expect("wait for box up")
+    }
+
+    fn kill(&mut self) {
+        self.child.kill().expect("kill box up");
     }
 }
 
@@ -538,6 +700,22 @@ fn box_list(binary: &Path, env: &TestEnv, label: &str) -> Vec<serde_json::Value>
         .lines()
         .map(|line| serde_json::from_str(line).expect("list line is JSON"))
         .collect()
+}
+
+fn box_prune(binary: &Path, env: &TestEnv) -> ExitStatus {
+    env.command(binary)
+        .args(["box", "prune"])
+        .stdin(Stdio::null())
+        .status()
+        .expect("run pinfold box prune")
+}
+
+/// The box's egress log, at the fixed path under pinfold's state dir.
+fn egress_log(env: &TestEnv, name: &str) -> PathBuf {
+    env.state
+        .join("pinfold")
+        .join("egress")
+        .join(format!("{name}.jsonl"))
 }
 
 fn box_down(binary: &Path, env: &TestEnv, name: &str) -> ExitStatus {

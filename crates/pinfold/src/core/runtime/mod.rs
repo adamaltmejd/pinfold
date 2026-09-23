@@ -45,8 +45,13 @@ pub struct BuildRequest<'a> {
 
 /// One OS's container runtime. Command lines are built as data.
 pub trait Runtime: Sync {
-    /// Start the attached `container run` process that owns the box.
-    fn up(&self, plan: &Plan, init: &Path) -> io::Result<Child>;
+    /// Start the attached `container run` process that owns the box. When
+    /// `proxy_socket` is set, carry that host unix socket into the box.
+    fn up(&self, plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<Child>;
+
+    /// Make the carried proxy socket connectable by the box user. Apple only:
+    /// the forwarded socket arrives root-owned and mode 000.
+    fn make_proxy_connectable(&self, name: &str) -> io::Result<()>;
 
     /// Stop and remove the box.
     fn down(&self, name: &str) -> io::Result<()>;

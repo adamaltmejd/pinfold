@@ -11,14 +11,18 @@ use serde::Deserialize;
 use tokio::process::{Child, Command};
 
 use crate::core::plan::{Env, Plan};
+use crate::core::proxy::PROXY_URL;
 use crate::core::runtime::{BoxInfo, BuildRequest, Runtime, guest_path};
+
+/// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
+pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
 
 /// Apple `container`.
 pub struct Apple;
 
 impl Runtime for Apple {
-    fn up(&self, plan: &Plan, init: &Path) -> io::Result<Child> {
-        let argv = up_argv(plan, init);
+    fn up(&self, plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<Child> {
+        let argv = up_argv(plan, init, proxy_socket);
         let (program, arguments) = argv.split_first().expect("argv is never empty");
         let mut command = Command::new(program);
         command
@@ -33,7 +37,33 @@ impl Runtime for Apple {
                 command.env(name, value);
             }
         }
+        if let Some(socket) = proxy_socket {
+            command.env("SSH_AUTH_SOCK", socket);
+        }
+        // Always applied: Node's fetch reads HTTPS_PROXY only with this set.
+        command.env("NODE_USE_ENV_PROXY", "1");
+        if plan.egress.is_some() {
+            command.env("HTTPS_PROXY", PROXY_URL);
+        }
         command.spawn()
+    }
+
+    fn make_proxy_connectable(&self, name: &str) -> io::Result<()> {
+        let argv = chmod_proxy_argv(name);
+        let (program, arguments) = argv.split_first().expect("argv is never empty");
+        let status = std::process::Command::new(program)
+            .args(arguments)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "container exec chmod {GUEST_PROXY_SOCKET}: {status}"
+            )))
+        }
     }
 
     fn down(&self, name: &str) -> io::Result<()> {
@@ -182,11 +212,13 @@ fn parse_digest(json: &[u8]) -> io::Result<Option<String>> {
         .map(|image| image.configuration.descriptor.digest))
 }
 
-/// The `container run` argv for a no-egress box, as data.
+/// The `container run` argv for a box, as data.
 ///
 /// `init` is a host path; it and its directory are mounted read-only at the
-/// same path, so it is also the path PID 1 runs.
-pub fn up_argv(plan: &Plan, init: &Path) -> Vec<OsString> {
+/// same path, so it is also the path PID 1 runs. When `proxy_socket` is set,
+/// the box carries the socket in over `--ssh` and init relays to the guest
+/// path as its argument.
+pub fn up_argv(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> Vec<OsString> {
     let mut argv: Vec<OsString> = vec![
         "container".into(),
         "run".into(),
@@ -205,6 +237,11 @@ pub fn up_argv(plan: &Plan, init: &Path) -> Vec<OsString> {
         "--user".into(),
         user(plan),
     ];
+    if proxy_socket.is_some() {
+        // Off-label: the runtime treats the socket as an SSH agent and
+        // forwards it to GUEST_PROXY_SOCKET.
+        argv.push("--ssh".into());
+    }
     if let Some(cpus) = plan.cpus {
         argv.push("--cpus".into());
         argv.push(cpus.to_string().into());
@@ -222,6 +259,13 @@ pub fn up_argv(plan: &Plan, init: &Path) -> Vec<OsString> {
         argv.push("--env".into());
         argv.push(name.into());
     }
+    // Always applied: Node's fetch reads HTTPS_PROXY only with this set.
+    argv.push("--env".into());
+    argv.push("NODE_USE_ENV_PROXY".into());
+    if plan.egress.is_some() {
+        argv.push("--env".into());
+        argv.push("HTTPS_PROXY".into());
+    }
     for mount in &plan.mounts {
         argv.push("--mount".into());
         argv.push(bind(&mount.host, &mount.guest, mount.readonly));
@@ -236,7 +280,25 @@ pub fn up_argv(plan: &Plan, init: &Path) -> Vec<OsString> {
     argv.push(guest_path(init).into_os_string());
     argv.push(plan.image.clone().into());
     argv.push("init".into());
+    if proxy_socket.is_some() {
+        argv.push(GUEST_PROXY_SOCKET.into());
+    }
     argv
+}
+
+/// The one transient root exec that makes the forwarded socket connectable
+/// by the box user, as data.
+pub fn chmod_proxy_argv(name: &str) -> Vec<OsString> {
+    vec![
+        "container".into(),
+        "exec".into(),
+        "--user".into(),
+        "0:0".into(),
+        name.into(),
+        "chmod".into(),
+        "666".into(),
+        GUEST_PROXY_SOCKET.into(),
+    ]
 }
 
 /// The `container build` argv for one build, as data.

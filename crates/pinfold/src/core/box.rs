@@ -8,6 +8,7 @@ use tokio::process::Child;
 use tokio::signal::unix::{SignalKind, signal};
 
 use crate::core::plan::Plan;
+use crate::core::proxy::Proxy;
 use crate::core::runtime::{Runtime, runtime};
 use crate::dirs;
 
@@ -17,6 +18,7 @@ pub struct Box {
     state_dir: PathBuf,
     child: Child,
     runtime: &'static dyn Runtime,
+    proxy: Option<Proxy>,
 }
 
 /// What stopped the box.
@@ -48,12 +50,34 @@ impl Box {
 
         let runtime = runtime()?;
         let state_dir = dirs::state_dir()?.join("boxes").join(&plan.name);
+        let log = match &plan.egress {
+            Some(_) => Some(dirs::egress_dir()?.join(format!("{}.jsonl", plan.name))),
+            None => None,
+        };
         tokio::fs::create_dir_all(&state_dir).await?;
         tokio::fs::write(state_dir.join("pid"), std::process::id().to_string()).await?;
 
-        let mut child = match runtime.up(plan, init) {
+        // The proxy comes up before the box, so the socket is listening when
+        // the runtime forwards it.
+        let proxy = match (&plan.egress, log) {
+            (Some(egress), Some(log)) => {
+                match Proxy::start(state_dir.join("proxy.sock"), &egress.allow, log) {
+                    Ok(proxy) => Some(proxy),
+                    Err(error) => {
+                        let _ = tokio::fs::remove_dir_all(&state_dir).await;
+                        return Err(error);
+                    }
+                }
+            }
+            _ => None,
+        };
+
+        let mut child = match runtime.up(plan, init, proxy.as_ref().map(Proxy::socket)) {
             Ok(child) => child,
             Err(error) => {
+                if let Some(proxy) = proxy {
+                    proxy.close();
+                }
                 let _ = tokio::fs::remove_dir_all(&state_dir).await;
                 return Err(error);
             }
@@ -77,11 +101,29 @@ impl Box {
             let _ = runtime.down(&plan.name);
             let _ = child.start_kill();
             let status = child.wait().await;
+            if let Some(proxy) = proxy {
+                proxy.close();
+            }
             let _ = tokio::fs::remove_dir_all(&state_dir).await;
             return Err(io::Error::other(match status {
                 Ok(status) => format!("{failure}: {status}"),
                 Err(error) => format!("{failure}: {error}"),
             }));
+        }
+        // Apple only: the forwarded socket arrives root-owned and mode 000.
+        // The one root exec happens before ready reaches the caller, so no
+        // work can race it.
+        if proxy.is_some()
+            && let Err(error) = runtime.make_proxy_connectable(&plan.name)
+        {
+            let _ = runtime.down(&plan.name);
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            if let Some(proxy) = proxy {
+                proxy.close();
+            }
+            let _ = tokio::fs::remove_dir_all(&state_dir).await;
+            return Err(error);
         }
         // Keep the pipe drained so a talkative box cannot block on it.
         tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
@@ -91,6 +133,7 @@ impl Box {
             state_dir,
             child,
             runtime,
+            proxy,
         })
     }
 
@@ -109,6 +152,9 @@ impl Box {
     pub async fn down(&mut self) -> io::Result<()> {
         let result = self.runtime.down(&self.name);
         let _ = self.child.wait().await;
+        if let Some(proxy) = self.proxy.take() {
+            proxy.close();
+        }
         let _ = tokio::fs::remove_dir_all(&self.state_dir).await;
         result
     }

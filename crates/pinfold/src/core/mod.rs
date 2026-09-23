@@ -4,4 +4,5 @@ pub mod artifacts;
 pub mod r#box;
 pub mod plan;
 pub mod profile;
+pub mod proxy;
 pub mod runtime;

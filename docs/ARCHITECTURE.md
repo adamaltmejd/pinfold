@@ -201,7 +201,10 @@ network listener, no token: the socket identifies the box.
   CONNECT to a route is refused. The host service authenticates its callers.
 - **Limits:** a connection cap, a header timeout, an idle timeout on
   tunnels.
-- **Log:** one JSON line per decision in the box's egress log.
+- **Log:** one JSON line per decision in the box's egress log at
+  `~/.local/state/pinfold/egress/<box>.jsonl` (`$XDG_STATE_HOME` is
+  honored). It names the host, the decision and its reason; no header value
+  is ever written.
 
 ## Images
 

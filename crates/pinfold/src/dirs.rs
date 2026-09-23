@@ -29,6 +29,12 @@ pub fn artifacts_dir() -> io::Result<PathBuf> {
     Ok(cache_dir()?.join("artifacts"))
 }
 
+/// `$XDG_STATE_HOME/pinfold/egress`: one JSON log per box, kept past the
+/// box's teardown for Maintenance to age out.
+pub fn egress_dir() -> io::Result<PathBuf> {
+    Ok(state_dir()?.join("egress"))
+}
+
 fn xdg(variable: &str, fallback: &str) -> io::Result<PathBuf> {
     match std::env::var_os(variable) {
         Some(value) if Path::new(&value).is_absolute() => Ok(PathBuf::from(value).join("pinfold")),

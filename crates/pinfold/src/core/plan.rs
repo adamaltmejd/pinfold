@@ -25,10 +25,21 @@ pub struct Plan {
     /// Exact environment. `{ "from": "NAME" }` takes the caller's value.
     #[serde(default)]
     pub env: BTreeMap<String, Env>,
+    /// Present means the box gets a proxy; absent means no way out at all.
+    #[serde(default)]
+    pub egress: Option<Egress>,
     #[serde(default)]
     pub cpus: Option<f64>,
     #[serde(default)]
     pub memory: Option<String>,
+}
+
+/// The box's egress allowlist.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Egress {
+    /// Exact host names, or `.suffix` for a name and its subdomains.
+    #[serde(default)]
+    pub allow: Vec<String>,
 }
 
 /// One host directory and where it appears in the box.
