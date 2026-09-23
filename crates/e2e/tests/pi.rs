@@ -90,10 +90,10 @@ fn the_environment_is_exactly_the_spec() {
 fn project_state_persists_and_stays_separate() {
     // Sabotage: derive the project id from the directory name alone (drop
     // the root hash in state.rs::id_for); the two checkouts named `checkout`
-    // then share a home, so the second run sees the first project's marker
-    // and the not-marker assertion fails. Sabotage: seed $HOME on every run
-    // instead of only when missing; the edited marker is overwritten and
-    // the survives-a-run assertion fails.
+    // then share a home, and the assert_ne "two checkouts share a home"
+    // fails. Sabotage: seed $HOME on every run instead of only when missing;
+    // the edited marker is overwritten and the survives-a-run assertion
+    // fails.
     let binary = pinfold();
     let env = TestEnv::new("pi-state");
     default_image(binary, &env);
@@ -122,9 +122,10 @@ fn project_state_persists_and_stays_separate() {
     );
 
     // A second checkout with the same directory name gets its own home and
-    // does not see the first project's marker.
-    pi_version(binary, &env, b.path());
+    // does not see the first project's marker. Take the first home before
+    // the second run: the sabotage overwrites the shared state.json's root.
     let home_a = project_home(&env, a.path());
+    pi_version(binary, &env, b.path());
     let home_b = project_home(&env, b.path());
     assert_ne!(home_a, home_b, "two checkouts share a home");
     let seeded_b =
