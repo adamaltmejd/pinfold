@@ -194,9 +194,9 @@ network listener, no token: the socket identifies the box.
   the CONNECT host.
 - **Plain HTTP:** port 80 only, one request per connection, Content-Length
   framing only. Ambiguous framing, folded headers and bare LF get 400.
-- **Refused:** IP literals, and names resolving to loopback, private,
-  link-local, CGNAT (`100.64/10`) or benchmark (`198.18/15`) addresses.
-  Resolve once; dial the checked address.
+- **Refused:** IP literals, and names resolving to loopback, unspecified,
+  private, link-local, CGNAT (`100.64/10`) or benchmark (`198.18/15`)
+  addresses. Resolve once; dial the checked address.
 - **Routes:** a name maps to one host service, e.g.
   `yard.internal → 127.0.0.1:7777`. Plain HTTP only, Host header rewritten.
   CONNECT to a route is refused. The host service authenticates its callers.

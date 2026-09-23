@@ -56,6 +56,10 @@ fn forbidden_v4(ip: Ipv4Addr) -> Option<&'static str> {
     if ip.is_loopback() {
         return Some("loopback");
     }
+    // Connecting to the unspecified address reaches the local host.
+    if ip.is_unspecified() {
+        return Some("unspecified");
+    }
     if ip.is_private() {
         return Some("private");
     }
@@ -77,6 +81,10 @@ fn forbidden_v4(ip: Ipv4Addr) -> Option<&'static str> {
 fn forbidden_v6(ip: Ipv6Addr) -> Option<&'static str> {
     if ip.is_loopback() {
         return Some("loopback");
+    }
+    // Connecting to the unspecified address reaches the local host.
+    if ip.is_unspecified() {
+        return Some("unspecified");
     }
     // An IPv4-mapped address dials the IPv4 address it embeds.
     if let Some(ip) = ip.to_ipv4_mapped() {
