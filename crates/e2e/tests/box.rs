@@ -920,7 +920,6 @@ fn no_egress_means_no_way_out() {
     drop(up);
 }
 
-
 /// One `/proc/<pid>/status` field's value.
 fn status_field(status: &str, key: &str) -> String {
     status
