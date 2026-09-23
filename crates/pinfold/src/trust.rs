@@ -1,0 +1,134 @@
+//! Project trust: the project's `.pinfold.toml` and the effective
+//! Containerfile are used only when `pinfold allow` recorded their hashes.
+//!
+//! The record is one JSON file per project at
+//! `~/.local/state/pinfold/trust/<project-id>.json`, keyed by the same id
+//! the project state uses. An absent `.pinfold.toml` is recorded as an
+//! absence, so creating one later is a change. A project with no
+//! `.pinfold.toml` and no record has nothing to trust and runs.
+
+use std::fmt::Write as _;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::config::{Config, Containerfile};
+use crate::dirs;
+use crate::pi::state;
+
+/// The project config file trust covers.
+const TOML_FILE: &str = ".pinfold.toml";
+
+/// The recorded hashes of a project's config inputs. `None` is a recorded
+/// absence.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Trust {
+    /// sha256 of the project's `.pinfold.toml`.
+    toml: Option<String>,
+    /// sha256 of the effective Containerfile.
+    containerfile: Option<String>,
+}
+
+/// Record the current hashes for the project rooted at `root`.
+pub fn allow(root: &Path) -> io::Result<()> {
+    let config = Config::load(root)?;
+    let trust = current(root, &config)?;
+    let dir = dirs::state_dir()?.join("trust");
+    fs::create_dir_all(&dir)?;
+    let json = serde_json::to_vec(&trust).map_err(io::Error::other)?;
+    fs::write(dir.join(format!("{}.json", state::project_id(root)?)), json)
+}
+
+/// Refuse when the project's config inputs no longer match the record. A
+/// project with no `.pinfold.toml` and no record has nothing to trust.
+pub fn check(root: &Path, config: &Config) -> io::Result<()> {
+    let current = current(root, config)?;
+    let Some(stored) = read(root)? else {
+        if current.toml.is_none() {
+            return Ok(());
+        }
+        return Err(refused(format!(
+            "{TOML_FILE} is not trusted; run `pinfold allow`"
+        )));
+    };
+    if stored.toml != current.toml {
+        return Err(refused(format!(
+            "{TOML_FILE} changed since `pinfold allow`; run `pinfold allow` to trust it"
+        )));
+    }
+    if stored.containerfile != current.containerfile {
+        return Err(refused(
+            "the effective Containerfile changed since `pinfold allow`; run `pinfold allow` to trust it",
+        ));
+    }
+    Ok(())
+}
+
+/// The hashes of the project's config inputs as they are now.
+fn current(root: &Path, config: &Config) -> io::Result<Trust> {
+    Ok(Trust {
+        toml: hash_file(&root.join(TOML_FILE))?,
+        containerfile: match &config.containerfile {
+            Containerfile::Profile(bytes) => Some(hash(bytes)),
+            Containerfile::Project(path) => hash_file(&root.join(path))?,
+        },
+    })
+}
+
+/// The recorded hashes for `root`, or `None` when nothing was recorded.
+fn read(root: &Path) -> io::Result<Option<Trust>> {
+    let path = record_path(root)?;
+    match fs::read(&path) {
+        Ok(bytes) => {
+            let trust = serde_json::from_slice(&bytes).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("read {}: {error}", path.display()),
+                )
+            })?;
+            Ok(Some(trust))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!("read {}: {error}", path.display()),
+        )),
+    }
+}
+
+/// The trust record for `root`: `<project-id>.json` under the state dir.
+fn record_path(root: &Path) -> io::Result<PathBuf> {
+    Ok(dirs::state_dir()?
+        .join("trust")
+        .join(format!("{}.json", state::project_id(root)?)))
+}
+
+/// The sha256 of a file, hex-encoded; `None` when the file is absent.
+fn hash_file(path: &Path) -> io::Result<Option<String>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(hash(&bytes))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!("read {}: {error}", path.display()),
+        )),
+    }
+}
+
+/// The sha256 of `bytes`, hex-encoded.
+fn hash(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let mut hex = String::with_capacity(64);
+    for byte in hasher.finalize() {
+        write!(hex, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    hex
+}
+
+fn refused(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::PermissionDenied, message.into())
+}

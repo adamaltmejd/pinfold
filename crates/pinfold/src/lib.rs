@@ -7,3 +7,4 @@ pub mod core;
 pub mod dirs;
 pub mod init;
 pub mod pi;
+pub mod trust;

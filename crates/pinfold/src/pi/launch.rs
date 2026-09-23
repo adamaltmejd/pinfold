@@ -25,6 +25,7 @@ use crate::core::clean;
 use crate::core::plan::{Egress, Env, Mount, Plan};
 use crate::core::runtime::runtime;
 use crate::pi::state::ProjectState;
+use crate::trust;
 
 /// The label naming a box's project.
 pub const PROJECT_LABEL: &str = "dev.pinfold.project";
@@ -45,18 +46,9 @@ pub fn run(args: &[OsString]) -> i32 {
 
 fn launch(args: &[OsString]) -> io::Result<i32> {
     let cwd = canonical(&env::current_dir()?)?;
-    let root = canonical(&project_root(&cwd)?)?;
-    if !cwd.starts_with(&root) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "current directory {} is outside the project root {}",
-                cwd.display(),
-                root.display()
-            ),
-        ));
-    }
+    let root = project_root(&cwd)?;
     let config = Config::load(&root)?;
+    trust::check(&root, &config)?;
     let state = ProjectState::load_or_create(&root)?;
     let image = resolve_image(&config);
     ensure_profile_image(&config, &image)?;
@@ -69,8 +61,26 @@ fn launch(args: &[OsString]) -> io::Result<i32> {
     run_box(&plan, &cwd, &argv)
 }
 
-/// The project root: the git top level, else the invoking directory.
-fn project_root(cwd: &Path) -> io::Result<PathBuf> {
+/// The canonical project root for `cwd`: the git top level, else `cwd`.
+/// Refuses a `cwd` outside the root.
+pub(crate) fn project_root(cwd: &Path) -> io::Result<PathBuf> {
+    let cwd = canonical(cwd)?;
+    let root = canonical(&top_level(&cwd)?)?;
+    if !cwd.starts_with(&root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "current directory {} is outside the project root {}",
+                cwd.display(),
+                root.display()
+            ),
+        ));
+    }
+    Ok(root)
+}
+
+/// The git top level, else the invoking directory.
+fn top_level(cwd: &Path) -> io::Result<PathBuf> {
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(cwd)

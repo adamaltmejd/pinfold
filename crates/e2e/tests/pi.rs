@@ -1,4 +1,4 @@
-//! End-to-end tests for guarantees 6 and 13 in docs/ARCHITECTURE.md.
+//! End-to-end tests for guarantees 6, 12 and 13 in docs/ARCHITECTURE.md.
 //!
 //! They run on a macOS host with the Apple `container` CLI. The harness
 //! isolates the XDG dirs, builds the default profile image once, and drives
@@ -8,7 +8,7 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio};
 use std::sync::OnceLock;
 
 #[test]
@@ -150,6 +150,99 @@ fn project_state_persists_and_stays_separate() {
     assert!(!reseeded.contains("project-a"), "the marker came back");
 }
 
+#[test]
+fn a_changed_project_file_stops_the_run() {
+    // Sabotage: drop the trust::check call from pi::launch; the created and
+    // the changed `.pinfold.toml` then run and both refusal assertions fail.
+    // Sabotage: hash an absent `.pinfold.toml` as the empty file instead of
+    // recording its absence; the live run after `pinfold allow` refuses and
+    // never answers get_state.
+    let binary = pinfold();
+    let env = TestEnv::new("pi-trust");
+    default_image(binary, &env);
+    let project = TestDir::new(&env, "project");
+    git_init(project.path());
+    let config = project.path().join(".pinfold.toml");
+
+    // A project with no `.pinfold.toml` has nothing to trust: it runs
+    // without `pinfold allow`.
+    pi_version(binary, &env, project.path());
+
+    // `pinfold allow` records the absence, so the file the agent creates in
+    // the live box is a change.
+    allow(binary, &env, project.path());
+    let run = PiRpc::start(binary, &env, project.path());
+    let id = project_id(&env, project.path());
+    let name = run.ready_box(binary, &env, &id);
+    let created = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!(
+                "printf 'allow = [\"example.com\"]\\n' > {}",
+                config.display()
+            ),
+        ],
+    );
+    assert_eq!(
+        created.code, 0,
+        "writing .pinfold.toml in the box failed: {}",
+        created.stderr
+    );
+    assert!(run.finish().success(), "the bare run did not exit cleanly");
+
+    // The file that appeared stops the run until `pinfold allow` records it.
+    let refused = pi_version_output(binary, &env, project.path());
+    assert!(!refused.status.success(), "the new .pinfold.toml ran");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("pinfold allow"),
+        "the refusal did not name `pinfold allow`: {stderr}"
+    );
+    allow(binary, &env, project.path());
+    pi_version(binary, &env, project.path());
+
+    // The agent adds a domain to the now-trusted file in a live box.
+    let run = PiRpc::start(binary, &env, project.path());
+    let name = run.ready_box(binary, &env, &id);
+    let changed = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!(
+                "printf 'allow = [\"example.com\", \"api.github.com\"]\\n' > {}",
+                config.display()
+            ),
+        ],
+    );
+    assert_eq!(
+        changed.code, 0,
+        "changing .pinfold.toml in the box failed: {}",
+        changed.stderr
+    );
+    assert!(
+        run.finish().success(),
+        "the trusted run did not exit cleanly"
+    );
+
+    // The change stops the run again, and `pinfold allow` clears it.
+    let refused = pi_version_output(binary, &env, project.path());
+    assert!(!refused.status.success(), "the changed .pinfold.toml ran");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("pinfold allow"),
+        "the refusal did not name `pinfold allow`: {stderr}"
+    );
+    allow(binary, &env, project.path());
+    pi_version(binary, &env, project.path());
+}
+
 /// A `pinfold pi --mode rpc` process with a live box.
 struct PiRpc {
     child: Child,
@@ -223,16 +316,36 @@ impl Drop for PiRpc {
 
 /// Run `pinfold pi --version` in `project` and assert it exits cleanly.
 fn pi_version(binary: &Path, env: &TestEnv, project: &Path) {
-    let output = env
-        .command(binary)
+    let output = pi_version_output(binary, env, project);
+    assert!(
+        output.status.success(),
+        "pinfold pi --version failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Run `pinfold pi --version` in `project` and return its output.
+fn pi_version_output(binary: &Path, env: &TestEnv, project: &Path) -> Output {
+    env.command(binary)
         .args(["pi", "--version"])
         .current_dir(project)
         .stdin(Stdio::null())
         .output()
-        .expect("run pinfold pi --version");
+        .expect("run pinfold pi --version")
+}
+
+/// Run `pinfold allow` in `project` and assert it succeeds.
+fn allow(binary: &Path, env: &TestEnv, project: &Path) {
+    let output = env
+        .command(binary)
+        .arg("allow")
+        .current_dir(project)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold allow");
     assert!(
         output.status.success(),
-        "pinfold pi --version failed: {}",
+        "pinfold allow failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 }

@@ -30,6 +30,7 @@ fn main() -> ExitCode {
     match verb {
         Some("init") => init::run(&rest[1..]),
         Some("box") => ExitCode::from(cli::run(&rest[1..]) as u8),
+        Some("allow") => ExitCode::from(cli::allow(&rest[1..]) as u8),
         Some("build") => ExitCode::from(cli::build(&rest[1..]) as u8),
         Some("profile") => ExitCode::from(cli::profile(&rest[1..]) as u8),
         Some("pi") => ExitCode::from(cli::pi(&rest[1..]) as u8),

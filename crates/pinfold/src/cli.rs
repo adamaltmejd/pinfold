@@ -25,10 +25,30 @@ use crate::dirs;
 const USAGE: &str = "usage: pinfold box up|exec BOX [--tty] [--workdir DIR] -- argv|down BOX|list --label k=v|prune";
 const BUILD_USAGE: &str = "usage: pinfold build [--profile NAME]";
 const PROFILE_USAGE: &str = "usage: pinfold profile new NAME [--from PROFILE]";
+const ALLOW_USAGE: &str = "usage: pinfold allow";
 
 /// Run a `pinfold pi` invocation and return its process exit code.
 pub fn pi(args: &[OsString]) -> i32 {
     crate::pi::launch::run(args)
+}
+
+/// Run a `pinfold allow` invocation and return its process exit code.
+pub fn allow(args: &[OsString]) -> i32 {
+    match run_allow(args) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("pinfold allow: {error}");
+            1
+        }
+    }
+}
+
+fn run_allow(args: &[OsString]) -> io::Result<()> {
+    if !args.is_empty() {
+        return Err(allow_usage("allow takes no arguments"));
+    }
+    let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
+    crate::trust::allow(&root)
 }
 
 /// Run a `pinfold box` invocation and return its process exit code.
@@ -493,5 +513,12 @@ fn profile_usage(message: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
         format!("{message}\n{PROFILE_USAGE}"),
+    )
+}
+
+fn allow_usage(message: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("{message}\n{ALLOW_USAGE}"),
     )
 }
