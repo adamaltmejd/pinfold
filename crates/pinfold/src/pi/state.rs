@@ -10,9 +10,9 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::dirs;
@@ -32,7 +32,7 @@ pub struct ProjectState {
 
 /// What `state.json` records for Maintenance: the checkout to check and the
 /// last run to age.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct StateFile {
     /// The canonical project root.
     root: PathBuf,
@@ -103,6 +103,62 @@ fn sanitize(name: &str) -> String {
             }
         })
         .collect()
+}
+
+/// One project state dir, as Maintenance sees it.
+pub struct StateDir {
+    /// The dir under `projects/`, holding `state.json` and `home`.
+    pub dir: PathBuf,
+    /// The `$HOME` mounted into the project's boxes.
+    pub home: PathBuf,
+    /// The checkout the dir records.
+    pub root: PathBuf,
+    /// Seconds since the epoch of the last run.
+    pub last_run: u64,
+}
+
+impl StateDir {
+    /// Whether `clean` should remove this state: the checkout is gone, or
+    /// with `unused`, the project has not run for that long.
+    pub fn stale(&self, unused: Option<Duration>) -> bool {
+        if !self.root.exists() {
+            return true;
+        }
+        let Some(unused) = unused else {
+            return false;
+        };
+        now().saturating_sub(self.last_run) > unused.as_secs()
+    }
+}
+
+/// Every project state dir with a readable `state.json`. A dir without one
+/// is a first start that failed before it recorded anything; it names no
+/// checkout, so Maintenance leaves it alone.
+pub fn state_dirs() -> io::Result<Vec<StateDir>> {
+    let projects = dirs::state_dir()?.join("projects");
+    let entries = match fs::read_dir(&projects) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut dirs = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let dir = entry.path();
+        let Ok(json) = fs::read(dir.join("state.json")) else {
+            continue;
+        };
+        let Ok(state) = serde_json::from_slice::<StateFile>(&json) else {
+            continue;
+        };
+        dirs.push(StateDir {
+            home: dir.join("home"),
+            dir,
+            root: state.root,
+            last_run: state.last_run,
+        });
+    }
+    Ok(dirs)
 }
 
 fn now() -> u64 {

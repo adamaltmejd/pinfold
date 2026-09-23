@@ -157,6 +157,24 @@ impl Runtime for Apple {
         }
     }
 
+    fn purge_build_cache(&self) -> io::Result<()> {
+        let argv = builder_delete_argv();
+        let (program, arguments) = argv.split_first().expect("argv is never empty");
+        let status = std::process::Command::new(program)
+            .args(arguments)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "container builder delete: {status}"
+            )))
+        }
+    }
+
     fn build(&self, request: &BuildRequest) -> io::Result<()> {
         let argv = build_argv(request);
         let (program, arguments) = argv.split_first().expect("argv is never empty");
@@ -445,6 +463,18 @@ pub fn build_argv(request: &BuildRequest) -> Vec<OsString> {
 /// The `container rm` argv that stops and removes a box, as data.
 pub fn down_argv(name: &str) -> Vec<OsString> {
     vec!["container".into(), "rm".into(), "-f".into(), name.into()]
+}
+
+/// The `container builder delete` argv that removes the builder container
+/// and its build cache, as data. `--force` removes a running builder too; a
+/// missing builder is not an error.
+pub fn builder_delete_argv() -> Vec<OsString> {
+    vec![
+        "container".into(),
+        "builder".into(),
+        "delete".into(),
+        "--force".into(),
+    ]
 }
 
 /// The `container exec` argv, as data.

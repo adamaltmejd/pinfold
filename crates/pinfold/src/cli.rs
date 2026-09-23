@@ -4,7 +4,7 @@
 //! The verbs are parsed by hand: the set is small, and ARCHITECTURE.md's
 //! dependency list has no argument parser.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
@@ -16,6 +16,7 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
 use crate::config::{Config, Containerfile};
+use crate::core::artifacts;
 use crate::core::r#box::Box;
 use crate::core::clean;
 use crate::core::plan::Plan;
@@ -29,6 +30,7 @@ const BUILD_USAGE: &str = "usage: pinfold build [--profile NAME]";
 const PROFILE_USAGE: &str = "usage: pinfold profile new NAME [--from PROFILE]";
 const ALLOW_USAGE: &str = "usage: pinfold allow";
 const ATTACH_USAGE: &str = "usage: pinfold attach [--box NAME] [cmd...]";
+const CLEAN_USAGE: &str = "usage: pinfold clean [--dry-run] [--unused AGE]";
 
 /// Run a `pinfold pi` invocation and return its process exit code.
 pub fn pi(args: &[OsString]) -> i32 {
@@ -267,6 +269,137 @@ fn prune(args: &[OsString]) -> io::Result<i32> {
     }
     clean::prune_boxes(runtime()?)?;
     Ok(0)
+}
+
+/// Run a `pinfold clean` invocation and return its process exit code.
+pub fn clean(args: &[OsString]) -> i32 {
+    match run_clean(args) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("pinfold clean: {error}");
+            1
+        }
+    }
+}
+
+/// List every category pinfold holds, then reclaim it unless `--dry-run`.
+fn run_clean(args: &[OsString]) -> io::Result<()> {
+    let (dry_run, unused) = parse_clean(args)?;
+    let runtime = runtime()?;
+
+    // Measure everything before removing anything, so `--dry-run` lists the
+    // sizes a real `clean` reclaims.
+    let dead = clean::dead_boxes(runtime)?;
+    let sockets = clean::leftover_socket_dirs()?;
+    let mut box_dirs: BTreeSet<PathBuf> = dead.iter().map(|dead| dead.state_dir.clone()).collect();
+    box_dirs.extend(sockets);
+    let artifacts = artifacts::unpinned_versions()?;
+    let egress = clean::old_egress_logs()?;
+
+    let projects = crate::pi::state::state_dirs()?;
+    let mut caches = Vec::new();
+    let mut stale = Vec::new();
+    for project in &projects {
+        if project.stale(unused) {
+            // The whole state dir goes; its cache is part of its size.
+            stale.push(project.dir.clone());
+        } else {
+            let cache = project.home.join(".cache");
+            if cache.exists() {
+                caches.push(cache);
+            }
+        }
+    }
+
+    let automatic = clean::total_bytes(&box_dirs)
+        + clean::total_bytes(&artifacts)
+        + clean::total_bytes(&egress);
+    let project_caches = clean::total_bytes(&caches);
+    let project_state = clean::total_bytes(&stale);
+    let total = automatic + project_caches + project_state;
+    if dry_run {
+        println!("pinfold clean: dry run; {total} B reclaimable");
+    } else {
+        println!("pinfold clean: reclaiming {total} B");
+    }
+    println!("  automatic maintenance: {automatic} B");
+    println!("  build cache: the runtime's builder container");
+    println!("  project caches: {project_caches} B");
+    println!("  project state: {project_state} B");
+
+    if dry_run {
+        return Ok(());
+    }
+
+    clean::prune_boxes(runtime)?;
+    clean::prune_sockets()?;
+    artifacts::prune_unpinned()?;
+    clean::prune_egress_logs()?;
+    runtime.purge_build_cache()?;
+    for cache in &caches {
+        fs::remove_dir_all(cache)?;
+    }
+    for dir in &stale {
+        fs::remove_dir_all(dir)?;
+    }
+    Ok(())
+}
+
+/// `clean`'s options: `--dry-run`, and `--unused AGE` for state not run for
+/// that long.
+fn parse_clean(args: &[OsString]) -> io::Result<(bool, Option<Duration>)> {
+    let mut dry_run = false;
+    let mut unused = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--dry-run") => dry_run = true,
+            Some("--unused") => {
+                let value = args
+                    .next()
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| clean_usage("--unused needs an age like 30d"))?;
+                unused = Some(parse_age(value)?);
+            }
+            Some(option) => return Err(clean_usage(&format!("unknown clean option {option:?}"))),
+            None => return Err(clean_usage("clean options must be valid UTF-8")),
+        }
+    }
+    Ok((dry_run, unused))
+}
+
+/// `AGE` is a whole number and one unit: `s`, `m`, `h` or `d`.
+fn parse_age(value: &str) -> io::Result<Duration> {
+    let mut chars = value.chars();
+    let Some(unit) = chars.next_back() else {
+        return Err(clean_usage("--unused needs an age like 30d"));
+    };
+    let seconds = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 60 * 60,
+        'd' => 24 * 60 * 60,
+        _ => {
+            return Err(clean_usage(&format!(
+                "age {value:?} needs a unit: s, m, h or d"
+            )));
+        }
+    };
+    let number: u64 = chars
+        .collect::<String>()
+        .parse()
+        .map_err(|_| clean_usage(&format!("age {value:?} is not a whole number and a unit")))?;
+    number
+        .checked_mul(seconds)
+        .map(Duration::from_secs)
+        .ok_or_else(|| clean_usage(&format!("age {value:?} is too large")))
+}
+
+fn clean_usage(message: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("{message}\n{CLEAN_USAGE}"),
+    )
 }
 
 struct ExecArgs {

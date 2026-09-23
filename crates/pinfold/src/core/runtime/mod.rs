@@ -89,6 +89,10 @@ pub trait Runtime: Sync {
     /// Remove one image by reference, and any layers no image references.
     fn remove_image(&self, reference: &str) -> io::Result<()>;
 
+    /// Remove the runtime's build cache. Apple: the builder container and
+    /// its layers.
+    fn purge_build_cache(&self) -> io::Result<()>;
+
     /// Build an image from [`BuildRequest`].
     fn build(&self, request: &BuildRequest) -> io::Result<()>;
 

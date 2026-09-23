@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use nix::sys::signal::kill;
@@ -98,10 +99,19 @@ pub fn alive(pid: i32) -> bool {
     }
 }
 
-/// Remove boxes pinfold labeled whose owning `box up` process is gone, and
-/// the state dirs that name them.
-pub fn prune_boxes(runtime: &dyn Runtime) -> io::Result<()> {
+/// A pinfold box whose owning `box up` process is gone: the runtime removes
+/// the box, and its state dir goes with it.
+pub struct DeadBox {
+    /// The runtime's container id.
+    pub id: String,
+    /// The state dir `box up` created for it.
+    pub state_dir: PathBuf,
+}
+
+/// The pinfold boxes whose owning `box up` process is gone.
+pub fn dead_boxes(runtime: &dyn Runtime) -> io::Result<Vec<DeadBox>> {
     let boxes = dirs::state_dir()?.join("boxes");
+    let mut dead = Vec::new();
     for box_ in runtime.list()? {
         if !box_
             .labels
@@ -117,22 +127,35 @@ pub fn prune_boxes(runtime: &dyn Runtime) -> io::Result<()> {
         if owner.is_some_and(alive) {
             continue;
         }
+        dead.push(DeadBox {
+            state_dir: boxes.join(&box_.id),
+            id: box_.id,
+        });
+    }
+    Ok(dead)
+}
+
+/// Remove boxes pinfold labeled whose owning `box up` process is gone, and
+/// the state dirs that name them.
+pub fn prune_boxes(runtime: &dyn Runtime) -> io::Result<()> {
+    for box_ in dead_boxes(runtime)? {
         runtime.down(&box_.id)?;
-        let _ = fs::remove_dir_all(boxes.join(&box_.id));
+        let _ = fs::remove_dir_all(&box_.state_dir);
     }
     Ok(())
 }
 
-/// Remove state dirs whose owner is gone. A live `box up` writes its pid
-/// before it binds the proxy socket, so a socket without a live pid is
-/// leftover.
-fn prune_sockets() -> io::Result<()> {
+/// State dirs whose owner is gone and that hold a leftover proxy socket. A
+/// live `box up` writes its pid before it binds the socket, so a socket with
+/// no live pid is leftover.
+pub fn leftover_socket_dirs() -> io::Result<Vec<PathBuf>> {
     let boxes = dirs::state_dir()?.join("boxes");
     let entries = match fs::read_dir(&boxes) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
+    let mut leftover = Vec::new();
     for entry in entries {
         let entry = entry?;
         let dir = entry.path();
@@ -142,39 +165,80 @@ fn prune_sockets() -> io::Result<()> {
         if pid.is_some_and(alive) {
             continue;
         }
-        let has_socket = fs::symlink_metadata(dir.join("proxy.sock")).is_ok();
-        // A live `box up` writes its pid before it binds the socket, so a
-        // socket with no live pid is leftover. A dir without a socket is a
-        // start that failed before it could listen; it holds nothing worth
-        // reclaiming, and removing it could race a start.
-        if has_socket {
-            let _ = fs::remove_dir_all(&dir);
+        // A dir without a socket is a start that failed before it could
+        // listen; it holds nothing worth reclaiming, and removing it could
+        // race a start.
+        if fs::symlink_metadata(dir.join("proxy.sock")).is_ok() {
+            leftover.push(dir);
         }
+    }
+    Ok(leftover)
+}
+
+/// Remove state dirs whose owner is gone.
+pub fn prune_sockets() -> io::Result<()> {
+    for dir in leftover_socket_dirs()? {
+        let _ = fs::remove_dir_all(&dir);
     }
     Ok(())
 }
 
-/// Remove egress logs older than [`EGRESS_LOG_AGE`].
-fn prune_egress_logs() -> io::Result<()> {
+/// Egress logs older than [`EGRESS_LOG_AGE`].
+pub fn old_egress_logs() -> io::Result<Vec<PathBuf>> {
     let dir = dirs::egress_dir()?;
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
     let Some(cutoff) = SystemTime::now().checked_sub(EGRESS_LOG_AGE) else {
-        return Ok(());
+        return Ok(Vec::new());
     };
+    let mut old = Vec::new();
     for entry in entries {
         let entry = entry?;
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
         if metadata.is_file() && metadata.modified().is_ok_and(|modified| modified < cutoff) {
-            fs::remove_file(entry.path())?;
+            old.push(entry.path());
         }
     }
+    Ok(old)
+}
+
+/// Remove egress logs older than [`EGRESS_LOG_AGE`].
+pub fn prune_egress_logs() -> io::Result<()> {
+    for log in old_egress_logs()? {
+        fs::remove_file(log)?;
+    }
     Ok(())
+}
+
+/// The bytes a file or directory holds, without following symlinks. An
+/// unreadable entry counts as nothing.
+pub fn path_bytes(path: &Path) -> u64 {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if metadata.is_file() {
+        return metadata.len();
+    }
+    if !metadata.is_dir() {
+        return 0;
+    }
+    let mut total = 0;
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            total += path_bytes(&entry.path());
+        }
+    }
+    total
+}
+
+/// The total bytes of `paths`.
+pub fn total_bytes<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> u64 {
+    paths.into_iter().map(|path| path_bytes(path)).sum()
 }
 
 /// Keep the newest two images carrying `label = source`, removing older ones

@@ -74,21 +74,30 @@ pub fn pi() -> io::Result<PathBuf> {
     }
 }
 
-/// Remove artifact versions no pin names. The embedded init lives under
-/// `init/` and is named by no pin, so it is never touched.
-pub fn prune_unpinned() -> io::Result<()> {
+/// Artifact versions under `pi/` that no pin names. The embedded init lives
+/// under `init/` and is named by no pin, so it is never listed.
+pub fn unpinned_versions() -> io::Result<Vec<PathBuf>> {
     let pi = dirs::artifacts_dir()?.join("pi");
     let entries = match fs::read_dir(&pi) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
+    let mut unpinned = Vec::new();
     for entry in entries {
         let entry = entry?;
         if entry.file_name().to_str() == Some(PI_VERSION) {
             continue;
         }
-        remove(&entry.path())?;
+        unpinned.push(entry.path());
+    }
+    Ok(unpinned)
+}
+
+/// Remove artifact versions no pin names.
+pub fn prune_unpinned() -> io::Result<()> {
+    for path in unpinned_versions()? {
+        remove(&path)?;
     }
     Ok(())
 }

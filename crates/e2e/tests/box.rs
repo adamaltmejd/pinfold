@@ -741,16 +741,23 @@ fn losing_the_owner_fails_closed() {
 
 #[test]
 fn cleanup_removes_only_pinfolds_garbage() {
-    // Guarantee 15's after-build half: after three builds of one source, two
-    // images remain. The `pinfold clean` half of this test lands with the
-    // clean command.
+    // Guarantee 15: cleanup removes only pinfold's garbage.
     //
     // Sabotage: make `keep_two_images` return before it removes anything;
     // three images remain and the two-image assertion fails. Sabotage: drop
     // the `dev.pinfold.profile` label from the build; no image matches and
-    // the count is zero.
+    // the count is zero. Sabotage: make `clean` remove every image instead
+    // of only pinfold's own; the unlabeled image assertion fails. Sabotage:
+    // make `clean` remove every box or every project state; the live box or
+    // the surviving project state assertion fails. Sabotage: make `clean`
+    // skip boxes whose owner is gone; the dead box assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("cleanup");
+    // `clean` deletes the runtime's builder, so wait for the suite's shared
+    // default image first: no other test builds after this, and a build
+    // racing the deletion would fail. The three builds below stay on a tiny
+    // profile of this run's own.
+    default_image(binary, &env);
     // A profile of this test's own, named for this run, so the operator's
     // default profile images, the other tests and a failed run's leftovers
     // cannot share the source.
@@ -789,6 +796,133 @@ fn cleanup_removes_only_pinfolds_garbage() {
         digests.len(),
         2,
         "after three builds of one source, two images should remain: {images:?}"
+    );
+
+    // An unlabeled image: no `dev.pinfold` label, so `clean` must leave it.
+    // Its tag shares the profile prefix, so the guard above deletes it.
+    let context = containerfile.parent().unwrap();
+    let unlabeled = format!("pinfold/profile-{profile}:unlabeled");
+    let status = Command::new("container")
+        .args(["build", "--file"])
+        .arg(&containerfile)
+        .args(["--tag", &unlabeled])
+        .arg(context)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()
+        .expect("run container build");
+    assert!(status.success(), "building the unlabeled image failed");
+    assert!(
+        image_references()
+            .iter()
+            .any(|reference| reference == &unlabeled),
+        "the unlabeled image is missing before clean"
+    );
+
+    // A project's state: a refused `pinfold pi` creates it before it names
+    // the missing image. The profile is never built, so this part downloads
+    // no pi artifact.
+    let missing = format!("{profile}-missing");
+    let missing_containerfile = env
+        .config
+        .join("pinfold")
+        .join("profiles")
+        .join(&missing)
+        .join("Containerfile");
+    fs::create_dir_all(missing_containerfile.parent().unwrap()).unwrap();
+    fs::write(&missing_containerfile, b"FROM scratch\n").unwrap();
+    let project = TestDir::new(&env, "project");
+    let refused = env
+        .command(binary)
+        .args(["pi", "--version"])
+        .env("PINFOLD_PROFILE", &missing)
+        .current_dir(project.path())
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold pi");
+    assert!(!refused.status.success(), "pi ran a profile with no image");
+    let state = project_state_dir(&env, project.path());
+    assert!(state.is_dir(), "the refused run created no project state");
+
+    // A live pinfold box and a dead one, both on this run's tiny image.
+    let live_label = "dev.pinfold.project=e2e-cleanup-live";
+    let live = format!("pinfold-e2e-{}-cleanup-live", std::process::id());
+    let live_spec = serde_json::json!({
+        "name": live,
+        "image": format!("pinfold/profile-{profile}:latest"),
+        "labels": { "dev.pinfold.project": "e2e-cleanup-live" },
+    });
+    let _live = box_up(binary, &env, &live_spec, &live);
+
+    let dead_label = "dev.pinfold.project=e2e-cleanup-dead";
+    let dead = format!("pinfold-e2e-{}-cleanup-dead", std::process::id());
+    let dead_spec = serde_json::json!({
+        "name": dead,
+        "image": format!("pinfold/profile-{profile}:latest"),
+        "labels": { "dev.pinfold.project": "e2e-cleanup-dead" },
+    });
+    let mut dead_up = box_up(binary, &env, &dead_spec, &dead);
+    dead_up.kill();
+    dead_up.wait();
+
+    // Positive controls: everything `clean` sorts out exists before it runs.
+    assert!(
+        !box_list(binary, &env, live_label).is_empty(),
+        "the live box is missing before clean"
+    );
+    assert!(
+        !box_list(binary, &env, dead_label).is_empty(),
+        "the dead box is missing before clean"
+    );
+
+    // `--dry-run` only lists: nothing it lists may disappear.
+    let dry = env
+        .command(binary)
+        .args(["clean", "--dry-run"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold clean --dry-run");
+    assert!(
+        dry.status.success(),
+        "pinfold clean --dry-run failed: {}",
+        String::from_utf8_lossy(&dry.stderr)
+    );
+    assert!(
+        !box_list(binary, &env, dead_label).is_empty(),
+        "--dry-run removed the dead box"
+    );
+    assert!(state.is_dir(), "--dry-run removed the project state");
+
+    // The real clean removes the dead box and only the dead box.
+    let clean = env
+        .command(binary)
+        .args(["clean"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold clean");
+    assert!(
+        clean.status.success(),
+        "pinfold clean failed: {}",
+        String::from_utf8_lossy(&clean.stderr)
+    );
+    assert!(
+        image_references()
+            .iter()
+            .any(|reference| reference == &unlabeled),
+        "clean removed an unlabeled image"
+    );
+    assert!(
+        !box_list(binary, &env, live_label).is_empty(),
+        "clean removed a live box"
+    );
+    assert!(
+        state.is_dir(),
+        "clean removed a project state whose checkout exists"
+    );
+    assert!(
+        box_list(binary, &env, dead_label).is_empty(),
+        "clean left a box whose owner is gone"
     );
 }
 
@@ -943,6 +1077,52 @@ fn labeled_images(label: &str, value: &str) -> Vec<(String, String)> {
             names.into_iter().map(move |name| (id.clone(), name))
         })
         .collect()
+}
+
+/// Whether one `container image list` entry carries `label = value`, as an
+/// OCI image config label or an index descriptor annotation.
+fn image_has_label(image: &serde_json::Value, label: &str, value: &str) -> bool {
+    if image["configuration"]["descriptor"]["annotations"][label] == value {
+        return true;
+    }
+    image["variants"].as_array().is_some_and(|variants| {
+        variants
+            .iter()
+            .any(|variant| variant["config"]["config"]["Labels"][label] == value)
+    })
+}
+
+/// Every image reference the runtime holds.
+fn image_references() -> Vec<String> {
+    let output = Command::new("container")
+        .args(["image", "list", "--quiet"])
+        .output()
+        .expect("run container image list");
+    assert!(
+        output.status.success(),
+        "container image list failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("image list is UTF-8")
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// The project state dir whose recorded root is `project`.
+fn project_state_dir(env: &TestEnv, project: &Path) -> PathBuf {
+    let root = fs::canonicalize(project).expect("canonicalize project");
+    let projects = env.state.join("pinfold").join("projects");
+    for entry in fs::read_dir(&projects).expect("read projects dir") {
+        let dir = entry.expect("project entry").path();
+        let state = fs::read_to_string(dir.join("state.json")).expect("read state.json");
+        let state: serde_json::Value = serde_json::from_str(&state).expect("state.json is JSON");
+        if state["root"].as_str() == root.to_str() {
+            return dir;
+        }
+    }
+    panic!("no project state for {}", project.display());
 }
 
 #[test]
