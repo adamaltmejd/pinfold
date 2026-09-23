@@ -575,8 +575,8 @@ fn the_box_cannot_write_git_or_protected_config() {
 #[test]
 fn both_pi_config_levels_load_behind_a_route() {
     // Sabotage: drop the route (leave PINFOLD_ROUTES empty, or point it at
-    // another name); pi's request to fake.model cannot leave the box, no
-    // request reaches the fake model, and the skill assertions fail.
+    // another name); the proxy refuses fake.model with a 403 and the
+    // "pi -p failed" assertion fails before any request reaches the model.
     // Sabotage: skip the profile skill under the profile's share/pi/skills;
     // the profile marker is absent from the request. Sabotage: stop the
     // project from being trusted (remove defaultProjectTrust from the seeded

@@ -64,8 +64,8 @@ Not protected:
 - Project contents: an agent with a model API can put them in a prompt.
 - Files the host runs by explicit command: build scripts, tests, package
   scripts.
-- A planted nested repo (`sub/.git`) runs code if a host tool runs git in
-  it (VS Code does by default).
+- A planted repo (`sub/.git`, or `.git` in a project that has none) runs
+  code if a host tool runs git in it (VS Code does by default).
 - CDN fronting beyond the SNI check (Host-header fronting needs TLS
   interception).
 - Allowlisted services that accept writes (GitHub with a token, registries).
