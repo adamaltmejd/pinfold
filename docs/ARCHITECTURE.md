@@ -98,7 +98,8 @@ need `loginctl enable-linger`.
 3. Apple only: one transient root exec makes the socket connectable.
 4. `pinfold init` relays `127.0.0.1:3128` to the socket, reaps children, and
    reports ready.
-5. `exec` work as the host uid:gid, with `HTTPS_PROXY=http://127.0.0.1:3128`.
+5. `exec` work as the host uid:gid, with `HTTPS_PROXY` and `http_proxy` set
+   to `http://127.0.0.1:3128`.
 6. Remove the box, close the proxy, delete the socket.
 
 One `pinfold box up` process owns one box. It does steps 1–4, holds the

@@ -39,12 +39,15 @@ pub struct Plan {
     pub memory: Option<String>,
 }
 
-/// The box's egress allowlist.
+/// The box's egress allowlist and routes.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Egress {
     /// Exact host names, or `.suffix` for a name and its subdomains.
     #[serde(default)]
     pub allow: Vec<String>,
+    /// Route names mapped to host services, `name -> host:port`.
+    #[serde(default)]
+    pub routes: BTreeMap<String, String>,
 }
 
 /// One host directory and where it appears in the box.

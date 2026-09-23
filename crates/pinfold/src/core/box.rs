@@ -75,7 +75,7 @@ impl Box {
         // the runtime forwards it.
         let proxy = match (&plan.egress, log) {
             (Some(egress), Some(log)) => {
-                match Proxy::start(state_dir.join("proxy.sock"), &egress.allow, log) {
+                match Proxy::start(state_dir.join("proxy.sock"), egress, log) {
                     Ok(proxy) => Some(proxy),
                     Err(error) => {
                         let _ = tokio::fs::remove_dir_all(&state_dir).await;
