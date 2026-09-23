@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+use std::io::Read;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -60,6 +61,17 @@ impl Plan {
     /// Parse and validate a box spec.
     pub fn parse(json: &str) -> Result<Plan, PlanError> {
         let plan: Plan = serde_json::from_str(json)?;
+        plan.validate()?;
+        Ok(plan)
+    }
+
+    /// Parse and validate one box spec from a reader, leaving any data after
+    /// the JSON value unread so `box up` can watch the same stdin for EOF.
+    pub fn from_reader(reader: impl Read) -> Result<Plan, PlanError> {
+        let plan: Plan = serde_json::Deserializer::from_reader(reader)
+            .into_iter::<Plan>()
+            .next()
+            .ok_or_else(|| PlanError::Invalid("no box spec on stdin".into()))??;
         plan.validate()?;
         Ok(plan)
     }

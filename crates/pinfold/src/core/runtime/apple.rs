@@ -1,14 +1,17 @@
 //! The Apple `container` runtime adapter.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 
+use serde::Deserialize;
 use tokio::process::{Child, Command};
 
 use crate::core::plan::{Env, Plan};
-use crate::core::runtime::{Runtime, guest_path};
+use crate::core::runtime::{BoxInfo, Runtime, guest_path};
 
 /// Apple `container`.
 pub struct Apple;
@@ -49,6 +52,69 @@ impl Runtime for Apple {
             )))
         }
     }
+
+    fn exec(
+        &self,
+        name: &str,
+        tty: bool,
+        workdir: Option<&Path>,
+        argv: &[String],
+    ) -> io::Result<ExitStatus> {
+        let argv = exec_argv(name, tty, workdir, argv);
+        let (program, arguments) = argv.split_first().expect("argv is never empty");
+        let mut command = std::process::Command::new(program);
+        command
+            .args(arguments)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        if !tty {
+            // Without a TTY the runtime's exec gets its own process group, so
+            // a terminal signal reaches pinfold and not the exec.
+            command.process_group(0);
+        }
+        command.status()
+    }
+
+    fn list(&self) -> io::Result<Vec<BoxInfo>> {
+        let output = std::process::Command::new("container")
+            .args(["list", "--all", "--format", "json"])
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "container list: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        parse_list(&output.stdout)
+    }
+}
+
+/// One `container list --format json` entry, as much as pinfold needs.
+#[derive(Deserialize)]
+struct ListedContainer {
+    id: String,
+    #[serde(default)]
+    configuration: ListedConfiguration,
+}
+
+#[derive(Default, Deserialize)]
+struct ListedConfiguration {
+    #[serde(default)]
+    labels: BTreeMap<String, String>,
+}
+
+fn parse_list(json: &[u8]) -> io::Result<Vec<BoxInfo>> {
+    let containers: Vec<ListedContainer> = serde_json::from_slice(json).map_err(|error| {
+        io::Error::other(format!("container list returned invalid JSON: {error}"))
+    })?;
+    Ok(containers
+        .into_iter()
+        .map(|container| BoxInfo {
+            id: container.id,
+            labels: container.configuration.labels,
+        })
+        .collect())
 }
 
 /// The `container run` argv for a no-egress box, as data.
@@ -109,6 +175,33 @@ pub fn up_argv(plan: &Plan, init: &Path) -> Vec<OsString> {
 /// The `container rm` argv that stops and removes a box, as data.
 pub fn down_argv(name: &str) -> Vec<OsString> {
     vec!["container".into(), "rm".into(), "-f".into(), name.into()]
+}
+
+/// The `container exec` argv, as data.
+///
+/// The process inherits the run's user, so box-created files stay the host
+/// user's. With a TTY, keep the host's terminal identity: the runtime
+/// otherwise reports `TERM=xterm`.
+pub fn exec_argv(name: &str, tty: bool, workdir: Option<&Path>, argv: &[String]) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec!["container".into(), "exec".into(), "-i".into()];
+    if tty {
+        args.push("-t".into());
+        for variable in ["TERM", "COLORTERM"] {
+            if let Ok(value) = std::env::var(variable) {
+                args.push("--env".into());
+                args.push(format!("{variable}={value}").into());
+            }
+        }
+    }
+    if let Some(dir) = workdir {
+        args.push("--workdir".into());
+        args.push(dir.as_os_str().to_os_string());
+    }
+    args.push(name.into());
+    for arg in argv {
+        args.push(OsString::from(arg));
+    }
+    args
 }
 
 fn bind(host: &Path, guest: &Path, readonly: bool) -> OsString {

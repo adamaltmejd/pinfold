@@ -2,8 +2,10 @@
 
 pub mod apple;
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 
 use tokio::process::Child;
 
@@ -21,6 +23,13 @@ pub fn runtime() -> io::Result<&'static dyn Runtime> {
     }
 }
 
+/// One box the runtime knows about, running or not.
+#[derive(Debug, Clone)]
+pub struct BoxInfo {
+    pub id: String,
+    pub labels: BTreeMap<String, String>,
+}
+
 /// One OS's container runtime. Command lines are built as data.
 pub trait Runtime: Sync {
     /// Start the attached `container run` process that owns the box.
@@ -28,6 +37,18 @@ pub trait Runtime: Sync {
 
     /// Stop and remove the box.
     fn down(&self, name: &str) -> io::Result<()>;
+
+    /// Run a command in a running box with inherited stdio.
+    fn exec(
+        &self,
+        name: &str,
+        tty: bool,
+        workdir: Option<&Path>,
+        argv: &[String],
+    ) -> io::Result<ExitStatus>;
+
+    /// List every box, running or not.
+    fn list(&self) -> io::Result<Vec<BoxInfo>>;
 }
 
 /// The path a host path appears at inside the box. The identity on Unix.
