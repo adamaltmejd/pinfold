@@ -75,9 +75,9 @@ fn box_shares_files_with_the_host() {
     // write to /readonly/new then succeeds and its assertion fails. The
     // write to /workspace is the positive control that the same operation
     // works on a writable mount.
-    // Sabotage: make `box exec` run as root instead of the run's user; the
-    // box-created file is then not the host user's and the owner assertion
-    // fails.
+    // Not a sabotage on Apple: running `box exec` as root. virtiofs reports
+    // every host file as the host user's whatever the guest uid, so the owner
+    // assertion still passes; the uid itself is guarantee 5's to check.
     let binary = pinfold();
     let env = TestEnv::new("shared-files");
     let dir = TestDir::new(&env, "mount");

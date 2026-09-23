@@ -136,16 +136,19 @@ command = "CARGO_HOME=/usr/local/cargo cargo clippy --all-targets --locked --off
 timeout_minutes = 20
 stage = "candidate"
 
-# The end-to-end suite on Apple container, once it exists. It runs on this Mac,
-# so it is batch-stage only: code reaches the host after the exact head is
-# approved, never from an unreviewed candidate.
-# [gates.e2e-macos]
-# command = "cargo test -p e2e --locked"
-# timeout_minutes = 15
-# stage = "batch"
-# environment = "host"
-# platform = "darwin"
-# architecture = "arm64"
+# The end-to-end suite on Apple container. It runs on this Mac, so it is
+# batch-stage only: code reaches the host after the exact head is approved,
+# never from an unreviewed candidate. A host gate gets a fresh HOME, which
+# rustup's cargo resolves its toolchain through, so the command names the
+# user's real rustup and cargo homes. zig, cargo-zigbuild and container come
+# from the daemon's PATH.
+[gates.e2e-macos]
+command = 'h=$(eval echo "~$(id -un)"); RUSTUP_HOME="$h/.rustup" CARGO_HOME="$h/.cargo" cargo test -p e2e --locked'
+timeout_minutes = 15
+stage = "batch"
+environment = "host"
+platform = "darwin"
+architecture = "arm64"
 
 # Review runs on every candidate whose workflow selects a panel of seats.
 [review]
