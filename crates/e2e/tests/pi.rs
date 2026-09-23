@@ -1,9 +1,10 @@
 //! End-to-end tests for guarantees 6, 12, 13 and 14 in docs/ARCHITECTURE.md.
 //!
-//! They run on a macOS host with the Apple `container` CLI. The harness
-//! isolates the XDG dirs, builds the default profile image once, and drives
-//! `pinfold pi` as a user would. No model is needed: `pi --mode rpc` answers
-//! `get_state` while the box runs, and `pi --version` exits on its own.
+//! They run on a macOS host with the Apple `container` CLI, or a Linux host
+//! with rootless podman. The harness isolates the XDG dirs, builds the
+//! default profile image once, and drives `pinfold pi` as a user would. No
+//! model is needed: `pi --mode rpc` answers `get_state` while the box runs,
+//! and `pi --version` exits on its own.
 //! Guarantee 14's test runs `pi -p` through the shim against a fake model on
 //! the host, reached through a route.
 
@@ -14,6 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
+
+use e2e::pinfold;
 
 #[test]
 fn the_environment_is_exactly_the_spec() {
@@ -995,28 +998,6 @@ fn answer(mut stream: TcpStream, requests: &Mutex<Vec<String>>) {
     );
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
-}
-
-/// The built `pinfold` binary. The test executable lives in
-/// `<target>/<profile>/deps`, so the binary is its sibling.
-fn pinfold() -> &'static Path {
-    static BINARY: OnceLock<PathBuf> = OnceLock::new();
-    BINARY.get_or_init(|| {
-        let status = Command::new(env!("CARGO"))
-            .args(["build", "-p", "pinfold", "--locked"])
-            .status()
-            .expect("run cargo build -p pinfold");
-        assert!(status.success(), "cargo build -p pinfold failed");
-        let exe = std::env::current_exe().expect("test executable path");
-        let target = exe
-            .parent()
-            .and_then(Path::parent)
-            .and_then(Path::parent)
-            .expect("target dir");
-        let binary = target.join("debug").join("pinfold");
-        assert!(binary.is_file(), "{} is missing", binary.display());
-        binary
-    })
 }
 
 /// Build the default profile image once per suite run; `pinfold pi` refuses

@@ -1,8 +1,10 @@
 //! Container runtimes: one per OS, behind a trait.
 
 pub mod apple;
+pub mod podman;
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -15,6 +17,8 @@ use crate::core::plan::Plan;
 pub fn runtime() -> io::Result<&'static dyn Runtime> {
     if cfg!(target_os = "macos") {
         Ok(&apple::Apple)
+    } else if cfg!(target_os = "linux") {
+        Ok(&podman::Podman)
     } else {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -107,4 +111,30 @@ pub fn local_image_id(runtime: &dyn Runtime, reference: &str) -> io::Result<Opti
         .into_iter()
         .find(|image| image.reference == reference)
         .map(|image| image.id))
+}
+
+/// The uid:gid PID 1 and all work run as: the spec's, else the host user's.
+pub(crate) fn user(plan: &Plan) -> OsString {
+    match plan.user {
+        Some(user) => {
+            let (uid, gid) = (user.uid, user.gid);
+            format!("{uid}:{gid}").into()
+        }
+        None => {
+            let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
+            format!("{uid}:{gid}").into()
+        }
+    }
+}
+
+/// A `type=bind` mount value, as both runtimes spell it.
+pub(crate) fn bind(host: &Path, guest: &Path, readonly: bool) -> OsString {
+    let mut value = OsString::from("type=bind,source=");
+    value.push(host);
+    value.push(",target=");
+    value.push(guest);
+    if readonly {
+        value.push(",readonly");
+    }
+    value
 }

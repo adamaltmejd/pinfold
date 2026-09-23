@@ -12,7 +12,7 @@ use tokio::process::{Child, Command};
 
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
-use crate::core::runtime::{BoxInfo, BuildRequest, ImageInfo, Runtime, guest_path};
+use crate::core::runtime::{BoxInfo, BuildRequest, ImageInfo, Runtime, bind, guest_path, user};
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
 pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
@@ -472,28 +472,4 @@ pub fn exec_argv(name: &str, tty: bool, workdir: Option<&Path>, argv: &[String])
         args.push(OsString::from(arg));
     }
     args
-}
-
-fn bind(host: &Path, guest: &Path, readonly: bool) -> OsString {
-    let mut value = OsString::from("type=bind,source=");
-    value.push(host);
-    value.push(",target=");
-    value.push(guest);
-    if readonly {
-        value.push(",readonly");
-    }
-    value
-}
-
-fn user(plan: &Plan) -> OsString {
-    match plan.user {
-        Some(user) => {
-            let (uid, gid) = (user.uid, user.gid);
-            format!("{uid}:{gid}").into()
-        }
-        None => {
-            let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
-            format!("{uid}:{gid}").into()
-        }
-    }
 }

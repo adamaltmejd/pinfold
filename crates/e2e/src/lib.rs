@@ -1,16 +1,52 @@
 //! End-to-end tests that drive the `pinfold` binary from outside.
 //!
 //! The tests live in `tests/` and run on a macOS host with the Apple
-//! `container` CLI. `cargo test -p e2e` builds the binary and runs them, so
-//! that one command is the whole host gate.
+//! `container` CLI, or a Linux host with rootless podman. `cargo test -p e2e`
+//! builds the binary and runs them, so that one command is the whole host
+//! gate.
 //!
-//! This crate also holds the host fixtures the tests reach through routes.
+//! This crate also holds the host fixtures the tests reach through routes,
+//! and the built binary both test files drive.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
+
+/// The built `pinfold` binary. The test executable lives in
+/// `<target>/<profile>/deps`, so the binary is its sibling. On Linux the
+/// box's PID 1 is the CLI's own executable, so the static musl target is
+/// built and its binary used.
+pub fn pinfold() -> &'static Path {
+    static BINARY: OnceLock<PathBuf> = OnceLock::new();
+    BINARY.get_or_init(|| {
+        let triple = cfg!(target_os = "linux")
+            .then(|| format!("{}-unknown-linux-musl", std::env::consts::ARCH));
+        let mut command = Command::new(env!("CARGO"));
+        command.args(["build", "-p", "pinfold", "--locked"]);
+        if let Some(triple) = &triple {
+            command.args(["--target", triple]);
+        }
+        let status = command.status().expect("run cargo build -p pinfold");
+        assert!(status.success(), "cargo build -p pinfold failed");
+        let exe = std::env::current_exe().expect("test executable path");
+        let target = exe
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .expect("target dir");
+        let binary = match &triple {
+            Some(triple) => target.join(triple).join("debug").join("pinfold"),
+            None => target.join("debug").join("pinfold"),
+        };
+        assert!(binary.is_file(), "{} is missing", binary.display());
+        binary
+    })
+}
 
 /// A host HTTP service, reachable from a box only through a route.
 pub struct HttpFixture {
