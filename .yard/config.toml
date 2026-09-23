@@ -136,6 +136,17 @@ command = "CARGO_HOME=/usr/local/cargo cargo clippy --all-targets --locked --off
 timeout_minutes = 20
 stage = "candidate"
 
+# No credential in the candidate's history, not only its tree: a secret
+# committed and then deleted still lands in git. trufflehog clones
+# /workspace with its own git environment, so the safe.directory exception
+# goes in the gate's global config ($HOME is /tmp on the floor).
+# --no-verification because the gate has no network; --fail so any match
+# fails the gate.
+[gates.secrets]
+command = "git config --global safe.directory '*' && trufflehog git file:///workspace --no-verification --no-update --fail"
+timeout_minutes = 5
+stage = "candidate"
+
 # The end-to-end suite on Apple container. It runs on this Mac, so it is
 # batch-stage only: code reaches the host after the exact head is approved,
 # never from an unreviewed candidate. A host gate gets a fresh HOME, which
