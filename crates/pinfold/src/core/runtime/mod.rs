@@ -30,6 +30,19 @@ pub struct BoxInfo {
     pub labels: BTreeMap<String, String>,
 }
 
+/// One image build: an empty context holding only a Containerfile, the
+/// names to tag the result with, and the labels to record on it.
+pub struct BuildRequest<'a> {
+    /// The build context; it holds only the Containerfile.
+    pub context: &'a Path,
+    /// The Containerfile inside the context.
+    pub containerfile: &'a Path,
+    /// The image names to tag the built image with.
+    pub tags: &'a [String],
+    /// Labels to put on the image, for Maintenance to find it by.
+    pub labels: &'a BTreeMap<String, String>,
+}
+
 /// One OS's container runtime. Command lines are built as data.
 pub trait Runtime: Sync {
     /// Start the attached `container run` process that owns the box.
@@ -49,6 +62,13 @@ pub trait Runtime: Sync {
 
     /// List every box, running or not.
     fn list(&self) -> io::Result<Vec<BoxInfo>>;
+
+    /// Build an image from [`BuildRequest`].
+    fn build(&self, request: &BuildRequest) -> io::Result<()>;
+
+    /// Pull `reference` and return the digest it resolved to. `None` when
+    /// the reference does not resolve, for example `scratch`.
+    fn image_digest(&self, reference: &str) -> io::Result<Option<String>>;
 }
 
 /// The path a host path appears at inside the box. The identity on Unix.

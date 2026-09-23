@@ -1,8 +1,10 @@
-//! `pinfold box`: the JSON-on-stdio process interface Switchyard uses.
+//! `pinfold box`: the JSON-on-stdio process interface Switchyard uses, and
+//! `pinfold build`: the profile image build.
 //!
 //! The verbs are parsed by hand: the set is small, and ARCHITECTURE.md's
 //! dependency list has no argument parser.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
@@ -15,10 +17,12 @@ use nix::unistd::Pid;
 
 use crate::core::r#box::Box;
 use crate::core::plan::Plan;
-use crate::core::runtime::runtime;
+use crate::core::profile::Profile;
+use crate::core::runtime::{BuildRequest, runtime};
 use crate::dirs;
 
 const USAGE: &str = "usage: pinfold box up|exec BOX [--tty] [--workdir DIR] -- argv|down BOX|list --label k=v|prune";
+const BUILD_USAGE: &str = "usage: pinfold build [--profile NAME]";
 
 /// Run a `pinfold box` invocation and return its process exit code.
 pub fn run(args: &[OsString]) -> i32 {
@@ -299,4 +303,93 @@ fn embedded_init() -> io::Result<PathBuf> {
 
 fn usage(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, format!("{message}\n{USAGE}"))
+}
+
+/// Run a `pinfold build` invocation and return its process exit code.
+pub fn build(args: &[OsString]) -> i32 {
+    match run_build(args) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("pinfold build: {error}");
+            1
+        }
+    }
+}
+
+fn run_build(args: &[OsString]) -> io::Result<()> {
+    let name = parse_profile(args)?;
+    let profile = Profile::load(&name)?;
+    let id = build_id();
+    // The build gets the Containerfile alone: a profile directory's other
+    // files are not build inputs, and an embedded default has no directory.
+    let context = dirs::cache_dir()?.join("build").join(&id);
+    fs::create_dir_all(&context)?;
+    let containerfile = context.join("Containerfile");
+    fs::write(&containerfile, &profile.containerfile)?;
+    let result = build_image(&profile, &context, &containerfile, &id);
+    let _ = fs::remove_dir_all(&context);
+    result
+}
+
+fn build_image(
+    profile: &Profile,
+    context: &Path,
+    containerfile: &Path,
+    id: &str,
+) -> io::Result<()> {
+    let runtime = runtime()?;
+    let mut labels = BTreeMap::new();
+    labels.insert("dev.pinfold.profile".to_string(), profile.name.clone());
+    // The unique build label is what makes every build a distinct image even
+    // when every layer is cached.
+    labels.insert("dev.pinfold.build".to_string(), id.to_string());
+    if let Some(base) = profile.base_image()
+        && let Some(digest) = runtime.image_digest(base)?
+    {
+        labels.insert("dev.pinfold.base".to_string(), digest);
+    }
+    let stable = format!("pinfold/profile-{}:latest", profile.name);
+    let unique = format!("pinfold/profile-{}:{id}", profile.name);
+    runtime.build(&BuildRequest {
+        context,
+        containerfile,
+        tags: &[stable.clone(), unique],
+        labels: &labels,
+    })?;
+    println!("{stable}");
+    Ok(())
+}
+
+fn parse_profile(args: &[OsString]) -> io::Result<String> {
+    let mut name = "default".to_string();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--profile") => {
+                name = args
+                    .next()
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| build_usage("--profile needs a name"))?
+                    .to_string();
+            }
+            Some(option) => return Err(build_usage(&format!("unknown build option {option:?}"))),
+            None => return Err(build_usage("build options must be valid UTF-8")),
+        }
+    }
+    Ok(name)
+}
+
+fn build_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{nanos:x}-{}", std::process::id())
+}
+
+fn build_usage(message: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("{message}\n{BUILD_USAGE}"),
+    )
 }

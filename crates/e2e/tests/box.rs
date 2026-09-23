@@ -1,9 +1,9 @@
-//! End-to-end tests for guarantees 9 and 10 in docs/ARCHITECTURE.md.
+//! End-to-end tests for guarantees 5, 9 and 10 in docs/ARCHITECTURE.md.
 //!
-//! They run on a macOS host with the Apple `container` CLI and the
-//! `debian:trixie-slim` image. The harness builds the `pinfold` binary and
-//! drives it as a user would: the CLI, environment variables and the box
-//! spec are its only seams.
+//! They run on a macOS host with the Apple `container` CLI. The harness
+//! builds the `pinfold` binary, builds the default profile image once, and
+//! drives pinfold as a user would: the CLI, environment variables and the
+//! box spec are its only seams.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -11,9 +11,6 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
-
-const IMAGE: &str =
-    "debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a";
 
 #[test]
 fn box_lifecycle_works_for_a_caller() {
@@ -27,7 +24,7 @@ fn box_lifecycle_works_for_a_caller() {
     let label = "dev.yard.lane=e2e-lifecycle";
     let spec = serde_json::json!({
         "name": name,
-        "image": IMAGE,
+        "image": default_image(binary, &env),
         "labels": { "dev.yard.lane": "e2e-lifecycle" },
     });
     let mut up = box_up(binary, &env, &spec, &name);
@@ -102,7 +99,7 @@ fn box_shares_files_with_the_host() {
 
     let spec = serde_json::json!({
         "name": name,
-        "image": IMAGE,
+        "image": default_image(binary, &env),
         "mounts": [
             { "host": dir.path(), "guest": "/workspace" },
             { "host": readonly, "guest": "/readonly", "readonly": true },
@@ -187,6 +184,139 @@ fn box_shares_files_with_the_host() {
     drop(up);
 }
 
+#[test]
+fn nothing_can_gain_privileges() {
+    // Sabotage: drop `find / -xdev -perm /6000 -type f -exec chmod a-s {} +`
+    // from profile/Containerfile; the setuid/setgid scan then lists files and
+    // fails. Sabotage: drop `--read-only` from the Apple adapter's
+    // `container run` argv; the rootfs write then succeeds and its assertion
+    // fails.
+    let binary = pinfold();
+    let env = TestEnv::new("privileges");
+    let image = default_image(binary, &env);
+    let dir = TestDir::new(&env, "mount");
+    let name = format!("pinfold-e2e-{}-privileges", std::process::id());
+    let spec = serde_json::json!({
+        "name": name,
+        "image": image,
+        "mounts": [{ "host": dir.path(), "guest": "/workspace" }],
+    });
+    let up = box_up(binary, &env, &spec, &name);
+
+    // Exec'd work runs as the host uid:gid with an empty capability bounding
+    // set. Read /proc: Apple's virtiofs reports host files as the host user's
+    // whatever the guest uid, so ownership cannot show a root exec.
+    let work = box_exec(binary, &env, &name, &["cat", "/proc/self/status"]);
+    assert_eq!(
+        work.code, 0,
+        "reading /proc/self/status failed: {}",
+        work.stderr
+    );
+    assert_eq!(
+        status_field(&work.stdout, "CapBnd:"),
+        "0000000000000000",
+        "exec capability bound"
+    );
+    assert_process_ids(&work.stdout, "exec");
+
+    // PID 1 is pinfold init, also as the host uid:gid.
+    let init = box_exec(binary, &env, &name, &["cat", "/proc/1/status"]);
+    assert_eq!(
+        init.code, 0,
+        "reading /proc/1/status failed: {}",
+        init.stderr
+    );
+    assert_process_ids(&init.stdout, "PID 1");
+
+    // No setuid or setgid files on the root filesystem. The marker proves the
+    // scan ran even though unreadable directories make find exit nonzero.
+    let setuid = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            "command -v find >/dev/null || exit 1; \
+             find / -xdev -perm /6000 -type f 2>/dev/null; echo scan-complete",
+        ],
+    );
+    assert_eq!(setuid.code, 0, "setuid scan failed: {}", setuid.stderr);
+    assert_eq!(
+        setuid.stdout, "scan-complete\n",
+        "setuid or setgid files: {}",
+        setuid.stdout
+    );
+
+    // The rootfs is read-only.
+    let rootfs = box_exec(
+        binary,
+        &env,
+        &name,
+        &["sh", "-c", "printf x > /pinfold-root-write-test"],
+    );
+    assert_ne!(rootfs.code, 0, "the rootfs accepted a write");
+    assert!(
+        rootfs.stderr.contains("Read-only file system"),
+        "the rootfs write failed for another reason: {}",
+        rootfs.stderr
+    );
+
+    // Positive controls: the same write works on /tmp and the project mount.
+    let tmp = box_exec(
+        binary,
+        &env,
+        &name,
+        &["sh", "-c", "printf x > /tmp/pinfold-write-test"],
+    );
+    assert_eq!(tmp.code, 0, "writing /tmp failed: {}", tmp.stderr);
+    let workspace = box_exec(
+        binary,
+        &env,
+        &name,
+        &["sh", "-c", "printf x > /workspace/pinfold-write-test"],
+    );
+    assert_eq!(
+        workspace.code, 0,
+        "writing /workspace failed: {}",
+        workspace.stderr
+    );
+    assert!(dir.path().join("pinfold-write-test").is_file());
+
+    let status = box_down(binary, &env, &name);
+    assert!(status.success(), "box down failed: {status}");
+    drop(up);
+}
+
+/// One `/proc/<pid>/status` field's value.
+fn status_field(status: &str, key: &str) -> String {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix(key))
+        .unwrap_or_else(|| panic!("{key} missing from:\n{status}"))
+        .trim()
+        .to_string()
+}
+
+/// Assert a `/proc/<pid>/status` dump's real, effective, saved and fs uid and
+/// gid are all the host's.
+fn assert_process_ids(status: &str, who: &str) {
+    for (key, want) in [("Uid:", host_id("-u")), ("Gid:", host_id("-g"))] {
+        for got in status_field(status, key).split_whitespace() {
+            assert_eq!(got, want.as_str(), "{who} {key}");
+        }
+    }
+}
+
+fn host_id(flag: &str) -> String {
+    let output = Command::new("id").arg(flag).output().expect("run id");
+    assert!(output.status.success(), "id {flag} failed");
+    String::from_utf8(output.stdout)
+        .expect("id output is UTF-8")
+        .trim()
+        .to_string()
+}
+
 /// The built `pinfold` binary. The test executable lives in
 /// `<target>/<profile>/deps`, so the binary is its sibling.
 fn pinfold() -> &'static Path {
@@ -209,11 +339,36 @@ fn pinfold() -> &'static Path {
     })
 }
 
-/// Per-test XDG state and cache, so a test never touches the operator's.
+/// The stable ref of the built-in default profile's image, built once per
+/// suite run. Every test's boxes run on it.
+fn default_image(binary: &Path, env: &TestEnv) -> &'static str {
+    static IMAGE: OnceLock<String> = OnceLock::new();
+    IMAGE.get_or_init(|| {
+        let output = env
+            .command(binary)
+            .args(["build", "--profile", "default"])
+            .output()
+            .expect("run pinfold build --profile default");
+        assert!(
+            output.status.success(),
+            "pinfold build --profile default failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("build output is UTF-8")
+            .trim()
+            .to_string()
+    })
+}
+
+/// Per-test XDG state, cache and config, so a test never touches the
+/// operator's. An empty config dir also means `default` resolves to the
+/// embedded profile, not the operator's own copy of it.
 struct TestEnv {
     root: PathBuf,
     state: PathBuf,
     cache: PathBuf,
+    config: PathBuf,
 }
 
 impl TestEnv {
@@ -224,15 +379,23 @@ impl TestEnv {
             .join(format!("pinfold-e2e-{}-{test}", std::process::id()));
         let state = root.join("state");
         let cache = root.join("cache");
+        let config = root.join("config");
         fs::create_dir_all(&state).unwrap();
         fs::create_dir_all(&cache).unwrap();
-        TestEnv { root, state, cache }
+        fs::create_dir_all(&config).unwrap();
+        TestEnv {
+            root,
+            state,
+            cache,
+            config,
+        }
     }
 
     fn command(&self, binary: &Path) -> Command {
         let mut command = Command::new(binary);
         command.env("XDG_STATE_HOME", &self.state);
         command.env("XDG_CACHE_HOME", &self.cache);
+        command.env("XDG_CONFIG_HOME", &self.config);
         command
     }
 }
