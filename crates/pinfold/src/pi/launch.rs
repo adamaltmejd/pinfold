@@ -24,6 +24,7 @@ use crate::core::r#box::Box;
 use crate::core::clean;
 use crate::core::plan::{Egress, Env, Mount, Plan};
 use crate::core::runtime::runtime;
+use crate::pi::git::Git;
 use crate::pi::state::ProjectState;
 use crate::trust;
 
@@ -57,8 +58,14 @@ fn launch(args: &[OsString]) -> io::Result<i32> {
         io::Error::other(format!("pi artifact {} has no directory", pi.display()))
     })?;
     let argv = pi_argv(args)?;
-    let plan = build_plan(&config, &state, &image, pi_dir)?;
-    run_box(&plan, &cwd, &argv)
+    // The read-only mounts are prepared after trust, so a refused run leaves
+    // no created directory behind.
+    let git = Git::prepare(&root, &config.protect)?;
+    let plan = build_plan(&config, &state, &image, pi_dir, &git)?;
+    let code = run_box(&plan, &cwd, &argv);
+    // The box is down; remove the protected directories this run created.
+    git.cleanup();
+    code
 }
 
 /// The canonical project root for `cwd`: the git top level, else `cwd`.
@@ -171,6 +178,7 @@ fn build_plan(
     state: &ProjectState,
     image: &str,
     pi_dir: &Path,
+    git: &Git,
 ) -> io::Result<Plan> {
     let home = state.home.to_str().ok_or_else(|| {
         io::Error::new(
@@ -208,28 +216,33 @@ fn build_plan(
         );
     }
 
+    let mut mounts = vec![
+        Mount {
+            host: git.root().to_path_buf(),
+            guest: git.root().to_path_buf(),
+            readonly: false,
+        },
+        Mount {
+            host: state.home.clone(),
+            guest: state.home.clone(),
+            readonly: false,
+        },
+        Mount {
+            host: pi_dir.to_path_buf(),
+            guest: PathBuf::from(GUEST_PI),
+            readonly: true,
+        },
+    ];
+    // Nested after the writable project mount, so the read-only `.git` and
+    // protected editor config shadow it.
+    mounts.extend(git.mounts().iter().cloned());
+
     Ok(Plan {
         name: format!("pi-{}-{}", state.id, std::process::id()),
         image: Some(image.to_string()),
         profile: Some(config.profile.name.clone()),
         labels,
-        mounts: vec![
-            Mount {
-                host: state.root.clone(),
-                guest: state.root.clone(),
-                readonly: false,
-            },
-            Mount {
-                host: state.home.clone(),
-                guest: state.home.clone(),
-                readonly: false,
-            },
-            Mount {
-                host: pi_dir.to_path_buf(),
-                guest: PathBuf::from(GUEST_PI),
-                readonly: true,
-            },
-        ],
+        mounts,
         user: None,
         env,
         egress: Some(Egress {
