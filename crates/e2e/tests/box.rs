@@ -373,8 +373,11 @@ fn only_allowlisted_hosts_get_through() {
 fn losing_the_owner_fails_closed() {
     // Sabotage: make `box prune` skip boxes whose owner is gone; the box
     // survives prune and the post-prune list assertion fails. Sabotage: start
-    // the proxy outside the `box up` process; egress survives the SIGKILL and
-    // the fail-closed assertion fails.
+    // the proxy outside the `box up` process; it survives the SIGKILL, logs
+    // the post-kill request and lets it through, so the unchanged-log
+    // assertion fails. Curl's own error is not asserted: Apple's forwarder
+    // sometimes hangs after the owner dies rather than closing, so the
+    // request may end in a timeout instead of a refusal.
     let binary = pinfold();
     let env = TestEnv::new("owner-gone");
     let name = format!("pinfold-e2e-{}-owner-gone", std::process::id());
@@ -411,7 +414,15 @@ fn losing_the_owner_fails_closed() {
     up.kill();
     up.wait();
 
-    // The socket died with `box up`, so the box has no way out.
+    // The positive control left its decision in the log. A live proxy
+    // anywhere would log before it dials, so no new line means no proxy saw
+    // the request; the request itself may hang, because Apple's forwarder
+    // does not reliably close after the owner dies.
+    let before = egress_log_lines(&env, &name);
+    assert!(
+        !before.is_empty(),
+        "the positive control left no egress log line"
+    );
     let denied = box_exec(
         binary,
         &env,
@@ -420,7 +431,7 @@ fn losing_the_owner_fails_closed() {
             "curl",
             "-sS",
             "--max-time",
-            "30",
+            "5",
             "-o",
             "/dev/null",
             "https://api.github.com/",
@@ -429,6 +440,12 @@ fn losing_the_owner_fails_closed() {
     assert_ne!(
         denied.code, 0,
         "the box still had egress after the owner died"
+    );
+    let after = egress_log_lines(&env, &name);
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "the egress log gained a line after the owner died: {after:?}"
     );
 
     // `box prune` removes the leftover by label.
@@ -716,6 +733,15 @@ fn egress_log(env: &TestEnv, name: &str) -> PathBuf {
         .join("pinfold")
         .join("egress")
         .join(format!("{name}.jsonl"))
+}
+
+/// The parsed decision lines of a box's egress log.
+fn egress_log_lines(env: &TestEnv, name: &str) -> Vec<serde_json::Value> {
+    fs::read_to_string(egress_log(env, name))
+        .expect("read egress log")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("log line is JSON"))
+        .collect()
 }
 
 fn box_down(binary: &Path, env: &TestEnv, name: &str) -> ExitStatus {
