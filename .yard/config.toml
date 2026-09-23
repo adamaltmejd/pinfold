@@ -171,6 +171,9 @@ engine = "pi"
 # A pi seat takes effort up to "xhigh"; the review tool refuses "max".
 model = "opencode-go/muse-spark-1.3-contributor"
 effort = "xhigh"
+# Jev skips this seat only when it is confident the diff is outside this scope;
+# a change to .yard or a protected path always gets the full panel.
+when = "The change touches program behavior: Rust source, tests, Cargo or toolchain files, the profile, a Containerfile, or CI."
 instructions = "Judge the change against docs/ARCHITECTURE.md and AGENTS.md. Blocking: a weakened or missing security control, a secret that can reach argv or a log, a unit test or mock, and an end-to-end test that cannot fail (no positive control, or a pass on timeout)."
 context = ["docs/ARCHITECTURE.md", "AGENTS.md"]
 # instructions are one seat's own, appended verbatim to that seat's prompt and
