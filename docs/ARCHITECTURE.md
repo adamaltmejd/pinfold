@@ -465,9 +465,13 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain. An unlabeled image, a live box and a project's state survive `pinfold clean`. |
 
 Linux (podman) runs in GitHub CI on `ubuntu-26.04` and `ubuntu-26.04-arm` as
-the required gate. macOS (Apple `container`) runs as a Switchyard host gate
-at `stage = "batch"`, never `"candidate"`: code runs on the host only after
-the exact head is approved.
+the required gate. The workflow installs the pinned toolchain's musl target,
+enables linger and a D-Bus user session for the runner user so podman's
+cgroup manager is systemd, and clears AppArmor's unprivileged-userns
+restriction, which the runner image enables and which denies rootless podman
+the user namespace it needs. macOS (Apple `container`) runs as a Switchyard
+host gate at `stage = "batch"`, never `"candidate"`: code runs on the host
+only after the exact head is approved.
 
 ## Code
 
@@ -514,8 +518,6 @@ profile/   the built-in default profile
   Configurable, or documented.
 - Nested user namespaces in the Apple `container` guest kernel: can they be
   turned off?
-- GitHub runners: AppArmor's unprivileged-userns restriction, and linger for
-  the runner user.
 - Where herdr reads `HERDR_AGENT`.
 - For Switchyard: memory limits and OOM detection on Apple `container`;
   Codex's single-file credential mount becomes a directory.
