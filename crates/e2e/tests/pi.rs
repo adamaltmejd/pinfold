@@ -243,6 +243,262 @@ fn a_changed_project_file_stops_the_run() {
     pi_version(binary, &env, project.path());
 }
 
+#[test]
+fn the_box_cannot_write_git_or_protected_config() {
+    // Sabotage: omit the `.git` read-only mount from pi::git (or mount it
+    // writable); the hook, `core.fsmonitor` and `commondir` writes and the
+    // rename then succeed, and host `git status` runs the planted fsmonitor,
+    // so those assertions fail. Sabotage: skip the absent protect
+    // directories; the "pinfold did not create the absent .vscode" assertion
+    // fails before the box starts. Sabotage: classify protected paths with
+    // fs::metadata instead of the symlink check; a symlinked `.vscode` is
+    // followed, the run starts, and the refusal assertion fails.
+    let binary = pinfold();
+    let env = TestEnv::new("pi-git");
+    default_image(binary, &env);
+
+    // A project with no `.vscode/` yet: pinfold creates the protected
+    // directories empty before the run, so the box cannot create them, and
+    // removes them after the run when they are still empty.
+    let bare = TestDir::new(&env, "bare");
+    git_init(bare.path());
+    let root = bare.path();
+    let vscode = root.join(".vscode");
+    assert!(!vscode.exists(), "the fixture already has .vscode");
+
+    let run = PiRpc::start(binary, &env, root);
+    let id = project_id(&env, root);
+    let name = run.ready_box(binary, &env, &id);
+    assert!(vscode.is_dir(), "pinfold did not create the absent .vscode");
+    assert_eq!(
+        fs::read_dir(&vscode).expect("read .vscode").count(),
+        0,
+        ".vscode was not created empty"
+    );
+
+    // The box cannot create the protected directory it did not have...
+    let denied = box_exec(
+        binary,
+        &env,
+        &name,
+        &["sh", "-c", &format!("mkdir '{}'", vscode.display())],
+    );
+    assert_ne!(denied.code, 0, "the box created .vscode");
+    assert!(
+        denied.stderr.contains("File exists"),
+        "mkdir .vscode failed for another reason: {}",
+        denied.stderr
+    );
+    // ...nor write into it.
+    let denied = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!("printf '{{}}' > '{}/settings.json'", vscode.display()),
+        ],
+    );
+    assert_ne!(denied.code, 0, "the box wrote .vscode/settings.json");
+    assert!(
+        denied.stderr.contains("Read-only file system"),
+        "the .vscode write failed for another reason: {}",
+        denied.stderr
+    );
+
+    // `.git` is read-only: a hook, the config, and commondir.
+    let hook = root.join(".git/hooks/pre-commit");
+    let denied = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!(
+                "printf '#!/bin/sh\\ntouch {}/pwned-hook\\n' > '{}'",
+                root.display(),
+                hook.display()
+            ),
+        ],
+    );
+    assert_ne!(denied.code, 0, "the box wrote a git hook");
+    assert!(
+        denied.stderr.contains("Read-only file system"),
+        "the hook write failed for another reason: {}",
+        denied.stderr
+    );
+
+    // A script in the writable project; the config that would make host git
+    // run it is what must fail.
+    let fsmonitor = root.join("fsmonitor.sh");
+    let denied = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!(
+                "printf '#!/bin/sh\\ntouch {}/pwned-fsmonitor\\n' > '{}' && chmod +x '{}' && git -C '{}' config core.fsmonitor '{}'",
+                root.display(),
+                fsmonitor.display(),
+                fsmonitor.display(),
+                root.display(),
+                fsmonitor.display()
+            ),
+        ],
+    );
+    assert_ne!(denied.code, 0, "the box set core.fsmonitor");
+    assert!(
+        denied.stderr.contains("Read-only file system"),
+        "git config failed for another reason: {}",
+        denied.stderr
+    );
+
+    let denied = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!(
+                "printf '../evilgit\\n' > '{}/.git/commondir'",
+                root.display()
+            ),
+        ],
+    );
+    assert_ne!(denied.code, 0, "the box wrote .git/commondir");
+    assert!(
+        denied.stderr.contains("Read-only file system"),
+        "the commondir write failed for another reason: {}",
+        denied.stderr
+    );
+
+    // The `.git` mount point cannot be renamed.
+    let dot_git = root.join(".git");
+    let denied = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!("mv '{}' '{}-moved'", dot_git.display(), dot_git.display()),
+        ],
+    );
+    assert_ne!(denied.code, 0, "the box renamed .git");
+    assert!(
+        denied.stderr.contains("Device or resource busy"),
+        "renaming .git failed for another reason: {}",
+        denied.stderr
+    );
+
+    // Positive control: the project itself is writable.
+    let control = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!("printf 'ok\\n' > '{}/control.txt'", root.display()),
+        ],
+    );
+    assert_eq!(
+        control.code, 0,
+        "the box could not write a project file: {}",
+        control.stderr
+    );
+    assert_eq!(
+        fs::read(root.join("control.txt")).expect("read control.txt"),
+        b"ok\n"
+    );
+
+    assert!(run.finish().success(), "pinfold pi did not exit cleanly");
+
+    // Host git runs nothing the box planted: the fsmonitor was never set,
+    // no hook exists, and .git was not renamed.
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(root)
+        .output()
+        .expect("run host git status");
+    assert!(
+        status.status.success(),
+        "host git status failed: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    assert!(
+        !root.join("pwned-fsmonitor").exists(),
+        "host git status ran the box's fsmonitor"
+    );
+    assert!(!root.join("pwned-hook").exists(), "the box planted a hook");
+    assert!(!root.join(".git-moved").exists(), "the box renamed .git");
+    assert!(
+        !vscode.exists(),
+        "the created .vscode was not removed after the run"
+    );
+
+    // A project that already has `.vscode/`: its settings stay read-only.
+    let with = TestDir::new(&env, "with-vscode");
+    git_init(with.path());
+    let settings = with.path().join(".vscode/settings.json");
+    fs::create_dir(with.path().join(".vscode")).unwrap();
+    fs::write(&settings, "{\"keep\":true}\n").unwrap();
+    let run = PiRpc::start(binary, &env, with.path());
+    let id = project_id(&env, with.path());
+    let name = run.ready_box(binary, &env, &id);
+    let denied = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!("printf '{{}}' > '{}'", settings.display()),
+        ],
+    );
+    assert_ne!(denied.code, 0, "the box overwrote .vscode/settings.json");
+    assert!(
+        denied.stderr.contains("Read-only file system"),
+        "the settings write failed for another reason: {}",
+        denied.stderr
+    );
+    assert!(run.finish().success(), "pinfold pi did not exit cleanly");
+    assert_eq!(
+        fs::read_to_string(&settings).expect("read settings.json"),
+        "{\"keep\":true}\n",
+        "the host's .vscode/settings.json changed"
+    );
+    assert!(
+        with.path().join(".vscode").is_dir(),
+        "the existing .vscode was removed"
+    );
+
+    // A protected path the host planted as a symlink is refused: the runtime
+    // resolves a bind-mount source on the host, so following it would mount
+    // the target into the box.
+    let outside = TestDir::new(&env, "outside");
+    let symlinked = TestDir::new(&env, "symlinked");
+    git_init(symlinked.path());
+    let link = symlinked.path().join(".vscode");
+    std::os::unix::fs::symlink(outside.path(), &link).expect("create .vscode symlink");
+    let refused = pi_version_output(binary, &env, symlinked.path());
+    assert!(
+        !refused.status.success(),
+        "pinfold pi started with a symlinked .vscode"
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("not a real directory") && stderr.contains(&link.display().to_string()),
+        "the refusal did not name {} as not a real directory: {stderr}",
+        link.display()
+    );
+}
+
 /// A `pinfold pi --mode rpc` process with a live box.
 struct PiRpc {
     child: Child,
