@@ -1,15 +1,19 @@
-//! End-to-end tests for guarantees 6, 12 and 13 in docs/ARCHITECTURE.md.
+//! End-to-end tests for guarantees 6, 12, 13 and 14 in docs/ARCHITECTURE.md.
 //!
 //! They run on a macOS host with the Apple `container` CLI. The harness
 //! isolates the XDG dirs, builds the default profile image once, and drives
 //! `pinfold pi` as a user would. No model is needed: `pi --mode rpc` answers
 //! `get_state` while the box runs, and `pi --version` exits on its own.
+//! Guarantee 14's test runs `pi -p` through the shim against a fake model on
+//! the host, reached through a route.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 
 #[test]
 fn the_environment_is_exactly_the_spec() {
@@ -499,6 +503,105 @@ fn the_box_cannot_write_git_or_protected_config() {
     );
 }
 
+
+#[test]
+fn both_pi_config_levels_load_behind_a_route() {
+    // Sabotage: drop the route (leave PINFOLD_ROUTES empty, or point it at
+    // another name); pi's request to fake.model cannot leave the box, no
+    // request reaches the fake model, and the skill assertions fail.
+    // Sabotage: skip the profile skill under the profile's share/pi/skills;
+    // the profile marker is absent from the request. Sabotage: stop the
+    // project from being trusted (remove defaultProjectTrust from the seeded
+    // settings); the project marker is absent.
+    let binary = pinfold();
+    let env = TestEnv::new("pi-levels");
+    let project = TestDir::new(&env, "project");
+    git_init(project.path());
+
+    // The profile carries the user level: a skill in its share/pi package,
+    // and the agent dir's models.json, where pi reads provider settings
+    // (pi's models.md and custom-provider.md). The seeded settings.json from
+    // `default` keeps defaultProjectTrust, so the project level loads too.
+    let profile = "e2e-fake";
+    profile_new(binary, &env, profile);
+    let profile_dir = env.config.join("pinfold/profiles").join(profile);
+    let profile_marker = "pinfold-e2e-profile-skill-marker";
+    write_skill(
+        &profile_dir.join("share/pi/skills/e2e-profile-skill"),
+        "e2e-profile-skill",
+        profile_marker,
+    );
+    let agent_dir = profile_dir.join("home/.pi/agent");
+    fs::create_dir_all(&agent_dir).expect("create the profile's agent dir");
+    fs::write(
+        agent_dir.join("models.json"),
+        r#"{
+  "providers": {
+    "openai": {
+      "baseUrl": "http://fake.model/v1",
+      "api": "openai-completions",
+      "models": [{ "id": "fake-model", "name": "Fake Model" }]
+    }
+  }
+}
+"#,
+    )
+    .expect("write the profile's models.json");
+    build_profile(binary, &env, profile);
+
+    // The project carries the project level: a skill under .pi/.
+    let project_marker = "pinfold-e2e-project-skill-marker";
+    write_skill(
+        &project.path().join(".pi/skills/e2e-project-skill"),
+        "e2e-project-skill",
+        project_marker,
+    );
+
+    // The fake model listens on the host; only the route can reach it.
+    let model = FakeModel::start();
+
+    // `pi -p` through the shim, without a TTY. The provider and model pin the
+    // request to the fake model in the profile's models.json.
+    let shim = env.root.join("pi");
+    std::os::unix::fs::symlink(binary, &shim).expect("symlink pi to pinfold");
+    let output = env
+        .command(&shim)
+        .args([
+            "-p",
+            "--provider",
+            "openai",
+            "--model",
+            "fake-model",
+            "reply with ok",
+        ])
+        .current_dir(project.path())
+        .env("PINFOLD_PROFILE", profile)
+        .env(
+            "PINFOLD_ROUTES",
+            format!("fake.model=127.0.0.1:{}", model.port()),
+        )
+        .env("PINFOLD_ENV_OPENAI_API_KEY", "sk-fake")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pi -p");
+    assert!(
+        output.status.success(),
+        "pi -p failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let request = model.request();
+    assert!(
+        request.contains(profile_marker),
+        "the profile skill never reached the model; the profile config level did not load"
+    );
+    assert!(
+        request.contains(project_marker),
+        "the project skill never reached the model; the project config level did not load"
+    );
+}
+
+
 /// A `pinfold pi --mode rpc` process with a live box.
 struct PiRpc {
     child: Child,
@@ -641,6 +744,138 @@ fn git_init(path: &Path) {
         .status()
         .expect("run git init");
     assert!(status.success(), "git init failed in {}", path.display());
+}
+
+/// Copy `default` into a user profile; the caller edits it before building.
+fn profile_new(binary: &Path, env: &TestEnv, name: &str) {
+    let output = env
+        .command(binary)
+        .args(["profile", "new", name, "--from", "default"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold profile new");
+    assert!(
+        output.status.success(),
+        "pinfold profile new {name} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Build a user profile's image; `pinfold pi` refuses without it.
+fn build_profile(binary: &Path, env: &TestEnv, name: &str) {
+    let output = env
+        .command(binary)
+        .args(["build", "--profile", name])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold build --profile");
+    assert!(
+        output.status.success(),
+        "pinfold build --profile {name} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Write one discoverable skill whose description carries `marker`.
+fn write_skill(dir: &Path, name: &str, marker: &str) {
+    fs::create_dir_all(dir).expect("create the skill directory");
+    fs::write(
+        dir.join("SKILL.md"),
+        format!(
+            "---\nname: {name}\ndescription: {marker} identifies this skill in a model request.\n---\n\n# {name}\n"
+        ),
+    )
+    .expect("write SKILL.md");
+}
+
+/// A fake OpenAI-compatible chat-completions server on the host. It answers
+/// the one streaming request pi sends and keeps the body, so the test can
+/// assert what pi loaded.
+struct FakeModel {
+    port: u16,
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+impl FakeModel {
+    fn start() -> FakeModel {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the fake model");
+        let port = listener.local_addr().expect("fake model address").port();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { continue };
+                let captured = Arc::clone(&captured);
+                thread::spawn(move || answer(stream, &captured));
+            }
+        });
+        FakeModel { port, requests }
+    }
+
+    fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// The first request body the model answered.
+    fn request(&self) -> String {
+        self.requests
+            .lock()
+            .expect("lock the fake model's requests")
+            .first()
+            .cloned()
+            .expect("the fake model got no request")
+    }
+}
+
+/// Read one Content-Length-framed request, keep its body, and answer with a
+/// streaming chat completion.
+fn answer(mut stream: TcpStream, requests: &Mutex<Vec<String>>) {
+    let mut data = Vec::new();
+    let mut buffer = [0u8; 4096];
+    let head_end = loop {
+        let read = match stream.read(&mut buffer) {
+            Ok(0) | Err(_) => return,
+            Ok(read) => read,
+        };
+        data.extend_from_slice(&buffer[..read]);
+        if let Some(end) = data.windows(4).position(|window| window == b"\r\n\r\n") {
+            break end + 4;
+        }
+    };
+    let head = String::from_utf8_lossy(&data[..head_end]).to_string();
+    let content_length = head
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.eq_ignore_ascii_case("content-length") {
+                value.trim().parse::<usize>().ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+    while data.len() < head_end + content_length {
+        let read = match stream.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        data.extend_from_slice(&buffer[..read]);
+    }
+    requests
+        .lock()
+        .expect("lock the fake model's requests")
+        .push(String::from_utf8_lossy(&data[head_end..]).into_owned());
+    let body = concat!(
+        "data: {\"id\":\"chatcmpl-e2e\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"fake-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"chatcmpl-e2e\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"fake-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
 }
 
 /// The built `pinfold` binary. The test executable lives in
