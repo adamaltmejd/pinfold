@@ -4,8 +4,8 @@ Run a coding agent in a disposable box: an Apple `container` micro-VM on
 macOS, a rootless podman container on Linux. The box sees its mounts and
 nothing else of the host. Its only way out is its own allowlisting proxy.
 
-Isolation differs by platform, stated once: on macOS each box is its own
-VM; on Linux, boxes share the host kernel.
+Isolation differs by platform: on macOS each box is its own VM; on Linux,
+boxes share the host kernel.
 
 - **Interactive:** `pi` on the host is a shim for `pinfold pi`.
 - **Programmatic:** Switchyard drives boxes through `pinfold box`, JSON on
@@ -38,6 +38,7 @@ macOS needs `zig` and `cargo-zigbuild` (`cargo install cargo-zigbuild`):
 the build cross-compiles the Linux init the macOS CLI embeds.
 
 ```sh
+rustup target add aarch64-unknown-linux-musl
 cargo build --release
 mkdir -p ~/.local/bin
 install -m 0755 target/release/pinfold ~/.local/bin/pinfold
