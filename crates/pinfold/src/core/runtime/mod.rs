@@ -30,6 +30,17 @@ pub struct BoxInfo {
     pub labels: BTreeMap<String, String>,
 }
 
+/// One image the runtime knows about.
+#[derive(Debug, Clone)]
+pub struct ImageInfo {
+    /// The image's content digest; references to one image share it.
+    pub id: String,
+    /// A reference that names the image, for removal.
+    pub reference: String,
+    /// The labels recorded on the image.
+    pub labels: BTreeMap<String, String>,
+}
+
 /// One image build: an empty context holding only a Containerfile, the
 /// names to tag the result with, and the labels to record on it.
 pub struct BuildRequest<'a> {
@@ -67,6 +78,12 @@ pub trait Runtime: Sync {
 
     /// List every box, running or not.
     fn list(&self) -> io::Result<Vec<BoxInfo>>;
+
+    /// List every image, with the labels recorded on it.
+    fn list_images(&self) -> io::Result<Vec<ImageInfo>>;
+
+    /// Remove one image by reference, and any layers no image references.
+    fn remove_image(&self, reference: &str) -> io::Result<()>;
 
     /// Build an image from [`BuildRequest`].
     fn build(&self, request: &BuildRequest) -> io::Result<()>;

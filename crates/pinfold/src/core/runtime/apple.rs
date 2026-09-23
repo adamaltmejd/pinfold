@@ -12,7 +12,7 @@ use tokio::process::{Child, Command};
 
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
-use crate::core::runtime::{BoxInfo, BuildRequest, Runtime, guest_path};
+use crate::core::runtime::{BoxInfo, BuildRequest, ImageInfo, Runtime, guest_path};
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
 pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
@@ -119,6 +119,34 @@ impl Runtime for Apple {
         parse_list(&output.stdout)
     }
 
+    fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
+        let output = std::process::Command::new("container")
+            .args(["image", "list", "--format", "json"])
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "container image list: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        parse_images(&output.stdout)
+    }
+
+    fn remove_image(&self, reference: &str) -> io::Result<()> {
+        // `image delete` also collects the layers no image references.
+        let output = std::process::Command::new("container")
+            .args(["image", "delete", reference])
+            .output()?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "container image delete {reference}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )))
+        }
+    }
+
     fn build(&self, request: &BuildRequest) -> io::Result<()> {
         let argv = build_argv(request);
         let (program, arguments) = argv.split_first().expect("argv is never empty");
@@ -180,6 +208,81 @@ fn parse_list(json: &[u8]) -> io::Result<Vec<BoxInfo>> {
         .map(|container| BoxInfo {
             id: container.id,
             labels: container.configuration.labels,
+        })
+        .collect())
+}
+
+/// One `container image list --format json` entry, as much as pinfold needs.
+#[derive(Deserialize)]
+struct ListedImage {
+    id: String,
+    configuration: ListedImageConfiguration,
+    #[serde(default)]
+    variants: Vec<ListedImageVariant>,
+}
+
+#[derive(Deserialize)]
+struct ListedImageConfiguration {
+    name: String,
+    descriptor: Option<ListedImageDescriptor>,
+}
+
+#[derive(Deserialize)]
+struct ListedImageDescriptor {
+    #[serde(default)]
+    annotations: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+struct ListedImageVariant {
+    config: Option<ListedImageConfig>,
+}
+
+#[derive(Deserialize)]
+struct ListedImageConfig {
+    config: Option<ListedImageLabels>,
+}
+
+#[derive(Deserialize)]
+struct ListedImageLabels {
+    #[serde(default, rename = "Labels")]
+    labels: BTreeMap<String, String>,
+}
+
+fn parse_images(json: &[u8]) -> io::Result<Vec<ImageInfo>> {
+    let images: Vec<ListedImage> = serde_json::from_slice(json).map_err(|error| {
+        io::Error::other(format!(
+            "container image list returned invalid JSON: {error}"
+        ))
+    })?;
+    Ok(images
+        .into_iter()
+        .map(|image| {
+            let ListedImage {
+                id,
+                configuration,
+                variants,
+            } = image;
+            // Build labels are OCI image config labels; a locally built
+            // image also carries name annotations on its index descriptor.
+            let mut labels = configuration
+                .descriptor
+                .map(|descriptor| descriptor.annotations)
+                .unwrap_or_default();
+            for variant in &variants {
+                if let Some(config) = variant
+                    .config
+                    .as_ref()
+                    .and_then(|config| config.config.as_ref())
+                {
+                    labels.extend(config.labels.clone());
+                }
+            }
+            ImageInfo {
+                id,
+                reference: configuration.name,
+                labels,
+            }
         })
         .collect())
 }

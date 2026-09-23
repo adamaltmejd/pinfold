@@ -16,6 +16,7 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
 use crate::core::r#box::Box;
+use crate::core::clean;
 use crate::core::plan::Plan;
 use crate::core::profile::{Profile, valid_name};
 use crate::core::runtime::{BuildRequest, runtime};
@@ -57,7 +58,7 @@ fn up(args: &[OsString]) -> io::Result<i32> {
     let mut plan = Plan::from_reader(io::stdin()).map_err(io::Error::other)?;
     // The owner label is how `box prune` tells a live box from a leftover.
     plan.labels
-        .insert("dev.pinfold.owner".into(), std::process::id().to_string());
+        .insert(clean::OWNER_LABEL.into(), std::process::id().to_string());
     let init = init_path()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -97,14 +98,14 @@ fn down(args: &[OsString]) -> io::Result<i32> {
     let name = single_name(args, "down")?;
     let state = state_path(&name)?;
     if let Some(pid) = read_pid(&state)
-        && alive(pid)
+        && clean::alive(pid)
     {
         kill(Pid::from_raw(pid), Signal::SIGTERM).map_err(io::Error::other)?;
         for _ in 0..1000 {
             if !state.exists() {
                 return Ok(0);
             }
-            if !alive(pid) {
+            if !clean::alive(pid) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -134,25 +135,7 @@ fn prune(args: &[OsString]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(usage("prune takes no arguments"));
     }
-    let runtime = runtime()?;
-    for box_ in runtime.list()? {
-        if !box_
-            .labels
-            .keys()
-            .any(|key| key.starts_with("dev.pinfold."))
-        {
-            continue;
-        }
-        let owner = box_
-            .labels
-            .get("dev.pinfold.owner")
-            .and_then(|pid| pid.parse::<i32>().ok());
-        if owner.is_some_and(alive) {
-            continue;
-        }
-        runtime.down(&box_.id)?;
-        let _ = fs::remove_dir_all(state_path(&box_.id)?);
-    }
+    clean::prune_boxes(runtime()?)?;
     Ok(0)
 }
 
@@ -247,13 +230,6 @@ fn read_pid(state: &Path) -> Option<i32> {
         .ok()
 }
 
-fn alive(pid: i32) -> bool {
-    match kill(Pid::from_raw(pid), None) {
-        Ok(()) | Err(nix::errno::Errno::EPERM) => true,
-        Err(_) => false,
-    }
-}
-
 fn exit_code(status: ExitStatus) -> i32 {
     use std::os::unix::process::ExitStatusExt;
     match status.code() {
@@ -339,10 +315,10 @@ fn build_image(
 ) -> io::Result<()> {
     let runtime = runtime()?;
     let mut labels = BTreeMap::new();
-    labels.insert("dev.pinfold.profile".to_string(), profile.name.clone());
+    labels.insert(clean::PROFILE_LABEL.to_string(), profile.name.clone());
     // The unique build label is what makes every build a distinct image even
     // when every layer is cached.
-    labels.insert("dev.pinfold.build".to_string(), id.to_string());
+    labels.insert(clean::BUILD_LABEL.to_string(), id.to_string());
     if let Some(base) = profile.base_image()
         && let Some(digest) = runtime.image_digest(base)?
     {
@@ -356,6 +332,11 @@ fn build_image(
         tags: &[stable.clone(), unique],
         labels: &labels,
     })?;
+    // Keep the two newest images of this source, the second for rollback.
+    // A failure here is reported but never fails the build that succeeded.
+    if let Err(error) = clean::keep_two_images(runtime, clean::PROFILE_LABEL, &profile.name) {
+        eprintln!("pinfold build: maintenance: {error}");
+    }
     println!("{stable}");
     Ok(())
 }

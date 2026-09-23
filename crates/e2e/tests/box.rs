@@ -458,6 +458,136 @@ fn losing_the_owner_fails_closed() {
     );
 }
 
+#[test]
+fn cleanup_removes_only_pinfolds_garbage() {
+    // Guarantee 15's after-build half: after three builds of one source, two
+    // images remain. The `pinfold clean` half of this test lands with the
+    // clean command.
+    //
+    // Sabotage: make `keep_two_images` return before it removes anything;
+    // three images remain and the two-image assertion fails. Sabotage: drop
+    // the `dev.pinfold.profile` label from the build; no image matches and
+    // the count is zero.
+    let binary = pinfold();
+    let env = TestEnv::new("cleanup");
+    // A profile of this test's own, named for this run, so the operator's
+    // default profile images, the other tests and a failed run's leftovers
+    // cannot share the source.
+    let profile = format!("e2e-maintenance-{}", std::process::id());
+    let _images = ImageCleanup {
+        source: profile.clone(),
+    };
+    let containerfile = env
+        .config
+        .join("pinfold")
+        .join("profiles")
+        .join(&profile)
+        .join("Containerfile");
+    fs::create_dir_all(containerfile.parent().unwrap()).unwrap();
+    // `FROM scratch` keeps the test off the network and fast.
+    fs::write(&containerfile, b"FROM scratch\n").unwrap();
+
+    for _ in 0..3 {
+        let output = env
+            .command(binary)
+            .args(["build", "--profile", &profile])
+            .output()
+            .expect("run pinfold build");
+        assert!(
+            output.status.success(),
+            "pinfold build failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let images = labeled_images("dev.pinfold.profile", &profile);
+    let mut digests: Vec<&str> = images.iter().map(|(digest, _)| digest.as_str()).collect();
+    digests.sort_unstable();
+    digests.dedup();
+    assert_eq!(
+        digests.len(),
+        2,
+        "after three builds of one source, two images should remain: {images:?}"
+    );
+}
+
+/// Removes the run's images from the runtime store on drop, so a failing run
+/// does not leave them for the next run to count or for the operator's disk.
+struct ImageCleanup {
+    source: String,
+}
+
+impl Drop for ImageCleanup {
+    fn drop(&mut self) {
+        // Best effort: a Drop during unwinding must not panic.
+        let Ok(output) = Command::new("container")
+            .args(["image", "list", "--quiet"])
+            .output()
+        else {
+            return;
+        };
+        if !output.status.success() {
+            return;
+        }
+        // Every build tags the image `pinfold/profile-<source>:<build>`, and
+        // the reference remains even when the label sabotage drops the source
+        // label.
+        let prefix = format!("pinfold/profile-{}:", self.source);
+        let references = String::from_utf8_lossy(&output.stdout);
+        for reference in references.lines() {
+            if !reference.contains(&prefix) {
+                continue;
+            }
+            let _ = Command::new("container")
+                .args(["image", "delete", reference])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+}
+
+/// The `(digest, reference)` of every image carrying `label = value`, from
+/// the runtime itself: `container image list` is the ground truth for what
+/// remains.
+fn labeled_images(label: &str, value: &str) -> Vec<(String, String)> {
+    let output = Command::new("container")
+        .args(["image", "list", "--format", "json"])
+        .output()
+        .expect("run container image list");
+    assert!(
+        output.status.success(),
+        "container image list failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let images: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).expect("image list is JSON");
+    images
+        .into_iter()
+        .filter(|image| image_has_label(image, label, value))
+        .filter_map(|image| {
+            Some((
+                image["id"].as_str()?.to_string(),
+                image["configuration"]["name"].as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+/// Whether one `container image list` entry carries `label = value`, as an
+/// OCI image config label or an index descriptor annotation.
+fn image_has_label(image: &serde_json::Value, label: &str, value: &str) -> bool {
+    if image["configuration"]["descriptor"]["annotations"][label] == value {
+        return true;
+    }
+    image["variants"].as_array().is_some_and(|variants| {
+        variants
+            .iter()
+            .any(|variant| variant["config"]["config"]["Labels"][label] == value)
+    })
+}
+
 /// One `/proc/<pid>/status` field's value.
 fn status_field(status: &str, key: &str) -> String {
     status
