@@ -181,12 +181,20 @@ fn box_os_arch() -> io::Result<&'static str> {
 /// Download `url` into `staging`, verify its sha256, and unpack it there.
 fn unpack(staging: &Path, url: &str, expected: &str, os_arch: &str) -> io::Result<()> {
     let archive = staging.join("pi.tar.gz");
+    // Fail a stalled first contact, but no --max-time: a slow, moving
+    // download must still finish.
     let status = Command::new("curl")
         .args([
             "--fail",
             "--location",
             "--silent",
             "--show-error",
+            "--connect-timeout",
+            "15",
+            "--speed-limit",
+            "1",
+            "--speed-time",
+            "30",
             "--output",
         ])
         .arg(&archive)
