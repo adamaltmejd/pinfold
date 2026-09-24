@@ -220,6 +220,68 @@ impl Runtime for Podman {
     }
 }
 
+/// What `podman info` reports that `doctor` shows.
+#[derive(Debug)]
+pub struct PodmanInfo {
+    /// `host.cgroupManager`: `systemd`, `cgroupfs`, or another backend.
+    pub cgroup_manager: String,
+}
+
+/// The runtime `doctor` detects on a podman host. Preflight refuses all but
+/// rootless podman; `doctor` reports what it finds instead.
+#[derive(Debug)]
+pub enum Detected {
+    RootlessPodman(PodmanInfo),
+    RootfulPodman(PodmanInfo),
+    Docker,
+    Missing,
+}
+
+/// Ask the host which runtime it has and what podman reports, for `doctor`.
+/// Reads only: a rootful, cgroupfs, docker or missing host is an answer, not
+/// a failure.
+pub fn detect() -> io::Result<Detected> {
+    let info = match podman_info() {
+        Ok(info) => info,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(if docker_present() {
+                Detected::Docker
+            } else {
+                Detected::Missing
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let reported = PodmanInfo {
+        cgroup_manager: info.host.cgroup_manager,
+    };
+    Ok(if info.host.security.rootless {
+        Detected::RootlessPodman(reported)
+    } else {
+        Detected::RootfulPodman(reported)
+    })
+}
+
+/// Whether `loginctl enable-linger` is on for this user, for `doctor`. A box
+/// outlives the login that started it only with linger.
+pub fn linger() -> io::Result<bool> {
+    let uid = nix::unistd::getuid().to_string();
+    let output = std::process::Command::new("loginctl")
+        .args(["show-user", &uid, "--property=Linger"])
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "loginctl show-user: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text
+        .lines()
+        .find_map(|line| line.strip_prefix("Linger="))
+        .is_some_and(|value| value == "yes"))
+}
+
 /// What preflight needs from `podman info`.
 #[derive(Deserialize)]
 struct Info {
@@ -240,14 +302,27 @@ struct InfoSecurity {
     seccomp_profile_path: String,
 }
 
+/// Run and parse `podman info`. A missing CLI is the caller's to name:
+/// preflight and `doctor` say different things about it.
+fn podman_info() -> io::Result<Info> {
+    let output = std::process::Command::new("podman")
+        .args(["info", "--format", "json"])
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "podman info failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| io::Error::other(format!("podman info returned invalid JSON: {error}")))
+}
+
 /// Refuse a host pinfold will not run a box on, naming the problem. Runs
 /// before any box starts; a misconfigured host fails closed here.
 fn preflight() -> io::Result<Info> {
-    let output = match std::process::Command::new("podman")
-        .args(["info", "--format", "json"])
-        .output()
-    {
-        Ok(output) => output,
+    let info = match podman_info() {
+        Ok(info) => info,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Err(if docker_present() {
                 io::Error::other("docker is not supported; pinfold requires rootless podman")
@@ -257,14 +332,6 @@ fn preflight() -> io::Result<Info> {
         }
         Err(error) => return Err(error),
     };
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "podman info failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    let info: Info = serde_json::from_slice(&output.stdout)
-        .map_err(|error| io::Error::other(format!("podman info returned invalid JSON: {error}")))?;
     if !info.host.security.rootless {
         return Err(io::Error::other(
             "rootful podman is not supported; pinfold requires rootless podman",

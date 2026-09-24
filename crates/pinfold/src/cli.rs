@@ -21,7 +21,7 @@ use crate::core::r#box::Box;
 use crate::core::clean;
 use crate::core::plan::Plan;
 use crate::core::profile::{Profile, valid_name};
-use crate::core::runtime::{BoxInfo, BuildRequest, Runtime, local_image_id, runtime};
+use crate::core::runtime::{BoxInfo, BuildRequest, Runtime, local_image_id, podman, runtime};
 use crate::dirs;
 use crate::trust;
 
@@ -501,6 +501,9 @@ fn run_doctor(args: &[OsString]) -> io::Result<usize> {
                     problems += 1;
                 }
             }
+            if runtime.name() == "podman" {
+                report_podman();
+            }
         }
         Err(error) => {
             println!("runtime: unavailable: {error}");
@@ -614,6 +617,46 @@ fn run_doctor(args: &[OsString]) -> io::Result<usize> {
     }
 
     Ok(problems)
+}
+
+/// The podman lines in `doctor`'s runtime report: which runtime the host
+/// has, podman's cgroup manager, and linger. Report only: `preflight` is
+/// what refuses a host, and `doctor` changes nothing.
+fn report_podman() {
+    match podman::detect() {
+        Ok(podman::Detected::RootlessPodman(info)) => {
+            println!("  detected: rootless podman");
+            print_cgroup_manager(&info.cgroup_manager);
+        }
+        Ok(podman::Detected::RootfulPodman(info)) => {
+            println!("  detected: rootful podman; pinfold requires rootless podman");
+            print_cgroup_manager(&info.cgroup_manager);
+        }
+        Ok(podman::Detected::Docker) => {
+            println!("  detected: docker; pinfold requires rootless podman");
+        }
+        Ok(podman::Detected::Missing) => {
+            println!("  detected: missing; podman is not on PATH");
+        }
+        Err(error) => println!("  detected: unavailable: {error}"),
+    }
+    match podman::linger() {
+        Ok(true) => println!("  linger: enabled"),
+        Ok(false) => println!(
+            "  linger: disabled; long-lived boxes stop at logout; run `loginctl enable-linger`"
+        ),
+        Err(error) => println!("  linger: unavailable: {error}"),
+    }
+}
+
+/// `doctor`'s cgroup-manager line. Under cgroupfs podman accepts `--cpus`
+/// and `--memory` and silently ignores them; preflight refuses the host.
+fn print_cgroup_manager(manager: &str) {
+    if manager == "systemd" {
+        println!("  cgroupManager: systemd");
+    } else {
+        println!("  cgroupManager: {manager}; --cpus and --memory are silently not enforced");
+    }
 }
 
 /// Report the image `pinfold pi` would run, and whether it was built from the
