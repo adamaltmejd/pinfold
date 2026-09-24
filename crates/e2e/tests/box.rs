@@ -2829,12 +2829,10 @@ fn a_caller_owned_box_cannot_write_git() {
     let repo = TestDir::new(&env, "repo");
     let root = repo.path().to_string_lossy().into_owned();
     let dot_git = repo.path().join(".git");
-    // Apple's virtiofs attributes a mount's owner to whichever process
-    // looked first, and the runtime's own look can leave the nested `.git`
-    // share owned by another uid for the box's first git command, which
-    // then refuses with "dubious ownership". The ownership check is not
-    // what this guarantee is about, so the box's git is told the repository
-    // is safe.
+    // On Apple the top directory of every mount is root:root inside the
+    // box while the files under it keep the host ids: `stat` printed 0:0
+    // for REPO and REPO/.git and 501:20 for REPO/f.txt, so git refuses any
+    // mounted repository until `safe.directory` names it.
     let safe = format!("safe.directory={root}");
 
     // One host commit, so the box has history to read.

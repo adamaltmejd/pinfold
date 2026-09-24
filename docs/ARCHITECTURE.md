@@ -637,7 +637,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 19 | A caller-owned box launches the pinned harness | A spec with harness: pi runs /opt/pinfold/pi/pi --version at the pinned version, and the box's PINFOLD_ALLOW is the spec's allow list. |
 | 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, every field is present, and `exec`'d processes carry `oom_score_adj` 1000, so init is never the victim. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
-| 22 | A caller-owned box cannot write .git | With REPO writable and REPO/.git read-only, listed in either order: a worktree write succeeds, git log and git status succeed, a hook write, git commit and renaming .git fail, and host git status runs nothing the box wrote. |
+| 22 | A caller-owned box cannot write .git | With REPO writable and REPO/.git read-only, listed in either order, with safe.directory set by the caller: a worktree write succeeds, git log and git status succeed, a hook write, git commit and renaming .git fail, and host git status runs nothing the box wrote. |
 | 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref and the labels; a second build of the same name keeps two images and moves latest. |
 
 Linux (podman) runs in GitHub CI on `ubuntu-26.04` and `ubuntu-26.04-arm` as
