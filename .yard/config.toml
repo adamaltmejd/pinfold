@@ -247,6 +247,27 @@ runtime with cfg!(target_os = ...) in one place, and put code behind #[cfg]
 only when it cannot compile elsewhere.
 """
 
+# heavy is the default workflow with a stronger implementer, for a lane that
+# adds a dependency or reworks a module: select it per ticket with
+# yard ticket edit ID --workflow heavy.
+[workflows.heavy]
+implementer = "opus"
+review = ["code"]
+access = "writable"
+inactivity_timeout_minutes = 0
+total_work_timeout_minutes = 360
+instructions = """
+Lanes run in a Linux container with no Apple container and no podman, so the
+end-to-end suite cannot run here. cargo build, cargo fmt --check and
+cargo clippy --all-targets are your checks. Write the end-to-end tests your
+ticket names anyway, as AGENTS.md says; the operator runs them on the macOS
+host before approving, against the sabotage each test's comment names.
+
+Keep macOS-only code compiling on Linux, so clippy here checks it: choose the
+runtime with cfg!(target_os = ...) in one place, and put code behind #[cfg]
+only when it cannot compile elsewhere.
+"""
+
 [workspace]
 # build_artifacts names the directories ordinary build activity fills with
 # output your .gitignore already covers: each a directory path relative to the
