@@ -219,7 +219,7 @@ impl Config {
                 .unwrap_or_else(|| DEFAULT_ALLOW.iter().map(|host| host.to_string()).collect()),
             routes: merged.routes.unwrap_or_default(),
             protect: merged.protect.unwrap_or_default(),
-            cpus: merged.cpus.map(Cpus::value).unwrap_or(DEFAULT_CPUS),
+            cpus: merged.cpus.unwrap_or(DEFAULT_CPUS),
             memory: merged.memory.unwrap_or_else(|| DEFAULT_MEMORY.to_string()),
             env: env_names(),
             origins,
@@ -242,7 +242,7 @@ struct Layer {
     allow: Option<Vec<String>>,
     routes: Option<BTreeMap<String, Route>>,
     protect: Option<Vec<String>>,
-    cpus: Option<Cpus>,
+    cpus: Option<f64>,
     memory: Option<String>,
 }
 
@@ -283,12 +283,12 @@ impl Layer {
                 .transpose()?,
             protect: var("PINFOLD_PROTECT").as_deref().map(split_list),
             cpus: match var("PINFOLD_CPUS") {
-                Some(value) => Some(Cpus::Float(value.parse::<f64>().map_err(|error| {
+                Some(value) => Some(value.parse::<f64>().map_err(|error| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
                         format!("PINFOLD_CPUS={value:?}: {error}"),
                     )
-                })?)),
+                })?),
                 None => None,
             },
             memory: var("PINFOLD_MEMORY"),
@@ -305,23 +305,6 @@ impl Layer {
         self.routes = higher.routes.or(self.routes);
         self.protect = higher.protect.or(self.protect);
         self
-    }
-}
-
-/// A TOML number: `cpus = 4` and `cpus = 4.5` are both valid.
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(untagged)]
-enum Cpus {
-    Integer(i64),
-    Float(f64),
-}
-
-impl Cpus {
-    fn value(self) -> f64 {
-        match self {
-            Cpus::Integer(value) => value as f64,
-            Cpus::Float(value) => value,
-        }
     }
 }
 

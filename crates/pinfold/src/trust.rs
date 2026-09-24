@@ -38,10 +38,12 @@ struct Trust {
 pub fn allow(root: &Path) -> io::Result<()> {
     let config = Config::load(root)?;
     let trust = current(&config);
-    let dir = dirs::state_dir()?.join("trust");
-    fs::create_dir_all(&dir)?;
+    let path = record_path(root)?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
     let json = serde_json::to_vec(&trust).map_err(io::Error::other)?;
-    fs::write(dir.join(format!("{}.json", state::project_id(root)?)), json)
+    fs::write(path, json)
 }
 
 /// Refuse when the project's config inputs no longer match the record. A

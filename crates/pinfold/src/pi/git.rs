@@ -15,6 +15,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use crate::core::plan::Mount;
+use crate::pi::state::canonical;
 
 /// Editor config the host runs on open, always protected.
 const ALWAYS_PROTECT: [&str; 3] = [".vscode", ".claude", ".idea"];
@@ -228,12 +229,7 @@ fn path_kind(path: &Path) -> io::Result<PathKind> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(PathKind::File),
         Ok(metadata) if metadata.is_dir() => {
-            let real = fs::canonicalize(path).map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!("canonicalize {}: {error}", path.display()),
-                )
-            })?;
+            let real = canonical(path)?;
             Ok(if real.as_path() == path {
                 PathKind::Directory
             } else {

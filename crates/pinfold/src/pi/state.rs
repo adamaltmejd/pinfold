@@ -20,12 +20,10 @@ use crate::dirs;
 /// Hex characters of the root hash in a project id.
 const HASH_LENGTH: usize = 12;
 
-/// One project's state: its id, root and `$HOME`.
+/// One project's state: its id and `$HOME`.
 pub struct ProjectState {
     /// `<sanitized-name>-<short-hash>`.
     pub id: String,
-    /// The canonical project root the id was computed from.
-    pub root: PathBuf,
     /// The project home, mounted as the box's `$HOME`.
     pub home: PathBuf,
 }
@@ -42,19 +40,18 @@ struct StateFile {
 
 impl ProjectState {
     /// Load this project's state, creating the home and refreshing
-    /// `state.json`.
+    /// `state.json`. `root` is canonical.
     pub fn load_or_create(root: &Path) -> io::Result<ProjectState> {
-        let root = canonical(root)?;
-        let (id, dir) = state_dir_for(&root)?;
+        let (id, dir) = state_dir_for(root)?;
         let home = dir.join("home");
         fs::create_dir_all(&home)?;
         let state = StateFile {
-            root: root.clone(),
+            root: root.to_path_buf(),
             last_run: now(),
         };
         let json = serde_json::to_vec(&state).map_err(io::Error::other)?;
         fs::write(dir.join("state.json"), json)?;
-        Ok(ProjectState { id, root, home })
+        Ok(ProjectState { id, home })
     }
 }
 
@@ -67,24 +64,23 @@ fn state_dir_for(root: &Path) -> io::Result<(String, PathBuf)> {
 }
 
 /// The project home `pinfold pi` mounts as the box's `$HOME`, computed
-/// without creating it.
+/// without creating it. `root` is canonical.
 pub fn project_home(root: &Path) -> io::Result<PathBuf> {
-    let root = canonical(root)?;
-    let (_, dir) = state_dir_for(&root)?;
+    let (_, dir) = state_dir_for(root)?;
     Ok(dir.join("home"))
 }
 
-/// The id for `root`, canonicalizing it first. Trust records use the same
-/// id.
+/// The id for a canonical `root`. Trust records use the same id.
 pub fn project_id(root: &Path) -> io::Result<String> {
-    Ok(id_for(&canonical(root)?))
+    Ok(id_for(root))
 }
 
-fn canonical(root: &Path) -> io::Result<PathBuf> {
-    fs::canonicalize(root).map_err(|error| {
+/// Canonicalize `path`, naming it in the error.
+pub(crate) fn canonical(path: &Path) -> io::Result<PathBuf> {
+    fs::canonicalize(path).map_err(|error| {
         io::Error::new(
             error.kind(),
-            format!("canonicalize {}: {error}", root.display()),
+            format!("canonicalize {}: {error}", path.display()),
         )
     })
 }
