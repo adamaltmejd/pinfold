@@ -2829,6 +2829,13 @@ fn a_caller_owned_box_cannot_write_git() {
     let repo = TestDir::new(&env, "repo");
     let root = repo.path().to_string_lossy().into_owned();
     let dot_git = repo.path().join(".git");
+    // Apple's virtiofs attributes a mount's owner to whichever process
+    // looked first, and the runtime's own look can leave the nested `.git`
+    // share owned by another uid for the box's first git command, which
+    // then refuses with "dubious ownership". The ownership check is not
+    // what this guarantee is about, so the box's git is told the repository
+    // is safe.
+    let safe = format!("safe.directory={root}");
 
     // One host commit, so the box has history to read.
     let status = Command::new("git")
@@ -2881,7 +2888,7 @@ fn a_caller_owned_box_cannot_write_git() {
         binary,
         &env,
         &name,
-        &["git", "-C", &root, "log", "--oneline"],
+        &["git", "-C", &root, "-c", &safe, "log", "--oneline"],
     );
     assert_eq!(log.code, 0, "box git log failed: {}", log.stderr);
     assert!(
@@ -2893,7 +2900,7 @@ fn a_caller_owned_box_cannot_write_git() {
         binary,
         &env,
         &name,
-        &["git", "-C", &root, "status", "--porcelain"],
+        &["git", "-C", &root, "-c", &safe, "status", "--porcelain"],
     );
     assert_eq!(status.code, 0, "box git status failed: {}", status.stderr);
     let wrote = box_exec(
@@ -2938,6 +2945,8 @@ fn a_caller_owned_box_cannot_write_git() {
             "user.name=a",
             "-c",
             "user.email=a@b",
+            "-c",
+            &safe,
             "commit",
             "-qam",
             "x",
