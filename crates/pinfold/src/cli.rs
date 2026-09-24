@@ -215,17 +215,45 @@ fn up(args: &[OsString]) -> io::Result<i32> {
             detail: error.to_string(),
         }));
     }
-    // The owner label is how `box prune` tells a live box from a leftover.
+    // The owner label names this process to `list`. For a state dir other
+    // than this one, it is also how the owner is judged alive.
     plan.labels
         .insert(clean::OWNER_LABEL.into(), std::process::id().to_string());
+    // Every error from here on has removed what the start made; it ends the
+    // stream as one `failed` line.
+    Ok(match hold_up(&plan) {
+        Ok(code) => code,
+        Err(error) => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "event": "failed",
+                    "box": &plan.name,
+                    "detail": error.to_string(),
+                })
+            );
+            1
+        }
+    })
+}
+
+/// Start the validated box, report it ready, hold it, and print the `down`
+/// line. A refusal prints its own line.
+fn hold_up(plan: &Plan) -> io::Result<i32> {
     let init = init_path()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let result = runtime.block_on(async {
-        let mut box_ = match Box::up(&plan, &init).await {
+        // This process owns the box, so `up` takes SIGTERM and SIGINT.
+        let mut box_ = match Box::up(plan, &init, true).await {
             Ok(box_) => box_,
             Err(UpError::Refused(refusal)) => return Ok(refused(refusal)),
+            Err(UpError::Signal) => {
+                println!("{}", down_line(&plan.name, Shutdown::Signal));
+                io::stdout().flush()?;
+                return Ok(0);
+            }
             Err(UpError::Other(error)) => return Err(error),
         };
         println!(
@@ -331,19 +359,20 @@ fn stat(args: &[OsString]) -> io::Result<i32> {
 }
 
 /// Signal the owning `box up` process through the state dir and wait for it
-/// to remove the box. A dead owner means remove the leftover directly.
+/// to remove the box. The pid is signalled only while its lock is held, so a
+/// reused pid is never hit. A dead owner means remove the leftover directly.
 fn down(args: &[OsString]) -> io::Result<i32> {
     let name = single_name(args, "down")?;
     let state = state_path(&name)?;
     if let Some(pid) = read_pid(&state)
-        && clean::alive(pid)
+        && clean::owner_alive(&state)
     {
         kill(Pid::from_raw(pid), Signal::SIGTERM).map_err(io::Error::other)?;
         for _ in 0..1000 {
             if !state.exists() {
                 return Ok(0);
             }
-            if !clean::alive(pid) {
+            if !clean::owner_alive(&state) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -357,6 +386,7 @@ fn down(args: &[OsString]) -> io::Result<i32> {
 /// Print one JSON line per box matching every `--label` filter.
 fn list(args: &[OsString]) -> io::Result<i32> {
     let filters = parse_labels(args)?;
+    let state = dirs::state_dir()?.join("boxes");
     for box_ in runtime()?.list()? {
         let matches = filters.iter().all(|(key, value)| match value {
             Some(value) => box_.labels.get(key) == Some(value),
@@ -375,7 +405,7 @@ fn list(args: &[OsString]) -> io::Result<i32> {
                 "name": box_.id,
                 "labels": box_.labels,
                 "owner": owner,
-                "owner_alive": owner.is_some_and(clean::alive),
+                "owner_alive": clean::box_owner_alive(&state.join(&box_.id), owner),
                 "created": box_.created,
                 "state": box_.state.as_str(),
             })

@@ -12,6 +12,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use e2e::{HttpFixture, TestEnv, pinfold};
 
@@ -35,6 +36,10 @@ fn box_lifecycle_works_for_a_caller() {
     // positive control that the same path can succeed.
     // Sabotage: skip exec's existence check; the post-down exec returns the
     // runtime's 125 instead of 3.
+    // Sabotage: install `up`'s SIGTERM and SIGINT handlers after `ready`, as
+    // before; the SIGTERM sent once `pid` exists lands before `ready` and
+    // kills `up` by the default action, so there is no `down` line, `up`
+    // ends by signal 15 instead of exit 0, and the box stays listed.
     let binary = pinfold();
     let env = TestEnv::new("lifecycle");
     let name = format!("pinfold-e2e-{}-lifecycle", std::process::id());
@@ -136,6 +141,65 @@ fn box_lifecycle_works_for_a_caller() {
         "wrong down reason: {lines:?}"
     );
     assert!(again.wait().success(), "up did not exit 0 for stdin-closed");
+
+    // SIGTERM before ready tears down whatever exists and still ends with
+    // `down`. `up` writes its `pid` file right after its claim, so after its
+    // handlers; a SIGTERM sent right after spawn could meet the default
+    // action instead.
+    let mut starting = box_up_start(binary, &env, &spec, &[]);
+    let pid = env
+        .state
+        .join("pinfold")
+        .join("boxes")
+        .join(&name)
+        .join("pid");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !pid.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "up never wrote {}",
+            pid.display()
+        );
+        std::thread::yield_now();
+    }
+    let kill = Command::new("kill")
+        .args(["-TERM", &starting.child.id().to_string()])
+        .status()
+        .expect("run kill");
+    assert!(kill.success(), "kill failed: {kill}");
+    let lines = starting.rest();
+    let status = starting.child.wait().expect("wait for box up");
+    assert!(
+        status.success(),
+        "up did not exit 0 for a SIGTERM before ready: {status}"
+    );
+    let (down, earlier) = lines
+        .split_last()
+        .unwrap_or_else(|| panic!("up printed no down line after SIGTERM"));
+    assert_eq!(
+        down["event"], "down",
+        "the last line was not down: {lines:?}"
+    );
+    assert_eq!(down["box"], name);
+    assert_eq!(down["reason"], "signal", "wrong down reason: {lines:?}");
+    assert!(
+        earlier.iter().all(|line| line["event"] == "ready"),
+        "up printed more than ready and down: {lines:?}"
+    );
+    drop(starting.stdin);
+    let listed = box_list(binary, &env, label);
+    assert!(
+        !listed
+            .iter()
+            .any(|box_| box_["name"].as_str() == Some(name.as_str())),
+        "the box survived a SIGTERM before ready: {listed:?}"
+    );
+    let state = env.state.join("pinfold").join("boxes").join(&name);
+    assert!(
+        !state.exists(),
+        "a SIGTERM before ready left the state dir: {}",
+        state.display()
+    );
 }
 
 #[test]
@@ -153,6 +217,13 @@ fn up_refuses_before_it_creates() {
     // Sabotage: drop the comma and control-character check from the
     // mount-path validation; the comma path then reaches the runtime, whose
     // option parser reads the rest as mount options, so the refusal assertion
+    // fails.
+    // Sabotage: make the claim treat an existing state dir as success, as
+    // `create_dir_all` does, and make the name checks always pass; the
+    // concurrent loser is never refused `name-in-use`, and its failure path
+    // removes the winner's box, so the winner's `exec` fails too.
+    // Sabotage: return a failure after the claim as prose on stderr, as
+    // before; the absent-mount `up` prints no line and the first-line read
     // fails.
     let binary = pinfold();
     let env = TestEnv::new("refuses");
@@ -283,6 +354,35 @@ fn up_refuses_before_it_creates() {
         "the refused up left a box"
     );
 
+    // A mount whose absolute host path does not exist passes validation, so
+    // the runtime rejects the run after the claim. `up` removes what it made
+    // and ends with one `failed` line. The positive control is the live
+    // name below, which comes up `ready` from the same image.
+    let absent = serde_json::json!({
+        "name": name,
+        "image": default_image(binary, &env),
+        "labels": { "dev.example.test": "refuses" },
+        "mounts": [{ "host": env.root.join("absent"), "guest": "/workspace", "readonly": false }],
+    });
+    let (code, failed) = box_up_refused(binary, &env, &absent, &[]);
+    assert_eq!(code, 1, "a failed up exits 1: {failed}");
+    assert_eq!(failed["event"], "failed", "not a failed line: {failed}");
+    assert_eq!(failed["box"], name);
+    assert!(
+        !failed["detail"].as_str().unwrap_or_default().is_empty(),
+        "the failed line has no detail: {failed}"
+    );
+    let state = env.state.join("pinfold").join("boxes").join(&name);
+    assert!(
+        !state.exists(),
+        "the failed up left a state dir: {}",
+        state.display()
+    );
+    assert!(
+        box_list(binary, &env, label).is_empty(),
+        "the failed up left a box"
+    );
+
     // A second `up` on a live name is refused without touching the first
     // box.
     let live = serde_json::json!({
@@ -305,6 +405,46 @@ fn up_refuses_before_it_creates() {
 
     let _ = box_down(binary, &env, &name);
     assert!(up.wait().success(), "box up did not exit cleanly");
+    drop(up);
+
+    // Two `up`s on one free name at once: the claim lets exactly one hold
+    // it, and the loser touches nothing of the winner's. Both are spawned
+    // before either's first line is read.
+    let mut starts = [
+        box_up_start(binary, &env, &live, &[]),
+        box_up_start(binary, &env, &live, &[]),
+    ];
+    let lines = starts.each_mut().map(Starting::first_line);
+    let [first, second] = starts;
+    let [first_line, second_line] = lines;
+    let (winner, ready, mut loser, refused) = if first_line["event"] == "ready" {
+        (first, first_line, second, second_line)
+    } else {
+        (second, second_line, first, first_line)
+    };
+    assert_eq!(ready["event"], "ready", "neither up came ready: {ready}");
+    assert_eq!(ready["box"], name);
+    let mut winner = winner.into_up(binary, &env, &name, ready);
+    assert_eq!(
+        refused["event"], "refused",
+        "the loser was not refused: {refused}"
+    );
+    assert_eq!(refused["box"], name);
+    assert_eq!(refused["reason"], "name-in-use", "wrong reason: {refused}");
+    drop(loser.stdin);
+    let status = loser.child.wait().expect("wait for the losing up");
+    assert_eq!(exit_code(status), 1, "the losing up did not exit 1");
+    let ok = box_exec(binary, &env, &name, &["true"]);
+    assert_eq!(
+        ok.code, 0,
+        "the winner did not survive the losing up: {}",
+        ok.stderr
+    );
+    let _ = box_down(binary, &env, &name);
+    assert!(
+        winner.wait().success(),
+        "the winning up did not exit cleanly"
+    );
 }
 
 #[test]
@@ -898,7 +1038,12 @@ fn losing_the_owner_fails_closed() {
     // and lets it through, so the unchanged-log assertion fails. Curl's own
     // error is not asserted: Apple's forwarder sometimes hangs after the
     // owner dies rather than closing, so the request may end in a timeout
-    // instead of a refusal.
+    // instead of a refusal. Sabotage: make the owner liveness test read the
+    // pid from the `pid` file and return `kill(pid, 0)` as `Ok` or `EPERM`;
+    // pid 1 then counts as alive, so `list` reports `owner_alive` true and
+    // `prune` skips the box, and both assertions fail. The positive control
+    // is the live box in `cleanup_removes_only_pinfolds_garbage`, whose
+    // `owner_alive` is true through the same test.
     let binary = pinfold();
     let env = TestEnv::new("owner-gone");
     let name = format!("pinfold-e2e-{}-owner-gone", std::process::id());
@@ -937,8 +1082,13 @@ fn losing_the_owner_fails_closed() {
     let _race = DEAD_BOX_RACE
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
+    // The owner is reaped only after `box prune` has reported the box. Until
+    // then it is a zombie: `kill(pid, 0)` succeeds on it, so every other
+    // test's state root, which judges this box by its label pid, leaves it
+    // alone, while this root sees the lock released the moment the process
+    // died. Reaped earlier, another test's first command runs the daily pass
+    // and prunes the box before this test's `box prune` can report it.
     up.kill();
-    up.wait();
 
     // The positive control left its decision in the log. A live proxy
     // anywhere would log before it dials, so no new line means no proxy saw
@@ -973,6 +1123,19 @@ fn losing_the_owner_fails_closed() {
         before.len(),
         "the egress log gained a line after the owner died: {after:?}"
     );
+
+    // The state dir's `pid` now names pid 1, which is alive and which this
+    // test cannot signal: pid reuse and EPERM in one write. Only the lock
+    // tells the owner is gone.
+    fs::write(
+        env.state
+            .join("pinfold")
+            .join("boxes")
+            .join(&name)
+            .join("pid"),
+        "1",
+    )
+    .expect("overwrite the dead owner's pid");
 
     // Pinfold's own liveness test reports the owner gone before prune acts:
     // the box is still listed, with `owner_alive` false.
@@ -1014,11 +1177,19 @@ fn losing_the_owner_fails_closed() {
         Some(u64::from(owner)),
         "prune named another owner: {line:?}"
     );
+    up.wait();
     let listed = box_list(binary, &env, label);
     assert!(
         !listed.iter().any(|box_| box_["name"] == name),
         "prune left the box: {listed:?}"
     );
+
+    // The name is free again: a fresh `up` comes up `ready`, not refused
+    // `name-in-use`, and goes down cleanly.
+    let mut fresh = box_up(binary, &env, &spec, &name);
+    let status = box_down(binary, &env, &name);
+    assert!(status.success(), "box down failed: {status}");
+    assert!(fresh.wait().success(), "the fresh up did not exit cleanly");
 }
 
 #[test]
@@ -2354,6 +2525,66 @@ fn box_up_with_env(
     name: &str,
     vars: &[(&str, &str)],
 ) -> Up {
+    let mut starting = box_up_start(binary, env, spec, vars);
+    let ready = starting.first_line();
+    assert_eq!(ready["event"], "ready", "first line was {ready}");
+    assert_eq!(ready["box"], name, "ready named another box: {ready}");
+    starting.into_up(binary, env, name, ready)
+}
+
+/// A spawned `box up` with its spec written and stdin still open, before
+/// any of its output is read.
+struct Starting {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl Starting {
+    /// Read and parse `up`'s first line.
+    fn first_line(&mut self) -> serde_json::Value {
+        let mut line = String::new();
+        self.stdout
+            .read_line(&mut line)
+            .expect("read box up's first line");
+        serde_json::from_str(line.trim())
+            .unwrap_or_else(|error| panic!("box up's first line {line:?} is not JSON: {error}"))
+    }
+
+    /// Read the rest of `up`'s stdout to EOF, stdin still open.
+    fn rest(&mut self) -> Vec<serde_json::Value> {
+        (&mut self.stdout)
+            .lines()
+            .map(|line| {
+                serde_json::from_str(&line.expect("read box up output"))
+                    .expect("box up line is JSON")
+            })
+            .collect()
+    }
+
+    /// The [`Up`] of a start whose first line was `ready`.
+    fn into_up(self, binary: &Path, env: &TestEnv, name: &str, ready: serde_json::Value) -> Up {
+        Up {
+            binary: binary.to_path_buf(),
+            state: env.state.clone(),
+            cache: env.cache.clone(),
+            name: name.to_string(),
+            ready,
+            child: self.child,
+            stdin: Some(self.stdin),
+            stdout: Some(self.stdout),
+        }
+    }
+}
+
+/// Spawn `box up` and write its spec, reading nothing, so a test can start
+/// several at once.
+fn box_up_start(
+    binary: &Path,
+    env: &TestEnv,
+    spec: &serde_json::Value,
+    vars: &[(&str, &str)],
+) -> Starting {
     let mut child = env
         .command(binary)
         .envs(vars.iter().copied())
@@ -2367,24 +2598,11 @@ fn box_up_with_env(
     let spec = serde_json::to_string(spec).expect("serialize spec");
     stdin.write_all(spec.as_bytes()).expect("write spec");
     stdin.flush().expect("flush spec");
-
-    let stdout = child.stdout.take().expect("box up stdout");
-    let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
-    reader.read_line(&mut line).expect("read ready line");
-    let ready: serde_json::Value = serde_json::from_str(line.trim()).expect("ready JSON");
-    assert_eq!(ready["event"], "ready", "first line was {line:?}");
-    assert_eq!(ready["box"], name, "ready named another box: {line:?}");
-
-    Up {
-        binary: binary.to_path_buf(),
-        state: env.state.clone(),
-        cache: env.cache.clone(),
-        name: name.to_string(),
-        ready,
+    let stdout = BufReader::new(child.stdout.take().expect("box up stdout"));
+    Starting {
         child,
-        stdin: Some(stdin),
-        stdout: Some(reader),
+        stdin,
+        stdout,
     }
 }
 
