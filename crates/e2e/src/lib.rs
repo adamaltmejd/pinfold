@@ -235,6 +235,30 @@ pub fn image_id(reference: &str) -> Option<String> {
         .map(|image| image.id)
 }
 
+/// The digest the runtime's inspect reports for `reference`: podman's
+/// manifest digest, which is not the image id; Apple's descriptor digest,
+/// which is.
+pub fn image_digest(reference: &str) -> String {
+    let output = Command::new(image_cli())
+        .args(["image", "inspect", reference])
+        .output()
+        .unwrap_or_else(|error| panic!("run {} image inspect: {error}", image_cli()));
+    assert!(
+        output.status.success(),
+        "{} image inspect {reference} failed: {}",
+        image_cli(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let images: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).expect("image inspect is JSON");
+    let image = images.first().expect("image inspect returned an image");
+    image["Digest"]
+        .as_str()
+        .or_else(|| image["configuration"]["descriptor"]["digest"].as_str())
+        .unwrap_or_else(|| panic!("{reference} inspect carries no digest: {image}"))
+        .to_string()
+}
+
 /// The number of untagged images `podman images -a` lists, including the
 /// intermediate layers a cached build leaves behind. Linux only.
 pub fn untagged_images() -> usize {

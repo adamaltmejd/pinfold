@@ -14,8 +14,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use e2e::{
-    HttpFixture, TestEnv, image_cli, image_id, image_named, pinfold, remove_runtime_image,
-    runtime_images, untagged_images,
+    HttpFixture, TestEnv, image_cli, image_digest, image_id, image_named, pinfold,
+    remove_runtime_image, runtime_images, untagged_images,
 };
 
 /// The two owner-gone tests share one hazard: either one's removal can take
@@ -1355,7 +1355,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // `clean` skip boxes whose owner is gone; the dead box assertion fails.
     // Sabotage: set only the build's own family label, as before; build 4
     // then counts x1 and x2 as P's newest images and removes b3, so the "b3
-    // is still listed" assertion fails.
+    // is still listed" assertion fails, and x's base label carries P's own
+    // base, so the base assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("cleanup");
     // `clean` deletes the runtime's builder, so hold off the other tests'
@@ -1425,7 +1426,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         repository: format!("pinfold/image-{x_name}"),
     };
     let profile_ref = format!("pinfold/profile-{profile}:latest");
-    let profile_id = image_id(&profile_ref);
+    let profile_digest = image_digest(&profile_ref);
     let x_context = env.root.join("x-context");
     fs::create_dir_all(&x_context).unwrap();
     let x_containerfile = x_context.join("Containerfile");
@@ -1449,32 +1450,20 @@ fn cleanup_removes_only_pinfolds_garbage() {
             built["labels"]["dev.pinfold.profile"], "",
             "x carries the profile's family label: {built}"
         );
-        // A local-only FROM does not pull: on podman the base is empty,
-        // and on Apple it resolves to the listed profile image's digest.
-        // Either is x's own base, never the one the profile carries.
-        let base = built["labels"]["dev.pinfold.base"]
-            .as_str()
-            .unwrap_or_else(|| panic!("x build {} carries no base label: {built}", i + 1));
-        assert!(
-            base.is_empty()
-                || Some(base.strip_prefix("sha256:").unwrap_or(base)) == profile_id.as_deref(),
-            "x build {} carries a base that is neither empty nor its profile image: {built}",
+        // The base is the runtime's digest of the profile ref: x's own,
+        // never the one the profile carries.
+        assert_eq!(
+            built["labels"]["dev.pinfold.base"],
+            profile_digest.as_str(),
+            "x build {} does not carry the profile image's digest as its base: {built}",
             i + 1
         );
-        if base.is_empty() {
-            assert!(
-                built["base"].is_null(),
-                "x build {} reports an empty base label as not null: {built}",
-                i + 1
-            );
-        } else {
-            assert_eq!(
-                built["base"],
-                built["labels"]["dev.pinfold.base"],
-                "x build {} base is not the recorded base label: {built}",
-                i + 1
-            );
-        }
+        assert_eq!(
+            built["base"],
+            built["labels"]["dev.pinfold.base"],
+            "x build {} base is not the recorded base label: {built}",
+            i + 1
+        );
         x_refs.push(
             built["ref"]
                 .as_str()
