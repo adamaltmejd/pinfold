@@ -149,7 +149,11 @@ fn ensure_project_image(config: &Config, image: &str) -> io::Result<()> {
             format!("image {image} is missing; run `pinfold build`"),
         ));
     };
-    let recorded = built.labels.get(clean::BASE_LABEL).map(String::as_str);
+    let recorded = built
+        .labels
+        .get(clean::BASE_LABEL)
+        .map(String::as_str)
+        .filter(|base| !base.is_empty());
     let current = local_image_id(runtime, &config.profile.image_ref())?;
     if recorded != current.as_deref() {
         eprintln!(

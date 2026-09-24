@@ -1351,6 +1351,9 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // the other project's state assertion fails. Sabotage: make `clean`
     // remove every box; the live box assertion fails. Sabotage: make
     // `clean` skip boxes whose owner is gone; the dead box assertion fails.
+    // Sabotage: set only the build's own family label, as before; build 4
+    // then counts x1 and x2 as P's newest images and removes b3, so the "b3
+    // is still listed" assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("cleanup");
     // `clean` deletes the runtime's builder, so hold off the other tests'
@@ -1412,6 +1415,72 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "the two images left are not b2 and b3: {images:?}"
     );
 
+    // A caller image built on the profile's `:latest`. The runtime copies
+    // the base image's labels onto it, so without the explicit empty family
+    // labels it would count as the profile's image in build 4's retention.
+    let x_name = format!("{profile}-x");
+    let _x_images = ImageCleanup {
+        repository: format!("pinfold/image-{x_name}"),
+    };
+    let profile_ref = format!("pinfold/profile-{profile}:latest");
+    let profile_id = image_id(&profile_ref);
+    let x_context = env.root.join("x-context");
+    fs::create_dir_all(&x_context).unwrap();
+    let x_containerfile = x_context.join("Containerfile");
+    fs::write(
+        &x_containerfile,
+        format!("FROM {profile_ref}\nCOPY marker.txt /marker.txt\n"),
+    )
+    .unwrap();
+    fs::write(x_context.join("marker.txt"), "x\n").unwrap();
+    let mut x_refs: Vec<String> = Vec::new();
+    for i in 0..2 {
+        let (code, built) = image_build(binary, &env, &x_name, &x_containerfile, &x_context);
+        assert_eq!(built["event"], "built", "x build {}: {built}", i + 1);
+        assert_eq!(code, 0, "x build {} exited {code}", i + 1);
+        assert_eq!(
+            built["labels"]["dev.pinfold.image"],
+            x_name.as_str(),
+            "x is not its own family: {built}"
+        );
+        assert_eq!(
+            built["labels"]["dev.pinfold.profile"], "",
+            "x carries the profile's family label: {built}"
+        );
+        // A local-only FROM does not pull: on podman the base is empty,
+        // and on Apple it resolves to the listed profile image's digest.
+        // Either is x's own base, never the one the profile carries.
+        let base = built["labels"]["dev.pinfold.base"]
+            .as_str()
+            .unwrap_or_else(|| panic!("x build {} carries no base label: {built}", i + 1));
+        assert!(
+            base.is_empty()
+                || Some(base.strip_prefix("sha256:").unwrap_or(base)) == profile_id.as_deref(),
+            "x build {} carries a base that is neither empty nor its profile image: {built}",
+            i + 1
+        );
+        if base.is_empty() {
+            assert!(
+                built["base"].is_null(),
+                "x build {} reports an empty base label as not null: {built}",
+                i + 1
+            );
+        } else {
+            assert_eq!(
+                built["base"],
+                built["labels"]["dev.pinfold.base"],
+                "x build {} base is not the recorded base label: {built}",
+                i + 1
+            );
+        }
+        x_refs.push(
+            built["ref"]
+                .as_str()
+                .unwrap_or_else(|| panic!("x build {} carries no ref: {built}", i + 1))
+                .to_string(),
+        );
+    }
+
     // Box A pins b2, the older of the two, so the next build's retention
     // meets a pinned image first. `FROM scratch` has no program for `exec`,
     // so `box list` is how the test sees the box survive.
@@ -1445,6 +1514,16 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert!(
         stderr.contains(&b2),
         "build 4's maintenance line did not name the pinned b2: {stderr}"
+    );
+    // Build 4 counts only the profile's own images, so the caller's two
+    // survive and b3 remains the profile's older rollback image.
+    assert!(
+        x_refs.iter().all(|reference| image_named(reference)),
+        "build 4 removed a caller image built on the profile: {x_refs:?}"
+    );
+    assert!(
+        image_named(&b3),
+        "build 4 removed the profile's b3 for its caller images"
     );
 
     // Box B pins b3, then box A goes down and frees b2. Build 5's retention

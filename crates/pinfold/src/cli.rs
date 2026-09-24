@@ -920,7 +920,11 @@ fn report_image(config: &Config, runtime: &dyn Runtime, project: &str) -> io::Re
     };
     println!("  exists");
     if matches!(config.containerfile, Containerfile::Project(_)) {
-        let recorded = found.labels.get(clean::BASE_LABEL).map(String::as_str);
+        let recorded = found
+            .labels
+            .get(clean::BASE_LABEL)
+            .map(String::as_str)
+            .filter(|base| !base.is_empty());
         let current = local_image_id(runtime, &config.profile.image_ref())?;
         if recorded == current.as_deref() {
             println!("  built from the current profile image");
@@ -1365,7 +1369,10 @@ fn image_build(args: &[OsString]) -> i32 {
                 "image": name,
                 "ref": built.reference,
                 "latest": built.latest,
-                "base": built.labels.get(clean::BASE_LABEL),
+                "base": built
+                    .labels
+                    .get(clean::BASE_LABEL)
+                    .filter(|base| !base.is_empty()),
                 "labels": built.labels,
             }),
             0,
