@@ -50,7 +50,7 @@ fn launch(args: &[OsString]) -> io::Result<i32> {
     // The read-only mounts are prepared after trust, so a refused run leaves
     // no created directory behind.
     let git = Git::prepare(&root, &config.protect)?;
-    let plan = build_plan(&root, &config, &state, &image, &git)?;
+    let plan = build_plan(&config, &state, &image, &git)?;
     let code = run_box(&plan, &cwd, &argv);
     // The box is down; remove the protected directories this run created.
     git.cleanup();
@@ -171,14 +171,8 @@ fn pi_argv(args: &[OsString]) -> io::Result<Vec<String>> {
     Ok(argv)
 }
 
-/// The complete box spec for one project. `root` is canonical.
-fn build_plan(
-    root: &Path,
-    config: &Config,
-    state: &ProjectState,
-    image: &str,
-    git: &Git,
-) -> io::Result<Plan> {
+/// The complete box spec for one project.
+fn build_plan(config: &Config, state: &ProjectState, image: &str, git: &Git) -> io::Result<Plan> {
     let home = state.home.to_str().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -208,8 +202,8 @@ fn build_plan(
 
     let mut mounts = vec![
         Mount {
-            host: root.to_path_buf(),
-            guest: root.to_path_buf(),
+            host: git.root().to_path_buf(),
+            guest: git.root().to_path_buf(),
             readonly: false,
         },
         Mount {

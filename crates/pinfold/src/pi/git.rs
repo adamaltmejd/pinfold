@@ -23,6 +23,8 @@ const ALWAYS_PROTECT: [&str; 3] = [".vscode", ".claude", ".idea"];
 /// One run's read-only mounts and the absent protected directories it
 /// created for them.
 pub struct Git {
+    /// The project root the mounts are relative to.
+    root: PathBuf,
     /// Read-only mounts at their own absolute paths.
     readonly: Vec<Mount>,
     /// Protected directories that did not exist and were created empty.
@@ -96,7 +98,16 @@ impl Git {
                 readonly: true,
             });
         }
-        Ok(Git { readonly, created })
+        Ok(Git {
+            root: root.to_path_buf(),
+            readonly,
+            created,
+        })
+    }
+
+    /// The project root the mounts belong to.
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     /// The read-only mounts, at their own absolute paths.
