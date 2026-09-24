@@ -242,6 +242,18 @@ impl Runtime for Podman {
 pub struct PodmanInfo {
     /// `host.cgroupManager`: `systemd`, `cgroupfs`, or another backend.
     pub cgroup_manager: String,
+    /// `host.idMappings.uidmap`: the container ids the user namespace maps.
+    uid_map: Vec<IdMap>,
+    /// `host.idMappings.gidmap`: the container ids the user namespace maps.
+    gid_map: Vec<IdMap>,
+}
+
+/// One entry in podman's user-namespace id maps: container ids
+/// `container_id` through `container_id + size - 1`.
+#[derive(Debug, Deserialize)]
+struct IdMap {
+    container_id: u32,
+    size: u32,
 }
 
 /// What `doctor` finds of podman on this host. Preflight refuses all but
@@ -265,6 +277,8 @@ pub fn detect() -> io::Result<Detected> {
     };
     let reported = PodmanInfo {
         cgroup_manager: info.host.cgroup_manager,
+        uid_map: info.host.id_mappings.uidmap,
+        gid_map: info.host.id_mappings.gidmap,
     };
     Ok(if info.host.security.rootless {
         Detected::RootlessPodman(reported)
@@ -294,6 +308,24 @@ pub fn linger() -> io::Result<bool> {
         .is_some_and(|value| value == "yes"))
 }
 
+/// Whether `/dev/net/tun` exists, for `doctor`. pasta opens the device to
+/// give a `RUN` step a network; a box itself runs with `--network none`, so
+/// a missing device is a diagnosis, not a preflight refusal.
+pub fn tun_present() -> bool {
+    Path::new("/dev/net/tun").exists()
+}
+
+/// Whether both of podman's user-namespace id maps contain `id`, for
+/// `doctor`. Debian's `_apt` is gid 65534 and cannot `setegid` to it when
+/// the mapping stops short.
+pub fn subordinate_ids_cover(info: &PodmanInfo, id: u32) -> bool {
+    let covered = |map: &[IdMap]| {
+        map.iter()
+            .any(|entry| entry.container_id <= id && id - entry.container_id < entry.size)
+    };
+    covered(&info.uid_map) && covered(&info.gid_map)
+}
+
 /// What preflight needs from `podman info`.
 #[derive(Deserialize)]
 struct Info {
@@ -305,6 +337,17 @@ struct InfoHost {
     #[serde(rename = "cgroupManager")]
     cgroup_manager: String,
     security: InfoSecurity,
+    // Rootful podman reports no maps; rootless always does.
+    #[serde(rename = "idMappings", default, deserialize_with = "empty_default")]
+    id_mappings: InfoIdMappings,
+}
+
+#[derive(Deserialize, Default)]
+struct InfoIdMappings {
+    #[serde(default, deserialize_with = "empty_default")]
+    uidmap: Vec<IdMap>,
+    #[serde(default, deserialize_with = "empty_default")]
+    gidmap: Vec<IdMap>,
 }
 
 #[derive(Deserialize)]
