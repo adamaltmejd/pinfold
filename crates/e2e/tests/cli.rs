@@ -13,9 +13,9 @@ use e2e::{TestEnv, pinfold};
 #[test]
 fn version_needs_no_runtime() {
     // Sabotage: run `pinfold::core::clean::maintain()` before dispatch as
-    // the code did; with the empty PATH the pass prints
-    // `pinfold: maintenance: boxes: No such file or directory (os error 2)`
-    // on stderr and writes the `maintenance` stamp, failing both assertions.
+    // the code did; with the empty PATH the pass prints the
+    // missing-runtime sentence on stderr and writes the `maintenance` stamp,
+    // failing both assertions.
     let binary = pinfold();
     let env = TestEnv::new("version");
     let empty = env.root.join("empty-path");

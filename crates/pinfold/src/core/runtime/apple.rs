@@ -12,7 +12,9 @@ use tokio::process::{Child, Command};
 
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
-use crate::core::runtime::{BoxInfo, BuildRequest, ImageInfo, Runtime, bind, guest_path, user};
+use crate::core::runtime::{
+    BoxInfo, BuildRequest, ImageInfo, Runtime, bind, guest_path, spawn_error, user,
+};
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
 pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
@@ -55,7 +57,9 @@ impl Runtime for Apple {
             command.env("HTTPS_PROXY", PROXY_URL);
             command.env("http_proxy", PROXY_URL);
         }
-        command.spawn()
+        command
+            .spawn()
+            .map_err(|error| spawn_error("container", error))
     }
 
     fn make_proxy_connectable(&self, name: &str) -> io::Result<()> {
@@ -66,7 +70,8 @@ impl Runtime for Apple {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
-            .status()?;
+            .status()
+            .map_err(|error| spawn_error("container", error))?;
         if status.success() {
             Ok(())
         } else {
@@ -89,7 +94,8 @@ impl Runtime for Apple {
             .args(arguments)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .status()?;
+            .status()
+            .map_err(|error| spawn_error("container", error))?;
         if status.success() {
             return Ok(());
         }
@@ -123,13 +129,16 @@ impl Runtime for Apple {
             // a terminal signal reaches pinfold and not the exec.
             command.process_group(0);
         }
-        command.status()
+        command
+            .status()
+            .map_err(|error| spawn_error("container", error))
     }
 
     fn list(&self) -> io::Result<Vec<BoxInfo>> {
         let output = std::process::Command::new("container")
             .args(["list", "--all", "--format", "json"])
-            .output()?;
+            .output()
+            .map_err(|error| spawn_error("container", error))?;
         if !output.status.success() {
             return Err(io::Error::other(format!(
                 "container list: {}",
@@ -142,7 +151,8 @@ impl Runtime for Apple {
     fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
         let output = std::process::Command::new("container")
             .args(["image", "list", "--format", "json"])
-            .output()?;
+            .output()
+            .map_err(|error| spawn_error("container", error))?;
         if !output.status.success() {
             return Err(io::Error::other(format!(
                 "container image list: {}",
@@ -156,7 +166,8 @@ impl Runtime for Apple {
         // `image delete` also collects the layers no image references.
         let output = std::process::Command::new("container")
             .args(["image", "delete", reference])
-            .output()?;
+            .output()
+            .map_err(|error| spawn_error("container", error))?;
         if output.status.success() {
             Ok(())
         } else {
@@ -175,7 +186,8 @@ impl Runtime for Apple {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
-            .status()?;
+            .status()
+            .map_err(|error| spawn_error("container", error))?;
         if status.success() {
             Ok(())
         } else {
@@ -199,7 +211,8 @@ impl Runtime for Apple {
             // itself, so the caller's stdout holds only the ref.
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
-            .status()?;
+            .status()
+            .map_err(|error| spawn_error("container", error))?;
         if status.success() {
             Ok(())
         } else {
@@ -216,10 +229,12 @@ impl Runtime for Apple {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
-            .status();
+            .status()
+            .map_err(|error| spawn_error("container", error));
         let output = std::process::Command::new("container")
             .args(["image", "inspect", reference])
-            .output()?;
+            .output()
+            .map_err(|error| spawn_error("container", error))?;
         if !output.status.success() {
             return Ok(None);
         }

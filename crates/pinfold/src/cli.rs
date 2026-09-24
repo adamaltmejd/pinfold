@@ -524,6 +524,9 @@ fn run_doctor(args: &[OsString]) -> io::Result<usize> {
     println!("pinfold doctor: {}", root.display());
 
     let runtime = runtime();
+    // A missing runtime binary is this host's one problem; the checks that
+    // need the runtime fail with the same absence and are not counted again.
+    let mut runtime_missing = false;
     match &runtime {
         Ok(runtime) => {
             let runtime = *runtime;
@@ -533,6 +536,7 @@ fn run_doctor(args: &[OsString]) -> io::Result<usize> {
                 Err(error) => {
                     println!("  version: unavailable: {error}");
                     problems += 1;
+                    runtime_missing = error.kind() == io::ErrorKind::NotFound;
                 }
             }
             if runtime.name() == "podman" {
@@ -559,7 +563,7 @@ fn run_doctor(args: &[OsString]) -> io::Result<usize> {
             Ok(missing) => problems += missing,
             Err(error) => {
                 println!("  unchecked: {error}");
-                problems += 1;
+                problems += usize::from(!runtime_missing);
             }
         },
         Err(_) => println!("  unchecked: no runtime"),
@@ -647,7 +651,7 @@ fn run_doctor(args: &[OsString]) -> io::Result<usize> {
             }
             Err(error) => {
                 println!("  unavailable: {error}");
-                problems += 1;
+                problems += usize::from(!runtime_missing);
             }
         },
         Err(_) => println!("  unavailable: no runtime"),
@@ -660,8 +664,8 @@ fn run_doctor(args: &[OsString]) -> io::Result<usize> {
 /// a host `preflight` refuses cannot start a box. Report only: `preflight`
 /// is what refuses, and `doctor` changes nothing.
 ///
-/// A missing podman CLI adds nothing here: `runtime.version()` has already
-/// counted it, and a host is counted once.
+/// A missing podman is named here, not counted: `runtime.version()` has
+/// already counted it, and a host is counted once.
 fn report_podman() -> usize {
     let problems = match podman::detect() {
         Ok(podman::Detected::RootlessPodman(info)) => {
@@ -676,12 +680,11 @@ fn report_podman() -> usize {
             // counted twice for one host.
             1
         }
-        Ok(podman::Detected::Docker) => {
-            println!("  detected: docker; pinfold requires rootless podman");
-            0
-        }
         Ok(podman::Detected::Missing) => {
-            println!("  detected: missing; podman is not on PATH");
+            println!("  podman: not installed or not on PATH; install rootless podman");
+            if podman::docker_present() {
+                println!("  docker is on PATH; pinfold does not use it");
+            }
             0
         }
         Err(error) => {
