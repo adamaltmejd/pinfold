@@ -1887,7 +1887,7 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
     // Guarantee 19: a caller-owned box launches the pinned harness.
     // Sabotage: drop the harness mount (or mount the wrong directory); the
     // `/opt/pinfold/pi --version` assertion fails. Sabotage: mount pi but
-    // leave `PINFOLD_ALLOW` unset; the second assertion fails.
+    // leave `PINFOLD_ALLOW_PINFOLD` unset; the second assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("harness");
     let name = format!("pinfold-e2e-{}-harness", std::process::id());
@@ -1916,7 +1916,7 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
     let mut up = box_up(binary, &env, &spec, &name);
 
     // The pinned pi is in the box and runs at the pinned version.
-    let ran = box_exec(binary, &env, &name, &["/opt/pinfold/pi", "--version"]);
+    let ran = box_exec(binary, &env, &name, &["/opt/pinfold/pi/pi", "--version"]);
     assert_eq!(
         ran.code, 0,
         "/opt/pinfold/pi --version failed: {}",
@@ -1933,11 +1933,11 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
         binary,
         &env,
         &name,
-        &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""],
+        &["sh", "-c", "printf %s \"$PINFOLD_ALLOW_PINFOLD\""],
     );
     assert_eq!(
         allow.stdout, "api.github.com",
-        "the box's PINFOLD_ALLOW is not the spec's allow list"
+        "the box's PINFOLD_ALLOW_PINFOLD is not the spec's allow list"
     );
 
     let status = box_down(binary, &env, &name);
