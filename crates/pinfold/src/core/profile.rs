@@ -97,32 +97,32 @@ impl Profile {
     pub fn image_ref(&self) -> String {
         format!("pinfold/profile-{}:latest", self.name)
     }
+}
 
-    /// The image the Containerfile's first `FROM` builds on, when it is a
-    /// plain reference. A `FROM` that names a variable has none.
-    pub fn base_image(&self) -> Option<&str> {
-        let text = std::str::from_utf8(&self.containerfile).ok()?;
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let mut words = line.split_whitespace();
-            if !words.next()?.eq_ignore_ascii_case("FROM") {
-                continue;
-            }
-            for word in words {
-                if word.starts_with("--") {
-                    continue;
-                }
-                if word.contains('$') {
-                    return None;
-                }
-                return Some(word);
-            }
+/// The image a Containerfile's first `FROM` builds on, when it is a plain
+/// reference. A `FROM` that names a variable has none.
+pub fn base_image(containerfile: &[u8]) -> Option<&str> {
+    let text = std::str::from_utf8(containerfile).ok()?;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
         }
-        None
+        let mut words = line.split_whitespace();
+        if !words.next()?.eq_ignore_ascii_case("FROM") {
+            continue;
+        }
+        for word in words {
+            if word.starts_with("--") {
+                continue;
+            }
+            if word.contains('$') {
+                return None;
+            }
+            return Some(word);
+        }
     }
+    None
 }
 
 /// Read a profile from a user's directory.

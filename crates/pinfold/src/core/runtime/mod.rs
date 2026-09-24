@@ -5,9 +5,9 @@ pub mod podman;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::ExitStatus;
+use std::process::{ExitStatus, Stdio};
 
 use tokio::process::Child;
 
@@ -154,17 +154,28 @@ pub struct Preflight {
     pub seccomp_profile: Option<PathBuf>,
 }
 
-/// One image build: an empty context holding only a Containerfile, the
-/// names to tag the result with, and the labels to record on it.
+/// One image build: a context, a Containerfile, the names to tag the result
+/// with, and the labels to record on it.
 pub struct BuildRequest<'a> {
-    /// The build context; it holds only the Containerfile.
+    /// The build context.
     pub context: &'a Path,
-    /// The Containerfile inside the context.
+    /// The Containerfile, inside the context or not.
     pub containerfile: &'a Path,
     /// The image names to tag the built image with.
     pub tags: &'a [String],
     /// Labels to put on the image, for Maintenance to find it by.
     pub labels: &'a BTreeMap<String, String>,
+    /// Whether the runtime may reuse its layer cache. Without it every step
+    /// reruns.
+    pub cache: bool,
+}
+
+/// The runtime's build cache, as `pinfold clean` lists it.
+pub enum BuildCache {
+    /// The bytes [`Runtime::purge_build_cache`] would reclaim.
+    Bytes(u64),
+    /// A cache the runtime does not measure, named.
+    Named(&'static str),
 }
 
 /// One OS's container runtime. Command lines are built as data.
@@ -224,21 +235,16 @@ pub trait Runtime: Sync {
     fn remove_image(&self, reference: &str) -> io::Result<()>;
 
     /// Remove the runtime's build cache. Apple: the builder container and
-    /// its layers. The default is a runtime whose builds keep no cache; an
-    /// adapter with one overrides this.
-    fn purge_build_cache(&self) -> io::Result<()> {
-        Ok(())
-    }
+    /// its layers. podman: the intermediate images pinfold's cached builds
+    /// left that no image builds on.
+    fn purge_build_cache(&self) -> io::Result<()>;
 
-    /// A phrase naming what the runtime's build cache holds, printed by
-    /// `pinfold clean`. The default matches [`Runtime::purge_build_cache`]:
-    /// a runtime whose builds keep no cache.
-    fn build_cache_description(&self) -> &'static str {
-        "none"
-    }
+    /// What [`Runtime::purge_build_cache`] would remove, for `pinfold clean`.
+    fn build_cache(&self) -> io::Result<BuildCache>;
 
-    /// Build an image from [`BuildRequest`].
-    fn build(&self, request: &BuildRequest) -> io::Result<()>;
+    /// Build an image from [`BuildRequest`]. The inner `Err` is the build's
+    /// output, stdout and stderr in order, when the build ran and failed.
+    fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>>;
 
     /// Pull `reference` and return the digest it resolved to. `None` when
     /// the reference does not resolve, for example `scratch`.
@@ -272,6 +278,32 @@ pub fn exec_through_init(init: &Path, argv: &[String]) -> Vec<String> {
     wrapped.push("--".to_string());
     wrapped.extend_from_slice(argv);
     wrapped
+}
+
+/// Run a runtime's build argv with its stdout and stderr captured through
+/// one pipe, so the output keeps its order. The inner `Err` is that output
+/// when the build fails.
+fn captured_build(argv: &[OsString]) -> io::Result<Result<(), String>> {
+    let (program, arguments) = argv.split_first().expect("argv is never empty");
+    let (mut reader, writer) = io::pipe()?;
+    let mut command = std::process::Command::new(program);
+    command
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(writer.try_clone()?)
+        .stderr(writer);
+    let child = command.spawn();
+    // The command holds the pipe's write ends, and the read below ends only
+    // once every write end is closed.
+    drop(command);
+    let mut child = child.map_err(|error| spawn_error(&program.to_string_lossy(), error))?;
+    let mut output = Vec::new();
+    reader.read_to_end(&mut output)?;
+    if child.wait()?.success() {
+        Ok(Ok(()))
+    } else {
+        Ok(Err(String::from_utf8_lossy(&output).into_owned()))
+    }
 }
 
 /// The content digest of the image `reference` resolves to. `None` when the

@@ -70,7 +70,7 @@ Not protected:
 - CDN fronting beyond the SNI check (Host-header fronting needs TLS
   interception).
 - Allowlisted services that accept writes (GitHub with a token, registries).
-- Image builds: user-run, trusted, unrestricted egress.
+- Image builds: user- or caller-run, trusted, unrestricted egress.
 
 ## Runtimes
 
@@ -123,6 +123,29 @@ pinfold box stat BOX              # one JSON object of the box's memory, pids an
 pinfold box down BOX              # same as closing up's stdin; idempotent: an absent box exits 0
 pinfold box list --label k=v      # JSON lines; repeat --label to AND filters
 pinfold box prune                 # remove boxes whose `up` is gone, print each removed
+pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache]   # one JSON line
+```
+
+`image build` builds a caller image (see Images) and prints one line on
+stdout; the build's progress never reaches stdout. On success, exit 0:
+
+```json
+{"event":"built","image":NAME,"ref":"pinfold/image-<NAME>:<build>","latest":"pinfold/image-<NAME>:latest","labels":{…},"base":DIGEST|null}
+```
+
+`labels` is every label the build put on the image. A failed build exits 1
+with the last 40 lines of the runtime's build output:
+
+```json
+{"event":"failed","image":NAME,"log":[LINE,…]}
+```
+
+A refusal before the build (a bad name or argument, a missing context or
+Containerfile, a `dev.pinfold.` label, a missing runtime) exits 1 and
+builds nothing; `image` is null when no name was given:
+
+```json
+{"event":"refused","image":NAME,"reason":"spec"|"runtime","detail":TEXT}
 ```
 
 On a box that is absent, `exec` exits 3 with `pinfold box exec: no box
@@ -341,18 +364,32 @@ An image is a toolchain; the harness is not baked in. The default comes from
 the profile's Containerfile. A project can name its own, typically `FROM` the
 profile image.
 
-- Images are built only by `pinfold build`. `pinfold pi` refuses when the
-  image is missing and names the command.
-- Every build gets an empty context: the Containerfile alone. For a project
-  build, trust then covers every input. Files come in by `ADD --checksum` or
-  from the profile image.
+- Images are built only by `pinfold build` and `pinfold image build`.
+  `pinfold pi` refuses when the image is missing and names the command.
+- A profile or project build gets an empty context: the Containerfile
+  alone. For a project build, trust then covers every input. Files come in
+  by `ADD --checksum` or from the profile image. Every step reruns at every
+  build (no layer cache): the default profile runs `apt-get upgrade`, and a
+  cached layer would serve stale packages.
+- Every build is a distinct image, cached or not, through the unique
+  `dev.pinfold.build` label.
 - A profile build is tagged uniquely `pinfold/profile-<name>:<build>` and
   moves the stable `pinfold/profile-<name>:latest` to it. The stable ref is
   what a project Containerfile `FROM`s and what `doctor` compares against.
-  Every build is a distinct image even on a full cache hit, through the
-  unique `dev.pinfold.build` label. Images carry `dev.pinfold.profile=<name>`
-  and `dev.pinfold.base=<digest>` (the resolved base) so Maintenance can find
-  them.
+  Images carry `dev.pinfold.profile=<name>` and `dev.pinfold.base=<digest>`
+  (the resolved base) so Maintenance can find them.
+- A caller image is built by `pinfold image build NAME` from a context
+  directory the caller vouches for, as it vouches for its mounts: no trust
+  record, no project, no `.pinfold.toml`. The Containerfile may lie outside
+  the context. NAME is validated like a profile name. The build is tagged
+  uniquely `pinfold/image-<NAME>:<build>` and moves the stable
+  `pinfold/image-<NAME>:latest` to it; a box spec's `image` names either.
+  It carries `dev.pinfold.image=<NAME>`, `dev.pinfold.build`,
+  `dev.pinfold.base=<digest>` when the first `FROM` resolves to one, and the
+  caller's `--label`s, none of which may start with `dev.pinfold.`. The
+  newest two images per NAME are kept (Maintenance). It uses the runtime's
+  layer cache unless the caller passes `--no-cache`; podman labels the
+  cache's intermediate images `dev.pinfold.layer`.
 - A project build is tagged uniquely `pinfold/project-<id>:<build>` and
   moves the stable `pinfold/project-<id>:latest` to it, where `<id>` is the
   project's state id. A project image carries `dev.pinfold.project=<id>`,
@@ -453,16 +490,19 @@ and its state lives under its own dirs. Each project's state records its
 checkout path and last run.
 
 Automatic, never prompting:
-- After a build: keep the newest two images per source (a profile or a
-  project), the second for rollback. Remove older ones and their dangling
-  layers. An image a box still uses stays, and pins only itself.
+- After a build: keep the newest two images per source (a profile, a
+  project or a caller image name), the second for rollback. Remove older
+  ones and their dangling layers. An image a box still uses stays, and pins
+  only itself.
 - At most once a day, at the start of any command: prune boxes whose owner
   is gone (nothing holds the lock on its `pid` file), leftover sockets,
   artifact versions no pin names, and egress logs older than 14 days.
 
 `pinfold clean` lists sizes, then removes:
 - everything automatic, now
-- the runtime's build cache (Apple: the builder container)
+- the runtime's build cache (Apple: the builder container; podman: the
+  `dev.pinfold.layer` intermediate images no image builds on, listed with
+  their size)
 - caches in project homes (`~/.cache`)
 - state of projects whose checkout is gone
 - with `--unused AGE`, state of projects not run for that long. Never
@@ -550,6 +590,7 @@ until allowed again.
 pinfold pi [pi args…]            pi in a box for this project; `pi` is a symlink to this
 pinfold attach [--box NAME] [cmd…]   bash (or cmd) in this project's running pi box
 pinfold build [--profile NAME]   build this project's image, or a profile's; prints the ref
+pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache]   a caller's image from its own context; one JSON line
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
 pinfold profile new NAME [--from PROFILE] [--from-project [PATH]]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim disk (see Maintenance)
@@ -592,6 +633,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 19 | A caller-owned box launches the pinned harness | A spec with harness: pi runs /opt/pinfold/pi/pi --version at the pinned version, and the box's PINFOLD_ALLOW is the spec's allow list. |
 | 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, every field is present, and `exec`'d processes carry `oom_score_adj` 1000, so init is never the victim. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
+| 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref and the labels; a second build of the same name keeps two images and moves latest. |
 
 Linux (podman) runs in GitHub CI on `ubuntu-26.04` and `ubuntu-26.04-arm` as
 the required gate. The workflow installs the pinned toolchain's musl target
@@ -636,7 +678,7 @@ Portability (Windows later means the Linux build in WSL2):
 ```
 crates/pinfold/src/
   core/    runtime/{apple,podman}.rs plan.rs box.rs network.rs proxy.rs tls.rs
-           artifacts.rs profile.rs clean.rs
+           artifacts.rs profile.rs clean.rs image.rs
   init.rs  socket mode, TCP relay, reaping, readiness
   pi/      launch.rs state.rs git.rs
   cli.rs config.rs trust.rs

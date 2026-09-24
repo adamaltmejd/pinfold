@@ -13,8 +13,8 @@ use tokio::process::{Child, Command};
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
 use crate::core::runtime::{
-    BoxInfo, BoxStat, BoxState, BuildRequest, ImageIdentity, ImageInfo, MemoryStat, PidsStat,
-    Preflight, Runtime, bind, guest_path, spawn_error, user,
+    BoxInfo, BoxStat, BoxState, BuildCache, BuildRequest, ImageIdentity, ImageInfo, MemoryStat,
+    PidsStat, Preflight, Runtime, bind, captured_build, guest_path, spawn_error, user,
 };
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
@@ -242,27 +242,12 @@ impl Runtime for Apple {
         }
     }
 
-    fn build_cache_description(&self) -> &'static str {
-        "the runtime's builder container"
+    fn build_cache(&self) -> io::Result<BuildCache> {
+        Ok(BuildCache::Named("the runtime's builder container"))
     }
 
-    fn build(&self, request: &BuildRequest) -> io::Result<()> {
-        let argv = build_argv(request);
-        let (program, arguments) = argv.split_first().expect("argv is never empty");
-        let status = std::process::Command::new(program)
-            .args(arguments)
-            .stdin(Stdio::null())
-            // The build prints the tags on stdout; pinfold prints the ref
-            // itself, so the caller's stdout holds only the ref.
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .status()
-            .map_err(|error| spawn_error("container", error))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!("container build: {status}")))
-        }
+    fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
+        captured_build(&build_argv(request))
     }
 
     fn image_digest(&self, reference: &str) -> io::Result<Option<String>> {
@@ -610,15 +595,14 @@ pub fn chmod_proxy_argv(name: &str) -> Vec<OsString> {
 
 /// The `container build` argv for one build, as data.
 pub fn build_argv(request: &BuildRequest) -> Vec<OsString> {
-    let mut argv: Vec<OsString> = vec![
-        "container".into(),
-        "build".into(),
-        // Every build reruns every step, so a rebuild picks up base updates
-        // instead of replaying a cached `RUN` layer.
-        "--no-cache".into(),
-        "--file".into(),
-        request.containerfile.into(),
-    ];
+    let mut argv: Vec<OsString> = vec!["container".into(), "build".into()];
+    if !request.cache {
+        // Every step reruns, so a rebuild picks up base updates instead of
+        // replaying a cached `RUN` layer.
+        argv.push("--no-cache".into());
+    }
+    argv.push("--file".into());
+    argv.push(request.containerfile.into());
     for tag in request.tags {
         argv.push("--tag".into());
         argv.push(tag.into());

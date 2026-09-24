@@ -1,5 +1,6 @@
-//! `pinfold box`: the JSON-on-stdio process interface for programmatic
-//! callers, and `pinfold build`: the profile and project image build.
+//! `pinfold box` and `pinfold image`: the JSON-on-stdio process interface
+//! for programmatic callers, and `pinfold build`: the profile and project
+//! image build.
 //!
 //! The verbs are parsed by hand: the set is small, and ARCHITECTURE.md's
 //! dependency list has no argument parser.
@@ -19,16 +20,18 @@ use crate::config::{Config, Containerfile, Origin};
 use crate::core::artifacts;
 use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, UpError};
 use crate::core::clean;
+use crate::core::image::{self, Build, Built, Context, ImageError, ImageRequest};
 use crate::core::plan::{Plan, Route};
-use crate::core::profile::{Profile, valid_name};
+use crate::core::profile::{self, Profile, valid_name};
 use crate::core::runtime::{
-    BoxInfo, BuildRequest, Runtime, exec_through_init, local_image_id, podman, runtime,
+    BoxInfo, BuildCache, Runtime, exec_through_init, local_image_id, podman, runtime,
 };
 use crate::dirs;
 use crate::trust;
 
 const USAGE: &str = "usage: pinfold box up|exec BOX [--tty] [--workdir DIR] -- argv|stat BOX|down BOX|list --label k=v [--label k]|prune";
 const BUILD_USAGE: &str = "usage: pinfold build [--profile NAME]";
+const IMAGE_USAGE: &str = "usage: pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]... [--no-cache]";
 const PROFILE_USAGE: &str =
     "usage: pinfold profile new NAME [--from PROFILE] [--from-project [PATH]]";
 const ALLOW_USAGE: &str = "usage: pinfold allow";
@@ -456,7 +459,7 @@ fn run_clean(args: &[OsString]) -> io::Result<()> {
     } else {
         println!("pinfold clean: reclaiming {} B", plan.total());
     }
-    plan.print(runtime);
+    plan.print();
     if dry_run {
         return Ok(());
     }
@@ -472,6 +475,7 @@ struct CleanPlan {
     automatic: u64,
     project_caches: u64,
     project_state: u64,
+    build_cache: BuildCache,
 }
 
 impl CleanPlan {
@@ -513,6 +517,7 @@ impl CleanPlan {
             + clean::total_bytes(&egress);
         let project_caches = clean::total_bytes(&caches);
         let project_state = clean::total_bytes(&stale);
+        let build_cache = runtime.build_cache()?;
         Ok(CleanPlan {
             boxes,
             caches,
@@ -520,18 +525,26 @@ impl CleanPlan {
             automatic,
             project_caches,
             project_state,
+            build_cache,
         })
     }
 
     /// The bytes a real `clean` would reclaim.
     fn total(&self) -> u64 {
-        self.automatic + self.project_caches + self.project_state
+        let build_cache = match self.build_cache {
+            BuildCache::Bytes(bytes) => bytes,
+            BuildCache::Named(_) => 0,
+        };
+        self.automatic + build_cache + self.project_caches + self.project_state
     }
 
     /// List the categories, as `clean` and `doctor` both show them.
-    fn print(&self, runtime: &dyn Runtime) {
+    fn print(&self) {
         println!("  automatic maintenance: {} B", self.automatic);
-        println!("  build cache: {}", runtime.build_cache_description());
+        match self.build_cache {
+            BuildCache::Bytes(bytes) => println!("  build cache: {bytes} B"),
+            BuildCache::Named(name) => println!("  build cache: {name}"),
+        }
         println!("  project caches: {} B", self.project_caches);
         println!("  project state: {} B", self.project_state);
     }
@@ -769,7 +782,7 @@ fn run_doctor(args: &[OsString]) -> io::Result<usize> {
     match &runtime {
         Ok(runtime) => match CleanPlan::measure(*runtime, None) {
             Ok(plan) => {
-                plan.print(*runtime);
+                plan.print();
                 let total = plan.total();
                 if total > CLEAN_SUGGESTION_BYTES {
                     println!("  {total} B is over 20 GB; run `pinfold clean`");
@@ -1223,100 +1236,72 @@ fn build_configured() -> io::Result<()> {
     }
 }
 
-/// Build `profile`'s image from an empty context holding its Containerfile.
+/// Build `profile`'s image from an empty context holding its Containerfile:
+/// a profile directory's other files are not build inputs, and an embedded
+/// default has no directory.
 fn build_profile(profile: &Profile) -> io::Result<()> {
-    let id = build_id();
-    // The build gets the Containerfile alone: a profile directory's other
-    // files are not build inputs, and an embedded default has no directory.
-    let context = dirs::cache_dir()?.join("build").join(&id);
-    fs::create_dir_all(&context)?;
-    let containerfile = context.join("Containerfile");
-    fs::write(&containerfile, &profile.containerfile)?;
-    let result = build_profile_image(profile, &context, &containerfile, &id);
-    let _ = fs::remove_dir_all(&context);
-    result
-}
-
-fn build_profile_image(
-    profile: &Profile,
-    context: &Path,
-    containerfile: &Path,
-    id: &str,
-) -> io::Result<()> {
     let runtime = runtime()?;
     let mut labels = BTreeMap::new();
-    labels.insert(clean::PROFILE_LABEL.to_string(), profile.name.clone());
-    // The unique build label is what makes every build a distinct image even
-    // when every layer is cached.
-    labels.insert(clean::BUILD_LABEL.to_string(), id.to_string());
-    if let Some(base) = profile.base_image()
+    if let Some(base) = profile::base_image(&profile.containerfile)
         && let Some(digest) = runtime.image_digest(base)?
     {
         labels.insert(clean::BASE_LABEL.to_string(), digest);
     }
-    let stable = profile.image_ref();
-    let unique = format!("pinfold/profile-{}:{id}", profile.name);
-    runtime.build(&BuildRequest {
-        context,
-        containerfile,
-        tags: &[stable.clone(), unique],
-        labels: &labels,
-    })?;
-    // Keep the two newest images of this source, the second for rollback.
-    // A failure here is reported but never fails the build that succeeded.
-    if let Err(error) = clean::keep_two_images(runtime, clean::PROFILE_LABEL, &profile.name) {
-        eprintln!("pinfold build: maintenance: {error}");
-    }
-    println!("{stable}");
-    Ok(())
+    let built = image::build(
+        runtime,
+        Build {
+            repository: format!("pinfold/profile-{}", profile.name),
+            label: clean::PROFILE_LABEL,
+            source: &profile.name,
+            context: Context::Alone(&profile.containerfile),
+            labels,
+            cache: false,
+        },
+    )?;
+    print_built(runtime, built)
 }
 
-/// Build this project's image from the Containerfile bytes trust checked.
+/// Build this project's image from the Containerfile bytes trust checked,
+/// alone in an empty context, so trust covers every input.
 fn build_project(root: &Path, config: &Config, bytes: &[u8]) -> io::Result<()> {
-    let id = build_id();
-    // The build gets the Containerfile alone, so trust covers every input.
-    let context = dirs::cache_dir()?.join("build").join(&id);
-    fs::create_dir_all(&context)?;
-    let containerfile = context.join("Containerfile");
-    fs::write(&containerfile, bytes)?;
-    let result = build_project_image(root, config, &context, &containerfile, &id);
-    let _ = fs::remove_dir_all(&context);
-    result
-}
-
-fn build_project_image(
-    root: &Path,
-    config: &Config,
-    context: &Path,
-    containerfile: &Path,
-    id: &str,
-) -> io::Result<()> {
     let runtime = runtime()?;
     let project = crate::pi::state::project_id(root)?;
     let mut labels = BTreeMap::new();
-    labels.insert(clean::PROJECT_LABEL.to_string(), project.clone());
-    labels.insert(clean::BUILD_LABEL.to_string(), id.to_string());
     // The digest of the profile image this project image was built from;
     // `pinfold pi` warns when the profile image moves past it.
     if let Some(digest) = local_image_id(runtime, &config.profile.image_ref())? {
         labels.insert(clean::BASE_LABEL.to_string(), digest);
     }
-    let prefix = format!("pinfold/project-{project}");
-    let stable = format!("{prefix}:latest");
-    let unique = format!("{prefix}:{id}");
-    runtime.build(&BuildRequest {
-        context,
-        containerfile,
-        tags: &[stable.clone(), unique],
-        labels: &labels,
-    })?;
-    // Keep the two newest images of this project, the second for rollback.
-    // A failure here is reported but never fails the build that succeeded.
-    if let Err(error) = clean::keep_two_images(runtime, clean::PROJECT_LABEL, &project) {
-        eprintln!("pinfold build: maintenance: {error}");
+    let built = image::build(
+        runtime,
+        Build {
+            repository: format!("pinfold/project-{project}"),
+            label: clean::PROJECT_LABEL,
+            source: &project,
+            context: Context::Alone(bytes),
+            labels,
+            cache: false,
+        },
+    )?;
+    print_built(runtime, built)
+}
+
+/// Print a profile or project build's stable ref, or its captured output on
+/// stderr when it failed.
+fn print_built(runtime: &dyn Runtime, built: Result<Built, String>) -> io::Result<()> {
+    match built {
+        Ok(built) => {
+            println!("{}", built.latest);
+            Ok(())
+        }
+        Err(output) => {
+            eprint!("{output}");
+            Err(io::Error::other(format!(
+                "the {} build failed",
+                runtime.name()
+            )))
+        }
     }
-    println!("{stable}");
-    Ok(())
 }
 
 fn parse_profile(args: &[OsString]) -> io::Result<Option<String>> {
@@ -1339,19 +1324,121 @@ fn parse_profile(args: &[OsString]) -> io::Result<Option<String>> {
     Ok(name)
 }
 
-fn build_id() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    format!("{nanos:x}-{}", std::process::id())
-}
-
 fn build_usage(message: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
         format!("{message}\n{BUILD_USAGE}"),
     )
+}
+
+/// Run a `pinfold image` invocation and return its process exit code.
+pub fn image(args: &[OsString]) -> i32 {
+    match args.first().and_then(|arg| arg.to_str()) {
+        Some("build") => image_build(&args[1..]),
+        Some(verb) => {
+            eprintln!("pinfold image: unknown image verb {verb:?}\n{IMAGE_USAGE}");
+            1
+        }
+        None => {
+            eprintln!("pinfold image: an image verb is required\n{IMAGE_USAGE}");
+            1
+        }
+    }
+}
+
+/// The most lines of a failed build's output the `failed` line carries.
+const FAILED_LOG_LINES: usize = 40;
+
+/// Build a caller's image and print one `built`, `failed` or `refused` line.
+fn image_build(args: &[OsString]) -> i32 {
+    let name = args
+        .first()
+        .and_then(|arg| arg.to_str())
+        .filter(|arg| !arg.starts_with("--"));
+    let result = parse_image_build(args)
+        .map_err(|detail| ImageError::Refused(RefusalReason::Spec, detail))
+        .and_then(image::build_image);
+    let (line, code) = match result {
+        Ok(built) => (
+            serde_json::json!({
+                "event": "built",
+                "image": name,
+                "ref": built.reference,
+                "latest": built.latest,
+                "base": built.labels.get(clean::BASE_LABEL),
+                "labels": built.labels,
+            }),
+            0,
+        ),
+        Err(ImageError::Failed(output)) => {
+            let lines: Vec<&str> = output.lines().collect();
+            let tail = &lines[lines.len().saturating_sub(FAILED_LOG_LINES)..];
+            (
+                serde_json::json!({ "event": "failed", "image": name, "log": tail }),
+                1,
+            )
+        }
+        Err(ImageError::Refused(reason, detail)) => (
+            serde_json::json!({
+                "event": "refused",
+                "image": name,
+                "reason": reason.as_str(),
+                "detail": detail,
+            }),
+            1,
+        ),
+    };
+    println!("{line}");
+    code
+}
+
+/// `image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]...
+/// [--no-cache]`. An `Err` is the refusal's detail.
+fn parse_image_build(args: &[OsString]) -> Result<ImageRequest, String> {
+    let mut args = args.iter();
+    let name = args
+        .next()
+        .and_then(|arg| arg.to_str())
+        .filter(|arg| !arg.starts_with("--"))
+        .ok_or("image build needs an image name")?
+        .to_string();
+    let mut containerfile = None;
+    let mut context = None;
+    let mut labels = BTreeMap::new();
+    let mut cache = true;
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--containerfile") => {
+                containerfile = Some(PathBuf::from(
+                    args.next().ok_or("--containerfile needs a path")?,
+                ));
+            }
+            Some("--context") => {
+                context = Some(PathBuf::from(
+                    args.next().ok_or("--context needs a directory")?,
+                ));
+            }
+            Some("--label") => {
+                let (key, value) = args
+                    .next()
+                    .and_then(|label| label.to_str())
+                    .and_then(|label| label.split_once('='))
+                    .filter(|(key, _)| !key.is_empty())
+                    .ok_or("--label needs KEY=VALUE")?;
+                labels.insert(key.to_string(), value.to_string());
+            }
+            Some("--no-cache") => cache = false,
+            Some(option) => return Err(format!("unknown image build option {option:?}")),
+            None => return Err("image build options must be valid UTF-8".to_string()),
+        }
+    }
+    Ok(ImageRequest {
+        name,
+        containerfile: containerfile.ok_or("image build needs --containerfile PATH")?,
+        context: context.ok_or("image build needs --context DIR")?,
+        labels,
+        cache,
+    })
 }
 
 /// Run a `pinfold profile` invocation and return its process exit code.
