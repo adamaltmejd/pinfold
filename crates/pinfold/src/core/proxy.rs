@@ -12,9 +12,10 @@ use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
@@ -39,8 +40,8 @@ const MAX_HEADERS: usize = 64;
 /// ClientHello.
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How long a tunnel or forwarded body may go without data before the
-/// proxy closes it.
+/// How long a forwarded body may go without data, or a tunnel with no
+/// bytes in either direction, before the proxy closes it.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The most connections one box may have open at once.
@@ -352,7 +353,7 @@ fn connect(client: &mut UnixStream, rules: &Rules, log: &Path, target: &str) {
         if server.write_all(&hello.bytes).is_err() {
             return;
         }
-        tunnel(client, server);
+        tunnel(client, server, log, host);
     }
 }
 
@@ -719,24 +720,113 @@ fn dial_address(address: impl ToSocketAddrs) -> Option<TcpStream> {
     TcpStream::connect(address).ok()
 }
 
-/// Copy both directions for the life of the tunnel.
-fn tunnel(client: &mut UnixStream, server: TcpStream) {
-    let mut server = server;
+/// The socket calls a tunnel direction needs besides reading and writing.
+trait TunnelSocket {
+    fn set_timeout(&self, timeout: Option<Duration>);
+    fn close(&self, how: Shutdown);
+}
+
+impl TunnelSocket for UnixStream {
+    fn set_timeout(&self, timeout: Option<Duration>) {
+        let _ = self.set_read_timeout(timeout);
+    }
+    fn close(&self, how: Shutdown) {
+        let _ = self.shutdown(how);
+    }
+}
+
+impl TunnelSocket for TcpStream {
+    fn set_timeout(&self, timeout: Option<Duration>) {
+        let _ = self.set_read_timeout(timeout);
+    }
+    fn close(&self, how: Shutdown) {
+        let _ = self.shutdown(how);
+    }
+}
+
+impl<T: TunnelSocket + ?Sized> TunnelSocket for &mut T {
+    fn set_timeout(&self, timeout: Option<Duration>) {
+        (**self).set_timeout(timeout);
+    }
+    fn close(&self, how: Shutdown) {
+        (**self).close(how);
+    }
+}
+
+/// Copy one direction for the life of the tunnel. Every read that moves
+/// bytes stamps the shared activity. A read timeout waits out the rest of
+/// `IDLE_TIMEOUT` while either direction has moved bytes; when none has,
+/// both sockets close and the tunnel is marked idle. EOF or an error
+/// half-closes the peer's write side.
+fn copy_direction<R, W>(mut reader: R, mut writer: W, activity: &Mutex<Instant>, idle: &AtomicBool)
+where
+    R: Read + TunnelSocket,
+    W: Write + TunnelSocket,
+{
+    let mut buffer = [0u8; 8 * 1024];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => {
+                writer.close(Shutdown::Write);
+                return;
+            }
+            Ok(n) => {
+                if let Ok(mut last) = activity.lock() {
+                    *last = Instant::now();
+                }
+                if writer.write_all(&buffer[..n]).is_err() {
+                    writer.close(Shutdown::Write);
+                    return;
+                }
+            }
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock
+                    || error.kind() == io::ErrorKind::TimedOut =>
+            {
+                let elapsed = activity
+                    .lock()
+                    .map_or(Duration::ZERO, |last| last.elapsed());
+                let Some(remaining) = IDLE_TIMEOUT.checked_sub(elapsed) else {
+                    idle.store(true, Ordering::SeqCst);
+                    reader.close(Shutdown::Both);
+                    writer.close(Shutdown::Both);
+                    return;
+                };
+                reader.set_timeout(Some(remaining.max(Duration::from_millis(1))));
+            }
+            Err(_) => {
+                writer.close(Shutdown::Write);
+                return;
+            }
+        }
+    }
+}
+
+/// Copy both directions for the life of the tunnel. It is idle, and logged
+/// closed, only when neither direction has moved bytes for `IDLE_TIMEOUT`.
+fn tunnel(client: &mut UnixStream, server: TcpStream, log: &Path, host: &str) {
     let _ = client.set_read_timeout(Some(IDLE_TIMEOUT));
     let _ = server.set_read_timeout(Some(IDLE_TIMEOUT));
-    let Ok(mut client_reader) = client.try_clone() else {
+    let Ok(client_reader) = client.try_clone() else {
         return;
     };
-    let Ok(mut server_writer) = server.try_clone() else {
+    let Ok(server_writer) = server.try_clone() else {
         return;
     };
-    let up = thread::spawn(move || {
-        let _ = io::copy(&mut client_reader, &mut server_writer);
-        let _ = server_writer.shutdown(Shutdown::Write);
-    });
-    let _ = io::copy(&mut server, client);
-    let _ = client.shutdown(Shutdown::Write);
+    let activity = Arc::new(Mutex::new(Instant::now()));
+    let idle = Arc::new(AtomicBool::new(false));
+    let up = {
+        let activity = Arc::clone(&activity);
+        let idle = Arc::clone(&idle);
+        thread::spawn(move || {
+            copy_direction(client_reader, server_writer, &activity, &idle);
+        })
+    };
+    copy_direction(server, client, &activity, &idle);
     let _ = up.join();
+    if idle.load(Ordering::SeqCst) {
+        record(log, host, "closed", "idle timeout");
+    }
 }
 
 fn respond(client: &mut UnixStream, code: u16) -> io::Result<()> {

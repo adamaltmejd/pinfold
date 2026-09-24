@@ -303,8 +303,8 @@ network listener, no token: the socket identifies the box.
   box can use the credential but not read it, unless `to` echoes request
   headers back. Header names that frame the request (`Host`,
   `Content-Length`, hop-by-hop) are refused.
-- **Limits:** a connection cap, a header timeout, an idle timeout on
-  tunnels.
+- **Limits:** a connection cap and a header timeout. A tunnel is idle, and
+  closed, only when neither direction has carried bytes for 5 minutes.
 - **Log:** one JSON line per decision in the box's egress log at
   `~/.local/state/pinfold/egress/<box>.jsonl` (`$XDG_STATE_HOME` is
   honored). It names the host, the decision and its reason; no header value
