@@ -63,7 +63,8 @@ running on the host.
 Not protected:
 - Project contents: an agent with a model API can put them in a prompt.
 - Files the host runs by explicit command: build scripts, tests, package
-  scripts.
+  scripts, and scripts a hook calls from the project, such as husky's
+  `.husky/pre-commit`.
 - A planted repo (`sub/.git`, or `.git` in a project that has none) runs
   code if a host tool runs git in it (VS Code does by default).
 - CDN fronting beyond the SNI check (Host-header fronting needs TLS
@@ -476,8 +477,9 @@ Automatic, never prompting:
 ### Git
 
 The box never writes the host's `.git`. `<root>/.git` is mounted read-only
-at its own path, and the mount point cannot be renamed. The agent reads
-history and diffs; commits are made on the host.
+at its own path, and the mount point cannot be renamed. A `core.hooksPath`
+inside the project is read-only too. The agent reads history and diffs;
+commits are made on the host.
 
 Worktrees are refused: their `.git` is a file whose `gitdir:` line host git
 follows, and Apple `container` cannot mount a file read-only.
@@ -554,7 +556,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, the box has no egress, and `box prune` removes it. |
 | 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code; `list` finds by label; `down` removes. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. A read-only mount rejects writes. |
-| 11 | The box cannot write `.git` or protected config | Writing a hook, `core.fsmonitor`, `commondir`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails; host `git status` runs nothing. Control: a project file is writable. |
+| 11 | The box cannot write `.git` or protected config | Writing a hook in `.git/hooks` or under `core.hooksPath`, `core.fsmonitor`, `commondir`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails; host `git status` runs nothing. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`; the next run refuses until `pinfold allow`. |
 | 13 | Project state persists and stays separate | Settings are seeded once and survive runs; a deleted seed returns; two projects don't see each other's state. |
 | 14 | Both pi config levels load without a TTY | `pi -p` through the shim: the fake model's request carries a skill from the profile and one from the project's `.pi/`. |

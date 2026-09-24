@@ -327,6 +327,9 @@ fn the_box_cannot_write_git_or_protected_config() {
     // fails before the box starts. Sabotage: classify protected paths with
     // fs::metadata instead of the symlink check; a symlinked `.vscode` is
     // followed, the run starts, and the refusal assertion fails.
+    // Sabotage: skip reading `core.hooksPath` in pi::git; the
+    // `.husky/_/pre-commit` write succeeds, the hook exists on the host, and
+    // those assertions fail.
     let binary = pinfold();
     let env = TestEnv::new("pi-git");
     default_image(binary, &env);
@@ -337,6 +340,17 @@ fn the_box_cannot_write_git_or_protected_config() {
     let bare = TestDir::new(&env, "bare");
     git_init(bare.path());
     let root = bare.path();
+    // Host git runs the hooks named by `core.hooksPath`; a value inside the
+    // project must be read-only like `.git` itself.
+    let husky = root.join(".husky/_");
+    let status = Command::new("git")
+        .args(["-C"])
+        .arg(root)
+        .args(["config", "core.hooksPath", ".husky/_"])
+        .status()
+        .expect("run git config core.hooksPath");
+    assert!(status.success(), "git config core.hooksPath failed");
+    fs::create_dir_all(&husky).expect("create .husky/_");
     let vscode = root.join(".vscode");
     assert!(!vscode.exists(), "the fixture already has .vscode");
 
@@ -401,6 +415,30 @@ fn the_box_cannot_write_git_or_protected_config() {
     assert!(
         denied.stderr.contains("Read-only file system"),
         "the hook write failed for another reason: {}",
+        denied.stderr
+    );
+
+    // Host git runs `.husky/_/pre-commit` on the next commit because the
+    // repo's `core.hooksPath` names it; the box cannot write it.
+    let husky_hook = husky.join("pre-commit");
+    let denied = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!(
+                "printf '#!/bin/sh\\ntouch {}/pwned-husky\\n' > '{}'",
+                root.display(),
+                husky_hook.display()
+            ),
+        ],
+    );
+    assert_ne!(denied.code, 0, "the box wrote a core.hooksPath hook");
+    assert!(
+        denied.stderr.contains("Read-only file system"),
+        "the core.hooksPath hook write failed for another reason: {}",
         denied.stderr
     );
 
@@ -510,6 +548,10 @@ fn the_box_cannot_write_git_or_protected_config() {
         "host git status ran the box's fsmonitor"
     );
     assert!(!root.join("pwned-hook").exists(), "the box planted a hook");
+    assert!(
+        !husky_hook.exists(),
+        "the box planted a core.hooksPath hook"
+    );
     assert!(!root.join(".git-moved").exists(), "the box renamed .git");
     assert!(
         !vscode.exists(),
