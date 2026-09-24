@@ -76,6 +76,12 @@ impl Runtime for Apple {
         }
     }
 
+    fn preflight(&self) -> io::Result<()> {
+        // A missing `container` binary is refused before `up` creates any
+        // state.
+        self.version().map(|_| ())
+    }
+
     fn down(&self, name: &str) -> io::Result<()> {
         let argv = down_argv(name);
         let (program, arguments) = argv.split_first().expect("argv is never empty");

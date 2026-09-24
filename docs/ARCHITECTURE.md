@@ -117,6 +117,18 @@ pinfold box list --label k=v      # JSON lines
 pinfold box prune                 # remove boxes whose `up` is gone
 ```
 
+When `up` refuses, it prints one JSON line instead of `ready` and exits 1:
+
+```json
+{"event":"refused","box":NAME,"reason":REASON,"detail":TEXT}
+```
+
+`REASON` is `spec`, `profile`, `runtime`, `image-missing` or `name-in-use`;
+`box` is null when the spec did not parse. Refusals are decided before
+anything is created; a refused `up` leaves nothing.
+
+The box spec `up` reads from stdin:
+
 ```json
 {
   "name": "job-3f2a…",
@@ -449,6 +461,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 14 | Both pi config levels load without a TTY | `pi -p` through the shim: the fake model's request carries a skill from the profile and one from the project's `.pi/`. |
 | 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain. An unlabeled image, a live box and a project's state survive `pinfold clean`. |
 | 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW is the default list; a project's allow = ["api.github.com"] makes it exactly that host, and registry.npmjs.org is refused as not allowlisted. |
+| 17 | up refuses before it creates | A missing image and a live name are refused as data, with no box, state dir or seed left; the box whose name was reused still answers exec. |
 
 Linux (podman) runs in GitHub CI on `ubuntu-26.04` and `ubuntu-26.04-arm` as
 the required gate. The workflow installs the pinned toolchain's musl target,

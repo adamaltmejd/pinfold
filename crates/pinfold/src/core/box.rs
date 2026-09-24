@@ -1,6 +1,8 @@
 //! The box lifecycle: one attached `container run` process owns one box.
 
 use std::ffi::OsStr;
+use std::fmt;
+use std::fs;
 use std::fs::File;
 use std::io;
 use std::io::Write;
@@ -15,10 +17,11 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Child;
 use tokio::signal::unix::{SignalKind, signal};
 
+use crate::core::clean;
 use crate::core::plan::{Env, Mount, Plan};
 use crate::core::profile::{Profile, Seed};
 use crate::core::proxy::Proxy;
-use crate::core::runtime::{Runtime, runtime};
+use crate::core::runtime::{Runtime, local_image_id, runtime};
 use crate::dirs;
 
 /// A started box, owned by this process.
@@ -41,28 +44,150 @@ pub enum Shutdown {
     BoxExited,
 }
 
+/// Why `up` refused before it created anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusalReason {
+    /// The spec did not parse or validate.
+    Spec,
+    /// The profile is missing or cannot be applied.
+    Profile,
+    /// The runtime refused the host, or its binary is missing.
+    Runtime,
+    /// The image is not present locally.
+    ImageMissing,
+    /// The box name is already in use.
+    NameInUse,
+}
+
+impl RefusalReason {
+    /// The reason string of the process interface's `refused` line.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RefusalReason::Spec => "spec",
+            RefusalReason::Profile => "profile",
+            RefusalReason::Runtime => "runtime",
+            RefusalReason::ImageMissing => "image-missing",
+            RefusalReason::NameInUse => "name-in-use",
+        }
+    }
+}
+
+/// A refused `up`: why, and the detail the runtime or host gave. `box_name`
+/// is `None` only when the spec did not parse.
+#[derive(Debug)]
+pub struct Refusal {
+    pub box_name: Option<String>,
+    pub reason: RefusalReason,
+    pub detail: String,
+}
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.reason.as_str(), self.detail)
+    }
+}
+
+impl std::error::Error for Refusal {}
+
+/// Why [`Box::up`] failed: a refusal decided before anything was created, or
+/// an error after creation began.
+#[derive(Debug)]
+pub enum UpError {
+    Refused(Refusal),
+    Other(io::Error),
+}
+
+impl fmt::Display for UpError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UpError::Refused(refusal) => refusal.fmt(formatter),
+            UpError::Other(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for UpError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            UpError::Refused(_) => None,
+            UpError::Other(error) => Some(error),
+        }
+    }
+}
+
+impl From<io::Error> for UpError {
+    fn from(error: io::Error) -> UpError {
+        UpError::Other(error)
+    }
+}
+
+impl From<UpError> for io::Error {
+    fn from(error: UpError) -> io::Error {
+        match error {
+            UpError::Refused(refusal) => io::Error::other(refusal),
+            UpError::Other(error) => error,
+        }
+    }
+}
+
 impl Box {
-    /// Start a box, wait for init's `ready` line, and return it.
-    pub async fn up(plan: &Plan, init: &Path) -> io::Result<Box> {
+    /// Start a box, wait for init's `ready` line, and return it. Every
+    /// refusal is decided before anything is created: the profile, the
+    /// host's runtime, the image and the name are checked first, and home
+    /// seeds are written only after all of them pass.
+    pub async fn up(plan: &Plan, init: &Path) -> Result<Box, UpError> {
         if !init.is_absolute() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "init path must be absolute",
-            ));
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "init path must be absolute").into(),
+            );
         }
         if init.parent().is_none_or(|parent| parent == Path::new("/")) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "init must live in a directory below /",
-            ));
+            )
+            .into());
         }
 
         // The profile's image, share and home seeds are the box's to apply;
-        // the runtime sees the resolved plan.
+        // the runtime sees the resolved plan. Resolving writes nothing; the
+        // seeds wait until every refusal has been decided.
         let mut plan = plan.clone();
-        apply_profile(&mut plan)?;
+        let profile = resolve_profile(&mut plan)
+            .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
 
-        let runtime = runtime()?;
+        let runtime =
+            runtime().map_err(|error| refused(&plan, RefusalReason::Runtime, error.to_string()))?;
+        runtime
+            .preflight()
+            .map_err(|error| refused(&plan, RefusalReason::Runtime, error.to_string()))?;
+
+        let image = plan.image.clone().ok_or_else(|| {
+            refused(
+                &plan,
+                RefusalReason::Spec,
+                "a box spec needs an image or a profile",
+            )
+        })?;
+        if local_image_id(runtime, &image)?.is_none() {
+            return Err(refused(
+                &plan,
+                RefusalReason::ImageMissing,
+                format!("image {image:?} is not present locally; build or pull it first"),
+            ));
+        }
+        if let Some(detail) = name_in_use(runtime, &plan.name)? {
+            return Err(refused(&plan, RefusalReason::NameInUse, detail));
+        }
+
+        // Home seeds are written only after the checks pass, just before the
+        // runtime starts the box.
+        if let Some(profile) = &profile
+            && let Some((mount, relative)) = &profile.seed
+        {
+            seed_home(mount, relative, &profile.home)?;
+        }
+
         let state_dir = dirs::state_dir()?.join("boxes").join(&plan.name);
         let log = match &plan.egress {
             Some(_) => Some(dirs::egress_dir()?.join(format!("{}.jsonl", plan.name))),
@@ -79,7 +204,7 @@ impl Box {
                     Ok(proxy) => Some(proxy),
                     Err(error) => {
                         let _ = tokio::fs::remove_dir_all(&state_dir).await;
-                        return Err(error);
+                        return Err(error.into());
                     }
                 }
             }
@@ -93,7 +218,7 @@ impl Box {
                     proxy.close();
                 }
                 let _ = tokio::fs::remove_dir_all(&state_dir).await;
-                return Err(error);
+                return Err(error.into());
             }
         };
         let stdout = child
@@ -122,7 +247,8 @@ impl Box {
             return Err(io::Error::other(match status {
                 Ok(status) => format!("{failure}: {status}"),
                 Err(error) => format!("{failure}: {error}"),
-            }));
+            })
+            .into());
         }
         // Apple only: the forwarded socket arrives root-owned and mode 000.
         // The one root exec happens before ready reaches the caller, so no
@@ -137,7 +263,7 @@ impl Box {
                 proxy.close();
             }
             let _ = tokio::fs::remove_dir_all(&state_dir).await;
-            return Err(error);
+            return Err(error.into());
         }
         // Keep the pipe drained so a talkative box cannot block on it.
         tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
@@ -192,12 +318,19 @@ async fn wait_for_shutdown() -> io::Result<Shutdown> {
     }
 }
 
-/// Apply the spec's profile before the box starts: its image when the spec
-/// names none, its `share/` mounted read-only at `/opt/pinfold/profile`, and
-/// its `home/` seeds copied into the host directory behind `$HOME`.
-fn apply_profile(plan: &mut Plan) -> io::Result<()> {
+/// A profile resolved before the refusal checks: its `home/` seeds and,
+/// when it has any, the writable mount behind `$HOME` to copy them into.
+struct ResolvedProfile {
+    home: Vec<Seed>,
+    seed: Option<(Mount, PathBuf)>,
+}
+
+/// Load the spec's profile and fold its image and `share/` mount into the
+/// plan. The seed target is computed here but nothing is written, so every
+/// refusal that depends on the profile is decided before creation.
+fn resolve_profile(plan: &mut Plan) -> io::Result<Option<ResolvedProfile>> {
     let Some(name) = plan.profile.clone() else {
-        return Ok(());
+        return Ok(None);
     };
     let profile = Profile::load(&name)?;
     if plan.image.is_none() {
@@ -210,11 +343,22 @@ fn apply_profile(plan: &mut Plan) -> io::Result<()> {
             readonly: true,
         });
     }
-    if profile.home.is_empty() {
-        return Ok(());
-    }
-    let home = plan
-        .env
+    let seed = if profile.home.is_empty() {
+        None
+    } else {
+        let home = exact_home(plan, &name)?;
+        let (mount, relative) = home_mount(plan, &name, &home)?;
+        Some((mount.clone(), relative))
+    };
+    Ok(Some(ResolvedProfile {
+        home: profile.home,
+        seed,
+    }))
+}
+
+/// The spec's exact `$HOME` entry, when a profile seeds it.
+fn exact_home(plan: &Plan, name: &str) -> io::Result<PathBuf> {
+    plan.env
         .get("HOME")
         .and_then(|value| match value {
             Env::Exact(value) => Some(PathBuf::from(value)),
@@ -227,10 +371,39 @@ fn apply_profile(plan: &mut Plan) -> io::Result<()> {
                     "profile {name:?} seeds $HOME, but the box spec has no exact HOME env entry"
                 ),
             )
-        })?;
-    let (mount, relative) = home_mount(plan, &name, &home)?;
-    seed_home(mount, &relative, &profile.home)?;
-    Ok(())
+        })
+}
+
+/// A refusal carrying `plan`'s box name.
+fn refused(plan: &Plan, reason: RefusalReason, detail: impl Into<String>) -> UpError {
+    UpError::Refused(Refusal {
+        box_name: Some(plan.name.clone()),
+        reason,
+        detail: detail.into(),
+    })
+}
+
+/// Whether a box already holds `name`: the runtime lists it, or its state
+/// dir holds a live owner pid. The detail names which.
+fn name_in_use(runtime: &dyn Runtime, name: &str) -> io::Result<Option<String>> {
+    if runtime.list()?.iter().any(|box_| box_.id == name) {
+        return Ok(Some(format!(
+            "the runtime already has a box named {name:?}"
+        )));
+    }
+    let state = dirs::state_dir()?.join("boxes").join(name);
+    let pid = fs::read_to_string(state.join("pid"))
+        .ok()
+        .and_then(|pid| pid.trim().parse::<i32>().ok());
+    if let Some(pid) = pid
+        && clean::alive(pid)
+    {
+        return Ok(Some(format!(
+            "state dir {} is held by live pid {pid}",
+            state.display()
+        )));
+    }
+    Ok(None)
 }
 
 /// The mount behind a guest `$HOME` and the plain path from its guest root

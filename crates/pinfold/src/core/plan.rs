@@ -85,18 +85,19 @@ impl Plan {
         Ok(plan)
     }
 
-    /// Parse and validate one box spec from a reader, leaving any data after
-    /// the JSON value unread so `box up` can watch the same stdin for EOF.
+    /// Parse one box spec from a reader, leaving any data after the JSON
+    /// value unread so `box up` can watch the same stdin for EOF. The caller
+    /// validates, so a refusal can name the box when the JSON parsed.
     pub fn from_reader(reader: impl Read) -> Result<Plan, PlanError> {
-        let plan: Plan = serde_json::Deserializer::from_reader(reader)
+        serde_json::Deserializer::from_reader(reader)
             .into_iter::<Plan>()
             .next()
-            .ok_or_else(|| PlanError::Invalid("no box spec on stdin".into()))??;
-        plan.validate()?;
-        Ok(plan)
+            .ok_or_else(|| PlanError::Invalid("no box spec on stdin".into()))?
+            .map_err(PlanError::from)
     }
 
-    fn validate(&self) -> Result<(), PlanError> {
+    /// Check a parsed spec.
+    pub fn validate(&self) -> Result<(), PlanError> {
         if !valid_name(&self.name) {
             return Err(PlanError::Invalid(format!(
                 "name {:?} must start alphanumeric and hold only [A-Za-z0-9._-]",

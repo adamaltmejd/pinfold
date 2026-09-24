@@ -43,7 +43,7 @@ impl Runtime for Podman {
         if let Some(socket) = proxy_socket {
             tighten(socket)?;
         }
-        let info = preflight()?;
+        let info = podman_info()?;
         let seccomp = seccomp_profile(&info)?;
         let resolv_conf = empty_resolv_conf()?;
         let argv = up_argv(plan, init, proxy_socket, &seccomp, &resolv_conf);
@@ -87,6 +87,10 @@ impl Runtime for Podman {
         // The bind-mounted socket already belongs to the box user under
         // keep-id; there is no root-owned forwarded copy to chmod.
         Ok(())
+    }
+
+    fn preflight(&self) -> io::Result<()> {
+        preflight().map(|_| ())
     }
 
     fn down(&self, name: &str) -> io::Result<()> {

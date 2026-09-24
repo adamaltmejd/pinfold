@@ -17,7 +17,7 @@ use nix::unistd::Pid;
 
 use crate::config::{Config, Containerfile, Origin};
 use crate::core::artifacts;
-use crate::core::r#box::Box;
+use crate::core::r#box::{Box, Refusal, RefusalReason, UpError};
 use crate::core::clean;
 use crate::core::plan::Plan;
 use crate::core::profile::{Profile, valid_name};
@@ -191,7 +191,23 @@ fn up(args: &[OsString]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(usage("up takes no arguments"));
     }
-    let mut plan = Plan::from_reader(io::stdin()).map_err(io::Error::other)?;
+    let mut plan = match Plan::from_reader(io::stdin()) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return Ok(refused(Refusal {
+                box_name: None,
+                reason: RefusalReason::Spec,
+                detail: error.to_string(),
+            }));
+        }
+    };
+    if let Err(error) = plan.validate() {
+        return Ok(refused(Refusal {
+            box_name: Some(plan.name.clone()),
+            reason: RefusalReason::Spec,
+            detail: error.to_string(),
+        }));
+    }
     // The owner label is how `box prune` tells a live box from a leftover.
     plan.labels
         .insert(clean::OWNER_LABEL.into(), std::process::id().to_string());
@@ -200,7 +216,11 @@ fn up(args: &[OsString]) -> io::Result<i32> {
         .enable_all()
         .build()?;
     let result = runtime.block_on(async {
-        let mut box_ = Box::up(&plan, &init).await?;
+        let mut box_ = match Box::up(&plan, &init).await {
+            Ok(box_) => box_,
+            Err(UpError::Refused(refusal)) => return Ok(refused(refusal)),
+            Err(UpError::Other(error)) => return Err(error),
+        };
         println!(
             "{}",
             serde_json::json!({ "event": "ready", "box": plan.name })
@@ -215,6 +235,20 @@ fn up(args: &[OsString]) -> io::Result<i32> {
     // process exit.
     runtime.shutdown_background();
     result
+}
+
+/// Print one `refused` line on stdout and return exit code 1.
+fn refused(refusal: Refusal) -> i32 {
+    println!(
+        "{}",
+        serde_json::json!({
+            "event": "refused",
+            "box": refusal.box_name,
+            "reason": refusal.reason.as_str(),
+            "detail": refusal.detail,
+        })
+    );
+    1
 }
 
 /// Run a command in a running box with this process's stdio and return its

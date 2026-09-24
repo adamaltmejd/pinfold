@@ -80,6 +80,64 @@ fn box_lifecycle_works_for_a_caller() {
 }
 
 #[test]
+fn up_refuses_before_it_creates() {
+    // Guarantee 17: up refuses before it creates.
+    // Sabotage: keep the name check after the state dir is created; the
+    // first box's `pid` is overwritten and the second `up`'s cleanup takes
+    // the first box down, so its `exec` fails.
+    let binary = pinfold();
+    let env = TestEnv::new("refuses");
+    let name = format!("pinfold-e2e-{}-refuses", std::process::id());
+    let label = "dev.example.test=refuses";
+
+    // An image that was never built is refused as data, and the refusal
+    // leaves no state dir and no box.
+    let missing = serde_json::json!({
+        "name": name,
+        "image": "pinfold-e2e-missing:latest",
+        "labels": { "dev.example.test": "refuses" },
+    });
+    let (code, refused) = box_up_refused(binary, &env, &missing);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["event"], "refused");
+    assert_eq!(refused["box"], name);
+    assert_eq!(refused["reason"], "image-missing");
+    let state = env.state.join("pinfold").join("boxes").join(&name);
+    assert!(
+        !state.exists(),
+        "the refused up left a state dir: {}",
+        state.display()
+    );
+    assert!(
+        box_list(binary, &env, label).is_empty(),
+        "the refused up left a box"
+    );
+
+    // A second `up` on a live name is refused without touching the first
+    // box.
+    let live = serde_json::json!({
+        "name": name,
+        "image": default_image(binary, &env),
+        "labels": { "dev.example.test": "refuses" },
+    });
+    let mut up = box_up(binary, &env, &live, &name);
+    let (code, refused) = box_up_refused(binary, &env, &live);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["event"], "refused");
+    assert_eq!(refused["box"], name);
+    assert_eq!(refused["reason"], "name-in-use");
+    let ok = box_exec(binary, &env, &name, &["true"]);
+    assert_eq!(
+        ok.code, 0,
+        "the first box did not survive the refused up: {}",
+        ok.stderr
+    );
+
+    let _ = box_down(binary, &env, &name);
+    assert!(up.wait().success(), "box up did not exit cleanly");
+}
+
+#[test]
 fn box_shares_files_with_the_host() {
     // Sabotage: drop `readonly` from the adapter's bind mounts; the
     // write to /readonly/new then succeeds and its assertion fails. The
@@ -1829,6 +1887,37 @@ fn box_up(binary: &Path, env: &TestEnv, spec: &serde_json::Value, name: &str) ->
         child,
         _stdin: stdin,
     }
+}
+
+/// Run `box up` with a spec and return its exit code and first stdout line.
+/// For an `up` that refuses before it holds; close the spec stdin so the
+/// child cannot park.
+fn box_up_refused(
+    binary: &Path,
+    env: &TestEnv,
+    spec: &serde_json::Value,
+) -> (i32, serde_json::Value) {
+    let mut child = env
+        .command(binary)
+        .args(["box", "up"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn pinfold box up");
+    let mut stdin = child.stdin.take().expect("box up stdin");
+    let spec = serde_json::to_string(spec).expect("serialize spec");
+    stdin.write_all(spec.as_bytes()).expect("write spec");
+    stdin.flush().expect("flush spec");
+    drop(stdin);
+
+    let output = child.wait_with_output().expect("wait for box up");
+    let stdout = String::from_utf8(output.stdout).expect("box up output is UTF-8");
+    let line = stdout.lines().next().expect("a refused up prints a line");
+    (
+        exit_code(output.status),
+        serde_json::from_str(line).expect("refusal line is JSON"),
+    )
 }
 
 struct ExecOutput {
