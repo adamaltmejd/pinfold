@@ -6,8 +6,8 @@ mounts and nothing else of the host. Its only way out is its own allowlisting
 proxy.
 
 - **Interactive:** `pi` on the host is a shim for `pinfold pi`.
-- **Programmatic:** Switchyard drives boxes through `pinfold box`, JSON on
-  stdio.
+- **Programmatic:** a caller such as a CI system or an agent orchestrator
+  drives boxes through `pinfold box`, JSON on stdio.
 
 This is the current spec. Evidence and rationale are in `docs/archive/`.
 
@@ -37,7 +37,7 @@ Deleting it there reseeds it at the next start.
 
 | Layer | Owns | Used by |
 |---|---|---|
-| core | runtimes, box lifecycle, transport, proxy, images, profiles, pinned artifacts, maintenance | Switchyard, pi layer |
+| core | runtimes, box lifecycle, transport, proxy, images, profiles, pinned artifacts, maintenance | programmatic callers, pi layer |
 | pi | shim, per-project state, config, trust, `.git` protection, herdr | the `pinfold` CLI |
 | profiles | box defaults, an image, pi's user-level config | applied as data |
 
@@ -119,14 +119,14 @@ pinfold box prune                 # remove boxes whose `up` is gone
 
 ```json
 {
-  "name": "yard-3f2a…-e12-g1",
-  "labels": { "dev.yard.lane": "…" },
+  "name": "job-3f2a…",
+  "labels": { "dev.example.job": "…" },
   "profile": "builder",
   "image": "…",
   "mounts": [{ "host": "/…/clone", "guest": "/workspace", "readonly": false }],
   "user": { "uid": 501, "gid": 20 },
-  "env": { "HOME": "/yard/state/home", "OPENROUTER_API_KEY": { "from": "OPENROUTER_API_KEY" } },
-  "egress": { "allow": ["openrouter.ai"], "routes": { "yard.internal": "127.0.0.1:7777" } },
+  "env": { "HOME": "/state/home", "OPENROUTER_API_KEY": { "from": "OPENROUTER_API_KEY" } },
+  "egress": { "allow": ["openrouter.ai"], "routes": { "api.internal": "127.0.0.1:7777" } },
   "cpus": 4,
   "memory": "8G"
 }
@@ -140,6 +140,8 @@ pinfold box prune                 # remove boxes whose `up` is gone
   its image if `image` is absent. Core never reads the profile's
   `pinfold.toml`: egress, env and resources come only from the spec.
 - Apple: mounts are directories. Nested read-only mounts protect subpaths.
+- `.git` protection belongs to the pi layer; a box spec gets only the
+  mounts it names.
 
 ### Always applied
 
@@ -198,7 +200,7 @@ network listener, no token: the socket identifies the box.
   private, link-local, CGNAT (`100.64/10`) or benchmark (`198.18/15`)
   addresses. Resolve once; dial the checked address.
 - **Routes:** a name maps to one host service, e.g.
-  `yard.internal → 127.0.0.1:7777`. Plain HTTP only, Host header rewritten.
+  `api.internal → 127.0.0.1:7777`. Plain HTTP only, Host header rewritten.
   CONNECT to a route is refused. The host service authenticates its callers.
 - **Limits:** a connection cap, a header timeout, an idle timeout on
   tunnels.
@@ -246,7 +248,7 @@ The default profile's image:
 
 Checksummed release binaries in
 `~/.cache/pinfold/artifacts/<name>/<version>/<os-arch>/`, mounted read-only:
-pi, and Switchyard's codex and claude.
+pi.
 
 The init is not an artifact: it always comes from the CLI's own build. The
 macOS CLI embeds the `aarch64-unknown-linux-musl` build and writes it to the
@@ -255,8 +257,8 @@ cache once; a Linux CLI mounts its own executable.
 ## Profiles
 
 A profile is data: box defaults, an image, and pi's user-level config. It
-works the same for interactive runs and Switchyard boxes, with or without a
-TTY.
+works the same for interactive runs and programmatic boxes, with or
+without a TTY.
 
 ```
 ~/.config/pinfold/profiles/<name>/
@@ -295,7 +297,7 @@ lives in one.
 The default profile's `pinfold.toml` allows the model APIs and npm:
 `api.anthropic.com`, `platform.claude.com`, `api.openai.com`,
 `auth.openai.com`, `chatgpt.com`, `openrouter.ai`, `opencode.ai`,
-`registry.npmjs.org`. `PI_OFFLINE` is unset, so pi's package installs go
+`registry.npmjs.org`, and `pi.dev` for pi's model catalog. `PI_OFFLINE` is unset, so pi's package installs go
 through the proxy.
 
 ## Shared files
@@ -431,17 +433,6 @@ pinfold init                     PID 1 in the box (Linux builds)
 
 The project root is the git top level, else `$PWD`.
 
-## Switchyard
-
-Uses core only: `box up`/`exec`/`down`, label-based
-`list`/`prune` for reconcile, no-egress boxes for gates, a proxy per worker
-with a route to its MCP listener, profiles for its workers' pi config
-(`pinfold build --profile` for the image), and pinned pi, codex and claude.
-No `.git` protection: lanes are clones.
-
-Reviews run as a pi review extension in a box with the candidate read-only
-and egress to the model API only.
-
 ## Guarantees
 
 Each has one end-to-end test. Testing policy is in `AGENTS.md`.
@@ -469,9 +460,8 @@ the required gate. The workflow installs the pinned toolchain's musl target,
 enables linger and a D-Bus user session for the runner user so podman's
 cgroup manager is systemd, and clears AppArmor's unprivileged-userns
 restriction, which the runner image enables and which denies rootless podman
-the user namespace it needs. macOS (Apple `container`) runs as a Switchyard
-host gate at `stage = "batch"`, never `"candidate"`: code runs on the host
-only after the exact head is approved.
+the user namespace it needs. macOS (Apple `container`) runs on a macOS host
+before each merge, on the exact commit being merged.
 
 ## Code
 
@@ -519,7 +509,6 @@ profile/   the built-in default profile
 - Nested user namespaces in the Apple `container` guest kernel: can they be
   turned off?
 - Where herdr reads `HERDR_AGENT`.
-- For Switchyard: memory limits and OOM detection on Apple `container`;
-  Codex's single-file credential mount becomes a directory.
+- Memory limits and OOM detection on Apple `container`.
 - No disk cap on Apple `container`.
 - Model credentials injected at the proxy, so the box sees a placeholder.

@@ -1,5 +1,5 @@
-//! `pinfold box`: the JSON-on-stdio process interface Switchyard uses, and
-//! `pinfold build`: the profile and project image build.
+//! `pinfold box`: the JSON-on-stdio process interface for programmatic
+//! callers, and `pinfold build`: the profile and project image build.
 //!
 //! The verbs are parsed by hand: the set is small, and ARCHITECTURE.md's
 //! dependency list has no argument parser.

@@ -9,4 +9,5 @@ allow = [
     "openrouter.ai",
     "opencode.ai",
     "registry.npmjs.org",
+    "pi.dev",
 ]

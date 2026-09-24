@@ -8,8 +8,8 @@ Isolation differs by platform: on macOS each box is its own VM; on Linux,
 boxes share the host kernel.
 
 - **Interactive:** `pi` on the host is a shim for `pinfold pi`.
-- **Programmatic:** Switchyard drives boxes through `pinfold box`, JSON on
-  stdio.
+- **Programmatic:** a caller such as a CI system or an agent orchestrator
+  drives boxes through `pinfold box`, JSON on stdio.
 
 - Spec: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - History: [docs/archive/](docs/archive/)
@@ -139,8 +139,3 @@ Apple `container` limitations:
 2. Linux podman end-to-end suite in GitHub CI, and this README. Both
    landed. Daily use then moves from agentbox to pinfold, and agentbox is
    archived.
-3. Switchyard on pinfold: its engine interface over the core, worker
-   allowlists, and `docker.ts` removed.
-
-pinfold is built with Switchyard (`.yard/`). Until phase 3 its lanes run
-in Docker with unrestricted network.

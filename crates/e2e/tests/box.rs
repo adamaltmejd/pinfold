@@ -34,11 +34,11 @@ fn box_lifecycle_works_for_a_caller() {
     let binary = pinfold();
     let env = TestEnv::new("lifecycle");
     let name = format!("pinfold-e2e-{}-lifecycle", std::process::id());
-    let label = "dev.yard.lane=e2e-lifecycle";
+    let label = "dev.example.test=lifecycle";
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(binary, &env),
-        "labels": { "dev.yard.lane": "e2e-lifecycle" },
+        "labels": { "dev.example.test": "lifecycle" },
     });
     let mut up = box_up(binary, &env, &spec, &name);
 
@@ -672,11 +672,11 @@ fn losing_the_owner_fails_closed() {
     let binary = pinfold();
     let env = TestEnv::new("owner-gone");
     let name = format!("pinfold-e2e-{}-owner-gone", std::process::id());
-    let label = "dev.yard.lane=e2e-owner-gone";
+    let label = "dev.example.test=owner-gone";
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(binary, &env),
-        "labels": { "dev.yard.lane": "e2e-owner-gone" },
+        "labels": { "dev.example.test": "owner-gone" },
         "egress": { "allow": ["api.github.com"] },
     });
     let mut up = box_up(binary, &env, &spec, &name);
