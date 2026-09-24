@@ -5,7 +5,7 @@
 //! dependency list has no argument parser.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -27,7 +27,8 @@ use crate::trust;
 
 const USAGE: &str = "usage: pinfold box up|exec BOX [--tty] [--workdir DIR] -- argv|stat BOX|down BOX|list --label k=v [--label k]|prune";
 const BUILD_USAGE: &str = "usage: pinfold build [--profile NAME]";
-const PROFILE_USAGE: &str = "usage: pinfold profile new NAME [--from PROFILE]";
+const PROFILE_USAGE: &str =
+    "usage: pinfold profile new NAME [--from PROFILE] [--from-project [PATH]]";
 const ALLOW_USAGE: &str = "usage: pinfold allow";
 const ATTACH_USAGE: &str = "usage: pinfold attach [--box NAME] [cmd...]";
 const CLEAN_USAGE: &str = "usage: pinfold clean [--dry-run] [--unused AGE]";
@@ -1328,15 +1329,17 @@ fn run_profile(args: &[OsString]) -> io::Result<()> {
 }
 
 /// Copy a profile's files to `~/.config/pinfold/profiles/NAME/`, refusing to
-/// overwrite an existing profile.
+/// overwrite an existing profile. `--from-project` merges a project's pi
+/// agent config into the new profile after the copy.
 fn profile_new(args: &[OsString]) -> io::Result<()> {
-    let (name, from) = parse_profile_new(args)?;
+    let (name, from, from_project) = parse_profile_new(args)?;
     if !valid_name(&name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("profile name {name:?} must start alphanumeric and hold only [a-z0-9._-]"),
         ));
     }
+    let project_agent = from_project.as_deref().map(project_agent_dir).transpose()?;
     let source = Profile::load(&from);
     let target = dirs::config_dir()?.join("profiles").join(&name);
     if let Some(parent) = target.parent() {
@@ -1352,12 +1355,67 @@ fn profile_new(args: &[OsString]) -> io::Result<()> {
             error
         }
     })?;
-    let result = source.and_then(|source| write_profile(&source, &target));
+    let result = source
+        .and_then(|source| write_profile(&source, &target))
+        .and_then(|()| match &project_agent {
+            Some(agent) => merge_agent_tree(agent, &target.join("home/.pi/agent")),
+            None => Ok(()),
+        });
     if result.is_err() {
         // Do not leave a half-written profile behind to load or block a retry.
         let _ = fs::remove_dir_all(&target);
     }
     result
+}
+
+/// The pi agent dir of the project rooted at `path` (any directory inside
+/// the project works). A project that never started has no state: an error
+/// naming the missing path.
+fn project_agent_dir(path: &Path) -> io::Result<PathBuf> {
+    let root = crate::pi::launch::project_root(path)?;
+    let agent = crate::pi::state::project_home(&root)?.join(".pi/agent");
+    if !agent.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "project {} has no state at {}",
+                root.display(),
+                agent.display()
+            ),
+        ));
+    }
+    Ok(agent)
+}
+
+/// Merge a project's `home/.pi/agent/` into a profile's, replacing the
+/// seeds of the same path. pi's login, session history, npm install and
+/// caches stay behind; nothing else from the project home is copied.
+fn merge_agent_tree(from: &Path, to: &Path) -> io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if agent_entry_excluded(&name) {
+            continue;
+        }
+        let target = to.join(&name);
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            merge_agent_tree(&entry.path(), &target)?;
+        } else if file_type.is_file() {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Entries that never enter a profile: pi's credentials, session history,
+/// package install and cache directories.
+fn agent_entry_excluded(name: &OsStr) -> bool {
+    matches!(
+        name.to_str(),
+        Some("auth.json" | "sessions" | "npm" | "cache" | ".cache")
+    )
 }
 
 fn write_profile(source: &Profile, target: &Path) -> io::Result<()> {
@@ -1391,9 +1449,10 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn parse_profile_new(args: &[OsString]) -> io::Result<(String, String)> {
+fn parse_profile_new(args: &[OsString]) -> io::Result<(String, String, Option<PathBuf>)> {
     let mut name = None;
     let mut from = None;
+    let mut from_project = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -1405,6 +1464,18 @@ fn parse_profile_new(args: &[OsString]) -> io::Result<(String, String)> {
                         .to_string(),
                 );
             }
+            Some("--from-project") => {
+                // The path is optional; without one, or before another
+                // option, the project root of the current directory.
+                let path = match args.clone().next().and_then(|value| value.to_str()) {
+                    Some(value) if !value.starts_with("--") => {
+                        args.next();
+                        PathBuf::from(value)
+                    }
+                    _ => PathBuf::from("."),
+                };
+                from_project = Some(path);
+            }
             Some(option) if option.starts_with("--") => {
                 return Err(profile_usage(&format!("unknown profile option {option:?}")));
             }
@@ -1414,7 +1485,11 @@ fn parse_profile_new(args: &[OsString]) -> io::Result<(String, String)> {
         }
     }
     let name = name.ok_or_else(|| profile_usage("profile new needs a name"))?;
-    Ok((name, from.unwrap_or_else(|| "default".to_string())))
+    Ok((
+        name,
+        from.unwrap_or_else(|| "default".to_string()),
+        from_project,
+    ))
 }
 
 fn profile_usage(message: &str) -> io::Error {

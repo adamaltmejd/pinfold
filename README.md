@@ -94,6 +94,10 @@ In a project:
 4. Run `/login` in pi once per project: state is per project. API keys
    arrive through the environment instead.
 
+To reuse one project's pi configuration in another, `pinfold profile new
+NAME --from-project [PATH]` copies its settings, provider and skills into a
+profile; `auth.json`, `sessions/`, `npm/` and caches stay behind.
+
 ## Configuration
 
 Layers, highest first: the environment, `.pinfold.toml`, the selected
