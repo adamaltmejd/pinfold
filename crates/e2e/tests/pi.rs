@@ -672,10 +672,9 @@ fn both_pi_config_levels_load_behind_a_route() {
 
 #[test]
 fn the_highest_layer_sets_the_allowlist() {
-    // Sabotage: keep `union` in `Layer::over`; the project's `allow` no
-    // longer replaces the built-in list, so the default hosts stay in the
-    // box's PINFOLD_ALLOW and npm is let through: the exact-list assertion
-    // and the registry refusal fail.
+    // Sabotage: union DEFAULT_ALLOW under the merged allow in
+    // `Config::load`; the default hosts stay in the box's PINFOLD_ALLOW and
+    // npm is let through, so the exact-list assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("pi-allow");
     default_image(binary, &env);
