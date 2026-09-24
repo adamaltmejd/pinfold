@@ -31,8 +31,18 @@ and `--memory` are silently not enforced. Long-lived boxes need
 
 ## Install
 
-Build from a checkout of this repository; the Rust toolchain is pinned in
-`rust-toolchain.toml`.
+Linux can install the released static binary. From the release page,
+download the file named `pinfold-0.0.1-$(uname -m)-unknown-linux-musl`
+and `SHA256SUMS`, then verify and install:
+
+```sh
+sha256sum -c --ignore-missing SHA256SUMS
+mkdir -p ~/.local/bin
+install -m 0755 "pinfold-0.0.1-$(uname -m)-unknown-linux-musl" ~/.local/bin/pinfold
+```
+
+Or build from a checkout of this repository; the Rust toolchain is pinned
+in `rust-toolchain.toml`.
 
 macOS needs `zig` and `cargo-zigbuild` (`cargo install cargo-zigbuild`):
 the build cross-compiles the Linux init the macOS CLI embeds.
