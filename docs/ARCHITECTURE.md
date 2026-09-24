@@ -211,9 +211,10 @@ The box spec `up` reads from stdin:
 ```
 
 - No `egress`: no way out at all (gates).
-- `env` is exact; nothing is inherited. `{ "from": "NAME" }` is read from
-  the caller's environment and passed as `--env NAME`, so values never reach
-  argv.
+- `env` is exact; nothing is inherited. An env name must match
+  `[A-Za-z_][A-Za-z0-9_]*`; any other name is refused as `spec`, naming it.
+  `{ "from": "NAME" }` is read from the caller's environment and passed as
+  `--env NAME`, so values never reach argv.
 - `profile` applies the profile's `home/` and `share/` (see Profiles), and
   its image if `image` is absent. Core never reads the profile's
   `pinfold.toml`: egress, env and resources come only from the spec.
@@ -222,6 +223,8 @@ The box spec `up` reads from stdin:
   `PINFOLD_ALLOW` (the spec's `egress.allow`, empty without egress). The
   spec's own `env` wins. It needs no profile.
 - Apple: mounts are directories. Nested read-only mounts protect subpaths.
+- A mount path holding `,` or an ASCII control character is refused as
+  `spec`, naming the path.
 - `.git` protection belongs to the pi layer; a box spec gets only the
   mounts it names.
 - An unknown key at any level of the spec is refused as `spec`, naming the

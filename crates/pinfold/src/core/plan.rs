@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -267,10 +267,20 @@ impl Plan {
                     mount.guest.display()
                 )));
             }
+            for path in [&mount.host, &mount.guest] {
+                if !valid_mount_path(path) {
+                    return Err(PlanError::Invalid(format!(
+                        "mount path {:?} must not hold ',' or an ASCII control character",
+                        path
+                    )));
+                }
+            }
         }
         for (name, value) in &self.env {
-            if name.is_empty() || name.contains('=') {
-                return Err(PlanError::Invalid(format!("env name {name:?} is invalid")));
+            if !valid_env_name(name) {
+                return Err(PlanError::Invalid(format!(
+                    "env name {name:?} must match [A-Za-z_][A-Za-z0-9_]*"
+                )));
             }
             if let Env::From { from } = value
                 && std::env::var_os(from).is_none()
@@ -287,6 +297,29 @@ impl Plan {
         }
         Ok(())
     }
+}
+
+/// A POSIX environment name: `[A-Za-z_][A-Za-z0-9_]*`. Podman expands a
+/// trailing `*` in `--env NAME` against its own environment, which is the
+/// caller's, so anything else would leak or fail unpredictably.
+fn valid_env_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    match bytes.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == b'_' => {}
+        _ => return false,
+    }
+    bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+/// A mount path that survives `type=bind,source=HOST,target=GUEST`: the
+/// value is concatenated, not CSV-quoted, and the runtime's option parser
+/// reads a comma as a separator and a control character as noise.
+fn valid_mount_path(path: &Path) -> bool {
+    !path
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .any(|byte| *byte == b',' || *byte < 0x20 || *byte == 0x7f)
 }
 
 fn valid_name(name: &str) -> bool {

@@ -146,6 +146,14 @@ fn up_refuses_before_it_creates() {
     // the first box down, so its `exec` fails.
     // Sabotage: drop `deny_unknown_fields` from `Mount`; the misspelled
     // mount spec then comes up `ready` and the refusal assertion fails.
+    // Sabotage: drop the character-class check from the env-name validation,
+    // keeping only the old empty-or-`=` test; the wildcard spec then comes up
+    // `ready`, so the refusal assertion fails, and on podman the box's
+    // environment also holds `HOSTSECRET_TOKEN=leaked`.
+    // Sabotage: drop the comma and control-character check from the
+    // mount-path validation; the comma path then reaches the runtime, whose
+    // option parser reads the rest as mount options, so the refusal assertion
+    // fails.
     let binary = pinfold();
     let env = TestEnv::new("refuses");
     let name = format!("pinfold-e2e-{}-refuses", std::process::id());
@@ -158,7 +166,7 @@ fn up_refuses_before_it_creates() {
         "image": "pinfold-e2e-missing:latest",
         "labels": { "dev.example.test": "refuses" },
     });
-    let (code, refused) = box_up_refused(binary, &env, &missing);
+    let (code, refused) = box_up_refused(binary, &env, &missing, &[]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["event"], "refused");
     assert_eq!(refused["box"], name);
@@ -184,7 +192,7 @@ fn up_refuses_before_it_creates() {
         "labels": { "dev.example.test": "refuses" },
         "mounts": [{ "host": env.root, "guest": "/workspace", "read_only": true }],
     });
-    let (code, refused) = box_up_refused(binary, &env, &misspelled);
+    let (code, refused) = box_up_refused(binary, &env, &misspelled, &[]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["event"], "refused");
     assert_eq!(refused["reason"], "spec");
@@ -206,6 +214,75 @@ fn up_refuses_before_it_creates() {
         "the refused up left a box"
     );
 
+    // A spec whose env name is not a POSIX name is refused as data, naming
+    // the key, and leaves no state dir and no box. `HOSTSECRET_*` would make
+    // podman import every `HOSTSECRET_` variable from `up`'s own
+    // environment, which is the caller's. The positive control, a valid name
+    // arriving in the box, is guarantee 6's `the_environment_is_exactly_the_spec`.
+    let wildcard = serde_json::json!({
+        "name": name,
+        "image": default_image(binary, &env),
+        "labels": { "dev.example.test": "refuses" },
+        "env": { "HOSTSECRET_*": "x" },
+    });
+    let (code, refused) =
+        box_up_refused(binary, &env, &wildcard, &[("HOSTSECRET_TOKEN", "leaked")]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["event"], "refused");
+    assert_eq!(refused["reason"], "spec");
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("HOSTSECRET_*"),
+        "the refusal did not name the key: {refused}"
+    );
+    let state = env.state.join("pinfold").join("boxes").join(&name);
+    assert!(
+        !state.exists(),
+        "the refused up left a state dir: {}",
+        state.display()
+    );
+    assert!(
+        box_list(binary, &env, label).is_empty(),
+        "the refused up left a box"
+    );
+
+    // A spec whose mount path holds a comma is refused as data, naming the
+    // path, and leaves no state dir and no box: the bind value is built by
+    // concatenation, so the runtime reads the rest as mount options. The
+    // positive control, a plain path mounting, is guarantee 10's
+    // `box_shares_files_with_the_host`.
+    let comma = env.root.join("a,b");
+    fs::create_dir_all(&comma).unwrap();
+    let comma_mount = serde_json::json!({
+        "name": name,
+        "image": default_image(binary, &env),
+        "labels": { "dev.example.test": "refuses" },
+        "mounts": [{ "host": comma, "guest": "/workspace", "readonly": false }],
+    });
+    let (code, refused) = box_up_refused(binary, &env, &comma_mount, &[]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["event"], "refused");
+    assert_eq!(refused["reason"], "spec");
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("a,b"),
+        "the refusal did not name the path: {refused}"
+    );
+    let state = env.state.join("pinfold").join("boxes").join(&name);
+    assert!(
+        !state.exists(),
+        "the refused up left a state dir: {}",
+        state.display()
+    );
+    assert!(
+        box_list(binary, &env, label).is_empty(),
+        "the refused up left a box"
+    );
+
     // A second `up` on a live name is refused without touching the first
     // box.
     let live = serde_json::json!({
@@ -214,7 +291,7 @@ fn up_refuses_before_it_creates() {
         "labels": { "dev.example.test": "refuses" },
     });
     let mut up = box_up(binary, &env, &live, &name);
-    let (code, refused) = box_up_refused(binary, &env, &live);
+    let (code, refused) = box_up_refused(binary, &env, &live, &[]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["event"], "refused");
     assert_eq!(refused["box"], name);
@@ -2291,15 +2368,18 @@ fn box_up_with_env(
 }
 
 /// Run `box up` with a spec and return its exit code and first stdout line.
+/// `vars` go in `up`'s own environment, as [`box_up_with_env`] gives them.
 /// For an `up` that refuses before it holds; close the spec stdin so the
 /// child cannot park.
 fn box_up_refused(
     binary: &Path,
     env: &TestEnv,
     spec: &serde_json::Value,
+    vars: &[(&str, &str)],
 ) -> (i32, serde_json::Value) {
     let mut child = env
         .command(binary)
+        .envs(vars.iter().copied())
         .args(["box", "up"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
