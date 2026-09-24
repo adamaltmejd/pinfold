@@ -127,26 +127,30 @@ host environment variable enters the box.
 
 - Project contents: an agent with a model API can put them in a prompt.
 - Files the host runs by explicit command: build scripts, tests, package
-  scripts.
+  scripts, and scripts a hook calls from the project, such as husky's
+  `.husky/pre-commit`.
 - A planted repo (`sub/.git`, or `.git` in a project that has none) runs
   code if a host tool runs git in it (VS Code does by default).
 - CDN fronting beyond the SNI check (Host-header fronting needs TLS
   interception).
 - Allowlisted services that accept writes (GitHub with a token,
   registries).
-- Image builds: user-run, trusted, unrestricted egress.
+- Image builds: user- or caller-run, trusted, unrestricted egress.
 
 ## Shared files
 
 Box-created files land on the host as the user's, 644 or 755; the exec bit
-and symlinks survive; git needs no `safe.directory`.
+and symlinks survive. Apple `container` can show the top directory of a
+mount as root-owned inside the box, so git needs `safe.directory` for a
+mounted repository; `pinfold pi` sets it for the project root.
 
 Apple `container` limitations:
 
 | Limitation | Handling |
 |---|---|
-| ~1 s metadata and name cache: ENOENT or stale `stat` after a host atomic save | If it bites, a profile extension retries pi's reads once after 1 s. |
-| No inotify for host changes | Polling (`CHOKIDAR_USEPOLLING`, `WATCHPACK_POLLING`). |
+| ~1 s metadata and name cache: ENOENT or stale `stat` after a host atomic save | Not handled; a reader retries. |
+| A mount's top directory may be root-owned inside the box | `safe.directory`, as above. |
+| No inotify for host changes | The box polls (`CHOKIDAR_USEPOLLING`, `WATCHPACK_POLLING`); pinfold sets neither. |
 | `flock`/`fcntl` locks not shared; O_EXCL lockfiles are safe | Don't open one SQLite database from both sides. |
 | A case-only rename is a no-op | Rename in two steps. |
 | Small-file I/O 4–10× slower | Accepted. `/tmp` is tmpfs. |

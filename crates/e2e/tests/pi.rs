@@ -1,4 +1,4 @@
-//! End-to-end tests for guarantees 6, 12, 13, 14, 16 and 18 in
+//! End-to-end tests for guarantees 6, 11, 12, 13, 14, 16 and 18 in
 //! docs/ARCHITECTURE.md.
 //!
 //! They run on a macOS host with the Apple `container` CLI, or a Linux host
