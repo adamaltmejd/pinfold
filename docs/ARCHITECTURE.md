@@ -194,8 +194,17 @@ The box spec `up` reads from stdin:
   "image": "…",
   "mounts": [{ "host": "/…/clone", "guest": "/workspace", "readonly": false }],
   "user": { "uid": 501, "gid": 20 },
-  "env": { "HOME": "/state/home", "OPENROUTER_API_KEY": { "from": "OPENROUTER_API_KEY" } },
-  "egress": { "allow": ["openrouter.ai"], "routes": { "api.internal": "127.0.0.1:7777" } },
+  "env": { "HOME": "/state/home", "GH_TOKEN": { "from": "GH_TOKEN" } },
+  "egress": {
+    "allow": ["api.github.com"],
+    "routes": {
+      "api.internal": "127.0.0.1:7777",
+      "openrouter": {
+        "to": "https://openrouter.ai",
+        "headers": { "Authorization": { "from": "OPENROUTER_API_KEY", "prefix": "Bearer " } }
+      }
+    }
+  },
   "cpus": 4,
   "memory": "8G"
 }
@@ -275,6 +284,19 @@ network listener, no token: the socket identifies the box.
 - **Routes:** a name maps to one host service, e.g.
   `api.internal → 127.0.0.1:7777`. Plain HTTP only, Host header rewritten.
   CONNECT to a route is refused. The host service authenticates its callers.
+- **Injecting routes:** a route whose value is `{ "to": ORIGIN, "headers":
+  { NAME: { "from": VAR, "prefix": "…" } } }`. `to` is an `http://` or
+  `https://` origin. The box sends `http://<route>/path` as for any route;
+  the proxy dials `to`, over TLS for `https` with SNI and the certificate
+  checked against the host's roots, sets `Host` to `to`'s authority, and
+  sets each named header to `prefix` plus `$VAR` from `up`'s own
+  environment, replacing any the box sent under that name. Values are read
+  once at start; a missing variable refuses `up`. An `https` target is
+  resolved and checked like an allowlisted host; an `http` target is a host
+  service. The value never reaches argv, the box, the spec or the log. The
+  box can use the credential but not read it, unless `to` echoes request
+  headers back. Header names that frame the request (`Host`,
+  `Content-Length`, hop-by-hop) are refused.
 - **Limits:** a connection cap, a header timeout, an idle timeout on
   tunnels.
 - **Log:** one JSON line per decision in the box's egress log at
@@ -463,7 +485,7 @@ nothing. An environment variable that is set, even empty, sets its key.
 |---|---|---|---|
 | `profile` | `PINFOLD_PROFILE` | `default` | Profile name |
 | `allow` | `PINFOLD_ALLOW` | `api.anthropic.com`, `platform.claude.com`, `api.openai.com`, `auth.openai.com`, `chatgpt.com`, `openrouter.ai`, `opencode.ai`, `registry.npmjs.org`, `pi.dev` | Hosts the proxy lets through |
-| `routes` | `PINFOLD_ROUTES` | `{}` | Proxy routes to host services |
+| `routes` | `PINFOLD_ROUTES` | `{}` | Proxy routes: `name = "host:port"` for a host service, or an injecting route `name = { to = "https://…", headers = { Authorization = { from = "VAR", prefix = "Bearer " } } }` (see Egress proxy) |
 | `protect` | `PINFOLD_PROTECT` | `[]` | Read-only directories in the box, beyond the always-protected ones |
 | `containerfile` | — | the profile's image | The project's Containerfile, a path relative to the project; typically FROM the profile image |
 | `cpus` | `PINFOLD_CPUS` | 4 | |
@@ -473,7 +495,7 @@ nothing. An environment variable that is set, even empty, sets its key.
 The list keys take comma-separated values in the environment:
 
 - `PINFOLD_ALLOW`: host names; a leading `.` makes a suffix entry.
-- `PINFOLD_ROUTES`: `name=host:port` pairs.
+- `PINFOLD_ROUTES`: `name=host:port` pairs; an injecting route needs a file.
 - `PINFOLD_PROTECT`: project-relative directory paths.
 
 `pinfold config` prints the effective configuration, spec-shaped.
@@ -534,6 +556,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 18 | A caller reads the effective configuration as data | pinfold config reports a project's allow list, its trust state before and after pinfold allow, and the project home pinfold pi then mounts. |
 | 19 | A caller-owned box launches the pinned harness | A spec with harness: pi runs /opt/pinfold/pi/pi --version at the pinned version, and the box's PINFOLD_ALLOW is the spec's allow list. |
 | 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, and every field is present. |
+| 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
 
 Linux (podman) runs in GitHub CI on `ubuntu-26.04` and `ubuntu-26.04-arm` as
 the required gate. The workflow installs the pinned toolchain's musl target,
@@ -561,7 +584,9 @@ see the same operations as one that spawns `pinfold box`, so a new verb is a
 Linux targets build on a Mac with `cargo zigbuild`. The default profile and,
 in the macOS CLI, the arm64 Linux init are embedded with `include_bytes!`.
 
-Dependencies: `tokio`, `httparse`, `serde`, `serde_json`, `sha2`, `toml`, `nix`.
+Dependencies: `tokio`, `httparse`, `serde`, `serde_json`, `sha2`, `toml`, `nix`,
+and the TLS client for injecting routes: `rustls` (ring) with
+`rustls-native-certs` for the host's roots.
 SNI comes from a small ClientHello parser.
 
 Portability (Windows later means the Linux build in WSL2):
@@ -600,4 +625,3 @@ profile/   the built-in default profile
   `pids.limit` are null there; seeing a kill needs the guest kernel or the
   runtime to report it.
 - No disk cap on Apple `container`.
-- Model credentials injected at the proxy, so the box sees a placeholder.

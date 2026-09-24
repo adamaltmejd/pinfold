@@ -19,7 +19,7 @@ use crate::config::{Config, Containerfile, Origin};
 use crate::core::artifacts;
 use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, UpError};
 use crate::core::clean;
-use crate::core::plan::Plan;
+use crate::core::plan::{Plan, Route};
 use crate::core::profile::{Profile, valid_name};
 use crate::core::runtime::{BoxInfo, BuildRequest, Runtime, local_image_id, podman, runtime};
 use crate::dirs;
@@ -901,12 +901,16 @@ fn print_list(key: &str, entries: &[String], origin: Origin, profile: &str) {
 }
 
 /// The effective routes, each with the layer the list came from and target.
-fn print_routes(routes: &BTreeMap<String, String>, origin: Origin, profile: &str) {
+fn print_routes(routes: &BTreeMap<String, Route>, origin: Origin, profile: &str) {
     println!("  routes:");
     if routes.is_empty() {
         println!("    (none)");
     }
     for (name, target) in routes {
+        let target = match target {
+            Route::Address(address) => address,
+            Route::Inject(inject) => &inject.to,
+        };
         println!("    {name} -> {target} ({})", origin_label(origin, profile));
     }
 }

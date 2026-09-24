@@ -13,9 +13,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// The built `pinfold` binary. The test executable lives in
@@ -108,7 +108,11 @@ impl Drop for TestEnv {
 pub struct HttpFixture {
     port: u16,
     requests: Arc<AtomicUsize>,
+    headers: Arc<Mutex<Vec<Headers>>>,
 }
+
+/// One request's header lines, as `(name, value)` in the order received.
+pub type Headers = Vec<(String, String)>;
 
 impl HttpFixture {
     /// Bind on loopback and serve until the process exits.
@@ -116,15 +120,22 @@ impl HttpFixture {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the fixture");
         let port = listener.local_addr().expect("fixture address").port();
         let requests = Arc::new(AtomicUsize::new(0));
+        let headers = Arc::new(Mutex::new(Vec::new()));
         let counter = Arc::clone(&requests);
+        let seen = Arc::clone(&headers);
         thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
                 let counter = Arc::clone(&counter);
-                thread::spawn(move || serve(stream, &counter));
+                let seen = Arc::clone(&seen);
+                thread::spawn(move || serve(stream, &counter, &seen));
             }
         });
-        HttpFixture { port, requests }
+        HttpFixture {
+            port,
+            requests,
+            headers,
+        }
     }
 
     /// The port the fixture listens on.
@@ -136,10 +147,16 @@ impl HttpFixture {
     pub fn requests(&self) -> usize {
         self.requests.load(Ordering::SeqCst)
     }
+
+    /// The headers of each request the fixture has answered, in order.
+    pub fn headers(&self) -> Vec<Headers> {
+        self.headers.lock().expect("fixture headers").clone()
+    }
 }
 
-/// Answer one request with the Host header it carried.
-fn serve(mut stream: TcpStream, requests: &AtomicUsize) {
+/// Answer one request with the Host header it carried, and record its
+/// headers.
+fn serve(mut stream: TcpStream, requests: &AtomicUsize, seen: &Mutex<Vec<Headers>>) {
     let Ok(clone) = stream.try_clone() else {
         return;
     };
@@ -149,6 +166,7 @@ fn serve(mut stream: TcpStream, requests: &AtomicUsize) {
         return;
     }
     let mut host = String::new();
+    let mut headers = Vec::new();
     loop {
         line.clear();
         if reader.read_line(&mut line).unwrap_or(0) == 0 {
@@ -160,7 +178,11 @@ fn serve(mut stream: TcpStream, requests: &AtomicUsize) {
         if let Some(value) = line.to_ascii_lowercase().strip_prefix("host:") {
             host = value.trim().to_string();
         }
+        if let Some((name, value)) = line.split_once(':') {
+            headers.push((name.to_string(), value.trim().to_string()));
+        }
     }
+    seen.lock().expect("fixture headers").push(headers);
     requests.fetch_add(1, Ordering::SeqCst);
     let body = format!("fixture host={host}\n");
     let response = format!(
