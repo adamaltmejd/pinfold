@@ -218,13 +218,6 @@ pub enum Env {
 }
 
 impl Plan {
-    /// Parse and validate a box spec.
-    pub fn parse(json: &str) -> Result<Plan, PlanError> {
-        let plan: Plan = serde_json::from_str(json)?;
-        plan.validate()?;
-        Ok(plan)
-    }
-
     /// Parse one box spec from a reader, leaving any data after the JSON
     /// value unread so `box up` can watch the same stdin for EOF. The caller
     /// validates, so a refusal can name the box when the JSON parsed.

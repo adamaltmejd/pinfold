@@ -183,6 +183,11 @@ impl Box {
             .into());
         }
 
+        // The spec rules are the first refusal, before anything is created
+        // or resolved.
+        plan.validate()
+            .map_err(|error| refused(plan, RefusalReason::Spec, error.to_string()))?;
+
         // Two mounts at one guest path would be ambiguous: the runtime
         // applies both, and whichever comes last shadows the other. Refuse
         // before the claim, naming the path.
@@ -207,13 +212,12 @@ impl Box {
             .preflight()
             .map_err(|error| refused(&plan, RefusalReason::Runtime, error.to_string()))?;
 
-        let image = plan.image.clone().ok_or_else(|| {
-            refused(
-                &plan,
-                RefusalReason::Spec,
-                "a box spec needs an image or a profile",
-            )
-        })?;
+        // `validate` refused a spec with neither an image nor a profile, and
+        // `resolve_profile` fills the image from the profile.
+        let image = plan
+            .image
+            .clone()
+            .expect("a validated spec has an image after profile resolution");
         // The runtime resolves the reference, so every spelling it resolves
         // locally is accepted. It is still given `image`, not the id.
         let identity = runtime.resolve_image(&image)?.map_err(|message| {
@@ -240,7 +244,7 @@ impl Box {
         match runtime.list() {
             Ok(boxes) if boxes.iter().all(|box_| box_.id != plan.name) => {}
             listed => {
-                let _ = fs::remove_dir_all(&state_dir);
+                abort(runtime, &plan.name, &state_dir, Parts::default()).await;
                 return Err(match listed {
                     Ok(_) => refused(
                         &plan,
@@ -275,8 +279,7 @@ impl Box {
         let labels = match started {
             Ok(labels) => labels,
             Err(stop) => {
-                let status = parts.teardown(runtime, &plan.name).await;
-                let _ = fs::remove_dir_all(&state_dir);
+                let status = abort(runtime, &plan.name, &state_dir, parts).await;
                 return Err(match stop {
                     Stop::Signal => UpError::Signal,
                     Stop::Failed(error) => UpError::Other(error),
@@ -379,27 +382,32 @@ struct Parts {
     child: Option<Child>,
 }
 
-impl Parts {
-    /// Remove the box and the proxy. Returns the runtime child's exit status
-    /// when the runtime was started.
-    async fn teardown(self, runtime: &dyn Runtime, name: &str) -> Option<io::Result<ExitStatus>> {
-        let status = match self.child {
-            Some(mut child) => {
-                // The client goes first, so one still creating the box cannot
-                // finish after the removal. The box exists by name even when
-                // readiness failed.
-                let _ = child.start_kill();
-                let status = child.wait().await;
-                let _ = runtime.down(name);
-                Some(status)
-            }
-            None => None,
-        };
-        if let Some(proxy) = self.proxy {
-            proxy.close();
+/// Remove what a failed start left: stop the runtime child, take the box
+/// down, close the proxy, then remove the claimed state dir. The box goes
+/// down first, so no checker sees a box whose state dir is gone.
+async fn abort(
+    runtime: &dyn Runtime,
+    name: &str,
+    state_dir: &Path,
+    parts: Parts,
+) -> Option<io::Result<ExitStatus>> {
+    let status = match parts.child {
+        Some(mut child) => {
+            // The client goes first, so one still creating the box cannot
+            // finish after the removal. The box exists by name even when
+            // readiness failed.
+            let _ = child.start_kill();
+            let status = child.wait().await;
+            let _ = runtime.down(name);
+            Some(status)
         }
-        status
+        None => None,
+    };
+    if let Some(proxy) = parts.proxy {
+        proxy.close();
     }
+    let _ = fs::remove_dir_all(state_dir);
+    status
 }
 
 /// Claim `plan`'s name: create its state dir exclusively, then lock and
@@ -628,7 +636,7 @@ fn resolve_profile(plan: &mut Plan) -> io::Result<Option<ResolvedProfile>> {
     };
     let profile = Profile::load(&name)?;
     if plan.image.is_none() {
-        plan.image = Some(format!("pinfold/profile-{name}:latest"));
+        plan.image = Some(profile.image_ref());
     }
     if let Some(share) = &profile.share {
         plan.mounts.push(Mount {

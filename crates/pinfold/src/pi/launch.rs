@@ -8,7 +8,6 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
-use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
@@ -20,12 +19,12 @@ use tokio::signal::unix::{SignalKind, signal};
 use crate::cli;
 use crate::config::{Config, Containerfile};
 use crate::core::artifacts::GUEST_PI;
-use crate::core::r#box::Box;
+use crate::core::r#box::{Box, RefusalReason, UpError};
 use crate::core::clean;
 use crate::core::plan::{Egress, Env, HARNESS_PI, Mount, Plan};
 use crate::core::runtime::{exec_through_init, local_image_id, runtime};
 use crate::pi::git::Git;
-use crate::pi::state::ProjectState;
+use crate::pi::state::{ProjectState, canonical};
 use crate::trust;
 
 /// Run a `pi`/`pinfold pi` invocation and return pi's exit code.
@@ -51,7 +50,7 @@ fn launch(args: &[OsString]) -> io::Result<i32> {
     // The read-only mounts are prepared after trust, so a refused run leaves
     // no created directory behind.
     let git = Git::prepare(&root, &config.protect)?;
-    let plan = build_plan(&config, &state, &image, &git)?;
+    let plan = build_plan(&root, &config, &state, &image, &git)?;
     let code = run_box(&plan, &cwd, &argv);
     // The box is down; remove the protected directories this run created.
     git.cleanup();
@@ -92,15 +91,6 @@ fn top_level(cwd: &Path) -> io::Result<PathBuf> {
         }
     }
     Ok(cwd.to_path_buf())
-}
-
-fn canonical(path: &Path) -> io::Result<PathBuf> {
-    fs::canonicalize(path).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("canonicalize {}: {error}", path.display()),
-        )
-    })
 }
 
 /// The image ref the box runs. A project Containerfile runs the project's
@@ -181,8 +171,14 @@ fn pi_argv(args: &[OsString]) -> io::Result<Vec<String>> {
     Ok(argv)
 }
 
-/// The complete box spec for one project.
-fn build_plan(config: &Config, state: &ProjectState, image: &str, git: &Git) -> io::Result<Plan> {
+/// The complete box spec for one project. `root` is canonical.
+fn build_plan(
+    root: &Path,
+    config: &Config,
+    state: &ProjectState,
+    image: &str,
+    git: &Git,
+) -> io::Result<Plan> {
     let home = state.home.to_str().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -212,8 +208,8 @@ fn build_plan(config: &Config, state: &ProjectState, image: &str, git: &Git) -> 
 
     let mut mounts = vec![
         Mount {
-            host: git.root().to_path_buf(),
-            guest: git.root().to_path_buf(),
+            host: root.to_path_buf(),
+            guest: root.to_path_buf(),
             readonly: false,
         },
         Mount {
@@ -242,10 +238,6 @@ fn build_plan(config: &Config, state: &ProjectState, image: &str, git: &Git) -> 
         cpus: Some(config.cpus),
         memory: Some(config.memory.clone()),
     };
-    // The pi layer builds a box spec, so the spec rules `box up` applies
-    // decide whether it may reach the runtime.
-    plan.validate()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     Ok(plan)
 }
 
@@ -258,7 +250,16 @@ fn run_box(plan: &Plan, cwd: &Path, argv: &[String]) -> io::Result<i32> {
         // during startup is caught and the box is removed once it is up.
         let mut shutdown = Shutdown::new(tty)?;
         // The handlers above are the run's; `up` installs none of its own.
-        let mut box_ = Box::up(plan, &init, false).await?;
+        // `Box::up` owns the spec rules now: a spec refusal reads as the pi
+        // layer's old validate error, and every other refusal keeps its
+        // reason.
+        let mut box_ = match Box::up(plan, &init, false).await {
+            Ok(box_) => box_,
+            Err(UpError::Refused(refusal)) if refusal.reason == RefusalReason::Spec => {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, refusal.detail));
+            }
+            Err(error) => return Err(error.into()),
+        };
         let code = exec_pi(&plan.name, &init, tty, cwd, argv, &mut shutdown).await;
         // Remove the box exactly once, whatever ended the run. A failed
         // removal must not hide the error that ended pi.

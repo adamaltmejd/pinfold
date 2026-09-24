@@ -15,6 +15,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use crate::core::plan::Mount;
+use crate::pi::state::canonical;
 
 /// Editor config the host runs on open, always protected.
 const ALWAYS_PROTECT: [&str; 3] = [".vscode", ".claude", ".idea"];
@@ -22,8 +23,6 @@ const ALWAYS_PROTECT: [&str; 3] = [".vscode", ".claude", ".idea"];
 /// One run's read-only mounts and the absent protected directories it
 /// created for them.
 pub struct Git {
-    /// The project root the mounts are relative to.
-    root: PathBuf,
     /// Read-only mounts at their own absolute paths.
     readonly: Vec<Mount>,
     /// Protected directories that did not exist and were created empty.
@@ -97,16 +96,7 @@ impl Git {
                 readonly: true,
             });
         }
-        Ok(Git {
-            root: root.to_path_buf(),
-            readonly,
-            created,
-        })
-    }
-
-    /// The project root the mounts belong to.
-    pub fn root(&self) -> &Path {
-        &self.root
+        Ok(Git { readonly, created })
     }
 
     /// The read-only mounts, at their own absolute paths.
@@ -228,12 +218,7 @@ fn path_kind(path: &Path) -> io::Result<PathKind> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(PathKind::File),
         Ok(metadata) if metadata.is_dir() => {
-            let real = fs::canonicalize(path).map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!("canonicalize {}: {error}", path.display()),
-                )
-            })?;
+            let real = canonical(path)?;
             Ok(if real.as_path() == path {
                 PathKind::Directory
             } else {

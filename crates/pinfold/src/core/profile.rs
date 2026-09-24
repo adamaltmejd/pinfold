@@ -68,12 +68,7 @@ impl Profile {
     /// `~/.config/pinfold/profiles/<name>/` wins whole; only when no such
     /// directory exists does `default` fall back to the embedded copy.
     pub fn load(name: &str) -> io::Result<Profile> {
-        if !valid_name(name) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("profile name {name:?} must start alphanumeric and hold only [a-z0-9._-]"),
-            ));
-        }
+        check_name(name)?;
         let root = dirs::config_dir()?.join("profiles").join(name);
         if root.is_dir() {
             return load_dir(name, &root);
@@ -253,6 +248,18 @@ fn read_seed_dir(root: &Path, dir: &Path, seeds: &mut Vec<Seed>) -> io::Result<(
         }
     }
     Ok(())
+}
+
+/// Refuse a name that is not safe as a profile directory name, with the
+/// sentence `profile new` and [`Profile::load`] share.
+pub fn check_name(name: &str) -> io::Result<()> {
+    if valid_name(name) {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("profile name {name:?} must start alphanumeric and hold only [a-z0-9._-]"),
+    ))
 }
 
 /// Whether `name` is safe as a profile directory name: one path component

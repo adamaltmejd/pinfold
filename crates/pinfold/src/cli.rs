@@ -22,7 +22,7 @@ use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, UpError};
 use crate::core::clean;
 use crate::core::image::{self, Build, Built, Context, ImageError, ImageRequest};
 use crate::core::plan::{Plan, Route};
-use crate::core::profile::{self, Profile, valid_name};
+use crate::core::profile::{self, Profile};
 use crate::core::runtime::{
     BoxInfo, BuildCache, Runtime, exec_through_init, local_image_id, podman, runtime,
 };
@@ -211,13 +211,6 @@ fn up(args: &[OsString]) -> io::Result<i32> {
             }));
         }
     };
-    if let Err(error) = plan.validate() {
-        return Ok(refused(Refusal {
-            box_name: Some(plan.name.clone()),
-            reason: RefusalReason::Spec,
-            detail: error.to_string(),
-        }));
-    }
     // The owner label names this process to `list`. For a state dir other
     // than this one, it is also how the owner is judged alive.
     plan.labels
@@ -1465,12 +1458,7 @@ fn run_profile(args: &[OsString]) -> io::Result<()> {
 /// agent config into the new profile after the copy.
 fn profile_new(args: &[OsString]) -> io::Result<()> {
     let (name, from, from_project) = parse_profile_new(args)?;
-    if !valid_name(&name) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("profile name {name:?} must start alphanumeric and hold only [a-z0-9._-]"),
-        ));
-    }
+    profile::check_name(&name)?;
     let project_agent = from_project.as_deref().map(project_agent_dir).transpose()?;
     let source = Profile::load(&from);
     let target = dirs::config_dir()?.join("profiles").join(&name);
