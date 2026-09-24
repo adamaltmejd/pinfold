@@ -1305,7 +1305,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // Guarantee 15: cleanup removes only pinfold's garbage.
     //
     // Sabotage: make `keep_two_images` return before it removes anything;
-    // three images remain and the two-image assertion fails. Sabotage: drop
+    // three images remain and the two-image assertion fails. Sabotage: keep
+    // the `?` on `remove_image` in `keep_two_images`; the fifth build meets
+    // pinned b3 before the freed b2 and returns there, so b2 stays and the
+    // freed-b2-gone assertion fails. Sabotage: drop
     // the `dev.pinfold.profile` label from the build; no image matches and
     // the count is zero. Sabotage: make `clean` remove every image instead
     // of only pinfold's own; the unlabeled image assertion fails. Sabotage:
@@ -1342,6 +1345,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // `FROM scratch` keeps the test off the network and fast.
     fs::write(&containerfile, b"FROM scratch\n").unwrap();
 
+    // Record each build's unique tag. The `:latest` tag moves along, so a
+    // box pins the image it started from by this tag. After three builds b1
+    // is gone; b2 and b3 remain and b2 is the next removal candidate.
+    let mut builds: Vec<String> = Vec::new();
     for _ in 0..3 {
         let output = env
             .command(binary)
@@ -1353,7 +1360,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
             "pinfold build failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        builds.push(built_unique_ref(&profile));
     }
+    let b2 = builds[1].clone();
+    let b3 = builds[2].clone();
 
     let images = labeled_images("dev.pinfold.profile", &profile);
     let mut digests: Vec<&str> = images.iter().map(|(digest, _)| digest.as_str()).collect();
@@ -1364,6 +1374,103 @@ fn cleanup_removes_only_pinfolds_garbage() {
         2,
         "after three builds of one source, two images should remain: {images:?}"
     );
+    assert!(
+        image_named(&b2) && image_named(&b3),
+        "the two images left are not b2 and b3: {images:?}"
+    );
+
+    // Box A pins b2, the older of the two, so the next build's retention
+    // meets a pinned image first. `FROM scratch` has no program for `exec`,
+    // so `box list` is how the test sees the box survive.
+    let pinned_label = "dev.example.test=cleanup-pinned";
+    let box_a = format!("pinfold-e2e-{}-cleanup-a", std::process::id());
+    let pin_a = serde_json::json!({
+        "name": box_a,
+        "image": b2.as_str(),
+        "labels": { "dev.example.test": "cleanup-pinned" },
+    });
+    let mut up_a = box_up(binary, &env, &pin_a, &box_a);
+
+    // Build 4: b2 cannot go while box A holds it. The build still exits 0
+    // and its one maintenance line names b2.
+    let output = env
+        .command(binary)
+        .args(["build", "--profile", &profile])
+        .output()
+        .expect("run pinfold build");
+    assert!(
+        output.status.success(),
+        "a build that could not remove an image failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    builds.push(built_unique_ref(&profile));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        image_named(&b2),
+        "the image box A pins is gone after build 4"
+    );
+    assert!(
+        stderr.contains(&b2),
+        "build 4's maintenance line did not name the pinned b2: {stderr}"
+    );
+
+    // Box B pins b3, then box A goes down and frees b2. Build 5's retention
+    // meets pinned b3 first and must still remove the free b2 behind it.
+    let box_b = format!("pinfold-e2e-{}-cleanup-b", std::process::id());
+    let pin_b = serde_json::json!({
+        "name": box_b,
+        "image": b3.as_str(),
+        "labels": { "dev.example.test": "cleanup-pinned" },
+    });
+    let mut up_b = box_up(binary, &env, &pin_b, &box_b);
+    let status = box_down(binary, &env, &box_a);
+    assert!(status.success(), "box down failed: {status}");
+    assert!(up_a.wait().success(), "box A's up did not exit cleanly");
+
+    let output = env
+        .command(binary)
+        .args(["build", "--profile", &profile])
+        .output()
+        .expect("run pinfold build");
+    assert!(
+        output.status.success(),
+        "a build that could not remove an image failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    builds.push(built_unique_ref(&profile));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !image_named(&b2),
+        "build 5 kept the freed b2 because the pinned b3 failed first"
+    );
+    assert!(image_named(&b3), "build 5 removed the pinned b3");
+    assert!(
+        stderr.contains(&b3),
+        "build 5's maintenance line did not name the pinned b3: {stderr}"
+    );
+    assert!(
+        !stderr.contains(&b2),
+        "build 5's maintenance line named the freed b2: {stderr}"
+    );
+    let listed = box_list(binary, &env, pinned_label);
+    let pinned = listed
+        .iter()
+        .find(|box_| box_["name"] == box_b)
+        .unwrap_or_else(|| panic!("box B is not listed after build 5: {listed:?}"));
+    assert_eq!(
+        pinned["state"], "running",
+        "box B is not running after build 5: {pinned:?}"
+    );
+    assert_eq!(
+        pinned["owner_alive"], true,
+        "box B's owner is reported dead after build 5: {pinned:?}"
+    );
+
+    // Box B goes down before the rest of the test, which starts its own
+    // boxes from the profile's `:latest`.
+    let status = box_down(binary, &env, &box_b);
+    assert!(status.success(), "box down failed: {status}");
+    assert!(up_b.wait().success(), "box B's up did not exit cleanly");
 
     // An unlabeled image: no `dev.pinfold` label, so `clean` must leave it.
     // Its tag shares the profile prefix, so the guard above deletes it.
@@ -1837,6 +1944,50 @@ fn labeled_images(label: &str, value: &str) -> Vec<(String, String)> {
             names.into_iter().map(move |name| (id.clone(), name))
         })
         .collect()
+}
+
+/// Whether the runtime lists an image under `reference`, ignoring podman's
+/// `localhost/` prefix.
+fn image_named(reference: &str) -> bool {
+    runtime_images()
+        .expect("list the runtime's images")
+        .iter()
+        .any(|image| {
+            image
+                .names
+                .iter()
+                .any(|name| name.strip_prefix("localhost/").unwrap_or(name) == reference)
+        })
+}
+
+/// The unique tag of the image that `pinfold/profile-<profile>:latest` names
+/// now, with podman's `localhost/` prefix stripped. Each build tags its image
+/// `:latest` and one unique tag; the stable tag moves to every new build, so
+/// a box pins an image by the unique tag. The unique tag is collected from
+/// every runtime image entry sharing the `:latest` image's id, because a
+/// runtime may list one entry per tag.
+fn built_unique_ref(profile: &str) -> String {
+    let latest = format!("pinfold/profile-{profile}:latest");
+    let images = runtime_images().expect("list the runtime's images");
+    let id = images
+        .iter()
+        .find(|image| {
+            image
+                .names
+                .iter()
+                .any(|name| name.strip_prefix("localhost/").unwrap_or(name) == latest)
+        })
+        .map(|image| image.id.clone())
+        .unwrap_or_else(|| panic!("no image names {latest}"));
+    images
+        .iter()
+        .filter(|image| image.id == id)
+        .flat_map(|image| image.names.iter())
+        .find_map(|name| {
+            let name = name.strip_prefix("localhost/").unwrap_or(name);
+            (name != latest).then(|| name.to_string())
+        })
+        .unwrap_or_else(|| panic!("the image {latest} names has no unique tag"))
 }
 
 /// The project state dir whose recorded root is `project`.

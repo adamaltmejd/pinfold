@@ -455,7 +455,7 @@ checkout path and last run.
 Automatic, never prompting:
 - After a build: keep the newest two images per source (a profile or a
   project), the second for rollback. Remove older ones and their dangling
-  layers.
+  layers. An image a box still uses stays, and pins only itself.
 - At most once a day, at the start of any command: prune boxes whose owner
   is gone (nothing holds the lock on its `pid` file), leftover sockets,
   artifact versions no pin names, and egress logs older than 14 days.
@@ -585,7 +585,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`; the next run refuses until `pinfold allow`. |
 | 13 | Project state persists and stays separate | Settings are seeded once and survive runs; a deleted seed returns; two projects don't see each other's state. |
 | 14 | Both pi config levels load without a TTY | `pi -p` through the shim: the fake model's request carries a skill from the profile and one from the project's `.pi/`. |
-| 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain. An unlabeled image, a live box and a project's state survive `pinfold clean`. |
+| 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself. An unlabeled image, a live box and a project's state survive `pinfold clean`. |
 | 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW is the default list; a project's allow = ["api.github.com"] makes it exactly that host, and registry.npmjs.org is refused as not allowlisted. |
 | 17 | up refuses before it creates | A missing image and a live name are refused as data, with no box, state dir or seed left; the box whose name was reused still answers exec. |
 | 18 | A caller reads the effective configuration as data | pinfold config reports a project's allow list, its trust state before and after pinfold allow, and the project home pinfold pi then mounts. |

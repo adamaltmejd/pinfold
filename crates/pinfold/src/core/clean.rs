@@ -302,7 +302,9 @@ pub fn total_bytes<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> u64 {
 }
 
 /// Keep the newest two images carrying `label = source`, removing older ones
-/// and the layers no image references. Called after a successful build.
+/// and the layers no image references. Called after a successful build. Every
+/// older image is tried; a failure keeps that image and the rest still run,
+/// so one pinned image never stops the others from going.
 pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result<()> {
     let mut groups: BTreeMap<String, (u128, Vec<String>)> = BTreeMap::new();
     for image in runtime.list_images()? {
@@ -320,12 +322,20 @@ pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::
         .collect();
     // Newest first; the digest orders equal ranks deterministically.
     images.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    let mut failures = Vec::new();
     for (_, _, references) in images.into_iter().skip(2) {
         for reference in references {
-            runtime.remove_image(&reference)?;
+            if let Err(error) = runtime.remove_image(&reference) {
+                // Every removal carries its reference in the runtime's
+                // error; join them into the one line the caller prints.
+                failures.push(error.to_string());
+            }
         }
     }
-    Ok(())
+    if failures.is_empty() {
+        return Ok(());
+    }
+    Err(io::Error::other(failures.join("; ")))
 }
 
 /// The build time of an image from its build label, which starts with the
