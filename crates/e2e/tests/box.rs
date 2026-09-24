@@ -10,7 +10,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio};
 use std::sync::{Mutex, OnceLock};
 
 use e2e::{HttpFixture, TestEnv, pinfold};
@@ -780,12 +780,14 @@ fn the_proxy_refuses_the_tricks() {
 #[test]
 fn losing_the_owner_fails_closed() {
     // Sabotage: make `box prune` skip boxes whose owner is gone; the box
-    // survives prune and the post-prune list assertion fails. Sabotage: start
-    // the proxy outside the `box up` process; it survives the SIGKILL, logs
-    // the post-kill request and lets it through, so the unchanged-log
-    // assertion fails. Curl's own error is not asserted: Apple's forwarder
-    // sometimes hangs after the owner dies rather than closing, so the
-    // request may end in a timeout instead of a refusal.
+    // survives prune and the post-prune list assertion fails. Sabotage:
+    // report `owner_alive` as true whenever the label parses; the dead-owner
+    // `owner_alive` assertion fails. Sabotage: start the proxy outside the
+    // `box up` process; it survives the SIGKILL, logs the post-kill request
+    // and lets it through, so the unchanged-log assertion fails. Curl's own
+    // error is not asserted: Apple's forwarder sometimes hangs after the
+    // owner dies rather than closing, so the request may end in a timeout
+    // instead of a refusal.
     let binary = pinfold();
     let env = TestEnv::new("owner-gone");
     let name = format!("pinfold-e2e-{}-owner-gone", std::process::id());
@@ -861,9 +863,46 @@ fn losing_the_owner_fails_closed() {
         "the egress log gained a line after the owner died: {after:?}"
     );
 
-    // `box prune` removes the leftover by label.
-    let status = box_prune(binary, &env);
-    assert!(status.success(), "box prune failed: {status}");
+    // Pinfold's own liveness test reports the owner gone before prune acts:
+    // the box is still listed, with `owner_alive` false.
+    let owner = up.pid();
+    let listed = box_list(binary, &env, label);
+    let leftover = listed
+        .iter()
+        .find(|box_| box_["name"] == name)
+        .unwrap_or_else(|| panic!("the dead owner's box is not listed: {listed:?}"));
+    assert_eq!(
+        leftover["owner_alive"], false,
+        "the dead owner's box reports owner_alive true: {leftover:?}"
+    );
+    assert_eq!(
+        leftover["owner"].as_u64(),
+        Some(u64::from(owner)),
+        "the dead owner's box names another owner: {leftover:?}"
+    );
+
+    // `box prune` removes the leftover by label and reports the removal.
+    let output = box_prune(binary, &env);
+    assert!(
+        output.status.success(),
+        "box prune failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let pruned: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+        .expect("prune output is UTF-8")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("prune line is JSON"))
+        .collect();
+    let line = pruned
+        .iter()
+        .find(|line| line["box"] == name)
+        .unwrap_or_else(|| panic!("prune did not report {name}: {pruned:?}"));
+    assert_eq!(line["event"], "pruned", "not a pruned line: {line:?}");
+    assert_eq!(
+        line["owner"].as_u64(),
+        Some(u64::from(owner)),
+        "prune named another owner: {line:?}"
+    );
     let listed = box_list(binary, &env, label);
     assert!(
         !listed.iter().any(|box_| box_["name"] == name),
@@ -1040,9 +1079,16 @@ fn cleanup_removes_only_pinfolds_garbage() {
     dead_up.wait();
 
     // Positive controls: everything `clean` sorts out exists before it runs.
-    assert!(
-        !box_list(binary, &env, &live_label).is_empty(),
-        "the live box is missing before clean"
+    // Sabotage: report `owner_alive` as false whenever the owner label
+    // parses; the live-owner assertion fails.
+    let listed = box_list(binary, &env, &live_label);
+    let live_box = listed
+        .iter()
+        .find(|box_| box_["name"] == live)
+        .unwrap_or_else(|| panic!("the live box is missing before clean: {listed:?}"));
+    assert_eq!(
+        live_box["owner_alive"], true,
+        "the live box reports its owner dead before clean: {live_box:?}"
     );
     assert!(
         !box_list(binary, &env, dead_label).is_empty(),
@@ -1984,11 +2030,11 @@ fn box_list(binary: &Path, env: &TestEnv, label: &str) -> Vec<serde_json::Value>
         .collect()
 }
 
-fn box_prune(binary: &Path, env: &TestEnv) -> ExitStatus {
+fn box_prune(binary: &Path, env: &TestEnv) -> Output {
     env.command(binary)
         .args(["box", "prune"])
         .stdin(Stdio::null())
-        .status()
+        .output()
         .expect("run pinfold box prune")
 }
 

@@ -60,6 +60,36 @@ fn cli_version(program: &str) -> io::Result<String> {
 pub struct BoxInfo {
     pub id: String,
     pub labels: BTreeMap<String, String>,
+    /// When the runtime created the box, RFC 3339 in UTC.
+    pub created: String,
+    /// Whether the box is running.
+    pub state: BoxState,
+}
+
+/// A box's run state, as `box list` reports it.
+#[derive(Debug, Clone, Copy)]
+pub enum BoxState {
+    Running,
+    Stopped,
+}
+
+impl BoxState {
+    /// The state a runtime's status string names. Only `running` is running;
+    /// everything else, `unknown` included, is stopped.
+    pub fn from_runtime(state: &str) -> BoxState {
+        if state == "running" {
+            BoxState::Running
+        } else {
+            BoxState::Stopped
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BoxState::Running => "running",
+            BoxState::Stopped => "stopped",
+        }
+    }
 }
 
 /// One image the runtime knows about.

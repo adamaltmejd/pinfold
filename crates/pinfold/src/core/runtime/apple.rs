@@ -13,7 +13,7 @@ use tokio::process::{Child, Command};
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
 use crate::core::runtime::{
-    BoxInfo, BuildRequest, ImageInfo, Runtime, bind, guest_path, spawn_error, user,
+    BoxInfo, BoxState, BuildRequest, ImageInfo, Runtime, bind, guest_path, spawn_error, user,
 };
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
@@ -260,12 +260,23 @@ struct ListedContainer {
     id: String,
     #[serde(default)]
     configuration: ListedConfiguration,
+    #[serde(default)]
+    status: ListedStatus,
 }
 
 #[derive(Default, Deserialize)]
 struct ListedConfiguration {
     #[serde(default)]
     labels: BTreeMap<String, String>,
+    /// ISO 8601, which is RFC 3339.
+    #[serde(default, rename = "creationDate")]
+    created: String,
+}
+
+#[derive(Default, Deserialize)]
+struct ListedStatus {
+    #[serde(default)]
+    state: String,
 }
 
 fn parse_list(json: &[u8]) -> io::Result<Vec<BoxInfo>> {
@@ -277,6 +288,8 @@ fn parse_list(json: &[u8]) -> io::Result<Vec<BoxInfo>> {
         .map(|container| BoxInfo {
             id: container.id,
             labels: container.configuration.labels,
+            created: container.configuration.created,
+            state: BoxState::from_runtime(&container.status.state),
         })
         .collect())
 }
