@@ -6,8 +6,9 @@
 //! gate.
 //!
 //! This crate also holds the host fixtures the tests reach through routes,
-//! and the built binary both test files drive.
+//! and the built binary the test files drive.
 
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -46,6 +47,61 @@ pub fn pinfold() -> &'static Path {
         assert!(binary.is_file(), "{} is missing", binary.display());
         binary
     })
+}
+
+/// Per-test XDG state, cache and config, so a test never touches the
+/// operator's. An empty config dir also means `default` resolves to the
+/// embedded profile, not the operator's own copy of it.
+pub struct TestEnv {
+    /// The test's scratch root; projects and fixtures live under it.
+    pub root: PathBuf,
+    /// `XDG_STATE_HOME`; pinfold's state dir is `<state>/pinfold`.
+    pub state: PathBuf,
+    /// `XDG_CACHE_HOME`, where built artifacts and the init land.
+    pub cache: PathBuf,
+    /// `XDG_CONFIG_HOME`, where profiles live. Empty, so `default` is the
+    /// embedded one.
+    pub config: PathBuf,
+}
+
+impl TestEnv {
+    pub fn new(test: &str) -> TestEnv {
+        // `/tmp` is a symlink on macOS; the runtime wants the real path.
+        let root = fs::canonicalize(std::env::temp_dir())
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(format!("pinfold-e2e-{}-{test}", std::process::id()));
+        // The box's proxy socket lives under the state dir, and macOS caps
+        // unix socket paths at 104 bytes. `$TMPDIR` is too long for that, so
+        // the state dir gets its own short path under /tmp.
+        let state = PathBuf::from("/tmp").join(format!("pf-e2e-{}-{test}", std::process::id()));
+        let cache = root.join("cache");
+        let config = root.join("config");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(&cache).unwrap();
+        fs::create_dir_all(&config).unwrap();
+        TestEnv {
+            root,
+            state,
+            cache,
+            config,
+        }
+    }
+
+    pub fn command(&self, binary: &Path) -> Command {
+        let mut command = Command::new(binary);
+        command.env("XDG_STATE_HOME", &self.state);
+        command.env("XDG_CACHE_HOME", &self.cache);
+        command.env("XDG_CONFIG_HOME", &self.config);
+        command
+    }
+}
+
+impl Drop for TestEnv {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+        let _ = fs::remove_dir_all(&self.state);
+    }
 }
 
 /// A host HTTP service, reachable from a box only through a route.

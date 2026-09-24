@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::{Mutex, OnceLock};
 
-use e2e::{HttpFixture, pinfold};
+use e2e::{HttpFixture, TestEnv, pinfold};
 
 /// The two owner-gone tests share one hazard: either one's removal can take
 /// the other's dead box before the other expects it. Hold this from killing
@@ -1680,56 +1680,6 @@ fn default_image(binary: &Path, env: &TestEnv) -> &'static str {
             .trim()
             .to_string()
     })
-}
-
-/// Per-test XDG state, cache and config, so a test never touches the
-/// operator's. An empty config dir also means `default` resolves to the
-/// embedded profile, not the operator's own copy of it.
-struct TestEnv {
-    root: PathBuf,
-    state: PathBuf,
-    cache: PathBuf,
-    config: PathBuf,
-}
-
-impl TestEnv {
-    fn new(test: &str) -> TestEnv {
-        // `/tmp` is a symlink on macOS; the runtime wants the real path.
-        let root = fs::canonicalize(std::env::temp_dir())
-            .unwrap_or(std::env::temp_dir())
-            .join(format!("pinfold-e2e-{}-{test}", std::process::id()));
-        // The box's proxy socket lives under the state dir, and macOS caps
-        // unix socket paths at 104 bytes. `$TMPDIR` is too long for that, so
-        // the state dir gets its own short path under /tmp.
-        let state = PathBuf::from("/tmp").join(format!("pf-e2e-{}-{test}", std::process::id()));
-        let cache = root.join("cache");
-        let config = root.join("config");
-        fs::create_dir_all(&root).unwrap();
-        fs::create_dir_all(&state).unwrap();
-        fs::create_dir_all(&cache).unwrap();
-        fs::create_dir_all(&config).unwrap();
-        TestEnv {
-            root,
-            state,
-            cache,
-            config,
-        }
-    }
-
-    fn command(&self, binary: &Path) -> Command {
-        let mut command = Command::new(binary);
-        command.env("XDG_STATE_HOME", &self.state);
-        command.env("XDG_CACHE_HOME", &self.cache);
-        command.env("XDG_CONFIG_HOME", &self.config);
-        command
-    }
-}
-
-impl Drop for TestEnv {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
-        let _ = fs::remove_dir_all(&self.state);
-    }
 }
 
 /// A host directory the test mounts into the box.
