@@ -32,14 +32,26 @@ and `--memory` are silently not enforced. Long-lived boxes need
 
 ## Install
 
-Linux can install the released static binary. Download
-`pinfold-<version>-$(uname -m)-unknown-linux-musl` and `SHA256SUMS` from
-the release page, or on a private repository
+Each release carries a binary per host and `SHA256SUMS`. Download them
+from the release page, or on a private repository with
 `gh release download v<version> -R <owner>/pinfold`. Then verify and
-install:
+install. macOS (Apple silicon):
 
 ```sh
-version=0.0.1
+version=0.0.2
+shasum -a 256 -c --ignore-missing SHA256SUMS
+mkdir -p ~/.local/bin
+install -m 0755 "pinfold-$version-aarch64-apple-darwin" ~/.local/bin/pinfold
+```
+
+The macOS binary is not notarized. `gh` and `curl` downloads run as they
+are; a browser download carries the quarantine attribute and Gatekeeper
+refuses it until `xattr -d com.apple.quarantine` clears it.
+
+Linux, a static musl binary:
+
+```sh
+version=0.0.2
 sha256sum -c --ignore-missing SHA256SUMS
 mkdir -p ~/.local/bin
 install -m 0755 "pinfold-$version-$(uname -m)-unknown-linux-musl" ~/.local/bin/pinfold

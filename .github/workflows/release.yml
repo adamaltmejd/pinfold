@@ -67,9 +67,41 @@ jobs:
           path: dist/pinfold-*
           if-no-files-found: error
 
+  macos:
+    name: macOS (aarch64-apple-darwin)
+    needs: version
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # build.rs cross-builds the embedded Linux init with cargo zigbuild,
+      # so the macOS build needs zig, cargo-zigbuild and the musl target.
+      # Homebrew's zig is unpinned; if cargo-zigbuild stops accepting it,
+      # pin both here.
+      - name: Zig and the init target
+        run: |
+          brew install zig cargo-zigbuild
+          rustup target add aarch64-unknown-linux-musl
+
+      - name: Build
+        run: cargo build -p pinfold --release --locked --target aarch64-apple-darwin
+
+      - name: Stage
+        run: |
+          mkdir dist
+          cp target/aarch64-apple-darwin/release/pinfold \
+            "dist/pinfold-${{ needs.version.outputs.version }}-aarch64-apple-darwin"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aarch64-apple-darwin
+          path: dist/pinfold-*
+          if-no-files-found: error
+
   release:
     name: Release
-    needs: [version, build]
+    needs: [version, build, macos]
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
