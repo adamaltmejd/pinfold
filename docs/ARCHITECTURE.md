@@ -334,9 +334,13 @@ network listener, no token: the socket identifies the box.
   the CONNECT host.
 - **Plain HTTP:** port 80 only, one request per connection, Content-Length
   framing only. Ambiguous framing, folded headers and bare LF get 400.
-- **Refused:** IP literals, and names resolving to loopback, unspecified,
-  private, link-local, CGNAT (`100.64/10`) or benchmark (`198.18/15`)
-  addresses. Resolve once; dial the checked address.
+- **Refused:** IP literals, and names resolving to loopback, unspecified
+  (`0/8`), private, link-local, CGNAT (`100.64/10`), benchmark
+  (`198.18/15`), IETF protocol (`192.0.0/24`), multicast, reserved (`240/4`,
+  with broadcast), site-local (`fec0::/10`) or NAT64 local-use
+  (`64:ff9b:1::/48`) addresses. An IPv6 address that embeds an IPv4 one
+  (IPv4-mapped, IPv4-compatible, NAT64 `64:ff9b::/96`, 6to4) is checked as
+  that IPv4 address. Resolve once; dial the checked address.
 - **Routes:** a name maps to one host service, e.g.
   `api.internal → 127.0.0.1:7777`. Plain HTTP only, Host header rewritten.
   CONNECT to a route is refused. The host service authenticates its callers.

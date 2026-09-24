@@ -3,7 +3,9 @@
 //! A name is resolved once and every address it resolves to must pass
 //! [`forbidden`] before the first is dialed. A route's target is a host
 //! service and is dialed without these checks, except an injecting route's
-//! `https` target, which is checked like an allowlisted host.
+//! `https` target, which is checked like an allowlisted host. An IPv6
+//! address that embeds an IPv4 one (IPv4-mapped, IPv4-compatible, NAT64
+//! `64:ff9b::/96` or 6to4) is checked as that IPv4 address.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 
@@ -57,8 +59,10 @@ fn forbidden_v4(ip: Ipv4Addr) -> Option<&'static str> {
     if ip.is_loopback() {
         return Some("loopback");
     }
-    // Connecting to the unspecified address reaches the local host.
-    if ip.is_unspecified() {
+    let octets = ip.octets();
+    // 0.0.0.0/8; connecting to the unspecified address reaches the local
+    // host.
+    if octets[0] == 0 {
         return Some("unspecified");
     }
     if ip.is_private() {
@@ -67,7 +71,6 @@ fn forbidden_v4(ip: Ipv4Addr) -> Option<&'static str> {
     if ip.is_link_local() {
         return Some("link-local");
     }
-    let octets = ip.octets();
     // 100.64.0.0/10.
     if octets[0] == 100 && (64..=127).contains(&octets[1]) {
         return Some("cgnat");
@@ -75,6 +78,18 @@ fn forbidden_v4(ip: Ipv4Addr) -> Option<&'static str> {
     // 198.18.0.0/15.
     if octets[0] == 198 && (octets[1] == 18 || octets[1] == 19) {
         return Some("benchmark");
+    }
+    // 192.0.0.0/24.
+    if octets[0] == 192 && octets[1] == 0 && octets[2] == 0 {
+        return Some("ietf-protocol");
+    }
+    // 224.0.0.0/4.
+    if ip.is_multicast() {
+        return Some("multicast");
+    }
+    // 240.0.0.0/4, which includes the broadcast address.
+    if octets[0] >= 240 {
+        return Some("reserved");
     }
     None
 }
@@ -87,9 +102,34 @@ fn forbidden_v6(ip: Ipv6Addr) -> Option<&'static str> {
     if ip.is_unspecified() {
         return Some("unspecified");
     }
-    // An IPv4-mapped address dials the IPv4 address it embeds.
-    if let Some(ip) = ip.to_ipv4_mapped() {
-        return forbidden_v4(ip);
+    let octets = ip.octets();
+    // IPv4-mapped ::ffff:0:0/96 dials the IPv4 address in the last 32 bits.
+    if octets[..10] == [0; 10] && octets[10] == 0xff && octets[11] == 0xff {
+        return forbidden_v4(Ipv4Addr::new(
+            octets[12], octets[13], octets[14], octets[15],
+        ));
+    }
+    // IPv4-compatible ::/96 dials the IPv4 address in the last 32 bits.
+    if octets[..12] == [0; 12] {
+        return forbidden_v4(Ipv4Addr::new(
+            octets[12], octets[13], octets[14], octets[15],
+        ));
+    }
+    // NAT64 well-known prefix 64:ff9b::/96 dials the IPv4 address in the
+    // last 32 bits.
+    if octets[..12] == [0x00, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0] {
+        return forbidden_v4(Ipv4Addr::new(
+            octets[12], octets[13], octets[14], octets[15],
+        ));
+    }
+    // 6to4 2002::/16 dials the IPv4 address in bits 16-47.
+    if octets[0] == 0x20 && octets[1] == 0x02 {
+        return forbidden_v4(Ipv4Addr::new(octets[2], octets[3], octets[4], octets[5]));
+    }
+    // NAT64 local-use 64:ff9b:1::/48. RFC 6052 puts the embedded IPv4 at a
+    // position set by the chosen prefix length, so it is refused whole.
+    if octets[..6] == [0x00, 0x64, 0xff, 0x9b, 0x00, 0x01] {
+        return Some("nat64 local-use");
     }
     // fc00::/7.
     if ip.segments()[0] & 0xfe00 == 0xfc00 {
@@ -98,6 +138,14 @@ fn forbidden_v6(ip: Ipv6Addr) -> Option<&'static str> {
     // fe80::/10.
     if ip.segments()[0] & 0xffc0 == 0xfe80 {
         return Some("link-local");
+    }
+    // fec0::/10.
+    if ip.segments()[0] & 0xffc0 == 0xfec0 {
+        return Some("site-local");
+    }
+    // ff00::/8.
+    if octets[0] == 0xff {
+        return Some("multicast");
     }
     None
 }
