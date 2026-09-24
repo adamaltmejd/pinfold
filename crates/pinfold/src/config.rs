@@ -179,9 +179,30 @@ impl Config {
         // The bytes are read here so trust and the build see the same ones.
         let containerfile = match &containerfile_path {
             Some(path) => {
-                let path = root.join(path);
-                let bytes = fs::read(&path).map_err(|error| {
-                    io::Error::new(error.kind(), format!("read {}: {error}", path.display()))
+                let relative = Path::new(path);
+                if !relative.is_relative() {
+                    return Err(invalid(
+                        ".pinfold.toml",
+                        &format!(
+                            "`containerfile` must be a path relative to the project root: {path:?}"
+                        ),
+                    ));
+                }
+                let joined = root.join(relative);
+                // Resolve symlinks, so a path that stays under the root but
+                // leaves the project is refused too.
+                let canonical = fs::canonicalize(&joined).map_err(|error| {
+                    io::Error::new(error.kind(), format!("read {}: {error}", joined.display()))
+                })?;
+                if !canonical.starts_with(root) {
+                    return Err(invalid(
+                        ".pinfold.toml",
+                        &format!("`containerfile` must name a file inside the project: {path:?}"),
+                    ));
+                }
+                // Read the canonical path, the same one the check saw.
+                let bytes = fs::read(&canonical).map_err(|error| {
+                    io::Error::new(error.kind(), format!("read {}: {error}", joined.display()))
                 })?;
                 Containerfile::Project(bytes)
             }
