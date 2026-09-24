@@ -252,7 +252,8 @@ fn run_box(plan: &Plan, cwd: &Path, argv: &[String]) -> io::Result<i32> {
         // Register the handlers before the box starts, so a closed terminal
         // during startup is caught and the box is removed once it is up.
         let mut shutdown = Shutdown::new(tty)?;
-        let mut box_ = Box::up(plan, &init).await?;
+        // The handlers above are the run's; `up` installs none of its own.
+        let mut box_ = Box::up(plan, &init, false).await?;
         let code = exec_pi(&plan.name, &init, tty, cwd, argv, &mut shutdown).await;
         // Remove the box exactly once, whatever ended the run. A failed
         // removal must not hide the error that ended pi.

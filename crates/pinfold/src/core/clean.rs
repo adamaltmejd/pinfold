@@ -7,11 +7,12 @@
 //! and never fails the command it runs before.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::io;
+use std::fs::{self, File};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use nix::fcntl::{Flock, FlockArg};
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
 
@@ -88,8 +89,39 @@ fn unix_seconds() -> u64 {
         .unwrap_or(0)
 }
 
-/// Whether a process with this pid exists.
-pub fn alive(pid: i32) -> bool {
+/// Whether the `box up` that claimed `state_dir` is alive: it holds the lock
+/// on the dir's `pid` file. A missing or empty `pid` is a start between its
+/// claim and its lock, so it counts as alive. Pid reuse and EPERM cannot
+/// make a dead owner look alive.
+pub fn owner_alive(state_dir: &Path) -> bool {
+    let Ok(file) = File::open(state_dir.join("pid")) else {
+        return true;
+    };
+    let Ok(mut file) = Flock::lock(file, FlockArg::LockExclusiveNonblock) else {
+        return true;
+    };
+    let mut pid = String::new();
+    if file.read_to_string(&mut pid).is_err() {
+        return true;
+    }
+    pid.trim().is_empty()
+}
+
+/// Whether a listed box's owner is alive. A box whose state dir exists under
+/// this state root is judged by its lock. One from another state root keeps
+/// the label pid check: judging it by a lock this root cannot see would call
+/// every other root's live box dead.
+pub fn box_owner_alive(state_dir: &Path, owner: Option<i32>) -> bool {
+    if state_dir.is_dir() {
+        owner_alive(state_dir)
+    } else {
+        owner.is_some_and(pid_alive)
+    }
+}
+
+/// Whether a process with this pid exists. Only for a box from another state
+/// root; everything else goes by [`owner_alive`].
+fn pid_alive(pid: i32) -> bool {
     if pid <= 0 {
         return false;
     }
@@ -128,8 +160,8 @@ pub struct Boxes {
     pub live_projects: BTreeSet<String>,
 }
 
-/// Read the runtime's box list once. A pinfold box with no owner label
-/// counts as gone: nothing holds it.
+/// Read the runtime's box list once. A pinfold box with neither a state dir
+/// here nor an owner label counts as gone: nothing holds it.
 pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
     let state = dirs::state_dir()?.join("boxes");
     let mut dead = Vec::new();
@@ -146,14 +178,15 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
             .labels
             .get(OWNER_LABEL)
             .and_then(|pid| pid.parse::<i32>().ok());
-        if owner.is_some_and(alive) {
+        let state_dir = state.join(&box_.id);
+        if box_owner_alive(&state_dir, owner) {
             if let Some(project) = box_.labels.get(PROJECT_LABEL) {
                 live_projects.insert(project.clone());
             }
             continue;
         }
         dead.push(DeadBox {
-            state_dir: state.join(&box_.id),
+            state_dir,
             id: box_.id,
             owner,
         });
@@ -176,8 +209,8 @@ pub fn prune_boxes(runtime: &dyn Runtime) -> io::Result<Vec<DeadBox>> {
 }
 
 /// State dirs whose owner is gone and that hold a leftover proxy socket. A
-/// live `box up` writes its pid before it binds the socket, so a socket with
-/// no live pid is leftover.
+/// live `box up` locks its `pid` file before it binds the socket, so a
+/// socket whose `pid` no lock holds is leftover.
 pub fn leftover_socket_dirs() -> io::Result<Vec<PathBuf>> {
     let boxes = dirs::state_dir()?.join("boxes");
     let entries = match fs::read_dir(&boxes) {
@@ -189,10 +222,7 @@ pub fn leftover_socket_dirs() -> io::Result<Vec<PathBuf>> {
     for entry in entries {
         let entry = entry?;
         let dir = entry.path();
-        let pid = fs::read_to_string(dir.join("pid"))
-            .ok()
-            .and_then(|pid| pid.trim().parse::<i32>().ok());
-        if pid.is_some_and(alive) {
+        if owner_alive(&dir) {
             continue;
         }
         // A dir without a socket is a start that failed before it could

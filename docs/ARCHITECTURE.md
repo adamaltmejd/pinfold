@@ -92,21 +92,27 @@ need `loginctl enable-linger`.
 
 ### Lifecycle
 
-1. Start the box's proxy on a new unix socket in the state dir. Keep the path
+1. Claim the name: create the state dir `boxes/<name>` exclusively and write
+   the owner's pid, and hold an exclusive lock on that `pid` file for `up`'s
+   whole life. The owner is alive while the lock is held. A live owner
+   already there is `name-in-use`; a dead owner's dir is reclaimed. Nothing
+   (seeds, proxy, box) is created before the claim.
+2. Start the box's proxy on a new unix socket in the state dir. Keep the path
    under macOS's 104-byte limit.
-2. Run the box with `--network none` and the socket carried in (Transport).
+3. Run the box with `--network none` and the socket carried in (Transport).
    PID 1 is `pinfold init`, as the host uid.
-3. Apple only: one transient root exec makes the socket connectable.
-4. `pinfold init` relays `127.0.0.1:3128` to the socket, reaps children, and
+4. Apple only: one transient root exec makes the socket connectable.
+5. `pinfold init` relays `127.0.0.1:3128` to the socket, reaps children, and
    reports ready.
-5. `exec` work as the host uid:gid, with `HTTPS_PROXY` and `http_proxy` set
+6. `exec` work as the host uid:gid, with `HTTPS_PROXY` and `http_proxy` set
    to `http://127.0.0.1:3128`.
-6. Remove the box, close the proxy, delete the socket.
+7. Remove the box, close the proxy, delete the socket.
 
-One `pinfold box up` process owns one box. It does steps 1–4, holds the
-proxy, and does step 6 on `down`, stdin EOF or SIGTERM. If it dies, the
-socket dies and the box has no way out (fails closed); `box prune` removes
-leftovers by label. The CLI runs the same code in-process.
+One `pinfold box up` process owns one box. It does steps 1–5, holds the
+proxy, and does step 7 on `down`, stdin EOF or SIGTERM. A SIGTERM or SIGINT
+before `ready` also runs step 7. If it dies, the socket dies and the box has
+no way out (fails closed); `box prune` removes leftovers by label. The CLI
+runs the same code in-process.
 
 ### Process interface
 
@@ -167,11 +173,23 @@ When `up` refuses, it prints one JSON line instead of `ready` and exits 1:
 `box` is null when the spec did not parse. Refusals are decided before
 anything is created; a refused `up` leaves nothing.
 
+When `up` fails after it began creating, it removes what it made, prints one
+`failed` line instead of `ready` or `down`, and exits 1:
+
+```json
+{"event":"failed","box":NAME,"detail":TEXT}
+```
+
+A SIGTERM or SIGINT before `ready` tears down the same way and ends with
+`down`, reason `signal`, exit 0. Every `up` ends its stdout with exactly one
+of `refused`, `failed` or `down`.
+
 `list` prints one JSON line per box whose labels match every `--label`.
 `--label KEY=VALUE` matches that value; `--label KEY` matches any value of
 `KEY`. Each line carries the box's labels, its `dev.pinfold.owner` pid (or
-null), whether that process is alive, and the runtime's RFC 3339 `created`
-time and `state` (`running` or `stopped`):
+null), whether it still holds the lock on the box's `pid` file (for a box
+from another state dir, whether that pid is alive), and the runtime's RFC
+3339 `created` time and `state` (`running` or `stopped`):
 
 ```json
 {"name":NAME,"labels":{…},"owner":PID,"owner_alive":true,"created":RFC3339,"state":"running"}
@@ -435,8 +453,8 @@ Automatic, never prompting:
   project), the second for rollback. Remove older ones and their dangling
   layers.
 - At most once a day, at the start of any command: prune boxes whose owner
-  is gone, leftover sockets, artifact versions no pin names, and egress
-  logs older than 14 days.
+  is gone (nothing holds the lock on its `pid` file), leftover sockets,
+  artifact versions no pin names, and egress logs older than 14 days.
 
 `pinfold clean` lists sizes, then removes:
 - everything automatic, now
@@ -556,7 +574,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 5 | Nothing can gain privileges | `CapBnd` 0 in exec'd processes; no setuid or setgid files; rootfs not writable. |
 | 6 | The environment is exactly the spec | An unprefixed host variable is absent; `PINFOLD_ENV_X` arrives as `X`; the secret never shows in host `ps`. |
 | 7 | No egress means no way out | Without `egress`, nothing gets out, not even through a route. |
-| 8 | Losing the owner fails closed | After SIGKILL of `box up`, the box has no egress, and `box prune` removes it. |
+| 8 | Losing the owner fails closed | After SIGKILL of `box up`, the box has no egress. With its `pid` file naming a live process, `list` reports the owner gone, `box prune` removes it, and the name can be used again. |
 | 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code; `list` finds by label; `down` removes. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. A read-only mount rejects writes. |
 | 11 | The box cannot write `.git` or protected config | Writing a hook in `.git/hooks` or under `core.hooksPath`, `core.fsmonitor`, `commondir`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails; host `git status` runs nothing. Control: a project file is writable. |

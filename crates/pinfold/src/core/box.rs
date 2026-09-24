@@ -12,12 +12,12 @@ use std::path::{Component, Path, PathBuf};
 use std::process::ExitStatus;
 
 use nix::errno::Errno;
-use nix::fcntl::{OFlag, openat};
+use nix::fcntl::{Flock, FlockArg, OFlag, openat};
 use nix::sys::stat::{Mode, mkdirat};
 use nix::unistd::{UnlinkatFlags, unlinkat};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Child;
-use tokio::signal::unix::{SignalKind, signal};
+use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::core::artifacts;
 use crate::core::clean;
@@ -34,9 +34,13 @@ pub struct Box {
     /// identity labels.
     pub labels: BTreeMap<String, String>,
     state_dir: PathBuf,
+    /// The lock on the state dir's `pid` file. Holding it is what makes the
+    /// owner alive to every checker.
+    _lock: Flock<File>,
     child: Child,
     runtime: &'static dyn Runtime,
     proxy: Option<Proxy>,
+    signals: Option<Signals>,
 }
 
 /// What stopped the box.
@@ -61,7 +65,7 @@ impl Shutdown {
     }
 }
 
-/// Why `up` refused before it created anything.
+/// Why `up` refused. A refused `up` leaves nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefusalReason {
     /// The spec did not parse or validate.
@@ -106,11 +110,12 @@ impl fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
-/// Why [`Box::up`] failed: a refusal decided before anything was created, or
-/// an error after creation began.
+/// Why [`Box::up`] failed: a refusal, SIGTERM or SIGINT before ready, or any
+/// other error. Each removes what the start made before it returns.
 #[derive(Debug)]
 pub enum UpError {
     Refused(Refusal),
+    Signal,
     Other(io::Error),
 }
 
@@ -118,6 +123,7 @@ impl fmt::Display for UpError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             UpError::Refused(refusal) => refusal.fmt(formatter),
+            UpError::Signal => formatter.write_str("stopped by a signal before ready"),
             UpError::Other(error) => error.fmt(formatter),
         }
     }
@@ -126,7 +132,7 @@ impl fmt::Display for UpError {
 impl std::error::Error for UpError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            UpError::Refused(_) => None,
+            UpError::Refused(_) | UpError::Signal => None,
             UpError::Other(error) => Some(error),
         }
     }
@@ -142,6 +148,7 @@ impl From<UpError> for io::Error {
     fn from(error: UpError) -> io::Error {
         match error {
             UpError::Refused(refusal) => io::Error::other(refusal),
+            UpError::Signal => io::Error::new(io::ErrorKind::Interrupted, UpError::Signal),
             UpError::Other(error) => error,
         }
     }
@@ -149,10 +156,15 @@ impl From<UpError> for io::Error {
 
 impl Box {
     /// Start a box, wait for init's `ready` line, and return it. Every
-    /// refusal is decided before anything is created: the profile, the
-    /// host's runtime, the image and the name are checked first, and home
-    /// seeds are written only after all of them pass.
-    pub async fn up(plan: &Plan, init: &Path) -> Result<Box, UpError> {
+    /// refusal but a taken name is decided before anything is created: the
+    /// profile, the host's runtime and the image are checked first. Then
+    /// `up` claims the name, and only the claim's owner creates anything.
+    ///
+    /// With `signals`, SIGTERM and SIGINT are handled from the claim on:
+    /// before ready they remove what the start made and `up` returns
+    /// [`UpError::Signal`]; after ready [`Box::hold`] watches them. Without,
+    /// the caller handles its own.
+    pub async fn up(plan: &Plan, init: &Path, signals: bool) -> Result<Box, UpError> {
         if !init.is_absolute() {
             return Err(
                 io::Error::new(io::ErrorKind::InvalidInput, "init path must be absolute").into(),
@@ -168,7 +180,7 @@ impl Box {
 
         // The profile's image, share and home seeds are the box's to apply;
         // the runtime sees the resolved plan. Resolving writes nothing; the
-        // seeds wait until every refusal has been decided.
+        // seeds wait until the name is claimed.
         let mut plan = plan.clone();
         let profile = resolve_profile(&mut plan)
             .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
@@ -204,120 +216,89 @@ impl Box {
                 plan.labels.entry(key).or_insert(value);
             }
         }
-        if let Some(detail) = name_in_use(runtime, &plan.name)? {
-            return Err(refused(&plan, RefusalReason::NameInUse, detail));
+
+        // The handlers come before the claim, so a signal from here on tears
+        // down; one before this point finds nothing created.
+        let mut signals = if signals { Some(Signals::new()?) } else { None };
+        let (state_dir, lock) = claim(&plan)?;
+        match runtime.list() {
+            Ok(boxes) if boxes.iter().all(|box_| box_.id != plan.name) => {}
+            listed => {
+                let _ = fs::remove_dir_all(&state_dir);
+                return Err(match listed {
+                    Ok(_) => refused(
+                        &plan,
+                        RefusalReason::NameInUse,
+                        format!("the runtime already has a box named {:?}", plan.name),
+                    ),
+                    Err(error) => error.into(),
+                });
+            }
         }
 
-        // The harness artifact is fetched and folded in after every refusal,
-        // so a refused box downloads nothing. The spec's own env wins.
-        resolve_harness(&mut plan)?;
-
-        // Home seeds are written only after the checks pass, just before the
-        // runtime starts the box.
-        if let Some(profile) = &profile
-            && let Some((mount, relative)) = &profile.seed
-        {
-            seed_home(mount, relative, &profile.home)?;
+        // Dropping a start part-way tears nothing down, so a signal ends it
+        // here and `parts` says what to remove.
+        let mut parts = Parts::default();
+        let starting = start(
+            &mut plan,
+            init,
+            runtime,
+            profile.as_ref(),
+            &state_dir,
+            &mut parts,
+        );
+        let started = match &mut signals {
+            Some(signals) => tokio::select! {
+                biased;
+                () = signals.recv() => Err(Stop::Signal),
+                started = starting => started,
+            },
+            None => starting.await,
+        };
+        if let Err(stop) = started {
+            let status = parts.teardown(runtime, &plan.name).await;
+            let _ = fs::remove_dir_all(&state_dir);
+            return Err(match stop {
+                Stop::Signal => UpError::Signal,
+                Stop::Failed(error) => UpError::Other(error),
+                Stop::NotReady(failure) => UpError::Other(io::Error::other(match status {
+                    Some(Ok(status)) => format!("{failure}: {status}"),
+                    Some(Err(error)) => format!("{failure}: {error}"),
+                    None => failure,
+                })),
+            });
         }
-
-        let state_dir = dirs::state_dir()?.join("boxes").join(&plan.name);
-        let log = match &plan.egress {
-            Some(_) => Some(dirs::egress_dir()?.join(format!("{}.jsonl", plan.name))),
-            None => None,
-        };
-        tokio::fs::create_dir_all(&state_dir).await?;
-        tokio::fs::write(state_dir.join("pid"), std::process::id().to_string()).await?;
-
-        // The proxy comes up before the box, so the socket is listening when
-        // the runtime forwards it.
-        let proxy = match (&plan.egress, log) {
-            (Some(egress), Some(log)) => {
-                match Proxy::start(state_dir.join("proxy.sock"), egress, log) {
-                    Ok(proxy) => Some(proxy),
-                    Err(error) => {
-                        let _ = tokio::fs::remove_dir_all(&state_dir).await;
-                        return Err(error.into());
-                    }
-                }
-            }
-            _ => None,
-        };
-
-        let mut child = match runtime.up(&plan, init, proxy.as_ref().map(Proxy::socket)) {
-            Ok(child) => child,
-            Err(error) => {
-                if let Some(proxy) = proxy {
-                    proxy.close();
-                }
-                let _ = tokio::fs::remove_dir_all(&state_dir).await;
-                return Err(error.into());
-            }
-        };
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::other("runtime up did not pipe the box's stdout"))?;
-        let mut lines = BufReader::new(stdout).lines();
-        let failure = loop {
-            match lines.next_line().await {
-                Ok(Some(line)) if line == "ready" => break None,
-                Ok(Some(_)) => {}
-                Ok(None) => break Some("box exited before ready".to_string()),
-                Err(error) => break Some(format!("box output failed: {error}")),
-            }
-        };
-        if let Some(failure) = failure {
-            // The container exists by name even when readiness failed; remove
-            // it before the state dir that names it.
-            let _ = runtime.down(&plan.name);
-            let _ = child.start_kill();
-            let status = child.wait().await;
-            if let Some(proxy) = proxy {
-                proxy.close();
-            }
-            let _ = tokio::fs::remove_dir_all(&state_dir).await;
-            return Err(io::Error::other(match status {
-                Ok(status) => format!("{failure}: {status}"),
-                Err(error) => format!("{failure}: {error}"),
-            })
-            .into());
-        }
-        // Apple only: the forwarded socket arrives root-owned and mode 000.
-        // The one root exec happens before ready reaches the caller, so no
-        // work can race it.
-        if proxy.is_some()
-            && let Err(error) = runtime.make_proxy_connectable(&plan.name)
-        {
-            let _ = runtime.down(&plan.name);
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            if let Some(proxy) = proxy {
-                proxy.close();
-            }
-            let _ = tokio::fs::remove_dir_all(&state_dir).await;
-            return Err(error.into());
-        }
-        // Keep the pipe drained so a talkative box cannot block on it.
-        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
 
         Ok(Box {
             name: plan.name.clone(),
             labels: plan.labels,
             state_dir,
-            child,
+            _lock: lock,
+            child: parts
+                .child
+                .take()
+                .expect("a started box has a runtime child"),
             runtime,
-            proxy,
+            proxy: parts.proxy.take(),
+            signals,
         })
     }
 
     /// Wait until the box exits, stdin closes, or a termination signal
     /// arrives, then stop and remove the box.
     pub async fn hold(&mut self) -> io::Result<Shutdown> {
-        let reason = tokio::select! {
-            reason = wait_for_shutdown() => reason?,
-            status = self.child.wait() => Shutdown::BoxExited(status?),
+        let signals = match &mut self.signals {
+            Some(signals) => signals,
+            None => self.signals.insert(Signals::new()?),
         };
-        self.down().await?;
+        let reason = tokio::select! {
+            reason = wait_for_shutdown(signals) => reason,
+            status = self.child.wait() => status.map(Shutdown::BoxExited),
+        };
+        // Tear down whatever ended the wait, so a failed wait leaves no box.
+        let down = self.down().await;
+        let reason = reason?;
+        down?;
         Ok(reason)
     }
 
@@ -333,15 +314,200 @@ impl Box {
     }
 }
 
-async fn wait_for_shutdown() -> io::Result<Shutdown> {
-    let mut terminate = signal(SignalKind::terminate())?;
-    let mut interrupt = signal(SignalKind::interrupt())?;
+/// SIGTERM and SIGINT, handled by `box up` from its claim to its exit.
+struct Signals {
+    terminate: Signal,
+    interrupt: Signal,
+}
+
+impl Signals {
+    fn new() -> io::Result<Signals> {
+        Ok(Signals {
+            terminate: signal(SignalKind::terminate())?,
+            interrupt: signal(SignalKind::interrupt())?,
+        })
+    }
+
+    async fn recv(&mut self) {
+        tokio::select! {
+            _ = self.terminate.recv() => {}
+            _ = self.interrupt.recv() => {}
+        }
+    }
+}
+
+/// Why a start ended before ready.
+enum Stop {
+    Signal,
+    /// Readiness failed; the runtime child's exit status completes the text.
+    NotReady(String),
+    Failed(io::Error),
+}
+
+impl From<io::Error> for Stop {
+    fn from(error: io::Error) -> Stop {
+        Stop::Failed(error)
+    }
+}
+
+/// What a start has made so far besides the claimed state dir.
+#[derive(Default)]
+struct Parts {
+    proxy: Option<Proxy>,
+    child: Option<Child>,
+}
+
+impl Parts {
+    /// Remove the box and the proxy. Returns the runtime child's exit status
+    /// when the runtime was started.
+    async fn teardown(self, runtime: &dyn Runtime, name: &str) -> Option<io::Result<ExitStatus>> {
+        let status = match self.child {
+            Some(mut child) => {
+                // The client goes first, so one still creating the box cannot
+                // finish after the removal. The box exists by name even when
+                // readiness failed.
+                let _ = child.start_kill();
+                let status = child.wait().await;
+                let _ = runtime.down(name);
+                Some(status)
+            }
+            None => None,
+        };
+        if let Some(proxy) = self.proxy {
+            proxy.close();
+        }
+        status
+    }
+}
+
+/// Claim `plan`'s name: create its state dir exclusively, then lock and
+/// write the `pid` file. A dir whose owner is alive is `name-in-use`; a dead
+/// owner's dir is removed and the claim tried once more.
+fn claim(plan: &Plan) -> Result<(PathBuf, Flock<File>), UpError> {
+    let boxes = dirs::state_dir()?.join("boxes");
+    fs::create_dir_all(&boxes)?;
+    let state_dir = boxes.join(&plan.name);
+    let mut reclaimed = false;
+    loop {
+        match fs::create_dir(&state_dir) {
+            Ok(()) => break,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        if reclaimed {
+            return Err(refused(
+                plan,
+                RefusalReason::NameInUse,
+                format!(
+                    "state dir {} was claimed by another start",
+                    state_dir.display()
+                ),
+            ));
+        }
+        if clean::owner_alive(&state_dir) {
+            return Err(refused(
+                plan,
+                RefusalReason::NameInUse,
+                format!("state dir {} is held by a live owner", state_dir.display()),
+            ));
+        }
+        match fs::remove_dir_all(&state_dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        reclaimed = true;
+    }
+    match lock_pid(&state_dir) {
+        Ok(lock) => Ok((state_dir, lock)),
+        Err(error) => {
+            let _ = fs::remove_dir_all(&state_dir);
+            Err(error.into())
+        }
+    }
+}
+
+/// Create the claimed dir's `pid` file, lock it, and write this process's
+/// pid. The lock is held until the process exits or the box is torn down.
+fn lock_pid(state_dir: &Path) -> io::Result<Flock<File>> {
+    // std opens with O_CLOEXEC, so no runtime child inherits the lock and
+    // holds it past this process.
+    let file = File::options()
+        .write(true)
+        .create_new(true)
+        .open(state_dir.join("pid"))?;
+    // Blocking: a checker holds the lock only for a moment.
+    let mut lock =
+        Flock::lock(file, FlockArg::LockExclusive).map_err(|(_, errno)| io::Error::from(errno))?;
+    lock.write_all(std::process::id().to_string().as_bytes())?;
+    Ok(lock)
+}
+
+/// The start after the claim: harness, seeds, proxy, runtime, readiness.
+/// What it creates goes into `parts` as soon as it exists, so a failure, or
+/// a signal at any await, removes exactly that.
+async fn start(
+    plan: &mut Plan,
+    init: &Path,
+    runtime: &'static dyn Runtime,
+    profile: Option<&ResolvedProfile>,
+    state_dir: &Path,
+    parts: &mut Parts,
+) -> Result<(), Stop> {
+    // The harness artifact is fetched and folded in after the claim, so a
+    // refused box downloads nothing. The spec's own env wins.
+    resolve_harness(plan)?;
+
+    if let Some(profile) = profile
+        && let Some((mount, relative)) = &profile.seed
+    {
+        seed_home(mount, relative, &profile.home)?;
+    }
+
+    // The proxy comes up before the box, so the socket is listening when
+    // the runtime forwards it.
+    if let Some(egress) = &plan.egress {
+        let log = dirs::egress_dir()?.join(format!("{}.jsonl", plan.name));
+        parts.proxy = Some(Proxy::start(state_dir.join("proxy.sock"), egress, log)?);
+    }
+
+    // A signal that arrived during the steps above wins the select here,
+    // before the runtime is asked to create anything.
+    tokio::task::yield_now().await;
+    let child =
+        parts
+            .child
+            .insert(runtime.up(plan, init, parts.proxy.as_ref().map(Proxy::socket))?);
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("runtime up did not pipe the box's stdout"))?;
+    let mut lines = BufReader::new(stdout).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) if line == "ready" => break,
+            Ok(Some(_)) => {}
+            Ok(None) => return Err(Stop::NotReady("box exited before ready".to_string())),
+            Err(error) => return Err(Stop::NotReady(format!("box output failed: {error}"))),
+        }
+    }
+    // Apple only: the forwarded socket arrives root-owned and mode 000.
+    // The one root exec happens before ready reaches the caller, so no
+    // work can race it.
+    if parts.proxy.is_some() {
+        runtime.make_proxy_connectable(&plan.name)?;
+    }
+    // Keep the pipe drained so a talkative box cannot block on it.
+    tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+    Ok(())
+}
+
+async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
     let mut stdin = tokio::io::stdin();
     let mut buffer = [0u8; 4096];
     loop {
         tokio::select! {
-            _ = terminate.recv() => return Ok(Shutdown::Signal),
-            _ = interrupt.recv() => return Ok(Shutdown::Signal),
+            () = signals.recv() => return Ok(Shutdown::Signal),
             read = stdin.read(&mut buffer) => {
                 if read? == 0 {
                     return Ok(Shutdown::StdinEof);
@@ -447,29 +613,6 @@ fn refused(plan: &Plan, reason: RefusalReason, detail: impl Into<String>) -> UpE
         reason,
         detail: detail.into(),
     })
-}
-
-/// Whether a box already holds `name`: the runtime lists it, or its state
-/// dir holds a live owner pid. The detail names which.
-fn name_in_use(runtime: &dyn Runtime, name: &str) -> io::Result<Option<String>> {
-    if runtime.list()?.iter().any(|box_| box_.id == name) {
-        return Ok(Some(format!(
-            "the runtime already has a box named {name:?}"
-        )));
-    }
-    let state = dirs::state_dir()?.join("boxes").join(name);
-    let pid = fs::read_to_string(state.join("pid"))
-        .ok()
-        .and_then(|pid| pid.trim().parse::<i32>().ok());
-    if let Some(pid) = pid
-        && clean::alive(pid)
-    {
-        return Ok(Some(format!(
-            "state dir {} is held by live pid {pid}",
-            state.display()
-        )));
-    }
-    Ok(None)
 }
 
 /// The mount behind a guest `$HOME` and the plain path from its guest root
