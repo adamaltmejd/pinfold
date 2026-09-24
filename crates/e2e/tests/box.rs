@@ -900,6 +900,8 @@ fn the_proxy_refuses_the_tricks() {
     // Sabotage: drop the duplicate-Content-Length check in parse_plain; the
     // raw request reaches api.github.com, so the 400 and "ambiguous
     // framing" assertions fail.
+    // Sabotage: answer the malformed CONNECT with 400 but no record; the
+    // new refusal-line assertion for it fails.
     let binary = pinfold();
     let env = TestEnv::new("tricks");
     let fixture = HttpFixture::start();
@@ -1107,6 +1109,35 @@ fn the_proxy_refuses_the_tricks() {
         framing.stdout.contains("400"),
         "ambiguous framing got no 400: {}",
         framing.stdout
+    );
+
+    // A CONNECT whose authority has no host is malformed: the proxy answers
+    // 400 and, like every decision, writes one refusal line.
+    let before = egress_log_lines(&env, &name);
+    let malformed_connect = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "bash",
+            "-c",
+            "exec 3<>/dev/tcp/127.0.0.1/3128; \
+             printf 'CONNECT :443 HTTP/1.1\\r\\nHost: example.com\\r\\n\\r\\n' >&3; \
+             cat <&3",
+        ],
+    );
+    assert!(
+        malformed_connect.stdout.contains("400"),
+        "malformed CONNECT got no 400: {}",
+        malformed_connect.stdout
+    );
+    let after = egress_log_lines(&env, &name);
+    assert!(
+        after.len() == before.len() + 1
+            && after.last().is_some_and(
+                |line| line["decision"] == "refused" && line["reason"] == "malformed request"
+            ),
+        "the malformed CONNECT left no refusal line: {after:?}"
     );
 
     // Every refusal names its own reason, distinct from "not allowlisted".
