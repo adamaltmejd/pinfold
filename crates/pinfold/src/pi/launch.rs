@@ -22,30 +22,23 @@ use crate::core::artifacts::GUEST_PI;
 use crate::core::r#box::{Box, RefusalReason, UpError};
 use crate::core::clean;
 use crate::core::plan::{Egress, Env, HARNESS_PI, Mount, Plan};
-use crate::core::runtime::{exec_through_init, local_image_id, runtime};
+use crate::core::runtime::{ImageStatus, exec_through_init, image_status, runtime};
 use crate::pi::git::Git;
 use crate::pi::state::{ProjectState, canonical};
 use crate::trust;
 
 /// Run a `pi`/`pinfold pi` invocation and return pi's exit code.
-pub fn run(args: &[OsString]) -> i32 {
-    match launch(args) {
-        Ok(code) => code,
-        Err(error) => {
-            eprintln!("pinfold pi: {error}");
-            1
-        }
-    }
-}
-
-fn launch(args: &[OsString]) -> io::Result<i32> {
+pub fn run(args: &[OsString]) -> io::Result<i32> {
     let cwd = canonical(&env::current_dir()?)?;
     let root = project_root(&cwd)?;
     let config = Config::load(&root)?;
     trust::check(&root, &config)?;
     let state = ProjectState::load_or_create(&root)?;
     let image = resolve_image(&config, &state.id);
-    ensure_image(&config, &image)?;
+    // A missing profile image is `Box::up`'s refusal.
+    if let Containerfile::Project(_) = config.containerfile {
+        ensure_project_image(&config, &image)?;
+    }
     let argv = pi_argv(args)?;
     // The read-only mounts are prepared after trust, so a refused run leaves
     // no created directory behind.
@@ -102,57 +95,24 @@ pub(crate) fn resolve_image(config: &Config, project: &str) -> String {
     }
 }
 
-/// Refuse when the image the box runs has not been built.
-fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
-    match &config.containerfile {
-        Containerfile::Project(_) => ensure_project_image(config, image),
-        Containerfile::Profile(_) => ensure_profile_image(config, image),
-    }
-}
-
-/// Refuse when the profile image has not been built.
-fn ensure_profile_image(config: &Config, image: &str) -> io::Result<()> {
-    let built = runtime()?
-        .list_images()?
-        .iter()
-        .any(|info| info.reference == image);
-    if built {
-        return Ok(());
-    }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        format!(
-            "image {image} is missing; run `pinfold build --profile {}`",
-            config.profile.name
-        ),
-    ))
-}
-
 /// Refuse when the project image has not been built, and report when the
 /// profile image it records is no longer the current one.
 fn ensure_project_image(config: &Config, image: &str) -> io::Result<()> {
-    let runtime = runtime()?;
-    let images = runtime.list_images()?;
-    let Some(built) = images.iter().find(|info| info.reference == image) else {
-        return Err(io::Error::new(
+    match image_status(runtime()?, image, Some(&config.profile.image_ref()))? {
+        ImageStatus::Missing => Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("image {image} is missing; run `pinfold build`"),
-        ));
-    };
-    let recorded = built
-        .labels
-        .get(clean::BASE_LABEL)
-        .map(String::as_str)
-        .filter(|base| !base.is_empty());
-    let current = local_image_id(runtime, &config.profile.image_ref())?;
-    if recorded != current.as_deref() {
-        eprintln!(
-            "pinfold: project image {image} was built from profile image {}; the current profile image is {}; run `pinfold build`",
-            recorded.unwrap_or("(none)"),
-            current.as_deref().unwrap_or("(none)")
-        );
+        )),
+        ImageStatus::Current => Ok(()),
+        ImageStatus::Stale { recorded, current } => {
+            eprintln!(
+                "pinfold: project image {image} was built from profile image {}; the current profile image is {}; run `pinfold build`",
+                recorded.as_deref().unwrap_or("(none)"),
+                current.as_deref().unwrap_or("(none)")
+            );
+            Ok(())
+        }
     }
-    Ok(())
 }
 
 /// pi's argv in the box: the mounted artifact and the caller's arguments,
@@ -286,6 +246,18 @@ fn run_box(plan: &Plan, cwd: &Path, argv: &[String]) -> io::Result<i32> {
             Ok(box_) => box_,
             Err(UpError::Refused(refusal)) if refusal.reason == RefusalReason::Spec => {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, refusal.detail));
+            }
+            // The project image was checked before the run, so a missing
+            // image is the profile's; name its build command.
+            Err(UpError::Refused(refusal)) if refusal.reason == RefusalReason::ImageMissing => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "image {} is missing; run `pinfold build --profile {}`",
+                        plan.image.as_deref().unwrap_or_default(),
+                        plan.profile.as_deref().unwrap_or_default()
+                    ),
+                ));
             }
             Err(error) => return Err(error.into()),
         };

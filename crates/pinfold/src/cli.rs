@@ -13,23 +13,21 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::time::Duration;
 
-use nix::sys::signal::{Signal, kill};
-use nix::unistd::Pid;
-
 use crate::config::{Config, Containerfile, Origin};
 use crate::core::artifacts;
 use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, UpError};
 use crate::core::clean;
-use crate::core::image::{self, Build, Built, Context, ImageError, ImageRequest};
+use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
 use crate::core::plan::{Plan, Route};
 use crate::core::profile::{self, Profile};
 use crate::core::runtime::{
-    BoxInfo, BuildCache, Runtime, exec_through_init, local_image_id, podman, runtime,
+    BoxInfo, BuildCache, ImageStatus, Runtime, exec_through_init, image_status, local_image_id,
+    podman, runtime,
 };
 use crate::dirs;
 use crate::trust;
 
-const USAGE: &str = "usage: pinfold box up|exec BOX [--tty] [--workdir DIR] -- argv|stat BOX|down BOX|list --label k=v [--label k]|prune";
+const BOX_USAGE: &str = "usage: pinfold box up|exec BOX [--tty] [--workdir DIR] -- argv|stat BOX|down BOX|list --label k=v [--label k]|prune";
 const BUILD_USAGE: &str = "usage: pinfold build [--profile NAME]";
 const IMAGE_USAGE: &str = "usage: pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]... [--no-cache]";
 const PROFILE_USAGE: &str =
@@ -44,44 +42,34 @@ const CONFIG_USAGE: &str = "usage: pinfold config [ROOT]";
 /// `doctor` suggests `pinfold clean` above this much measured disk use.
 const CLEAN_SUGGESTION_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 
-/// Run a `pinfold pi` invocation and return its process exit code.
-pub fn pi(args: &[OsString]) -> i32 {
-    crate::pi::launch::run(args)
+/// A verb's process exit code: its own, or 1 after printing
+/// `pinfold VERB: ERROR` on stderr.
+pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
+    result.unwrap_or_else(|error| {
+        eprintln!("pinfold {verb}: {error}");
+        1
+    })
 }
 
-/// Run a `pinfold allow` invocation and return its process exit code.
-pub fn allow(args: &[OsString]) -> i32 {
-    match run_allow(args) {
-        Ok(()) => 0,
-        Err(error) => {
-            eprintln!("pinfold allow: {error}");
-            1
-        }
-    }
+/// A malformed invocation: `message`, then the verb's usage line.
+fn usage(usage: &str, message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, format!("{message}\n{usage}"))
 }
 
-fn run_allow(args: &[OsString]) -> io::Result<()> {
+/// `pinfold allow`: trust this project's `.pinfold.toml` and Containerfile.
+pub fn allow(args: &[OsString]) -> io::Result<i32> {
     if !args.is_empty() {
-        return Err(allow_usage("allow takes no arguments"));
+        return Err(usage(ALLOW_USAGE, "allow takes no arguments"));
     }
     let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
-    crate::trust::allow(&root)
+    crate::trust::allow(&root)?;
+    Ok(0)
 }
 
-/// Run a `pinfold attach` invocation: bash, or the given command, in this
-/// project's running pi box. The box's owner keeps its lifetime; attach
-/// streams one exec and adds none of its own.
-pub fn attach(args: &[OsString]) -> i32 {
-    match run_attach(args) {
-        Ok(code) => code,
-        Err(error) => {
-            eprintln!("pinfold attach: {error}");
-            1
-        }
-    }
-}
-
-fn run_attach(args: &[OsString]) -> io::Result<i32> {
+/// `pinfold attach`: bash, or the given command, in this project's running
+/// pi box. The box's owner keeps its lifetime; attach streams one exec and
+/// adds none of its own.
+pub fn attach(args: &[OsString]) -> io::Result<i32> {
     let (box_name, mut argv) = parse_attach(args)?;
     if argv.is_empty() {
         argv.push("bash".to_string());
@@ -148,7 +136,7 @@ fn parse_attach(args: &[OsString]) -> io::Result<(Option<String>, Vec<String>)> 
                 name = Some(
                     args.get(index + 1)
                         .and_then(|value| value.to_str())
-                        .ok_or_else(|| attach_usage("--box needs a box name"))?
+                        .ok_or_else(|| usage(ATTACH_USAGE, "--box needs a box name"))?
                         .to_string(),
                 );
                 index += 2;
@@ -164,34 +152,27 @@ fn parse_attach(args: &[OsString]) -> io::Result<(Option<String>, Vec<String>)> 
     for arg in &args[index..] {
         argv.push(
             arg.to_str()
-                .ok_or_else(|| attach_usage("attach arguments must be valid UTF-8"))?
+                .ok_or_else(|| usage(ATTACH_USAGE, "attach arguments must be valid UTF-8"))?
                 .to_string(),
         );
     }
     Ok((name, argv))
 }
 
-/// Run a `pinfold box` invocation and return its process exit code.
-pub fn run(args: &[OsString]) -> i32 {
-    match dispatch(args) {
-        Ok(code) => code,
-        Err(error) => {
-            eprintln!("pinfold box: {error}");
-            1
-        }
-    }
-}
-
-fn dispatch(args: &[OsString]) -> io::Result<i32> {
+/// `pinfold box`: the process interface.
+pub fn run(args: &[OsString]) -> io::Result<i32> {
     match args.first().and_then(|arg| arg.to_str()) {
         Some("up") => up(&args[1..]),
         Some("exec") => exec(&args[1..]),
         Some("stat") => stat(&args[1..]),
-        Some("down") => down(&args[1..]),
+        Some("down") => {
+            crate::core::r#box::down(&single_name(&args[1..], "down")?)?;
+            Ok(0)
+        }
         Some("list") => list(&args[1..]),
         Some("prune") => prune(&args[1..]),
-        Some(verb) => Err(usage(&format!("unknown box verb {verb:?}"))),
-        None => Err(usage("a box verb is required")),
+        Some(verb) => Err(usage(BOX_USAGE, &format!("unknown box verb {verb:?}"))),
+        None => Err(usage(BOX_USAGE, "a box verb is required")),
     }
 }
 
@@ -199,7 +180,7 @@ fn dispatch(args: &[OsString]) -> io::Result<i32> {
 /// until stdin closes, SIGTERM arrives, or the box exits.
 fn up(args: &[OsString]) -> io::Result<i32> {
     if !args.is_empty() {
-        return Err(usage("up takes no arguments"));
+        return Err(usage(BOX_USAGE, "up takes no arguments"));
     }
     let mut plan = match Plan::from_reader(io::stdin()) {
         Ok(plan) => plan,
@@ -355,35 +336,9 @@ fn stat(args: &[OsString]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// Signal the owning `box up` process through the state dir and wait for it
-/// to remove the box. The pid is signalled only while its lock is held, so a
-/// reused pid is never hit. A dead owner means remove the leftover directly.
-fn down(args: &[OsString]) -> io::Result<i32> {
-    let name = single_name(args, "down")?;
-    let state = state_path(&name)?;
-    if let Some(pid) = read_pid(&state)
-        && clean::owner_alive(&state)
-    {
-        kill(Pid::from_raw(pid), Signal::SIGTERM).map_err(io::Error::other)?;
-        for _ in 0..1000 {
-            if !state.exists() {
-                return Ok(0);
-            }
-            if !clean::owner_alive(&state) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-    runtime()?.down(&name)?;
-    let _ = fs::remove_dir_all(&state);
-    Ok(0)
-}
-
 /// Print one JSON line per box matching every `--label` filter.
 fn list(args: &[OsString]) -> io::Result<i32> {
     let filters = parse_labels(args)?;
-    let state = dirs::state_dir()?.join("boxes");
     for box_ in runtime()?.list()? {
         let matches = filters.iter().all(|(key, value)| match value {
             Some(value) => box_.labels.get(key) == Some(value),
@@ -403,7 +358,7 @@ fn list(args: &[OsString]) -> io::Result<i32> {
                 "labels": box_.labels,
                 "image": { "id": box_.image_id, "ref": box_.image_ref },
                 "owner": owner,
-                "owner_alive": clean::box_owner_alive(&state.join(&box_.id), owner),
+                "owner_alive": clean::box_owner_alive(&dirs::box_state_dir(&box_.id)?, owner),
                 "created": box_.created,
                 "state": if box_.running { "running" } else { "stopped" },
             })
@@ -416,7 +371,7 @@ fn list(args: &[OsString]) -> io::Result<i32> {
 /// print one line per removal.
 fn prune(args: &[OsString]) -> io::Result<i32> {
     if !args.is_empty() {
-        return Err(usage("prune takes no arguments"));
+        return Err(usage(BOX_USAGE, "prune takes no arguments"));
     }
     for dead in clean::prune_boxes(runtime()?)? {
         println!(
@@ -431,19 +386,9 @@ fn prune(args: &[OsString]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// Run a `pinfold clean` invocation and return its process exit code.
-pub fn clean(args: &[OsString]) -> i32 {
-    match run_clean(args) {
-        Ok(()) => 0,
-        Err(error) => {
-            eprintln!("pinfold clean: {error}");
-            1
-        }
-    }
-}
-
-/// List every category pinfold holds, then reclaim it unless `--dry-run`.
-fn run_clean(args: &[OsString]) -> io::Result<()> {
+/// `pinfold clean`: list every category pinfold holds, then reclaim it
+/// unless `--dry-run`.
+pub fn clean(args: &[OsString]) -> io::Result<i32> {
     let (dry_run, unused) = parse_clean(args)?;
     let runtime = runtime()?;
     let plan = CleanPlan::measure(runtime, unused)?;
@@ -453,10 +398,10 @@ fn run_clean(args: &[OsString]) -> io::Result<()> {
         println!("pinfold clean: reclaiming {} B", plan.total());
     }
     plan.print();
-    if dry_run {
-        return Ok(());
+    if !dry_run {
+        plan.remove(runtime)?;
     }
-    plan.remove(runtime)
+    Ok(0)
 }
 
 /// Everything one `clean` pass measures and would remove, measured before
@@ -574,11 +519,16 @@ fn parse_clean(args: &[OsString]) -> io::Result<(bool, Option<Duration>)> {
                 let value = args
                     .next()
                     .and_then(|value| value.to_str())
-                    .ok_or_else(|| clean_usage("--unused needs an age like 30d"))?;
+                    .ok_or_else(|| usage(CLEAN_USAGE, "--unused needs an age like 30d"))?;
                 unused = Some(parse_age(value)?);
             }
-            Some(option) => return Err(clean_usage(&format!("unknown clean option {option:?}"))),
-            None => return Err(clean_usage("clean options must be valid UTF-8")),
+            Some(option) => {
+                return Err(usage(
+                    CLEAN_USAGE,
+                    &format!("unknown clean option {option:?}"),
+                ));
+            }
+            None => return Err(usage(CLEAN_USAGE, "clean options must be valid UTF-8")),
         }
     }
     Ok((dry_run, unused))
@@ -588,7 +538,7 @@ fn parse_clean(args: &[OsString]) -> io::Result<(bool, Option<Duration>)> {
 fn parse_age(value: &str) -> io::Result<Duration> {
     let mut chars = value.chars();
     let Some(unit) = chars.next_back() else {
-        return Err(clean_usage("--unused needs an age like 30d"));
+        return Err(usage(CLEAN_USAGE, "--unused needs an age like 30d"));
     };
     let seconds = match unit {
         's' => 1,
@@ -596,55 +546,30 @@ fn parse_age(value: &str) -> io::Result<Duration> {
         'h' => 60 * 60,
         'd' => 24 * 60 * 60,
         _ => {
-            return Err(clean_usage(&format!(
-                "age {value:?} needs a unit: s, m, h or d"
-            )));
+            return Err(usage(
+                CLEAN_USAGE,
+                &format!("age {value:?} needs a unit: s, m, h or d"),
+            ));
         }
     };
-    let number: u64 = chars
-        .collect::<String>()
-        .parse()
-        .map_err(|_| clean_usage(&format!("age {value:?} is not a whole number and a unit")))?;
+    let number: u64 = chars.collect::<String>().parse().map_err(|_| {
+        usage(
+            CLEAN_USAGE,
+            &format!("age {value:?} is not a whole number and a unit"),
+        )
+    })?;
     number
         .checked_mul(seconds)
         .map(Duration::from_secs)
-        .ok_or_else(|| clean_usage(&format!("age {value:?} is too large")))
+        .ok_or_else(|| usage(CLEAN_USAGE, &format!("age {value:?} is too large")))
 }
 
-fn clean_usage(message: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!("{message}\n{CLEAN_USAGE}"),
-    )
-}
-
-/// Run a `pinfold doctor` invocation and return its process exit code.
-pub fn doctor(args: &[OsString]) -> i32 {
-    match run_doctor(args) {
-        Ok(0) => {
-            println!("pinfold doctor: ok");
-            0
-        }
-        Ok(problems) => {
-            eprintln!("pinfold doctor: {problems} problem(s)");
-            1
-        }
-        Err(error) => {
-            eprintln!("pinfold doctor: {error}");
-            1
-        }
-    }
-}
-
-/// Print one report of what `pinfold pi` depends on and what state it is in,
-/// and return the number of missing dependencies. Reads only: nothing is
-/// created, downloaded or fixed.
-fn run_doctor(args: &[OsString]) -> io::Result<usize> {
+/// `pinfold doctor`: print one report of what `pinfold pi` depends on and
+/// what state it is in, ending with the count of missing dependencies. Reads
+/// only: nothing is created, downloaded or fixed.
+pub fn doctor(args: &[OsString]) -> io::Result<i32> {
     if !args.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("doctor takes no arguments\n{DOCTOR_USAGE}"),
-        ));
+        return Err(usage(DOCTOR_USAGE, "doctor takes no arguments"));
     }
     let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
     // The config must parse; a broken `.pinfold.toml` is itself the answer.
@@ -789,43 +714,24 @@ fn run_doctor(args: &[OsString]) -> io::Result<usize> {
         Err(_) => println!("  unavailable: no runtime"),
     }
 
-    Ok(problems)
-}
-
-/// Run a `pinfold artifacts` invocation and return its process exit code.
-pub fn artifacts(args: &[OsString]) -> i32 {
-    match run_artifacts(args) {
-        Ok(()) => 0,
-        Err(error) => {
-            eprintln!("pinfold artifacts: {error}");
-            1
-        }
+    if problems == 0 {
+        println!("pinfold doctor: ok");
+        Ok(0)
+    } else {
+        eprintln!("pinfold doctor: {problems} problem(s)");
+        Ok(1)
     }
 }
 
-/// Print the pinned artifacts as one JSON array, an object per pin. Reads
-/// only: nothing is downloaded.
-fn run_artifacts(args: &[OsString]) -> io::Result<()> {
+/// `pinfold artifacts`: print the pinned artifacts as one JSON array, an
+/// object per pin. Reads only: nothing is downloaded.
+pub fn artifacts(args: &[OsString]) -> io::Result<i32> {
     if !args.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("artifacts takes no arguments\n{ARTIFACTS_USAGE}"),
-        ));
+        return Err(usage(ARTIFACTS_USAGE, "artifacts takes no arguments"));
     }
-    let pins = artifacts::pins()?
-        .into_iter()
-        .map(|pin| {
-            Ok(serde_json::json!({
-                "name": pin.name,
-                "version": pin.version,
-                "sha256": pin.sha256,
-                "path": path_string(&pin.path)?,
-                "cached": pin.cached,
-            }))
-        })
-        .collect::<io::Result<Vec<_>>>()?;
-    println!("{}", serde_json::Value::Array(pins));
-    Ok(())
+    let pins = serde_json::to_value(artifacts::pins()?).map_err(io::Error::other)?;
+    println!("{pins}");
+    Ok(0)
 }
 
 /// The podman lines in `doctor`'s runtime report, and the problems they add:
@@ -906,28 +812,24 @@ fn print_cgroup_manager(manager: &str) {
 /// current profile image. Returns 1 when the image is missing.
 fn report_image(config: &Config, runtime: &dyn Runtime, project: &str) -> io::Result<usize> {
     let image = crate::pi::launch::resolve_image(config, project);
-    let images = runtime.list_images()?;
-    let Some(found) = images.iter().find(|info| info.reference == image) else {
+    let base = match config.containerfile {
+        Containerfile::Project(_) => Some(config.profile.image_ref()),
+        Containerfile::Profile(_) => None,
+    };
+    let status = image_status(runtime, &image, base.as_deref())?;
+    if let ImageStatus::Missing = status {
         println!("  missing; run `pinfold build`");
         return Ok(1);
-    };
+    }
     println!("  exists");
-    if matches!(config.containerfile, Containerfile::Project(_)) {
-        let recorded = found
-            .labels
-            .get(clean::BASE_LABEL)
-            .map(String::as_str)
-            .filter(|base| !base.is_empty());
-        let current = local_image_id(runtime, &config.profile.image_ref())?;
-        if recorded == current.as_deref() {
-            println!("  built from the current profile image");
-        } else {
-            println!(
-                "  built from profile image {}; the current profile image is {}; run `pinfold build`",
-                recorded.unwrap_or("(none)"),
-                current.as_deref().unwrap_or("(none)")
-            );
-        }
+    match status {
+        ImageStatus::Stale { recorded, current } => println!(
+            "  built from profile image {}; the current profile image is {}; run `pinfold build`",
+            recorded.as_deref().unwrap_or("(none)"),
+            current.as_deref().unwrap_or("(none)")
+        ),
+        _ if base.is_some() => println!("  built from the current profile image"),
+        _ => {}
     }
     Ok(0)
 }
@@ -975,40 +877,26 @@ fn origin_label(origin: Origin, profile: &str) -> String {
     }
 }
 
-/// Run a `pinfold config` invocation and return its process exit code.
-pub fn config(args: &[OsString]) -> i32 {
-    match run_config(args) {
-        Ok(()) => 0,
-        Err(error) => {
-            eprintln!("pinfold config: {error}");
-            1
-        }
-    }
-}
-
-/// Print one JSON object: the effective configuration and the project facts
-/// a caller needs to compose a box. `ROOT` defaults to the project root
-/// `pinfold pi` would use from the current directory. Reads only: nothing is
-/// created and nothing is recorded.
-fn run_config(args: &[OsString]) -> io::Result<()> {
+/// `pinfold config`: print one JSON object, the effective configuration and
+/// the project facts a caller needs to compose a box. `ROOT` defaults to the
+/// project root `pinfold pi` would use from the current directory. Reads
+/// only: nothing is created and nothing is recorded.
+pub fn config(args: &[OsString]) -> io::Result<i32> {
     let root = match args {
         [] => crate::pi::launch::project_root(&std::env::current_dir()?)?,
         [root] => crate::pi::launch::project_root(Path::new(root))?,
         _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("config takes at most one project root\n{CONFIG_USAGE}"),
-            ));
+            return Err(usage(CONFIG_USAGE, "config takes at most one project root"));
         }
     };
     let config = Config::load(&root)?;
     let project = crate::pi::state::project_id(&root)?;
     let home = crate::pi::state::project_home(&root)?;
     let image = crate::pi::launch::resolve_image(&config, &project);
-    let image_built = runtime()?
-        .list_images()?
-        .iter()
-        .any(|info| info.reference == image);
+    let image_built = !matches!(
+        image_status(runtime()?, &image, None)?,
+        ImageStatus::Missing
+    );
     let trust = match trust::check(&root, &config) {
         Ok(()) => serde_json::json!({ "ok": true, "detail": "ok" }),
         Err(error) => serde_json::json!({ "ok": false, "detail": error.to_string() }),
@@ -1038,7 +926,7 @@ fn run_config(args: &[OsString]) -> io::Result<()> {
         "trust": trust,
     });
     println!("{report}");
-    Ok(())
+    Ok(0)
 }
 
 /// A path as a string for the `config` report. The report is JSON, so a
@@ -1065,7 +953,7 @@ impl ExecArgs {
         let name = args
             .next()
             .and_then(|arg| arg.to_str())
-            .ok_or_else(|| usage("exec needs a box name"))?
+            .ok_or_else(|| usage(BOX_USAGE, "exec needs a box name"))?
             .to_string();
         let mut tty = false;
         let mut workdir = None;
@@ -1076,24 +964,26 @@ impl ExecArgs {
                     for arg in args.by_ref() {
                         let arg = arg
                             .to_str()
-                            .ok_or_else(|| usage("exec argv must be valid UTF-8"))?;
+                            .ok_or_else(|| usage(BOX_USAGE, "exec argv must be valid UTF-8"))?;
                         argv.push(arg.to_string());
                     }
                     break;
                 }
                 Some("--tty") => tty = true,
                 Some("--workdir") => {
-                    workdir = Some(PathBuf::from(
-                        args.next()
-                            .ok_or_else(|| usage("--workdir needs a directory"))?,
-                    ));
+                    workdir =
+                        Some(PathBuf::from(args.next().ok_or_else(|| {
+                            usage(BOX_USAGE, "--workdir needs a directory")
+                        })?));
                 }
-                Some(option) => return Err(usage(&format!("unknown exec option {option:?}"))),
-                None => return Err(usage("exec needs `-- argv`")),
+                Some(option) => {
+                    return Err(usage(BOX_USAGE, &format!("unknown exec option {option:?}")));
+                }
+                None => return Err(usage(BOX_USAGE, "exec needs `-- argv`")),
             }
         }
         if argv.is_empty() {
-            return Err(usage("exec needs a command after `--`"));
+            return Err(usage(BOX_USAGE, "exec needs a command after `--`"));
         }
         Ok(ExecArgs {
             name,
@@ -1109,8 +999,11 @@ fn single_name(args: &[OsString], verb: &str) -> io::Result<String> {
         [name] => name
             .to_str()
             .map(str::to_string)
-            .ok_or_else(|| usage("box name must be valid UTF-8")),
-        _ => Err(usage(&format!("{verb} needs exactly one box name"))),
+            .ok_or_else(|| usage(BOX_USAGE, "box name must be valid UTF-8")),
+        _ => Err(usage(
+            BOX_USAGE,
+            &format!("{verb} needs exactly one box name"),
+        )),
     }
 }
 
@@ -1121,33 +1014,21 @@ fn parse_labels(args: &[OsString]) -> io::Result<Vec<(String, Option<String>)>> 
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         if arg.to_str() != Some("--label") {
-            return Err(usage("list takes only --label k=v or --label k"));
+            return Err(usage(BOX_USAGE, "list takes only --label k=v or --label k"));
         }
         let label = args
             .next()
             .and_then(|value| value.to_str())
-            .ok_or_else(|| usage("--label needs k=v or k"))?;
+            .ok_or_else(|| usage(BOX_USAGE, "--label needs k=v or k"))?;
         match label.split_once('=') {
             Some((key, value)) => filters.push((key.to_string(), Some(value.to_string()))),
             None => filters.push((label.to_string(), None)),
         }
     }
     if filters.is_empty() {
-        return Err(usage("list needs at least one --label"));
+        return Err(usage(BOX_USAGE, "list needs at least one --label"));
     }
     Ok(filters)
-}
-
-fn state_path(name: &str) -> io::Result<PathBuf> {
-    Ok(dirs::state_dir()?.join("boxes").join(name))
-}
-
-fn read_pid(state: &Path) -> Option<i32> {
-    fs::read_to_string(state.join("pid"))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
 }
 
 pub(crate) fn exit_code(status: ExitStatus) -> i32 {
@@ -1197,99 +1078,71 @@ fn embedded_init() -> io::Result<PathBuf> {
     Ok(path)
 }
 
-fn usage(message: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidInput, format!("{message}\n{USAGE}"))
-}
-
-/// Run a `pinfold build` invocation and return its process exit code.
-pub fn build(args: &[OsString]) -> i32 {
-    match run_build(args) {
-        Ok(()) => 0,
-        Err(error) => {
-            eprintln!("pinfold build: {error}");
-            1
+/// `pinfold build`: `--profile NAME`'s image; else the project's own image
+/// when its config names a Containerfile, else the configured profile's.
+/// Either builds from an empty context holding only the Containerfile, so
+/// trust covers every input of a project build, and a profile directory's
+/// other files are not build inputs. Prints the stable ref, or the build's
+/// captured output on stderr when it failed.
+pub fn build(args: &[OsString]) -> io::Result<i32> {
+    let (profile, project) = match parse_profile(args)? {
+        Some(name) => (Profile::load(&name)?, None),
+        None => {
+            let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
+            let config = Config::load(&root)?;
+            // A project build is a run of its config: an untrusted change
+            // stops it like it stops `pinfold pi`.
+            trust::check(&root, &config)?;
+            let project = match config.containerfile {
+                Containerfile::Project(bytes) => {
+                    Some((crate::pi::state::project_id(&root)?, bytes))
+                }
+                Containerfile::Profile(_) => None,
+            };
+            (config.profile, project)
         }
-    }
-}
-
-fn run_build(args: &[OsString]) -> io::Result<()> {
-    match parse_profile(args)? {
-        Some(name) => build_profile(&Profile::load(&name)?),
-        None => build_configured(),
-    }
-}
-
-/// `pinfold build` without `--profile`: build the project's own image when
-/// its config names a Containerfile, else the configured profile's image.
-fn build_configured() -> io::Result<()> {
-    let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
-    let config = Config::load(&root)?;
-    // A project build is a run of its config: an untrusted change stops it
-    // like it stops `pinfold pi`.
-    trust::check(&root, &config)?;
-    match &config.containerfile {
-        Containerfile::Project(bytes) => build_project(&root, &config, bytes),
-        Containerfile::Profile(_) => build_profile(&config.profile),
-    }
-}
-
-/// Build `profile`'s image from an empty context holding its Containerfile:
-/// a profile directory's other files are not build inputs, and an embedded
-/// default has no directory.
-fn build_profile(profile: &Profile) -> io::Result<()> {
+    };
     let runtime = runtime()?;
-    let mut labels = BTreeMap::new();
-    if let Some(base) = profile::base_image(&profile.containerfile)
-        && let Some(digest) = runtime.image_digest(base)?
-    {
-        labels.insert(clean::BASE_LABEL.to_string(), digest);
-    }
+    // A project image records the profile image it was built from, so
+    // `pinfold pi` warns when the profile image moves past it; a profile
+    // image records the image its FROM pulls.
+    let (repository, label, source, containerfile, base) = match &project {
+        Some((id, bytes)) => (
+            format!("pinfold/project-{id}"),
+            clean::PROJECT_LABEL,
+            id,
+            bytes,
+            local_image_id(runtime, &profile.image_ref())?,
+        ),
+        None => (
+            format!("pinfold/profile-{}", profile.name),
+            clean::PROFILE_LABEL,
+            &profile.name,
+            &profile.containerfile,
+            profile::base_image(&profile.containerfile)
+                .map(|base| runtime.image_digest(base))
+                .transpose()?
+                .flatten(),
+        ),
+    };
     let built = image::build(
         runtime,
         Build {
-            repository: format!("pinfold/profile-{}", profile.name),
-            label: clean::PROFILE_LABEL,
-            source: &profile.name,
-            context: Context::Alone(&profile.containerfile),
-            labels,
+            repository,
+            label,
+            source,
+            context: Context::Alone(containerfile),
+            labels: base
+                .map(|digest| (clean::BASE_LABEL.to_string(), digest))
+                .into_iter()
+                .collect(),
             cache: false,
         },
     )?;
-    print_built(runtime, built)
-}
-
-/// Build this project's image from the Containerfile bytes trust checked,
-/// alone in an empty context, so trust covers every input.
-fn build_project(root: &Path, config: &Config, bytes: &[u8]) -> io::Result<()> {
-    let runtime = runtime()?;
-    let project = crate::pi::state::project_id(root)?;
-    let mut labels = BTreeMap::new();
-    // The digest of the profile image this project image was built from;
-    // `pinfold pi` warns when the profile image moves past it.
-    if let Some(digest) = local_image_id(runtime, &config.profile.image_ref())? {
-        labels.insert(clean::BASE_LABEL.to_string(), digest);
-    }
-    let built = image::build(
-        runtime,
-        Build {
-            repository: format!("pinfold/project-{project}"),
-            label: clean::PROJECT_LABEL,
-            source: &project,
-            context: Context::Alone(bytes),
-            labels,
-            cache: false,
-        },
-    )?;
-    print_built(runtime, built)
-}
-
-/// Print a profile or project build's stable ref, or its captured output on
-/// stderr when it failed.
-fn print_built(runtime: &dyn Runtime, built: Result<Built, String>) -> io::Result<()> {
     match built {
         Ok(built) => {
             println!("{}", built.latest);
-            Ok(())
+            Ok(0)
         }
         Err(output) => {
             eprint!("{output}");
@@ -1310,36 +1163,28 @@ fn parse_profile(args: &[OsString]) -> io::Result<Option<String>> {
                 name = Some(
                     args.next()
                         .and_then(|value| value.to_str())
-                        .ok_or_else(|| build_usage("--profile needs a name"))?
+                        .ok_or_else(|| usage(BUILD_USAGE, "--profile needs a name"))?
                         .to_string(),
                 );
             }
-            Some(option) => return Err(build_usage(&format!("unknown build option {option:?}"))),
-            None => return Err(build_usage("build options must be valid UTF-8")),
+            Some(option) => {
+                return Err(usage(
+                    BUILD_USAGE,
+                    &format!("unknown build option {option:?}"),
+                ));
+            }
+            None => return Err(usage(BUILD_USAGE, "build options must be valid UTF-8")),
         }
     }
     Ok(name)
 }
 
-fn build_usage(message: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!("{message}\n{BUILD_USAGE}"),
-    )
-}
-
-/// Run a `pinfold image` invocation and return its process exit code.
-pub fn image(args: &[OsString]) -> i32 {
+/// `pinfold image`: a caller's image build.
+pub fn image(args: &[OsString]) -> io::Result<i32> {
     match args.first().and_then(|arg| arg.to_str()) {
-        Some("build") => image_build(&args[1..]),
-        Some(verb) => {
-            eprintln!("pinfold image: unknown image verb {verb:?}\n{IMAGE_USAGE}");
-            1
-        }
-        None => {
-            eprintln!("pinfold image: an image verb is required\n{IMAGE_USAGE}");
-            1
-        }
+        Some("build") => Ok(image_build(&args[1..])),
+        Some(verb) => Err(usage(IMAGE_USAGE, &format!("unknown image verb {verb:?}"))),
+        None => Err(usage(IMAGE_USAGE, "an image verb is required")),
     }
 }
 
@@ -1441,22 +1286,15 @@ fn parse_image_build(args: &[OsString]) -> Result<ImageRequest, String> {
     })
 }
 
-/// Run a `pinfold profile` invocation and return its process exit code.
-pub fn profile(args: &[OsString]) -> i32 {
-    match run_profile(args) {
-        Ok(()) => 0,
-        Err(error) => {
-            eprintln!("pinfold profile: {error}");
-            1
-        }
-    }
-}
-
-fn run_profile(args: &[OsString]) -> io::Result<()> {
+/// `pinfold profile`: copy a profile to edit as files.
+pub fn profile(args: &[OsString]) -> io::Result<i32> {
     match args.first().and_then(|arg| arg.to_str()) {
-        Some("new") => profile_new(&args[1..]),
-        Some(verb) => Err(profile_usage(&format!("unknown profile verb {verb:?}"))),
-        None => Err(profile_usage("a profile verb is required")),
+        Some("new") => profile_new(&args[1..]).map(|()| 0),
+        Some(verb) => Err(usage(
+            PROFILE_USAGE,
+            &format!("unknown profile verb {verb:?}"),
+        )),
+        None => Err(usage(PROFILE_USAGE, "a profile verb is required")),
     }
 }
 
@@ -1587,7 +1425,7 @@ fn parse_profile_new(args: &[OsString]) -> io::Result<(String, String, Option<Pa
                 from = Some(
                     args.next()
                         .and_then(|value| value.to_str())
-                        .ok_or_else(|| profile_usage("--from needs a profile name"))?
+                        .ok_or_else(|| usage(PROFILE_USAGE, "--from needs a profile name"))?
                         .to_string(),
                 );
             }
@@ -1604,38 +1442,20 @@ fn parse_profile_new(args: &[OsString]) -> io::Result<(String, String, Option<Pa
                 from_project = Some(path);
             }
             Some(option) if option.starts_with("--") => {
-                return Err(profile_usage(&format!("unknown profile option {option:?}")));
+                return Err(usage(
+                    PROFILE_USAGE,
+                    &format!("unknown profile option {option:?}"),
+                ));
             }
             Some(value) if name.is_none() => name = Some(value.to_string()),
-            Some(_) => return Err(profile_usage("profile new takes one name")),
-            None => return Err(profile_usage("profile names must be valid UTF-8")),
+            Some(_) => return Err(usage(PROFILE_USAGE, "profile new takes one name")),
+            None => return Err(usage(PROFILE_USAGE, "profile names must be valid UTF-8")),
         }
     }
-    let name = name.ok_or_else(|| profile_usage("profile new needs a name"))?;
+    let name = name.ok_or_else(|| usage(PROFILE_USAGE, "profile new needs a name"))?;
     Ok((
         name,
         from.unwrap_or_else(|| "default".to_string()),
         from_project,
     ))
-}
-
-fn profile_usage(message: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!("{message}\n{PROFILE_USAGE}"),
-    )
-}
-
-fn allow_usage(message: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!("{message}\n{ALLOW_USAGE}"),
-    )
-}
-
-fn attach_usage(message: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!("{message}\n{ATTACH_USAGE}"),
-    )
 }

@@ -35,6 +35,12 @@ pub fn egress_dir() -> io::Result<PathBuf> {
     Ok(state_dir()?.join("egress"))
 }
 
+/// `$XDG_STATE_HOME/pinfold/boxes/NAME`: the state dir `box up` claims for
+/// box NAME. An empty name is the directory that holds them all.
+pub fn box_state_dir(name: &str) -> io::Result<PathBuf> {
+    Ok(state_dir()?.join("boxes").join(name))
+}
+
 fn xdg(variable: &str, fallback: &str) -> io::Result<PathBuf> {
     match std::env::var_os(variable) {
         Some(value) if Path::new(&value).is_absolute() => Ok(PathBuf::from(value).join("pinfold")),

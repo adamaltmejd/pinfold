@@ -445,6 +445,46 @@ pub fn local_image_id(runtime: &dyn Runtime, reference: &str) -> io::Result<Opti
     Ok(runtime.resolve_image(reference)?.ok().map(|image| image.id))
 }
 
+/// Whether a local image is built, and whether it was built on what `base`
+/// resolves to now, as `doctor`, `config` and `pinfold pi` report it.
+pub enum ImageStatus {
+    Missing,
+    /// Built, and on the current base when a base was asked about.
+    Current,
+    /// Built on base digest `recorded`; `base` now resolves to `current`.
+    Stale {
+        recorded: Option<String>,
+        current: Option<String>,
+    },
+}
+
+/// The status of image `reference`. With `base`, the digest the image
+/// records in `dev.pinfold.base` is compared with the one `base` resolves
+/// to now. Never pulls.
+pub fn image_status(
+    runtime: &dyn Runtime,
+    reference: &str,
+    base: Option<&str>,
+) -> io::Result<ImageStatus> {
+    let Ok(image) = runtime.resolve_image(reference)? else {
+        return Ok(ImageStatus::Missing);
+    };
+    let Some(base) = base else {
+        return Ok(ImageStatus::Current);
+    };
+    let recorded = image
+        .labels
+        .get(crate::core::clean::BASE_LABEL)
+        .filter(|digest| !digest.is_empty())
+        .cloned();
+    let current = local_image_id(runtime, base)?;
+    Ok(if recorded == current {
+        ImageStatus::Current
+    } else {
+        ImageStatus::Stale { recorded, current }
+    })
+}
+
 /// The uid:gid PID 1 and all work run as: the spec's, else the host user's.
 pub(crate) fn user(plan: &Plan) -> OsString {
     match plan.user {

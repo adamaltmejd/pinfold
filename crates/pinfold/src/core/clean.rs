@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -102,14 +102,21 @@ pub fn owner_alive(state_dir: &Path) -> bool {
     let Ok(file) = File::open(state_dir.join("pid")) else {
         return true;
     };
-    let Ok(mut file) = Flock::lock(file, FlockArg::LockExclusiveNonblock) else {
+    // Read under the lock, so an owner cannot lock and write in between.
+    let Ok(_lock) = Flock::lock(file, FlockArg::LockExclusiveNonblock) else {
         return true;
     };
-    let mut pid = String::new();
-    if file.read_to_string(&mut pid).is_err() {
-        return true;
-    }
-    pid.trim().is_empty()
+    owner_pid(state_dir).is_none()
+}
+
+/// The pid the owning `box up` wrote to `state_dir`'s `pid` file. Only
+/// [`owner_alive`] says whether that process still holds the dir.
+pub fn owner_pid(state_dir: &Path) -> Option<i32> {
+    fs::read_to_string(state_dir.join("pid"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// Whether a listed box's owner is alive. A box whose state dir exists under
@@ -168,7 +175,6 @@ pub struct Boxes {
 /// Read the runtime's box list once. A pinfold box with neither a state dir
 /// here nor an owner label counts as gone: nothing holds it.
 pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
-    let state = dirs::state_dir()?.join("boxes");
     let mut dead = Vec::new();
     let mut live_projects = BTreeSet::new();
     for box_ in runtime.list()? {
@@ -183,7 +189,7 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
             .labels
             .get(OWNER_LABEL)
             .and_then(|pid| pid.parse::<i32>().ok());
-        let state_dir = state.join(&box_.id);
+        let state_dir = dirs::box_state_dir(&box_.id)?;
         if box_owner_alive(&state_dir, owner) {
             if let Some(project) = box_.labels.get(PROJECT_LABEL) {
                 live_projects.insert(project.clone());
@@ -217,7 +223,7 @@ pub fn prune_boxes(runtime: &dyn Runtime) -> io::Result<Vec<DeadBox>> {
 /// live `box up` locks its `pid` file before it binds the socket, so a
 /// socket whose `pid` no lock holds is leftover.
 pub fn leftover_socket_dirs() -> io::Result<Vec<PathBuf>> {
-    let boxes = dirs::state_dir()?.join("boxes");
+    let boxes = dirs::box_state_dir("")?;
     let entries = match fs::read_dir(&boxes) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
