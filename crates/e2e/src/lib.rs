@@ -6,14 +6,14 @@
 //! gate.
 //!
 //! This crate also holds the host fixtures the tests reach through routes,
-//! and the built binary the test files drive.
+//! the built binary the test files drive, and the helpers they share.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -277,6 +277,153 @@ pub fn untagged_images() -> usize {
         .count()
 }
 
+/// The stable ref of the built-in default profile's image, built once per
+/// suite run. Every box and `pinfold pi` run starts from it.
+pub fn default_image(binary: &Path, env: &TestEnv) -> &'static str {
+    static IMAGE: OnceLock<()> = OnceLock::new();
+    // The runtime store is shared by both test binaries; a stale image is
+    // fine, the tests read its labels and run boxes from it.
+    const STABLE: &str = "pinfold/profile-default:latest";
+    IMAGE.get_or_init(|| {
+        if image_named(STABLE) {
+            return;
+        }
+        let output = env
+            .command(binary)
+            .args(["build", "--profile", "default"])
+            .output()
+            .expect("run pinfold build --profile default");
+        assert!(
+            output.status.success(),
+            "pinfold build --profile default failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    });
+    STABLE
+}
+
+/// A host directory under the test's root, removed on drop.
+pub struct TestDir {
+    path: PathBuf,
+}
+
+impl TestDir {
+    pub fn new(env: &TestEnv, name: &str) -> TestDir {
+        let path = env.root.join(name);
+        fs::create_dir_all(&path).unwrap();
+        TestDir { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+pub struct ExecOutput {
+    pub code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+pub fn box_exec(binary: &Path, env: &TestEnv, name: &str, argv: &[&str]) -> ExecOutput {
+    let output = env
+        .command(binary)
+        .args(["box", "exec", name, "--"])
+        .args(argv)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold box exec");
+    ExecOutput {
+        code: exit_code(output.status),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+/// Run `curl -sS --max-time SECONDS ARGS...` in the box.
+pub fn curl(binary: &Path, env: &TestEnv, name: &str, seconds: &str, args: &[&str]) -> ExecOutput {
+    let mut argv = vec!["curl", "-sS", "--max-time", seconds];
+    argv.extend_from_slice(args);
+    box_exec(binary, env, name, &argv)
+}
+
+pub fn box_list(binary: &Path, env: &TestEnv, label: &str) -> Vec<serde_json::Value> {
+    let output = env
+        .command(binary)
+        .args(["box", "list", "--label", label])
+        .output()
+        .expect("run pinfold box list");
+    assert!(
+        output.status.success(),
+        "box list failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("list output is UTF-8")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("list line is JSON"))
+        .collect()
+}
+
+/// The box's egress log, at the fixed path under pinfold's state dir.
+pub fn egress_log(env: &TestEnv, name: &str) -> PathBuf {
+    env.state
+        .join("pinfold")
+        .join("egress")
+        .join(format!("{name}.jsonl"))
+}
+
+/// The parsed decision lines of a box's egress log.
+pub fn egress_log_lines(env: &TestEnv, name: &str) -> Vec<serde_json::Value> {
+    fs::read_to_string(egress_log(env, name))
+        .expect("read egress log")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("log line is JSON"))
+        .collect()
+}
+
+pub fn exit_code(status: ExitStatus) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+    status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
+}
+
+/// The project state dir whose recorded root is `project`.
+pub fn project_state_dir(env: &TestEnv, project: &Path) -> PathBuf {
+    let root = fs::canonicalize(project).expect("canonicalize project");
+    let projects = env.state.join("pinfold").join("projects");
+    for entry in fs::read_dir(&projects).expect("read projects dir") {
+        let dir = entry.expect("project entry").path();
+        let state = fs::read_to_string(dir.join("state.json")).expect("read state.json");
+        let state: serde_json::Value = serde_json::from_str(&state).expect("state.json is JSON");
+        if state["root"].as_str() == root.to_str() {
+            return dir;
+        }
+    }
+    panic!("no project state for {}", project.display());
+}
+
+/// The project's home, in its state dir.
+pub fn project_home(env: &TestEnv, project: &Path) -> PathBuf {
+    project_state_dir(env, project).join("home")
+}
+
+/// The project's id, which names its state dir.
+pub fn project_id(env: &TestEnv, project: &Path) -> String {
+    project_state_dir(env, project)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("the project id is UTF-8")
+        .to_string()
+}
+
 /// A host HTTP service, reachable from a box only through a route.
 pub struct HttpFixture {
     port: u16,
@@ -311,9 +458,9 @@ impl HttpFixture {
         }
     }
 
-    /// The port the fixture listens on.
-    pub fn port(&self) -> u16 {
-        self.port
+    /// The `host:port` a route names to reach the fixture.
+    pub fn route(&self) -> String {
+        format!("127.0.0.1:{}", self.port)
     }
 
     /// How many requests the fixture has answered.

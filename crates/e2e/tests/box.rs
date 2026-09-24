@@ -10,12 +10,13 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use e2e::{
-    HttpFixture, TestEnv, image_cli, image_digest, image_id, image_named, pinfold,
-    remove_runtime_image, runtime_images, untagged_images,
+    HttpFixture, TestDir, TestEnv, box_exec, box_list, curl, default_image, egress_log,
+    egress_log_lines, exit_code, image_cli, image_digest, image_id, image_named, pinfold,
+    project_id, project_state_dir, remove_runtime_image, runtime_images, untagged_images,
 };
 
 /// The two owner-gone tests share one hazard: either one's removal can take
@@ -59,7 +60,7 @@ fn box_lifecycle_works_for_a_caller() {
     // way.
     let binary = pinfold();
     let env = TestEnv::new("lifecycle");
-    let name = format!("pinfold-e2e-{}-lifecycle", std::process::id());
+    let name = box_name("lifecycle");
     let label = "dev.example.test=lifecycle";
     let image = default_image(binary, &env);
     let spec = serde_json::json!({
@@ -146,8 +147,7 @@ fn box_lifecycle_works_for_a_caller() {
     );
 
     // `down` removes the box and the owner exits.
-    let status = box_down(binary, &env, &name);
-    assert!(status.success(), "box down failed: {status}");
+    up.down(binary, &env);
     let listed = box_list(binary, &env, label);
     assert!(
         !listed
@@ -338,7 +338,7 @@ fn up_refuses_before_it_creates() {
     // fails.
     let binary = pinfold();
     let env = TestEnv::new("refuses");
-    let name = format!("pinfold-e2e-{}-refuses", std::process::id());
+    let name = box_name("refuses");
     let label = "dev.example.test=refuses";
 
     // An image that was never built is refused as data, and the refusal
@@ -353,16 +353,7 @@ fn up_refuses_before_it_creates() {
     assert_eq!(refused["event"], "refused");
     assert_eq!(refused["box"], name);
     assert_eq!(refused["reason"], "image-missing");
-    let state = env.state.join("pinfold").join("boxes").join(&name);
-    assert!(
-        !state.exists(),
-        "the refused up left a state dir: {}",
-        state.display()
-    );
-    assert!(
-        box_list(binary, &env, label).is_empty(),
-        "the refused up left a box"
-    );
+    assert_left_nothing(binary, &env, &name, label, "refused");
 
     // A spec whose mount misspells `readonly` as `read_only` is refused as
     // data, naming the key, and leaves no state dir and no box. The positive
@@ -385,16 +376,7 @@ fn up_refuses_before_it_creates() {
             .contains("read_only"),
         "the refusal did not name the key: {refused}"
     );
-    let state = env.state.join("pinfold").join("boxes").join(&name);
-    assert!(
-        !state.exists(),
-        "the refused up left a state dir: {}",
-        state.display()
-    );
-    assert!(
-        box_list(binary, &env, label).is_empty(),
-        "the refused up left a box"
-    );
+    assert_left_nothing(binary, &env, &name, label, "refused");
 
     // A spec whose env name is not a POSIX name is refused as data, naming
     // the key, and leaves no state dir and no box. `HOSTSECRET_*` would make
@@ -419,16 +401,7 @@ fn up_refuses_before_it_creates() {
             .contains("HOSTSECRET_*"),
         "the refusal did not name the key: {refused}"
     );
-    let state = env.state.join("pinfold").join("boxes").join(&name);
-    assert!(
-        !state.exists(),
-        "the refused up left a state dir: {}",
-        state.display()
-    );
-    assert!(
-        box_list(binary, &env, label).is_empty(),
-        "the refused up left a box"
-    );
+    assert_left_nothing(binary, &env, &name, label, "refused");
 
     // A spec whose mount path holds a comma is refused as data, naming the
     // path, and leaves no state dir and no box: the bind value is built by
@@ -454,16 +427,7 @@ fn up_refuses_before_it_creates() {
             .contains("a,b"),
         "the refusal did not name the path: {refused}"
     );
-    let state = env.state.join("pinfold").join("boxes").join(&name);
-    assert!(
-        !state.exists(),
-        "the refused up left a state dir: {}",
-        state.display()
-    );
-    assert!(
-        box_list(binary, &env, label).is_empty(),
-        "the refused up left a box"
-    );
+    assert_left_nothing(binary, &env, &name, label, "refused");
 
     // A mount whose absolute host path does not exist passes validation, so
     // the runtime rejects the run after the claim. `up` removes what it made
@@ -483,16 +447,7 @@ fn up_refuses_before_it_creates() {
         !failed["detail"].as_str().unwrap_or_default().is_empty(),
         "the failed line has no detail: {failed}"
     );
-    let state = env.state.join("pinfold").join("boxes").join(&name);
-    assert!(
-        !state.exists(),
-        "the failed up left a state dir: {}",
-        state.display()
-    );
-    assert!(
-        box_list(binary, &env, label).is_empty(),
-        "the failed up left a box"
-    );
+    assert_left_nothing(binary, &env, &name, label, "failed");
 
     // A second `up` on a live name is refused without touching the first
     // box.
@@ -570,7 +525,7 @@ fn box_shares_files_with_the_host() {
     let binary = pinfold();
     let env = TestEnv::new("shared-files");
     let dir = TestDir::new(&env, "mount");
-    let name = format!("pinfold-e2e-{}-files", std::process::id());
+    let name = box_name("files");
 
     // Host files the box must be able to change.
     fs::write(dir.path().join("host-600"), b"before\n").unwrap();
@@ -671,9 +626,7 @@ fn box_shares_files_with_the_host() {
     );
     assert_eq!(fs::read(readonly.join("keep")).unwrap(), b"keep\n");
 
-    let status = box_down(binary, &env, &name);
-    assert!(status.success(), "box down failed: {status}");
-    drop(up);
+    up.down(binary, &env);
 }
 
 #[test]
@@ -686,7 +639,7 @@ fn nothing_can_gain_privileges() {
     let env = TestEnv::new("privileges");
     let image = default_image(binary, &env);
     let dir = TestDir::new(&env, "mount");
-    let name = format!("pinfold-e2e-{}-privileges", std::process::id());
+    let name = box_name("privileges");
     let spec = serde_json::json!({
         "name": name,
         "image": image,
@@ -798,9 +751,7 @@ fn nothing_can_gain_privileges() {
         );
     }
 
-    let status = box_down(binary, &env, &name);
-    assert!(status.success(), "box down failed: {status}");
-    drop(up);
+    up.down(binary, &env);
 }
 
 #[test]
@@ -811,7 +762,7 @@ fn only_allowlisted_hosts_get_through() {
     // an allowlisted host through.
     let binary = pinfold();
     let env = TestEnv::new("egress");
-    let name = format!("pinfold-e2e-{}-egress", std::process::id());
+    let name = box_name("egress");
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(binary, &env),
@@ -819,19 +770,12 @@ fn only_allowlisted_hosts_get_through() {
     });
     let up = box_up(binary, &env, &spec, &name);
 
-    let allowed = box_exec(
+    let allowed = curl(
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "30",
-            "-o",
-            "/dev/null",
-            "https://api.github.com/",
-        ],
+        "30",
+        &["-o", "/dev/null", "https://api.github.com/"],
     );
     assert_eq!(
         allowed.code, 0,
@@ -839,19 +783,12 @@ fn only_allowlisted_hosts_get_through() {
         allowed.stderr
     );
 
-    let denied = box_exec(
+    let denied = curl(
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "30",
-            "-o",
-            "/dev/null",
-            "https://example.com/",
-        ],
+        "30",
+        &["-o", "/dev/null", "https://example.com/"],
     );
     assert_ne!(denied.code, 0, "example.com was allowed through");
     assert!(
@@ -861,11 +798,7 @@ fn only_allowlisted_hosts_get_through() {
     );
 
     // The log names the host, the decision and its reason.
-    let log = fs::read_to_string(egress_log(&env, &name)).expect("read egress log");
-    let lines: Vec<serde_json::Value> = log
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("log line is JSON"))
-        .collect();
+    let lines = egress_log_lines(&env, &name);
     assert!(
         lines
             .iter()
@@ -879,9 +812,7 @@ fn only_allowlisted_hosts_get_through() {
         "no not-allowlisted refusal for example.com: {lines:?}"
     );
 
-    let status = box_down(binary, &env, &name);
-    assert!(status.success(), "box down failed: {status}");
-    drop(up);
+    up.down(binary, &env);
 }
 
 #[test]
@@ -908,62 +839,43 @@ fn the_proxy_refuses_the_tricks() {
     let binary = pinfold();
     let env = TestEnv::new("tricks");
     let fixture = HttpFixture::start();
-    let name = format!("pinfold-e2e-{}-tricks", std::process::id());
+    let name = box_name("tricks");
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(binary, &env),
         "egress": {
             "allow": ["api.github.com", "localhost"],
-            "routes": { "fixture.internal": format!("127.0.0.1:{}", fixture.port()) },
+            "routes": { "fixture.internal": fixture.route() },
         },
     });
     let up = box_up(binary, &env, &spec, &name);
 
     // Controls: the same paths work when the trick is not played.
-    let connect = box_exec(
+    let connect = curl(
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "30",
-            "-o",
-            "/dev/null",
-            "https://api.github.com/",
-        ],
+        "30",
+        &["-o", "/dev/null", "https://api.github.com/"],
     );
     assert_eq!(
         connect.code, 0,
         "allowlisted CONNECT failed: {}",
         connect.stderr
     );
-    let plain = box_exec(
+    let plain = curl(
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "30",
-            "-o",
-            "/dev/null",
-            "http://api.github.com/",
-        ],
+        "30",
+        &["-o", "/dev/null", "http://api.github.com/"],
     );
     assert_eq!(
         plain.code, 0,
         "allowlisted plain HTTP failed: {}",
         plain.stderr
     );
-    let route = box_exec(
-        binary,
-        &env,
-        &name,
-        &["curl", "-sS", "--max-time", "5", "http://fixture.internal/"],
-    );
+    let route = curl(binary, &env, &name, "5", &["http://fixture.internal/"]);
     assert_eq!(route.code, 0, "route control failed: {}", route.stderr);
     assert!(
         route.stdout.contains("fixture host=fixture.internal"),
@@ -972,19 +884,12 @@ fn the_proxy_refuses_the_tricks() {
     );
 
     // An IP literal, in both request forms.
-    let literal_connect = box_exec(
+    let literal_connect = curl(
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "30",
-            "-o",
-            "/dev/null",
-            "https://127.0.0.1/",
-        ],
+        "30",
+        &["-o", "/dev/null", "https://127.0.0.1/"],
     );
     assert_ne!(
         literal_connect.code, 0,
@@ -995,20 +900,12 @@ fn the_proxy_refuses_the_tricks() {
         "CONNECT to an IP literal got no 403: {}",
         literal_connect.stderr
     );
-    let literal_plain = box_exec(
+    let literal_plain = curl(
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "-f",
-            "--max-time",
-            "30",
-            "-o",
-            "/dev/null",
-            "http://127.0.0.1/",
-        ],
+        "30",
+        &["-f", "-o", "/dev/null", "http://127.0.0.1/"],
     );
     assert_ne!(
         literal_plain.code, 0,
@@ -1021,19 +918,12 @@ fn the_proxy_refuses_the_tricks() {
     );
 
     // A name that resolves to loopback.
-    let loopback = box_exec(
+    let loopback = curl(
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "30",
-            "-o",
-            "/dev/null",
-            "https://localhost/",
-        ],
+        "30",
+        &["-o", "/dev/null", "https://localhost/"],
     );
     assert_ne!(loopback.code, 0, "a name resolving to loopback succeeded");
     assert!(
@@ -1045,15 +935,12 @@ fn the_proxy_refuses_the_tricks() {
     // A ClientHello whose SNI names another host. The proxy answers the
     // CONNECT with 200 and then refuses on the ClientHello, so curl fails
     // the TLS handshake (35) rather than reading an HTTP status.
-    let sni = box_exec(
+    let sni = curl(
         binary,
         &env,
         &name,
+        "30",
         &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "30",
             "-o",
             "/dev/null",
             "--connect-to",
@@ -1073,19 +960,12 @@ fn the_proxy_refuses_the_tricks() {
     );
 
     // CONNECT to a route name.
-    let route_connect = box_exec(
+    let route_connect = curl(
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "30",
-            "-o",
-            "/dev/null",
-            "https://fixture.internal/",
-        ],
+        "30",
+        &["-o", "/dev/null", "https://fixture.internal/"],
     );
     assert_ne!(route_connect.code, 0, "CONNECT to a route succeeded");
     assert!(
@@ -1165,9 +1045,7 @@ fn the_proxy_refuses_the_tricks() {
         "no ambiguous framing refusal: {lines:?}"
     );
 
-    let status = box_down(binary, &env, &name);
-    assert!(status.success(), "box down failed: {status}");
-    drop(up);
+    up.down(binary, &env);
 }
 
 #[test]
@@ -1188,7 +1066,7 @@ fn losing_the_owner_fails_closed() {
     // `owner_alive` is true through the same test.
     let binary = pinfold();
     let env = TestEnv::new("owner-gone");
-    let name = format!("pinfold-e2e-{}-owner-gone", std::process::id());
+    let name = box_name("owner-gone");
     let label = "dev.example.test=owner-gone";
     let spec = serde_json::json!({
         "name": name,
@@ -1199,19 +1077,12 @@ fn losing_the_owner_fails_closed() {
     let mut up = box_up(binary, &env, &spec, &name);
 
     // Positive control: the box has egress while its owner lives.
-    let allowed = box_exec(
+    let allowed = curl(
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "30",
-            "-o",
-            "/dev/null",
-            "https://api.github.com/",
-        ],
+        "30",
+        &["-o", "/dev/null", "https://api.github.com/"],
     );
     assert_eq!(
         allowed.code, 0,
@@ -1236,24 +1107,19 @@ fn losing_the_owner_fails_closed() {
     // anywhere would log before it dials, so no new line means no proxy saw
     // the request; the request itself may hang, because Apple's forwarder
     // does not reliably close after the owner dies.
+    // The log-line count is the assertion; the curl exit is only a
+    // precondition, since a hang and a refusal both exit non-zero.
     let before = egress_log_lines(&env, &name);
     assert!(
         !before.is_empty(),
         "the positive control left no egress log line"
     );
-    let denied = box_exec(
+    let denied = curl(
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "5",
-            "-o",
-            "/dev/null",
-            "https://api.github.com/",
-        ],
+        "5",
+        &["-o", "/dev/null", "https://api.github.com/"],
     );
     assert_ne!(
         denied.code, 0,
@@ -1329,8 +1195,7 @@ fn losing_the_owner_fails_closed() {
     // The name is free again: a fresh `up` comes up `ready`, not refused
     // `name-in-use`, and goes down cleanly.
     let mut fresh = box_up(binary, &env, &spec, &name);
-    let status = box_down(binary, &env, &name);
-    assert!(status.success(), "box down failed: {status}");
+    fresh.down(binary, &env);
     assert!(fresh.wait().success(), "the fresh up did not exit cleanly");
 }
 
@@ -1477,7 +1342,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // meets a pinned image first. `FROM scratch` has no program for `exec`,
     // so `box list` is how the test sees the box survive.
     let pinned_label = "dev.example.test=cleanup-pinned";
-    let box_a = format!("pinfold-e2e-{}-cleanup-a", std::process::id());
+    let box_a = box_name("cleanup-a");
     let pin_a = serde_json::json!({
         "name": box_a,
         "image": b2.as_str(),
@@ -1520,15 +1385,14 @@ fn cleanup_removes_only_pinfolds_garbage() {
 
     // Box B pins b3, then box A goes down and frees b2. Build 5's retention
     // meets pinned b3 first and must still remove the free b2 behind it.
-    let box_b = format!("pinfold-e2e-{}-cleanup-b", std::process::id());
+    let box_b = box_name("cleanup-b");
     let pin_b = serde_json::json!({
         "name": box_b,
         "image": b3.as_str(),
         "labels": { "dev.example.test": "cleanup-pinned" },
     });
     let mut up_b = box_up(binary, &env, &pin_b, &box_b);
-    let status = box_down(binary, &env, &box_a);
-    assert!(status.success(), "box down failed: {status}");
+    up_a.down(binary, &env);
     assert!(up_a.wait().success(), "box A's up did not exit cleanly");
 
     let output = env
@@ -1572,8 +1436,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
 
     // Box B goes down before the rest of the test, which starts its own
     // boxes from the profile's `:latest`.
-    let status = box_down(binary, &env, &box_b);
-    assert!(status.success(), "box down failed: {status}");
+    up_b.down(binary, &env);
     assert!(up_b.wait().success(), "box B's up did not exit cleanly");
 
     // An unlabeled image: no `dev.pinfold` label, so `clean` must leave it.
@@ -1627,12 +1490,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         .expect("run pinfold pi");
     assert!(!refused.status.success(), "pi ran a profile with no image");
     let live_state = project_state_dir(&env, live_project.path());
-    let live_id = live_state
-        .file_name()
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
+    let live_id = project_id(&env, live_project.path());
     let live_marker = live_state.join("home").join(".cache").join("marker");
     fs::create_dir_all(live_marker.parent().unwrap()).unwrap();
     fs::write(&live_marker, b"live\n").unwrap();
@@ -1655,7 +1513,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // A live pinfold box for the live project, and a dead box that names
     // no project.
     let live_label = format!("dev.pinfold.project={live_id}");
-    let live = format!("pinfold-e2e-{}-cleanup-live", std::process::id());
+    let live = box_name("cleanup-live");
     let live_spec = serde_json::json!({
         "name": live,
         "image": format!("pinfold/profile-{profile}:latest"),
@@ -1664,7 +1522,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let _live = box_up(binary, &env, &live_spec, &live);
 
     let dead_label = "dev.pinfold.project=e2e-cleanup-dead";
-    let dead = format!("pinfold-e2e-{}-cleanup-dead", std::process::id());
+    let dead = box_name("cleanup-dead");
     let dead_spec = serde_json::json!({
         "name": dead,
         "image": format!("pinfold/profile-{profile}:latest"),
@@ -2017,14 +1875,12 @@ fn file_from_image(
     name: &str,
     path: &str,
 ) -> String {
-    let name = format!("pinfold-e2e-{}-{name}", std::process::id());
+    let name = box_name(name);
     let spec = serde_json::json!({ "name": name, "image": reference });
     let up = box_up(binary, env, &spec, &name);
     let output = box_exec(binary, env, &name, &["cat", path]);
     assert_eq!(output.code, 0, "reading {path} failed: {}", output.stderr);
-    let status = box_down(binary, env, &name);
-    assert!(status.success(), "box down failed: {status}");
-    drop(up);
+    up.down(binary, env);
     output.stdout
 }
 
@@ -2104,22 +1960,6 @@ fn built_unique_ref(profile: &str) -> String {
         })
         .unwrap_or_else(|| panic!("the image {latest} names has no unique tag"))
 }
-
-/// The project state dir whose recorded root is `project`.
-fn project_state_dir(env: &TestEnv, project: &Path) -> PathBuf {
-    let root = fs::canonicalize(project).expect("canonicalize project");
-    let projects = env.state.join("pinfold").join("projects");
-    for entry in fs::read_dir(&projects).expect("read projects dir") {
-        let dir = entry.expect("project entry").path();
-        let state = fs::read_to_string(dir.join("state.json")).expect("read state.json");
-        let state: serde_json::Value = serde_json::from_str(&state).expect("state.json is JSON");
-        if state["root"].as_str() == root.to_str() {
-            return dir;
-        }
-    }
-    panic!("no project state for {}", project.display());
-}
-
 #[test]
 fn box_has_no_network_but_loopback() {
     // Sabotage: drop `--network none` from the adapter's `run` argv;
@@ -2129,12 +1969,12 @@ fn box_has_no_network_but_loopback() {
     let binary = pinfold();
     let env = TestEnv::new("network");
     let fixture = HttpFixture::start();
-    let name = format!("pinfold-e2e-{}-network", std::process::id());
+    let name = box_name("network");
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(binary, &env),
         "egress": {
-            "routes": { "fixture.internal": format!("127.0.0.1:{}", fixture.port()) },
+            "routes": { "fixture.internal": fixture.route() },
         },
     });
     let up = box_up(binary, &env, &spec, &name);
@@ -2156,20 +1996,12 @@ fn box_has_no_network_but_loopback() {
     // Named addresses fail at once with the kernel's reason, not a timeout.
     // The short --max-time turns a hang into a failure; -v carries the
     // kernel's reason, which curl's summary line omits.
-    let public = box_exec(
+    let public = curl(
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "-v",
-            "--max-time",
-            "5",
-            "--noproxy",
-            "*",
-            "http://1.1.1.1/",
-        ],
+        "5",
+        &["-v", "--noproxy", "*", "http://1.1.1.1/"],
     );
     assert_eq!(public.code, 7, "1.1.1.1 answered: {}", public.stdout);
     assert!(
@@ -2180,20 +2012,12 @@ fn box_has_no_network_but_loopback() {
 
     // An address on the host's network is unreachable too; with --network
     // none the box has no route to it.
-    let gateway = box_exec(
+    let gateway = curl(
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "-v",
-            "--max-time",
-            "5",
-            "--noproxy",
-            "*",
-            "http://192.168.64.1/",
-        ],
+        "5",
+        &["-v", "--noproxy", "*", "http://192.168.64.1/"],
     );
     assert_eq!(
         gateway.code, 7,
@@ -2221,12 +2045,7 @@ fn box_has_no_network_but_loopback() {
 
     // Positive control: the route answers through the proxy while the box
     // has no network.
-    let route = box_exec(
-        binary,
-        &env,
-        &name,
-        &["curl", "-sS", "--max-time", "5", "http://fixture.internal/"],
-    );
+    let route = curl(binary, &env, &name, "5", &["http://fixture.internal/"]);
     assert_eq!(route.code, 0, "the route failed: {}", route.stderr);
     assert!(
         route.stdout.contains("fixture host=fixture.internal"),
@@ -2239,9 +2058,7 @@ fn box_has_no_network_but_loopback() {
         "the fixture did not answer the route"
     );
 
-    let status = box_down(binary, &env, &name);
-    assert!(status.success(), "box down failed: {status}");
-    drop(up);
+    up.down(binary, &env);
 }
 
 #[test]
@@ -2253,23 +2070,18 @@ fn a_route_reaches_exactly_one_host_service() {
     let binary = pinfold();
     let env = TestEnv::new("route");
     let fixture = HttpFixture::start();
-    let name = format!("pinfold-e2e-{}-route", std::process::id());
+    let name = box_name("route");
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(binary, &env),
         "egress": {
-            "routes": { "fixture.internal": format!("127.0.0.1:{}", fixture.port()) },
+            "routes": { "fixture.internal": fixture.route() },
         },
     });
     let up = box_up(binary, &env, &spec, &name);
 
     // The route reaches the fixture.
-    let route = box_exec(
-        binary,
-        &env,
-        &name,
-        &["curl", "-sS", "--max-time", "5", "http://fixture.internal/"],
-    );
+    let route = curl(binary, &env, &name, "5", &["http://fixture.internal/"]);
     assert_eq!(route.code, 0, "the route failed: {}", route.stderr);
     assert!(
         route.stdout.contains("fixture host=fixture.internal"),
@@ -2279,19 +2091,12 @@ fn a_route_reaches_exactly_one_host_service() {
 
     // The Host header is rewritten from the absolute-form target, not passed
     // through from the client.
-    let rewritten = box_exec(
+    let rewritten = curl(
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "5",
-            "-H",
-            "Host: evil.example",
-            "http://fixture.internal/",
-        ],
+        "5",
+        &["-H", "Host: evil.example", "http://fixture.internal/"],
     );
     assert_eq!(rewritten.code, 0, "the route failed: {}", rewritten.stderr);
     assert!(
@@ -2302,19 +2107,16 @@ fn a_route_reaches_exactly_one_host_service() {
 
     // The fixture's loopback port is unreachable without the route: the
     // box's own loopback has no listener.
-    let direct = box_exec(
+    let direct = curl(
         binary,
         &env,
         &name,
+        "5",
         &[
-            "curl",
-            "-sS",
             "-v",
-            "--max-time",
-            "5",
             "--noproxy",
             "*",
-            &format!("http://127.0.0.1:{}/", fixture.port()),
+            &format!("http://{}/", fixture.route()),
         ],
     );
     assert_eq!(
@@ -2342,9 +2144,7 @@ fn a_route_reaches_exactly_one_host_service() {
         "no route decision: {lines:?}"
     );
 
-    let status = box_down(binary, &env, &name);
-    assert!(status.success(), "box down failed: {status}");
-    drop(up);
+    up.down(binary, &env);
 }
 
 #[test]
@@ -2358,14 +2158,14 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
     let env = TestEnv::new("inject");
     let fixture = HttpFixture::start();
     let secret = format!("pf-secret-{}", std::process::id());
-    let name = format!("pinfold-e2e-{}-inject", std::process::id());
+    let name = box_name("inject");
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(binary, &env),
         "egress": {
             "routes": {
                 "key.internal": {
-                    "to": format!("http://127.0.0.1:{}", fixture.port()),
+                    "to": format!("http://{}", fixture.route()),
                     "headers": {
                         "Authorization": { "from": "PINFOLD_E2E_ROUTE_KEY", "prefix": "Bearer " },
                     },
@@ -2383,15 +2183,12 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
     );
 
     // The fixture receives the header from the host, not the box's own.
-    let route = box_exec(
+    let route = curl(
         binary,
         &env,
         &name,
+        "5",
         &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "5",
             "-H",
             "Authorization: Bearer from-box",
             "http://key.internal/",
@@ -2401,7 +2198,7 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
     assert!(
         route
             .stdout
-            .contains(&format!("fixture host=127.0.0.1:{}", fixture.port())),
+            .contains(&format!("fixture host={}", fixture.route())),
         "the route answered: {}",
         route.stdout
     );
@@ -2427,21 +2224,12 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
     );
 
     // An https route reaches api.github.com over TLS.
-    let github = box_exec(
+    let github = curl(
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "20",
-            "-o",
-            "/dev/null",
-            "-w",
-            "%{http_code}",
-            "http://gh/",
-        ],
+        "20",
+        &["-o", "/dev/null", "-w", "%{http_code}", "http://gh/"],
     );
     assert_eq!(github.code, 0, "the https route failed: {}", github.stderr);
     assert_eq!(github.stdout, "200", "the https route answered");
@@ -2459,9 +2247,7 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
         );
     }
 
-    let status = box_down(binary, &env, &name);
-    assert!(status.success(), "box down failed: {status}");
-    drop(up);
+    up.down(binary, &env);
 }
 
 #[test]
@@ -2473,7 +2259,7 @@ fn no_egress_means_no_way_out() {
     let binary = pinfold();
     let env = TestEnv::new("no-egress");
     let fixture = HttpFixture::start();
-    let name = format!("pinfold-e2e-{}-no-egress", std::process::id());
+    let name = box_name("no-egress");
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(binary, &env),
@@ -2489,16 +2275,13 @@ fn no_egress_means_no_way_out() {
             found.stdout
         );
     }
-    let proxied = box_exec(
+    let proxied = curl(
         binary,
         &env,
         &name,
+        "5",
         &[
-            "curl",
-            "-sS",
             "-v",
-            "--max-time",
-            "5",
             "-x",
             "http://127.0.0.1:3128",
             "http://fixture.internal/",
@@ -2511,13 +2294,10 @@ fn no_egress_means_no_way_out() {
         proxied.stderr
     );
 
-    // A route name is nothing without egress.
-    let direct = box_exec(
-        binary,
-        &env,
-        &name,
-        &["curl", "-sS", "--max-time", "5", "http://fixture.internal/"],
-    );
+    // A route name is nothing without egress. The DNS error is the
+    // guaranteed behavior here, not a pass by failure: no egress means no
+    // resolver.
+    let direct = curl(binary, &env, &name, "5", &["http://fixture.internal/"]);
     assert_eq!(direct.code, 6, "the box reached a route: {}", direct.stdout);
     assert!(
         direct.stderr.contains("Could not resolve host"),
@@ -2530,26 +2310,20 @@ fn no_egress_means_no_way_out() {
         "the fixture answered a no-egress box"
     );
 
-    let status = box_down(binary, &env, &name);
-    assert!(status.success(), "box down failed: {status}");
+    up.down(binary, &env);
     drop(up);
 
     // Positive control: the same request with the route in the spec answers.
-    let name = format!("pinfold-e2e-{}-no-egress-control", std::process::id());
+    let name = box_name("no-egress-control");
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(binary, &env),
         "egress": {
-            "routes": { "fixture.internal": format!("127.0.0.1:{}", fixture.port()) },
+            "routes": { "fixture.internal": fixture.route() },
         },
     });
     let up = box_up(binary, &env, &spec, &name);
-    let route = box_exec(
-        binary,
-        &env,
-        &name,
-        &["curl", "-sS", "--max-time", "5", "http://fixture.internal/"],
-    );
+    let route = curl(binary, &env, &name, "5", &["http://fixture.internal/"]);
     assert_eq!(route.code, 0, "the control route failed: {}", route.stderr);
     assert!(
         route.stdout.contains("fixture host=fixture.internal"),
@@ -2562,9 +2336,7 @@ fn no_egress_means_no_way_out() {
         "the fixture did not answer the control"
     );
 
-    let status = box_down(binary, &env, &name);
-    assert!(status.success(), "box down failed: {status}");
-    drop(up);
+    up.down(binary, &env);
 }
 
 #[test]
@@ -2579,7 +2351,7 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
     // macOS host and Debian do not.)
     let binary = pinfold();
     let env = TestEnv::new("oom");
-    let name = format!("pinfold-e2e-{}-oom", std::process::id());
+    let name = box_name("oom");
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(binary, &env),
@@ -2658,8 +2430,7 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
     }
 
     // An absent box is pinfold's own failure, exit 3, like exec.
-    let status = box_down(binary, &env, &name);
-    assert!(status.success(), "box down failed: {status}");
+    up.down(binary, &env);
     let absent = env
         .command(binary)
         .args(["box", "stat", &name])
@@ -2684,7 +2455,7 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
     // leave `PINFOLD_ALLOW` unset; the second assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("harness");
-    let name = format!("pinfold-e2e-{}-harness", std::process::id());
+    let name = box_name("harness");
     let home = TestDir::new(&env, "home");
     default_image(binary, &env);
 
@@ -2734,8 +2505,7 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
         "the box's PINFOLD_ALLOW is not the spec's allow list"
     );
 
-    let status = box_down(binary, &env, &name);
-    assert!(status.success(), "box down failed: {status}");
+    up.down(binary, &env);
     assert!(up.wait().success(), "box up did not exit cleanly");
 }
 
@@ -2746,7 +2516,7 @@ fn a_caller_owned_box_cannot_write_git() {
     // assertions fail.
     let binary = pinfold();
     let env = TestEnv::new("caller-git");
-    let name = format!("pinfold-e2e-{}-caller-git", std::process::id());
+    let name = box_name("caller-git");
     let image = default_image(binary, &env);
     let repo = TestDir::new(&env, "repo");
     let root = repo.path().to_string_lossy().into_owned();
@@ -2896,8 +2666,7 @@ fn a_caller_owned_box_cannot_write_git() {
         denied.stderr
     );
 
-    let status = box_down(binary, &env, &name);
-    assert!(status.success(), "box down failed: {status}");
+    up.down(binary, &env);
     assert!(up.wait().success(), "box up did not exit cleanly");
 
     // Host git works on the clone afterwards and runs nothing the box wrote.
@@ -2969,53 +2738,6 @@ fn host_id(flag: &str) -> String {
         .to_string()
 }
 
-/// The stable ref of the built-in default profile's image, built once per
-/// suite run. Every test's boxes run on it.
-fn default_image(binary: &Path, env: &TestEnv) -> &'static str {
-    static IMAGE: OnceLock<String> = OnceLock::new();
-    IMAGE.get_or_init(|| {
-        // The runtime store is shared by both test binaries; a stale image
-        // is fine, the tests read its labels and run boxes from it.
-        const STABLE: &str = "pinfold/profile-default:latest";
-        if !image_named(STABLE) {
-            let output = env
-                .command(binary)
-                .args(["build", "--profile", "default"])
-                .output()
-                .expect("run pinfold build --profile default");
-            assert!(
-                output.status.success(),
-                "pinfold build --profile default failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        STABLE.to_string()
-    })
-}
-
-/// A host directory the test mounts into the box.
-struct TestDir {
-    path: PathBuf,
-}
-
-impl TestDir {
-    fn new(env: &TestEnv, name: &str) -> TestDir {
-        let path = env.root.join(name);
-        fs::create_dir_all(&path).unwrap();
-        TestDir { path }
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
 /// A `box up` process and its ready box.
 struct Up {
     binary: PathBuf,
@@ -3040,6 +2762,12 @@ impl Up {
 
     fn kill(&mut self) {
         self.child.kill().expect("kill box up");
+    }
+
+    /// Run `box down` on this box and assert it succeeded.
+    fn down(&self, binary: &Path, env: &TestEnv) {
+        let status = box_down(binary, env, &self.name);
+        assert!(status.success(), "box down failed: {status}");
     }
 
     /// Close `up`'s stdin and read the rest of its stdout. `up` ends its
@@ -3201,27 +2929,6 @@ fn box_up_refused(
     )
 }
 
-struct ExecOutput {
-    code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-fn box_exec(binary: &Path, env: &TestEnv, name: &str, argv: &[&str]) -> ExecOutput {
-    let output = env
-        .command(binary)
-        .args(["box", "exec", name, "--"])
-        .args(argv)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold box exec");
-    ExecOutput {
-        code: exit_code(output.status),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    }
-}
-
 /// Run `box stat` on a live box and parse its one JSON object.
 fn box_stat(binary: &Path, env: &TestEnv, name: &str) -> serde_json::Value {
     let output = env
@@ -3238,22 +2945,24 @@ fn box_stat(binary: &Path, env: &TestEnv, name: &str) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).expect("stat output is one JSON object")
 }
 
-fn box_list(binary: &Path, env: &TestEnv, label: &str) -> Vec<serde_json::Value> {
-    let output = env
-        .command(binary)
-        .args(["box", "list", "--label", label])
-        .output()
-        .expect("run pinfold box list");
+/// The test's box name, unique to this run.
+fn box_name(test: &str) -> String {
+    format!("pinfold-e2e-{}-{test}", std::process::id())
+}
+
+/// Assert that the `what` up (`refused` or `failed`) left no state dir for
+/// `name` and no box labeled `label`.
+fn assert_left_nothing(binary: &Path, env: &TestEnv, name: &str, label: &str, what: &str) {
+    let state = env.state.join("pinfold").join("boxes").join(name);
     assert!(
-        output.status.success(),
-        "box list failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !state.exists(),
+        "the {what} up left a state dir: {}",
+        state.display()
     );
-    String::from_utf8(output.stdout)
-        .expect("list output is UTF-8")
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("list line is JSON"))
-        .collect()
+    assert!(
+        box_list(binary, env, label).is_empty(),
+        "the {what} up left a box"
+    );
 }
 
 fn box_prune(binary: &Path, env: &TestEnv) -> Output {
@@ -3264,34 +2973,10 @@ fn box_prune(binary: &Path, env: &TestEnv) -> Output {
         .expect("run pinfold box prune")
 }
 
-/// The box's egress log, at the fixed path under pinfold's state dir.
-fn egress_log(env: &TestEnv, name: &str) -> PathBuf {
-    env.state
-        .join("pinfold")
-        .join("egress")
-        .join(format!("{name}.jsonl"))
-}
-
-/// The parsed decision lines of a box's egress log.
-fn egress_log_lines(env: &TestEnv, name: &str) -> Vec<serde_json::Value> {
-    fs::read_to_string(egress_log(env, name))
-        .expect("read egress log")
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("log line is JSON"))
-        .collect()
-}
-
 fn box_down(binary: &Path, env: &TestEnv, name: &str) -> ExitStatus {
     env.command(binary)
         .args(["box", "down", name])
         .stdin(Stdio::null())
         .status()
         .expect("run pinfold box down")
-}
-
-fn exit_code(status: ExitStatus) -> i32 {
-    use std::os::unix::process::ExitStatusExt;
-    status
-        .code()
-        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
 }

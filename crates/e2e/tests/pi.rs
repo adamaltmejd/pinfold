@@ -12,12 +12,15 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
-use e2e::{TestEnv, image_named, pinfold, remove_runtime_image, runtime_images};
+use e2e::{
+    TestDir, TestEnv, box_exec, box_list, curl, default_image, egress_log_lines, exit_code,
+    pinfold, project_home, project_id, remove_runtime_image, runtime_images,
+};
 
 #[test]
 fn the_environment_is_exactly_the_spec() {
@@ -35,10 +38,7 @@ fn the_environment_is_exactly_the_spec() {
     let project = TestDir::new(&env, "project");
     git_init(project.path());
 
-    // The run creates the project state; the id names its directory.
-    let run = PiRpc::start(binary, &env, project.path());
-    let id = project_id(&env, project.path());
-    let name = run.ready_box(binary, &env, &id);
+    let (run, id, name) = PiRpc::start(binary, &env, project.path());
 
     // PINFOLD_ENV_SECRET arrives as SECRET; the prefix stays on the host.
     let secret = box_exec(binary, &env, &name, &["sh", "-c", "printf %s \"$SECRET\""]);
@@ -213,9 +213,7 @@ fn a_changed_project_file_stops_the_run() {
     // `pinfold allow` records the absence, so the file the agent creates in
     // the live box is a change.
     allow(binary, &env, project.path());
-    let run = PiRpc::start(binary, &env, project.path());
-    let id = project_id(&env, project.path());
-    let name = run.ready_box(binary, &env, &id);
+    let (run, id, name) = PiRpc::start(binary, &env, project.path());
     let created = box_exec(
         binary,
         &env,
@@ -248,8 +246,7 @@ fn a_changed_project_file_stops_the_run() {
     pi_version(binary, &env, project.path());
 
     // The agent adds a domain to the now-trusted file in a live box.
-    let run = PiRpc::start(binary, &env, project.path());
-    let name = run.ready_box(binary, &env, &id);
+    let (run, _, name) = PiRpc::start(binary, &env, project.path());
     let changed = box_exec(
         binary,
         &env,
@@ -302,8 +299,7 @@ fn a_changed_project_file_stops_the_run() {
     pi_version(binary, &env, project.path());
 
     // The agent changes the Containerfile in a live box.
-    let run = PiRpc::start(binary, &env, project.path());
-    let name = run.ready_box(binary, &env, &id);
+    let (run, _, name) = PiRpc::start(binary, &env, project.path());
     let changed = box_exec(
         binary,
         &env,
@@ -411,9 +407,7 @@ fn the_box_cannot_write_git_or_protected_config() {
     let vscode = root.join(".vscode");
     assert!(!vscode.exists(), "the fixture already has .vscode");
 
-    let run = PiRpc::start(binary, &env, root);
-    let id = project_id(&env, root);
-    let name = run.ready_box(binary, &env, &id);
+    let (run, _, name) = PiRpc::start(binary, &env, root);
     assert!(vscode.is_dir(), "pinfold did not create the absent .vscode");
     assert_eq!(
         fs::read_dir(&vscode).expect("read .vscode").count(),
@@ -646,9 +640,7 @@ fn the_box_cannot_write_git_or_protected_config() {
     let settings = with.path().join(".vscode/settings.json");
     fs::create_dir(with.path().join(".vscode")).unwrap();
     fs::write(&settings, "{\"keep\":true}\n").unwrap();
-    let run = PiRpc::start(binary, &env, with.path());
-    let id = project_id(&env, with.path());
-    let name = run.ready_box(binary, &env, &id);
+    let (run, _, name) = PiRpc::start(binary, &env, with.path());
     let denied = box_exec(
         binary,
         &env,
@@ -806,9 +798,7 @@ fn the_highest_layer_sets_the_allowlist() {
     git_init(project.path());
 
     // No `.pinfold.toml`: the built-in defaults are the box's allowlist.
-    let run = PiRpc::start(binary, &env, project.path());
-    let id = project_id(&env, project.path());
-    let name = run.ready_box(binary, &env, &id);
+    let (run, _, name) = PiRpc::start(binary, &env, project.path());
     let default_allow = box_exec(
         binary,
         &env,
@@ -835,8 +825,7 @@ fn the_highest_layer_sets_the_allowlist() {
     let config = project.path().join(".pinfold.toml");
     fs::write(&config, "allow = [\"api.github.com\"]\n").expect("write .pinfold.toml");
     allow(binary, &env, project.path());
-    let run = PiRpc::start(binary, &env, project.path());
-    let name = run.ready_box(binary, &env, &id);
+    let (run, _, name) = PiRpc::start(binary, &env, project.path());
     let project_allow = box_exec(
         binary,
         &env,
@@ -849,19 +838,12 @@ fn the_highest_layer_sets_the_allowlist() {
     );
 
     // The one listed host works.
-    let allowed = box_exec(
+    let allowed = curl(
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "30",
-            "-o",
-            "/dev/null",
-            "https://api.github.com/",
-        ],
+        "30",
+        &["-o", "/dev/null", "https://api.github.com/"],
     );
     assert_eq!(
         allowed.code, 0,
@@ -871,19 +853,12 @@ fn the_highest_layer_sets_the_allowlist() {
 
     // A host the built-in list allowed is refused now; the proxy decides
     // before dialing, so no request reaches npm.
-    let denied = box_exec(
+    let denied = curl(
         binary,
         &env,
         &name,
-        &[
-            "curl",
-            "-sS",
-            "--max-time",
-            "30",
-            "-o",
-            "/dev/null",
-            "https://registry.npmjs.org/",
-        ],
+        "30",
+        &["-o", "/dev/null", "https://registry.npmjs.org/"],
     );
     assert_ne!(denied.code, 0, "registry.npmjs.org was allowed through");
     assert!(
@@ -952,9 +927,7 @@ fn a_caller_reads_the_effective_configuration_as_data() {
     );
 
     // The home the report names is the one the box mounts as HOME.
-    let run = PiRpc::start(binary, &env, project.path());
-    let id = project_id(&env, project.path());
-    let name = run.ready_box(binary, &env, &id);
+    let (run, _, name) = PiRpc::start(binary, &env, project.path());
     let boxed_home = box_exec(binary, &env, &name, &["sh", "-c", "printf %s \"$HOME\""]);
     assert_eq!(
         boxed_home.stdout, home,
@@ -971,7 +944,9 @@ struct PiRpc {
 }
 
 impl PiRpc {
-    fn start(binary: &Path, env: &TestEnv, project: &Path) -> PiRpc {
+    /// Start pi in `project` and wait for its answer; return the run, the
+    /// project id, and the name of the one box the run owns.
+    fn start(binary: &Path, env: &TestEnv, project: &Path) -> (PiRpc, String, String) {
         let mut child = env
             .command(binary)
             .args(["pi", "--mode", "rpc"])
@@ -1001,21 +976,20 @@ impl PiRpc {
                 break;
             }
         }
-        PiRpc {
+        let run = PiRpc {
             child,
             stdin: Some(stdin),
             _reader: reader,
-        }
-    }
-
-    /// The one box this run owns, once pi has answered.
-    fn ready_box(&self, binary: &Path, env: &TestEnv, id: &str) -> String {
+        };
+        // The run has created the project state; the id names its directory.
+        let id = project_id(env, project);
         let listed = box_list(binary, env, &format!("dev.pinfold.project={id}"));
         assert_eq!(listed.len(), 1, "expected one pi box for {id}: {listed:?}");
-        listed[0]["name"]
+        let name = listed[0]["name"]
             .as_str()
             .expect("box name is a string")
-            .to_string()
+            .to_string();
+        (run, id, name)
     }
 
     /// Close pi's stdin, wait for it, and return its exit status.
@@ -1126,33 +1100,6 @@ impl Drop for ProjectImageCleanup {
             }
         }
     }
-}
-
-/// The project id of the state dir whose recorded root is `project`.
-fn project_id(env: &TestEnv, project: &Path) -> String {
-    project_home(env, project)
-        .parent()
-        .expect("the home has a project dir")
-        .file_name()
-        .expect("the project dir has a name")
-        .to_str()
-        .expect("the project id is UTF-8")
-        .to_string()
-}
-
-/// The project's home, found from the state dir's `state.json`.
-fn project_home(env: &TestEnv, project: &Path) -> PathBuf {
-    let root = fs::canonicalize(project).expect("canonicalize project");
-    let projects = env.state.join("pinfold").join("projects");
-    for entry in fs::read_dir(&projects).expect("read projects dir") {
-        let dir = entry.expect("project entry").path();
-        let state = fs::read_to_string(dir.join("state.json")).expect("read state.json");
-        let state: serde_json::Value = serde_json::from_str(&state).expect("state.json is JSON");
-        if state["root"].as_str() == root.to_str() {
-            return dir.join("home");
-        }
-    }
-    panic!("no project state for {}", project.display());
 }
 
 /// Create a git repository at `path`, so launch finds the project root.
@@ -1295,111 +1242,4 @@ fn answer(mut stream: TcpStream, requests: &Mutex<Vec<String>>) {
     );
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
-}
-
-/// Build the default profile image once per suite run; `pinfold pi` refuses
-/// without it.
-fn default_image(binary: &Path, env: &TestEnv) {
-    static IMAGE: OnceLock<()> = OnceLock::new();
-    IMAGE.get_or_init(|| {
-        // The runtime store is shared by both test binaries; a stale image
-        // is fine, the tests read its labels and run boxes from it.
-        const STABLE: &str = "pinfold/profile-default:latest";
-        if image_named(STABLE) {
-            return;
-        }
-        let output = env
-            .command(binary)
-            .args(["build", "--profile", "default"])
-            .output()
-            .expect("run pinfold build --profile default");
-        assert!(
-            output.status.success(),
-            "pinfold build --profile default failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    });
-}
-
-/// A host directory the tests run projects in.
-struct TestDir {
-    path: PathBuf,
-}
-
-impl TestDir {
-    fn new(env: &TestEnv, name: &str) -> TestDir {
-        let path = env.root.join(name);
-        fs::create_dir_all(&path).unwrap();
-        TestDir { path }
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
-struct ExecOutput {
-    code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-fn box_exec(binary: &Path, env: &TestEnv, name: &str, argv: &[&str]) -> ExecOutput {
-    let output = env
-        .command(binary)
-        .args(["box", "exec", name, "--"])
-        .args(argv)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold box exec");
-    ExecOutput {
-        code: exit_code(output.status),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    }
-}
-
-/// The parsed decision lines of a box's egress log.
-fn egress_log_lines(env: &TestEnv, name: &str) -> Vec<serde_json::Value> {
-    let path = env
-        .state
-        .join("pinfold")
-        .join("egress")
-        .join(format!("{name}.jsonl"));
-    fs::read_to_string(path)
-        .expect("read egress log")
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("log line is JSON"))
-        .collect()
-}
-
-fn box_list(binary: &Path, env: &TestEnv, label: &str) -> Vec<serde_json::Value> {
-    let output = env
-        .command(binary)
-        .args(["box", "list", "--label", label])
-        .output()
-        .expect("run pinfold box list");
-    assert!(
-        output.status.success(),
-        "box list failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("list output is UTF-8")
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("list line is JSON"))
-        .collect()
-}
-
-fn exit_code(status: ExitStatus) -> i32 {
-    use std::os::unix::process::ExitStatusExt;
-    status
-        .code()
-        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
 }
