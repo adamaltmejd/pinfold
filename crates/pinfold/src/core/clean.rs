@@ -304,8 +304,16 @@ pub fn total_bytes<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> u64 {
 /// Keep the newest two images carrying `label = source`, removing older ones
 /// and the layers no image references. Called after a successful build. Every
 /// older image is tried; a failure keeps that image and the rest still run,
-/// so one pinned image never stops the others from going.
+/// so one in-use image never stops the others from going. An image a listed
+/// box reports is never offered to the runtime: Apple's delete would remove
+/// it under the box, so pinfold skips it itself and reports it like a failed
+/// removal.
 pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result<()> {
+    // One list before anything goes: the ids of the images boxes pin.
+    let mut in_use: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for box_ in runtime.list()? {
+        in_use.entry(box_.image_id).or_default().insert(box_.id);
+    }
     let mut groups: BTreeMap<String, (u128, Vec<String>)> = BTreeMap::new();
     for image in runtime.list_images()? {
         if image.labels.get(label).map(String::as_str) != Some(source) {
@@ -323,7 +331,18 @@ pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::
     // Newest first; the digest orders equal ranks deterministically.
     images.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
     let mut failures = Vec::new();
-    for (_, _, references) in images.into_iter().skip(2) {
+    for (_, id, references) in images.into_iter().skip(2) {
+        if let Some(boxes) = in_use.get(&id) {
+            // Count a skip like a failed removal: the image stays, the next
+            // build tries again, and the one line names it and its boxes.
+            for reference in references {
+                failures.push(format!(
+                    "{reference}: in use by box {}",
+                    boxes.iter().cloned().collect::<Vec<_>>().join(", ")
+                ));
+            }
+            continue;
+        }
         for reference in references {
             if let Err(error) = runtime.remove_image(&reference) {
                 // Every removal carries its reference in the runtime's

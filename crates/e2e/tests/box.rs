@@ -1305,10 +1305,12 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // Guarantee 15: cleanup removes only pinfold's garbage.
     //
     // Sabotage: make `keep_two_images` return before it removes anything;
-    // three images remain and the two-image assertion fails. Sabotage: keep
-    // the `?` on `remove_image` in `keep_two_images`; the fifth build meets
-    // pinned b3 before the freed b2 and returns there, so b2 stays and the
-    // freed-b2-gone assertion fails. Sabotage: drop
+    // three images remain and the two-image assertion fails. Sabotage: drop
+    // the in-use skip from `keep_two_images` and restore the `?` on
+    // `remove_image`; on Apple build 4 deletes b2 under box A and the "b2 is
+    // still listed" assertion fails, and on podman build 5 returns at the
+    // refused b3 before reaching the freed b2, so the "b2 is gone" assertion
+    // fails. Sabotage: drop
     // the `dev.pinfold.profile` label from the build; no image matches and
     // the count is zero. Sabotage: make `clean` remove every image instead
     // of only pinfold's own; the unlabeled image assertion fails. Sabotage:
