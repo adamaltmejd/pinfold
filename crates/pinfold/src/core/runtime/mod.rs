@@ -27,11 +27,25 @@ pub fn runtime() -> io::Result<&'static dyn Runtime> {
     }
 }
 
+/// Turn a failed spawn into pinfold's message. A missing binary is named as
+/// missing; any other failure names the program and keeps the OS text.
+fn spawn_error(program: &str, error: io::Error) -> io::Error {
+    if error.kind() == io::ErrorKind::NotFound {
+        io::Error::new(
+            error.kind(),
+            format!("{program} is not installed or not on PATH"),
+        )
+    } else {
+        io::Error::new(error.kind(), format!("{program}: {error}"))
+    }
+}
+
 /// A runtime CLI's `--version` output, trimmed. `doctor` uses it.
 fn cli_version(program: &str) -> io::Result<String> {
     let output = std::process::Command::new(program)
         .arg("--version")
-        .output()?;
+        .output()
+        .map_err(|error| spawn_error(program, error))?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
             "{program} --version: {}",

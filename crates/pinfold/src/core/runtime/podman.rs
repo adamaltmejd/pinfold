@@ -20,7 +20,9 @@ use tokio::process::{Child, Command};
 
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
-use crate::core::runtime::{BoxInfo, BuildRequest, ImageInfo, Runtime, bind, guest_path, user};
+use crate::core::runtime::{
+    BoxInfo, BuildRequest, ImageInfo, Runtime, bind, guest_path, spawn_error, user,
+};
 use crate::dirs;
 
 /// Where the bind-mounted proxy socket appears in the box.
@@ -80,7 +82,9 @@ impl Runtime for Podman {
             command.env("HTTPS_PROXY", PROXY_URL);
             command.env("http_proxy", PROXY_URL);
         }
-        command.spawn()
+        command
+            .spawn()
+            .map_err(|error| spawn_error("podman", error))
     }
 
     fn make_proxy_connectable(&self, _name: &str) -> io::Result<()> {
@@ -100,7 +104,8 @@ impl Runtime for Podman {
             .args(arguments)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .status()?;
+            .status()
+            .map_err(|error| spawn_error("podman", error))?;
         if status.success() {
             Ok(())
         } else {
@@ -130,13 +135,16 @@ impl Runtime for Podman {
             // a terminal signal reaches pinfold and not the exec.
             command.process_group(0);
         }
-        command.status()
+        command
+            .status()
+            .map_err(|error| spawn_error("podman", error))
     }
 
     fn list(&self) -> io::Result<Vec<BoxInfo>> {
         let output = std::process::Command::new("podman")
             .args(["ps", "--all", "--format", "json"])
-            .output()?;
+            .output()
+            .map_err(|error| spawn_error("podman", error))?;
         if !output.status.success() {
             return Err(io::Error::other(format!(
                 "podman ps: {}",
@@ -149,7 +157,8 @@ impl Runtime for Podman {
     fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
         let output = std::process::Command::new("podman")
             .args(["image", "list", "--format", "json"])
-            .output()?;
+            .output()
+            .map_err(|error| spawn_error("podman", error))?;
         if !output.status.success() {
             return Err(io::Error::other(format!(
                 "podman image list: {}",
@@ -163,7 +172,8 @@ impl Runtime for Podman {
         // `image rm` also collects the layers no image references.
         let output = std::process::Command::new("podman")
             .args(["image", "rm", reference])
-            .output()?;
+            .output()
+            .map_err(|error| spawn_error("podman", error))?;
         if output.status.success() {
             Ok(())
         } else {
@@ -184,7 +194,8 @@ impl Runtime for Podman {
             // itself, so the caller's stdout holds only the ref.
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
-            .status()?;
+            .status()
+            .map_err(|error| spawn_error("podman", error))?;
         if status.success() {
             Ok(())
         } else {
@@ -201,10 +212,12 @@ impl Runtime for Podman {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
-            .status();
+            .status()
+            .map_err(|error| spawn_error("podman", error));
         let output = std::process::Command::new("podman")
             .args(["image", "inspect", reference])
-            .output()?;
+            .output()
+            .map_err(|error| spawn_error("podman", error))?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -231,28 +244,22 @@ pub struct PodmanInfo {
     pub cgroup_manager: String,
 }
 
-/// The runtime `doctor` detects on a podman host. Preflight refuses all but
+/// What `doctor` finds of podman on this host. Preflight refuses all but
 /// rootless podman; `doctor` reports what it finds instead.
 #[derive(Debug)]
 pub enum Detected {
     RootlessPodman(PodmanInfo),
     RootfulPodman(PodmanInfo),
-    Docker,
     Missing,
 }
 
-/// Ask the host which runtime it has and what podman reports, for `doctor`.
-/// Reads only: a rootful, cgroupfs, docker or missing host is an answer, not
-/// a failure.
+/// Ask the host what podman reports, for `doctor`. Reads only: a rootful,
+/// cgroupfs or missing podman is an answer, not a failure.
 pub fn detect() -> io::Result<Detected> {
     let info = match podman_info() {
         Ok(info) => info,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(if docker_present() {
-                Detected::Docker
-            } else {
-                Detected::Missing
-            });
+            return Ok(Detected::Missing);
         }
         Err(error) => return Err(error),
     };
@@ -272,7 +279,8 @@ pub fn linger() -> io::Result<bool> {
     let uid = nix::unistd::getuid().to_string();
     let output = std::process::Command::new("loginctl")
         .args(["show-user", &uid, "--property=Linger"])
-        .output()?;
+        .output()
+        .map_err(|error| spawn_error("loginctl", error))?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
             "loginctl show-user: {}",
@@ -306,12 +314,13 @@ struct InfoSecurity {
     seccomp_profile_path: String,
 }
 
-/// Run and parse `podman info`. A missing CLI is the caller's to name:
-/// preflight and `doctor` say different things about it.
+/// Run and parse `podman info`. A missing CLI is named by the spawn helper,
+/// so preflight and `doctor` say the same thing about it.
 fn podman_info() -> io::Result<Info> {
     let output = std::process::Command::new("podman")
         .args(["info", "--format", "json"])
-        .output()?;
+        .output()
+        .map_err(|error| spawn_error("podman", error))?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
             "podman info failed: {}",
@@ -325,17 +334,7 @@ fn podman_info() -> io::Result<Info> {
 /// Refuse a host pinfold will not run a box on, naming the problem. Runs
 /// before any box starts; a misconfigured host fails closed here.
 fn preflight() -> io::Result<Info> {
-    let info = match podman_info() {
-        Ok(info) => info,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(if docker_present() {
-                io::Error::other("docker is not supported; pinfold requires rootless podman")
-            } else {
-                io::Error::other("podman is required but was not found on PATH")
-            });
-        }
-        Err(error) => return Err(error),
-    };
+    let info = podman_info()?;
     if !info.host.security.rootless {
         return Err(io::Error::other(
             "rootful podman is not supported; pinfold requires rootless podman",
@@ -355,8 +354,9 @@ fn preflight() -> io::Result<Info> {
     Ok(info)
 }
 
-/// Whether the docker CLI is installed, to name it in the refusal.
-fn docker_present() -> bool {
+/// Whether the docker CLI is on `PATH`, for `doctor`'s second line: pinfold
+/// never runs docker.
+pub fn docker_present() -> bool {
     std::process::Command::new("docker")
         .arg("--version")
         .stdin(Stdio::null())
