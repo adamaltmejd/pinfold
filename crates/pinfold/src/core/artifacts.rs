@@ -91,6 +91,7 @@ fn pi_sha256(os_arch: &str) -> &'static str {
 
 /// One pinned artifact's cache state, as `doctor` and `artifacts` report it.
 /// Nothing here downloads.
+#[derive(serde::Serialize)]
 pub struct Pin {
     /// The artifact's name, e.g. `pi`.
     pub name: &'static str,

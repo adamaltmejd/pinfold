@@ -2,6 +2,7 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::process::ExitCode;
 
+use pinfold::pi::launch;
 use pinfold::{cli, init};
 
 /// One line per verb from the CLI table in docs/ARCHITECTURE.md, plus the
@@ -36,57 +37,60 @@ fn main() -> ExitCode {
         .and_then(Path::file_name)
         .and_then(|name| name.to_str())
         == Some("pi");
-    let verb = rest.first().and_then(|verb| verb.to_str());
+    let verb = rest
+        .first()
+        .and_then(|verb| verb.to_str())
+        .unwrap_or_default();
     // The daily pass runs before any command, the `pi` shim included. Only a
     // verb that does work pays for it: `init` is PID 1 in a box with the
     // project home for state and no runtime to prune, and `--version`,
     // `--help`, a bare `pinfold` and an unknown verb touch nothing.
     let working = matches!(
         verb,
-        Some(
-            "box"
-                | "build"
-                | "image"
-                | "pi"
-                | "clean"
-                | "doctor"
-                | "artifacts"
-                | "config"
-                | "profile"
-                | "allow"
-                | "attach"
-        )
+        "box"
+            | "build"
+            | "image"
+            | "pi"
+            | "clean"
+            | "doctor"
+            | "artifacts"
+            | "config"
+            | "profile"
+            | "allow"
+            | "attach"
     );
     if shim || working {
         pinfold::core::clean::maintain();
     }
     if shim {
-        return ExitCode::from(cli::pi(&rest) as u8);
+        return ExitCode::from(cli::report("pi", launch::run(&rest)) as u8);
     }
-    match verb {
-        Some("init") => init::run(&rest[1..]),
-        Some("--version" | "-V") => {
+    let args = rest.get(1..).unwrap_or_default();
+    let result = match verb {
+        "init" => init::run(args),
+        "--version" | "-V" => {
             println!("pinfold {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
+            return ExitCode::SUCCESS;
         }
-        Some("--help" | "-h" | "help") => {
+        "--help" | "-h" | "help" => {
             println!("{USAGE}");
-            ExitCode::SUCCESS
+            return ExitCode::SUCCESS;
         }
-        Some("box") => ExitCode::from(cli::run(&rest[1..]) as u8),
-        Some("allow") => ExitCode::from(cli::allow(&rest[1..]) as u8),
-        Some("attach") => ExitCode::from(cli::attach(&rest[1..]) as u8),
-        Some("build") => ExitCode::from(cli::build(&rest[1..]) as u8),
-        Some("image") => ExitCode::from(cli::image(&rest[1..]) as u8),
-        Some("clean") => ExitCode::from(cli::clean(&rest[1..]) as u8),
-        Some("doctor") => ExitCode::from(cli::doctor(&rest[1..]) as u8),
-        Some("artifacts") => ExitCode::from(cli::artifacts(&rest[1..]) as u8),
-        Some("config") => ExitCode::from(cli::config(&rest[1..]) as u8),
-        Some("profile") => ExitCode::from(cli::profile(&rest[1..]) as u8),
-        Some("pi") => ExitCode::from(cli::pi(&rest[1..]) as u8),
+        "box" => cli::run(args),
+        "allow" => cli::allow(args),
+        "attach" => cli::attach(args),
+        "build" => cli::build(args),
+        "image" => cli::image(args),
+        "clean" => cli::clean(args),
+        "doctor" => cli::doctor(args),
+        "artifacts" => cli::artifacts(args),
+        "config" => cli::config(args),
+        "profile" => cli::profile(args),
+        "pi" => launch::run(args),
         _ => {
             eprintln!("{USAGE}");
-            ExitCode::from(1)
+            return ExitCode::from(1);
         }
-    }
+    };
+    ExitCode::from(cli::report(verb, result) as u8)
 }

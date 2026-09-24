@@ -10,11 +10,12 @@ use std::io::Write;
 use std::os::fd::OwnedFd;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitStatus;
+use std::time::Duration;
 
 use nix::errno::Errno;
 use nix::fcntl::{Flock, FlockArg, OFlag, openat};
 use nix::sys::stat::{Mode, mkdirat};
-use nix::unistd::{UnlinkatFlags, unlinkat};
+use nix::unistd::{Pid, UnlinkatFlags, unlinkat};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Child;
 use tokio::signal::unix::{Signal, SignalKind, signal};
@@ -339,6 +340,32 @@ impl Box {
     }
 }
 
+/// Take box `name` down from outside its owner: signal the owning `box up`
+/// through the state dir and wait for it to remove the box. The pid is
+/// signalled only while its lock is held, so a reused pid is never hit. A
+/// dead owner means remove the leftover directly.
+pub fn down(name: &str) -> io::Result<()> {
+    let state = dirs::box_state_dir(name)?;
+    if let Some(pid) = clean::owner_pid(&state)
+        && clean::owner_alive(&state)
+    {
+        nix::sys::signal::kill(Pid::from_raw(pid), nix::sys::signal::SIGTERM)
+            .map_err(io::Error::other)?;
+        for _ in 0..1000 {
+            if !state.exists() {
+                return Ok(());
+            }
+            if !clean::owner_alive(&state) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    runtime()?.down(name)?;
+    let _ = fs::remove_dir_all(&state);
+    Ok(())
+}
+
 /// SIGTERM and SIGINT, handled by `box up` from its claim to its exit.
 struct Signals {
     terminate: Signal,
@@ -414,9 +441,8 @@ async fn abort(
 /// write the `pid` file. A dir whose owner is alive is `name-in-use`; a dead
 /// owner's dir is removed and the claim tried once more.
 fn claim(plan: &Plan) -> Result<(PathBuf, Flock<File>), UpError> {
-    let boxes = dirs::state_dir()?.join("boxes");
-    fs::create_dir_all(&boxes)?;
-    let state_dir = boxes.join(&plan.name);
+    fs::create_dir_all(dirs::box_state_dir("")?)?;
+    let state_dir = dirs::box_state_dir(&plan.name)?;
     let mut reclaimed = false;
     loop {
         match fs::create_dir(&state_dir) {
