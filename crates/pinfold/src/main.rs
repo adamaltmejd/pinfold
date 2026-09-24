@@ -15,6 +15,7 @@ pinfold allow                    trust this project's .pinfold.toml and Containe
 pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim disk (see Maintenance)
 pinfold doctor                   runtime, kernel, image, artifacts, trust, config, disk use
+pinfold config [ROOT]            the effective configuration and project facts as JSON, for callers
 pinfold box …                    the process interface
 pinfold init                     PID 1 in the box (Linux builds)
 pinfold --version                print the version
@@ -40,7 +41,9 @@ fn main() -> ExitCode {
     // `--help`, a bare `pinfold` and an unknown verb touch nothing.
     let working = matches!(
         verb,
-        Some("box" | "build" | "pi" | "clean" | "doctor" | "profile" | "allow" | "attach")
+        Some(
+            "box" | "build" | "pi" | "clean" | "doctor" | "config" | "profile" | "allow" | "attach"
+        )
     );
     if shim || working {
         pinfold::core::clean::maintain();
@@ -64,6 +67,7 @@ fn main() -> ExitCode {
         Some("build") => ExitCode::from(cli::build(&rest[1..]) as u8),
         Some("clean") => ExitCode::from(cli::clean(&rest[1..]) as u8),
         Some("doctor") => ExitCode::from(cli::doctor(&rest[1..]) as u8),
+        Some("config") => ExitCode::from(cli::config(&rest[1..]) as u8),
         Some("profile") => ExitCode::from(cli::profile(&rest[1..]) as u8),
         Some("pi") => ExitCode::from(cli::pi(&rest[1..]) as u8),
         _ => {

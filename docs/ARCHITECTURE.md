@@ -439,6 +439,8 @@ The list keys take comma-separated values in the environment:
 - `PINFOLD_ROUTES`: `name=host:port` pairs.
 - `PINFOLD_PROTECT`: project-relative directory paths.
 
+`pinfold config` prints the effective configuration, spec-shaped.
+
 **Trust.** `.pinfold.toml` and the Containerfile its `containerfile` names
 are used only if their hashes match those `pinfold allow` recorded in
 `~/.local/state/pinfold/trust` for this project. A change stops the run
@@ -458,6 +460,7 @@ pinfold allow                    trust this project's .pinfold.toml and Containe
 pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim disk (see Maintenance)
 pinfold doctor                   runtime, kernel, image, artifacts, trust, config, disk use
+pinfold config [ROOT]            the effective configuration and project facts as JSON, for callers
 pinfold box …                    the process interface
 pinfold init                     PID 1 in the box (Linux builds)
 ```
@@ -490,6 +493,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain. An unlabeled image, a live box and a project's state survive `pinfold clean`. |
 | 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW is the default list; a project's allow = ["api.github.com"] makes it exactly that host, and registry.npmjs.org is refused as not allowlisted. |
 | 17 | up refuses before it creates | A missing image and a live name are refused as data, with no box, state dir or seed left; the box whose name was reused still answers exec. |
+| 18 | A caller reads the effective configuration as data | pinfold config reports a project's allow list, its trust state before and after pinfold allow, and the project home pinfold pi then mounts. |
 
 Linux (podman) runs in GitHub CI on `ubuntu-26.04` and `ubuntu-26.04-arm` as
 the required gate. The workflow installs the pinned toolchain's musl target,

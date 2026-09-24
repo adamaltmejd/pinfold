@@ -32,6 +32,7 @@ const ALLOW_USAGE: &str = "usage: pinfold allow";
 const ATTACH_USAGE: &str = "usage: pinfold attach [--box NAME] [cmd...]";
 const CLEAN_USAGE: &str = "usage: pinfold clean [--dry-run] [--unused AGE]";
 const DOCTOR_USAGE: &str = "usage: pinfold doctor";
+const CONFIG_USAGE: &str = "usage: pinfold config [ROOT]";
 
 /// `doctor` suggests `pinfold clean` above this much measured disk use.
 const CLEAN_SUGGESTION_BYTES: u64 = 20 * 1024 * 1024 * 1024;
@@ -813,6 +814,83 @@ fn origin_label(origin: Origin, profile: &str) -> String {
         Origin::Profile => format!("profile {profile}"),
         other => other.name().to_string(),
     }
+}
+
+/// Run a `pinfold config` invocation and return its process exit code.
+pub fn config(args: &[OsString]) -> i32 {
+    match run_config(args) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("pinfold config: {error}");
+            1
+        }
+    }
+}
+
+/// Print one JSON object: the effective configuration and the project facts
+/// a caller needs to compose a box. `ROOT` defaults to the project root
+/// `pinfold pi` would use from the current directory. Reads only: nothing is
+/// created and nothing is recorded.
+fn run_config(args: &[OsString]) -> io::Result<()> {
+    let root = match args {
+        [] => crate::pi::launch::project_root(&std::env::current_dir()?)?,
+        [root] => crate::pi::launch::project_root(Path::new(root))?,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("config takes at most one project root\n{CONFIG_USAGE}"),
+            ));
+        }
+    };
+    let config = Config::load(&root)?;
+    let project = crate::pi::state::project_id(&root)?;
+    let home = crate::pi::state::project_home(&root)?;
+    let image = crate::pi::launch::resolve_image(&config, &project);
+    let image_built = runtime()?
+        .list_images()?
+        .iter()
+        .any(|info| info.reference == image);
+    let trust = match trust::check(&root, &config) {
+        Ok(()) => serde_json::json!({ "ok": true, "detail": "ok" }),
+        Err(error) => serde_json::json!({ "ok": false, "detail": error.to_string() }),
+    };
+    let origin = |value: Origin| origin_label(value, &config.profile.name);
+    let report = serde_json::json!({
+        "root": path_string(&root)?,
+        "profile": &config.profile.name,
+        "image": image,
+        "image_built": image_built,
+        "containerfile": config.containerfile_path.as_deref().unwrap_or("profile"),
+        "egress": { "allow": &config.allow, "routes": &config.routes },
+        "protect": &config.protect,
+        "cpus": config.cpus,
+        "memory": &config.memory,
+        "env": &config.env,
+        "origins": {
+            "profile": origin(config.origins.profile),
+            "containerfile": origin(config.origins.containerfile),
+            "cpus": origin(config.origins.cpus),
+            "memory": origin(config.origins.memory),
+            "allow": origin(config.origins.allow),
+            "routes": origin(config.origins.routes),
+            "protect": origin(config.origins.protect),
+        },
+        "project": { "id": project, "home": path_string(&home)? },
+        "trust": trust,
+    });
+    println!("{report}");
+    Ok(())
+}
+
+/// A path as a string for the `config` report. The report is JSON, so a
+/// non-UTF-8 path is a refusal, not a lossy value.
+fn path_string(path: &Path) -> io::Result<&str> {
+    path.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("path {} is not valid UTF-8", path.display()),
+        )
+    })
 }
 
 struct ExecArgs {

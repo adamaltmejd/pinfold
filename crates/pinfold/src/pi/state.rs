@@ -45,8 +45,7 @@ impl ProjectState {
     /// `state.json`.
     pub fn load_or_create(root: &Path) -> io::Result<ProjectState> {
         let root = canonical(root)?;
-        let id = id_for(&root);
-        let dir = dirs::state_dir()?.join("projects").join(&id);
+        let (id, dir) = state_dir_for(&root)?;
         let home = dir.join("home");
         fs::create_dir_all(&home)?;
         let state = StateFile {
@@ -57,6 +56,22 @@ impl ProjectState {
         fs::write(dir.join("state.json"), json)?;
         Ok(ProjectState { id, root, home })
     }
+}
+
+/// The project's state dir and its id, for an already canonical `root`.
+/// Computes paths only; creates nothing.
+fn state_dir_for(root: &Path) -> io::Result<(String, PathBuf)> {
+    let id = id_for(root);
+    let dir = dirs::state_dir()?.join("projects").join(&id);
+    Ok((id, dir))
+}
+
+/// The project home `pinfold pi` mounts as the box's `$HOME`, computed
+/// without creating it.
+pub fn project_home(root: &Path) -> io::Result<PathBuf> {
+    let root = canonical(root)?;
+    let (_, dir) = state_dir_for(&root)?;
+    Ok(dir.join("home"))
 }
 
 /// The id for `root`, canonicalizing it first. Trust records use the same
