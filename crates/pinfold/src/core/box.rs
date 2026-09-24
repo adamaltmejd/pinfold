@@ -489,10 +489,6 @@ async fn start(
     // The harness artifact is fetched and folded in after the claim, so a
     // refused box downloads nothing. The spec's own env wins.
     resolve_harness(plan)?;
-    // Mounts are applied parent first, so a nested mount shadows its parent
-    // whatever the spec's order. The sort is stable, so the spec decides the
-    // order of unrelated mounts.
-    order_mounts(&mut plan.mounts);
 
     if let Some(profile) = profile
         && let Some((mount, relative)) = &profile.seed
@@ -566,13 +562,6 @@ async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
             },
         }
     }
-}
-
-/// Order mounts parent first: a mount whose guest path is inside another's
-/// comes after it, so a nested mount shadows its parent whatever the spec's
-/// order. A nested path always has more components than its ancestor.
-fn order_mounts(mounts: &mut [Mount]) {
-    mounts.sort_by_key(|mount| mount.guest.components().count());
 }
 
 /// The first guest path two mounts share, if any.

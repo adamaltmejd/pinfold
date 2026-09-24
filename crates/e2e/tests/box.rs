@@ -2741,10 +2741,8 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
 #[test]
 fn a_caller_owned_box_cannot_write_git() {
     // Guarantee 22: a caller-owned box cannot write `.git`.
-    // Sabotage: skip the parent-first ordering of the spec's mounts; the
-    // `.git` mount is listed first, the writable repository mount shadows
-    // it, and the hook write then succeeds. Sabotage: mount `.git`
-    // writable; the hook, commit and rename assertions fail.
+    // Sabotage: mount `.git` writable; the hook, commit and rename
+    // assertions fail.
     let binary = pinfold();
     let env = TestEnv::new("caller-git");
     let name = format!("pinfold-e2e-{}-caller-git", std::process::id());
@@ -2791,8 +2789,9 @@ fn a_caller_owned_box_cannot_write_git() {
     assert!(status.success(), "host git commit failed");
 
     // The `.git` mount first and read-only, the repository second and
-    // writable: the reverse of shadowing order, so only the parent-first
-    // ordering keeps `.git` read-only.
+    // writable: a runtime that applied mounts in spec order would let the
+    // parent shadow `.git`, so this checks that both runtimes apply a
+    // nested mount by path.
     let spec = serde_json::json!({
         "name": name,
         "image": image,

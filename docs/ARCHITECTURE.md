@@ -268,9 +268,10 @@ The box spec `up` reads from stdin:
   `/opt/pinfold/pi` and sets `PI_TELEMETRY=0`, `PI_SKIP_VERSION_CHECK=1` and
   `PINFOLD_ALLOW` (the spec's `egress.allow`, empty without egress). The
   spec's own `env` wins. It needs no profile.
-- Mounts are directories. A mount nested in another shadows it whatever the
-  spec's order, so a read-only `REPO/.git` inside a writable `REPO` protects
-  the repository on both runtimes; two mounts at one guest path are refused.
+- Mounts are directories. Both runtimes apply a mount nested in another
+  inside it whatever the spec's order, so a read-only `REPO/.git` inside a
+  writable `REPO` protects the repository on both runtimes; two mounts at
+  one guest path are refused.
 - A mount path holding `,` or an ASCII control character is refused as
   `spec`, naming the path.
 - `.git` protection belongs to the pi layer; a box spec gets only the
