@@ -210,6 +210,37 @@ fn build_plan(config: &Config, state: &ProjectState, image: &str, git: &Git) -> 
         );
     }
 
+    // Apple `container` shows the top directory of a mount as root-owned
+    // inside the box, so git's ownership check refuses a mounted repository
+    // with "detected dubious ownership". Listing the project root as
+    // `safe.directory` through git's environment config skips the check. A
+    // host `PINFOLD_ENV_GIT_CONFIG_COUNT` pass-through keeps its entries, so
+    // the pi entry goes at its next index.
+    let root = git.root().to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("project root {} is not valid UTF-8", git.root().display()),
+        )
+    })?;
+    let count = match env.get("GIT_CONFIG_COUNT") {
+        Some(Env::Exact(value)) => value.parse::<usize>().ok(),
+        Some(Env::From { from }) => env::var(from).ok().and_then(|value| value.parse().ok()),
+        None => None,
+    }
+    .unwrap_or(0);
+    env.insert(
+        "GIT_CONFIG_COUNT".to_string(),
+        Env::Exact((count + 1).to_string()),
+    );
+    env.insert(
+        format!("GIT_CONFIG_KEY_{count}"),
+        Env::Exact("safe.directory".to_string()),
+    );
+    env.insert(
+        format!("GIT_CONFIG_VALUE_{count}"),
+        Env::Exact(root.to_string()),
+    );
+
     let mut mounts = vec![
         Mount {
             host: git.root().to_path_buf(),

@@ -360,7 +360,9 @@ fn the_box_cannot_write_git_or_protected_config() {
     // followed, the run starts, and the refusal assertion fails.
     // Sabotage: skip reading `core.hooksPath` in pi::git; the
     // `.husky/_/pre-commit` write succeeds, the hook exists on the host, and
-    // those assertions fail.
+    // those assertions fail. Sabotage: drop the GIT_CONFIG_* entries from
+    // the pi box's env; on macOS the positive control's `git status` and
+    // `git log` exit 128 with `dubious ownership`.
     let binary = pinfold();
     let env = TestEnv::new("pi-git");
     default_image(binary, &env);
@@ -371,6 +373,26 @@ fn the_box_cannot_write_git_or_protected_config() {
     let bare = TestDir::new(&env, "bare");
     git_init(bare.path());
     let root = bare.path();
+    // A commit for the box's `git log` positive control below. The author is
+    // on the command line, so the fixture does not need host git config.
+    let status = Command::new("git")
+        .args(["-C"])
+        .arg(root)
+        .args([
+            "-c",
+            "user.name=pinfold-e2e",
+            "-c",
+            "user.email=pinfold-e2e@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "pinfold-e2e",
+        ])
+        .status()
+        .expect("run git commit");
+    assert!(status.success(), "git commit failed");
     // Host git runs the hooks named by `core.hooksPath`; a value inside the
     // project must be read-only like `.git` itself.
     let husky = root.join(".husky/_");
@@ -393,6 +415,31 @@ fn the_box_cannot_write_git_or_protected_config() {
         fs::read_dir(&vscode).expect("read .vscode").count(),
         0,
         ".vscode was not created empty"
+    );
+
+    // Positive control: the box reads the project's git state. Apple
+    // `container` shows a mount's top directory as root-owned inside the
+    // box, so without the `safe.directory` entry git refuses the project as
+    // dubious ownership.
+    let root_str = root.to_str().expect("project root is UTF-8");
+    let status = box_exec(
+        binary,
+        &env,
+        &name,
+        &["git", "-C", root_str, "status", "--porcelain"],
+    );
+    assert_eq!(status.code, 0, "git status failed: {}", status.stderr);
+    let log = box_exec(
+        binary,
+        &env,
+        &name,
+        &["git", "-C", root_str, "log", "--oneline"],
+    );
+    assert_eq!(log.code, 0, "git log failed: {}", log.stderr);
+    assert!(
+        log.stdout.contains("pinfold-e2e"),
+        "the box's git log is missing the commit: {}",
+        log.stdout
     );
 
     // The box cannot create the protected directory it did not have...
