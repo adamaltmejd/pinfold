@@ -10,7 +10,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{Mutex, OnceLock};
 
 use e2e::{HttpFixture, pinfold};
@@ -27,7 +27,9 @@ static BUILDER_RACE: Mutex<()> = Mutex::new(());
 
 #[test]
 fn box_lifecycle_works_for_a_caller() {
+    // Guarantee 9: the lifecycle works for a caller.
     // Sabotage: make `box down` a no-op; the post-down list assertion fails.
+    // Sabotage: drop the final `down` line; the last-line assertion fails.
     // Sabotage: make `box exec` drop the runtime's exit status and return 0;
     // the exit-3 assertion fails, and the zero-exit command below is the
     // positive control that the same path can succeed.
@@ -35,12 +37,40 @@ fn box_lifecycle_works_for_a_caller() {
     let env = TestEnv::new("lifecycle");
     let name = format!("pinfold-e2e-{}-lifecycle", std::process::id());
     let label = "dev.example.test=lifecycle";
+    let image = default_image(binary, &env);
     let spec = serde_json::json!({
         "name": name,
-        "image": default_image(binary, &env),
+        "image": image,
         "labels": { "dev.example.test": "lifecycle" },
     });
     let mut up = box_up(binary, &env, &spec, &name);
+
+    // `ready` carries the owner and the box's full label set, the image's
+    // identity labels included.
+    let build = runtime_images()
+        .expect("list the runtime's images")
+        .into_iter()
+        .find(|known| {
+            known
+                .names
+                .iter()
+                .any(|name| name.strip_prefix("localhost/").unwrap_or(name) == image)
+        })
+        .and_then(|known| known.labels.get("dev.pinfold.build").cloned())
+        .expect("the default image records dev.pinfold.build");
+    assert_eq!(
+        up.ready["owner"],
+        up.pid(),
+        "ready owner is not up's pid: {}",
+        up.ready
+    );
+    assert_eq!(up.ready["labels"]["dev.example.test"], "lifecycle");
+    assert_eq!(
+        up.ready["labels"]["dev.pinfold.build"],
+        build.as_str(),
+        "ready lost the image's build label: {}",
+        up.ready
+    );
 
     // `exec` streams both streams and returns the process exit code.
     let failed = box_exec(
@@ -77,6 +107,24 @@ fn box_lifecycle_works_for_a_caller() {
         "box survived down: {listed:?}"
     );
     assert!(up.wait().success(), "box up did not exit cleanly");
+
+    // Closing stdin is `down`: the owner prints the final `down` line and
+    // exits 0.
+    let mut again = box_up(binary, &env, &spec, &name);
+    let lines = again.close_stdin();
+    let down = lines
+        .last()
+        .unwrap_or_else(|| panic!("up printed no down line: {lines:?}"));
+    assert_eq!(
+        down["event"], "down",
+        "the last line was not down: {lines:?}"
+    );
+    assert_eq!(down["box"], name);
+    assert_eq!(
+        down["reason"], "stdin-closed",
+        "wrong down reason: {lines:?}"
+    );
+    assert!(again.wait().success(), "up did not exit 0 for stdin-closed");
 }
 
 #[test]
@@ -1819,17 +1867,39 @@ struct Up {
     state: PathBuf,
     cache: PathBuf,
     name: String,
+    /// The parsed `ready` line.
+    ready: serde_json::Value,
     child: Child,
-    _stdin: ChildStdin,
+    stdin: Option<ChildStdin>,
+    stdout: Option<BufReader<ChildStdout>>,
 }
 
 impl Up {
+    fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     fn wait(&mut self) -> ExitStatus {
         self.child.wait().expect("wait for box up")
     }
 
     fn kill(&mut self) {
         self.child.kill().expect("kill box up");
+    }
+
+    /// Close `up`'s stdin and read the rest of its stdout. `up` ends its
+    /// stream once teardown is done, so reading to EOF waits for the `down`
+    /// line without a sleep.
+    fn close_stdin(&mut self) -> Vec<serde_json::Value> {
+        drop(self.stdin.take());
+        let stdout = self.stdout.take().expect("box up stdout");
+        stdout
+            .lines()
+            .map(|line| {
+                serde_json::from_str(&line.expect("read box up output"))
+                    .expect("box up line is JSON")
+            })
+            .collect()
     }
 }
 
@@ -1871,21 +1941,15 @@ fn box_up(binary: &Path, env: &TestEnv, spec: &serde_json::Value, name: &str) ->
     assert_eq!(ready["event"], "ready", "first line was {line:?}");
     assert_eq!(ready["box"], name, "ready named another box: {line:?}");
 
-    // Keep draining stdout so a chatty box cannot block on the pipe.
-    std::thread::spawn(move || {
-        let mut sink = String::new();
-        while reader.read_line(&mut sink).unwrap_or(0) > 0 {
-            sink.clear();
-        }
-    });
-
     Up {
         binary: binary.to_path_buf(),
         state: env.state.clone(),
         cache: env.cache.clone(),
         name: name.to_string(),
+        ready,
         child,
-        _stdin: stdin,
+        stdin: Some(stdin),
+        stdout: Some(reader),
     }
 }
 

@@ -17,7 +17,7 @@ use nix::unistd::Pid;
 
 use crate::config::{Config, Containerfile, Origin};
 use crate::core::artifacts;
-use crate::core::r#box::{Box, Refusal, RefusalReason, UpError};
+use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, UpError};
 use crate::core::clean;
 use crate::core::plan::Plan;
 use crate::core::profile::{Profile, valid_name};
@@ -223,11 +223,23 @@ fn up(args: &[OsString]) -> io::Result<i32> {
         };
         println!(
             "{}",
-            serde_json::json!({ "event": "ready", "box": plan.name })
+            serde_json::json!({
+                "event": "ready",
+                "box": &plan.name,
+                "owner": std::process::id(),
+                "labels": box_.labels,
+            })
         );
         io::stdout().flush()?;
-        box_.hold().await?;
-        Ok(0)
+        let shutdown = box_.hold().await?;
+        // Teardown is done, so the down line names a box the caller can
+        // start again. It ends the stream.
+        println!("{}", down_line(&plan.name, shutdown));
+        io::stdout().flush()?;
+        Ok(match shutdown {
+            Shutdown::StdinEof | Shutdown::Signal => 0,
+            Shutdown::BoxExited(_) => 1,
+        })
     });
     // `Box::hold` watches stdin through tokio's blocking pool. A caller that
     // keeps stdin open leaves that read parked, and dropping the runtime
@@ -235,6 +247,25 @@ fn up(args: &[OsString]) -> io::Result<i32> {
     // process exit.
     runtime.shutdown_background();
     result
+}
+
+/// The one `down` line that ends `up`'s stream: why the box ended, after
+/// teardown. Only `exited` carries a detail, the init's exit status.
+fn down_line(name: &str, shutdown: Shutdown) -> serde_json::Value {
+    let reason = shutdown.as_str();
+    match shutdown {
+        Shutdown::BoxExited(status) => serde_json::json!({
+            "event": "down",
+            "box": name,
+            "reason": reason,
+            "detail": status.to_string(),
+        }),
+        Shutdown::StdinEof | Shutdown::Signal => serde_json::json!({
+            "event": "down",
+            "box": name,
+            "reason": reason,
+        }),
+    }
 }
 
 /// Print one `refused` line on stdout and return exit code 1.

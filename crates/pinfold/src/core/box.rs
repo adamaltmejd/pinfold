@@ -1,5 +1,6 @@
 //! The box lifecycle: one attached `container run` process owns one box.
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
@@ -8,6 +9,7 @@ use std::io;
 use std::io::Write;
 use std::os::fd::OwnedFd;
 use std::path::{Component, Path, PathBuf};
+use std::process::ExitStatus;
 
 use nix::errno::Errno;
 use nix::fcntl::{OFlag, openat};
@@ -21,12 +23,15 @@ use crate::core::clean;
 use crate::core::plan::{Env, Mount, Plan};
 use crate::core::profile::{Profile, Seed};
 use crate::core::proxy::Proxy;
-use crate::core::runtime::{Runtime, local_image_id, runtime};
+use crate::core::runtime::{Runtime, runtime};
 use crate::dirs;
 
 /// A started box, owned by this process.
 pub struct Box {
     name: String,
+    /// The box's full label set: the spec's, the owner's, and the image's
+    /// identity labels.
+    pub labels: BTreeMap<String, String>,
     state_dir: PathBuf,
     child: Child,
     runtime: &'static dyn Runtime,
@@ -41,7 +46,18 @@ pub enum Shutdown {
     /// SIGTERM or SIGINT arrived.
     Signal,
     /// The attached `container run` process exited on its own.
-    BoxExited,
+    BoxExited(ExitStatus),
+}
+
+impl Shutdown {
+    /// The reason string of the process interface's `down` line.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Shutdown::StdinEof => "stdin-closed",
+            Shutdown::Signal => "signal",
+            Shutdown::BoxExited(_) => "exited",
+        }
+    }
 }
 
 /// Why `up` refused before it created anything.
@@ -169,12 +185,23 @@ impl Box {
                 "a box spec needs an image or a profile",
             )
         })?;
-        if local_image_id(runtime, &image)?.is_none() {
+        let Some(image_info) = runtime
+            .list_images()?
+            .into_iter()
+            .find(|info| info.reference == image)
+        else {
             return Err(refused(
                 &plan,
                 RefusalReason::ImageMissing,
                 format!("image {image:?} is not present locally; build or pull it first"),
             ));
+        };
+        // The image's identity labels are the box's too, so a caller reading
+        // `ready` gets them without a second `list`. The spec's labels win.
+        for (key, value) in image_info.labels {
+            if key.starts_with("dev.pinfold.") {
+                plan.labels.entry(key).or_insert(value);
+            }
         }
         if let Some(detail) = name_in_use(runtime, &plan.name)? {
             return Err(refused(&plan, RefusalReason::NameInUse, detail));
@@ -270,6 +297,7 @@ impl Box {
 
         Ok(Box {
             name: plan.name.clone(),
+            labels: plan.labels,
             state_dir,
             child,
             runtime,
@@ -282,7 +310,7 @@ impl Box {
     pub async fn hold(&mut self) -> io::Result<Shutdown> {
         let reason = tokio::select! {
             reason = wait_for_shutdown() => reason?,
-            _ = self.child.wait() => Shutdown::BoxExited,
+            status = self.child.wait() => Shutdown::BoxExited(status?),
         };
         self.down().await?;
         Ok(reason)
