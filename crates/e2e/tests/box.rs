@@ -49,8 +49,9 @@ fn box_lifecycle_works_for_a_caller() {
     // Sabotage: let Apple's `down` pass the runtime's stderr through again;
     // on macOS the second `down` prints the runtime's not-found error and the
     // empty-stderr assertion fails.
-    // Sabotage: drop `--ignore` from podman's `down_argv`; on Linux the
-    // second `down` exits 1 and the exit-0 assertion fails.
+    // Sabotage: drop `-f` from podman's `down_argv`; podman then refuses
+    // `-t`, so `down` treats the non-zero `rm` status as an error and on
+    // Linux the first `box down` fails the status assertion.
     // Sabotage: find the image in `Box::up` by exact string match against
     // `list_images()` references again; the tag-less `again` box is refused
     // `image-missing` on both runtimes, so `box_up` panics on a first line
