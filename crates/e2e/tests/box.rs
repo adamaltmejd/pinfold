@@ -2815,6 +2815,185 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
     assert!(up.wait().success(), "box up did not exit cleanly");
 }
 
+#[test]
+fn a_caller_owned_box_cannot_write_git() {
+    // Guarantee 22: a caller-owned box cannot write `.git`.
+    // Sabotage: skip the parent-first ordering of the spec's mounts; the
+    // `.git` mount is listed first, the writable repository mount shadows
+    // it, and the hook write then succeeds. Sabotage: mount `.git`
+    // writable; the hook, commit and rename assertions fail.
+    let binary = pinfold();
+    let env = TestEnv::new("caller-git");
+    let name = format!("pinfold-e2e-{}-caller-git", std::process::id());
+    let image = default_image(binary, &env);
+    let repo = TestDir::new(&env, "repo");
+    let root = repo.path().to_string_lossy().into_owned();
+    let dot_git = repo.path().join(".git");
+
+    // One host commit, so the box has history to read.
+    let status = Command::new("git")
+        .args(["init", "-q"])
+        .arg(repo.path())
+        .status()
+        .expect("run host git init");
+    assert!(status.success(), "host git init failed");
+    fs::write(repo.path().join("committed.txt"), b"one\n").expect("write committed.txt");
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["add", "committed.txt"])
+        .status()
+        .expect("run host git add");
+    assert!(status.success(), "host git add failed");
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args([
+            "-c",
+            "user.name=a",
+            "-c",
+            "user.email=a@b",
+            "commit",
+            "-q",
+            "-m",
+            "one",
+        ])
+        .status()
+        .expect("run host git commit");
+    assert!(status.success(), "host git commit failed");
+
+    // The `.git` mount first and read-only, the repository second and
+    // writable: the reverse of shadowing order, so only the parent-first
+    // ordering keeps `.git` read-only.
+    let spec = serde_json::json!({
+        "name": name,
+        "image": image,
+        "labels": { "dev.example.test": "caller-git" },
+        "mounts": [
+            { "host": dot_git, "guest": dot_git, "readonly": true },
+            { "host": repo.path(), "guest": repo.path(), "readonly": false },
+        ],
+    });
+    let mut up = box_up(binary, &env, &spec, &name);
+
+    // The box reads history and status, and writes the worktree.
+    let log = box_exec(
+        binary,
+        &env,
+        &name,
+        &["git", "-C", &root, "log", "--oneline"],
+    );
+    assert_eq!(log.code, 0, "box git log failed: {}", log.stderr);
+    assert!(
+        log.stdout.contains("one"),
+        "box git log lost the commit: {}",
+        log.stdout
+    );
+    let status = box_exec(
+        binary,
+        &env,
+        &name,
+        &["git", "-C", &root, "status", "--porcelain"],
+    );
+    assert_eq!(status.code, 0, "box git status failed: {}", status.stderr);
+    let wrote = box_exec(
+        binary,
+        &env,
+        &name,
+        &["sh", "-c", &format!("echo x > '{root}/new.txt'")],
+    );
+    assert_eq!(
+        wrote.code, 0,
+        "the box could not write the worktree: {}",
+        wrote.stderr
+    );
+
+    // Every write into `.git` fails.
+    let hook = dot_git.join("hooks/pre-commit");
+    let denied = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!("printf '#!/bin/sh\\n' > '{}'", hook.display()),
+        ],
+    );
+    assert_ne!(denied.code, 0, "the box wrote a hook");
+    assert!(
+        denied.stderr.contains("Read-only file system"),
+        "the hook write failed for another reason: {}",
+        denied.stderr
+    );
+    let denied = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "git",
+            "-C",
+            &root,
+            "-c",
+            "user.name=a",
+            "-c",
+            "user.email=a@b",
+            "commit",
+            "-qam",
+            "x",
+        ],
+    );
+    assert_ne!(denied.code, 0, "the box committed");
+    assert!(
+        denied.stderr.contains("Read-only file system"),
+        "the commit failed for another reason: {}",
+        denied.stderr
+    );
+    let denied = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!("mv '{}' '{}-moved'", dot_git.display(), dot_git.display()),
+        ],
+    );
+    assert_ne!(denied.code, 0, "the box renamed .git");
+    assert!(
+        denied.stderr.contains("Device or resource busy"),
+        "renaming .git failed for another reason: {}",
+        denied.stderr
+    );
+
+    let status = box_down(binary, &env, &name);
+    assert!(status.success(), "box down failed: {status}");
+    assert!(up.wait().success(), "box up did not exit cleanly");
+
+    // Host git works on the clone afterwards and runs nothing the box wrote.
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["status", "--porcelain"])
+        .output()
+        .expect("run host git status");
+    assert!(
+        status.status.success(),
+        "host git status failed: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let porcelain = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        porcelain.contains("new.txt"),
+        "host git status lost the worktree change: {porcelain}"
+    );
+    assert!(!hook.exists(), "the box planted a hook");
+    assert!(
+        !repo.path().join(".git-moved").exists(),
+        "the box renamed .git"
+    );
+}
+
 /// `pinfold artifacts` as parsed JSON: one object per pin.
 fn artifacts(binary: &Path, env: &TestEnv) -> Vec<serde_json::Value> {
     let output = env

@@ -183,6 +183,17 @@ impl Box {
             .into());
         }
 
+        // Two mounts at one guest path would be ambiguous: the runtime
+        // applies both, and whichever comes last shadows the other. Refuse
+        // before the claim, naming the path.
+        if let Some(guest) = duplicate_guest(&plan.mounts) {
+            return Err(refused(
+                plan,
+                RefusalReason::Spec,
+                format!("two mounts name the same guest path {}", guest.display()),
+            ));
+        }
+
         // The profile's image, share and home seeds are the box's to apply;
         // the runtime sees the resolved plan. Resolving writes nothing; the
         // seeds wait until the name is claimed.
@@ -470,6 +481,10 @@ async fn start(
     // The harness artifact is fetched and folded in after the claim, so a
     // refused box downloads nothing. The spec's own env wins.
     resolve_harness(plan)?;
+    // Mounts are applied parent first, so a nested mount shadows its parent
+    // whatever the spec's order. The sort is stable, so the spec decides the
+    // order of unrelated mounts.
+    order_mounts(&mut plan.mounts);
 
     if let Some(profile) = profile
         && let Some((mount, relative)) = &profile.seed
@@ -543,6 +558,25 @@ async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
             },
         }
     }
+}
+
+/// Order mounts parent first: a mount whose guest path is inside another's
+/// comes after it, so a nested mount shadows its parent whatever the spec's
+/// order. A nested path always has more components than its ancestor.
+fn order_mounts(mounts: &mut [Mount]) {
+    mounts.sort_by_key(|mount| mount.guest.components().count());
+}
+
+/// The first guest path two mounts share, if any.
+fn duplicate_guest(mounts: &[Mount]) -> Option<&Path> {
+    let mut guests: Vec<&Path> = Vec::with_capacity(mounts.len());
+    for mount in mounts {
+        if guests.contains(&mount.guest.as_path()) {
+            return Some(mount.guest.as_path());
+        }
+        guests.push(mount.guest.as_path());
+    }
+    None
 }
 
 /// Fold the spec's harness into the plan: fetch the pinned artifact if it is

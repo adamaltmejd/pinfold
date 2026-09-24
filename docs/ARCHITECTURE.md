@@ -268,7 +268,9 @@ The box spec `up` reads from stdin:
   `/opt/pinfold/pi` and sets `PI_TELEMETRY=0`, `PI_SKIP_VERSION_CHECK=1` and
   `PINFOLD_ALLOW` (the spec's `egress.allow`, empty without egress). The
   spec's own `env` wins. It needs no profile.
-- Apple: mounts are directories. Nested read-only mounts protect subpaths.
+- Mounts are directories. A mount nested in another shadows it whatever the
+  spec's order, so a read-only `REPO/.git` inside a writable `REPO` protects
+  the repository on both runtimes; two mounts at one guest path are refused.
 - A mount path holding `,` or an ASCII control character is refused as
   `spec`, naming the path.
 - `.git` protection belongs to the pi layer; a box spec gets only the
@@ -544,7 +546,9 @@ Automatic, never prompting:
 The box never writes the host's `.git`. `<root>/.git` is mounted read-only
 at its own path, and the mount point cannot be renamed. A `core.hooksPath`
 inside the project is read-only too. The agent reads history and diffs;
-commits are made on the host.
+commits are made on the host. A caller-owned box protects its repository
+the same way by mounting `.git` read-only; its commits are the caller's own
+host-side operation, hooks and signing off.
 
 Worktrees are refused: their `.git` is a file whose `gitdir:` line host git
 follows, and Apple `container` cannot mount a file read-only.
@@ -633,6 +637,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 19 | A caller-owned box launches the pinned harness | A spec with harness: pi runs /opt/pinfold/pi/pi --version at the pinned version, and the box's PINFOLD_ALLOW is the spec's allow list. |
 | 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, every field is present, and `exec`'d processes carry `oom_score_adj` 1000, so init is never the victim. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
+| 22 | A caller-owned box cannot write .git | With REPO writable and REPO/.git read-only, listed in either order: a worktree write succeeds, git log and git status succeed, a hook write, git commit and renaming .git fail, and host git status runs nothing the box wrote. |
 | 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref and the labels; a second build of the same name keeps two images and moves latest. |
 
 Linux (podman) runs in GitHub CI on `ubuntu-26.04` and `ubuntu-26.04-arm` as
