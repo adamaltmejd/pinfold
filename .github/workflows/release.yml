@@ -73,6 +73,12 @@ jobs:
       # checkout and refuses --repo, so the repo is inferred from origin.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
+      # checkout writes the tag ref as the bare commit (--no-tags --depth=1),
+      # so the local tag is lightweight and gh would fall back to the commit
+      # message. Fetch the annotated tag object.
+      - name: Fetch annotated tag
+        run: git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
