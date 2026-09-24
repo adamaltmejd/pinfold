@@ -32,6 +32,7 @@ const ALLOW_USAGE: &str = "usage: pinfold allow";
 const ATTACH_USAGE: &str = "usage: pinfold attach [--box NAME] [cmd...]";
 const CLEAN_USAGE: &str = "usage: pinfold clean [--dry-run] [--unused AGE]";
 const DOCTOR_USAGE: &str = "usage: pinfold doctor";
+const ARTIFACTS_USAGE: &str = "usage: pinfold artifacts";
 const CONFIG_USAGE: &str = "usage: pinfold config [ROOT]";
 
 /// `doctor` suggests `pinfold clean` above this much measured disk use.
@@ -741,6 +742,42 @@ fn run_doctor(args: &[OsString]) -> io::Result<usize> {
     }
 
     Ok(problems)
+}
+
+/// Run a `pinfold artifacts` invocation and return its process exit code.
+pub fn artifacts(args: &[OsString]) -> i32 {
+    match run_artifacts(args) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("pinfold artifacts: {error}");
+            1
+        }
+    }
+}
+
+/// Print the pinned artifacts as one JSON array, an object per pin. Reads
+/// only: nothing is downloaded.
+fn run_artifacts(args: &[OsString]) -> io::Result<()> {
+    if !args.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("artifacts takes no arguments\n{ARTIFACTS_USAGE}"),
+        ));
+    }
+    let pins = artifacts::pins()?
+        .into_iter()
+        .map(|pin| {
+            Ok(serde_json::json!({
+                "name": pin.name,
+                "version": pin.version,
+                "sha256": pin.sha256,
+                "path": path_string(&pin.path)?,
+                "cached": pin.cached,
+            }))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    println!("{}", serde_json::Value::Array(pins));
+    Ok(())
 }
 
 /// The podman lines in `doctor`'s runtime report, and the problems they add:

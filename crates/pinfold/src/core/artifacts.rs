@@ -14,6 +14,9 @@ use sha2::{Digest, Sha256};
 
 use crate::dirs;
 
+/// Where the pinned harness directory is mounted in the box.
+pub const GUEST_PI: &str = "/opt/pinfold/pi";
+
 /// pi's pinned release.
 const PI_VERSION: &str = "0.87.1";
 
@@ -36,10 +39,7 @@ const PI_PINS: &[(&str, &str)] = &[
 /// the cache. Later calls use the cache and touch no network.
 pub fn pi() -> io::Result<PathBuf> {
     let os_arch = box_os_arch()?;
-    let sha256 = PI_PINS
-        .iter()
-        .find_map(|(name, sha256)| (*name == os_arch).then_some(*sha256))
-        .expect("every supported os-arch has a pin");
+    let sha256 = pi_sha256(os_arch);
     let binary = pi_binary(os_arch)?;
     if binary.is_file() {
         return Ok(binary);
@@ -81,13 +81,24 @@ pub fn pi() -> io::Result<PathBuf> {
     }
 }
 
-/// One pinned artifact's cache state, as `doctor` reports it. Nothing here
-/// downloads.
+/// The pinned sha256 of pi's release archive for `os_arch`.
+fn pi_sha256(os_arch: &str) -> &'static str {
+    PI_PINS
+        .iter()
+        .find_map(|(name, sha256)| (*name == os_arch).then_some(*sha256))
+        .expect("every supported os-arch has a pin")
+}
+
+/// One pinned artifact's cache state, as `doctor` and `artifacts` report it.
+/// Nothing here downloads.
 pub struct Pin {
     /// The artifact's name, e.g. `pi`.
     pub name: &'static str,
     /// The pinned version.
     pub version: &'static str,
+    /// The sha256 of the release archive this host's artifact was unpacked
+    /// from.
+    pub sha256: &'static str,
     /// The host path of the binary in the cache.
     pub path: PathBuf,
     /// Whether the binary is already in the cache.
@@ -96,10 +107,12 @@ pub struct Pin {
 
 /// Every pinned artifact and whether the cache holds it. Never downloads.
 pub fn pins() -> io::Result<Vec<Pin>> {
-    let path = pi_binary(box_os_arch()?)?;
+    let os_arch = box_os_arch()?;
+    let path = pi_binary(os_arch)?;
     Ok(vec![Pin {
         name: "pi",
         version: PI_VERSION,
+        sha256: pi_sha256(os_arch),
         cached: path.is_file(),
         path,
     }])

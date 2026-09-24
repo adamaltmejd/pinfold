@@ -19,8 +19,9 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Child;
 use tokio::signal::unix::{SignalKind, signal};
 
+use crate::core::artifacts;
 use crate::core::clean;
-use crate::core::plan::{Env, Mount, Plan};
+use crate::core::plan::{Env, HARNESS_PI, Mount, Plan};
 use crate::core::profile::{Profile, Seed};
 use crate::core::proxy::Proxy;
 use crate::core::runtime::{Runtime, runtime};
@@ -207,6 +208,10 @@ impl Box {
             return Err(refused(&plan, RefusalReason::NameInUse, detail));
         }
 
+        // The harness artifact is fetched and folded in after every refusal,
+        // so a refused box downloads nothing. The spec's own env wins.
+        resolve_harness(&mut plan)?;
+
         // Home seeds are written only after the checks pass, just before the
         // runtime starts the box.
         if let Some(profile) = &profile
@@ -344,6 +349,39 @@ async fn wait_for_shutdown() -> io::Result<Shutdown> {
             },
         }
     }
+}
+
+/// Fold the spec's harness into the plan: fetch the pinned artifact if it is
+/// not cached, mount it read-only, and set its environment. The spec's own
+/// env wins over the harness defaults.
+fn resolve_harness(plan: &mut Plan) -> io::Result<()> {
+    if plan.harness.as_deref() != Some(HARNESS_PI) {
+        return Ok(());
+    }
+    let pi = artifacts::pi()?;
+    let dir = pi.parent().ok_or_else(|| {
+        io::Error::other(format!("pi artifact {} has no directory", pi.display()))
+    })?;
+    plan.mounts.push(Mount {
+        host: dir.to_path_buf(),
+        guest: PathBuf::from(artifacts::GUEST_PI),
+        readonly: true,
+    });
+    plan.env
+        .entry("PI_TELEMETRY".to_string())
+        .or_insert(Env::Exact("0".to_string()));
+    plan.env
+        .entry("PI_SKIP_VERSION_CHECK".to_string())
+        .or_insert(Env::Exact("1".to_string()));
+    let allow = plan
+        .egress
+        .as_ref()
+        .map(|egress| egress.allow.join(","))
+        .unwrap_or_default();
+    plan.env
+        .entry("PINFOLD_ALLOW".to_string())
+        .or_insert(Env::Exact(allow));
+    Ok(())
 }
 
 /// A profile resolved before the refusal checks: its `home/` seeds and,

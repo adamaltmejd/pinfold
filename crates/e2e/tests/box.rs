@@ -1882,6 +1882,85 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
     drop(up);
 }
 
+#[test]
+fn a_caller_owned_box_launches_the_pinned_harness() {
+    // Guarantee 19: a caller-owned box launches the pinned harness.
+    // Sabotage: drop the harness mount (or mount the wrong directory); the
+    // `/opt/pinfold/pi --version` assertion fails. Sabotage: mount pi but
+    // leave `PINFOLD_ALLOW` unset; the second assertion fails.
+    let binary = pinfold();
+    let env = TestEnv::new("harness");
+    let name = format!("pinfold-e2e-{}-harness", std::process::id());
+    let home = TestDir::new(&env, "home");
+    default_image(binary, &env);
+
+    // The version `pinfold artifacts` pins. The caller records which pi it
+    // ran from the same report.
+    let pins = artifacts(binary, &env);
+    let pi = pins
+        .iter()
+        .find(|pin| pin["name"] == "pi")
+        .unwrap_or_else(|| panic!("pinfold artifacts does not name pi: {pins:?}"));
+    let version = pi["version"].as_str().expect("pin version is a string");
+
+    // A caller-owned box: the spec names the harness and the allow list; the
+    // profile supplies the image and home seeds.
+    let spec = serde_json::json!({
+        "name": name,
+        "profile": "default",
+        "harness": "pi",
+        "mounts": [{ "host": home.path(), "guest": "/home/harness" }],
+        "env": { "HOME": "/home/harness" },
+        "egress": { "allow": ["api.github.com"] },
+    });
+    let mut up = box_up(binary, &env, &spec, &name);
+
+    // The pinned pi is in the box and runs at the pinned version.
+    let ran = box_exec(binary, &env, &name, &["/opt/pinfold/pi", "--version"]);
+    assert_eq!(
+        ran.code, 0,
+        "/opt/pinfold/pi --version failed: {}",
+        ran.stderr
+    );
+    assert!(
+        ran.stdout.contains(version),
+        "the box's pi is not the pinned {version}: {}",
+        ran.stdout
+    );
+
+    // The harness environment is the spec's allow list, exactly.
+    let allow = box_exec(
+        binary,
+        &env,
+        &name,
+        &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""],
+    );
+    assert_eq!(
+        allow.stdout, "api.github.com",
+        "the box's PINFOLD_ALLOW is not the spec's allow list"
+    );
+
+    let status = box_down(binary, &env, &name);
+    assert!(status.success(), "box down failed: {status}");
+    assert!(up.wait().success(), "box up did not exit cleanly");
+}
+
+/// `pinfold artifacts` as parsed JSON: one object per pin.
+fn artifacts(binary: &Path, env: &TestEnv) -> Vec<serde_json::Value> {
+    let output = env
+        .command(binary)
+        .arg("artifacts")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold artifacts");
+    assert!(
+        output.status.success(),
+        "pinfold artifacts failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("pinfold artifacts output is JSON")
+}
+
 /// One `/proc/<pid>/status` field's value.
 fn status_field(status: &str, key: &str) -> String {
     status

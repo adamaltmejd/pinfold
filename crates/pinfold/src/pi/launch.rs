@@ -19,17 +19,14 @@ use tokio::signal::unix::{SignalKind, signal};
 
 use crate::cli;
 use crate::config::{Config, Containerfile};
-use crate::core::artifacts;
+use crate::core::artifacts::GUEST_PI;
 use crate::core::r#box::Box;
 use crate::core::clean;
-use crate::core::plan::{Egress, Env, Mount, Plan};
+use crate::core::plan::{Egress, Env, HARNESS_PI, Mount, Plan};
 use crate::core::runtime::{local_image_id, runtime};
 use crate::pi::git::Git;
 use crate::pi::state::ProjectState;
 use crate::trust;
-
-/// Where the pinned pi artifact is mounted in the box.
-const GUEST_PI: &str = "/opt/pinfold/pi";
 
 /// Run a `pi`/`pinfold pi` invocation and return pi's exit code.
 pub fn run(args: &[OsString]) -> i32 {
@@ -50,15 +47,11 @@ fn launch(args: &[OsString]) -> io::Result<i32> {
     let state = ProjectState::load_or_create(&root)?;
     let image = resolve_image(&config, &state.id);
     ensure_image(&config, &image)?;
-    let pi = artifacts::pi()?;
-    let pi_dir = pi.parent().ok_or_else(|| {
-        io::Error::other(format!("pi artifact {} has no directory", pi.display()))
-    })?;
     let argv = pi_argv(args)?;
     // The read-only mounts are prepared after trust, so a refused run leaves
     // no created directory behind.
     let git = Git::prepare(&root, &config.protect)?;
-    let plan = build_plan(&config, &state, &image, pi_dir, &git)?;
+    let plan = build_plan(&config, &state, &image, &git)?;
     let code = run_box(&plan, &cwd, &argv);
     // The box is down; remove the protected directories this run created.
     git.cleanup();
@@ -189,13 +182,7 @@ fn pi_argv(args: &[OsString]) -> io::Result<Vec<String>> {
 }
 
 /// The complete box spec for one project.
-fn build_plan(
-    config: &Config,
-    state: &ProjectState,
-    image: &str,
-    pi_dir: &Path,
-    git: &Git,
-) -> io::Result<Plan> {
+fn build_plan(config: &Config, state: &ProjectState, image: &str, git: &Git) -> io::Result<Plan> {
     let home = state.home.to_str().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -213,15 +200,6 @@ fn build_plan(
 
     let mut env = BTreeMap::new();
     env.insert("HOME".to_string(), Env::Exact(home.to_string()));
-    env.insert("PI_TELEMETRY".to_string(), Env::Exact("0".to_string()));
-    env.insert(
-        "PI_SKIP_VERSION_CHECK".to_string(),
-        Env::Exact("1".to_string()),
-    );
-    env.insert(
-        "PINFOLD_ALLOW".to_string(),
-        Env::Exact(config.allow.join(",")),
-    );
     env.insert("HERDR_AGENT".to_string(), Env::Exact("pi".to_string()));
     for name in &config.env {
         env.insert(
@@ -243,11 +221,6 @@ fn build_plan(
             guest: state.home.clone(),
             readonly: false,
         },
-        Mount {
-            host: pi_dir.to_path_buf(),
-            guest: PathBuf::from(GUEST_PI),
-            readonly: true,
-        },
     ];
     // Nested after the writable project mount, so the read-only `.git` and
     // protected editor config shadow it.
@@ -257,6 +230,7 @@ fn build_plan(
         name: format!("pi-{}-{}", state.id, std::process::id()),
         image: Some(image.to_string()),
         profile: Some(config.profile.name.clone()),
+        harness: Some(HARNESS_PI.to_string()),
         labels,
         mounts,
         user: None,

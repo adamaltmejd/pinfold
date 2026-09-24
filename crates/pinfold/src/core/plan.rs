@@ -8,6 +8,9 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+/// The only harness a box spec may select.
+pub const HARNESS_PI: &str = "pi";
+
 /// A parsed box spec.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Plan {
@@ -20,6 +23,9 @@ pub struct Plan {
     /// seeds and its `share/`.
     #[serde(default)]
     pub profile: Option<String>,
+    /// The pinned harness to install in the box. Only `pi` exists.
+    #[serde(default)]
+    pub harness: Option<String>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
     #[serde(default)]
@@ -111,6 +117,13 @@ impl Plan {
             return Err(PlanError::Invalid(
                 "a box spec needs an image or a profile".into(),
             ));
+        }
+        if let Some(harness) = &self.harness
+            && harness != HARNESS_PI
+        {
+            return Err(PlanError::Invalid(format!(
+                "harness {harness:?} is not supported; the only harness is {HARNESS_PI:?}"
+            )));
         }
         for mount in &self.mounts {
             if !mount.host.is_absolute() || !mount.guest.is_absolute() {

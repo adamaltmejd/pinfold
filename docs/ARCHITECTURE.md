@@ -190,6 +190,7 @@ The box spec `up` reads from stdin:
   "name": "job-3f2a…",
   "labels": { "dev.example.job": "…" },
   "profile": "builder",
+  "harness": "pi",
   "image": "…",
   "mounts": [{ "host": "/…/clone", "guest": "/workspace", "readonly": false }],
   "user": { "uid": 501, "gid": 20 },
@@ -207,6 +208,10 @@ The box spec `up` reads from stdin:
 - `profile` applies the profile's `home/` and `share/` (see Profiles), and
   its image if `image` is absent. Core never reads the profile's
   `pinfold.toml`: egress, env and resources come only from the spec.
+- `harness: pi` mounts the pinned pi's directory read-only at
+  `/opt/pinfold/pi` and sets `PI_TELEMETRY=0`, `PI_SKIP_VERSION_CHECK=1` and
+  `PINFOLD_ALLOW` (the spec's `egress.allow`, empty without egress). The
+  spec's own `env` wins. It needs no profile.
 - Apple: mounts are directories. Nested read-only mounts protect subpaths.
 - `.git` protection belongs to the pi layer; a box spec gets only the
   mounts it names.
@@ -412,7 +417,8 @@ Automatic, never prompting:
 
 ## pi layer
 
-- **Harness:** pi, a pinned artifact at `/opt/pinfold/pi`.
+- **Harness:** pi, a pinned artifact at `/opt/pinfold/pi`; `pinfold pi`
+  asks core for it with `"harness": "pi"`.
 - **State:** `~/.local/state/pinfold/projects/<name>-<hash>/home`, mounted as
   `$HOME`, where the hash is of the canonical project root path. pi's agent
   dir, sessions, `~/.config` and caches sit at their default paths. One per
@@ -491,6 +497,7 @@ pinfold allow                    trust this project's .pinfold.toml and Containe
 pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim disk (see Maintenance)
 pinfold doctor                   runtime, kernel, image, artifacts, trust, config, disk use
+pinfold artifacts                the pinned artifacts as JSON: name, version, sha256, path, cached
 pinfold config [ROOT]            the effective configuration and project facts as JSON, for callers
 pinfold box …                    the process interface
 pinfold init                     PID 1 in the box (Linux builds)
@@ -525,6 +532,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW is the default list; a project's allow = ["api.github.com"] makes it exactly that host, and registry.npmjs.org is refused as not allowlisted. |
 | 17 | up refuses before it creates | A missing image and a live name are refused as data, with no box, state dir or seed left; the box whose name was reused still answers exec. |
 | 18 | A caller reads the effective configuration as data | pinfold config reports a project's allow list, its trust state before and after pinfold allow, and the project home pinfold pi then mounts. |
+| 19 | A caller-owned box launches the pinned harness | A spec with harness: pi runs /opt/pinfold/pi --version at the pinned version, and the box's PINFOLD_ALLOW is the spec's allow list. |
 | 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, and every field is present. |
 
 Linux (podman) runs in GitHub CI on `ubuntu-26.04` and `ubuntu-26.04-arm` as
