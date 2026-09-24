@@ -117,6 +117,9 @@ pinfold box list --label k=v      # JSON lines
 pinfold box prune                 # remove boxes whose `up` is gone
 ```
 
+On a box that is absent, `exec` exits 3 with `pinfold box exec: no box
+named ...`; any other exit code is the command's.
+
 `up` prints one `ready` line once the box is up:
 
 ```json

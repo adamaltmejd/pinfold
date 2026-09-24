@@ -286,10 +286,17 @@ fn refused(refusal: Refusal) -> i32 {
 /// exit code.
 fn exec(args: &[OsString]) -> io::Result<i32> {
     let args = ExecArgs::parse(args)?;
+    let runtime = runtime()?;
+    // An absent box is pinfold's own failure, told apart from the command's
+    // by exit 3; every other code is the command's.
+    if !runtime.list()?.iter().any(|box_| box_.id == args.name) {
+        eprintln!("pinfold box exec: no box named {:?}", args.name);
+        return Ok(3);
+    }
     // A TTY only makes sense when both ends are terminals; `--tty` forces it
     // for callers that drive pinfold through their own pty.
     let tty = args.tty || (io::stdin().is_terminal() && io::stdout().is_terminal());
-    let status = runtime()?.exec(&args.name, tty, args.workdir.as_deref(), &args.argv)?;
+    let status = runtime.exec(&args.name, tty, args.workdir.as_deref(), &args.argv)?;
     Ok(exit_code(status))
 }
 

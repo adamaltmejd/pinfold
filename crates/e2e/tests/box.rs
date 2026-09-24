@@ -33,6 +33,8 @@ fn box_lifecycle_works_for_a_caller() {
     // Sabotage: make `box exec` drop the runtime's exit status and return 0;
     // the exit-3 assertion fails, and the zero-exit command below is the
     // positive control that the same path can succeed.
+    // Sabotage: skip exec's existence check; the post-down exec returns the
+    // runtime's 125 instead of 3.
     let binary = pinfold();
     let env = TestEnv::new("lifecycle");
     let name = format!("pinfold-e2e-{}-lifecycle", std::process::id());
@@ -107,6 +109,15 @@ fn box_lifecycle_works_for_a_caller() {
         "box survived down: {listed:?}"
     );
     assert!(up.wait().success(), "box up did not exit cleanly");
+
+    // `exec` on the box `down` removed is pinfold's own absent-box failure:
+    // exit 3, not the runtime's error and exit code.
+    let absent = box_exec(binary, &env, &name, &["sh", "-c", "exit 0"]);
+    assert_eq!(
+        absent.code, 3,
+        "exec on an absent box did not exit 3: {}",
+        absent.stderr
+    );
 
     // Closing stdin is `down`: the owner prints the final `down` line and
     // exits 0.
