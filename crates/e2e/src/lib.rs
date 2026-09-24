@@ -8,11 +8,12 @@
 //! This crate also holds the host fixtures the tests reach through routes,
 //! and the built binary the test files drive.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -49,15 +50,15 @@ pub fn pinfold() -> &'static Path {
     })
 }
 
-/// Per-test XDG state, cache and config, so a test never touches the
-/// operator's. An empty config dir also means `default` resolves to the
-/// embedded profile, not the operator's own copy of it.
+/// Per-test XDG state and config, and the shared cache, so a test never
+/// touches the operator's. An empty config dir also means `default`
+/// resolves to the embedded profile, not the operator's own copy of it.
 pub struct TestEnv {
     /// The test's scratch root; projects and fixtures live under it.
     pub root: PathBuf,
     /// `XDG_STATE_HOME`; pinfold's state dir is `<state>/pinfold`.
     pub state: PathBuf,
-    /// `XDG_CACHE_HOME`, where built artifacts and the init land.
+    /// `XDG_CACHE_HOME`, shared by every test; see `new`.
     pub cache: PathBuf,
     /// `XDG_CONFIG_HOME`, where profiles live. Empty, so `default` is the
     /// embedded one.
@@ -67,14 +68,15 @@ pub struct TestEnv {
 impl TestEnv {
     pub fn new(test: &str) -> TestEnv {
         // `/tmp` is a symlink on macOS; the runtime wants the real path.
-        let root = fs::canonicalize(std::env::temp_dir())
-            .unwrap_or_else(|_| std::env::temp_dir())
-            .join(format!("pinfold-e2e-{}-{test}", std::process::id()));
+        let temp = fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
+        let root = temp.join(format!("pinfold-e2e-{}-{test}", std::process::id()));
         // The box's proxy socket lives under the state dir, and macOS caps
         // unix socket paths at 104 bytes. `$TMPDIR` is too long for that, so
         // the state dir gets its own short path under /tmp.
         let state = PathBuf::from("/tmp").join(format!("pf-e2e-{}-{test}", std::process::id()));
-        let cache = root.join("cache");
+        // One cache for every test and both test binaries, so
+        // `artifacts::pi()` fetches the pinned release once.
+        let cache = temp.join("pinfold-e2e-cache");
         let config = root.join("config");
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&state).unwrap();
@@ -102,6 +104,153 @@ impl Drop for TestEnv {
         let _ = fs::remove_dir_all(&self.root);
         let _ = fs::remove_dir_all(&self.state);
     }
+}
+
+/// The image CLI this host uses: `podman` on Linux, Apple `container` on
+/// macOS.
+pub fn image_cli() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "podman"
+    } else {
+        "container"
+    }
+}
+
+/// Remove one image by reference from the runtime, best effort.
+pub fn remove_runtime_image(reference: &str) {
+    let mut command = Command::new(image_cli());
+    if cfg!(target_os = "linux") {
+        command.args(["image", "rm", reference]);
+    } else {
+        command.args(["image", "delete", reference]);
+    }
+    let _ = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// One runtime image, normalized across podman and Apple `container`.
+pub struct RuntimeImage {
+    pub id: String,
+    pub names: Vec<String>,
+    pub labels: BTreeMap<String, String>,
+}
+
+/// Every image the runtime knows, from its own image list.
+pub fn runtime_images() -> Result<Vec<RuntimeImage>, String> {
+    let output = Command::new(image_cli())
+        .args(["image", "list", "--format", "json"])
+        .output()
+        .map_err(|error| format!("run {} image list: {error}", image_cli()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{} image list failed: {}",
+            image_cli(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let images: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("image list is not JSON: {error}"))?;
+    Ok(images.iter().map(normalize_image).collect())
+}
+
+/// One image list entry, whatever the runtime's schema.
+fn normalize_image(image: &serde_json::Value) -> RuntimeImage {
+    // podman: `Id`, `Names` and `Labels`, the last two null when empty.
+    if let Some(id) = image["Id"].as_str() {
+        return RuntimeImage {
+            id: id.to_string(),
+            names: image["Names"]
+                .as_array()
+                .map(|names| {
+                    names
+                        .iter()
+                        .filter_map(|name| Some(name.as_str()?.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            labels: image["Labels"]
+                .as_object()
+                .map(|labels| {
+                    labels
+                        .iter()
+                        .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+    }
+    // Apple `container`: build labels are OCI image config labels; a locally
+    // built image also carries name annotations on its index descriptor.
+    let mut labels: BTreeMap<String, String> = image["configuration"]["descriptor"]["annotations"]
+        .as_object()
+        .map(|labels| {
+            labels
+                .iter()
+                .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(variants) = image["variants"].as_array() {
+        for variant in variants {
+            if let Some(config) = variant["config"]["config"]["Labels"].as_object() {
+                for (key, value) in config {
+                    if let Some(value) = value.as_str() {
+                        labels.insert(key.clone(), value.to_string());
+                    }
+                }
+            }
+        }
+    }
+    RuntimeImage {
+        id: image["id"].as_str().unwrap_or_default().to_string(),
+        names: image["configuration"]["name"]
+            .as_str()
+            .map(|name| vec![name.to_string()])
+            .unwrap_or_default(),
+        labels,
+    }
+}
+
+/// Whether the runtime lists an image under `reference`, ignoring podman's
+/// `localhost/` prefix.
+pub fn image_named(reference: &str) -> bool {
+    image_id(reference).is_some()
+}
+
+/// The id of the image the runtime lists under `reference`, ignoring
+/// podman's `localhost/` prefix.
+pub fn image_id(reference: &str) -> Option<String> {
+    runtime_images()
+        .expect("list the runtime's images")
+        .into_iter()
+        .find(|image| {
+            image
+                .names
+                .iter()
+                .any(|name| name.strip_prefix("localhost/").unwrap_or(name) == reference)
+        })
+        .map(|image| image.id)
+}
+
+/// The number of untagged images `podman images -a` lists, including the
+/// intermediate layers a cached build leaves behind. Linux only.
+pub fn untagged_images() -> usize {
+    let output = Command::new("podman")
+        .args(["images", "-a"])
+        .output()
+        .expect("run podman images -a");
+    assert!(
+        output.status.success(),
+        "podman images -a failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| line.split_whitespace().next() == Some("<none>"))
+        .count()
 }
 
 /// A host HTTP service, reachable from a box only through a route.

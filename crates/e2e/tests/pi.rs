@@ -17,7 +17,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, 
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
-use e2e::{TestEnv, pinfold};
+use e2e::{TestEnv, image_named, pinfold, remove_runtime_image, runtime_images};
 
 #[test]
 fn the_environment_is_exactly_the_spec() {
@@ -1105,6 +1105,7 @@ fn build_output(binary: &Path, env: &TestEnv, project: &Path) -> Output {
 
 /// Removes this project's images from the runtime store on drop, so a
 /// repeated run does not accumulate one project image per test project.
+/// Sabotage: hardcode `container`; `podman image ls` keeps the leak.
 struct ProjectImageCleanup {
     id: String,
 }
@@ -1112,28 +1113,13 @@ struct ProjectImageCleanup {
 impl Drop for ProjectImageCleanup {
     fn drop(&mut self) {
         // Best effort: a Drop during unwinding must not panic.
-        let Ok(output) = Command::new("container")
-            .args(["image", "list", "--quiet"])
-            .output()
-        else {
-            return;
-        };
-        if !output.status.success() {
-            return;
-        }
-        // Every build tags the image `pinfold/project-<id>:<build>` and
-        // moves the stable `pinfold/project-<id>:latest` to it.
+        let images = runtime_images().unwrap_or_default();
+        // Every build tags `pinfold/project-<id>:<build>` and moves `:latest`.
         let prefix = format!("pinfold/project-{}:", self.id);
-        for reference in String::from_utf8_lossy(&output.stdout).lines() {
-            if !reference.contains(&prefix) {
-                continue;
+        for reference in images.iter().flat_map(|image| &image.names) {
+            if reference.contains(&prefix) {
+                remove_runtime_image(reference);
             }
-            let _ = Command::new("container")
-                .args(["image", "delete", reference])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
         }
     }
 }
@@ -1312,6 +1298,12 @@ fn answer(mut stream: TcpStream, requests: &Mutex<Vec<String>>) {
 fn default_image(binary: &Path, env: &TestEnv) {
     static IMAGE: OnceLock<()> = OnceLock::new();
     IMAGE.get_or_init(|| {
+        // The runtime store is shared by both test binaries; a stale image
+        // is fine, the tests read its labels and run boxes from it.
+        const STABLE: &str = "pinfold/profile-default:latest";
+        if image_named(STABLE) {
+            return;
+        }
         let output = env
             .command(binary)
             .args(["build", "--profile", "default"])

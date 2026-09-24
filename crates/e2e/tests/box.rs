@@ -5,7 +5,6 @@
 //! default profile image once, and drives pinfold as a user would: the CLI,
 //! environment variables and the box spec are its only seams.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -14,7 +13,10 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, 
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use e2e::{HttpFixture, TestEnv, pinfold};
+use e2e::{
+    HttpFixture, TestEnv, image_cli, image_id, image_named, pinfold, remove_runtime_image,
+    runtime_images, untagged_images,
+};
 
 /// The two owner-gone tests share one hazard: either one's removal can take
 /// the other's dead box before the other expects it. Hold this from killing
@@ -2036,24 +2038,6 @@ fn file_from_image(
     output.stdout
 }
 
-/// The number of untagged images `podman images -a` lists, including the
-/// intermediate layers a cached build leaves behind. Linux only.
-fn untagged_images() -> usize {
-    let output = Command::new("podman")
-        .args(["images", "-a"])
-        .output()
-        .expect("run podman images -a");
-    assert!(
-        output.status.success(),
-        "podman images -a failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|line| line.split_whitespace().next() == Some("<none>"))
-        .count()
-}
-
 /// Removes the run's images from the runtime store on drop, so a failing run
 /// does not leave them for the next run to count or for the operator's disk.
 struct ImageCleanup {
@@ -2082,114 +2066,6 @@ impl Drop for ImageCleanup {
     }
 }
 
-/// Remove one image by reference from the runtime, best effort.
-fn remove_runtime_image(reference: &str) {
-    let mut command = Command::new(image_cli());
-    if cfg!(target_os = "linux") {
-        command.args(["image", "rm", reference]);
-    } else {
-        command.args(["image", "delete", reference]);
-    }
-    let _ = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
-
-/// The image CLI this host uses: `podman` on Linux, Apple `container` on
-/// macOS.
-fn image_cli() -> &'static str {
-    if cfg!(target_os = "linux") {
-        "podman"
-    } else {
-        "container"
-    }
-}
-
-/// One runtime image, normalized across podman and Apple `container`.
-struct RuntimeImage {
-    id: String,
-    names: Vec<String>,
-    labels: BTreeMap<String, String>,
-}
-
-/// Every image the runtime knows, from its own image list.
-fn runtime_images() -> Result<Vec<RuntimeImage>, String> {
-    let output = Command::new(image_cli())
-        .args(["image", "list", "--format", "json"])
-        .output()
-        .map_err(|error| format!("run {} image list: {error}", image_cli()))?;
-    if !output.status.success() {
-        return Err(format!(
-            "{} image list failed: {}",
-            image_cli(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let images: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("image list is not JSON: {error}"))?;
-    Ok(images.iter().map(normalize_image).collect())
-}
-
-/// One image list entry, whatever the runtime's schema.
-fn normalize_image(image: &serde_json::Value) -> RuntimeImage {
-    // podman: `Id`, `Names` and `Labels`, the last two null when empty.
-    if let Some(id) = image["Id"].as_str() {
-        return RuntimeImage {
-            id: id.to_string(),
-            names: image["Names"]
-                .as_array()
-                .map(|names| {
-                    names
-                        .iter()
-                        .filter_map(|name| Some(name.as_str()?.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            labels: image["Labels"]
-                .as_object()
-                .map(|labels| {
-                    labels
-                        .iter()
-                        .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
-                        .collect()
-                })
-                .unwrap_or_default(),
-        };
-    }
-    // Apple `container`: build labels are OCI image config labels; a locally
-    // built image also carries name annotations on its index descriptor.
-    let mut labels: BTreeMap<String, String> = image["configuration"]["descriptor"]["annotations"]
-        .as_object()
-        .map(|labels| {
-            labels
-                .iter()
-                .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
-    if let Some(variants) = image["variants"].as_array() {
-        for variant in variants {
-            if let Some(config) = variant["config"]["config"]["Labels"].as_object() {
-                for (key, value) in config {
-                    if let Some(value) = value.as_str() {
-                        labels.insert(key.clone(), value.to_string());
-                    }
-                }
-            }
-        }
-    }
-    RuntimeImage {
-        id: image["id"].as_str().unwrap_or_default().to_string(),
-        names: image["configuration"]["name"]
-            .as_str()
-            .map(|name| vec![name.to_string()])
-            .unwrap_or_default(),
-        labels,
-    }
-}
-
 /// The `(digest, reference)` of every image carrying `label = value`, from
 /// the runtime itself: its image list is the ground truth for what remains.
 fn labeled_images(label: &str, value: &str) -> Vec<(String, String)> {
@@ -2207,27 +2083,6 @@ fn labeled_images(label: &str, value: &str) -> Vec<(String, String)> {
             names.into_iter().map(move |name| (id.clone(), name))
         })
         .collect()
-}
-
-/// Whether the runtime lists an image under `reference`, ignoring podman's
-/// `localhost/` prefix.
-fn image_named(reference: &str) -> bool {
-    image_id(reference).is_some()
-}
-
-/// The id of the image the runtime lists under `reference`, ignoring
-/// podman's `localhost/` prefix.
-fn image_id(reference: &str) -> Option<String> {
-    runtime_images()
-        .expect("list the runtime's images")
-        .into_iter()
-        .find(|image| {
-            image
-                .names
-                .iter()
-                .any(|name| name.strip_prefix("localhost/").unwrap_or(name) == reference)
-        })
-        .map(|image| image.id)
 }
 
 /// The unique tag of the image that `pinfold/profile-<profile>:latest` names
@@ -3130,20 +2985,22 @@ fn host_id(flag: &str) -> String {
 fn default_image(binary: &Path, env: &TestEnv) -> &'static str {
     static IMAGE: OnceLock<String> = OnceLock::new();
     IMAGE.get_or_init(|| {
-        let output = env
-            .command(binary)
-            .args(["build", "--profile", "default"])
-            .output()
-            .expect("run pinfold build --profile default");
-        assert!(
-            output.status.success(),
-            "pinfold build --profile default failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8(output.stdout)
-            .expect("build output is UTF-8")
-            .trim()
-            .to_string()
+        // The runtime store is shared by both test binaries; a stale image
+        // is fine, the tests read its labels and run boxes from it.
+        const STABLE: &str = "pinfold/profile-default:latest";
+        if !image_named(STABLE) {
+            let output = env
+                .command(binary)
+                .args(["build", "--profile", "default"])
+                .output()
+                .expect("run pinfold build --profile default");
+            assert!(
+                output.status.success(),
+                "pinfold build --profile default failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        STABLE.to_string()
     })
 }
 
