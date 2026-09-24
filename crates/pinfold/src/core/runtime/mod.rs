@@ -92,6 +92,35 @@ impl BoxState {
     }
 }
 
+/// One box's run facts, as `pinfold box stat` reports them. A field is
+/// `None` when the runtime cannot answer it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BoxStat {
+    /// The box `list` names.
+    #[serde(rename = "box")]
+    pub name: String,
+    /// The number of times the box's cgroup killed a process for memory.
+    /// Monotonic for the box's life; the caller keeps its own baseline.
+    pub oom_kills: Option<u64>,
+    pub memory: MemoryStat,
+    pub pids: PidsStat,
+}
+
+/// One box's memory use and limit, in bytes.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct MemoryStat {
+    pub current: Option<u64>,
+    pub peak: Option<u64>,
+    pub limit: Option<u64>,
+}
+
+/// One box's pids use and limit.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct PidsStat {
+    pub current: Option<u64>,
+    pub limit: Option<u64>,
+}
+
 /// One image the runtime knows about.
 #[derive(Debug, Clone)]
 pub struct ImageInfo {
@@ -143,6 +172,10 @@ pub trait Runtime: Sync {
         workdir: Option<&Path>,
         argv: &[String],
     ) -> io::Result<ExitStatus>;
+
+    /// One box's OOM kills, memory and pids facts. `name` is the box
+    /// `list` names. Fields the runtime cannot answer are `None`.
+    fn stat(&self, name: &str) -> io::Result<BoxStat>;
 
     /// List every box, running or not.
     fn list(&self) -> io::Result<Vec<BoxInfo>>;

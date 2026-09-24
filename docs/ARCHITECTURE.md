@@ -112,6 +112,7 @@ leftovers by label. The CLI runs the same code in-process.
 ```
 pinfold box up < spec.json        # prints ready, holds the box, ends with down
 pinfold box exec BOX [--tty] [--workdir D] -- argv…   # stdio through, exit code back
+pinfold box stat BOX              # one JSON object of the box's memory, pids and OOM kills
 pinfold box down BOX              # same as closing up's stdin
 pinfold box list --label k=v      # JSON lines; repeat --label to AND filters
 pinfold box prune                 # remove boxes whose `up` is gone, print each removed
@@ -119,6 +120,19 @@ pinfold box prune                 # remove boxes whose `up` is gone, print each 
 
 On a box that is absent, `exec` exits 3 with `pinfold box exec: no box
 named ...`; any other exit code is the command's.
+
+`stat` prints one JSON object with every key present:
+
+```json
+{"box":NAME,"oom_kills":N|null,"memory":{"current":BYTES|null,"peak":BYTES|null,"limit":BYTES|null},"pids":{"current":N|null,"limit":N|null}}
+```
+
+On podman every field comes from the box's cgroup, found through the
+runtime. Apple answers the limits from what it reports for the box and null
+for the rest. A field the runtime cannot answer is null. `oom_kills` is
+monotonic for the box's life; the caller keeps its own baseline. On an
+absent box, `stat` exits 3 with `pinfold box stat: no box named ...`, like
+`exec`.
 
 `up` prints one `ready` line once the box is up:
 
@@ -511,6 +525,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW is the default list; a project's allow = ["api.github.com"] makes it exactly that host, and registry.npmjs.org is refused as not allowlisted. |
 | 17 | up refuses before it creates | A missing image and a live name are refused as data, with no box, state dir or seed left; the box whose name was reused still answers exec. |
 | 18 | A caller reads the effective configuration as data | pinfold config reports a project's allow list, its trust state before and after pinfold allow, and the project home pinfold pi then mounts. |
+| 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, and every field is present. |
 
 Linux (podman) runs in GitHub CI on `ubuntu-26.04` and `ubuntu-26.04-arm` as
 the required gate. The workflow installs the pinned toolchain's musl target,
@@ -571,6 +586,10 @@ profile/   the built-in default profile
 - Nested user namespaces in the Apple `container` guest kernel: can they be
   turned off?
 - Where herdr reads `HERDR_AGENT`.
-- Memory limits and OOM detection on Apple `container`.
+- Memory limits and OOM detection on Apple `container`: `stat` reports the
+  memory limit the box was given, but nothing of a kill or of use inside
+  the VM. `oom_kills`, `memory.current`, `memory.peak`, `pids.current` and
+  `pids.limit` are null there; seeing a kill needs the guest kernel or the
+  runtime to report it.
 - No disk cap on Apple `container`.
 - Model credentials injected at the proxy, so the box sees a placeholder.

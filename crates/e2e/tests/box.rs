@@ -1794,6 +1794,94 @@ fn no_egress_means_no_way_out() {
     drop(up);
 }
 
+#[test]
+fn a_caller_can_tell_an_oom_kill_from_a_failure() {
+    // Guarantee 20: a caller can tell an OOM kill from a failure.
+    // Sabotage: read `memory.events` but report `high` instead of `oom_kill`;
+    // with no memory.high set the count stays 0 and the post-exec assertion
+    // fails.
+    let binary = pinfold();
+    let env = TestEnv::new("oom");
+    let name = format!("pinfold-e2e-{}-oom", std::process::id());
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(binary, &env),
+        "memory": "256M",
+    });
+    let up = box_up(binary, &env, &spec, &name);
+
+    // Every key is present, and the limit is the one in force: 256 MiB. A
+    // field the runtime cannot answer is null, not absent.
+    let before = box_stat(binary, &env, &name);
+    assert_eq!(before["box"], name);
+    assert_eq!(
+        before["memory"]["limit"].as_u64(),
+        Some(256 * 1024 * 1024),
+        "stat: {before}"
+    );
+    for key in ["box", "oom_kills", "memory", "pids"] {
+        assert!(before.get(key).is_some(), "stat omitted {key}: {before}");
+    }
+    for key in ["current", "peak", "limit"] {
+        assert!(
+            before["memory"].get(key).is_some(),
+            "stat omitted memory.{key}: {before}"
+        );
+    }
+    for key in ["current", "limit"] {
+        assert!(
+            before["pids"].get(key).is_some(),
+            "stat omitted pids.{key}: {before}"
+        );
+    }
+
+    if cfg!(target_os = "linux") {
+        // A fresh box's cgroup has killed nothing; the caller's baseline.
+        assert_eq!(before["oom_kills"].as_u64(), Some(0), "stat: {before}");
+        // A command that allocates past the limit is killed; the box stays
+        // up and the count rises. The command's non-zero exit must be read
+        // together with stat, not as a failure.
+        let killed = box_exec(
+            binary,
+            &env,
+            &name,
+            &["sh", "-c", "head -c 1G /dev/zero | tail"],
+        );
+        assert_ne!(killed.code, 0, "the memory hog exited 0");
+        let after = box_stat(binary, &env, &name);
+        let kills = after["oom_kills"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("stat lost oom_kills: {after}"));
+        assert!(kills >= 1, "stat reports no OOM kill after one: {after}");
+    } else {
+        // The VM cannot see kills or use; the field is present and null, so
+        // a caller can tell "cannot know" from "no kill".
+        assert!(before["oom_kills"].is_null(), "stat: {before}");
+        assert!(before["memory"]["current"].is_null(), "stat: {before}");
+        assert!(before["memory"]["peak"].is_null(), "stat: {before}");
+        assert!(before["pids"]["current"].is_null(), "stat: {before}");
+        assert!(before["pids"]["limit"].is_null(), "stat: {before}");
+    }
+
+    // An absent box is pinfold's own failure, exit 3, like exec.
+    let status = box_down(binary, &env, &name);
+    assert!(status.success(), "box down failed: {status}");
+    let absent = env
+        .command(binary)
+        .args(["box", "stat", &name])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold box stat");
+    assert_eq!(
+        exit_code(absent.status),
+        3,
+        "stat on an absent box did not exit 3: {}",
+        String::from_utf8_lossy(&absent.stderr)
+    );
+
+    drop(up);
+}
+
 /// One `/proc/<pid>/status` field's value.
 fn status_field(status: &str, key: &str) -> String {
     status
@@ -2010,6 +2098,22 @@ fn box_exec(binary: &Path, env: &TestEnv, name: &str, argv: &[&str]) -> ExecOutp
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     }
+}
+
+/// Run `box stat` on a live box and parse its one JSON object.
+fn box_stat(binary: &Path, env: &TestEnv, name: &str) -> serde_json::Value {
+    let output = env
+        .command(binary)
+        .args(["box", "stat", name])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold box stat");
+    assert!(
+        output.status.success(),
+        "box stat failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("stat output is one JSON object")
 }
 
 fn box_list(binary: &Path, env: &TestEnv, label: &str) -> Vec<serde_json::Value> {

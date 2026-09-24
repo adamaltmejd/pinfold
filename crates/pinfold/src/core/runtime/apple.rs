@@ -13,7 +13,8 @@ use tokio::process::{Child, Command};
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
 use crate::core::runtime::{
-    BoxInfo, BoxState, BuildRequest, ImageInfo, Runtime, bind, guest_path, spawn_error, user,
+    BoxInfo, BoxStat, BoxState, BuildRequest, ImageInfo, MemoryStat, PidsStat, Runtime, bind,
+    guest_path, spawn_error, user,
 };
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
@@ -132,6 +133,20 @@ impl Runtime for Apple {
         command
             .status()
             .map_err(|error| spawn_error("container", error))
+    }
+
+    fn stat(&self, name: &str) -> io::Result<BoxStat> {
+        let output = std::process::Command::new("container")
+            .args(["list", "--all", "--format", "json"])
+            .output()
+            .map_err(|error| spawn_error("container", error))?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "container list: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        parse_stat(&output.stdout, name)
     }
 
     fn list(&self) -> io::Result<Vec<BoxInfo>> {
@@ -271,6 +286,16 @@ struct ListedConfiguration {
     /// ISO 8601, which is RFC 3339.
     #[serde(default, rename = "creationDate")]
     created: String,
+    #[serde(default)]
+    resources: ListedResources,
+}
+
+/// The limits the runtime reports for a box. The VM exposes no kill or use
+/// counters, so `stat` answers null for those.
+#[derive(Default, Deserialize)]
+struct ListedResources {
+    #[serde(default, rename = "memoryInBytes")]
+    memory: Option<u64>,
 }
 
 #[derive(Default, Deserialize)]
@@ -292,6 +317,33 @@ fn parse_list(json: &[u8]) -> io::Result<Vec<BoxInfo>> {
             state: BoxState::from_runtime(&container.status.state),
         })
         .collect())
+}
+
+/// `stat`'s answer for the box `name`: the limits Apple reports, and null
+/// for what the VM cannot answer (kills, memory use, pids use).
+fn parse_stat(json: &[u8], name: &str) -> io::Result<BoxStat> {
+    let containers: Vec<ListedContainer> = serde_json::from_slice(json).map_err(|error| {
+        io::Error::other(format!("container list returned invalid JSON: {error}"))
+    })?;
+    let resources = containers
+        .into_iter()
+        .find(|container| container.id == name)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no box named {name:?}")))?
+        .configuration
+        .resources;
+    Ok(BoxStat {
+        name: name.to_string(),
+        oom_kills: None,
+        memory: MemoryStat {
+            current: None,
+            peak: None,
+            limit: resources.memory,
+        },
+        pids: PidsStat {
+            current: None,
+            limit: None,
+        },
+    })
 }
 
 /// One `container image list --format json` entry, as much as pinfold needs.

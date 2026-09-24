@@ -21,7 +21,8 @@ use tokio::process::{Child, Command};
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
 use crate::core::runtime::{
-    BoxInfo, BoxState, BuildRequest, ImageInfo, Runtime, bind, guest_path, spawn_error, user,
+    BoxInfo, BoxStat, BoxState, BuildRequest, ImageInfo, MemoryStat, PidsStat, Runtime, bind,
+    guest_path, spawn_error, user,
 };
 use crate::dirs;
 
@@ -140,6 +141,26 @@ impl Runtime for Podman {
             .map_err(|error| spawn_error("podman", error))
     }
 
+    fn stat(&self, name: &str) -> io::Result<BoxStat> {
+        // The cgroup path comes from the runtime; pinfold never composes the
+        // systemd scope name. Every field is a plain cgroup v2 file under it.
+        let cgroup = cgroup_path(name)?;
+        let dir = Path::new("/sys/fs/cgroup").join(cgroup.trim_start_matches('/'));
+        Ok(BoxStat {
+            name: name.to_string(),
+            oom_kills: cgroup_event(&dir, "memory.events", "oom_kill"),
+            memory: MemoryStat {
+                current: cgroup_number(&dir, "memory.current"),
+                peak: cgroup_number(&dir, "memory.peak"),
+                limit: cgroup_number(&dir, "memory.max"),
+            },
+            pids: PidsStat {
+                current: cgroup_number(&dir, "pids.current"),
+                limit: cgroup_number(&dir, "pids.max"),
+            },
+        })
+    }
+
     fn list(&self) -> io::Result<Vec<BoxInfo>> {
         let output = std::process::Command::new("podman")
             .args(["ps", "--all", "--format", "json"])
@@ -235,6 +256,49 @@ impl Runtime for Podman {
     fn version(&self) -> io::Result<String> {
         super::cli_version("podman")
     }
+}
+
+/// The box's cgroup path, as `podman inspect` reports it. The path is
+/// relative to `/sys/fs/cgroup`; pinfold reads files under it and never
+/// composes the systemd scope name itself.
+fn cgroup_path(name: &str) -> io::Result<String> {
+    let output = std::process::Command::new("podman")
+        .args(["inspect", "--format", "{{.State.CgroupPath}}", name])
+        .output()
+        .map_err(|error| spawn_error("podman", error))?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "podman inspect {name}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        return Err(io::Error::other(format!(
+            "podman inspect {name} reports no cgroup path"
+        )));
+    }
+    Ok(path)
+}
+
+/// One cgroup v2 file as a number, or `None` when the kernel does not have
+/// the file (an old kernel's `memory.peak`) or the value is not a number
+/// (`max`, meaning no limit).
+fn cgroup_number(dir: &Path, file: &str) -> Option<u64> {
+    fs::read_to_string(dir.join(file)).ok()?.trim().parse().ok()
+}
+
+/// One named counter from a cgroup v2 events file (`key value` lines). A
+/// missing file is `None`.
+fn cgroup_event(dir: &Path, file: &str, key: &str) -> Option<u64> {
+    let text = fs::read_to_string(dir.join(file)).ok()?;
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+        if fields.next() == Some(key) {
+            return fields.next().and_then(|value| value.parse().ok());
+        }
+    }
+    None
 }
 
 /// What `podman info` reports that `doctor` shows.

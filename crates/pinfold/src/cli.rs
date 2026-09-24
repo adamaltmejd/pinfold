@@ -25,7 +25,7 @@ use crate::core::runtime::{BoxInfo, BuildRequest, Runtime, local_image_id, podma
 use crate::dirs;
 use crate::trust;
 
-const USAGE: &str = "usage: pinfold box up|exec BOX [--tty] [--workdir DIR] -- argv|down BOX|list --label k=v [--label k]|prune";
+const USAGE: &str = "usage: pinfold box up|exec BOX [--tty] [--workdir DIR] -- argv|stat BOX|down BOX|list --label k=v [--label k]|prune";
 const BUILD_USAGE: &str = "usage: pinfold build [--profile NAME]";
 const PROFILE_USAGE: &str = "usage: pinfold profile new NAME [--from PROFILE]";
 const ALLOW_USAGE: &str = "usage: pinfold allow";
@@ -178,6 +178,7 @@ fn dispatch(args: &[OsString]) -> io::Result<i32> {
     match args.first().and_then(|arg| arg.to_str()) {
         Some("up") => up(&args[1..]),
         Some("exec") => exec(&args[1..]),
+        Some("stat") => stat(&args[1..]),
         Some("down") => down(&args[1..]),
         Some("list") => list(&args[1..]),
         Some("prune") => prune(&args[1..]),
@@ -299,6 +300,23 @@ fn exec(args: &[OsString]) -> io::Result<i32> {
     let tty = args.tty || (io::stdin().is_terminal() && io::stdout().is_terminal());
     let status = runtime.exec(&args.name, tty, args.workdir.as_deref(), &args.argv)?;
     Ok(exit_code(status))
+}
+
+/// Print one JSON object of a box's runtime facts: OOM kills, memory and
+/// pids use and limits. `stat` is what tells a caller an OOM kill from a
+/// failure.
+fn stat(args: &[OsString]) -> io::Result<i32> {
+    let name = single_name(args, "stat")?;
+    let runtime = runtime()?;
+    // An absent box is pinfold's own failure, told apart from a stat failure
+    // by exit 3, like exec.
+    if !runtime.list()?.iter().any(|box_| box_.id == name) {
+        eprintln!("pinfold box stat: no box named {name:?}");
+        return Ok(3);
+    }
+    let report = serde_json::to_string(&runtime.stat(&name)?).map_err(io::Error::other)?;
+    println!("{report}");
+    Ok(0)
 }
 
 /// Signal the owning `box up` process through the state dir and wait for it
