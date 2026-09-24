@@ -2,9 +2,9 @@
 //! profile's `pinfold.toml`, and the host environment, merged.
 //!
 //! Layers, highest first: environment, `.pinfold.toml`, the profile's
-//! `pinfold.toml`, built-in defaults. Scalars take the highest layer;
-//! `allow`, `routes` and `protect` are unions, so no layer removes what
-//! another adds.
+//! `pinfold.toml`, built-in defaults. Each key takes the highest layer that
+//! sets it; a list replaces the ones below it, and a present-but-empty list
+//! sets an empty value.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -20,6 +20,18 @@ use crate::core::profile::Profile;
 const DEFAULT_PROFILE: &str = "default";
 const DEFAULT_CPUS: f64 = 4.0;
 const DEFAULT_MEMORY: &str = "8G";
+/// The built-in allowlist, in effect until a layer sets `allow`.
+const DEFAULT_ALLOW: [&str; 9] = [
+    "api.anthropic.com",
+    "platform.claude.com",
+    "api.openai.com",
+    "auth.openai.com",
+    "chatgpt.com",
+    "openrouter.ai",
+    "opencode.ai",
+    "registry.npmjs.org",
+    "pi.dev",
+];
 
 /// The merged configuration for one project run.
 pub struct Config {
@@ -35,12 +47,13 @@ pub struct Config {
     /// The raw bytes of the project's `.pinfold.toml` that were parsed,
     /// `None` when the file is absent. Trust hashes these bytes.
     pub project_toml: Option<Vec<u8>>,
-    /// The effective allowlist: the union of every layer.
+    /// The effective allowlist: the highest layer that sets `allow`, else
+    /// the built-in default.
     pub allow: Vec<String>,
-    /// The effective routes: the union of every layer. A higher layer wins
-    /// a name it shares with a lower one.
+    /// The effective routes: the highest layer that sets `routes`, else `{}`.
     pub routes: BTreeMap<String, String>,
-    /// The effective extra read-only directories: the union of every layer.
+    /// The effective extra read-only directories: the highest layer that
+    /// sets `protect`, else `[]`.
     pub protect: Vec<String>,
     /// The box's vCPUs.
     pub cpus: f64,
@@ -78,8 +91,8 @@ impl Origin {
     }
 }
 
-/// The layer each effective configuration value came from. `allow`, `routes`
-/// and `protect` carry one entry per effective item.
+/// The layer each effective configuration value came from. A list key
+/// carries the one layer the whole list came from.
 pub struct Origins {
     /// The selected profile.
     pub profile: Origin,
@@ -89,12 +102,12 @@ pub struct Origins {
     pub cpus: Origin,
     /// The effective `memory` value.
     pub memory: Origin,
-    /// Every effective allow entry, in effective order, with its origin.
-    pub allow: Vec<(String, Origin)>,
-    /// Every effective route, sorted by name, with its origin.
-    pub routes: Vec<(String, Origin)>,
-    /// Every effective protect entry, in effective order, with its origin.
-    pub protect: Vec<(String, Origin)>,
+    /// The layer the effective allowlist came from.
+    pub allow: Origin,
+    /// The layer the effective routes came from.
+    pub routes: Origin,
+    /// The layer the effective protect list came from.
+    pub protect: Origin,
 }
 
 /// The Containerfile whose bytes decide the effective image.
@@ -144,17 +157,21 @@ impl Config {
                 project.memory.is_some(),
                 profile_layer.memory.is_some(),
             ),
-            allow: union_origins([
-                (&profile_layer.allow, Origin::Profile),
-                (&project.allow, Origin::Project),
-                (&environment.allow, Origin::Environment),
-            ]),
-            protect: union_origins([
-                (&profile_layer.protect, Origin::Profile),
-                (&project.protect, Origin::Project),
-                (&environment.protect, Origin::Environment),
-            ]),
-            routes: route_origins(&profile_layer.routes, &project.routes, &environment.routes),
+            allow: scalar_origin(
+                environment.allow.is_some(),
+                project.allow.is_some(),
+                profile_layer.allow.is_some(),
+            ),
+            routes: scalar_origin(
+                environment.routes.is_some(),
+                project.routes.is_some(),
+                profile_layer.routes.is_some(),
+            ),
+            protect: scalar_origin(
+                environment.protect.is_some(),
+                project.protect.is_some(),
+                profile_layer.protect.is_some(),
+            ),
         };
         let merged = profile_layer.over(project).over(environment);
         let image = merged.image.clone();
@@ -177,9 +194,11 @@ impl Config {
             image,
             containerfile,
             project_toml,
-            allow: merged.allow,
-            routes: merged.routes,
-            protect: merged.protect,
+            allow: merged
+                .allow
+                .unwrap_or_else(|| DEFAULT_ALLOW.iter().map(|host| host.to_string()).collect()),
+            routes: merged.routes.unwrap_or_default(),
+            protect: merged.protect.unwrap_or_default(),
             cpus: merged.cpus.map(Cpus::value).unwrap_or(DEFAULT_CPUS),
             memory: merged.memory.unwrap_or_else(|| DEFAULT_MEMORY.to_string()),
             env: env_names(),
@@ -198,12 +217,9 @@ struct Layer {
     /// ignored.
     profile: Option<String>,
     image: Option<String>,
-    #[serde(default)]
-    allow: Vec<String>,
-    #[serde(default)]
-    routes: BTreeMap<String, String>,
-    #[serde(default)]
-    protect: Vec<String>,
+    allow: Option<Vec<String>>,
+    routes: Option<BTreeMap<String, String>>,
+    protect: Option<Vec<String>>,
     cpus: Option<Cpus>,
     memory: Option<String>,
 }
@@ -232,21 +248,18 @@ impl Layer {
         toml::from_str(text).map_err(|error| invalid(source, &error.to_string()))
     }
 
-    /// The environment layer. An absent variable is not a layer.
+    /// The environment layer. An absent variable is not a layer; a present
+    /// variable, even empty, sets its key.
     fn from_env() -> io::Result<Layer> {
         Ok(Layer {
             profile: var("PINFOLD_PROFILE"),
             image: var("PINFOLD_IMAGE"),
-            allow: var("PINFOLD_ALLOW")
-                .map(|value| split_list(&value))
-                .unwrap_or_default(),
-            routes: match var("PINFOLD_ROUTES") {
-                Some(value) => parse_routes(&value)?,
-                None => BTreeMap::new(),
-            },
-            protect: var("PINFOLD_PROTECT")
-                .map(|value| split_list(&value))
-                .unwrap_or_default(),
+            allow: var("PINFOLD_ALLOW").as_deref().map(split_list),
+            routes: var("PINFOLD_ROUTES")
+                .as_deref()
+                .map(parse_routes)
+                .transpose()?,
+            protect: var("PINFOLD_PROTECT").as_deref().map(split_list),
             cpus: match var("PINFOLD_CPUS") {
                 Some(value) => Some(Cpus::Float(value.parse::<f64>().map_err(|error| {
                     io::Error::new(
@@ -266,9 +279,9 @@ impl Layer {
         self.image = higher.image.or(self.image);
         self.cpus = higher.cpus.or(self.cpus);
         self.memory = higher.memory.or(self.memory);
-        self.allow = union(self.allow, higher.allow);
-        self.routes.extend(higher.routes);
-        self.protect = union(self.protect, higher.protect);
+        self.allow = higher.allow.or(self.allow);
+        self.routes = higher.routes.or(self.routes);
+        self.protect = higher.protect.or(self.protect);
         self
     }
 }
@@ -326,17 +339,7 @@ fn parse_routes(value: &str) -> io::Result<BTreeMap<String, String>> {
     Ok(routes)
 }
 
-/// `lower` plus the items of `higher` it does not already hold.
-fn union(mut lower: Vec<String>, higher: Vec<String>) -> Vec<String> {
-    for item in higher {
-        if !lower.contains(&item) {
-            lower.push(item);
-        }
-    }
-    lower
-}
-
-/// The origin of a scalar: the highest layer that set it, else the default.
+/// The origin of a key: the highest layer that set it, else the default.
 fn scalar_origin(environment: bool, project: bool, profile: bool) -> Origin {
     if environment {
         Origin::Environment
@@ -347,40 +350,6 @@ fn scalar_origin(environment: bool, project: bool, profile: bool) -> Origin {
     } else {
         Origin::Default
     }
-}
-
-/// The origin of each union entry: the lowest layer that added it wins,
-/// matching [`union`]'s order.
-fn union_origins(layers: [(&[String], Origin); 3]) -> Vec<(String, Origin)> {
-    let mut entries: Vec<(String, Origin)> = Vec::new();
-    for (items, origin) in layers {
-        for item in items {
-            if !entries.iter().any(|(existing, _)| existing == item) {
-                entries.push((item.clone(), origin));
-            }
-        }
-    }
-    entries
-}
-
-/// The origin of each route: the highest layer that set it wins, as
-/// [`Layer::over`] does.
-fn route_origins(
-    profile: &BTreeMap<String, String>,
-    project: &BTreeMap<String, String>,
-    environment: &BTreeMap<String, String>,
-) -> Vec<(String, Origin)> {
-    let mut routes: BTreeMap<String, Origin> = BTreeMap::new();
-    for name in profile.keys() {
-        routes.insert(name.clone(), Origin::Profile);
-    }
-    for name in project.keys() {
-        routes.insert(name.clone(), Origin::Project);
-    }
-    for name in environment.keys() {
-        routes.insert(name.clone(), Origin::Environment);
-    }
-    routes.into_iter().collect()
 }
 
 /// The `<NAME>`s of the host's `PINFOLD_ENV_<NAME>` variables, sorted.

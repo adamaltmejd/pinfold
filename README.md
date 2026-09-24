@@ -95,8 +95,8 @@ In a project:
 Layers, highest first: the environment, `.pinfold.toml`, the selected
 profile's `pinfold.toml`, built-in defaults. The keys, their environment
 variables and defaults are the table under Configuration in
-[ARCHITECTURE.md](docs/ARCHITECTURE.md#configuration). `allow`, `routes`
-and `protect` are unions, so a layer never removes what another adds.
+[ARCHITECTURE.md](docs/ARCHITECTURE.md#configuration). A list set in a
+layer replaces the lists below it.
 
 Credentials need no pinfold code: `op run -- pi …` for 1Password,
 `PINFOLD_ENV_GH_TOKEN` for gh and git, direnv for per-repo tokens, and

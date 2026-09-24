@@ -1,4 +1,5 @@
-//! End-to-end tests for guarantees 6, 12, 13 and 14 in docs/ARCHITECTURE.md.
+//! End-to-end tests for guarantees 6, 12, 13, 14 and 16 in
+//! docs/ARCHITECTURE.md.
 //!
 //! They run on a macOS host with the Apple `container` CLI, or a Linux host
 //! with rootless podman. The harness isolates the XDG dirs, builds the
@@ -669,6 +670,117 @@ fn both_pi_config_levels_load_behind_a_route() {
     );
 }
 
+#[test]
+fn the_highest_layer_sets_the_allowlist() {
+    // Sabotage: keep `union` in `Layer::over`; the project's `allow` no
+    // longer replaces the built-in list, so the default hosts stay in the
+    // box's PINFOLD_ALLOW and npm is let through: the exact-list assertion
+    // and the registry refusal fail.
+    let binary = pinfold();
+    let env = TestEnv::new("pi-allow");
+    default_image(binary, &env);
+    let project = TestDir::new(&env, "project");
+    git_init(project.path());
+
+    // No `.pinfold.toml`: the built-in defaults are the box's allowlist.
+    let run = PiRpc::start(binary, &env, project.path());
+    let id = project_id(&env, project.path());
+    let name = run.ready_box(binary, &env, &id);
+    let default_allow = box_exec(
+        binary,
+        &env,
+        &name,
+        &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""],
+    );
+    assert!(
+        default_allow.stdout.contains("registry.npmjs.org"),
+        "the built-in allowlist is missing registry.npmjs.org: {}",
+        default_allow.stdout
+    );
+    assert!(
+        default_allow.stdout.contains("pi.dev"),
+        "the built-in allowlist is missing pi.dev: {}",
+        default_allow.stdout
+    );
+    assert!(
+        run.finish().success(),
+        "the default run did not exit cleanly"
+    );
+
+    // A project list replaces the built-in one: the box's allowlist is
+    // exactly the host the file names.
+    let config = project.path().join(".pinfold.toml");
+    fs::write(&config, "allow = [\"api.github.com\"]\n").expect("write .pinfold.toml");
+    allow(binary, &env, project.path());
+    let run = PiRpc::start(binary, &env, project.path());
+    let name = run.ready_box(binary, &env, &id);
+    let project_allow = box_exec(
+        binary,
+        &env,
+        &name,
+        &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""],
+    );
+    assert_eq!(
+        project_allow.stdout, "api.github.com",
+        "the project's allowlist did not replace the built-in one"
+    );
+
+    // The one listed host works.
+    let allowed = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "30",
+            "-o",
+            "/dev/null",
+            "https://api.github.com/",
+        ],
+    );
+    assert_eq!(
+        allowed.code, 0,
+        "allowlisted host failed: {}",
+        allowed.stderr
+    );
+
+    // A host the built-in list allowed is refused now; the proxy decides
+    // before dialing, so no request reaches npm.
+    let denied = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "30",
+            "-o",
+            "/dev/null",
+            "https://registry.npmjs.org/",
+        ],
+    );
+    assert_ne!(denied.code, 0, "registry.npmjs.org was allowed through");
+    assert!(
+        denied.stderr.contains("403"),
+        "expected a proxy 403: {}",
+        denied.stderr
+    );
+
+    // The log names the refused host and the reason.
+    let lines = egress_log_lines(&env, &name);
+    assert!(
+        lines.iter().any(|line| line["host"] == "registry.npmjs.org"
+            && line["decision"] == "refused"
+            && line["reason"] == "not allowlisted"),
+        "no not-allowlisted refusal for registry.npmjs.org: {lines:?}"
+    );
+
+    assert!(run.finish().success(), "pinfold pi did not exit cleanly");
+}
+
 /// A `pinfold pi --mode rpc` process with a live box.
 struct PiRpc {
     child: Child,
@@ -1110,6 +1222,20 @@ fn box_exec(binary: &Path, env: &TestEnv, name: &str, argv: &[&str]) -> ExecOutp
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     }
+}
+
+/// The parsed decision lines of a box's egress log.
+fn egress_log_lines(env: &TestEnv, name: &str) -> Vec<serde_json::Value> {
+    let path = env
+        .state
+        .join("pinfold")
+        .join("egress")
+        .join(format!("{name}.jsonl"));
+    fs::read_to_string(path)
+        .expect("read egress log")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("log line is JSON"))
+        .collect()
 }
 
 fn box_list(binary: &Path, env: &TestEnv, label: &str) -> Vec<serde_json::Value> {

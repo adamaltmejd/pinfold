@@ -294,10 +294,8 @@ allowlist from `PINFOLD_ALLOW`, that a 403 is final, and that commits are
 made on the host. Extensions run in the box; nothing security-relevant
 lives in one.
 
-The default profile's `pinfold.toml` allows the model APIs and npm:
-`api.anthropic.com`, `platform.claude.com`, `api.openai.com`,
-`auth.openai.com`, `chatgpt.com`, `openrouter.ai`, `opencode.ai`,
-`registry.npmjs.org`, and `pi.dev` for pi's model catalog. `PI_OFFLINE` is unset, so pi's package installs go
+The default profile's `pinfold.toml` sets no config, so it gets the
+built-in defaults. `PI_OFFLINE` is unset, so pi's package installs go
 through the proxy.
 
 ## Shared files
@@ -383,14 +381,14 @@ follows, and Apple `container` cannot mount a file read-only.
 ## Configuration
 
 Layers: environment > `.pinfold.toml` > the profile's `pinfold.toml` >
-defaults. Scalar keys take the highest layer. `allow`, `routes` and
-`protect` are the union of all layers, so a layer never removes what
-another adds.
+built-in defaults. Each key takes the highest layer that sets it, lists
+included: a list replaces the ones below it, and `allow = []` allows
+nothing. An environment variable that is set, even empty, sets its key.
 
 | Key | Env | Default | Meaning |
 |---|---|---|---|
 | `profile` | `PINFOLD_PROFILE` | `default` | Profile name |
-| `allow` | `PINFOLD_ALLOW` | `[]` | Domains added to the allowlist |
+| `allow` | `PINFOLD_ALLOW` | `api.anthropic.com`, `platform.claude.com`, `api.openai.com`, `auth.openai.com`, `chatgpt.com`, `openrouter.ai`, `opencode.ai`, `registry.npmjs.org`, `pi.dev` | Hosts the proxy lets through |
 | `routes` | `PINFOLD_ROUTES` | `{}` | Proxy routes to host services |
 | `protect` | `PINFOLD_PROTECT` | `[]` | Read-only directories in the box, beyond the always-protected ones |
 | `image` | `PINFOLD_IMAGE` | profile image | Image ref, or a Containerfile path relative to the project |
@@ -454,6 +452,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 13 | Project state persists and stays separate | Settings are seeded once and survive runs; a deleted seed returns; two projects don't see each other's state. |
 | 14 | Both pi config levels load without a TTY | `pi -p` through the shim: the fake model's request carries a skill from the profile and one from the project's `.pi/`. |
 | 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain. An unlabeled image, a live box and a project's state survive `pinfold clean`. |
+| 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW is the default list; a project's allow = ["api.github.com"] makes it exactly that host, and registry.npmjs.org is refused as not allowlisted. |
 
 Linux (podman) runs in GitHub CI on `ubuntu-26.04` and `ubuntu-26.04-arm` as
 the required gate. The workflow installs the pinned toolchain's musl target,

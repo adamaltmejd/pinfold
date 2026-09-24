@@ -587,9 +587,9 @@ fn run_doctor(args: &[OsString]) -> io::Result<usize> {
         config.memory,
         origin_label(config.origins.memory, profile)
     );
-    print_list("allow", &config.origins.allow, profile);
-    print_routes(&config.routes, &config.origins.routes, profile);
-    print_list("protect", &config.origins.protect, profile);
+    print_list("allow", &config.allow, config.origins.allow, profile);
+    print_routes(&config.routes, config.origins.routes, profile);
+    print_list("protect", &config.protect, config.origins.protect, profile);
     println!("  env:");
     if config.env.is_empty() {
         println!("    (none)");
@@ -721,29 +721,25 @@ fn kernel() -> io::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// One union key's effective entries, each with its layer.
-fn print_list(key: &str, entries: &[(String, Origin)], profile: &str) {
+/// One list key's effective entries, each with the layer the list came from.
+fn print_list(key: &str, entries: &[String], origin: Origin, profile: &str) {
     println!("  {key}:");
     if entries.is_empty() {
         println!("    (none)");
     }
-    for (entry, origin) in entries {
-        println!("    {entry} ({})", origin_label(*origin, profile));
+    for entry in entries {
+        println!("    {entry} ({})", origin_label(origin, profile));
     }
 }
 
-/// The effective routes, each with its layer and target.
-fn print_routes(routes: &BTreeMap<String, String>, origins: &[(String, Origin)], profile: &str) {
+/// The effective routes, each with the layer the list came from and target.
+fn print_routes(routes: &BTreeMap<String, String>, origin: Origin, profile: &str) {
     println!("  routes:");
-    if origins.is_empty() {
+    if routes.is_empty() {
         println!("    (none)");
     }
-    for (name, origin) in origins {
-        let target = routes.get(name).map(String::as_str).unwrap_or("?");
-        println!(
-            "    {name} -> {target} ({})",
-            origin_label(*origin, profile)
-        );
+    for (name, target) in routes {
+        println!("    {name} -> {target} ({})", origin_label(origin, profile));
     }
 }
 
