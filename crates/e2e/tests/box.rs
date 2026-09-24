@@ -1082,8 +1082,13 @@ fn losing_the_owner_fails_closed() {
     let _race = DEAD_BOX_RACE
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
+    // The owner is reaped only after `box prune` has reported the box. Until
+    // then it is a zombie: `kill(pid, 0)` succeeds on it, so every other
+    // test's state root, which judges this box by its label pid, leaves it
+    // alone, while this root sees the lock released the moment the process
+    // died. Reaped earlier, another test's first command runs the daily pass
+    // and prunes the box before this test's `box prune` can report it.
     up.kill();
-    up.wait();
 
     // The positive control left its decision in the log. A live proxy
     // anywhere would log before it dials, so no new line means no proxy saw
@@ -1172,6 +1177,7 @@ fn losing_the_owner_fails_closed() {
         Some(u64::from(owner)),
         "prune named another owner: {line:?}"
     );
+    up.wait();
     let listed = box_list(binary, &env, label);
     assert!(
         !listed.iter().any(|box_| box_["name"] == name),
