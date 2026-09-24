@@ -179,6 +179,10 @@ impl Runtime for Apple {
         }
     }
 
+    fn build_cache_description(&self) -> &'static str {
+        "the runtime's builder container"
+    }
+
     fn build(&self, request: &BuildRequest) -> io::Result<()> {
         let argv = build_argv(request);
         let (program, arguments) = argv.split_first().expect("argv is never empty");
@@ -449,6 +453,9 @@ pub fn build_argv(request: &BuildRequest) -> Vec<OsString> {
     let mut argv: Vec<OsString> = vec![
         "container".into(),
         "build".into(),
+        // Every build reruns every step, so a rebuild picks up base updates
+        // instead of replaying a cached `RUN` layer.
+        "--no-cache".into(),
         "--file".into(),
         request.containerfile.into(),
     ];

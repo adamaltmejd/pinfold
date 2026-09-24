@@ -20,6 +20,11 @@ use e2e::{HttpFixture, pinfold};
 /// an owner until that test's removal has run.
 static DEAD_BOX_RACE: Mutex<()> = Mutex::new(());
 
+/// `cleanup_removes_only_pinfolds_garbage` deletes the runtime's builder in
+/// its `clean`, and a build racing that deletion fails. Every test that
+/// builds holds this from before its first build through its last.
+static BUILDER_RACE: Mutex<()> = Mutex::new(());
+
 #[test]
 fn box_lifecycle_works_for_a_caller() {
     // Sabotage: make `box down` a no-op; the post-down list assertion fails.
@@ -766,10 +771,13 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // `clean` skip boxes whose owner is gone; the dead box assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("cleanup");
-    // `clean` deletes the runtime's builder, so wait for the suite's shared
-    // default image first: no other test builds after this, and a build
-    // racing the deletion would fail. The three builds below stay on a tiny
-    // profile of this run's own.
+    // `clean` deletes the runtime's builder, so hold off the other tests'
+    // builds through this test's `clean`: a build racing the deletion fails.
+    // This also waits for the suite's shared default image, which must be
+    // built before the deletion.
+    let _builds = BUILDER_RACE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     default_image(binary, &env);
     // A profile of this test's own, named for this run, so the operator's
     // default profile images, the other tests and a failed run's leftovers
@@ -1001,6 +1009,128 @@ fn cleanup_removes_only_pinfolds_garbage() {
         box_list(binary, &env, dead_label).is_empty(),
         "clean left a box whose owner is gone"
     );
+}
+
+#[test]
+fn every_build_reruns_its_steps() {
+    // Every build reruns every step, so a rebuild picks up base updates
+    // instead of replaying a cached `RUN` layer.
+    //
+    // Sabotage: drop `--no-cache` from Apple's build argv, or
+    // `--layers=false` from podman's. The second build then serves `/stamp`
+    // from the first build's layer, the two values match, and podman's
+    // untagged-image assertion fails.
+    let binary = pinfold();
+    let env = TestEnv::new("rerun");
+    // The cleanup test's `clean` deletes the runtime's builder; a build
+    // racing that deletion fails. Hold the same lock it does, and wait for
+    // the suite's shared default image so the base is already pulled.
+    let _builds = BUILDER_RACE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    default_image(binary, &env);
+
+    let profile = format!("e2e-rerun-{}", std::process::id());
+    let _images = ImageCleanup {
+        source: profile.clone(),
+    };
+    let containerfile = env
+        .config
+        .join("pinfold")
+        .join("profiles")
+        .join(&profile)
+        .join("Containerfile");
+    fs::create_dir_all(containerfile.parent().unwrap()).unwrap();
+    // Random bytes at build time: a cached `RUN` layer replays the first
+    // build's file, so the two builds agree only when the cache is reused.
+    fs::write(
+        &containerfile,
+        b"FROM debian:trixie-slim\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\n",
+    )
+    .unwrap();
+
+    // podman's layer cache would show as untagged intermediate images. The
+    // baseline is after the shared default build, so only these builds' own
+    // leftovers are measured.
+    let before = if cfg!(target_os = "linux") {
+        Some(untagged_images())
+    } else {
+        None
+    };
+
+    let first = build_profile(binary, &env, &profile);
+    let first_stamp = stamp_from_image(binary, &env, &first, "rerun-1");
+    // Positive control: the first build ran the `RUN` step and wrote /stamp.
+    assert!(
+        !first_stamp.trim().is_empty(),
+        "the first build left no /stamp"
+    );
+
+    let second = build_profile(binary, &env, &profile);
+    let second_stamp = stamp_from_image(binary, &env, &second, "rerun-2");
+    assert_ne!(
+        first_stamp, second_stamp,
+        "the second build reused the first build's RUN layer"
+    );
+
+    if let Some(before) = before {
+        let after = untagged_images();
+        assert!(
+            after <= before,
+            "the builds left {} untagged image(s) behind; podman held {before} before",
+            after.saturating_sub(before)
+        );
+    }
+}
+
+/// Build `profile` and return the stable ref `pinfold build` printed.
+fn build_profile(binary: &Path, env: &TestEnv, profile: &str) -> String {
+    let output = env
+        .command(binary)
+        .args(["build", "--profile", profile])
+        .output()
+        .expect("run pinfold build");
+    assert!(
+        output.status.success(),
+        "pinfold build failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("build output is UTF-8")
+        .trim()
+        .to_string()
+}
+
+/// The `/stamp` file of the image `reference`, read through a box named
+/// `name`.
+fn stamp_from_image(binary: &Path, env: &TestEnv, reference: &str, name: &str) -> String {
+    let name = format!("pinfold-e2e-{}-{name}", std::process::id());
+    let spec = serde_json::json!({ "name": name, "image": reference });
+    let up = box_up(binary, env, &spec, &name);
+    let output = box_exec(binary, env, &name, &["cat", "/stamp"]);
+    assert_eq!(output.code, 0, "reading /stamp failed: {}", output.stderr);
+    let status = box_down(binary, env, &name);
+    assert!(status.success(), "box down failed: {status}");
+    drop(up);
+    output.stdout
+}
+
+/// The number of untagged images `podman images -a` lists, including the
+/// intermediate layers a cached build leaves behind. Linux only.
+fn untagged_images() -> usize {
+    let output = Command::new("podman")
+        .args(["images", "-a"])
+        .output()
+        .expect("run podman images -a");
+    assert!(
+        output.status.success(),
+        "podman images -a failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| line.split_whitespace().next() == Some("<none>"))
+        .count()
 }
 
 /// Removes the run's images from the runtime store on drop, so a failing run

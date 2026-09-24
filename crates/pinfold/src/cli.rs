@@ -331,7 +331,7 @@ fn run_clean(args: &[OsString]) -> io::Result<()> {
         println!("pinfold clean: reclaiming {total} B");
     }
     println!("  automatic maintenance: {automatic} B");
-    println!("  build cache: the runtime's builder container");
+    println!("  build cache: {}", runtime.build_cache_description());
     println!("  project caches: {project_caches} B");
     println!("  project state: {project_state} B");
 

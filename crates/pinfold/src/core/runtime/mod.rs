@@ -96,6 +96,13 @@ pub trait Runtime: Sync {
         Ok(())
     }
 
+    /// A phrase naming what the runtime's build cache holds, printed by
+    /// `pinfold clean`. The default matches [`Runtime::purge_build_cache`]:
+    /// a runtime whose builds keep no cache.
+    fn build_cache_description(&self) -> &'static str {
+        "none"
+    }
+
     /// Build an image from [`BuildRequest`].
     fn build(&self, request: &BuildRequest) -> io::Result<()>;
 

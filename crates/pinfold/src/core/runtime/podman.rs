@@ -634,6 +634,10 @@ pub fn build_argv(request: &BuildRequest) -> Vec<OsString> {
     let mut argv: Vec<OsString> = vec![
         "podman".into(),
         "build".into(),
+        // Every build reruns every step and leaves no intermediate images
+        // behind, so the default `purge_build_cache` is true of this
+        // adapter.
+        "--layers=false".into(),
         "--file".into(),
         request.containerfile.into(),
     ];
