@@ -110,12 +110,34 @@ leftovers by label. The CLI runs the same code in-process.
 ### Process interface
 
 ```
-pinfold box up < spec.json        # prints {"event":"ready","box":…}; holds the box
+pinfold box up < spec.json        # prints ready, holds the box, ends with down
 pinfold box exec BOX [--tty] [--workdir D] -- argv…   # stdio through, exit code back
 pinfold box down BOX              # same as closing up's stdin
 pinfold box list --label k=v      # JSON lines
 pinfold box prune                 # remove boxes whose `up` is gone
 ```
+
+`up` prints one `ready` line once the box is up:
+
+```json
+{"event":"ready","box":NAME,"owner":PID,"labels":{…}}
+```
+
+`owner` is the `box up` process; `labels` is the box's full label set. At
+`up`, the image's `dev.pinfold.*` identity labels are copied onto the box;
+the spec's labels win on a clash.
+
+The caller keeps `up`'s stdin open for the life of the box; closing it is
+`down`. The stream ends with one `down` line after teardown:
+
+```json
+{"event":"down","box":NAME,"reason":REASON}
+```
+
+`REASON` is one of `stdin-closed`, `signal` (SIGTERM or SIGINT, which is
+also what `box down` sends), or `exited` (the box's init ended on its own;
+`detail` carries its exit status). `up` exits 0 for `stdin-closed` and
+`signal`, and 1 for `exited`.
 
 When `up` refuses, it prints one JSON line instead of `ready` and exits 1:
 
