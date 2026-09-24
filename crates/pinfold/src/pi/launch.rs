@@ -226,7 +226,7 @@ fn build_plan(config: &Config, state: &ProjectState, image: &str, git: &Git) -> 
     // protected editor config shadow it.
     mounts.extend(git.mounts().iter().cloned());
 
-    Ok(Plan {
+    let plan = Plan {
         name: format!("pi-{}-{}", state.id, std::process::id()),
         image: Some(image.to_string()),
         profile: Some(config.profile.name.clone()),
@@ -241,7 +241,12 @@ fn build_plan(config: &Config, state: &ProjectState, image: &str, git: &Git) -> 
         }),
         cpus: Some(config.cpus),
         memory: Some(config.memory.clone()),
-    })
+    };
+    // The pi layer builds a box spec, so the spec rules `box up` applies
+    // decide whether it may reach the runtime.
+    plan.validate()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    Ok(plan)
 }
 
 fn run_box(plan: &Plan, cwd: &Path, argv: &[String]) -> io::Result<i32> {

@@ -26,7 +26,9 @@ fn the_environment_is_exactly_the_spec() {
     // child's environment; `shhh` then appears in host `ps` while the box
     // runs and the ps assertion fails. Sabotage: let the box inherit the
     // host environment; the unprefixed variable is then present and its
-    // assertion fails.
+    // assertion fails. Sabotage: skip the `validate` call in the pi layer;
+    // the `PINFOLD_ENV_BAD-NAME` run does not refuse and the refusal
+    // assertions fail.
     let binary = pinfold();
     let env = TestEnv::new("pi-env");
     default_image(binary, &env);
@@ -92,6 +94,35 @@ fn the_environment_is_exactly_the_spec() {
     assert!(run.finish().success(), "pinfold pi did not exit cleanly");
     let listed = box_list(binary, &env, &format!("dev.pinfold.project={id}"));
     assert!(listed.is_empty(), "the box survived pi exit: {listed:?}");
+
+    // A host PINFOLD_ENV_* name outside POSIX is refused as a spec before
+    // the box starts, naming the derived name: the shell cannot export such
+    // a name, but `Command::env` can set it. Sabotage: skip the `validate`
+    // call in the pi layer; the name reaches the runtime, the run does not
+    // refuse, and these assertions fail.
+    let refused = env
+        .command(binary)
+        .args(["pi", "--version"])
+        .current_dir(project.path())
+        .env("PINFOLD_ENV_BAD-NAME", "x")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold pi with a bad env name");
+    assert_eq!(
+        exit_code(refused.status),
+        1,
+        "the bad env name ran: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains(
+            "pinfold pi: invalid box spec: env name \"BAD-NAME\" must match [A-Za-z_][A-Za-z0-9_]*"
+        ),
+        "the refusal did not name BAD-NAME: {stderr}"
+    );
+    let listed = box_list(binary, &env, &format!("dev.pinfold.project={id}"));
+    assert!(listed.is_empty(), "the refused run left a box: {listed:?}");
 }
 
 #[test]
