@@ -437,6 +437,9 @@ pinfold box …                    the process interface
 pinfold init                     PID 1 in the box (Linux builds)
 ```
 
+`pinfold --version` and `pinfold --help` answer without touching the runtime
+or the state dir.
+
 The project root is the git top level, else `$PWD`.
 
 ## Guarantees
