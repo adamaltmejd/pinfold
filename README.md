@@ -31,14 +31,17 @@ and `--memory` are silently not enforced. Long-lived boxes need
 
 ## Install
 
-Linux can install the released static binary. From the release page,
-download the file named `pinfold-0.0.1-$(uname -m)-unknown-linux-musl`
-and `SHA256SUMS`, then verify and install:
+Linux can install the released static binary. Download
+`pinfold-<version>-$(uname -m)-unknown-linux-musl` and `SHA256SUMS` from
+the release page, or on a private repository
+`gh release download v<version> -R <owner>/pinfold`. Then verify and
+install:
 
 ```sh
+version=0.0.1
 sha256sum -c --ignore-missing SHA256SUMS
 mkdir -p ~/.local/bin
-install -m 0755 "pinfold-0.0.1-$(uname -m)-unknown-linux-musl" ~/.local/bin/pinfold
+install -m 0755 "pinfold-$version-$(uname -m)-unknown-linux-musl" ~/.local/bin/pinfold
 ```
 
 Or build from a checkout of this repository; the Rust toolchain is pinned

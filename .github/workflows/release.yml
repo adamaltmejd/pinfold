@@ -69,6 +69,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # gh's --notes-from-tag reads the tag annotation from the local
+      # checkout and refuses --repo, so the repo is inferred from origin.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
@@ -83,5 +87,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
+            --notes-from-tag \
             dist/pinfold-* dist/SHA256SUMS
