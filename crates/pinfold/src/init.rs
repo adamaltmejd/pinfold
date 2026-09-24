@@ -5,11 +5,16 @@
 //! are what make a stop possible. When the transport carries the proxy socket
 //! in, it also relays `127.0.0.1:3128` to that socket, because clients only
 //! know how to reach a proxy over TCP.
+//!
+//! `init exec -- ARGV...` is the second entry: it raises its own
+//! `oom_score_adj` and becomes ARGV, and every exec session runs through it.
 
 use std::ffi::OsString;
+use std::fs;
 use std::io::{self, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,7 +38,14 @@ extern "C" fn on_child(_signal: i32) {}
 
 /// Run as PID 1 until SIGTERM. `args` is the optional guest path of the
 /// carried proxy socket; without it the box has no egress and no relay.
+///
+/// `exec` is the other entry: `init exec -- ARGV...` raises this process's
+/// OOM score and becomes ARGV, and every exec session is started through it.
 pub fn run(args: &[OsString]) -> ! {
+    if args.first().and_then(|arg| arg.to_str()) == Some("exec") {
+        exec(&args[1..]);
+    }
+
     let unblocked = install_handlers();
 
     if let Some(target) = args.first() {
@@ -70,6 +82,37 @@ pub fn run(args: &[OsString]) -> ! {
         }
     }
     process::exit(0);
+}
+
+/// `init exec -- ARGV...`: raise this process's `oom_score_adj` to 1000 and
+/// become ARGV. Every process pinfold starts in a box other than init runs
+/// through here, so the kernel's OOM killer takes one of them before init.
+fn exec(args: &[OsString]) -> ! {
+    let argv = match args.split_first() {
+        Some((separator, argv)) if separator.as_os_str() == "--" => argv,
+        _ => {
+            eprintln!("pinfold init exec: usage: pinfold init exec -- argv...");
+            process::exit(1);
+        }
+    };
+    if argv.is_empty() {
+        eprintln!("pinfold init exec: no command after `--`");
+        process::exit(1);
+    }
+    // Raising a process's own OOM score needs no privilege; a rootless
+    // container cannot lower it again.
+    if let Err(error) = fs::write("/proc/self/oom_score_adj", "1000") {
+        eprintln!("pinfold init exec: oom_score_adj: {error}");
+        process::exit(1);
+    }
+    let error = process::Command::new(&argv[0]).args(&argv[1..]).exec();
+    eprintln!("pinfold init exec: {}: {error}", argv[0].to_string_lossy());
+    // The shell's convention for a command that could not be run.
+    process::exit(if error.kind() == io::ErrorKind::NotFound {
+        127
+    } else {
+        126
+    });
 }
 
 /// Accept relay clients and give each its own thread.

@@ -23,7 +23,7 @@ use crate::core::artifacts::GUEST_PI;
 use crate::core::r#box::Box;
 use crate::core::clean;
 use crate::core::plan::{Egress, Env, HARNESS_PI, Mount, Plan};
-use crate::core::runtime::{local_image_id, runtime};
+use crate::core::runtime::{exec_through_init, local_image_id, runtime};
 use crate::pi::git::Git;
 use crate::pi::state::ProjectState;
 use crate::trust;
@@ -253,7 +253,7 @@ fn run_box(plan: &Plan, cwd: &Path, argv: &[String]) -> io::Result<i32> {
         // during startup is caught and the box is removed once it is up.
         let mut shutdown = Shutdown::new(tty)?;
         let mut box_ = Box::up(plan, &init).await?;
-        let code = exec_pi(&plan.name, tty, cwd, argv, &mut shutdown).await;
+        let code = exec_pi(&plan.name, &init, tty, cwd, argv, &mut shutdown).await;
         // Remove the box exactly once, whatever ended the run. A failed
         // removal must not hide the error that ended pi.
         let down = box_.down().await;
@@ -284,6 +284,7 @@ enum Stop {
 /// removes the box; a signal that ends the run reports `128+n`.
 async fn exec_pi(
     name: &str,
+    init: &Path,
     tty: bool,
     cwd: &Path,
     argv: &[String],
@@ -291,9 +292,12 @@ async fn exec_pi(
 ) -> io::Result<i32> {
     let runtime = runtime()?;
     let name = name.to_string();
+    let init = init.to_path_buf();
     let workdir = cwd.to_path_buf();
     let argv = argv.to_vec();
-    let exec = tokio::task::spawn_blocking(move || runtime.exec(&name, tty, Some(&workdir), &argv));
+    let exec = tokio::task::spawn_blocking(move || {
+        runtime.exec(&name, tty, Some(&workdir), &exec_through_init(&init, &argv))
+    });
     tokio::pin!(exec);
     let stop = tokio::select! {
         status = &mut exec => Stop::Exited(

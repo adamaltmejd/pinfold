@@ -255,6 +255,9 @@ Runtime command lines are built as data.
   Revisit when apple/container#1941 lands: add a graceful SIGTERM before
   removal.
 - Exit codes pass through; `128+n` for a signal death.
+- Every process started in a box through `exec` runs with `oom_score_adj`
+  1000, so the kernel's OOM killer takes the box's own processes before its
+  init.
 - After a SIGKILL of pinfold, `box prune` cleans up; the terminal needs
   `stty sane`.
 
@@ -565,7 +568,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 17 | up refuses before it creates | A missing image and a live name are refused as data, with no box, state dir or seed left; the box whose name was reused still answers exec. |
 | 18 | A caller reads the effective configuration as data | pinfold config reports a project's allow list, its trust state before and after pinfold allow, and the project home pinfold pi then mounts. |
 | 19 | A caller-owned box launches the pinned harness | A spec with harness: pi runs /opt/pinfold/pi/pi --version at the pinned version, and the box's PINFOLD_ALLOW is the spec's allow list. |
-| 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, and every field is present. |
+| 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, every field is present, and `exec`'d processes carry `oom_score_adj` 1000, so init is never the victim. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
 
 Linux (podman) runs in GitHub CI on `ubuntu-26.04` and `ubuntu-26.04-arm` as

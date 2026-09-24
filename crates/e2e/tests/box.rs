@@ -2028,6 +2028,10 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
     // Sabotage: read `memory.events` but report `high` instead of `oom_kill`;
     // with no memory.high set the count stays 0 and the post-exec assertion
     // fails.
+    // Sabotage: skip the oom_score_adj write in init's exec wrapper; `cat`
+    // then prints 0 and the oom_score_adj assertion fails. (The original
+    // flake is not usable: it needs a kernel that picks init, which the
+    // macOS host and Debian do not.)
     let binary = pinfold();
     let env = TestEnv::new("oom");
     let name = format!("pinfold-e2e-{}-oom", std::process::id());
@@ -2062,6 +2066,23 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
             "stat omitted pids.{key}: {before}"
         );
     }
+
+    // Every process `exec` starts runs through the box's init, which raises
+    // its oom_score_adj to 1000 before exec'ing the command. The kernel's
+    // OOM killer then takes a box process before init, so the box survives
+    // the hog on every kernel.
+    let score = box_exec(binary, &env, &name, &["cat", "/proc/self/oom_score_adj"]);
+    assert_eq!(
+        score.code, 0,
+        "cat /proc/self/oom_score_adj failed: {}",
+        score.stderr
+    );
+    assert_eq!(
+        score.stdout.trim(),
+        "1000",
+        "exec'd process oom_score_adj: {}",
+        score.stdout
+    );
 
     if cfg!(target_os = "linux") {
         // A fresh box's cgroup has killed nothing; the caller's baseline.

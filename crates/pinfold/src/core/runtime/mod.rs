@@ -164,7 +164,9 @@ pub trait Runtime: Sync {
     /// Stop and remove the box.
     fn down(&self, name: &str) -> io::Result<()>;
 
-    /// Run a command in a running box with inherited stdio.
+    /// Run a command in a running box with inherited stdio. Callers wrap
+    /// `argv` with [`exec_through_init`] first, so the box's init raises its
+    /// `oom_score_adj` before exec'ing it.
     fn exec(
         &self,
         name: &str,
@@ -220,6 +222,21 @@ pub trait Runtime: Sync {
 /// The path a host path appears at inside the box. The identity on Unix.
 pub fn guest_path(host: &Path) -> PathBuf {
     host.to_path_buf()
+}
+
+/// The argv that runs `argv` in a box through its init: init raises its own
+/// `oom_score_adj` to 1000 and then becomes `argv`, so the kernel's OOM
+/// killer takes a box process before init. `init` is the host path
+/// `up_argv` mounts at the same guest path and runs as `<init> init`, so the
+/// composed command also carries the binary's `init` verb.
+pub fn exec_through_init(init: &Path, argv: &[String]) -> Vec<String> {
+    let mut wrapped = Vec::with_capacity(argv.len() + 4);
+    wrapped.push(guest_path(init).to_string_lossy().into_owned());
+    wrapped.push("init".to_string());
+    wrapped.push("exec".to_string());
+    wrapped.push("--".to_string());
+    wrapped.extend_from_slice(argv);
+    wrapped
 }
 
 /// The content digest of the image `reference` names, from the runtime's

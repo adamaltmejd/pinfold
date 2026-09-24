@@ -21,7 +21,9 @@ use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, UpError};
 use crate::core::clean;
 use crate::core::plan::{Plan, Route};
 use crate::core::profile::{Profile, valid_name};
-use crate::core::runtime::{BoxInfo, BuildRequest, Runtime, local_image_id, podman, runtime};
+use crate::core::runtime::{
+    BoxInfo, BuildRequest, Runtime, exec_through_init, local_image_id, podman, runtime,
+};
 use crate::dirs;
 use crate::trust;
 
@@ -92,7 +94,8 @@ fn run_attach(args: &[OsString]) -> io::Result<i32> {
         .collect();
     let name = select_box(&boxes, box_name.as_deref())?;
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-    let status = runtime.exec(&name, tty, Some(&cwd), &argv)?;
+    let init = init_path()?;
+    let status = runtime.exec(&name, tty, Some(&cwd), &exec_through_init(&init, &argv))?;
     Ok(exit_code(status))
 }
 
@@ -300,7 +303,13 @@ fn exec(args: &[OsString]) -> io::Result<i32> {
     // A TTY only makes sense when both ends are terminals; `--tty` forces it
     // for callers that drive pinfold through their own pty.
     let tty = args.tty || (io::stdin().is_terminal() && io::stdout().is_terminal());
-    let status = runtime.exec(&args.name, tty, args.workdir.as_deref(), &args.argv)?;
+    let init = init_path()?;
+    let status = runtime.exec(
+        &args.name,
+        tty,
+        args.workdir.as_deref(),
+        &exec_through_init(&init, &args.argv),
+    )?;
     Ok(exit_code(status))
 }
 
