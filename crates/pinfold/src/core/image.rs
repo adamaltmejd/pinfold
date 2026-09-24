@@ -57,7 +57,27 @@ pub struct Built {
 pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, String>> {
     let id = build_id();
     let mut labels = build.labels;
-    labels.insert(build.label.to_string(), build.source.to_string());
+    // The runtime copies the base image's labels onto the new image, so
+    // every family label goes on every image: its own with its source, the
+    // other two empty. Retention then never counts this image as another
+    // family's, whatever it builds on.
+    for family in [
+        clean::PROFILE_LABEL,
+        clean::PROJECT_LABEL,
+        clean::IMAGE_LABEL,
+    ] {
+        labels.insert(
+            family.to_string(),
+            if family == build.label {
+                build.source.to_string()
+            } else {
+                String::new()
+            },
+        );
+    }
+    // Likewise the base: the caller set the resolved digest, or this makes
+    // it empty, never an inherited copy.
+    labels.entry(clean::BASE_LABEL.to_string()).or_default();
     // The unique build label is what makes every build a distinct image,
     // cached or not.
     labels.insert(clean::BUILD_LABEL.to_string(), id.clone());

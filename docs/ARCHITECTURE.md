@@ -372,7 +372,9 @@ profile image.
   build (no layer cache): the default profile runs `apt-get upgrade`, and a
   cached layer would serve stale packages.
 - Every build is a distinct image, cached or not, through the unique
-  `dev.pinfold.build` label.
+  `dev.pinfold.build` label. Every build sets all three family labels and
+  `dev.pinfold.base`, the other families empty, so an image inherits no
+  family and no base from the image it builds on.
 - A profile build is tagged uniquely `pinfold/profile-<name>:<build>` and
   moves the stable `pinfold/profile-<name>:latest` to it. The stable ref is
   what a project Containerfile `FROM`s and what `doctor` compares against.
