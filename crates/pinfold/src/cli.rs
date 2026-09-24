@@ -700,16 +700,38 @@ fn run_doctor(args: &[OsString]) -> io::Result<usize> {
 
 /// The podman lines in `doctor`'s runtime report, and the problems they add:
 /// a host `preflight` refuses cannot start a box. Report only: `preflight`
-/// is what refuses, and `doctor` changes nothing.
+/// is what refuses, and `doctor` changes nothing. A missing tun device and a
+/// short subordinate-id mapping do not refuse a box, but they fail
+/// `pinfold build`, so they are counted for a rootless host.
 ///
 /// A missing podman is named here, not counted: `runtime.version()` has
 /// already counted it, and a host is counted once.
 fn report_podman() -> usize {
+    // Debian's `_apt` runs as gid 65534; the default image's apt step
+    // `setegid`s to it.
+    const APT_GID: u32 = 65534;
     let problems = match podman::detect() {
         Ok(podman::Detected::RootlessPodman(info)) => {
             println!("  detected: rootless podman");
             print_cgroup_manager(&info.cgroup_manager);
-            usize::from(info.cgroup_manager != "systemd")
+            let mut problems = usize::from(info.cgroup_manager != "systemd");
+            if podman::tun_present() {
+                println!("  tun: /dev/net/tun present");
+            } else {
+                println!(
+                    "  tun: /dev/net/tun missing; pinfold build cannot give RUN steps a network (add the device, or set netns = \"host\" in containers.conf)"
+                );
+                problems += 1;
+            }
+            if podman::subordinate_ids_cover(&info, APT_GID) {
+                println!("  subordinate ids: cover {APT_GID}");
+            } else {
+                println!(
+                    "  subordinate ids: the mapping does not reach {APT_GID}; the default image's apt step fails (extend /etc/subuid and /etc/subgid, then podman system migrate)"
+                );
+                problems += 1;
+            }
+            problems
         }
         Ok(podman::Detected::RootfulPodman(info)) => {
             println!("  detected: rootful podman; pinfold requires rootless podman");
