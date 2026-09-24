@@ -344,8 +344,11 @@ without a TTY.
 - `default` is built into the binary (from `profile/` in this repo) unless
   the user has their own. User profiles are the user's files and need no
   trust.
-- `pinfold profile new NAME [--from PROFILE]` writes a copy of `default`
-  (or another profile) to be edited as files.
+- `pinfold profile new NAME [--from PROFILE] [--from-project [PATH]]`
+  writes a copy of `default` (or another profile) to be edited as files;
+  `--from-project [PATH]` (PATH is the current project root by default)
+  merges the project's `home/.pi/agent/` into the copy, minus `auth.json`,
+  `sessions/`, `npm/` and caches.
 - Selected by `profile` in config or `"profile"` in a box spec.
 - `home/` needs `$HOME` on a read-write mount. Seeds are copied at start,
   never at build. To reseed a file, delete it from the project home.
@@ -494,7 +497,7 @@ pinfold pi [pi args…]            pi in a box for this project; `pi` is a symli
 pinfold attach [--box NAME] [cmd…]   bash (or cmd) in this project's running pi box
 pinfold build [--profile NAME]   build this project's image, or a profile's; prints the ref
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
-pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
+pinfold profile new NAME [--from PROFILE] [--from-project [PATH]]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim disk (see Maintenance)
 pinfold doctor                   runtime, kernel, image, artifacts, trust, config, disk use
 pinfold artifacts                the pinned artifacts as JSON: name, version, sha256, path, cached
