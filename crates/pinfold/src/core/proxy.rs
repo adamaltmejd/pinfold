@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,7 +16,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use crate::core::plan::Egress;
+use rustls::pki_types::ServerName;
+use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
+
+use crate::core::plan::{Egress, Route, Target};
 use crate::core::{network, tls};
 
 /// The loopback URL clients reach through `pinfold init`'s relay.
@@ -64,6 +67,9 @@ impl Proxy {
                 ),
             ));
         }
+        // Before anything is created, so a route that cannot be served
+        // leaves nothing behind.
+        let rules = Arc::new(Rules::new(egress)?);
         if let Some(parent) = log.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -75,7 +81,6 @@ impl Proxy {
             .open(&log)?;
         let listener = UnixListener::bind(&socket)?;
         let stop = Arc::new(AtomicBool::new(false));
-        let rules = Arc::new(Rules::new(egress));
         let thread = {
             let stop = Arc::clone(&stop);
             thread::spawn(move || serve(listener, stop, rules, log))
@@ -109,22 +114,68 @@ impl Proxy {
 /// One box's egress rules: the allowlist and the routes.
 struct Rules {
     allow: Allow,
-    /// Lowercased route names mapped to `host:port` services.
-    routes: BTreeMap<String, String>,
+    /// Lowercased route names mapped to where they lead.
+    routes: BTreeMap<String, Upstream>,
+    /// The TLS client for `https` routes, with the host's roots. Present when
+    /// one exists.
+    tls: Option<Arc<ClientConfig>>,
+}
+
+/// A route's upstream. No `Debug`: an injected header holds a credential.
+enum Upstream {
+    /// A host service at `host:port`.
+    Address(String),
+    /// An injecting route's target and its headers, values already read.
+    Inject {
+        target: Target,
+        headers: Vec<(String, String)>,
+    },
 }
 
 impl Rules {
-    fn new(egress: &Egress) -> Rules {
-        let routes = egress
-            .routes
-            .iter()
-            .map(|(name, target)| (name.to_ascii_lowercase(), target.clone()))
-            .collect();
-        Rules {
+    /// The rules for one box. Injected header values are read here, once,
+    /// from this process's environment.
+    fn new(egress: &Egress) -> io::Result<Rules> {
+        let mut routes = BTreeMap::new();
+        for (name, route) in &egress.routes {
+            let upstream = match route {
+                Route::Address(address) => Upstream::Address(address.clone()),
+                Route::Inject(inject) => {
+                    let (target, headers) = inject.resolve().map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("route {name}: {error}"),
+                        )
+                    })?;
+                    Upstream::Inject { target, headers }
+                }
+            };
+            routes.insert(name.to_ascii_lowercase(), upstream);
+        }
+        let https = routes
+            .values()
+            .any(|upstream| matches!(upstream, Upstream::Inject { target, .. } if target.https));
+        let tls = if https { Some(tls_config()?) } else { None };
+        Ok(Rules {
             allow: Allow::new(&egress.allow),
             routes,
-        }
+            tls,
+        })
     }
+}
+
+/// A TLS client that verifies against the host's roots. Roots that fail to
+/// load are skipped; with none, every `https` route fails verification.
+fn tls_config() -> io::Result<Arc<ClientConfig>> {
+    let mut roots = RootCertStore::empty();
+    roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    let config =
+        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(io::Error::other)?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+    Ok(Arc::new(config))
 }
 
 /// One box's allowlist.
@@ -327,13 +378,8 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, head: &[u8]) {
         return;
     }
     let host = request.host.to_ascii_lowercase();
-    if let Some(target) = rules.routes.get(&host) {
-        record(log, &request.host, "allowed", "route");
-        let Some(mut server) = dial_address(target) else {
-            let _ = respond(client, 502);
-            return;
-        };
-        let _ = forward(client, &mut server, &request);
+    if let Some(upstream) = rules.routes.get(&host) {
+        route(client, rules, log, &request, upstream);
         return;
     }
     if !rules.allow.allows(&host) {
@@ -346,7 +392,7 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, head: &[u8]) {
             record(log, &request.host, "allowed", "allowlisted");
             match TcpStream::connect(address) {
                 Ok(mut server) => {
-                    let _ = forward(client, &mut server, &request);
+                    let _ = forward(client, &mut server, &request, &request.authority, &[]);
                 }
                 Err(_) => {
                     let _ = respond(client, 502);
@@ -362,6 +408,73 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, head: &[u8]) {
             let _ = respond(client, 502);
         }
     }
+}
+
+/// Serve one request to a route. A host service is dialed unchecked; an
+/// `https` target is resolved and checked like an allowlisted host, then
+/// dialed over TLS.
+fn route(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain, upstream: &Upstream) {
+    let (target, headers) = match upstream {
+        Upstream::Address(address) => {
+            record(log, &request.host, "allowed", "route");
+            let Some(mut server) = dial_address(address.as_str()) else {
+                let _ = respond(client, 502);
+                return;
+            };
+            let _ = forward(client, &mut server, request, &request.authority, &[]);
+            return;
+        }
+        Upstream::Inject { target, headers } => (target, headers),
+    };
+    if !target.https {
+        record(log, &request.host, "allowed", "route");
+        let Some(mut server) = dial_address((target.host.as_str(), target.port)) else {
+            let _ = respond(client, 502);
+            return;
+        };
+        let _ = forward(client, &mut server, request, &target.authority, headers);
+        return;
+    }
+    let address = match network::resolve(&target.host, target.port) {
+        Ok(address) => address,
+        Err(network::ResolveError::Forbidden(reason)) => {
+            record(log, &request.host, "refused", reason);
+            let _ = respond(client, 403);
+            return;
+        }
+        Err(network::ResolveError::Unresolved) => {
+            record(log, &request.host, "refused", "resolve failed");
+            let _ = respond(client, 502);
+            return;
+        }
+    };
+    record(log, &request.host, "allowed", "route");
+    let Some(mut server) = rules
+        .tls
+        .as_ref()
+        .and_then(|config| dial_tls(address, &target.host, config))
+    else {
+        let _ = respond(client, 502);
+        return;
+    };
+    let _ = forward_tls(client, &mut server, request, &target.authority, headers);
+}
+
+/// Connect to a checked address and complete the TLS handshake, with SNI
+/// and the certificate checked against `host`.
+fn dial_tls(
+    address: SocketAddr,
+    host: &str,
+    config: &Arc<ClientConfig>,
+) -> Option<StreamOwned<ClientConnection, TcpStream>> {
+    let name = ServerName::try_from(host.to_string()).ok()?;
+    let mut connection = ClientConnection::new(Arc::clone(config), name).ok()?;
+    let mut server = TcpStream::connect(address).ok()?;
+    server.set_read_timeout(Some(IDLE_TIMEOUT)).ok()?;
+    while connection.is_handshaking() {
+        connection.complete_io(&mut server).ok()?;
+    }
+    Some(StreamOwned::new(connection, server))
 }
 
 /// One parsed plain HTTP request head.
@@ -411,7 +524,7 @@ fn parse_plain(head: &[u8]) -> Result<Plain, &'static str> {
     if authority.is_empty() || authority.contains('@') {
         return Err("malformed request");
     }
-    let (host, port) = authority_host(authority).ok_or("malformed request")?;
+    let (host, port) = network::authority_host(authority, 80).ok_or("malformed request")?;
     let path = &rest[authority.len()..];
     // A fragment is client-side only; a query without a path still needs the
     // origin-form's leading slash.
@@ -454,51 +567,62 @@ fn parse_plain(head: &[u8]) -> Result<Plain, &'static str> {
     })
 }
 
-/// Split an authority into its host and port, handling a bracketed IPv6
-/// host. The default port is 80.
-fn authority_host(authority: &str) -> Option<(&str, u16)> {
-    if let Some(rest) = authority.strip_prefix('[') {
-        let (host, rest) = rest.split_once(']')?;
-        if host.is_empty() {
-            return None;
-        }
-        let port = match rest {
-            "" => 80,
-            rest => {
-                let port = rest.strip_prefix(':')?;
-                if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
-                    return None;
-                }
-                port.parse().ok()?
-            }
-        };
-        return Some((host, port));
-    }
-    match authority.rsplit_once(':') {
-        Some((host, port)) => {
-            if host.is_empty() || port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit())
-            {
-                return None;
-            }
-            Some((host, port.parse().ok()?))
-        }
-        None => Some((authority, 80)),
-    }
-}
-
 /// Forward one parsed request and its Content-Length body, then stream the
 /// response back until the upstream closes. One request per connection.
-fn forward(client: &mut UnixStream, server: &mut TcpStream, request: &Plain) -> io::Result<()> {
-    let _ = client.set_read_timeout(Some(IDLE_TIMEOUT));
+fn forward(
+    client: &mut UnixStream,
+    server: &mut TcpStream,
+    request: &Plain,
+    host: &str,
+    inject: &[(String, String)],
+) -> io::Result<()> {
     let _ = server.set_read_timeout(Some(IDLE_TIMEOUT));
+    send(client, server, request, host, inject)?;
+    let _ = server.shutdown(Shutdown::Write);
+    relay(server, client)
+}
+
+/// [`forward`] over TLS. There is no half-close: a close_notify before the
+/// response would end the exchange. The server's close ends the response,
+/// with or without its own close_notify.
+fn forward_tls(
+    client: &mut UnixStream,
+    server: &mut StreamOwned<ClientConnection, TcpStream>,
+    request: &Plain,
+    host: &str,
+    inject: &[(String, String)],
+) -> io::Result<()> {
+    send(client, server, request, host, inject)?;
+    server.flush()?;
+    relay(server, client)
+}
+
+/// Write the request head with `host` as its Host header, then the body.
+/// Each injected header replaces any the box sent under the same name.
+fn send(
+    client: &mut UnixStream,
+    server: &mut impl Write,
+    request: &Plain,
+    host: &str,
+    inject: &[(String, String)],
+) -> io::Result<()> {
+    let _ = client.set_read_timeout(Some(IDLE_TIMEOUT));
     let mut head = Vec::with_capacity(256);
     write!(
         head,
         "{} {} {}\r\n",
         request.method, request.target, request.version
     )?;
-    write!(head, "Host: {}\r\n", request.authority)?;
+    write!(head, "Host: {host}\r\n")?;
     for (name, value) in &request.headers {
+        if !inject
+            .iter()
+            .any(|(injected, _)| injected.eq_ignore_ascii_case(name))
+        {
+            write!(head, "{name}: {value}\r\n")?;
+        }
+    }
+    for (name, value) in inject {
         write!(head, "{name}: {value}\r\n")?;
     }
     // Keep-alive is out of scope, so the upstream closes after answering.
@@ -508,14 +632,18 @@ fn forward(client: &mut UnixStream, server: &mut TcpStream, request: &Plain) -> 
         let mut body = Read::take(&mut *client, request.content_length);
         io::copy(&mut body, server)?;
     }
-    let _ = server.shutdown(Shutdown::Write);
+    Ok(())
+}
+
+/// Stream the response back until the upstream closes.
+fn relay(server: &mut impl Read, client: &mut UnixStream) -> io::Result<()> {
     io::copy(server, client)?;
     let _ = client.shutdown(Shutdown::Write);
     Ok(())
 }
 
 /// Whether a header is hop-by-hop and must not be forwarded.
-fn hop_by_hop(name: &str) -> bool {
+pub fn hop_by_hop(name: &str) -> bool {
     const HOP_BY_HOP: [&str; 9] = [
         "connection",
         "keep-alive",
@@ -584,9 +712,9 @@ fn head_well_formed(head: &[u8]) -> bool {
         .all(|line| !matches!(line.first(), Some(b' ' | b'\t')))
 }
 
-/// Resolve a route's `host:port` once and connect to the first address. A
-/// route's target is a host service, so its address is not checked.
-fn dial_address(address: &str) -> Option<TcpStream> {
+/// Resolve a route's address once and connect to the first. A route's
+/// target is a host service, so its address is not checked.
+fn dial_address(address: impl ToSocketAddrs) -> Option<TcpStream> {
     let address = address.to_socket_addrs().ok()?.next()?;
     TcpStream::connect(address).ok()
 }

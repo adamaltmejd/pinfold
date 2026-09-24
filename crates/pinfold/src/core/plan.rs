@@ -6,7 +6,9 @@ use std::fmt;
 use std::io::Read;
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+use crate::core::{network, proxy};
 
 /// The only harness a box spec may select.
 pub const HARNESS_PI: &str = "pi";
@@ -51,10 +53,138 @@ pub struct Egress {
     /// Exact host names, or `.suffix` for a name and its subdomains.
     #[serde(default)]
     pub allow: Vec<String>,
-    /// Route names mapped to host services, `name -> host:port`, served over
-    /// plain HTTP.
+    /// Route names served over plain HTTP, each mapped to a host service or
+    /// an injecting route.
     #[serde(default)]
-    pub routes: BTreeMap<String, String>,
+    pub routes: BTreeMap<String, Route>,
+}
+
+/// Where a route name leads.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum Route {
+    /// `host:port`: a host service.
+    Address(String),
+    /// `{ "to": ORIGIN, "headers": {…} }`: the proxy dials `to` and adds the
+    /// headers from its own environment.
+    Inject(Inject),
+}
+
+/// An injecting route: the credential stays in the proxy's process.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Inject {
+    /// An `http://` or `https://` origin.
+    pub to: String,
+    #[serde(default)]
+    pub headers: BTreeMap<String, Header>,
+}
+
+/// One injected header: `prefix` then the value of `$from`. Only the
+/// variable's name is ever written down.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Header {
+    pub from: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prefix: String,
+}
+
+/// An injecting route's `to`, parsed.
+#[derive(Debug, Clone)]
+pub struct Target {
+    pub https: bool,
+    pub host: String,
+    pub port: u16,
+    /// `to`'s authority, for the upstream Host header.
+    pub authority: String,
+}
+
+impl Inject {
+    /// The parsed target and each header with its value from this process's
+    /// environment. Errors name the header and the variable, never a value.
+    pub fn resolve(&self) -> Result<(Target, Vec<(String, String)>), PlanError> {
+        let target = parse_target(&self.to).ok_or_else(|| {
+            PlanError::Invalid(format!(
+                "route target {:?} must be an http:// or https:// origin",
+                self.to
+            ))
+        })?;
+        let mut headers = Vec::with_capacity(self.headers.len());
+        for (name, header) in &self.headers {
+            if !valid_header_name(name) {
+                return Err(PlanError::Invalid(format!(
+                    "route header {name:?} cannot be injected"
+                )));
+            }
+            if header.from.is_empty() {
+                return Err(PlanError::Invalid(format!(
+                    "route header {name:?} needs a from variable"
+                )));
+            }
+            let value = match std::env::var(&header.from) {
+                Ok(value) => value,
+                Err(std::env::VarError::NotPresent) => {
+                    return Err(PlanError::MissingEnv(header.from.clone()));
+                }
+                Err(std::env::VarError::NotUnicode(_)) => {
+                    return Err(PlanError::Invalid(format!(
+                        "route header {name:?}: {} is not UTF-8",
+                        header.from
+                    )));
+                }
+            };
+            let value = format!("{}{value}", header.prefix);
+            // A line break or NUL would let the value frame its own headers.
+            if value.contains(['\r', '\n', '\0']) {
+                return Err(PlanError::Invalid(format!(
+                    "route header {name:?}: its prefix or {} holds CR, LF or NUL",
+                    header.from
+                )));
+            }
+            headers.push((name.clone(), value));
+        }
+        Ok((target, headers))
+    }
+}
+
+/// Parse `http(s)://host[:port]`, with at most a trailing `/`. No userinfo,
+/// path, query or fragment.
+fn parse_target(to: &str) -> Option<Target> {
+    let (scheme, rest) = to.split_once("://")?;
+    let https = if scheme.eq_ignore_ascii_case("https") {
+        true
+    } else if scheme.eq_ignore_ascii_case("http") {
+        false
+    } else {
+        return None;
+    };
+    let authority = rest.strip_suffix('/').unwrap_or(rest);
+    if authority.is_empty() || authority.contains(['/', '?', '#', '@']) {
+        return None;
+    }
+    let (host, port) = network::authority_host(authority, if https { 443 } else { 80 })?;
+    // The host is the TLS server name, so it must be one.
+    if https && rustls::pki_types::ServerName::try_from(host).is_err() {
+        return None;
+    }
+    Some(Target {
+        https,
+        host: host.to_string(),
+        port,
+        authority: authority.to_string(),
+    })
+}
+
+/// An HTTP token that pinfold's own framing does not own.
+fn valid_header_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+        && !name.eq_ignore_ascii_case("host")
+        && !name.eq_ignore_ascii_case("content-length")
+        && !proxy::hop_by_hop(name)
 }
 
 /// One host directory and where it appears in the box.
@@ -142,6 +272,13 @@ impl Plan {
                 && std::env::var_os(from).is_none()
             {
                 return Err(PlanError::MissingEnv(from.clone()));
+            }
+        }
+        if let Some(egress) = &self.egress {
+            for route in egress.routes.values() {
+                if let Route::Inject(inject) = route {
+                    inject.resolve()?;
+                }
             }
         }
         Ok(())

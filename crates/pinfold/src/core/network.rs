@@ -2,7 +2,8 @@
 //!
 //! A name is resolved once and every address it resolves to must pass
 //! [`forbidden`] before the first is dialed. A route's target is a host
-//! service and is dialed without these checks.
+//! service and is dialed without these checks, except an injecting route's
+//! `https` target, which is checked like an allowlisted host.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 
@@ -99,4 +100,36 @@ fn forbidden_v6(ip: Ipv6Addr) -> Option<&'static str> {
         return Some("link-local");
     }
     None
+}
+
+/// Split an authority into its host and port, handling a bracketed IPv6
+/// host. `default` is the port when it names none.
+pub fn authority_host(authority: &str, default: u16) -> Option<(&str, u16)> {
+    if let Some(rest) = authority.strip_prefix('[') {
+        let (host, rest) = rest.split_once(']')?;
+        if host.is_empty() {
+            return None;
+        }
+        let port = match rest {
+            "" => default,
+            rest => {
+                let port = rest.strip_prefix(':')?;
+                if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return None;
+                }
+                port.parse().ok()?
+            }
+        };
+        return Some((host, port));
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) => {
+            if host.is_empty() || port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return None;
+            }
+            Some((host, port.parse().ok()?))
+        }
+        None => Some((authority, default)),
+    }
 }

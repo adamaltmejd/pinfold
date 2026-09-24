@@ -1692,6 +1692,123 @@ fn a_route_reaches_exactly_one_host_service() {
 }
 
 #[test]
+fn an_injecting_route_keeps_the_credential_on_the_host() {
+    // Guarantee 21. Sabotage: pass the header value through the box's
+    // environment as well (spec env `ROUTE_KEY: {from:
+    // PINFOLD_E2E_ROUTE_KEY}`); the environment assertion fails. The value
+    // lives only in `up`'s environment; the box sends its own Authorization,
+    // which the proxy replaces.
+    let binary = pinfold();
+    let env = TestEnv::new("inject");
+    let fixture = HttpFixture::start();
+    let secret = format!("pf-secret-{}", std::process::id());
+    let name = format!("pinfold-e2e-{}-inject", std::process::id());
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(binary, &env),
+        "egress": {
+            "routes": {
+                "key.internal": {
+                    "to": format!("http://127.0.0.1:{}", fixture.port()),
+                    "headers": {
+                        "Authorization": { "from": "PINFOLD_E2E_ROUTE_KEY", "prefix": "Bearer " },
+                    },
+                },
+                "gh": { "to": "https://api.github.com" },
+            },
+        },
+    });
+    let up = box_up_with_env(
+        binary,
+        &env,
+        &spec,
+        &name,
+        &[("PINFOLD_E2E_ROUTE_KEY", &secret)],
+    );
+
+    // The fixture receives the header from the host, not the box's own.
+    let route = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "5",
+            "-H",
+            "Authorization: Bearer from-box",
+            "http://key.internal/",
+        ],
+    );
+    assert_eq!(route.code, 0, "the route failed: {}", route.stderr);
+    assert!(
+        route
+            .stdout
+            .contains(&format!("fixture host=127.0.0.1:{}", fixture.port())),
+        "the route answered: {}",
+        route.stdout
+    );
+    let requests = fixture.headers();
+    assert_eq!(requests.len(), 1, "the fixture saw {requests:?}");
+    let authorization: Vec<&str> = requests[0]
+        .iter()
+        .filter(|(header, _)| header.eq_ignore_ascii_case("authorization"))
+        .map(|(_, value)| value.as_str())
+        .collect();
+    assert_eq!(
+        authorization,
+        [format!("Bearer {secret}")],
+        "the fixture's Authorization headers"
+    );
+
+    // The box's environment never holds the value.
+    let environment = box_exec(binary, &env, &name, &["env"]);
+    assert_eq!(environment.code, 0, "env failed: {}", environment.stderr);
+    assert!(
+        !environment.stdout.contains(&secret),
+        "the box's environment holds the value"
+    );
+
+    // An https route reaches api.github.com over TLS.
+    let github = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "curl",
+            "-sS",
+            "--max-time",
+            "20",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "http://gh/",
+        ],
+    );
+    assert_eq!(github.code, 0, "the https route failed: {}", github.stderr);
+    assert_eq!(github.stdout, "200", "the https route answered");
+
+    // The log names the routes and never the value.
+    let log = fs::read_to_string(egress_log(&env, &name)).expect("read egress log");
+    assert!(!log.contains(&secret), "the egress log holds the value");
+    let lines = egress_log_lines(&env, &name);
+    for route in ["key.internal", "gh"] {
+        assert!(
+            lines.iter().any(|line| line["host"] == route
+                && line["decision"] == "allowed"
+                && line["reason"] == "route"),
+            "no route decision for {route}: {lines:?}"
+        );
+    }
+
+    let status = box_down(binary, &env, &name);
+    assert!(status.success(), "box down failed: {status}");
+    drop(up);
+}
+
+#[test]
 fn no_egress_means_no_way_out() {
     // Sabotage: start the proxy and relay even without `egress` in the spec;
     // the explicit-proxy request then succeeds, the fixture answers, and the
@@ -2094,8 +2211,20 @@ impl Drop for Up {
 }
 
 fn box_up(binary: &Path, env: &TestEnv, spec: &serde_json::Value, name: &str) -> Up {
+    box_up_with_env(binary, env, spec, name, &[])
+}
+
+/// [`box_up`] with extra variables in `up`'s own environment.
+fn box_up_with_env(
+    binary: &Path,
+    env: &TestEnv,
+    spec: &serde_json::Value,
+    name: &str,
+    vars: &[(&str, &str)],
+) -> Up {
     let mut child = env
         .command(binary)
+        .envs(vars.iter().copied())
         .args(["box", "up"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

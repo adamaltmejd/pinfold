@@ -14,6 +14,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use crate::core::plan::Route;
 use crate::core::profile::Profile;
 
 /// The built-in defaults (ARCHITECTURE.md, Configuration).
@@ -50,7 +51,7 @@ pub struct Config {
     /// the built-in default.
     pub allow: Vec<String>,
     /// The effective routes: the highest layer that sets `routes`, else `{}`.
-    pub routes: BTreeMap<String, String>,
+    pub routes: BTreeMap<String, Route>,
     /// The effective extra read-only directories: the highest layer that
     /// sets `protect`, else `[]`.
     pub protect: Vec<String>,
@@ -239,7 +240,7 @@ struct Layer {
     /// load.
     containerfile: Option<String>,
     allow: Option<Vec<String>>,
-    routes: Option<BTreeMap<String, String>>,
+    routes: Option<BTreeMap<String, Route>>,
     protect: Option<Vec<String>>,
     cpus: Option<Cpus>,
     memory: Option<String>,
@@ -340,7 +341,7 @@ fn split_list(value: &str) -> Vec<String> {
 }
 
 /// `name=host:port` pairs, comma-separated.
-fn parse_routes(value: &str) -> io::Result<BTreeMap<String, String>> {
+fn parse_routes(value: &str) -> io::Result<BTreeMap<String, Route>> {
     let mut routes = BTreeMap::new();
     for entry in split_list(value) {
         let Some((name, target)) = entry.split_once('=') else {
@@ -355,7 +356,7 @@ fn parse_routes(value: &str) -> io::Result<BTreeMap<String, String>> {
                 format!("PINFOLD_ROUTES entry {entry:?} is not name=host:port"),
             ));
         }
-        routes.insert(name.to_string(), target.to_string());
+        routes.insert(name.to_string(), Route::Address(target.to_string()));
     }
     Ok(routes)
 }
