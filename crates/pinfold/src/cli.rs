@@ -412,7 +412,7 @@ fn list(args: &[OsString]) -> io::Result<i32> {
                 "owner": owner,
                 "owner_alive": clean::box_owner_alive(&state.join(&box_.id), owner),
                 "created": box_.created,
-                "state": box_.state.as_str(),
+                "state": if box_.running { "running" } else { "stopped" },
             })
         );
     }
@@ -850,8 +850,8 @@ fn report_podman() -> usize {
     let problems = match podman::detect() {
         Ok(podman::Detected::RootlessPodman(info)) => {
             println!("  detected: rootless podman");
-            print_cgroup_manager(&info.cgroup_manager);
-            let mut problems = usize::from(info.cgroup_manager != "systemd");
+            print_cgroup_manager(&info.host.cgroup_manager);
+            let mut problems = usize::from(info.host.cgroup_manager != "systemd");
             if podman::tun_present() {
                 println!("  tun: /dev/net/tun present");
             } else {
@@ -872,7 +872,7 @@ fn report_podman() -> usize {
         }
         Ok(podman::Detected::RootfulPodman(info)) => {
             println!("  detected: rootful podman; pinfold requires rootless podman");
-            print_cgroup_manager(&info.cgroup_manager);
+            print_cgroup_manager(&info.host.cgroup_manager);
             // Rootful alone is the problem; the cgroup manager is not
             // counted twice for one host.
             1
