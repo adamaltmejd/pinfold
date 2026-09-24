@@ -502,7 +502,7 @@ fn run_doctor(args: &[OsString]) -> io::Result<usize> {
                 }
             }
             if runtime.name() == "podman" {
-                report_podman();
+                problems += report_podman();
             }
         }
         Err(error) => {
@@ -619,27 +619,39 @@ fn run_doctor(args: &[OsString]) -> io::Result<usize> {
     Ok(problems)
 }
 
-/// The podman lines in `doctor`'s runtime report: which runtime the host
-/// has, podman's cgroup manager, and linger. Report only: `preflight` is
-/// what refuses a host, and `doctor` changes nothing.
-fn report_podman() {
-    match podman::detect() {
+/// The podman lines in `doctor`'s runtime report, and the problems they add:
+/// a host `preflight` refuses cannot start a box. Report only: `preflight`
+/// is what refuses, and `doctor` changes nothing.
+///
+/// A missing podman CLI adds nothing here: `runtime.version()` has already
+/// counted it, and a host is counted once.
+fn report_podman() -> usize {
+    let problems = match podman::detect() {
         Ok(podman::Detected::RootlessPodman(info)) => {
             println!("  detected: rootless podman");
             print_cgroup_manager(&info.cgroup_manager);
+            usize::from(info.cgroup_manager != "systemd")
         }
         Ok(podman::Detected::RootfulPodman(info)) => {
             println!("  detected: rootful podman; pinfold requires rootless podman");
             print_cgroup_manager(&info.cgroup_manager);
+            // Rootful alone is the problem; the cgroup manager is not
+            // counted twice for one host.
+            1
         }
         Ok(podman::Detected::Docker) => {
             println!("  detected: docker; pinfold requires rootless podman");
+            0
         }
         Ok(podman::Detected::Missing) => {
             println!("  detected: missing; podman is not on PATH");
+            0
         }
-        Err(error) => println!("  detected: unavailable: {error}"),
-    }
+        Err(error) => {
+            println!("  detected: unavailable: {error}");
+            1
+        }
+    };
     match podman::linger() {
         Ok(true) => println!("  linger: enabled"),
         Ok(false) => println!(
@@ -647,6 +659,7 @@ fn report_podman() {
         ),
         Err(error) => println!("  linger: unavailable: {error}"),
     }
+    problems
 }
 
 /// `doctor`'s cgroup-manager line. Under cgroupfs podman accepts `--cpus`
