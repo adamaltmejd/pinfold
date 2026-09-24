@@ -66,8 +66,11 @@ fn main() -> ExitCode {
         return ExitCode::from(cli::report("pi", launch::run(&rest)) as u8);
     }
     let args = rest.get(1..).unwrap_or_default();
+    // PID 1 never returns, so it never reaches `report`.
+    if verb == "init" {
+        init::run(args)
+    }
     let result = match verb {
-        "init" => init::run(args),
         "--version" | "-V" => {
             println!("pinfold {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
