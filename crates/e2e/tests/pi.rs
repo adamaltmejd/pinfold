@@ -361,8 +361,12 @@ fn the_box_cannot_write_git_or_protected_config() {
     // Sabotage: skip reading `core.hooksPath` in pi::git; the
     // `.husky/_/pre-commit` write succeeds, the hook exists on the host, and
     // those assertions fail. Sabotage: drop the GIT_CONFIG_* entries from
-    // the pi box's env; on macOS the positive control's `git status` and
-    // `git log` exit 128 with `dubious ownership`.
+    // the pi box's env. The sabotage bites only while Apple presents the
+    // mount top as root-owned; the Y-55 gate saw that on 2026-09-24, when
+    // the positive control's `git status` and `git log` exited 128 with
+    // `dubious ownership`, and a later probe did not see it, so the failure
+    // is not deterministic. On podman keep-id makes the mount top the box
+    // user's, so it never bites.
     let binary = pinfold();
     let env = TestEnv::new("pi-git");
     default_image(binary, &env);

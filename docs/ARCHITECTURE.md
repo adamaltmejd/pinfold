@@ -472,8 +472,8 @@ through the proxy.
 ## Shared files
 
 Ownership needs no work. Box-created files land on the host as the user's,
-644 or 755; the exec bit and symlinks survive. Apple `container` shows the
-top directory of a mount as root-owned inside the box, so git needs
+644 or 755; the exec bit and symlinks survive. Apple `container` can show
+the top directory of a mount as root-owned inside the box, so git needs
 `safe.directory` for a mounted repository: the pi layer sets it for the
 project root in the box's environment; a caller-owned box sets it in its
 spec's `env` or on git's command line. The box user can do whatever the
@@ -485,7 +485,7 @@ Apple `container` limitations, documented for users:
 | Limitation | Handling |
 |---|---|
 | ~1 s metadata and name cache: ENOENT or stale `stat` after a host atomic save | If it bites, a profile extension retries pi's reads once after 1 s. |
-| A mount's top directory is root-owned inside the box | git needs `safe.directory` for a mounted repository; the pi layer sets it for the project root, as in Shared files. |
+| A mount's top directory may be root-owned inside the box | git needs `safe.directory` for a mounted repository; the pi layer sets it for the project root, as in Shared files. |
 | No inotify for host changes | Polling (`CHOKIDAR_USEPOLLING`, `WATCHPACK_POLLING`). |
 | `flock`/`fcntl` locks not shared; O_EXCL lockfiles are safe | Don't open one SQLite database from both sides. |
 | A case-only rename is a no-op | Rename in two steps. |
