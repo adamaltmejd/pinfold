@@ -34,6 +34,7 @@ fn main() -> ExitCode {
         Some("attach") => ExitCode::from(cli::attach(&rest[1..]) as u8),
         Some("build") => ExitCode::from(cli::build(&rest[1..]) as u8),
         Some("clean") => ExitCode::from(cli::clean(&rest[1..]) as u8),
+        Some("doctor") => ExitCode::from(cli::doctor(&rest[1..]) as u8),
         Some("profile") => ExitCode::from(cli::profile(&rest[1..]) as u8),
         Some("pi") => ExitCode::from(cli::pi(&rest[1..]) as u8),
         _ => {

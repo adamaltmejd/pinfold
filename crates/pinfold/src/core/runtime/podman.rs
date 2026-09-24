@@ -206,6 +206,18 @@ impl Runtime for Podman {
         }
         parse_digest(&output.stdout)
     }
+
+    fn name(&self) -> &'static str {
+        "podman"
+    }
+
+    fn isolation(&self) -> &'static str {
+        "the host kernel, shared with every box"
+    }
+
+    fn version(&self) -> io::Result<String> {
+        super::cli_version("podman")
+    }
 }
 
 /// What preflight needs from `podman info`.

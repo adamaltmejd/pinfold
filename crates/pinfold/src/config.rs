@@ -49,6 +49,52 @@ pub struct Config {
     /// The `<NAME>`s of the host's `PINFOLD_ENV_<NAME>` variables. Their
     /// values stay on the host; a box spec passes each by name only.
     pub env: BTreeSet<String>,
+    /// The layer each effective value came from, for `doctor`.
+    pub origins: Origins,
+}
+
+/// The layer an effective configuration value came from, lowest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// The built-in defaults.
+    Default,
+    /// The selected profile's `pinfold.toml`.
+    Profile,
+    /// The project's `.pinfold.toml`.
+    Project,
+    /// The host environment.
+    Environment,
+}
+
+impl Origin {
+    /// The layer's name, for `doctor`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Origin::Default => "built-in default",
+            Origin::Profile => "profile",
+            Origin::Project => ".pinfold.toml",
+            Origin::Environment => "environment",
+        }
+    }
+}
+
+/// The layer each effective configuration value came from. `allow`, `routes`
+/// and `protect` carry one entry per effective item.
+pub struct Origins {
+    /// The selected profile.
+    pub profile: Origin,
+    /// The effective `image` value.
+    pub image: Origin,
+    /// The effective `cpus` value.
+    pub cpus: Origin,
+    /// The effective `memory` value.
+    pub memory: Origin,
+    /// Every effective allow entry, in effective order, with its origin.
+    pub allow: Vec<(String, Origin)>,
+    /// Every effective route, sorted by name, with its origin.
+    pub routes: Vec<(String, Origin)>,
+    /// Every effective protect entry, in effective order, with its origin.
+    pub protect: Vec<(String, Origin)>,
 }
 
 /// The Containerfile whose bytes decide the effective image.
@@ -76,6 +122,40 @@ impl Config {
             &profile.config,
             &format!("profile {profile_name:?} pinfold.toml"),
         )?;
+        // Provenance is read before `over` consumes the layers.
+        let origins = Origins {
+            profile: scalar_origin(
+                environment.profile.is_some(),
+                project.profile.is_some(),
+                false,
+            ),
+            image: scalar_origin(
+                environment.image.is_some(),
+                project.image.is_some(),
+                profile_layer.image.is_some(),
+            ),
+            cpus: scalar_origin(
+                environment.cpus.is_some(),
+                project.cpus.is_some(),
+                profile_layer.cpus.is_some(),
+            ),
+            memory: scalar_origin(
+                environment.memory.is_some(),
+                project.memory.is_some(),
+                profile_layer.memory.is_some(),
+            ),
+            allow: union_origins([
+                (&profile_layer.allow, Origin::Profile),
+                (&project.allow, Origin::Project),
+                (&environment.allow, Origin::Environment),
+            ]),
+            protect: union_origins([
+                (&profile_layer.protect, Origin::Profile),
+                (&project.protect, Origin::Project),
+                (&environment.protect, Origin::Environment),
+            ]),
+            routes: route_origins(&profile_layer.routes, &project.routes, &environment.routes),
+        };
         let merged = profile_layer.over(project).over(environment);
         let image = merged.image.clone();
         // The config cannot tell a bare image name from a bare file name, so
@@ -103,6 +183,7 @@ impl Config {
             cpus: merged.cpus.map(Cpus::value).unwrap_or(DEFAULT_CPUS),
             memory: merged.memory.unwrap_or_else(|| DEFAULT_MEMORY.to_string()),
             env: env_names(),
+            origins,
         })
     }
 }
@@ -253,6 +334,53 @@ fn union(mut lower: Vec<String>, higher: Vec<String>) -> Vec<String> {
         }
     }
     lower
+}
+
+/// The origin of a scalar: the highest layer that set it, else the default.
+fn scalar_origin(environment: bool, project: bool, profile: bool) -> Origin {
+    if environment {
+        Origin::Environment
+    } else if project {
+        Origin::Project
+    } else if profile {
+        Origin::Profile
+    } else {
+        Origin::Default
+    }
+}
+
+/// The origin of each union entry: the lowest layer that added it wins,
+/// matching [`union`]'s order.
+fn union_origins(layers: [(&[String], Origin); 3]) -> Vec<(String, Origin)> {
+    let mut entries: Vec<(String, Origin)> = Vec::new();
+    for (items, origin) in layers {
+        for item in items {
+            if !entries.iter().any(|(existing, _)| existing == item) {
+                entries.push((item.clone(), origin));
+            }
+        }
+    }
+    entries
+}
+
+/// The origin of each route: the highest layer that set it wins, as
+/// [`Layer::over`] does.
+fn route_origins(
+    profile: &BTreeMap<String, String>,
+    project: &BTreeMap<String, String>,
+    environment: &BTreeMap<String, String>,
+) -> Vec<(String, Origin)> {
+    let mut routes: BTreeMap<String, Origin> = BTreeMap::new();
+    for name in profile.keys() {
+        routes.insert(name.clone(), Origin::Profile);
+    }
+    for name in project.keys() {
+        routes.insert(name.clone(), Origin::Project);
+    }
+    for name in environment.keys() {
+        routes.insert(name.clone(), Origin::Environment);
+    }
+    routes.into_iter().collect()
 }
 
 /// The `<NAME>`s of the host's `PINFOLD_ENV_<NAME>` variables, sorted.

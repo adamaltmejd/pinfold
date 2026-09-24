@@ -111,8 +111,8 @@ fn canonical(path: &Path) -> io::Result<PathBuf> {
 }
 
 /// The image ref the box runs. A project Containerfile runs the project's
-/// image; a named image ref is the user's to provide.
-fn resolve_image(config: &Config, project: &str) -> String {
+/// image; a named image ref is the user's to provide. `doctor` reports it.
+pub(crate) fn resolve_image(config: &Config, project: &str) -> String {
     match &config.containerfile {
         Containerfile::Project(_) => format!("pinfold/project-{project}:latest"),
         Containerfile::Profile(_) => config

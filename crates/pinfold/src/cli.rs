@@ -9,19 +9,19 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::process::ExitStatus;
+use std::process::{Command, ExitStatus};
 use std::time::Duration;
 
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
-use crate::config::{Config, Containerfile};
+use crate::config::{Config, Containerfile, Origin};
 use crate::core::artifacts;
 use crate::core::r#box::Box;
 use crate::core::clean;
 use crate::core::plan::Plan;
 use crate::core::profile::{Profile, valid_name};
-use crate::core::runtime::{BoxInfo, BuildRequest, local_image_id, runtime};
+use crate::core::runtime::{BoxInfo, BuildRequest, Runtime, local_image_id, runtime};
 use crate::dirs;
 use crate::trust;
 
@@ -31,6 +31,10 @@ const PROFILE_USAGE: &str = "usage: pinfold profile new NAME [--from PROFILE]";
 const ALLOW_USAGE: &str = "usage: pinfold allow";
 const ATTACH_USAGE: &str = "usage: pinfold attach [--box NAME] [cmd...]";
 const CLEAN_USAGE: &str = "usage: pinfold clean [--dry-run] [--unused AGE]";
+const DOCTOR_USAGE: &str = "usage: pinfold doctor";
+
+/// `doctor` suggests `pinfold clean` above this much measured disk use.
+const CLEAN_SUGGESTION_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 
 /// Run a `pinfold pi` invocation and return its process exit code.
 pub fn pi(args: &[OsString]) -> i32 {
@@ -286,73 +290,109 @@ pub fn clean(args: &[OsString]) -> i32 {
 fn run_clean(args: &[OsString]) -> io::Result<()> {
     let (dry_run, unused) = parse_clean(args)?;
     let runtime = runtime()?;
-
-    // Measure everything before removing anything, so `--dry-run` lists the
-    // sizes a real `clean` reclaims.
-    let boxes = clean::boxes(runtime)?;
-    let sockets = clean::leftover_socket_dirs()?;
-    let mut box_dirs: BTreeSet<PathBuf> = boxes
-        .dead
-        .iter()
-        .map(|dead| dead.state_dir.clone())
-        .collect();
-    box_dirs.extend(sockets);
-    let artifacts = artifacts::unpinned_versions()?;
-    let egress = clean::old_egress_logs()?;
-
-    let projects = crate::pi::state::state_dirs()?;
-    let mut caches = Vec::new();
-    let mut stale = Vec::new();
-    for project in &projects {
-        // A live box holds this project's home; leave it all alone.
-        if boxes.live_projects.contains(&project.id) {
-            continue;
-        }
-        if project.stale(unused) {
-            // The whole state dir goes; its cache is part of its size.
-            stale.push(project.dir.clone());
-        } else {
-            let cache = project.home.join(".cache");
-            if cache.exists() {
-                caches.push(cache);
-            }
-        }
-    }
-
-    let automatic = clean::total_bytes(&box_dirs)
-        + clean::total_bytes(&artifacts)
-        + clean::total_bytes(&egress);
-    let project_caches = clean::total_bytes(&caches);
-    let project_state = clean::total_bytes(&stale);
-    let total = automatic + project_caches + project_state;
+    let plan = CleanPlan::measure(runtime, unused)?;
     if dry_run {
-        println!("pinfold clean: dry run; {total} B reclaimable");
+        println!("pinfold clean: dry run; {} B reclaimable", plan.total());
     } else {
-        println!("pinfold clean: reclaiming {total} B");
+        println!("pinfold clean: reclaiming {} B", plan.total());
     }
-    println!("  automatic maintenance: {automatic} B");
-    println!("  build cache: {}", runtime.build_cache_description());
-    println!("  project caches: {project_caches} B");
-    println!("  project state: {project_state} B");
-
+    plan.print(runtime);
     if dry_run {
         return Ok(());
     }
+    plan.remove(runtime)
+}
 
-    for dead in &boxes.dead {
-        dead.remove(runtime)?;
+/// Everything one `clean` pass measures and would remove, measured before
+/// anything is removed. `doctor` measures with it too, and removes nothing.
+struct CleanPlan {
+    boxes: clean::Boxes,
+    caches: Vec<PathBuf>,
+    stale: Vec<PathBuf>,
+    automatic: u64,
+    project_caches: u64,
+    project_state: u64,
+}
+
+impl CleanPlan {
+    /// Measure the categories without changing anything. `unused` ages
+    /// project state as `clean --unused` does.
+    fn measure(runtime: &dyn Runtime, unused: Option<Duration>) -> io::Result<CleanPlan> {
+        let boxes = clean::boxes(runtime)?;
+        let sockets = clean::leftover_socket_dirs()?;
+        let mut box_dirs: BTreeSet<PathBuf> = boxes
+            .dead
+            .iter()
+            .map(|dead| dead.state_dir.clone())
+            .collect();
+        box_dirs.extend(sockets);
+        let artifacts = artifacts::unpinned_versions()?;
+        let egress = clean::old_egress_logs()?;
+
+        let projects = crate::pi::state::state_dirs()?;
+        let mut caches = Vec::new();
+        let mut stale = Vec::new();
+        for project in &projects {
+            // A live box holds this project's home; leave it all alone.
+            if boxes.live_projects.contains(&project.id) {
+                continue;
+            }
+            if project.stale(unused) {
+                // The whole state dir goes; its cache is part of its size.
+                stale.push(project.dir.clone());
+            } else {
+                let cache = project.home.join(".cache");
+                if cache.exists() {
+                    caches.push(cache);
+                }
+            }
+        }
+
+        let automatic = clean::total_bytes(&box_dirs)
+            + clean::total_bytes(&artifacts)
+            + clean::total_bytes(&egress);
+        let project_caches = clean::total_bytes(&caches);
+        let project_state = clean::total_bytes(&stale);
+        Ok(CleanPlan {
+            boxes,
+            caches,
+            stale,
+            automatic,
+            project_caches,
+            project_state,
+        })
     }
-    clean::prune_sockets()?;
-    artifacts::prune_unpinned()?;
-    clean::prune_egress_logs()?;
-    runtime.purge_build_cache()?;
-    for cache in &caches {
-        fs::remove_dir_all(cache)?;
+
+    /// The bytes a real `clean` would reclaim.
+    fn total(&self) -> u64 {
+        self.automatic + self.project_caches + self.project_state
     }
-    for dir in &stale {
-        fs::remove_dir_all(dir)?;
+
+    /// List the categories, as `clean` and `doctor` both show them.
+    fn print(&self, runtime: &dyn Runtime) {
+        println!("  automatic maintenance: {} B", self.automatic);
+        println!("  build cache: {}", runtime.build_cache_description());
+        println!("  project caches: {} B", self.project_caches);
+        println!("  project state: {} B", self.project_state);
     }
-    Ok(())
+
+    /// Remove everything the plan measured.
+    fn remove(&self, runtime: &dyn Runtime) -> io::Result<()> {
+        for dead in &self.boxes.dead {
+            dead.remove(runtime)?;
+        }
+        clean::prune_sockets()?;
+        artifacts::prune_unpinned()?;
+        clean::prune_egress_logs()?;
+        runtime.purge_build_cache()?;
+        for cache in &self.caches {
+            fs::remove_dir_all(cache)?;
+        }
+        for dir in &self.stale {
+            fs::remove_dir_all(dir)?;
+        }
+        Ok(())
+    }
 }
 
 /// `clean`'s options: `--dry-run`, and `--unused AGE` for state not run for
@@ -410,6 +450,254 @@ fn clean_usage(message: &str) -> io::Error {
         io::ErrorKind::InvalidInput,
         format!("{message}\n{CLEAN_USAGE}"),
     )
+}
+
+/// Run a `pinfold doctor` invocation and return its process exit code.
+pub fn doctor(args: &[OsString]) -> i32 {
+    match run_doctor(args) {
+        Ok(0) => {
+            println!("pinfold doctor: ok");
+            0
+        }
+        Ok(problems) => {
+            eprintln!("pinfold doctor: {problems} problem(s)");
+            1
+        }
+        Err(error) => {
+            eprintln!("pinfold doctor: {error}");
+            1
+        }
+    }
+}
+
+/// Print one report of what `pinfold pi` depends on and what state it is in,
+/// and return the number of missing dependencies. Reads only: nothing is
+/// created, downloaded or fixed.
+fn run_doctor(args: &[OsString]) -> io::Result<usize> {
+    if !args.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("doctor takes no arguments\n{DOCTOR_USAGE}"),
+        ));
+    }
+    let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
+    // The config must parse; a broken `.pinfold.toml` is itself the answer.
+    let config = Config::load(&root)?;
+    let project = crate::pi::state::project_id(&root)?;
+    let profile = &config.profile.name;
+    let mut problems = 0;
+
+    println!("pinfold doctor: {}", root.display());
+
+    let runtime = runtime();
+    match &runtime {
+        Ok(runtime) => {
+            let runtime = *runtime;
+            println!("runtime: {} ({})", runtime.name(), runtime.isolation());
+            match runtime.version() {
+                Ok(version) => println!("  version: {version}"),
+                Err(error) => {
+                    println!("  version: unavailable: {error}");
+                    problems += 1;
+                }
+            }
+        }
+        Err(error) => {
+            println!("runtime: unavailable: {error}");
+            problems += 1;
+        }
+    }
+
+    match kernel() {
+        Ok(kernel) => println!("kernel: {kernel}"),
+        Err(error) => println!("kernel: unavailable: {error}"),
+    }
+
+    println!(
+        "image: {}",
+        crate::pi::launch::resolve_image(&config, &project)
+    );
+    match &runtime {
+        Ok(runtime) => match report_image(&config, *runtime, &project) {
+            Ok(missing) => problems += missing,
+            Err(error) => {
+                println!("  unchecked: {error}");
+                problems += 1;
+            }
+        },
+        Err(_) => println!("  unchecked: no runtime"),
+    }
+
+    match artifacts::pins() {
+        Ok(pins) => {
+            println!("artifacts:");
+            for pin in pins {
+                if pin.cached {
+                    println!(
+                        "  {} {}: cached at {}",
+                        pin.name,
+                        pin.version,
+                        pin.path.display()
+                    );
+                } else {
+                    println!(
+                        "  {} {}: not cached; `pinfold pi` downloads it on first run ({})",
+                        pin.name,
+                        pin.version,
+                        pin.path.display()
+                    );
+                    problems += 1;
+                }
+            }
+        }
+        Err(error) => {
+            println!("artifacts: unavailable: {error}");
+            problems += 1;
+        }
+    }
+
+    match trust::check(&root, &config) {
+        Ok(()) => println!("trust: ok"),
+        Err(error) => {
+            println!("trust: {error}");
+            problems += 1;
+        }
+    }
+
+    println!("config:");
+    println!(
+        "  profile: {} ({})",
+        profile,
+        origin_label(config.origins.profile, profile)
+    );
+    println!(
+        "  image: {} ({})",
+        config.image.as_deref().unwrap_or("(the profile image)"),
+        origin_label(config.origins.image, profile)
+    );
+    println!(
+        "  cpus: {} ({})",
+        config.cpus,
+        origin_label(config.origins.cpus, profile)
+    );
+    println!(
+        "  memory: {} ({})",
+        config.memory,
+        origin_label(config.origins.memory, profile)
+    );
+    print_list("allow", &config.origins.allow, profile);
+    print_routes(&config.routes, &config.origins.routes, profile);
+    print_list("protect", &config.origins.protect, profile);
+    println!("  env:");
+    if config.env.is_empty() {
+        println!("    (none)");
+    }
+    for name in &config.env {
+        println!("    {name} (environment)");
+    }
+
+    println!("disk:");
+    match &runtime {
+        Ok(runtime) => match CleanPlan::measure(*runtime, None) {
+            Ok(plan) => {
+                plan.print(*runtime);
+                let total = plan.total();
+                if total > CLEAN_SUGGESTION_BYTES {
+                    println!("  {total} B is over 20 GB; run `pinfold clean`");
+                }
+            }
+            Err(error) => {
+                println!("  unavailable: {error}");
+                problems += 1;
+            }
+        },
+        Err(_) => println!("  unavailable: no runtime"),
+    }
+
+    Ok(problems)
+}
+
+/// Report the image `pinfold pi` would run, and whether it was built from the
+/// current profile image. Returns 1 when a required image is missing.
+fn report_image(config: &Config, runtime: &dyn Runtime, project: &str) -> io::Result<usize> {
+    let image = crate::pi::launch::resolve_image(config, project);
+    let images = runtime.list_images()?;
+    let Some(found) = images.iter().find(|info| info.reference == image) else {
+        let required = image_required(config, &image);
+        if required {
+            println!("  missing; run `pinfold build`");
+        } else {
+            println!("  missing; the runtime may pull it");
+        }
+        return Ok(usize::from(required));
+    };
+    println!("  exists");
+    if matches!(config.containerfile, Containerfile::Project(_)) {
+        let recorded = found.labels.get(clean::BASE_LABEL).map(String::as_str);
+        let current = local_image_id(runtime, &config.profile.image_ref())?;
+        if recorded == current.as_deref() {
+            println!("  built from the current profile image");
+        } else {
+            println!(
+                "  built from profile image {}; the current profile image is {}; run `pinfold build`",
+                recorded.unwrap_or("(none)"),
+                current.as_deref().unwrap_or("(none)")
+            );
+        }
+    }
+    Ok(0)
+}
+
+/// Whether `pinfold pi` refuses when this image is missing. A named image
+/// ref is the user's to provide; a profile or project image must be built.
+fn image_required(config: &Config, image: &str) -> bool {
+    match &config.containerfile {
+        Containerfile::Project(_) => true,
+        Containerfile::Profile(_) => image == config.profile.image_ref(),
+    }
+}
+
+/// The host kernel, as `uname` reports it.
+fn kernel() -> io::Result<String> {
+    let output = Command::new("uname").arg("-sr").output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!("uname -sr: {}", output.status)));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// One union key's effective entries, each with its layer.
+fn print_list(key: &str, entries: &[(String, Origin)], profile: &str) {
+    println!("  {key}:");
+    if entries.is_empty() {
+        println!("    (none)");
+    }
+    for (entry, origin) in entries {
+        println!("    {entry} ({})", origin_label(*origin, profile));
+    }
+}
+
+/// The effective routes, each with its layer and target.
+fn print_routes(routes: &BTreeMap<String, String>, origins: &[(String, Origin)], profile: &str) {
+    println!("  routes:");
+    if origins.is_empty() {
+        println!("    (none)");
+    }
+    for (name, origin) in origins {
+        let target = routes.get(name).map(String::as_str).unwrap_or("?");
+        println!(
+            "    {name} -> {target} ({})",
+            origin_label(*origin, profile)
+        );
+    }
+}
+
+/// The layer a value came from, naming the selected profile.
+fn origin_label(origin: Origin, profile: &str) -> String {
+    match origin {
+        Origin::Profile => format!("profile {profile}"),
+        other => other.name().to_string(),
+    }
 }
 
 struct ExecArgs {

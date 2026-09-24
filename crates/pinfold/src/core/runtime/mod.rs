@@ -27,6 +27,20 @@ pub fn runtime() -> io::Result<&'static dyn Runtime> {
     }
 }
 
+/// A runtime CLI's `--version` output, trimmed. `doctor` uses it.
+fn cli_version(program: &str) -> io::Result<String> {
+    let output = std::process::Command::new(program)
+        .arg("--version")
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "{program} --version: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /// One box the runtime knows about, running or not.
 #[derive(Debug, Clone)]
 pub struct BoxInfo {
@@ -109,6 +123,15 @@ pub trait Runtime: Sync {
     /// Pull `reference` and return the digest it resolved to. `None` when
     /// the reference does not resolve, for example `scratch`.
     fn image_digest(&self, reference: &str) -> io::Result<Option<String>>;
+
+    /// The runtime's name, for `doctor`.
+    fn name(&self) -> &'static str;
+
+    /// The isolation the runtime gives each box, for `doctor`.
+    fn isolation(&self) -> &'static str;
+
+    /// The runtime CLI's version, as the CLI reports it.
+    fn version(&self) -> io::Result<String>;
 }
 
 /// The path a host path appears at inside the box. The identity on Unix.

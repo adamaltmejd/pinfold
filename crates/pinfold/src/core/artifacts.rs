@@ -40,13 +40,20 @@ pub fn pi() -> io::Result<PathBuf> {
         .iter()
         .find_map(|(name, sha256)| (*name == os_arch).then_some(*sha256))
         .expect("every supported os-arch has a pin");
-    let version_dir = dirs::artifacts_dir()?.join("pi").join(PI_VERSION);
-    let dir = version_dir.join(os_arch);
-    let binary = dir.join("pi").join("pi");
+    let binary = pi_binary(os_arch)?;
     if binary.is_file() {
         return Ok(binary);
     }
 
+    let dir = binary
+        .parent()
+        .and_then(Path::parent)
+        .expect("the pi binary path has an os-arch directory")
+        .to_path_buf();
+    let version_dir = dir
+        .parent()
+        .expect("the os-arch directory has a version directory")
+        .to_path_buf();
     fs::create_dir_all(&version_dir)?;
     // Stage and rename, like the embedded init: a failed or killed unpack
     // never leaves a half-written artifact where the next call looks.
@@ -72,6 +79,40 @@ pub fn pi() -> io::Result<PathBuf> {
             }
         }
     }
+}
+
+/// One pinned artifact's cache state, as `doctor` reports it. Nothing here
+/// downloads.
+pub struct Pin {
+    /// The artifact's name, e.g. `pi`.
+    pub name: &'static str,
+    /// The pinned version.
+    pub version: &'static str,
+    /// The host path of the binary in the cache.
+    pub path: PathBuf,
+    /// Whether the binary is already in the cache.
+    pub cached: bool,
+}
+
+/// Every pinned artifact and whether the cache holds it. Never downloads.
+pub fn pins() -> io::Result<Vec<Pin>> {
+    let path = pi_binary(box_os_arch()?)?;
+    Ok(vec![Pin {
+        name: "pi",
+        version: PI_VERSION,
+        cached: path.is_file(),
+        path,
+    }])
+}
+
+/// The host path of the pinned pi binary for `os_arch`, cached or not.
+fn pi_binary(os_arch: &str) -> io::Result<PathBuf> {
+    Ok(dirs::artifacts_dir()?
+        .join("pi")
+        .join(PI_VERSION)
+        .join(os_arch)
+        .join("pi")
+        .join("pi"))
 }
 
 /// Artifact versions under `pi/` that no pin names. The embedded init lives

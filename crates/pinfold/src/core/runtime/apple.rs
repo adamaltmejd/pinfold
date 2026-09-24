@@ -219,6 +219,18 @@ impl Runtime for Apple {
         }
         parse_digest(&output.stdout)
     }
+
+    fn name(&self) -> &'static str {
+        "Apple container"
+    }
+
+    fn isolation(&self) -> &'static str {
+        "one VM per box"
+    }
+
+    fn version(&self) -> io::Result<String> {
+        super::cli_version("container")
+    }
 }
 
 /// One `container list --format json` entry, as much as pinfold needs.
