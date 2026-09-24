@@ -11,19 +11,17 @@ use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 
 use serde::Deserialize;
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 
 use crate::core::clean::LAYER_LABEL;
 use crate::core::plan::{Env, Plan};
-use crate::core::proxy::PROXY_URL;
 use crate::core::runtime::{
-    BoxInfo, BoxStat, BoxState, BuildCache, BuildRequest, ImageIdentity, ImageInfo, MemoryStat,
-    PidsStat, Preflight, Runtime, bind, captured_build, guest_path, spawn_error, user,
+    BoxInfo, BoxStat, BuildCache, BuildRequest, ImageIdentity, ImageInfo, MemoryStat, PidsStat,
+    Preflight, Runtime, bind, output, run, spawn_error, up_command, user,
 };
 use crate::dirs;
 
@@ -60,40 +58,10 @@ impl Runtime for Podman {
         let seccomp = seccomp_profile(source)?;
         let resolv_conf = empty_resolv_conf()?;
         let argv = up_argv(plan, init, proxy_socket, &seccomp, &resolv_conf);
-        let (program, arguments) = argv.split_first().expect("argv is never empty");
-        let mut command = Command::new(program);
-        command
-            .args(arguments)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        // Values go through the child's environment, so argv holds only names
-        // and `ps` cannot read a secret. HOME is the exception: it goes on
-        // argv because changing the podman client's own HOME would move its
-        // rootless storage.
-        for (name, value) in &plan.env {
-            if name == "HOME" {
-                continue;
-            }
-            match value {
-                Env::Exact(value) => {
-                    command.env(name, value);
-                }
-                Env::From { from } => {
-                    if let Some(value) = std::env::var_os(from) {
-                        command.env(name, value);
-                    }
-                }
-            }
-        }
-        // Always applied: Node's fetch reads the proxy variables only with
-        // this set.
-        command.env("NODE_USE_ENV_PROXY", "1");
-        if plan.egress.is_some() {
-            command.env("HTTPS_PROXY", PROXY_URL);
-            command.env("http_proxy", PROXY_URL);
-        }
-        command
+        // HOME is not exported: it goes on argv because changing the podman
+        // client's own HOME would move its rootless storage.
+        let mut env = plan.env.iter().filter(|(name, _)| name.as_str() != "HOME");
+        up_command(&argv, &mut env, plan.egress.is_some())
             .spawn()
             .map_err(|error| spawn_error("podman", error))
     }
@@ -112,21 +80,7 @@ impl Runtime for Podman {
     }
 
     fn down(&self, name: &str) -> io::Result<()> {
-        let argv = down_argv(name);
-        let (program, arguments) = argv.split_first().expect("argv is never empty");
-        let status = std::process::Command::new(program)
-            .args(arguments)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .status()
-            .map_err(|error| spawn_error("podman", error))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!(
-                "podman rm -f -t 0 --ignore {name}: {status}"
-            )))
-        }
+        run(&down_argv(name))
     }
 
     fn exec(
@@ -136,22 +90,7 @@ impl Runtime for Podman {
         workdir: Option<&Path>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        let argv = exec_argv(name, tty, workdir, argv);
-        let (program, arguments) = argv.split_first().expect("argv is never empty");
-        let mut command = std::process::Command::new(program);
-        command
-            .args(arguments)
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-        if !tty {
-            // Without a TTY the runtime's exec gets its own process group, so
-            // a terminal signal reaches pinfold and not the exec.
-            command.process_group(0);
-        }
-        command
-            .status()
-            .map_err(|error| spawn_error("podman", error))
+        super::exec("podman", name, tty, workdir, argv)
     }
 
     fn stat(&self, name: &str) -> io::Result<BoxStat> {
@@ -175,31 +114,11 @@ impl Runtime for Podman {
     }
 
     fn list(&self) -> io::Result<Vec<BoxInfo>> {
-        let output = std::process::Command::new("podman")
-            .args(["ps", "--all", "--format", "json"])
-            .output()
-            .map_err(|error| spawn_error("podman", error))?;
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "podman ps: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        parse_list(&output.stdout)
+        parse_list(&output(&["podman", "ps", "--all", "--format", "json"])?)
     }
 
     fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
-        let output = std::process::Command::new("podman")
-            .args(["image", "list", "--format", "json"])
-            .output()
-            .map_err(|error| spawn_error("podman", error))?;
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "podman image list: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        parse_images(&output.stdout)
+        parse_images(&output(&["podman", "image", "list", "--format", "json"])?)
     }
 
     fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageIdentity, String>> {
@@ -218,80 +137,41 @@ impl Runtime for Podman {
 
     fn remove_image(&self, reference: &str) -> io::Result<()> {
         // `image rm` also collects the layers no image references.
-        let output = std::process::Command::new("podman")
-            .args(["image", "rm", reference])
-            .output()
-            .map_err(|error| spawn_error("podman", error))?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!(
-                "podman image rm {reference}: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )))
-        }
+        output(&["podman", "image", "rm", reference]).map(|_| ())
     }
 
     fn purge_build_cache(&self) -> io::Result<()> {
         // `image prune` removes only dangling images and repeats until none
         // is left, so an intermediate goes once nothing builds on it, and an
         // intermediate under a kept image stays with it.
-        let output = std::process::Command::new("podman")
-            .args(["image", "prune", "--force", "--filter"])
-            .arg(format!("label={LAYER_LABEL}"))
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|error| spawn_error("podman", error))?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!(
-                "podman image prune: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )))
-        }
+        let filter = format!("label={LAYER_LABEL}");
+        output(&["podman", "image", "prune", "--force", "--filter", &filter]).map(|_| ())
     }
 
     fn build_cache(&self) -> io::Result<BuildCache> {
-        let output = std::process::Command::new("podman")
-            .args(["image", "list", "--all", "--format", "json"])
-            .output()
-            .map_err(|error| spawn_error("podman", error))?;
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "podman image list --all: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        let images: Vec<ListedImage> = serde_json::from_slice(&output.stdout).map_err(|error| {
+        let json = output(&["podman", "image", "list", "--all", "--format", "json"])?;
+        let images: Vec<ListedImage> = serde_json::from_slice(&json).map_err(|error| {
             io::Error::other(format!("podman image list returned invalid JSON: {error}"))
         })?;
         Ok(BuildCache::Bytes(build_cache_bytes(&images)))
     }
 
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
-        captured_build(&build_argv(request))
+        let label = format!("{LAYER_LABEL}=true");
+        let cache_flags: &[&str] = if request.cache {
+            // The cache is intermediate images carrying only buildah's own
+            // labels; this one is how `purge_build_cache` tells pinfold's
+            // apart.
+            &["--layer-label", &label]
+        } else {
+            // Every step reruns and no intermediate image is left behind.
+            &["--layers=false"]
+        };
+        super::build("podman", cache_flags, request)
     }
 
     fn image_digest(&self, reference: &str) -> io::Result<Option<String>> {
-        // A floating tag must be pulled for its digest to be current and
-        // present to inspect. `scratch` and other non-registry references
-        // cannot be pulled; they simply have no digest.
-        let _ = std::process::Command::new("podman")
-            .args(["image", "pull", reference])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .status()
-            .map_err(|error| spawn_error("podman", error));
-        let output = std::process::Command::new("podman")
-            .args(["image", "inspect", reference])
-            .output()
-            .map_err(|error| spawn_error("podman", error))?;
-        if !output.status.success() {
-            return Ok(None);
-        }
-        parse_digest(&output.stdout)
+        super::image_digest("podman", reference, parse_digest)
     }
 
     fn name(&self) -> &'static str {
@@ -311,17 +191,15 @@ impl Runtime for Podman {
 /// relative to `/sys/fs/cgroup`; pinfold reads files under it and never
 /// composes the systemd scope name itself.
 fn cgroup_path(name: &str) -> io::Result<String> {
-    let output = std::process::Command::new("podman")
-        .args(["inspect", "--format", "{{.State.CgroupPath}}", name])
-        .output()
-        .map_err(|error| spawn_error("podman", error))?;
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "podman inspect {name}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let argv = [
+        "podman",
+        "inspect",
+        "--format",
+        "{{.State.CgroupPath}}",
+        name,
+    ];
+    let stdout = output(&argv)?;
+    let path = String::from_utf8_lossy(&stdout).trim().to_string();
     if path.is_empty() {
         return Err(io::Error::other(format!(
             "podman inspect {name} reports no cgroup path"
@@ -350,17 +228,6 @@ fn cgroup_event(dir: &Path, file: &str, key: &str) -> Option<u64> {
     None
 }
 
-/// What `podman info` reports that `doctor` shows.
-#[derive(Debug)]
-pub struct PodmanInfo {
-    /// `host.cgroupManager`: `systemd`, `cgroupfs`, or another backend.
-    pub cgroup_manager: String,
-    /// `host.idMappings.uidmap`: the container ids the user namespace maps.
-    uid_map: Vec<IdMap>,
-    /// `host.idMappings.gidmap`: the container ids the user namespace maps.
-    gid_map: Vec<IdMap>,
-}
-
 /// One entry in podman's user-namespace id maps: container ids
 /// `container_id` through `container_id + size - 1`.
 #[derive(Debug, Deserialize)]
@@ -373,8 +240,8 @@ struct IdMap {
 /// rootless podman; `doctor` reports what it finds instead.
 #[derive(Debug)]
 pub enum Detected {
-    RootlessPodman(PodmanInfo),
-    RootfulPodman(PodmanInfo),
+    RootlessPodman(Info),
+    RootfulPodman(Info),
     Missing,
 }
 
@@ -388,15 +255,10 @@ pub fn detect() -> io::Result<Detected> {
         }
         Err(error) => return Err(error),
     };
-    let reported = PodmanInfo {
-        cgroup_manager: info.host.cgroup_manager,
-        uid_map: info.host.id_mappings.uidmap,
-        gid_map: info.host.id_mappings.gidmap,
-    };
     Ok(if info.host.security.rootless {
-        Detected::RootlessPodman(reported)
+        Detected::RootlessPodman(info)
     } else {
-        Detected::RootfulPodman(reported)
+        Detected::RootfulPodman(info)
     })
 }
 
@@ -404,17 +266,8 @@ pub fn detect() -> io::Result<Detected> {
 /// outlives the login that started it only with linger.
 pub fn linger() -> io::Result<bool> {
     let uid = nix::unistd::getuid().to_string();
-    let output = std::process::Command::new("loginctl")
-        .args(["show-user", &uid, "--property=Linger"])
-        .output()
-        .map_err(|error| spawn_error("loginctl", error))?;
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "loginctl show-user: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
+    let stdout = output(&["loginctl", "show-user", &uid, "--property=Linger"])?;
+    let text = String::from_utf8_lossy(&stdout);
     Ok(text
         .lines()
         .find_map(|line| line.strip_prefix("Linger="))
@@ -431,31 +284,32 @@ pub fn tun_present() -> bool {
 /// Whether both of podman's user-namespace id maps contain `id`, for
 /// `doctor`. Debian's `_apt` is gid 65534 and cannot `setegid` to it when
 /// the mapping stops short.
-pub fn subordinate_ids_cover(info: &PodmanInfo, id: u32) -> bool {
+pub fn subordinate_ids_cover(info: &Info, id: u32) -> bool {
     let covered = |map: &[IdMap]| {
         map.iter()
             .any(|entry| entry.container_id <= id && id - entry.container_id < entry.size)
     };
-    covered(&info.uid_map) && covered(&info.gid_map)
+    covered(&info.host.id_mappings.uidmap) && covered(&info.host.id_mappings.gidmap)
 }
 
-/// What preflight needs from `podman info`.
-#[derive(Deserialize)]
-struct Info {
-    host: InfoHost,
+/// What preflight and `doctor` read from `podman info`.
+#[derive(Debug, Deserialize)]
+pub struct Info {
+    pub host: InfoHost,
 }
 
-#[derive(Deserialize)]
-struct InfoHost {
+#[derive(Debug, Deserialize)]
+pub struct InfoHost {
+    /// `systemd`, `cgroupfs`, or another backend.
     #[serde(rename = "cgroupManager")]
-    cgroup_manager: String,
+    pub cgroup_manager: String,
     security: InfoSecurity,
     // Rootful podman reports no maps; rootless always does.
     #[serde(rename = "idMappings", default, deserialize_with = "empty_default")]
     id_mappings: InfoIdMappings,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Debug, Deserialize, Default)]
 struct InfoIdMappings {
     #[serde(default, deserialize_with = "empty_default")]
     uidmap: Vec<IdMap>,
@@ -463,7 +317,7 @@ struct InfoIdMappings {
     gidmap: Vec<IdMap>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct InfoSecurity {
     rootless: bool,
     #[serde(rename = "seccompProfilePath", default)]
@@ -473,17 +327,8 @@ struct InfoSecurity {
 /// Run and parse `podman info`. A missing CLI is named by the spawn helper,
 /// so preflight and `doctor` say the same thing about it.
 fn podman_info() -> io::Result<Info> {
-    let output = std::process::Command::new("podman")
-        .args(["info", "--format", "json"])
-        .output()
-        .map_err(|error| spawn_error("podman", error))?;
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "podman info failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    serde_json::from_slice(&output.stdout)
+    let json = output(&["podman", "info", "--format", "json"])?;
+    serde_json::from_slice(&json)
         .map_err(|error| io::Error::other(format!("podman info returned invalid JSON: {error}")))
 }
 
@@ -690,7 +535,7 @@ fn parse_list(json: &[u8]) -> io::Result<Vec<BoxInfo>> {
                 image_id,
                 image_ref: image,
                 created: rfc3339(created),
-                state: BoxState::from_runtime(&state),
+                running: state == "running",
             }
         })
         .collect())
@@ -872,7 +717,7 @@ where
 /// same path, so it is also the path PID 1 runs. When `proxy_socket` is set,
 /// the socket is bind-mounted read-only at [`GUEST_PROXY_SOCKET`] and init
 /// relays to it as its argument.
-pub fn up_argv(
+fn up_argv(
     plan: &Plan,
     init: &Path,
     proxy_socket: Option<&Path>,
@@ -956,13 +801,13 @@ pub fn up_argv(
     // an init without a directory, so the parent is a real directory here.
     let init_dir = init.parent().unwrap_or(Path::new("/"));
     argv.push("--mount".into());
-    argv.push(bind(init_dir, &guest_path(init_dir), true));
+    argv.push(bind(init_dir, init_dir, true));
     if let Some(socket) = proxy_socket {
         argv.push("--mount".into());
         argv.push(bind(socket, Path::new(GUEST_PROXY_SOCKET), true));
     }
     argv.push("--entrypoint".into());
-    argv.push(guest_path(init).into_os_string());
+    argv.push(init.into());
     argv.push(
         plan.image
             .clone()
@@ -985,69 +830,8 @@ fn home_value(plan: &Plan) -> OsString {
     }
 }
 
-/// The `podman build` argv for one build, as data.
-pub fn build_argv(request: &BuildRequest) -> Vec<OsString> {
-    let mut argv: Vec<OsString> = vec!["podman".into(), "build".into()];
-    if request.cache {
-        // The cache is intermediate images carrying only buildah's own
-        // labels; this one is how `purge_build_cache` tells pinfold's apart.
-        argv.push("--layer-label".into());
-        argv.push(format!("{LAYER_LABEL}=true").into());
-    } else {
-        // Every step reruns and no intermediate image is left behind.
-        argv.push("--layers=false".into());
-    }
-    argv.push("--file".into());
-    argv.push(request.containerfile.into());
-    for tag in request.tags {
-        argv.push("--tag".into());
-        argv.push(tag.into());
-    }
-    for (key, value) in request.labels {
-        argv.push("--label".into());
-        argv.push(format!("{key}={value}").into());
-    }
-    argv.push(request.context.into());
-    argv
-}
-
-/// The `podman rm` argv that stops and removes a box, as data. `--ignore`
-/// makes removing a box that is already gone succeed.
-pub fn down_argv(name: &str) -> Vec<OsString> {
-    vec![
-        "podman".into(),
-        "rm".into(),
-        "-f".into(),
-        "-t".into(),
-        "0".into(),
-        "--ignore".into(),
-        name.into(),
-    ]
-}
-
-/// The `podman exec` argv, as data.
-///
-/// The process inherits the run's user, so box-created files stay the host
-/// user's. With a TTY, keep the host's terminal identity: the runtime
-/// otherwise reports its own `TERM`.
-pub fn exec_argv(name: &str, tty: bool, workdir: Option<&Path>, argv: &[String]) -> Vec<OsString> {
-    let mut args: Vec<OsString> = vec!["podman".into(), "exec".into(), "-i".into()];
-    if tty {
-        args.push("-t".into());
-        for variable in ["TERM", "COLORTERM"] {
-            if let Ok(value) = std::env::var(variable) {
-                args.push("--env".into());
-                args.push(format!("{variable}={value}").into());
-            }
-        }
-    }
-    if let Some(dir) = workdir {
-        args.push("--workdir".into());
-        args.push(dir.as_os_str().to_os_string());
-    }
-    args.push(name.into());
-    for arg in argv {
-        args.push(OsString::from(arg));
-    }
-    args
+/// The `podman rm` argv that stops and removes a box, as data. `-f` makes
+/// removing a box that is already gone succeed.
+fn down_argv(name: &str) -> Vec<&str> {
+    vec!["podman", "rm", "-f", "-t", "0", name]
 }

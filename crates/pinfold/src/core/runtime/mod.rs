@@ -6,12 +6,14 @@ pub mod podman;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{self, Read};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 
-use tokio::process::Child;
+use tokio::process::{Child, Command};
 
-use crate::core::plan::Plan;
+use crate::core::plan::{Env, Plan};
+use crate::core::proxy::PROXY_URL;
 
 /// The container runtime for this OS.
 pub fn runtime() -> io::Result<&'static dyn Runtime> {
@@ -40,19 +42,45 @@ fn spawn_error(program: &str, error: io::Error) -> io::Error {
     }
 }
 
-/// A runtime CLI's `--version` output, trimmed. `doctor` uses it.
-fn cli_version(program: &str) -> io::Result<String> {
+/// Run `argv` with stdin closed and return its stdout. A failed run's error
+/// names the command and carries its stderr; a failed spawn keeps its kind.
+fn output(argv: &[&str]) -> io::Result<Vec<u8>> {
+    let (program, arguments) = argv.split_first().expect("argv is never empty");
     let output = std::process::Command::new(program)
-        .arg("--version")
+        .args(arguments)
         .output()
         .map_err(|error| spawn_error(program, error))?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
-            "{program} --version: {}",
+            "{}: {}",
+            argv.join(" "),
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(output.stdout)
+}
+
+/// Run `argv` for its status, with stdin and stdout closed and stderr passed
+/// through. A failed run's error names the command and its status.
+fn run(argv: &[&str]) -> io::Result<()> {
+    let (program, arguments) = argv.split_first().expect("argv is never empty");
+    let status = std::process::Command::new(program)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .status()
+        .map_err(|error| spawn_error(program, error))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("{}: {status}", argv.join(" "))))
+    }
+}
+
+/// A runtime CLI's `--version` output, trimmed. `doctor` uses it.
+fn cli_version(program: &str) -> io::Result<String> {
+    let stdout = output(&[program, "--version"])?;
+    Ok(String::from_utf8_lossy(&stdout).trim().to_string())
 }
 
 /// One box the runtime knows about, running or not.
@@ -67,34 +95,9 @@ pub struct BoxInfo {
     pub image_ref: String,
     /// When the runtime created the box, RFC 3339 in UTC.
     pub created: String,
-    /// Whether the box is running.
-    pub state: BoxState,
-}
-
-/// A box's run state, as `box list` reports it.
-#[derive(Debug, Clone, Copy)]
-pub enum BoxState {
-    Running,
-    Stopped,
-}
-
-impl BoxState {
-    /// The state a runtime's status string names. Only `running` is running;
-    /// everything else, `unknown` included, is stopped.
-    pub fn from_runtime(state: &str) -> BoxState {
-        if state == "running" {
-            BoxState::Running
-        } else {
-            BoxState::Stopped
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            BoxState::Running => "running",
-            BoxState::Stopped => "stopped",
-        }
-    }
+    /// Whether the runtime reports the box `running`. Any other state,
+    /// `unknown` included, is stopped.
+    pub running: bool,
 }
 
 /// One box's run facts, as `pinfold box stat` reports them. A field is
@@ -192,11 +195,8 @@ pub trait Runtime: Sync {
     ) -> io::Result<Child>;
 
     /// Refuse a host the runtime cannot serve, before `up` creates any box
-    /// state, and return what `up` needs of the host. The default is a
-    /// runtime whose binary `up` checks itself.
-    fn preflight(&self) -> io::Result<Preflight> {
-        Ok(Preflight::default())
-    }
+    /// state, and return what `up` needs of the host.
+    fn preflight(&self) -> io::Result<Preflight>;
 
     /// Make the carried proxy socket connectable by the box user. Apple only:
     /// the forwarded socket arrives root-owned and mode 000.
@@ -260,11 +260,6 @@ pub trait Runtime: Sync {
     fn version(&self) -> io::Result<String>;
 }
 
-/// The path a host path appears at inside the box. The identity on Unix.
-pub fn guest_path(host: &Path) -> PathBuf {
-    host.to_path_buf()
-}
-
 /// The argv that runs `argv` in a box through its init: init raises its own
 /// `oom_score_adj` to 1000 and then becomes `argv`, so the kernel's OOM
 /// killer takes a box process before init. `init` is the host path
@@ -272,7 +267,7 @@ pub fn guest_path(host: &Path) -> PathBuf {
 /// composed command also carries the binary's `init` verb.
 pub fn exec_through_init(init: &Path, argv: &[String]) -> Vec<String> {
     let mut wrapped = Vec::with_capacity(argv.len() + 4);
-    wrapped.push(guest_path(init).to_string_lossy().into_owned());
+    wrapped.push(init.to_string_lossy().into_owned());
     wrapped.push("init".to_string());
     wrapped.push("exec".to_string());
     wrapped.push("--".to_string());
@@ -280,15 +275,113 @@ pub fn exec_through_init(init: &Path, argv: &[String]) -> Vec<String> {
     wrapped
 }
 
-/// Run a runtime's build argv with its stdout and stderr captured through
-/// one pipe, so the output keeps its order. The inner `Err` is that output
-/// when the build fails.
-fn captured_build(argv: &[OsString]) -> io::Result<Result<(), String>> {
+/// The `up` command for a runtime's run `argv`: stdin and stdout piped, and
+/// `env` exported. Values go through the child's environment, so argv holds
+/// only names and `ps` cannot read a secret. A `from` entry names a host
+/// variable the box sees under the entry's key; the two need not match.
+fn up_command(
+    argv: &[OsString],
+    env: &mut dyn Iterator<Item = (&String, &Env)>,
+    egress: bool,
+) -> Command {
     let (program, arguments) = argv.split_first().expect("argv is never empty");
+    let mut command = Command::new(program);
+    command
+        .args(arguments)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    for (name, value) in env {
+        match value {
+            Env::Exact(value) => {
+                command.env(name, value);
+            }
+            Env::From { from } => {
+                if let Some(value) = std::env::var_os(from) {
+                    command.env(name, value);
+                }
+            }
+        }
+    }
+    // Always applied: Node's fetch reads the proxy variables only with this
+    // set.
+    command.env("NODE_USE_ENV_PROXY", "1");
+    if egress {
+        command.env("HTTPS_PROXY", PROXY_URL);
+        command.env("http_proxy", PROXY_URL);
+    }
+    command
+}
+
+/// Run a command in a running box through `program`'s exec, with inherited
+/// stdio.
+fn exec(
+    program: &str,
+    name: &str,
+    tty: bool,
+    workdir: Option<&Path>,
+    argv: &[String],
+) -> io::Result<ExitStatus> {
+    let argv = exec_argv(program, name, tty, workdir, argv);
+    let mut command = std::process::Command::new(program);
+    command.args(&argv[1..]);
+    if !tty {
+        // Without a TTY the runtime's exec gets its own process group, so a
+        // terminal signal reaches pinfold and not the exec.
+        command.process_group(0);
+    }
+    command
+        .status()
+        .map_err(|error| spawn_error(program, error))
+}
+
+/// The `<program> exec` argv, as data.
+///
+/// The process inherits the run's user, so box-created files stay the host
+/// user's. With a TTY, keep the host's terminal identity: the runtime
+/// otherwise reports its own `TERM`.
+fn exec_argv(
+    program: &str,
+    name: &str,
+    tty: bool,
+    workdir: Option<&Path>,
+    argv: &[String],
+) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec![program.into(), "exec".into(), "-i".into()];
+    if tty {
+        args.push("-t".into());
+        for variable in ["TERM", "COLORTERM"] {
+            if let Ok(value) = std::env::var(variable) {
+                args.push("--env".into());
+                args.push(format!("{variable}={value}").into());
+            }
+        }
+    }
+    if let Some(dir) = workdir {
+        args.push("--workdir".into());
+        args.push(dir.as_os_str().to_os_string());
+    }
+    args.push(name.into());
+    for arg in argv {
+        args.push(OsString::from(arg));
+    }
+    args
+}
+
+/// Build `request` with `program`; `cache_flags` is how that runtime spells
+/// the request's cache choice. stdout and stderr are captured through one
+/// pipe, so the output keeps its order. The inner `Err` is that output when
+/// the build fails.
+fn build(
+    program: &str,
+    cache_flags: &[&str],
+    request: &BuildRequest,
+) -> io::Result<Result<(), String>> {
+    let argv = build_argv(program, cache_flags, request);
     let (mut reader, writer) = io::pipe()?;
     let mut command = std::process::Command::new(program);
     command
-        .args(arguments)
+        .args(&argv[1..])
         .stdin(Stdio::null())
         .stdout(writer.try_clone()?)
         .stderr(writer);
@@ -296,7 +389,7 @@ fn captured_build(argv: &[OsString]) -> io::Result<Result<(), String>> {
     // The command holds the pipe's write ends, and the read below ends only
     // once every write end is closed.
     drop(command);
-    let mut child = child.map_err(|error| spawn_error(&program.to_string_lossy(), error))?;
+    let mut child = child.map_err(|error| spawn_error(program, error))?;
     let mut output = Vec::new();
     reader.read_to_end(&mut output)?;
     if child.wait()?.success() {
@@ -304,6 +397,45 @@ fn captured_build(argv: &[OsString]) -> io::Result<Result<(), String>> {
     } else {
         Ok(Err(String::from_utf8_lossy(&output).into_owned()))
     }
+}
+
+/// The `<program> build` argv for one build, as data.
+fn build_argv(program: &str, cache_flags: &[&str], request: &BuildRequest) -> Vec<OsString> {
+    let mut argv: Vec<OsString> = vec![program.into(), "build".into()];
+    argv.extend(cache_flags.iter().map(OsString::from));
+    argv.push("--file".into());
+    argv.push(request.containerfile.into());
+    for tag in request.tags {
+        argv.push("--tag".into());
+        argv.push(tag.into());
+    }
+    for (key, value) in request.labels {
+        argv.push("--label".into());
+        argv.push(format!("{key}={value}").into());
+    }
+    argv.push(request.context.into());
+    argv
+}
+
+/// Pull `reference` with `program`, then return the digest `parse` reads
+/// from its inspect. `None` when the reference does not resolve.
+fn image_digest(
+    program: &str,
+    reference: &str,
+    parse: fn(&[u8]) -> io::Result<Option<String>>,
+) -> io::Result<Option<String>> {
+    // A floating tag must be pulled for its digest to be current and present
+    // to inspect. `scratch` and other non-registry references cannot be
+    // pulled; they simply have no digest.
+    let _ = run(&[program, "image", "pull", reference]);
+    let output = std::process::Command::new(program)
+        .args(["image", "inspect", reference])
+        .output()
+        .map_err(|error| spawn_error(program, error))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    parse(&output.stdout)
 }
 
 /// The content digest of the image `reference` resolves to. `None` when the
