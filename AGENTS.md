@@ -25,6 +25,17 @@ rules for changing the repository.
   in its commit message.
 - Plain prose, short sentences, in docs and comments. Comment only
   non-obvious intent, footguns, issue links and revisit triggers.
+- A ticket is admitted for a new guarantee, a bug reproduced through
+  the CLI, or a consolidation of one module that changes no test
+  assertion and lands net-negative in lines. A proposal born in a lane
+  is rejected unless it names the guarantee or bug it serves.
+- Before each release: one heavy consolidation ticket per module that
+  grew during the release, then the operator's spec pass over
+  ARCHITECTURE.md and README.md (cut restatement and rationale,
+  reconcile the guarantees table with the tests, close resolved open
+  questions). The pass reports the release's delete/add ratio, the
+  largest source file, ARCHITECTURE.md's line count and how many of its
+  tickets came from lane proposals, in a dated `docs/archive` file.
 
 ## Tests
 
