@@ -1353,8 +1353,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // `clean` skip boxes whose owner is gone; the dead box assertion fails.
     // Sabotage: set only the build's own family label, as before; build 4
     // then counts x1 and x2 as P's newest images and removes b3, so the "b3
-    // is still listed" assertion fails, and `built.base` on x carries P's
-    // base, so the null-base assertion fails.
+    // is still listed" assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("cleanup");
     // `clean` deletes the runtime's builder, so hold off the other tests'
@@ -1423,12 +1422,14 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let _x_images = ImageCleanup {
         repository: format!("pinfold/image-{x_name}"),
     };
+    let profile_ref = format!("pinfold/profile-{profile}:latest");
+    let profile_id = image_id(&profile_ref);
     let x_context = env.root.join("x-context");
     fs::create_dir_all(&x_context).unwrap();
     let x_containerfile = x_context.join("Containerfile");
     fs::write(
         &x_containerfile,
-        format!("FROM pinfold/profile-{profile}:latest\nCOPY marker.txt /marker.txt\n"),
+        format!("FROM {profile_ref}\nCOPY marker.txt /marker.txt\n"),
     )
     .unwrap();
     fs::write(x_context.join("marker.txt"), "x\n").unwrap();
@@ -1446,14 +1447,32 @@ fn cleanup_removes_only_pinfolds_garbage() {
             built["labels"]["dev.pinfold.profile"], "",
             "x carries the profile's family label: {built}"
         );
-        assert_eq!(
-            built["labels"]["dev.pinfold.base"], "",
-            "x carries an inherited base label: {built}"
-        );
+        // A local-only FROM does not pull: on podman the base is empty,
+        // and on Apple it resolves to the listed profile image's digest.
+        // Either is x's own base, never the one the profile carries.
+        let base = built["labels"]["dev.pinfold.base"]
+            .as_str()
+            .unwrap_or_else(|| panic!("x build {} carries no base label: {built}", i + 1));
         assert!(
-            built["base"].is_null(),
-            "x reports a base it did not resolve: {built}"
+            base.is_empty()
+                || Some(base.strip_prefix("sha256:").unwrap_or(base)) == profile_id.as_deref(),
+            "x build {} carries a base that is neither empty nor its profile image: {built}",
+            i + 1
         );
+        if base.is_empty() {
+            assert!(
+                built["base"].is_null(),
+                "x build {} reports an empty base label as not null: {built}",
+                i + 1
+            );
+        } else {
+            assert_eq!(
+                built["base"],
+                built["labels"]["dev.pinfold.base"],
+                "x build {} base is not the recorded base label: {built}",
+                i + 1
+            );
+        }
         x_refs.push(
             built["ref"]
                 .as_str()
