@@ -113,8 +113,8 @@ leftovers by label. The CLI runs the same code in-process.
 pinfold box up < spec.json        # prints ready, holds the box, ends with down
 pinfold box exec BOX [--tty] [--workdir D] -- argv…   # stdio through, exit code back
 pinfold box down BOX              # same as closing up's stdin
-pinfold box list --label k=v      # JSON lines
-pinfold box prune                 # remove boxes whose `up` is gone
+pinfold box list --label k=v      # JSON lines; repeat --label to AND filters
+pinfold box prune                 # remove boxes whose `up` is gone, print each removed
 ```
 
 On a box that is absent, `exec` exits 3 with `pinfold box exec: no box
@@ -151,6 +151,23 @@ When `up` refuses, it prints one JSON line instead of `ready` and exits 1:
 `REASON` is `spec`, `profile`, `runtime`, `image-missing` or `name-in-use`;
 `box` is null when the spec did not parse. Refusals are decided before
 anything is created; a refused `up` leaves nothing.
+
+`list` prints one JSON line per box whose labels match every `--label`.
+`--label KEY=VALUE` matches that value; `--label KEY` matches any value of
+`KEY`. Each line carries the box's labels, its `dev.pinfold.owner` pid (or
+null), whether that process is alive, and the runtime's RFC 3339 `created`
+time and `state` (`running` or `stopped`):
+
+```json
+{"name":NAME,"labels":{…},"owner":PID,"owner_alive":true,"created":RFC3339,"state":"running"}
+```
+
+`prune` removes each pinfold box whose `up` is gone and prints one line per
+removed box, nothing when there was none:
+
+```json
+{"event":"pruned","box":NAME,"owner":PID}
+```
 
 The box spec `up` reads from stdin:
 

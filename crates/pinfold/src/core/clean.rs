@@ -67,7 +67,7 @@ fn maintain_due() -> io::Result<()> {
 /// rest continue.
 fn daily() {
     match runtime() {
-        Ok(runtime) => report("boxes", prune_boxes(runtime)),
+        Ok(runtime) => report("boxes", prune_boxes(runtime).map(drop)),
         Err(error) => eprintln!("pinfold: maintenance: boxes: {error}"),
     }
     report("sockets", prune_sockets());
@@ -106,6 +106,8 @@ pub struct DeadBox {
     pub id: String,
     /// The state dir `box up` created for it.
     pub state_dir: PathBuf,
+    /// The `dev.pinfold.owner` pid, when the label parsed.
+    pub owner: Option<i32>,
 }
 
 impl DeadBox {
@@ -153,6 +155,7 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
         dead.push(DeadBox {
             state_dir: state.join(&box_.id),
             id: box_.id,
+            owner,
         });
     }
     Ok(Boxes {
@@ -162,12 +165,14 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
 }
 
 /// Remove boxes pinfold labeled whose owning `box up` process is gone, and
-/// the state dirs that name them.
-pub fn prune_boxes(runtime: &dyn Runtime) -> io::Result<()> {
-    for dead in boxes(runtime)?.dead {
-        dead.remove(runtime)?;
+/// the state dirs that name them. Return the removed boxes, so the caller
+/// can report each removal.
+pub fn prune_boxes(runtime: &dyn Runtime) -> io::Result<Vec<DeadBox>> {
+    let dead = boxes(runtime)?.dead;
+    for box_ in &dead {
+        box_.remove(runtime)?;
     }
-    Ok(())
+    Ok(dead)
 }
 
 /// State dirs whose owner is gone and that hold a leftover proxy socket. A

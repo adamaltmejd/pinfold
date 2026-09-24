@@ -25,7 +25,7 @@ use crate::core::runtime::{BoxInfo, BuildRequest, Runtime, local_image_id, podma
 use crate::dirs;
 use crate::trust;
 
-const USAGE: &str = "usage: pinfold box up|exec BOX [--tty] [--workdir DIR] -- argv|down BOX|list --label k=v|prune";
+const USAGE: &str = "usage: pinfold box up|exec BOX [--tty] [--workdir DIR] -- argv|down BOX|list --label k=v [--label k]|prune";
 const BUILD_USAGE: &str = "usage: pinfold build [--profile NAME]";
 const PROFILE_USAGE: &str = "usage: pinfold profile new NAME [--from PROFILE]";
 const ALLOW_USAGE: &str = "usage: pinfold allow";
@@ -324,26 +324,52 @@ fn down(args: &[OsString]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// Print one JSON line per box carrying the requested label.
+/// Print one JSON line per box matching every `--label` filter.
 fn list(args: &[OsString]) -> io::Result<i32> {
-    let (key, value) = parse_label(args)?;
+    let filters = parse_labels(args)?;
     for box_ in runtime()?.list()? {
-        if box_.labels.get(&key).map(String::as_str) == Some(value.as_str()) {
-            println!(
-                "{}",
-                serde_json::json!({ "name": box_.id, "labels": box_.labels })
-            );
+        let matches = filters.iter().all(|(key, value)| match value {
+            Some(value) => box_.labels.get(key) == Some(value),
+            None => box_.labels.contains_key(key),
+        });
+        if !matches {
+            continue;
         }
+        let owner = box_
+            .labels
+            .get(clean::OWNER_LABEL)
+            .and_then(|pid| pid.parse::<i32>().ok());
+        println!(
+            "{}",
+            serde_json::json!({
+                "name": box_.id,
+                "labels": box_.labels,
+                "owner": owner,
+                "owner_alive": owner.is_some_and(clean::alive),
+                "created": box_.created,
+                "state": box_.state.as_str(),
+            })
+        );
     }
     Ok(0)
 }
 
-/// Remove boxes pinfold labeled whose owning `box up` process is gone.
+/// Remove boxes pinfold labeled whose owning `box up` process is gone, and
+/// print one line per removal.
 fn prune(args: &[OsString]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(usage("prune takes no arguments"));
     }
-    clean::prune_boxes(runtime()?)?;
+    for dead in clean::prune_boxes(runtime()?)? {
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "pruned",
+                "box": dead.id,
+                "owner": dead.owner,
+            })
+        );
+    }
     Ok(0)
 }
 
@@ -877,21 +903,28 @@ fn single_name(args: &[OsString], verb: &str) -> io::Result<String> {
     }
 }
 
-fn parse_label(args: &[OsString]) -> io::Result<(String, String)> {
-    let mut label = None;
+/// `list`'s `--label` filters: each key, and the value to match when one was
+/// given. Every filter must match.
+fn parse_labels(args: &[OsString]) -> io::Result<Vec<(String, Option<String>)>> {
+    let mut filters = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         if arg.to_str() != Some("--label") {
-            return Err(usage("list takes only --label k=v"));
+            return Err(usage("list takes only --label k=v or --label k"));
         }
-        let value = args
+        let label = args
             .next()
             .and_then(|value| value.to_str())
-            .and_then(|value| value.split_once('='))
-            .ok_or_else(|| usage("--label needs k=v"))?;
-        label = Some((value.0.to_string(), value.1.to_string()));
+            .ok_or_else(|| usage("--label needs k=v or k"))?;
+        match label.split_once('=') {
+            Some((key, value)) => filters.push((key.to_string(), Some(value.to_string()))),
+            None => filters.push((label.to_string(), None)),
+        }
     }
-    label.ok_or_else(|| usage("list needs --label k=v"))
+    if filters.is_empty() {
+        return Err(usage("list needs at least one --label"));
+    }
+    Ok(filters)
 }
 
 fn state_path(name: &str) -> io::Result<PathBuf> {
