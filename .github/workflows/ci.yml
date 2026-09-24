@@ -50,7 +50,13 @@ jobs:
           } >>"$GITHUB_ENV"
 
       - name: Rust musl target
-        run: rustup target add "$(uname -m)-unknown-linux-musl"
+        run: |
+          # ring's C sources need the musl C compiler; the runner has none
+          # until musl-tools is installed, and cc-rs looks for it under the
+          # target's own name, so it is named for the target explicitly.
+          sudo apt-get install -y -qq musl-tools
+          rustup target add "$(uname -m)-unknown-linux-musl"
+          echo "CC_$(uname -m)_unknown_linux_musl=musl-gcc" >>"$GITHUB_ENV"
 
       - name: Format
         run: cargo fmt --check

@@ -562,7 +562,8 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
 
 Linux (podman) runs in GitHub CI on `ubuntu-26.04` and `ubuntu-26.04-arm` as
-the required gate. The workflow installs the pinned toolchain's musl target,
+the required gate. The workflow installs the pinned toolchain's musl target
+and `musl-tools`, which ring's C sources need,
 enables linger and a D-Bus user session for the runner user so podman's
 cgroup manager is systemd, and clears AppArmor's unprivileged-userns
 restriction, which the runner image enables and which denies rootless podman
