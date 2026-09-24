@@ -262,7 +262,7 @@ without a TTY.
 
 ```
 ~/.config/pinfold/profiles/<name>/
-  pinfold.toml    config defaults (the .pinfold.toml schema)
+  pinfold.toml    config defaults (the .pinfold.toml schema, less containerfile)
   Containerfile   the profile image
   home/           seeds for $HOME: a file is copied only if missing, then left alone
   share/          mounted read-only at /opt/pinfold/profile; live, never copied
@@ -391,14 +391,10 @@ nothing. An environment variable that is set, even empty, sets its key.
 | `allow` | `PINFOLD_ALLOW` | `api.anthropic.com`, `platform.claude.com`, `api.openai.com`, `auth.openai.com`, `chatgpt.com`, `openrouter.ai`, `opencode.ai`, `registry.npmjs.org`, `pi.dev` | Hosts the proxy lets through |
 | `routes` | `PINFOLD_ROUTES` | `{}` | Proxy routes to host services |
 | `protect` | `PINFOLD_PROTECT` | `[]` | Read-only directories in the box, beyond the always-protected ones |
-| `image` | `PINFOLD_IMAGE` | profile image | Image ref, or a Containerfile path relative to the project |
+| `containerfile` | — | the profile's image | The project's Containerfile, a path relative to the project; typically FROM the profile image |
 | `cpus` | `PINFOLD_CPUS` | 4 | |
 | `memory` | `PINFOLD_MEMORY` | `8G` | |
 | — | `PINFOLD_ENV_<NAME>` | — | `<NAME>` in the box; the only way host env enters |
-
-An `image` value that is a relative path to an existing file in the project
-is that project's Containerfile; any other value is an image ref, used as
-is.
 
 The list keys take comma-separated values in the environment:
 
@@ -406,8 +402,8 @@ The list keys take comma-separated values in the environment:
 - `PINFOLD_ROUTES`: `name=host:port` pairs.
 - `PINFOLD_PROTECT`: project-relative directory paths.
 
-**Trust.** `.pinfold.toml` and the Containerfile it names are used only if
-their hashes match those `pinfold allow` recorded in
+**Trust.** `.pinfold.toml` and the Containerfile its `containerfile` names
+are used only if their hashes match those `pinfold allow` recorded in
 `~/.local/state/pinfold/trust` for this project. A change stops the run
 until allowed again.
 

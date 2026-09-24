@@ -573,9 +573,12 @@ fn run_doctor(args: &[OsString]) -> io::Result<usize> {
         origin_label(config.origins.profile, profile)
     );
     println!(
-        "  image: {} ({})",
-        config.image.as_deref().unwrap_or("(the profile image)"),
-        origin_label(config.origins.image, profile)
+        "  containerfile: {} ({})",
+        config
+            .containerfile_path
+            .as_deref()
+            .unwrap_or("(the profile image)"),
+        origin_label(config.origins.containerfile, profile)
     );
     println!(
         "  cpus: {} ({})",
@@ -673,18 +676,13 @@ fn print_cgroup_manager(manager: &str) {
 }
 
 /// Report the image `pinfold pi` would run, and whether it was built from the
-/// current profile image. Returns 1 when a required image is missing.
+/// current profile image. Returns 1 when the image is missing.
 fn report_image(config: &Config, runtime: &dyn Runtime, project: &str) -> io::Result<usize> {
     let image = crate::pi::launch::resolve_image(config, project);
     let images = runtime.list_images()?;
     let Some(found) = images.iter().find(|info| info.reference == image) else {
-        let required = image_required(config, &image);
-        if required {
-            println!("  missing; run `pinfold build`");
-        } else {
-            println!("  missing; the runtime may pull it");
-        }
-        return Ok(usize::from(required));
+        println!("  missing; run `pinfold build`");
+        return Ok(1);
     };
     println!("  exists");
     if matches!(config.containerfile, Containerfile::Project(_)) {
@@ -701,15 +699,6 @@ fn report_image(config: &Config, runtime: &dyn Runtime, project: &str) -> io::Re
         }
     }
     Ok(0)
-}
-
-/// Whether `pinfold pi` refuses when this image is missing. A named image
-/// ref is the user's to provide; a profile or project image must be built.
-fn image_required(config: &Config, image: &str) -> bool {
-    match &config.containerfile {
-        Containerfile::Project(_) => true,
-        Containerfile::Profile(_) => image == config.profile.image_ref(),
-    }
 }
 
 /// The host kernel, as `uname` reports it.

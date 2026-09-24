@@ -260,7 +260,7 @@ fn a_changed_project_file_stops_the_run() {
     let containerfile = project.path().join("Containerfile.pinfold");
     fs::write(
         &config,
-        "image = \"Containerfile.pinfold\"\nallow = [\"example.com\"]\n",
+        "containerfile = \"Containerfile.pinfold\"\nallow = [\"example.com\"]\n",
     )
     .expect("point .pinfold.toml at the project Containerfile");
     fs::write(&containerfile, "FROM pinfold/profile-default:latest\n")

@@ -37,12 +37,11 @@ const DEFAULT_ALLOW: [&str; 9] = [
 pub struct Config {
     /// The selected profile, loaded.
     pub profile: Profile,
-    /// The merged `image` value. It is an image ref unless `containerfile`
-    /// is `Project`, in which case it is that Containerfile's
-    /// project-relative path. `None` means the profile's image.
-    pub image: Option<String>,
+    /// The project's Containerfile path from `.pinfold.toml`, relative to
+    /// the project root. `None` means the profile's image.
+    pub containerfile_path: Option<String>,
     /// The Containerfile whose bytes decide the effective image: the
-    /// project's when `image` names one, else the profile's.
+    /// project's when `containerfile` names one, else the profile's.
     pub containerfile: Containerfile,
     /// The raw bytes of the project's `.pinfold.toml` that were parsed,
     /// `None` when the file is absent. Trust hashes these bytes.
@@ -96,8 +95,8 @@ impl Origin {
 pub struct Origins {
     /// The selected profile.
     pub profile: Origin,
-    /// The effective `image` value.
-    pub image: Origin,
+    /// The effective `containerfile` value.
+    pub containerfile: Origin,
     /// The effective `cpus` value.
     pub cpus: Origin,
     /// The effective `memory` value.
@@ -135,6 +134,12 @@ impl Config {
             &profile.config,
             &format!("profile {profile_name:?} pinfold.toml"),
         )?;
+        if profile_layer.containerfile.is_some() {
+            return Err(invalid(
+                &format!("profile {profile_name:?} pinfold.toml"),
+                "`containerfile` is a project key; a profile's image is its own Containerfile",
+            ));
+        }
         // Provenance is read before `over` consumes the layers.
         let origins = Origins {
             profile: scalar_origin(
@@ -142,11 +147,7 @@ impl Config {
                 project.profile.is_some(),
                 false,
             ),
-            image: scalar_origin(
-                environment.image.is_some(),
-                project.image.is_some(),
-                profile_layer.image.is_some(),
-            ),
+            containerfile: scalar_origin(false, project.containerfile.is_some(), false),
             cpus: scalar_origin(
                 environment.cpus.is_some(),
                 project.cpus.is_some(),
@@ -174,24 +175,21 @@ impl Config {
             ),
         };
         let merged = profile_layer.over(project).over(environment);
-        let image = merged.image.clone();
-        // The config cannot tell a bare image name from a bare file name, so
-        // a relative path naming an existing project file is the
-        // Containerfile; anything else is an image ref. The bytes are read
-        // here so trust and the build see the same ones.
-        let containerfile = match image.as_deref() {
-            Some(image) if Path::new(image).is_relative() && root.join(image).is_file() => {
-                let path = root.join(image);
+        let containerfile_path = merged.containerfile.clone();
+        // The bytes are read here so trust and the build see the same ones.
+        let containerfile = match &containerfile_path {
+            Some(path) => {
+                let path = root.join(path);
                 let bytes = fs::read(&path).map_err(|error| {
                     io::Error::new(error.kind(), format!("read {}: {error}", path.display()))
                 })?;
                 Containerfile::Project(bytes)
             }
-            _ => Containerfile::Profile(profile.containerfile.clone()),
+            None => Containerfile::Profile(profile.containerfile.clone()),
         };
         Ok(Config {
             profile,
-            image,
+            containerfile_path,
             containerfile,
             project_toml,
             allow: merged
@@ -216,7 +214,9 @@ struct Layer {
     /// profile's own file is read after the selection, so its value is
     /// ignored.
     profile: Option<String>,
-    image: Option<String>,
+    /// A project key; a profile's `pinfold.toml` that sets it fails to
+    /// load.
+    containerfile: Option<String>,
     allow: Option<Vec<String>>,
     routes: Option<BTreeMap<String, String>>,
     protect: Option<Vec<String>>,
@@ -253,7 +253,7 @@ impl Layer {
     fn from_env() -> io::Result<Layer> {
         Ok(Layer {
             profile: var("PINFOLD_PROFILE"),
-            image: var("PINFOLD_IMAGE"),
+            containerfile: None,
             allow: var("PINFOLD_ALLOW").as_deref().map(split_list),
             routes: var("PINFOLD_ROUTES")
                 .as_deref()
@@ -276,7 +276,7 @@ impl Layer {
     /// `self` with `higher` applied over it.
     fn over(mut self, higher: Layer) -> Layer {
         self.profile = higher.profile.or(self.profile);
-        self.image = higher.image.or(self.image);
+        self.containerfile = higher.containerfile.or(self.containerfile);
         self.cpus = higher.cpus.or(self.cpus);
         self.memory = higher.memory.or(self.memory);
         self.allow = higher.allow.or(self.allow);

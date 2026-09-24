@@ -111,19 +111,15 @@ fn canonical(path: &Path) -> io::Result<PathBuf> {
 }
 
 /// The image ref the box runs. A project Containerfile runs the project's
-/// image; a named image ref is the user's to provide. `doctor` reports it.
+/// image; otherwise the profile's. `doctor` reports it.
 pub(crate) fn resolve_image(config: &Config, project: &str) -> String {
     match &config.containerfile {
         Containerfile::Project(_) => format!("pinfold/project-{project}:latest"),
-        Containerfile::Profile(_) => config
-            .image
-            .clone()
-            .unwrap_or_else(|| config.profile.image_ref()),
+        Containerfile::Profile(_) => config.profile.image_ref(),
     }
 }
 
-/// Refuse when the image the box runs has not been built. A named image ref
-/// is the user's to provide.
+/// Refuse when the image the box runs has not been built.
 fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
     match &config.containerfile {
         Containerfile::Project(_) => ensure_project_image(config, image),
@@ -131,12 +127,8 @@ fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
     }
 }
 
-/// Refuse when the profile image has not been built. A named image ref is
-/// the user's to provide.
+/// Refuse when the profile image has not been built.
 fn ensure_profile_image(config: &Config, image: &str) -> io::Result<()> {
-    if image != config.profile.image_ref() {
-        return Ok(());
-    }
     let built = runtime()?
         .list_images()?
         .iter()
