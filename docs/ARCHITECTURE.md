@@ -210,7 +210,7 @@ The box spec `up` reads from stdin:
   `pinfold.toml`: egress, env and resources come only from the spec.
 - `harness: pi` mounts the pinned pi's directory read-only at
   `/opt/pinfold/pi` and sets `PI_TELEMETRY=0`, `PI_SKIP_VERSION_CHECK=1` and
-  `PINFOLD_ALLOW_PINFOLD` (the spec's `egress.allow`, empty without egress). The
+  `PINFOLD_ALLOW` (the spec's `egress.allow`, empty without egress). The
   spec's own `env` wins. It needs no profile.
 - Apple: mounts are directories. Nested read-only mounts protect subpaths.
 - `.git` protection belongs to the pi layer; a box spec gets only the
@@ -363,7 +363,7 @@ ponytail, and set `defaultProjectTrust: "always"`: the box, not pi's prompt,
 is the boundary, and without it pi's non-interactive modes silently skip
 project config. Its `share/pi` holds skills and the operating-context
 extension, which writes the box's facts into the system prompt: the
-allowlist from `PINFOLD_ALLOW_PINFOLD`, that a 403 is final, and that commits are
+allowlist from `PINFOLD_ALLOW`, that a 403 is final, and that commits are
 made on the host. Extensions run in the box; nothing security-relevant
 lives in one.
 
@@ -427,7 +427,7 @@ Automatic, never prompting:
   absolute path; the box starts in the invoking directory. Paths outside the
   project fail, and pi reports them.
 - **Environment:** `PI_TELEMETRY=0`, `PI_SKIP_VERSION_CHECK=1`, the core's
-  proxy variables, `PINFOLD_ALLOW_PINFOLD` (the effective allowlist, for the
+  proxy variables, `PINFOLD_ALLOW` (the effective allowlist, for the
   operating-context extension), and `PINFOLD_ENV_*`.
 - **TTY** whenever the host has one; otherwise pi runs in print mode.
 - **Auth:** OAuth `/login` once per project; API keys through the
@@ -462,7 +462,7 @@ nothing. An environment variable that is set, even empty, sets its key.
 | Key | Env | Default | Meaning |
 |---|---|---|---|
 | `profile` | `PINFOLD_PROFILE` | `default` | Profile name |
-| `allow` | `PINFOLD_ALLOW_PINFOLD` | `api.anthropic.com`, `platform.claude.com`, `api.openai.com`, `auth.openai.com`, `chatgpt.com`, `openrouter.ai`, `opencode.ai`, `registry.npmjs.org`, `pi.dev` | Hosts the proxy lets through |
+| `allow` | `PINFOLD_ALLOW` | `api.anthropic.com`, `platform.claude.com`, `api.openai.com`, `auth.openai.com`, `chatgpt.com`, `openrouter.ai`, `opencode.ai`, `registry.npmjs.org`, `pi.dev` | Hosts the proxy lets through |
 | `routes` | `PINFOLD_ROUTES` | `{}` | Proxy routes to host services |
 | `protect` | `PINFOLD_PROTECT` | `[]` | Read-only directories in the box, beyond the always-protected ones |
 | `containerfile` | — | the profile's image | The project's Containerfile, a path relative to the project; typically FROM the profile image |
@@ -472,7 +472,7 @@ nothing. An environment variable that is set, even empty, sets its key.
 
 The list keys take comma-separated values in the environment:
 
-- `PINFOLD_ALLOW_PINFOLD`: host names; a leading `.` makes a suffix entry.
+- `PINFOLD_ALLOW`: host names; a leading `.` makes a suffix entry.
 - `PINFOLD_ROUTES`: `name=host:port` pairs.
 - `PINFOLD_PROTECT`: project-relative directory paths.
 
@@ -529,10 +529,10 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 13 | Project state persists and stays separate | Settings are seeded once and survive runs; a deleted seed returns; two projects don't see each other's state. |
 | 14 | Both pi config levels load without a TTY | `pi -p` through the shim: the fake model's request carries a skill from the profile and one from the project's `.pi/`. |
 | 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain. An unlabeled image, a live box and a project's state survive `pinfold clean`. |
-| 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW_PINFOLD is the default list; a project's allow = ["api.github.com"] makes it exactly that host, and registry.npmjs.org is refused as not allowlisted. |
+| 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW is the default list; a project's allow = ["api.github.com"] makes it exactly that host, and registry.npmjs.org is refused as not allowlisted. |
 | 17 | up refuses before it creates | A missing image and a live name are refused as data, with no box, state dir or seed left; the box whose name was reused still answers exec. |
 | 18 | A caller reads the effective configuration as data | pinfold config reports a project's allow list, its trust state before and after pinfold allow, and the project home pinfold pi then mounts. |
-| 19 | A caller-owned box launches the pinned harness | A spec with harness: pi runs /opt/pinfold/pi --version at the pinned version, and the box's PINFOLD_ALLOW_PINFOLD is the spec's allow list. |
+| 19 | A caller-owned box launches the pinned harness | A spec with harness: pi runs /opt/pinfold/pi/pi --version at the pinned version, and the box's PINFOLD_ALLOW is the spec's allow list. |
 | 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, and every field is present. |
 
 Linux (podman) runs in GitHub CI on `ubuntu-26.04` and `ubuntu-26.04-arm` as
