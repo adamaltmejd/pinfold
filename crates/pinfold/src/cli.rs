@@ -227,7 +227,7 @@ fn up(args: &[OsString]) -> io::Result<i32> {
                 "event": "ready",
                 "box": &plan.name,
                 "owner": std::process::id(),
-                "labels": box_.labels,
+                "labels": &box_.labels,
             })
         );
         io::stdout().flush()?;
