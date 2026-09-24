@@ -9,7 +9,8 @@ boxes share the host kernel.
 
 - **Interactive:** `pi` on the host is a shim for `pinfold pi`.
 - **Programmatic:** a caller such as a CI system or an agent orchestrator
-  drives boxes through `pinfold box`, JSON on stdio.
+  drives boxes through `pinfold box`, JSON on stdio, and reads a project's
+  configuration with `pinfold config`.
 
 - Spec: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - History: [docs/archive/](docs/archive/)

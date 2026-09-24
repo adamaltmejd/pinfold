@@ -1,4 +1,4 @@
-//! End-to-end tests for guarantees 6, 12, 13, 14 and 16 in
+//! End-to-end tests for guarantees 6, 12, 13, 14, 16 and 18 in
 //! docs/ARCHITECTURE.md.
 //!
 //! They run on a macOS host with the Apple `container` CLI, or a Linux host
@@ -780,6 +780,65 @@ fn the_highest_layer_sets_the_allowlist() {
     assert!(run.finish().success(), "pinfold pi did not exit cleanly");
 }
 
+#[test]
+fn a_caller_reads_the_effective_configuration_as_data() {
+    // Sabotage: report DEFAULT_ALLOW instead of the merged allow in
+    // `run_config`; `egress.allow` then names the built-in hosts and the
+    // exact-list assertion fails.
+    let binary = pinfold();
+    let env = TestEnv::new("pi-config");
+    default_image(binary, &env);
+    let project = TestDir::new(&env, "project");
+    git_init(project.path());
+    fs::write(
+        project.path().join(".pinfold.toml"),
+        "allow = [\"api.github.com\"]\n",
+    )
+    .expect("write .pinfold.toml");
+
+    // Before `pinfold allow`, the project's config is untrusted; the caller
+    // reads that state as data and the home is named but not created.
+    let report = config_json(binary, &env, project.path());
+    assert_eq!(
+        report["egress"]["allow"],
+        serde_json::json!(["api.github.com"]),
+        "the effective allowlist is not the project's"
+    );
+    assert_eq!(
+        report["trust"]["ok"].as_bool(),
+        Some(false),
+        "the untrusted config was reported trusted"
+    );
+    let home = report["project"]["home"]
+        .as_str()
+        .expect("project.home is a string")
+        .to_string();
+    assert!(
+        !Path::new(&home).exists(),
+        "pinfold config created the project home {home}"
+    );
+
+    // After `pinfold allow` the same command reports the config trusted.
+    allow(binary, &env, project.path());
+    let report = config_json(binary, &env, project.path());
+    assert_eq!(
+        report["trust"]["ok"].as_bool(),
+        Some(true),
+        "the allowed config was reported untrusted"
+    );
+
+    // The home the report names is the one the box mounts as HOME.
+    let run = PiRpc::start(binary, &env, project.path());
+    let id = project_id(&env, project.path());
+    let name = run.ready_box(binary, &env, &id);
+    let boxed_home = box_exec(binary, &env, &name, &["sh", "-c", "printf %s \"$HOME\""]);
+    assert_eq!(
+        boxed_home.stdout, home,
+        "the box's HOME is not project.home"
+    );
+    assert!(run.finish().success(), "pinfold pi did not exit cleanly");
+}
+
 /// A `pinfold pi --mode rpc` process with a live box.
 struct PiRpc {
     child: Child,
@@ -885,6 +944,23 @@ fn allow(binary: &Path, env: &TestEnv, project: &Path) {
         "pinfold allow failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// Run `pinfold config` in `project` and parse its JSON object.
+fn config_json(binary: &Path, env: &TestEnv, project: &Path) -> serde_json::Value {
+    let output = env
+        .command(binary)
+        .arg("config")
+        .current_dir(project)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold config");
+    assert!(
+        output.status.success(),
+        "pinfold config failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("pinfold config output is one JSON object")
 }
 
 /// Run `pinfold build` in `project` and assert it exits cleanly.
