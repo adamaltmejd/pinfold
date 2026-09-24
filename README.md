@@ -72,7 +72,10 @@ Then make `pi` a symlink to the binary, in a directory on `PATH`:
 ln -s pinfold ~/.local/bin/pi
 ```
 
-`pi` must resolve to pinfold before any other `pi` on `PATH`.
+`pi` must resolve to pinfold before any other `pi` on `PATH`. The shim
+shadows the host `pi` for every tool that spawns one, not only your shell:
+such a tool then runs pi in a box for the project it invokes `pi` from,
+with that project's pinfold state and logins.
 
 ## First run
 

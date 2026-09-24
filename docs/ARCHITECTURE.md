@@ -462,6 +462,11 @@ before each merge, on the exact commit being merged.
 
 Rust. Each Linux build is a static musl binary and doubles as `pinfold init`.
 
+Every process-interface operation is a `core` function that returns data;
+`cli.rs` serializes it and nothing more. A Rust caller will link `core` and
+see the same operations as one that spawns `pinfold box`, so a new verb is a
+`core` function first.
+
 | Target | Role |
 |---|---|
 | `aarch64-apple-darwin` | macOS CLI |
