@@ -221,8 +221,7 @@ fn serve(listener: UnixListener, stop: Arc<AtomicBool>, rules: Arc<Rules>, log: 
                 }
                 if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
                     active.fetch_sub(1, Ordering::SeqCst);
-                    record(&log, "", "refused", "connection cap");
-                    let _ = respond(&mut client, 503);
+                    refuse(&mut client, &log, "", 503, "connection cap");
                     continue;
                 }
                 let rules = Arc::clone(&rules);
@@ -255,23 +254,17 @@ fn handle(mut client: UnixStream, rules: &Rules, log: &Path) {
         Err(HeadError::Closed) => return,
     };
     if !head_well_formed(&head) {
-        record(log, "", "refused", "ambiguous framing");
-        let _ = respond(&mut client, 400);
-        return;
+        return refuse(&mut client, log, "", 400, "ambiguous framing");
     }
     let head_text = String::from_utf8_lossy(&head);
     let request_line = head_text.split("\r\n").next().unwrap_or("");
     let mut parts = request_line.split(' ');
     let (Some(method), Some(target), Some(_version)) = (parts.next(), parts.next(), parts.next())
     else {
-        record(log, "", "refused", "malformed request");
-        let _ = respond(&mut client, 400);
-        return;
+        return refuse(&mut client, log, "", 400, "malformed request");
     };
     if parts.next().is_some() {
-        record(log, "", "refused", "malformed request");
-        let _ = respond(&mut client, 400);
-        return;
+        return refuse(&mut client, log, "", 400, "malformed request");
     }
     if method == "CONNECT" {
         connect(&mut client, rules, log, target);
@@ -284,46 +277,25 @@ fn handle(mut client: UnixStream, rules: &Rules, log: &Path) {
 /// ClientHello's SNI checked before the server is dialed.
 fn connect(client: &mut UnixStream, rules: &Rules, log: &Path, target: &str) {
     let Some((host, port)) = target.rsplit_once(':') else {
-        let _ = respond(client, 400);
-        return;
+        return refuse(client, log, "", 400, "malformed request");
     };
     if host.is_empty() {
-        let _ = respond(client, 400);
-        return;
+        return refuse(client, log, "", 400, "malformed request");
     }
     if network::literal(host).is_some() {
-        record(log, host, "refused", "ip literal");
-        let _ = respond(client, 403);
-        return;
+        return refuse(client, log, host, 403, "ip literal");
     }
     if rules.routes.contains_key(&host.to_ascii_lowercase()) {
-        record(log, host, "refused", "route");
-        let _ = respond(client, 403);
-        return;
+        return refuse(client, log, host, 403, "route");
     }
     if !rules.allow.allows(host) {
-        record(log, host, "refused", "not allowlisted");
-        let _ = respond(client, 403);
-        return;
+        return refuse(client, log, host, 403, "not allowlisted");
     }
     if port.parse::<u16>() != Ok(443) {
-        record(log, host, "refused", "port not allowed");
-        let _ = respond(client, 403);
-        return;
+        return refuse(client, log, host, 403, "port not allowed");
     }
-    // Resolve once and check every address before anything is dialed.
-    let address = match network::resolve(host, 443) {
-        Ok(address) => address,
-        Err(network::ResolveError::Forbidden(reason)) => {
-            record(log, host, "refused", reason);
-            let _ = respond(client, 403);
-            return;
-        }
-        Err(network::ResolveError::Unresolved) => {
-            record(log, host, "refused", "resolve failed");
-            let _ = respond(client, 502);
-            return;
-        }
+    let Some(address) = resolve_checked(client, log, host, host, 443) else {
+        return;
     };
     if respond(client, 200).is_err() {
         return;
@@ -362,21 +334,13 @@ fn connect(client: &mut UnixStream, rules: &Rules, log: &Path, target: &str) {
 fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, head: &[u8]) {
     let request = match parse_plain(head) {
         Ok(request) => request,
-        Err(reason) => {
-            record(log, "", "refused", reason);
-            let _ = respond(client, 400);
-            return;
-        }
+        Err(reason) => return refuse(client, log, "", 400, reason),
     };
     if request.port != 80 {
-        record(log, &request.host, "refused", "port not allowed");
-        let _ = respond(client, 403);
-        return;
+        return refuse(client, log, &request.host, 403, "port not allowed");
     }
     if network::literal(&request.host).is_some() {
-        record(log, &request.host, "refused", "ip literal");
-        let _ = respond(client, 403);
-        return;
+        return refuse(client, log, &request.host, 403, "ip literal");
     }
     let host = request.host.to_ascii_lowercase();
     if let Some(upstream) = rules.routes.get(&host) {
@@ -384,28 +348,17 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, head: &[u8]) {
         return;
     }
     if !rules.allow.allows(&host) {
-        record(log, &request.host, "refused", "not allowlisted");
-        let _ = respond(client, 403);
-        return;
+        return refuse(client, log, &request.host, 403, "not allowlisted");
     }
-    match network::resolve(&host, 80) {
-        Ok(address) => {
-            record(log, &request.host, "allowed", "allowlisted");
-            match TcpStream::connect(address) {
-                Ok(mut server) => {
-                    let _ = forward(client, &mut server, &request, &request.authority, &[]);
-                }
-                Err(_) => {
-                    let _ = respond(client, 502);
-                }
-            }
+    let Some(address) = resolve_checked(client, log, &request.host, &host, 80) else {
+        return;
+    };
+    record(log, &request.host, "allowed", "allowlisted");
+    match TcpStream::connect(address) {
+        Ok(mut server) => {
+            let _ = forward(client, &mut server, &request, &request.authority, &[]);
         }
-        Err(network::ResolveError::Forbidden(reason)) => {
-            record(log, &request.host, "refused", reason);
-            let _ = respond(client, 403);
-        }
-        Err(network::ResolveError::Unresolved) => {
-            record(log, &request.host, "refused", "resolve failed");
+        Err(_) => {
             let _ = respond(client, 502);
         }
     }
@@ -415,50 +368,64 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, head: &[u8]) {
 /// `https` target is resolved and checked like an allowlisted host, then
 /// dialed over TLS.
 fn route(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain, upstream: &Upstream) {
-    let (target, headers) = match upstream {
-        Upstream::Address(address) => {
+    let (server, authority, headers) = match upstream {
+        Upstream::Address(address) => (
+            dial_address(address.as_str()),
+            request.authority.as_str(),
+            [].as_slice(),
+        ),
+        Upstream::Inject { target, headers } if !target.https => (
+            dial_address((target.host.as_str(), target.port)),
+            target.authority.as_str(),
+            headers.as_slice(),
+        ),
+        Upstream::Inject { target, headers } => {
+            let Some(address) =
+                resolve_checked(client, log, &request.host, &target.host, target.port)
+            else {
+                return;
+            };
             record(log, &request.host, "allowed", "route");
-            let Some(mut server) = dial_address(address.as_str()) else {
+            let Some(mut server) = rules
+                .tls
+                .as_ref()
+                .and_then(|config| dial_tls(address, &target.host, config))
+            else {
                 let _ = respond(client, 502);
                 return;
             };
-            let _ = forward(client, &mut server, request, &request.authority, &[]);
-            return;
-        }
-        Upstream::Inject { target, headers } => (target, headers),
-    };
-    if !target.https {
-        record(log, &request.host, "allowed", "route");
-        let Some(mut server) = dial_address((target.host.as_str(), target.port)) else {
-            let _ = respond(client, 502);
-            return;
-        };
-        let _ = forward(client, &mut server, request, &target.authority, headers);
-        return;
-    }
-    let address = match network::resolve(&target.host, target.port) {
-        Ok(address) => address,
-        Err(network::ResolveError::Forbidden(reason)) => {
-            record(log, &request.host, "refused", reason);
-            let _ = respond(client, 403);
-            return;
-        }
-        Err(network::ResolveError::Unresolved) => {
-            record(log, &request.host, "refused", "resolve failed");
-            let _ = respond(client, 502);
+            let _ = forward_tls(client, &mut server, request, &target.authority, headers);
             return;
         }
     };
     record(log, &request.host, "allowed", "route");
-    let Some(mut server) = rules
-        .tls
-        .as_ref()
-        .and_then(|config| dial_tls(address, &target.host, config))
-    else {
+    let Some(mut server) = server else {
         let _ = respond(client, 502);
         return;
     };
-    let _ = forward_tls(client, &mut server, request, &target.authority, headers);
+    let _ = forward(client, &mut server, request, authority, headers);
+}
+
+/// Resolve once and check every address before anything is dialed. A
+/// forbidden address is refused 403 with its reason, an unresolved name 502.
+fn resolve_checked(
+    client: &mut UnixStream,
+    log: &Path,
+    log_host: &str,
+    host: &str,
+    port: u16,
+) -> Option<SocketAddr> {
+    match network::resolve(host, port) {
+        Ok(address) => Some(address),
+        Err(network::ResolveError::Forbidden(reason)) => {
+            refuse(client, log, log_host, 403, reason);
+            None
+        }
+        Err(network::ResolveError::Unresolved) => {
+            refuse(client, log, log_host, 502, "resolve failed");
+            None
+        }
+    }
 }
 
 /// Connect to a checked address and complete the TLS handshake, with SNI
@@ -844,6 +811,12 @@ fn respond(client: &mut UnixStream, code: u16) -> io::Result<()> {
         }
     };
     client.write_all(response.as_bytes())
+}
+
+/// Record one refusal and answer with its status.
+fn refuse(client: &mut UnixStream, log: &Path, host: &str, code: u16, reason: &str) {
+    record(log, host, "refused", reason);
+    let _ = respond(client, code);
 }
 
 /// Append one decision as a JSON line. No header value is ever written.
