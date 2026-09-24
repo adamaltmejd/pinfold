@@ -11,9 +11,14 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use e2e::{HttpFixture, pinfold};
+
+/// The two owner-gone tests share one hazard: either one's removal can take
+/// the other's dead box before the other expects it. Hold this from killing
+/// an owner until that test's removal has run.
+static DEAD_BOX_RACE: Mutex<()> = Mutex::new(());
 
 #[test]
 fn box_lifecycle_works_for_a_caller() {
@@ -692,6 +697,11 @@ fn losing_the_owner_fails_closed() {
         allowed.stderr
     );
 
+    // Hold the race against the cleanup test's `clean`, which removes any
+    // dead pinfold box, through this test's `box prune`.
+    let _race = DEAD_BOX_RACE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     up.kill();
     up.wait();
 
@@ -741,16 +751,26 @@ fn losing_the_owner_fails_closed() {
 
 #[test]
 fn cleanup_removes_only_pinfolds_garbage() {
-    // Guarantee 15's after-build half: after three builds of one source, two
-    // images remain. The `pinfold clean` half of this test lands with the
-    // clean command.
+    // Guarantee 15: cleanup removes only pinfold's garbage.
     //
     // Sabotage: make `keep_two_images` return before it removes anything;
     // three images remain and the two-image assertion fails. Sabotage: drop
     // the `dev.pinfold.profile` label from the build; no image matches and
-    // the count is zero.
+    // the count is zero. Sabotage: make `clean` remove every image instead
+    // of only pinfold's own; the unlabeled image assertion fails. Sabotage:
+    // drop the live-box check from `clean`; the live project's marker is
+    // deleted and the marker-survives assertion fails. Sabotage: make
+    // `clean` remove every project state instead of only the stale ones;
+    // the other project's state assertion fails. Sabotage: make `clean`
+    // remove every box; the live box assertion fails. Sabotage: make
+    // `clean` skip boxes whose owner is gone; the dead box assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("cleanup");
+    // `clean` deletes the runtime's builder, so wait for the suite's shared
+    // default image first: no other test builds after this, and a build
+    // racing the deletion would fail. The three builds below stay on a tiny
+    // profile of this run's own.
+    default_image(binary, &env);
     // A profile of this test's own, named for this run, so the operator's
     // default profile images, the other tests and a failed run's leftovers
     // cannot share the source.
@@ -789,6 +809,197 @@ fn cleanup_removes_only_pinfolds_garbage() {
         digests.len(),
         2,
         "after three builds of one source, two images should remain: {images:?}"
+    );
+
+    // An unlabeled image: no `dev.pinfold` label, so `clean` must leave it.
+    // Its tag shares the profile prefix, so the guard above deletes it.
+    let context = containerfile.parent().unwrap();
+    let unlabeled = format!("pinfold/profile-{profile}:unlabeled");
+    let status = Command::new(image_cli())
+        .args(["build", "--file"])
+        .arg(&containerfile)
+        .args(["--tag", &unlabeled])
+        .arg(context)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()
+        .expect("run the runtime's build");
+    assert!(status.success(), "building the unlabeled image failed");
+    assert!(
+        runtime_images()
+            .expect("list images")
+            .iter()
+            .any(|image| image
+                .names
+                .iter()
+                .any(|name| name.contains(unlabeled.as_str()))),
+        "the unlabeled image is missing before clean"
+    );
+
+    // A project's state: a refused `pinfold pi` creates it before it names
+    // the missing image. The profile is never built, so this part downloads
+    // no pi artifact. Two projects get a cache marker: one runs a live box,
+    // the other does not.
+    let missing = format!("{profile}-missing");
+    let missing_containerfile = env
+        .config
+        .join("pinfold")
+        .join("profiles")
+        .join(&missing)
+        .join("Containerfile");
+    fs::create_dir_all(missing_containerfile.parent().unwrap()).unwrap();
+    fs::write(&missing_containerfile, b"FROM scratch\n").unwrap();
+
+    let live_project = TestDir::new(&env, "live-project");
+    let refused = env
+        .command(binary)
+        .args(["pi", "--version"])
+        .env("PINFOLD_PROFILE", &missing)
+        .current_dir(live_project.path())
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold pi");
+    assert!(!refused.status.success(), "pi ran a profile with no image");
+    let live_state = project_state_dir(&env, live_project.path());
+    let live_id = live_state
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let live_marker = live_state.join("home").join(".cache").join("marker");
+    fs::create_dir_all(live_marker.parent().unwrap()).unwrap();
+    fs::write(&live_marker, b"live\n").unwrap();
+
+    let other_project = TestDir::new(&env, "other-project");
+    let refused = env
+        .command(binary)
+        .args(["pi", "--version"])
+        .env("PINFOLD_PROFILE", &missing)
+        .current_dir(other_project.path())
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold pi");
+    assert!(!refused.status.success(), "pi ran a profile with no image");
+    let other_state = project_state_dir(&env, other_project.path());
+    let other_marker = other_state.join("home").join(".cache").join("marker");
+    fs::create_dir_all(other_marker.parent().unwrap()).unwrap();
+    fs::write(&other_marker, b"other\n").unwrap();
+
+    // A live pinfold box for the live project, and a dead box that names
+    // no project.
+    let live_label = format!("dev.pinfold.project={live_id}");
+    let live = format!("pinfold-e2e-{}-cleanup-live", std::process::id());
+    let live_spec = serde_json::json!({
+        "name": live,
+        "image": format!("pinfold/profile-{profile}:latest"),
+        "labels": { "dev.pinfold.project": live_id },
+    });
+    let _live = box_up(binary, &env, &live_spec, &live);
+
+    let dead_label = "dev.pinfold.project=e2e-cleanup-dead";
+    let dead = format!("pinfold-e2e-{}-cleanup-dead", std::process::id());
+    let dead_spec = serde_json::json!({
+        "name": dead,
+        "image": format!("pinfold/profile-{profile}:latest"),
+        "labels": { "dev.pinfold.project": "e2e-cleanup-dead" },
+    });
+    let mut dead_up = box_up(binary, &env, &dead_spec, &dead);
+    // Hold the race against the owner-gone test's `box prune` through this
+    // test's `clean`.
+    let _race = DEAD_BOX_RACE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    dead_up.kill();
+    dead_up.wait();
+
+    // Positive controls: everything `clean` sorts out exists before it runs.
+    assert!(
+        !box_list(binary, &env, &live_label).is_empty(),
+        "the live box is missing before clean"
+    );
+    assert!(
+        !box_list(binary, &env, dead_label).is_empty(),
+        "the dead box is missing before clean"
+    );
+    assert!(
+        live_marker.is_file(),
+        "the live project's marker is missing before clean"
+    );
+    assert!(
+        other_marker.is_file(),
+        "the other project's marker is missing before clean"
+    );
+
+    // `--dry-run` only lists: nothing it lists may disappear.
+    let dry = env
+        .command(binary)
+        .args(["clean", "--dry-run"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold clean --dry-run");
+    assert!(
+        dry.status.success(),
+        "pinfold clean --dry-run failed: {}",
+        String::from_utf8_lossy(&dry.stderr)
+    );
+    assert!(
+        !box_list(binary, &env, dead_label).is_empty(),
+        "--dry-run removed the dead box"
+    );
+    assert!(live_state.is_dir(), "--dry-run removed the project state");
+    assert!(
+        live_marker.is_file(),
+        "--dry-run removed the live project's marker"
+    );
+    assert!(other_marker.is_file(), "--dry-run removed a project cache");
+
+    // The real clean removes the dead box and only the dead box.
+    let clean = env
+        .command(binary)
+        .args(["clean"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold clean");
+    assert!(
+        clean.status.success(),
+        "pinfold clean failed: {}",
+        String::from_utf8_lossy(&clean.stderr)
+    );
+    assert!(
+        runtime_images()
+            .expect("list images")
+            .iter()
+            .any(|image| image
+                .names
+                .iter()
+                .any(|name| name.contains(unlabeled.as_str()))),
+        "clean removed an unlabeled image"
+    );
+    assert!(
+        !box_list(binary, &env, &live_label).is_empty(),
+        "clean removed a live box"
+    );
+    assert!(
+        live_state.is_dir(),
+        "clean removed a project state whose checkout exists"
+    );
+    assert!(
+        other_state.is_dir(),
+        "clean removed the other project's state"
+    );
+    assert!(
+        live_marker.is_file(),
+        "clean removed a live box's project cache"
+    );
+    assert!(
+        !other_marker.exists(),
+        "clean kept a project cache with no live box"
+    );
+    assert!(
+        box_list(binary, &env, dead_label).is_empty(),
+        "clean left a box whose owner is gone"
     );
 }
 
@@ -943,6 +1154,21 @@ fn labeled_images(label: &str, value: &str) -> Vec<(String, String)> {
             names.into_iter().map(move |name| (id.clone(), name))
         })
         .collect()
+}
+
+/// The project state dir whose recorded root is `project`.
+fn project_state_dir(env: &TestEnv, project: &Path) -> PathBuf {
+    let root = fs::canonicalize(project).expect("canonicalize project");
+    let projects = env.state.join("pinfold").join("projects");
+    for entry in fs::read_dir(&projects).expect("read projects dir") {
+        let dir = entry.expect("project entry").path();
+        let state = fs::read_to_string(dir.join("state.json")).expect("read state.json");
+        let state: serde_json::Value = serde_json::from_str(&state).expect("state.json is JSON");
+        if state["root"].as_str() == root.to_str() {
+            return dir;
+        }
+    }
+    panic!("no project state for {}", project.display());
 }
 
 #[test]
