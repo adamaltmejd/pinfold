@@ -50,20 +50,20 @@ dockerfile = ".yard/Dockerfile"
 # name from the job tables below and from a workflow. Two of them selecting one
 # agent share how the model is run and nothing else: what a job may write, what
 # it is told, and how long it may run are keys of the job.
-# This project trials open models on the pi harness through OpenCode Go. The
-# key that pays for them is OPENCODE_API_KEY in operator.env. The pi CLI has no
-# subagents, so each agent declares them off.
-[agents.kimi]
-harness = "pi"
-provider = "opencode-go"
-model = "kimi-k2.7-code"
+# Planning and conflicts run Opus on the claude harness (CLAUDE_CODE_OAUTH_TOKEN
+# in operator.env). Implementation runs an open model on the pi harness through
+# OpenRouter (OPENROUTER_API_KEY). The pi CLI has no subagents, so its agent
+# declares them off.
+[agents.opus]
+harness = "claude"
+model = "claude-opus-5-5"
 effort = "high"
 tools = { subagents = false }
 
 [agents.deepseek]
 harness = "pi"
-provider = "opencode-go"
-model = "deepseek-v4.1-flash"
+provider = "openrouter"
+model = "deepseek/deepseek-v4.1-flash"
 effort = "max"
 tools = { subagents = false }
 
@@ -72,7 +72,7 @@ tools = { subagents = false }
 # instructions state what is true of this project only: Yard's own planning
 # prompt carries the rest.
 [planning]
-agent = "kimi"
+agent = "opus"
 access = "read-only"
 instructions = "Plan against docs/ARCHITECTURE.md and the roadmap in README.md, and name the roadmap phase each ticket serves. Lanes are Linux containers without Apple container or podman, so no child can run the end-to-end suite; the operator runs it on the macOS host. Size each child to one module or one CLI verb plus the tests of the guarantees it completes, and name those guarantee numbers. A child that completes no guarantee names the child whose test exercises it."
 
@@ -81,7 +81,7 @@ instructions = "Plan against docs/ARCHITECTURE.md and the roadmap in README.md, 
 # belongs to the job rather than to the agent.
 [conflict]
 # agent names one of the agents above.
-agent = "kimi"
+agent = "opus"
 # access grants the worker's workspace access: "writable" or "read-only".
 access = "writable"
 # inactivity_timeout_minutes restarts a generation that has emitted no event for
@@ -182,7 +182,7 @@ timeout_minutes = 30
 # different engine family than the implementer is recommended.
 engine = "pi"
 # A pi seat takes effort up to "xhigh"; the review tool refuses "max".
-model = "opencode-go/muse-spark-1.3-contributor"
+model = "openrouter/meta/muse-spark-1.3-contributor"
 effort = "xhigh"
 # Jev skips this seat only when it is confident the diff is outside this scope;
 # a change to .yard or a protected path always gets the full panel.
