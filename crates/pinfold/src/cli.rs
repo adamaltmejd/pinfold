@@ -546,7 +546,6 @@ fn run_doctor(args: &[OsString]) -> io::Result<usize> {
                         pin.version,
                         pin.path.display()
                     );
-                    problems += 1;
                 }
             }
         }

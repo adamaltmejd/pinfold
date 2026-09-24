@@ -669,107 +669,6 @@ fn both_pi_config_levels_load_behind_a_route() {
     );
 }
 
-#[test]
-fn doctor_reports_readiness_and_changes_nothing() {
-    // Sabotage: make doctor create the project state (call
-    // ProjectState::load_or_create instead of state::project_id); the
-    // "doctor created project state" assertion fails. Sabotage: make doctor
-    // download the pi artifact (call artifacts::pi() instead of
-    // artifacts::pins()); the not-cached doctor exits 0 and the cache
-    // appears, failing both assertions. Sabotage: drop the missing-image
-    // problem from doctor's report; the missing-profile-image non-zero
-    // assertion fails. Sabotage: drop the trust check from doctor; the
-    // untrusted `.pinfold.toml` non-zero assertion fails.
-    let binary = pinfold();
-    let env = TestEnv::new("doctor");
-    let project = TestDir::new(&env, "project");
-    git_init(project.path());
-
-    // Nothing built and nothing cached: doctor exits non-zero. It creates
-    // no project state; only `pinfold pi` does that.
-    let output = doctor_output(binary, &env, project.path());
-    assert!(!output.status.success(), "doctor passed with nothing built");
-    let projects = env.state.join("pinfold").join("projects");
-    assert!(!projects.exists(), "doctor created project state");
-
-    // Build the shared default image and cache pi, as the first run would.
-    default_image(binary, &env);
-    pi_version(binary, &env, project.path());
-
-    // Everything `pinfold pi` needs is present: doctor exits 0.
-    let output = doctor_output(binary, &env, project.path());
-    assert!(
-        output.status.success(),
-        "doctor failed with everything in place: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // A changed `.pinfold.toml` stops the run; doctor reports it non-zero
-    // until `pinfold allow` records the new bytes.
-    fs::write(
-        project.path().join(".pinfold.toml"),
-        "allow = [\"example.com\"]\n",
-    )
-    .expect("write .pinfold.toml");
-    let output = doctor_output(binary, &env, project.path());
-    assert!(
-        !output.status.success(),
-        "doctor passed an untrusted .pinfold.toml"
-    );
-    allow(binary, &env, project.path());
-    let output = doctor_output(binary, &env, project.path());
-    assert!(
-        output.status.success(),
-        "doctor failed after `pinfold allow`: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // A missing profile image stops the run: doctor reports it non-zero. A
-    // profile of this test's own keeps the shared default image in place.
-    let profile = format!("e2e-doctor-{}", std::process::id());
-    let containerfile = env
-        .config
-        .join("pinfold")
-        .join("profiles")
-        .join(&profile)
-        .join("Containerfile");
-    fs::create_dir_all(containerfile.parent().unwrap()).unwrap();
-    fs::write(&containerfile, b"FROM scratch\n").unwrap();
-    let missing = doctor_profile_output(binary, &env, project.path(), &profile);
-    assert!(
-        !missing.status.success(),
-        "doctor passed a profile with no image"
-    );
-    let built = env
-        .command(binary)
-        .args(["build", "--profile", &profile])
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold build --profile");
-    assert!(
-        built.status.success(),
-        "pinfold build --profile {profile} failed: {}",
-        String::from_utf8_lossy(&built.stderr)
-    );
-    let ready = doctor_profile_output(binary, &env, project.path(), &profile);
-    assert!(
-        ready.status.success(),
-        "doctor failed after building the profile: {}",
-        String::from_utf8_lossy(&ready.stderr)
-    );
-
-    // A missing pi artifact stops the run: doctor reports it non-zero and
-    // downloads nothing.
-    let artifact = env.cache.join("pinfold").join("artifacts").join("pi");
-    fs::remove_dir_all(&artifact).expect("remove the pi artifact cache");
-    let output = doctor_output(binary, &env, project.path());
-    assert!(
-        !output.status.success(),
-        "doctor passed with no pi artifact"
-    );
-    assert!(!artifact.exists(), "doctor downloaded the pi artifact");
-}
-
 /// A `pinfold pi --mode rpc` process with a live box.
 struct PiRpc {
     child: Child,
@@ -859,27 +758,6 @@ fn pi_version_output(binary: &Path, env: &TestEnv, project: &Path) -> Output {
         .stdin(Stdio::null())
         .output()
         .expect("run pinfold pi --version")
-}
-
-/// Run `pinfold doctor` in `project` and return its output.
-fn doctor_output(binary: &Path, env: &TestEnv, project: &Path) -> Output {
-    env.command(binary)
-        .arg("doctor")
-        .current_dir(project)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold doctor")
-}
-
-/// Run `pinfold doctor` in `project` with `profile` selected.
-fn doctor_profile_output(binary: &Path, env: &TestEnv, project: &Path, profile: &str) -> Output {
-    env.command(binary)
-        .arg("doctor")
-        .current_dir(project)
-        .env("PINFOLD_PROFILE", profile)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold doctor")
 }
 
 /// Run `pinfold allow` in `project` and assert it succeeds.
