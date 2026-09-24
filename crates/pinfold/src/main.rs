@@ -11,6 +11,7 @@ const USAGE: &str = "\
 pinfold pi [pi args…]            pi in a box for this project; `pi` is a symlink to this
 pinfold attach [--box NAME] [cmd…]   bash (or cmd) in this project's running pi box
 pinfold build [--profile NAME]   build this project's image, or a profile's; prints the ref
+pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]... [--no-cache]   a caller's image from its own context; one JSON line
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
 pinfold profile new NAME [--from PROFILE] [--from-project [PATH]]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim disk (see Maintenance)
@@ -45,6 +46,7 @@ fn main() -> ExitCode {
         Some(
             "box"
                 | "build"
+                | "image"
                 | "pi"
                 | "clean"
                 | "doctor"
@@ -75,6 +77,7 @@ fn main() -> ExitCode {
         Some("allow") => ExitCode::from(cli::allow(&rest[1..]) as u8),
         Some("attach") => ExitCode::from(cli::attach(&rest[1..]) as u8),
         Some("build") => ExitCode::from(cli::build(&rest[1..]) as u8),
+        Some("image") => ExitCode::from(cli::image(&rest[1..]) as u8),
         Some("clean") => ExitCode::from(cli::clean(&rest[1..]) as u8),
         Some("doctor") => ExitCode::from(cli::doctor(&rest[1..]) as u8),
         Some("artifacts") => ExitCode::from(cli::artifacts(&rest[1..]) as u8),

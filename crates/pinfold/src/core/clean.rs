@@ -24,6 +24,11 @@ use crate::dirs;
 pub const PROFILE_LABEL: &str = "dev.pinfold.profile";
 /// The label naming a project source on an image, and the project on a box.
 pub const PROJECT_LABEL: &str = "dev.pinfold.project";
+/// The label naming a caller image's source: the name it built.
+pub const IMAGE_LABEL: &str = "dev.pinfold.image";
+/// The label podman puts on the intermediate images of a cached build, so
+/// `clean` prunes only pinfold's build cache.
+pub const LAYER_LABEL: &str = "dev.pinfold.layer";
 /// The label recording the digest of the image an image was built from.
 pub const BASE_LABEL: &str = "dev.pinfold.base";
 /// The label naming the build that produced an image. Its value starts with

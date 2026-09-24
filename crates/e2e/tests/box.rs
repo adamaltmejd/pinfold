@@ -1366,7 +1366,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // cannot share the source.
     let profile = format!("e2e-maintenance-{}", std::process::id());
     let _images = ImageCleanup {
-        source: profile.clone(),
+        repository: format!("pinfold/profile-{profile}"),
     };
     let containerfile = env
         .config
@@ -1725,7 +1725,7 @@ fn every_build_reruns_its_steps() {
 
     let profile = format!("e2e-rerun-{}", std::process::id());
     let _images = ImageCleanup {
-        source: profile.clone(),
+        repository: format!("pinfold/profile-{profile}"),
     };
     let containerfile = env
         .config
@@ -1752,7 +1752,7 @@ fn every_build_reruns_its_steps() {
     };
 
     let first = build_profile(binary, &env, &profile);
-    let first_stamp = stamp_from_image(binary, &env, &first, "rerun-1");
+    let first_stamp = file_from_image(binary, &env, &first, "rerun-1", "/stamp");
     // Positive control: the first build ran the `RUN` step and wrote /stamp.
     assert!(
         !first_stamp.trim().is_empty(),
@@ -1760,7 +1760,7 @@ fn every_build_reruns_its_steps() {
     );
 
     let second = build_profile(binary, &env, &profile);
-    let second_stamp = stamp_from_image(binary, &env, &second, "rerun-2");
+    let second_stamp = file_from_image(binary, &env, &second, "rerun-2", "/stamp");
     assert_ne!(
         first_stamp, second_stamp,
         "the second build reused the first build's RUN layer"
@@ -1774,6 +1774,149 @@ fn every_build_reruns_its_steps() {
             after.saturating_sub(before)
         );
     }
+}
+
+#[test]
+fn a_caller_builds_an_image_from_its_own_tree() {
+    // Guarantee 23: a caller builds an image from its own tree.
+    //
+    // Sabotage: tag the build but skip the `--context` argument, so the
+    // runtime gets no context holding marker.txt; the COPY fails and the
+    // first `built` assertion fails.
+    let binary = pinfold();
+    let env = TestEnv::new("image-build");
+    // The cleanup test's `clean` deletes the runtime's builder; a build
+    // racing that deletion fails. Hold the same lock it does, and wait for
+    // the suite's shared default image, which this image builds on.
+    let _builds = BUILDER_RACE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let base = default_image(binary, &env);
+
+    let name = format!("pinfold-e2e-{}", std::process::id());
+    let repository = format!("pinfold/image-{name}");
+    let latest = format!("{repository}:latest");
+    let _images = ImageCleanup {
+        repository: repository.clone(),
+    };
+    // The Containerfile lies outside the context, as a caller's may.
+    let context = env.root.join("image-context");
+    fs::create_dir_all(&context).unwrap();
+    let containerfile = env.root.join("Containerfile");
+    fs::write(
+        &containerfile,
+        format!("FROM {base}\nCOPY marker.txt /marker.txt\n"),
+    )
+    .unwrap();
+
+    let mut refs: Vec<String> = Vec::new();
+    for marker in ["first", "second", "third"] {
+        fs::write(context.join("marker.txt"), format!("{marker}\n")).unwrap();
+        let (code, built) = image_build(binary, &env, &name, &containerfile, &context);
+        assert_eq!(built["event"], "built", "the {marker} build: {built}");
+        assert_eq!(code, 0, "the {marker} build exited {code}");
+        assert_eq!(built["image"], name.as_str(), "built named another image");
+        let reference = built["ref"]
+            .as_str()
+            .unwrap_or_else(|| panic!("built carries no ref: {built}"))
+            .to_string();
+        let build = reference
+            .strip_prefix(&format!("{repository}:"))
+            .unwrap_or_else(|| panic!("ref {reference} is not {repository}:<build>"));
+        assert_eq!(built["latest"], latest.as_str(), "built: {built}");
+        assert_eq!(built["labels"]["dev.pinfold.image"], name.as_str());
+        assert_eq!(built["labels"]["dev.pinfold.build"], build);
+        assert_eq!(built["labels"]["dev.example.test"], "image");
+        assert_eq!(
+            built["base"], built["labels"]["dev.pinfold.base"],
+            "base is not the recorded base label: {built}"
+        );
+        if refs.is_empty() {
+            // The COPYed file reaches a box started from the unique ref.
+            let read = file_from_image(binary, &env, &reference, "image", "/marker.txt");
+            assert_eq!(read, "first\n", "the box read another marker");
+        }
+        assert_eq!(
+            image_id(&latest),
+            image_id(&reference),
+            "{latest} does not name the {marker} build"
+        );
+        refs.push(reference);
+    }
+
+    let names_ids = || {
+        let mut ids: Vec<String> = labeled_images("dev.pinfold.image", &name)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    };
+    let kept = names_ids();
+    assert_eq!(
+        kept.len(),
+        2,
+        "after three builds of one name, two images should remain: {kept:?}"
+    );
+    assert!(
+        !image_named(&refs[0]) && image_named(&refs[1]) && image_named(&refs[2]),
+        "the two images left are not the second and third builds: {refs:?}"
+    );
+
+    // A failed build carries its log and makes no image.
+    let failing = env.root.join("Containerfile.fail");
+    fs::write(&failing, format!("FROM {base}\nRUN false\n")).unwrap();
+    let (code, failed) = image_build(binary, &env, &name, &failing, &context);
+    assert_eq!(failed["event"], "failed", "a failing build: {failed}");
+    assert_eq!(code, 1, "a failed build exited {code}");
+    assert_eq!(failed["image"], name.as_str(), "failed named another image");
+    assert!(
+        failed["log"].as_array().is_some_and(|log| !log.is_empty()),
+        "the failed line carries no log: {failed}"
+    );
+    assert_eq!(
+        names_ids(),
+        kept,
+        "the failed build changed the name's images"
+    );
+    assert_eq!(
+        image_id(&latest),
+        image_id(&refs[2]),
+        "the failed build moved {latest}"
+    );
+}
+
+/// Run `pinfold image build NAME` with the caller label `dev.example.test`,
+/// and return its exit code and its one stdout line, parsed.
+fn image_build(
+    binary: &Path,
+    env: &TestEnv,
+    name: &str,
+    containerfile: &Path,
+    context: &Path,
+) -> (i32, serde_json::Value) {
+    let output = env
+        .command(binary)
+        .args(["image", "build", name, "--containerfile"])
+        .arg(containerfile)
+        .arg("--context")
+        .arg(context)
+        .args(["--label", "dev.example.test=image"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold image build");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "image build printed {} stdout lines: {stdout}\nstderr: {}",
+        lines.len(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let line = serde_json::from_str(lines[0]).expect("the image build line is JSON");
+    (exit_code(output.status), line)
 }
 
 /// Build `profile` and return the stable ref `pinfold build` printed.
@@ -1794,14 +1937,20 @@ fn build_profile(binary: &Path, env: &TestEnv, profile: &str) -> String {
         .to_string()
 }
 
-/// The `/stamp` file of the image `reference`, read through a box named
+/// The file at `path` in the image `reference`, read through a box named
 /// `name`.
-fn stamp_from_image(binary: &Path, env: &TestEnv, reference: &str, name: &str) -> String {
+fn file_from_image(
+    binary: &Path,
+    env: &TestEnv,
+    reference: &str,
+    name: &str,
+    path: &str,
+) -> String {
     let name = format!("pinfold-e2e-{}-{name}", std::process::id());
     let spec = serde_json::json!({ "name": name, "image": reference });
     let up = box_up(binary, env, &spec, &name);
-    let output = box_exec(binary, env, &name, &["cat", "/stamp"]);
-    assert_eq!(output.code, 0, "reading /stamp failed: {}", output.stderr);
+    let output = box_exec(binary, env, &name, &["cat", path]);
+    assert_eq!(output.code, 0, "reading {path} failed: {}", output.stderr);
     let status = box_down(binary, env, &name);
     assert!(status.success(), "box down failed: {status}");
     drop(up);
@@ -1829,7 +1978,9 @@ fn untagged_images() -> usize {
 /// Removes the run's images from the runtime store on drop, so a failing run
 /// does not leave them for the next run to count or for the operator's disk.
 struct ImageCleanup {
-    source: String,
+    /// The image name every build of the source tags, e.g.
+    /// `pinfold/profile-<source>`.
+    repository: String,
 }
 
 impl Drop for ImageCleanup {
@@ -1838,10 +1989,10 @@ impl Drop for ImageCleanup {
         let Ok(images) = runtime_images() else {
             return;
         };
-        // Every build tags the image `pinfold/profile-<source>:<build>`, and
-        // the reference remains even when the label sabotage drops the source
+        // Every build tags the image `<repository>:<build>`, and the
+        // reference remains even when the label sabotage drops the source
         // label.
-        let prefix = format!("pinfold/profile-{}:", self.source);
+        let prefix = format!("{}:", self.repository);
         for image in images {
             for reference in image.names {
                 if reference.contains(&prefix) {
@@ -1982,15 +2133,22 @@ fn labeled_images(label: &str, value: &str) -> Vec<(String, String)> {
 /// Whether the runtime lists an image under `reference`, ignoring podman's
 /// `localhost/` prefix.
 fn image_named(reference: &str) -> bool {
+    image_id(reference).is_some()
+}
+
+/// The id of the image the runtime lists under `reference`, ignoring
+/// podman's `localhost/` prefix.
+fn image_id(reference: &str) -> Option<String> {
     runtime_images()
         .expect("list the runtime's images")
-        .iter()
-        .any(|image| {
+        .into_iter()
+        .find(|image| {
             image
                 .names
                 .iter()
                 .any(|name| name.strip_prefix("localhost/").unwrap_or(name) == reference)
         })
+        .map(|image| image.id)
 }
 
 /// The unique tag of the image that `pinfold/profile-<profile>:latest` names

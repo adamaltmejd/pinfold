@@ -6,7 +6,7 @@
 //! or resolvers, swap disabled, a task cap, and the proxy socket bind-mounted
 //! 0600 in a 0700 state directory.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io;
@@ -18,11 +18,12 @@ use std::process::{ExitStatus, Stdio};
 use serde::Deserialize;
 use tokio::process::{Child, Command};
 
+use crate::core::clean::LAYER_LABEL;
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
 use crate::core::runtime::{
-    BoxInfo, BoxStat, BoxState, BuildRequest, ImageIdentity, ImageInfo, MemoryStat, PidsStat,
-    Preflight, Runtime, bind, guest_path, spawn_error, user,
+    BoxInfo, BoxStat, BoxState, BuildCache, BuildRequest, ImageIdentity, ImageInfo, MemoryStat,
+    PidsStat, Preflight, Runtime, bind, captured_build, guest_path, spawn_error, user,
 };
 use crate::dirs;
 
@@ -231,23 +232,45 @@ impl Runtime for Podman {
         }
     }
 
-    fn build(&self, request: &BuildRequest) -> io::Result<()> {
-        let argv = build_argv(request);
-        let (program, arguments) = argv.split_first().expect("argv is never empty");
-        let status = std::process::Command::new(program)
-            .args(arguments)
+    fn purge_build_cache(&self) -> io::Result<()> {
+        // `image prune` removes only dangling images and repeats until none
+        // is left, so an intermediate goes once nothing builds on it, and an
+        // intermediate under a kept image stays with it.
+        let output = std::process::Command::new("podman")
+            .args(["image", "prune", "--force", "--filter"])
+            .arg(format!("label={LAYER_LABEL}"))
             .stdin(Stdio::null())
-            // The build prints progress on stderr; pinfold prints the ref
-            // itself, so the caller's stdout holds only the ref.
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .status()
+            .output()
             .map_err(|error| spawn_error("podman", error))?;
-        if status.success() {
+        if output.status.success() {
             Ok(())
         } else {
-            Err(io::Error::other(format!("podman build: {status}")))
+            Err(io::Error::other(format!(
+                "podman image prune: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )))
         }
+    }
+
+    fn build_cache(&self) -> io::Result<BuildCache> {
+        let output = std::process::Command::new("podman")
+            .args(["image", "list", "--all", "--format", "json"])
+            .output()
+            .map_err(|error| spawn_error("podman", error))?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "podman image list --all: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let images: Vec<ListedImage> = serde_json::from_slice(&output.stdout).map_err(|error| {
+            io::Error::other(format!("podman image list returned invalid JSON: {error}"))
+        })?;
+        Ok(BuildCache::Bytes(build_cache_bytes(&images)))
+    }
+
+    fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
+        captured_build(&build_argv(request))
     }
 
     fn image_digest(&self, reference: &str) -> io::Result<Option<String>> {
@@ -706,6 +729,56 @@ struct ListedImage {
     names: Vec<String>,
     #[serde(rename = "Labels", default, deserialize_with = "empty_default")]
     labels: BTreeMap<String, String>,
+    #[serde(rename = "ParentId", default)]
+    parent: String,
+    /// The bytes of every layer the image stacks, its parents' included.
+    #[serde(rename = "Size", default)]
+    size: i64,
+}
+
+/// The bytes `image prune --filter label=dev.pinfold.layer` would reclaim:
+/// the untagged images carrying the layer label that no image outside that
+/// set builds on. Each counts the bytes it adds to its parent.
+fn build_cache_bytes(images: &[ListedImage]) -> u64 {
+    let by_id: BTreeMap<&str, &ListedImage> = images
+        .iter()
+        .map(|image| (image.id.as_str(), image))
+        .collect();
+    let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for image in images {
+        children
+            .entry(image.parent.as_str())
+            .or_default()
+            .push(&image.id);
+    }
+    // Prune's own convergence: an image goes once every child has gone.
+    let mut cache: BTreeSet<&str> = BTreeSet::new();
+    loop {
+        let before = cache.len();
+        for image in images {
+            if image.names.is_empty()
+                && image.labels.contains_key(LAYER_LABEL)
+                && children
+                    .get(image.id.as_str())
+                    .is_none_or(|ids| ids.iter().all(|id| cache.contains(id)))
+            {
+                cache.insert(&image.id);
+            }
+        }
+        if cache.len() == before {
+            break;
+        }
+    }
+    cache
+        .iter()
+        .map(|id| {
+            let image = by_id[id];
+            let parent = by_id
+                .get(image.parent.as_str())
+                .map_or(0, |parent| parent.size);
+            u64::try_from(image.size - parent).unwrap_or(0)
+        })
+        .sum()
 }
 
 fn parse_images(json: &[u8]) -> io::Result<Vec<ImageInfo>> {
@@ -714,7 +787,9 @@ fn parse_images(json: &[u8]) -> io::Result<Vec<ImageInfo>> {
     })?;
     let mut infos = Vec::new();
     for image in images {
-        let ListedImage { id, names, labels } = image;
+        let ListedImage {
+            id, names, labels, ..
+        } = image;
         // One entry per name, so Maintenance can remove every tag of an old
         // image; a dangling image is removed by its id.
         if names.is_empty() {
@@ -912,16 +987,18 @@ fn home_value(plan: &Plan) -> OsString {
 
 /// The `podman build` argv for one build, as data.
 pub fn build_argv(request: &BuildRequest) -> Vec<OsString> {
-    let mut argv: Vec<OsString> = vec![
-        "podman".into(),
-        "build".into(),
-        // Every build reruns every step and leaves no intermediate images
-        // behind, so the default `purge_build_cache` is true of this
-        // adapter.
-        "--layers=false".into(),
-        "--file".into(),
-        request.containerfile.into(),
-    ];
+    let mut argv: Vec<OsString> = vec!["podman".into(), "build".into()];
+    if request.cache {
+        // The cache is intermediate images carrying only buildah's own
+        // labels; this one is how `purge_build_cache` tells pinfold's apart.
+        argv.push("--layer-label".into());
+        argv.push(format!("{LAYER_LABEL}=true").into());
+    } else {
+        // Every step reruns and no intermediate image is left behind.
+        argv.push("--layers=false".into());
+    }
+    argv.push("--file".into());
+    argv.push(request.containerfile.into());
     for tag in request.tags {
         argv.push("--tag".into());
         argv.push(tag.into());
