@@ -3,7 +3,7 @@
 # The rest of what is written is this scaffold's own choice for a key that has
 # none: the agent harnesses, models and efforts, the default workflow's
 # implementer and its context window, the whole conflict job, and the review
-# panel with its two seats.
+# panel with its one seat.
 # Commented lines are examples: a key, an agent, a job, or a workflow this
 # project turns on by uncommenting it.
 # Unknown keys are errors.
@@ -206,17 +206,6 @@ context = ["docs/ARCHITECTURE.md", "AGENTS.md"]
 # invalidates the review evidence recorded under the old one:
 #     context = ["docs/design-system.md", ".claude/skills/design-review/SKILL.md"]
 
-# minimality is a second opinion on reuse and size; a finding is at P2 at
-# most, so under blocking = "P1" it is advisory by construction and never
-# sends a candidate to repair by itself.
-[review.reviewers.minimality]
-engine = "claude"
-model = "claude-opus-5-5"
-effort = "high"
-when = "The change touches program behavior: Rust source, tests, Cargo or toolchain files, the profile, a Containerfile, or CI."
-instructions = "Judge minimality from the diff, reporting at P2 at most and never at P0 or P1: an option, fallback, compatibility path or module the ticket did not ask for; code duplicated within the diff; near-copies between apple.rs and podman.rs that could live in runtime/mod.rs; a commit message without the reuse sentence; a spec paragraph that restates another. Do not judge cross-file consolidation beyond the diff."
-context = ["crates/pinfold/src/core/runtime/mod.rs", "crates/pinfold/src/core/box.rs", "crates/pinfold/src/cli.rs", "docs/ARCHITECTURE.md"]
-
 # Triage asks TypeSafe Jev, a pinned judgment model, for advice only; it needs
 # TYPESAFE_API_KEY in operator.env. filing: at yard ticket new, whether the
 # ticket fits its workflow, spans more than one subsystem, or asks to
@@ -237,7 +226,7 @@ implementer = "deepseek"
 # review is a list of the seat names above, in panel order, or "none", for which
 # no review execution is ever started -- its gates still run, and a review of
 # "none" is as clean at the approval decision as a pass is.
-review = ["code", "minimality"]
+review = ["code"]
 # access grants the worker's workspace access: "writable" or "read-only".
 access = "writable"
 # inactivity_timeout_minutes and total_work_timeout_minutes are the job keys
@@ -268,7 +257,7 @@ states, in one sentence, what was reused or why nothing fit.
 # yard ticket edit ID --workflow heavy.
 [workflows.heavy]
 implementer = "opus"
-review = ["code", "minimality"]
+review = ["code"]
 access = "writable"
 inactivity_timeout_minutes = 0
 total_work_timeout_minutes = 360
