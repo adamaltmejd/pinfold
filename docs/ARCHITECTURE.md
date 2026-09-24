@@ -224,6 +224,8 @@ The box spec `up` reads from stdin:
 - Apple: mounts are directories. Nested read-only mounts protect subpaths.
 - `.git` protection belongs to the pi layer; a box spec gets only the
   mounts it names.
+- An unknown key at any level of the spec is refused as `spec`, naming the
+  key; pinfold never applies a spec partially.
 
 ### Always applied
 

@@ -15,6 +15,7 @@ pub const HARNESS_PI: &str = "pi";
 
 /// A parsed box spec.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Plan {
     /// The box's name; also its state directory name.
     pub name: String,
@@ -49,6 +50,7 @@ pub struct Plan {
 
 /// The box's egress allowlist and routes.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Egress {
     /// Exact host names, or `.suffix` for a name and its subdomains.
     #[serde(default)]
@@ -189,6 +191,7 @@ fn valid_header_name(name: &str) -> bool {
 
 /// One host directory and where it appears in the box.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Mount {
     pub host: PathBuf,
     pub guest: PathBuf,
@@ -198,6 +201,7 @@ pub struct Mount {
 
 /// The box user.
 #[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct User {
     pub uid: u32,
     pub gid: u32,

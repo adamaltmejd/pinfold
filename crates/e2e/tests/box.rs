@@ -144,6 +144,8 @@ fn up_refuses_before_it_creates() {
     // Sabotage: keep the name check after the state dir is created; the
     // first box's `pid` is overwritten and the second `up`'s cleanup takes
     // the first box down, so its `exec` fails.
+    // Sabotage: drop `deny_unknown_fields` from `Mount`; the misspelled
+    // mount spec then comes up `ready` and the refusal assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("refuses");
     let name = format!("pinfold-e2e-{}-refuses", std::process::id());
@@ -161,6 +163,38 @@ fn up_refuses_before_it_creates() {
     assert_eq!(refused["event"], "refused");
     assert_eq!(refused["box"], name);
     assert_eq!(refused["reason"], "image-missing");
+    let state = env.state.join("pinfold").join("boxes").join(&name);
+    assert!(
+        !state.exists(),
+        "the refused up left a state dir: {}",
+        state.display()
+    );
+    assert!(
+        box_list(binary, &env, label).is_empty(),
+        "the refused up left a box"
+    );
+
+    // A spec whose mount misspells `readonly` as `read_only` is refused as
+    // data, naming the key, and leaves no state dir and no box. The positive
+    // control, a spelled `readonly` that rejects writes, is guarantee 10's
+    // `box_shares_files_with_the_host`.
+    let misspelled = serde_json::json!({
+        "name": name,
+        "image": default_image(binary, &env),
+        "labels": { "dev.example.test": "refuses" },
+        "mounts": [{ "host": env.root, "guest": "/workspace", "read_only": true }],
+    });
+    let (code, refused) = box_up_refused(binary, &env, &misspelled);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["event"], "refused");
+    assert_eq!(refused["reason"], "spec");
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("read_only"),
+        "the refusal did not name the key: {refused}"
+    );
     let state = env.state.join("pinfold").join("boxes").join(&name);
     assert!(
         !state.exists(),
