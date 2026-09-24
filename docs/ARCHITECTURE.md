@@ -120,7 +120,7 @@ runs the same code in-process.
 pinfold box up < spec.json        # prints ready, holds the box, ends with down
 pinfold box exec BOX [--tty] [--workdir D] -- argv…   # stdio through, exit code back
 pinfold box stat BOX              # one JSON object of the box's memory, pids and OOM kills
-pinfold box down BOX              # same as closing up's stdin
+pinfold box down BOX              # same as closing up's stdin; idempotent: an absent box exits 0
 pinfold box list --label k=v      # JSON lines; repeat --label to AND filters
 pinfold box prune                 # remove boxes whose `up` is gone, print each removed
 ```
@@ -144,11 +144,13 @@ absent box, `stat` exits 3 with `pinfold box stat: no box named ...`, like
 `up` prints one `ready` line once the box is up:
 
 ```json
-{"event":"ready","box":NAME,"owner":PID,"labels":{…}}
+{"event":"ready","box":NAME,"owner":PID,"labels":{…},"image":{"id":ID,"ref":REF}}
 ```
 
-`owner` is the `box up` process; `labels` is the box's full label set. At
-`up`, the image's `dev.pinfold.*` identity labels are copied onto the box;
+`owner` is the `box up` process; `labels` is the box's full label set, as
+the runtime reports them, image labels included. `image.id` is the image the
+runtime resolved `image` to; `image.ref` is the reference as the spec (or its
+profile) gave it. At `up`, the image's `dev.pinfold.*` identity labels are copied onto the box;
 the spec's labels win on a clash.
 
 The caller keeps `up`'s stdin open for the life of the box; closing it is
@@ -171,7 +173,9 @@ When `up` refuses, it prints one JSON line instead of `ready` and exits 1:
 
 `REASON` is `spec`, `profile`, `runtime`, `image-missing` or `name-in-use`;
 `box` is null when the spec did not parse. Refusals are decided before
-anything is created; a refused `up` leaves nothing.
+anything is created; a refused `up` leaves nothing. `up` asks the runtime to
+resolve `image`, so any reference the runtime resolves locally is accepted;
+`image-missing` means the runtime could not.
 
 When `up` fails after it began creating, it removes what it made, prints one
 `failed` line instead of `ready` or `down`, and exits 1:
@@ -186,13 +190,13 @@ of `refused`, `failed` or `down`.
 
 `list` prints one JSON line per box whose labels match every `--label`.
 `--label KEY=VALUE` matches that value; `--label KEY` matches any value of
-`KEY`. Each line carries the box's labels, its `dev.pinfold.owner` pid (or
-null), whether it still holds the lock on the box's `pid` file (for a box
+`KEY`. Each line carries the box's labels and the image it runs, as the
+runtime records it, then its `dev.pinfold.owner` pid (or null), whether it still holds the lock on the box's `pid` file (for a box
 from another state dir, whether that pid is alive), and the runtime's RFC
 3339 `created` time and `state` (`running` or `stopped`):
 
 ```json
-{"name":NAME,"labels":{…},"owner":PID,"owner_alive":true,"created":RFC3339,"state":"running"}
+{"name":NAME,"labels":{…},"image":{"id":ID,"ref":REF},"owner":PID,"owner_alive":true,"created":RFC3339,"state":"running"}
 ```
 
 `prune` removes each pinfold box whose `up` is gone and prints one line per
@@ -575,7 +579,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 6 | The environment is exactly the spec | An unprefixed host variable is absent; `PINFOLD_ENV_X` arrives as `X`; the secret never shows in host `ps`. |
 | 7 | No egress means no way out | Without `egress`, nothing gets out, not even through a route. |
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, the box has no egress. With its `pid` file naming a live process, `list` reports the owner gone, `box prune` removes it, and the name can be used again. |
-| 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code; `list` finds by label; `down` removes. |
+| 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code; `list` finds by label; `down` removes. `ready`'s labels equal `list`'s; `down` on an absent box exits 0 and prints nothing. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. A read-only mount rejects writes. |
 | 11 | The box cannot write `.git` or protected config | Writing a hook in `.git/hooks` or under `core.hooksPath`, `core.fsmonitor`, `commondir`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails; host `git status` runs nothing. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`; the next run refuses until `pinfold allow`. |

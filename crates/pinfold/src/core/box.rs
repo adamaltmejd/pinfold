@@ -24,15 +24,20 @@ use crate::core::clean;
 use crate::core::plan::{Env, HARNESS_PI, Mount, Plan};
 use crate::core::profile::{Profile, Seed};
 use crate::core::proxy::Proxy;
-use crate::core::runtime::{Runtime, runtime};
+use crate::core::runtime::{Preflight, Runtime, runtime};
 use crate::dirs;
 
 /// A started box, owned by this process.
 pub struct Box {
     name: String,
-    /// The box's full label set: the spec's, the owner's, and the image's
-    /// identity labels.
+    /// The box's full label set, as the runtime reports it once the box is
+    /// ready, the image's labels included.
     pub labels: BTreeMap<String, String>,
+    /// The id of the image `image_ref` resolved to.
+    pub image_id: String,
+    /// The image reference the box was started from: the spec's, or its
+    /// profile's.
+    pub image_ref: String,
     state_dir: PathBuf,
     /// The lock on the state dir's `pid` file. Holding it is what makes the
     /// owner alive to every checker.
@@ -187,7 +192,7 @@ impl Box {
 
         let runtime =
             runtime().map_err(|error| refused(&plan, RefusalReason::Runtime, error.to_string()))?;
-        runtime
+        let preflight = runtime
             .preflight()
             .map_err(|error| refused(&plan, RefusalReason::Runtime, error.to_string()))?;
 
@@ -198,20 +203,20 @@ impl Box {
                 "a box spec needs an image or a profile",
             )
         })?;
-        let Some(image_info) = runtime
-            .list_images()?
-            .into_iter()
-            .find(|info| info.reference == image)
-        else {
-            return Err(refused(
+        // The runtime resolves the reference, so every spelling it resolves
+        // locally is accepted. It is still given `image`, not the id.
+        let identity = runtime.resolve_image(&image)?.map_err(|message| {
+            refused(
                 &plan,
                 RefusalReason::ImageMissing,
-                format!("image {image:?} is not present locally; build or pull it first"),
-            ));
-        };
-        // The image's identity labels are the box's too, so a caller reading
-        // `ready` gets them without a second `list`. The spec's labels win.
-        for (key, value) in image_info.labels {
+                format!(
+                    "image {image:?} is not present locally; build or pull it first: {message}"
+                ),
+            )
+        })?;
+        // The image's identity labels are the box's too: Apple copies no
+        // image label onto a box. The spec's labels win.
+        for (key, value) in identity.labels {
             if key.starts_with("dev.pinfold.") {
                 plan.labels.entry(key).or_insert(value);
             }
@@ -243,6 +248,7 @@ impl Box {
             &mut plan,
             init,
             runtime,
+            &preflight,
             profile.as_ref(),
             &state_dir,
             &mut parts,
@@ -255,23 +261,28 @@ impl Box {
             },
             None => starting.await,
         };
-        if let Err(stop) = started {
-            let status = parts.teardown(runtime, &plan.name).await;
-            let _ = fs::remove_dir_all(&state_dir);
-            return Err(match stop {
-                Stop::Signal => UpError::Signal,
-                Stop::Failed(error) => UpError::Other(error),
-                Stop::NotReady(failure) => UpError::Other(io::Error::other(match status {
-                    Some(Ok(status)) => format!("{failure}: {status}"),
-                    Some(Err(error)) => format!("{failure}: {error}"),
-                    None => failure,
-                })),
-            });
-        }
+        let labels = match started {
+            Ok(labels) => labels,
+            Err(stop) => {
+                let status = parts.teardown(runtime, &plan.name).await;
+                let _ = fs::remove_dir_all(&state_dir);
+                return Err(match stop {
+                    Stop::Signal => UpError::Signal,
+                    Stop::Failed(error) => UpError::Other(error),
+                    Stop::NotReady(failure) => UpError::Other(io::Error::other(match status {
+                        Some(Ok(status)) => format!("{failure}: {status}"),
+                        Some(Err(error)) => format!("{failure}: {error}"),
+                        None => failure,
+                    })),
+                });
+            }
+        };
 
         Ok(Box {
             name: plan.name.clone(),
-            labels: plan.labels,
+            labels,
+            image_id: identity.id,
+            image_ref: image,
             state_dir,
             _lock: lock,
             child: parts
@@ -445,15 +456,17 @@ fn lock_pid(state_dir: &Path) -> io::Result<Flock<File>> {
 
 /// The start after the claim: harness, seeds, proxy, runtime, readiness.
 /// What it creates goes into `parts` as soon as it exists, so a failure, or
-/// a signal at any await, removes exactly that.
+/// a signal at any await, removes exactly that. Returns the box's labels as
+/// the runtime reports them.
 async fn start(
     plan: &mut Plan,
     init: &Path,
     runtime: &'static dyn Runtime,
+    preflight: &Preflight,
     profile: Option<&ResolvedProfile>,
     state_dir: &Path,
     parts: &mut Parts,
-) -> Result<(), Stop> {
+) -> Result<BTreeMap<String, String>, Stop> {
     // The harness artifact is fetched and folded in after the claim, so a
     // refused box downloads nothing. The spec's own env wins.
     resolve_harness(plan)?;
@@ -474,10 +487,12 @@ async fn start(
     // A signal that arrived during the steps above wins the select here,
     // before the runtime is asked to create anything.
     tokio::task::yield_now().await;
-    let child =
-        parts
-            .child
-            .insert(runtime.up(plan, init, parts.proxy.as_ref().map(Proxy::socket))?);
+    let child = parts.child.insert(runtime.up(
+        plan,
+        init,
+        parts.proxy.as_ref().map(Proxy::socket),
+        preflight,
+    )?);
     let stdout = child
         .stdout
         .take()
@@ -499,7 +514,20 @@ async fn start(
     }
     // Keep the pipe drained so a talkative box cannot block on it.
     tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
-    Ok(())
+    // `ready` reports the labels `list` will: podman adds every image label
+    // to the box, so the plan's set is not the box's.
+    let labels = runtime
+        .list()?
+        .into_iter()
+        .find(|box_| box_.id == plan.name)
+        .map(|box_| box_.labels)
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "the runtime does not list box {:?} after ready",
+                plan.name
+            ))
+        })?;
+    Ok(labels)
 }
 
 async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {

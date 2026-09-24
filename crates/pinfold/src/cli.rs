@@ -263,6 +263,7 @@ fn hold_up(plan: &Plan) -> io::Result<i32> {
                 "box": &plan.name,
                 "owner": std::process::id(),
                 "labels": &box_.labels,
+                "image": { "id": &box_.image_id, "ref": &box_.image_ref },
             })
         );
         io::stdout().flush()?;
@@ -404,6 +405,7 @@ fn list(args: &[OsString]) -> io::Result<i32> {
             serde_json::json!({
                 "name": box_.id,
                 "labels": box_.labels,
+                "image": { "id": box_.image_id, "ref": box_.image_ref },
                 "owner": owner,
                 "owner_alive": clean::box_owner_alive(&state.join(&box_.id), owner),
                 "created": box_.created,

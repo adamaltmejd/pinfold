@@ -13,8 +13,8 @@ use tokio::process::{Child, Command};
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
 use crate::core::runtime::{
-    BoxInfo, BoxStat, BoxState, BuildRequest, ImageInfo, MemoryStat, PidsStat, Runtime, bind,
-    guest_path, spawn_error, user,
+    BoxInfo, BoxStat, BoxState, BuildRequest, ImageIdentity, ImageInfo, MemoryStat, PidsStat,
+    Preflight, Runtime, bind, guest_path, spawn_error, user,
 };
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
@@ -24,7 +24,13 @@ pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
 pub struct Apple;
 
 impl Runtime for Apple {
-    fn up(&self, plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<Child> {
+    fn up(
+        &self,
+        plan: &Plan,
+        init: &Path,
+        proxy_socket: Option<&Path>,
+        _preflight: &Preflight,
+    ) -> io::Result<Child> {
         let argv = up_argv(plan, init, proxy_socket);
         let (program, arguments) = argv.split_first().expect("argv is never empty");
         let mut command = Command::new(program);
@@ -82,22 +88,23 @@ impl Runtime for Apple {
         }
     }
 
-    fn preflight(&self) -> io::Result<()> {
+    fn preflight(&self) -> io::Result<Preflight> {
         // A missing `container` binary is refused before `up` creates any
         // state.
-        self.version().map(|_| ())
+        self.version().map(|_| Preflight::default())
     }
 
     fn down(&self, name: &str) -> io::Result<()> {
         let argv = down_argv(name);
         let (program, arguments) = argv.split_first().expect("argv is never empty");
-        let status = std::process::Command::new(program)
+        // stderr is captured: an absent box fails `rm` with the runtime's
+        // not-found text, which is noise once the box is gone.
+        let output = std::process::Command::new(program)
             .args(arguments)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .status()
+            .output()
             .map_err(|error| spawn_error("container", error))?;
-        if status.success() {
+        if output.status.success() {
             return Ok(());
         }
         // Another process may have removed the box between the list and this
@@ -106,7 +113,8 @@ impl Runtime for Apple {
             return Ok(());
         }
         Err(io::Error::other(format!(
-            "container rm -f {name}: {status}"
+            "container rm -f {name}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
         )))
     }
 
@@ -175,6 +183,28 @@ impl Runtime for Apple {
             )));
         }
         parse_images(&output.stdout)
+    }
+
+    fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageIdentity, String>> {
+        let output = std::process::Command::new("container")
+            .args(["image", "inspect", reference])
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| spawn_error("container", error))?;
+        if !output.status.success() {
+            return Ok(Err(String::from_utf8_lossy(&output.stderr)
+                .trim()
+                .to_string()));
+        }
+        // `image inspect` prints the same entries as `image list`.
+        let image = parse_images(&output.stdout)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| io::Error::other("container image inspect returned no image"))?;
+        Ok(Ok(ImageIdentity {
+            id: image.id,
+            labels: image.labels,
+        }))
     }
 
     fn remove_image(&self, reference: &str) -> io::Result<()> {
@@ -283,11 +313,29 @@ struct ListedContainer {
 struct ListedConfiguration {
     #[serde(default)]
     labels: BTreeMap<String, String>,
+    #[serde(default)]
+    image: ListedBoxImage,
     /// ISO 8601, which is RFC 3339.
     #[serde(default, rename = "creationDate")]
     created: String,
     #[serde(default)]
     resources: ListedResources,
+}
+
+/// The image a box runs, as the runtime records it.
+#[derive(Default, Deserialize)]
+struct ListedBoxImage {
+    #[serde(default)]
+    reference: String,
+    #[serde(default)]
+    descriptor: ListedBoxImageDescriptor,
+}
+
+#[derive(Default, Deserialize)]
+struct ListedBoxImageDescriptor {
+    /// `sha256:<hex>`; the hex is the image list's `id`.
+    #[serde(default)]
+    digest: String,
 }
 
 /// The limits the runtime reports for a box. The VM exposes no kill or use
@@ -310,11 +358,25 @@ fn parse_list(json: &[u8]) -> io::Result<Vec<BoxInfo>> {
     })?;
     Ok(containers
         .into_iter()
-        .map(|container| BoxInfo {
-            id: container.id,
-            labels: container.configuration.labels,
-            created: container.configuration.created,
-            state: BoxState::from_runtime(&container.status.state),
+        .map(|container| {
+            let ListedConfiguration {
+                labels,
+                image,
+                created,
+                ..
+            } = container.configuration;
+            let digest = image.descriptor.digest;
+            BoxInfo {
+                id: container.id,
+                labels,
+                image_id: digest
+                    .strip_prefix("sha256:")
+                    .unwrap_or(&digest)
+                    .to_string(),
+                image_ref: image.reference,
+                created,
+                state: BoxState::from_runtime(&container.status.state),
+            }
         })
         .collect())
 }

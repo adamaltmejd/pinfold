@@ -60,6 +60,11 @@ fn cli_version(program: &str) -> io::Result<String> {
 pub struct BoxInfo {
     pub id: String,
     pub labels: BTreeMap<String, String>,
+    /// The id of the image the box runs, bare hex like [`ImageInfo::id`].
+    pub image_id: String,
+    /// The image reference the runtime records for the box, in its own
+    /// spelling.
+    pub image_ref: String,
     /// When the runtime created the box, RFC 3339 in UTC.
     pub created: String,
     /// Whether the box is running.
@@ -132,6 +137,23 @@ pub struct ImageInfo {
     pub labels: BTreeMap<String, String>,
 }
 
+/// The local image a reference resolves to.
+#[derive(Debug, Clone)]
+pub struct ImageIdentity {
+    /// The image's content digest, bare hex like [`ImageInfo::id`].
+    pub id: String,
+    /// The labels recorded on the image.
+    pub labels: BTreeMap<String, String>,
+}
+
+/// What preflight learned of the host that `up` needs, so one `up` asks the
+/// runtime once. A field a runtime does not use is `None`.
+#[derive(Debug, Default)]
+pub struct Preflight {
+    /// The seccomp profile path the runtime reports. podman only.
+    pub seccomp_profile: Option<PathBuf>,
+}
+
 /// One image build: an empty context holding only a Containerfile, the
 /// names to tag the result with, and the labels to record on it.
 pub struct BuildRequest<'a> {
@@ -149,12 +171,20 @@ pub struct BuildRequest<'a> {
 pub trait Runtime: Sync {
     /// Start the attached `container run` process that owns the box. When
     /// `proxy_socket` is set, carry that host unix socket into the box.
-    fn up(&self, plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<Child>;
+    /// `preflight` is what [`Runtime::preflight`] returned.
+    fn up(
+        &self,
+        plan: &Plan,
+        init: &Path,
+        proxy_socket: Option<&Path>,
+        preflight: &Preflight,
+    ) -> io::Result<Child>;
 
     /// Refuse a host the runtime cannot serve, before `up` creates any box
-    /// state. The default is a runtime whose binary `up` checks itself.
-    fn preflight(&self) -> io::Result<()> {
-        Ok(())
+    /// state, and return what `up` needs of the host. The default is a
+    /// runtime whose binary `up` checks itself.
+    fn preflight(&self) -> io::Result<Preflight> {
+        Ok(Preflight::default())
     }
 
     /// Make the carried proxy socket connectable by the box user. Apple only:
@@ -184,6 +214,11 @@ pub trait Runtime: Sync {
 
     /// List every image, with the labels recorded on it.
     fn list_images(&self) -> io::Result<Vec<ImageInfo>>;
+
+    /// Resolve `reference` to a local image with the runtime's own inspect,
+    /// so every spelling the runtime resolves is accepted. Never pulls. The
+    /// inner `Err` is the runtime's message when it cannot resolve it.
+    fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageIdentity, String>>;
 
     /// Remove one image by reference, and any layers no image references.
     fn remove_image(&self, reference: &str) -> io::Result<()>;
@@ -239,15 +274,11 @@ pub fn exec_through_init(init: &Path, argv: &[String]) -> Vec<String> {
     wrapped
 }
 
-/// The content digest of the image `reference` names, from the runtime's
-/// image list. `None` when no image carries the reference. Unlike
-/// [`Runtime::image_digest`], this never pulls: the reference is local.
+/// The content digest of the image `reference` resolves to. `None` when the
+/// runtime cannot resolve it. Unlike [`Runtime::image_digest`], this never
+/// pulls: the reference is local.
 pub fn local_image_id(runtime: &dyn Runtime, reference: &str) -> io::Result<Option<String>> {
-    Ok(runtime
-        .list_images()?
-        .into_iter()
-        .find(|image| image.reference == reference)
-        .map(|image| image.id))
+    Ok(runtime.resolve_image(reference)?.ok().map(|image| image.id))
 }
 
 /// The uid:gid PID 1 and all work run as: the spec's, else the host user's.

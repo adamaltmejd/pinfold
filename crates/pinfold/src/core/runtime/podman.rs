@@ -21,8 +21,8 @@ use tokio::process::{Child, Command};
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
 use crate::core::runtime::{
-    BoxInfo, BoxStat, BoxState, BuildRequest, ImageInfo, MemoryStat, PidsStat, Runtime, bind,
-    guest_path, spawn_error, user,
+    BoxInfo, BoxStat, BoxState, BuildRequest, ImageIdentity, ImageInfo, MemoryStat, PidsStat,
+    Preflight, Runtime, bind, guest_path, spawn_error, user,
 };
 use crate::dirs;
 
@@ -40,14 +40,23 @@ const CLONE_NEWUSER: u64 = 0x1000_0000;
 pub struct Podman;
 
 impl Runtime for Podman {
-    fn up(&self, plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<Child> {
+    fn up(
+        &self,
+        plan: &Plan,
+        init: &Path,
+        proxy_socket: Option<&Path>,
+        preflight: &Preflight,
+    ) -> io::Result<Child> {
         // Tighten the socket before anything slow, so it is not connectable
-        // by another host user while preflight runs.
+        // by another host user while the profile is derived.
         if let Some(socket) = proxy_socket {
             tighten(socket)?;
         }
-        let info = podman_info()?;
-        let seccomp = seccomp_profile(&info)?;
+        let source = preflight
+            .seccomp_profile
+            .as_deref()
+            .ok_or_else(|| io::Error::other("preflight found no podman seccomp profile"))?;
+        let seccomp = seccomp_profile(source)?;
         let resolv_conf = empty_resolv_conf()?;
         let argv = up_argv(plan, init, proxy_socket, &seccomp, &resolv_conf);
         let (program, arguments) = argv.split_first().expect("argv is never empty");
@@ -94,8 +103,11 @@ impl Runtime for Podman {
         Ok(())
     }
 
-    fn preflight(&self) -> io::Result<()> {
-        preflight().map(|_| ())
+    fn preflight(&self) -> io::Result<Preflight> {
+        let info = preflight()?;
+        Ok(Preflight {
+            seccomp_profile: Some(PathBuf::from(info.host.security.seccomp_profile_path)),
+        })
     }
 
     fn down(&self, name: &str) -> io::Result<()> {
@@ -187,6 +199,20 @@ impl Runtime for Podman {
             )));
         }
         parse_images(&output.stdout)
+    }
+
+    fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageIdentity, String>> {
+        let output = std::process::Command::new("podman")
+            .args(["image", "inspect", reference])
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| spawn_error("podman", error))?;
+        if !output.status.success() {
+            return Ok(Err(String::from_utf8_lossy(&output.stderr)
+                .trim()
+                .to_string()));
+        }
+        parse_identity(&output.stdout).map(Ok)
     }
 
     fn remove_image(&self, reference: &str) -> io::Result<()> {
@@ -481,9 +507,9 @@ pub fn docker_present() -> bool {
 /// are allowed only when their flags do not include `CLONE_NEWUSER`. `clone3`
 /// takes a pointer and its flags cannot be filtered, so it falls to the
 /// profile's default action (`ENOSYS` in podman's profile) and callers fall
-/// back to `clone`, where the flag is visible.
-fn seccomp_profile(info: &Info) -> io::Result<PathBuf> {
-    let source = Path::new(&info.host.security.seccomp_profile_path);
+/// back to `clone`, where the flag is visible. `source` is the default
+/// profile's path, as `podman info` reports it.
+fn seccomp_profile(source: &Path) -> io::Result<PathBuf> {
     let text = fs::read_to_string(source).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -608,6 +634,10 @@ struct ListedContainer {
     names: Vec<String>,
     #[serde(rename = "Labels", default, deserialize_with = "empty_default")]
     labels: BTreeMap<String, String>,
+    #[serde(rename = "ImageID", default)]
+    image_id: String,
+    #[serde(rename = "Image", default)]
+    image: String,
     /// Unix seconds.
     #[serde(rename = "Created")]
     created: i64,
@@ -625,6 +655,8 @@ fn parse_list(json: &[u8]) -> io::Result<Vec<BoxInfo>> {
                 id,
                 names,
                 labels,
+                image_id,
+                image,
                 created,
                 state,
             } = container;
@@ -632,6 +664,8 @@ fn parse_list(json: &[u8]) -> io::Result<Vec<BoxInfo>> {
                 // `down` and prune name the box, so its name is its id.
                 id: names.into_iter().next().unwrap_or(id),
                 labels,
+                image_id,
+                image_ref: image,
                 created: rfc3339(created),
                 state: BoxState::from_runtime(&state),
             }
@@ -711,8 +745,28 @@ fn local_reference(name: &str) -> String {
 /// One `podman image inspect` entry, as much as pinfold needs.
 #[derive(Deserialize)]
 struct InspectedImage {
+    #[serde(rename = "Id", default)]
+    id: String,
     #[serde(rename = "Digest", default)]
     digest: String,
+    #[serde(rename = "Labels", default, deserialize_with = "empty_default")]
+    labels: BTreeMap<String, String>,
+}
+
+fn parse_identity(json: &[u8]) -> io::Result<ImageIdentity> {
+    let images: Vec<InspectedImage> = serde_json::from_slice(json).map_err(|error| {
+        io::Error::other(format!(
+            "podman image inspect returned invalid JSON: {error}"
+        ))
+    })?;
+    let image = images
+        .into_iter()
+        .next()
+        .ok_or_else(|| io::Error::other("podman image inspect returned no image"))?;
+    Ok(ImageIdentity {
+        id: image.id,
+        labels: image.labels,
+    })
 }
 
 fn parse_digest(json: &[u8]) -> io::Result<Option<String>> {

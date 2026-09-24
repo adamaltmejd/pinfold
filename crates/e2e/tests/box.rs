@@ -40,6 +40,20 @@ fn box_lifecycle_works_for_a_caller() {
     // before; the SIGTERM sent once `pid` exists lands before `ready` and
     // kills `up` by the default action, so there is no `down` line, `up`
     // ends by signal 15 instead of exit 0, and the box stays listed.
+    // Sabotage: make `ready` print the merged spec set (`plan.labels`) again;
+    // on podman `list` also carries the image's `io.buildah.version`, so the
+    // labels equality assertion fails. This one fails only on Linux: on
+    // Apple the two sets already agree.
+    // Sabotage: let Apple's `down` pass the runtime's stderr through again;
+    // on macOS the second `down` prints the runtime's not-found error and the
+    // empty-stderr assertion fails.
+    // Sabotage: drop `--ignore` from podman's `down_argv`; on Linux the
+    // second `down` exits 1 and the exit-0 assertion fails.
+    // Sabotage: find the image in `Box::up` by exact string match against
+    // `list_images()` references again; the tag-less `again` box is refused
+    // `image-missing` on both runtimes, so `box_up` panics on a first line
+    // that is not `ready`. On Linux the box named by id is refused the same
+    // way.
     let binary = pinfold();
     let env = TestEnv::new("lifecycle");
     let name = format!("pinfold-e2e-{}-lifecycle", std::process::id());
@@ -52,9 +66,9 @@ fn box_lifecycle_works_for_a_caller() {
     });
     let mut up = box_up(binary, &env, &spec, &name);
 
-    // `ready` carries the owner and the box's full label set, the image's
-    // identity labels included.
-    let build = runtime_images()
+    // `ready` carries the owner, the box's full label set, the image's
+    // identity labels included, and the image it runs.
+    let default = runtime_images()
         .expect("list the runtime's images")
         .into_iter()
         .find(|known| {
@@ -63,7 +77,12 @@ fn box_lifecycle_works_for_a_caller() {
                 .iter()
                 .any(|name| name.strip_prefix("localhost/").unwrap_or(name) == image)
         })
-        .and_then(|known| known.labels.get("dev.pinfold.build").cloned())
+        .expect("the runtime lists the default image");
+    let image_id = default.id;
+    let build = default
+        .labels
+        .get("dev.pinfold.build")
+        .cloned()
         .expect("the default image records dev.pinfold.build");
     assert_eq!(
         up.ready["owner"],
@@ -76,6 +95,17 @@ fn box_lifecycle_works_for_a_caller() {
         up.ready["labels"]["dev.pinfold.build"],
         build.as_str(),
         "ready lost the image's build label: {}",
+        up.ready
+    );
+    assert_eq!(
+        up.ready["image"]["id"],
+        image_id.as_str(),
+        "ready names the wrong image id: {}",
+        up.ready
+    );
+    assert_eq!(
+        up.ready["image"]["ref"], image,
+        "ready's image ref is not the spec's: {}",
         up.ready
     );
 
@@ -94,13 +124,22 @@ fn box_lifecycle_works_for_a_caller() {
     let ok = box_exec(binary, &env, &name, &["sh", "-c", "exit 0"]);
     assert_eq!(ok.code, 0);
 
-    // `list` finds the box by the caller's label.
+    // `list` finds the box by the caller's label, with the labels `ready`
+    // reported and the same image id.
     let listed = box_list(binary, &env, label);
-    assert!(
-        listed
-            .iter()
-            .any(|box_| box_["name"].as_str() == Some(name.as_str())),
-        "list did not find {name}: {listed:?}"
+    let line = listed
+        .iter()
+        .find(|box_| box_["name"].as_str() == Some(name.as_str()))
+        .unwrap_or_else(|| panic!("list did not find {name}: {listed:?}"));
+    assert_eq!(
+        line["labels"], up.ready["labels"],
+        "list's labels differ from ready's: {line} vs {}",
+        up.ready
+    );
+    assert_eq!(
+        line["image"]["id"],
+        image_id.as_str(),
+        "list names the wrong image id: {line}"
     );
 
     // `down` removes the box and the owner exits.
@@ -115,6 +154,31 @@ fn box_lifecycle_works_for_a_caller() {
     );
     assert!(up.wait().success(), "box up did not exit cleanly");
 
+    // `down` is idempotent: on the box already gone it exits 0 and prints
+    // nothing on either stream.
+    let second = env
+        .command(binary)
+        .args(["box", "down", &name])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold box down");
+    assert!(
+        second.status.success(),
+        "down on an absent box failed: {}: {}",
+        second.status,
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert!(
+        second.stdout.is_empty(),
+        "down on an absent box printed on stdout: {}",
+        String::from_utf8_lossy(&second.stdout)
+    );
+    assert!(
+        second.stderr.is_empty(),
+        "down on an absent box printed on stderr: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+
     // `exec` on the box `down` removed is pinfold's own absent-box failure:
     // exit 3, not the runtime's error and exit code.
     let absent = box_exec(binary, &env, &name, &["sh", "-c", "exit 0"]);
@@ -125,8 +189,23 @@ fn box_lifecycle_works_for_a_caller() {
     );
 
     // Closing stdin is `down`: the owner prints the final `down` line and
-    // exits 0.
-    let mut again = box_up(binary, &env, &spec, &name);
+    // exits 0. This box names the image without its tag, which the runtime
+    // resolves to the same image.
+    let untagged = image
+        .strip_suffix(":latest")
+        .unwrap_or_else(|| panic!("the default image {image} is not tagged latest"));
+    let untagged_spec = serde_json::json!({
+        "name": name,
+        "image": untagged,
+        "labels": { "dev.example.test": "lifecycle" },
+    });
+    let mut again = box_up(binary, &env, &untagged_spec, &name);
+    assert_eq!(
+        again.ready["image"]["id"],
+        image_id.as_str(),
+        "the tag-less image resolved to another id: {}",
+        again.ready
+    );
     let lines = again.close_stdin();
     let down = lines
         .last()
@@ -141,6 +220,35 @@ fn box_lifecycle_works_for_a_caller() {
         "wrong down reason: {lines:?}"
     );
     assert!(again.wait().success(), "up did not exit 0 for stdin-closed");
+
+    // podman also resolves the image by its id and by its `localhost/` name.
+    // Apple's inspect resolves neither id nor digest; macOS asserts nothing
+    // about these forms.
+    if cfg!(target_os = "linux") {
+        let localhost = format!("localhost/{image}");
+        for reference in [image_id.as_str(), localhost.as_str()] {
+            let spec = serde_json::json!({
+                "name": name,
+                "image": reference,
+                "labels": { "dev.example.test": "lifecycle" },
+            });
+            let mut up = box_up(binary, &env, &spec, &name);
+            assert_eq!(
+                up.ready["image"]["id"],
+                image_id.as_str(),
+                "{reference} resolved to another id: {}",
+                up.ready
+            );
+            assert_eq!(
+                up.ready["labels"]["dev.pinfold.build"],
+                build.as_str(),
+                "{reference} lost the image's build label: {}",
+                up.ready
+            );
+            up.close_stdin();
+            assert!(up.wait().success(), "up did not exit 0 for stdin-closed");
+        }
+    }
 
     // SIGTERM before ready tears down whatever exists and still ends with
     // `down`. `up` writes its `pid` file right after its claim, so after its
