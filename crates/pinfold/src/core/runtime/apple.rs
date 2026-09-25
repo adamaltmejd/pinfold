@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
 use std::path::Path;
-use std::process::{ExitStatus, Stdio};
 
 use serde::Deserialize;
 use tokio::process::Child;
@@ -12,7 +11,7 @@ use tokio::process::Child;
 use crate::core::plan::Plan;
 use crate::core::runtime::{
     BoxInfo, BoxStat, BuildCache, BuildRequest, ImageIdentity, ImageInfo, MemoryStat, PidsStat,
-    Preflight, Runtime, bind, output, run, spawn_error, up_command, user,
+    Preflight, Runtime, inspect, output, parse_json, run, spawn_error,
 };
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
@@ -29,8 +28,21 @@ impl Runtime for Apple {
         proxy_socket: Option<&Path>,
         _preflight: &Preflight,
     ) -> io::Result<Child> {
-        let argv = up_argv(plan, init, proxy_socket);
-        let mut command = up_command(&argv, &mut plan.env.iter(), plan.egress.is_some());
+        let mut extra: Vec<OsString> = vec!["--progress".into(), "none".into()];
+        if proxy_socket.is_some() {
+            // Off-label: the runtime treats the socket as an SSH agent and
+            // forwards it to GUEST_PROXY_SOCKET.
+            extra.push("--ssh".into());
+        }
+        let guest_socket = proxy_socket.map(|_| GUEST_PROXY_SOCKET);
+        let mut command = super::up(
+            "container",
+            plan,
+            init,
+            guest_socket,
+            extra,
+            plan.env.iter(),
+        );
         if let Some(socket) = proxy_socket {
             command.env("SSH_AUTH_SOCK", socket);
         }
@@ -72,16 +84,6 @@ impl Runtime for Apple {
             return Ok(());
         }
         Err(error)
-    }
-
-    fn exec(
-        &self,
-        name: &str,
-        tty: bool,
-        workdir: Option<&Path>,
-        argv: &[String],
-    ) -> io::Result<ExitStatus> {
-        super::exec("container", name, tty, workdir, argv)
     }
 
     /// The limits Apple reports, and null for what the VM cannot answer
@@ -138,28 +140,26 @@ impl Runtime for Apple {
 
     fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
         let json = output(&["container", "image", "list", "--format", "json"])?;
-        parse_images(&json)
+        Ok(parse_images("container image list", &json)?
+            .into_iter()
+            .map(|(image, _)| image)
+            .collect())
     }
 
     fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageIdentity, String>> {
-        let output = std::process::Command::new("container")
-            .args(["image", "inspect", reference])
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|error| spawn_error("container", error))?;
-        if !output.status.success() {
-            return Ok(Err(String::from_utf8_lossy(&output.stderr)
-                .trim()
-                .to_string()));
-        }
+        let json = match inspect("container", reference)? {
+            Ok(json) => json,
+            Err(message) => return Ok(Err(message)),
+        };
         // `image inspect` prints the same entries as `image list`.
-        let image = parse_images(&output.stdout)?
+        let (image, digest) = parse_images("container image inspect", &json)?
             .into_iter()
             .next()
             .ok_or_else(|| io::Error::other("container image inspect returned no image"))?;
         Ok(Ok(ImageIdentity {
             id: image.id,
             labels: image.labels,
+            digest,
         }))
     }
 
@@ -185,8 +185,8 @@ impl Runtime for Apple {
         super::build("container", cache_flags, request)
     }
 
-    fn image_digest(&self, reference: &str) -> io::Result<Option<String>> {
-        super::image_digest("container", reference, parse_digest)
+    fn program(&self) -> &'static str {
+        "container"
     }
 
     fn name(&self) -> &'static str {
@@ -195,10 +195,6 @@ impl Runtime for Apple {
 
     fn isolation(&self) -> &'static str {
         "one VM per box"
-    }
-
-    fn version(&self) -> io::Result<String> {
-        super::cli_version("container")
     }
 }
 
@@ -258,8 +254,7 @@ struct ListedStatus {
 /// Every box `container list` reports, running or not.
 fn containers() -> io::Result<Vec<ListedContainer>> {
     let json = output(&["container", "list", "--all", "--format", "json"])?;
-    serde_json::from_slice(&json)
-        .map_err(|error| io::Error::other(format!("container list returned invalid JSON: {error}")))
+    parse_json("container list", &json)
 }
 
 /// One `container image list --format json` entry, as much as pinfold needs.
@@ -281,6 +276,8 @@ struct ListedImageConfiguration {
 struct ListedImageDescriptor {
     #[serde(default)]
     annotations: BTreeMap<String, String>,
+    /// `sha256:<hex>`.
+    digest: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -299,12 +296,9 @@ struct ListedImageLabels {
     labels: BTreeMap<String, String>,
 }
 
-fn parse_images(json: &[u8]) -> io::Result<Vec<ImageInfo>> {
-    let images: Vec<ListedImage> = serde_json::from_slice(json).map_err(|error| {
-        io::Error::other(format!(
-            "container image list returned invalid JSON: {error}"
-        ))
-    })?;
+/// Parse `what`'s image entries, each with its descriptor's digest.
+fn parse_images(what: &str, json: &[u8]) -> io::Result<Vec<(ImageInfo, Option<String>)>> {
+    let images: Vec<ListedImage> = parse_json(what, json)?;
     Ok(images
         .into_iter()
         .map(|image| {
@@ -315,9 +309,9 @@ fn parse_images(json: &[u8]) -> io::Result<Vec<ImageInfo>> {
             } = image;
             // Build labels are OCI image config labels; a locally built
             // image also carries name annotations on its index descriptor.
-            let mut labels = configuration
+            let (mut labels, digest) = configuration
                 .descriptor
-                .map(|descriptor| descriptor.annotations)
+                .map(|descriptor| (descriptor.annotations, descriptor.digest))
                 .unwrap_or_default();
             for variant in &variants {
                 if let Some(config) = variant
@@ -328,121 +322,12 @@ fn parse_images(json: &[u8]) -> io::Result<Vec<ImageInfo>> {
                     labels.extend(config.labels.clone());
                 }
             }
-            ImageInfo {
+            let image = ImageInfo {
                 id,
                 reference: configuration.name,
                 labels,
-            }
+            };
+            (image, digest)
         })
         .collect())
-}
-
-/// One `container image inspect` entry, as much as pinfold needs.
-#[derive(Deserialize)]
-struct InspectedImage {
-    configuration: InspectedConfiguration,
-}
-
-#[derive(Deserialize)]
-struct InspectedConfiguration {
-    descriptor: InspectedDescriptor,
-}
-
-#[derive(Deserialize)]
-struct InspectedDescriptor {
-    digest: String,
-}
-
-fn parse_digest(json: &[u8]) -> io::Result<Option<String>> {
-    let images: Vec<InspectedImage> = serde_json::from_slice(json).map_err(|error| {
-        io::Error::other(format!(
-            "container image inspect returned invalid JSON: {error}"
-        ))
-    })?;
-    Ok(images
-        .into_iter()
-        .next()
-        .map(|image| image.configuration.descriptor.digest))
-}
-
-/// The `container run` argv for a box, as data.
-///
-/// `init` is a host path; it and its directory are mounted read-only at the
-/// same path, so it is also the path PID 1 runs. When `proxy_socket` is set,
-/// the box carries the socket in over `--ssh` and init relays to the guest
-/// path as its argument.
-fn up_argv(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> Vec<OsString> {
-    let mut argv: Vec<OsString> = vec![
-        "container".into(),
-        "run".into(),
-        "-i".into(),
-        "--progress".into(),
-        "none".into(),
-        "--name".into(),
-        plan.name.clone().into(),
-        "--network".into(),
-        "none".into(),
-        "--cap-drop".into(),
-        "ALL".into(),
-        "--read-only".into(),
-        "--tmpfs".into(),
-        "/tmp".into(),
-        "--user".into(),
-        user(plan),
-    ];
-    if proxy_socket.is_some() {
-        // Off-label: the runtime treats the socket as an SSH agent and
-        // forwards it to GUEST_PROXY_SOCKET.
-        argv.push("--ssh".into());
-    }
-    if let Some(cpus) = plan.cpus {
-        argv.push("--cpus".into());
-        argv.push(cpus.to_string().into());
-    }
-    if let Some(memory) = &plan.memory {
-        argv.push("--memory".into());
-        argv.push(memory.into());
-    }
-    for (key, value) in &plan.labels {
-        argv.push("--label".into());
-        argv.push(format!("{key}={value}").into());
-    }
-    for name in plan.env.keys() {
-        // Names only: `container` reads the value from our environment.
-        argv.push("--env".into());
-        argv.push(name.into());
-    }
-    // Always applied: Node's fetch reads the proxy variables only with this
-    // set.
-    argv.push("--env".into());
-    argv.push("NODE_USE_ENV_PROXY".into());
-    if plan.egress.is_some() {
-        argv.push("--env".into());
-        argv.push("HTTPS_PROXY".into());
-        argv.push("--env".into());
-        argv.push("http_proxy".into());
-    }
-    for mount in &plan.mounts {
-        argv.push("--mount".into());
-        argv.push(bind(&mount.host, &mount.guest, mount.readonly));
-    }
-
-    // The init binary comes from the host and runs as PID 1. box::up refuses
-    // an init without a directory, so the parent is a real directory here.
-    let init_dir = init.parent().unwrap_or(Path::new("/"));
-    argv.push("--mount".into());
-    argv.push(bind(init_dir, init_dir, true));
-    argv.push("--entrypoint".into());
-    argv.push(init.into());
-    argv.push(
-        plan.image
-            .clone()
-            .expect("box up resolves the profile's image before the runtime runs")
-            .into(),
-    );
-    argv.push("init".into());
-    if proxy_socket.is_some() {
-        argv.push(GUEST_PROXY_SOCKET.into());
-    }
-    argv
 }
