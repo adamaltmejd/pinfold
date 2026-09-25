@@ -9,6 +9,13 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
+use crate::core::hex;
+
+/// Hex digits of the name hash in a box's state dir key.
+const BOX_KEY_LENGTH: usize = 16;
+
 /// `$XDG_CONFIG_HOME/pinfold`, else `~/.config/pinfold`.
 pub fn config_dir() -> io::Result<PathBuf> {
     xdg("XDG_CONFIG_HOME", ".config")
@@ -36,10 +43,17 @@ pub fn egress_dir() -> io::Result<PathBuf> {
     Ok(state_dir()?.join("egress"))
 }
 
-/// `$XDG_STATE_HOME/pinfold/boxes/NAME`: the state dir `box up` claims for
-/// box NAME. An empty name is the directory that holds them all.
+/// `$XDG_STATE_HOME/pinfold/boxes/KEY`: the state dir `box up` claims for a
+/// box. KEY is the first 16 hex digits of the sha256 of the name, so the
+/// socket path's length does not depend on the name. An empty name is the
+/// directory that holds them all.
 pub fn box_state_dir(name: &str) -> io::Result<PathBuf> {
-    Ok(state_dir()?.join("boxes").join(name))
+    let boxes = state_dir()?.join("boxes");
+    if name.is_empty() {
+        return Ok(boxes);
+    }
+    let hash = hex(&Sha256::digest(name.as_bytes()));
+    Ok(boxes.join(&hash[..BOX_KEY_LENGTH]))
 }
 
 /// Create `dir` in one step: `fill` writes into a staging sibling, which is

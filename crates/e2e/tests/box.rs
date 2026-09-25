@@ -8,7 +8,7 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -62,9 +62,14 @@ fn box_lifecycle_works_for_a_caller() {
     // `image-missing` on both runtimes, so `box_up` panics on a first line
     // that is not `ready`. On Linux the box named by id is refused the same
     // way.
+    // Sabotage: key the state dir by the name again; the 60-character box
+    // fails at `up` with the socket-length error, so the ready read panics.
     let binary = pinfold();
     let env = TestEnv::new("lifecycle");
-    let name = box_name("lifecycle");
+    // A caller's names can be long. The state dir is keyed by the name's
+    // hash, so 60 characters, past the old socket-path budget, still come
+    // up.
+    let name = format!("{:-<60}", box_name("lifecycle"));
     let label = "dev.example.test=lifecycle";
     let image = default_image(binary, &env);
     let spec = serde_json::json!({
@@ -282,23 +287,18 @@ fn box_lifecycle_works_for_a_caller() {
     // SIGTERM before ready tears down whatever exists and still ends with
     // `down`. `up` writes its `pid` file right after its claim, so after its
     // handlers; a SIGTERM sent right after spawn could meet the default
-    // action instead.
+    // action instead. State dirs are keyed by a hash of the name, so wait on
+    // the owner pid the test knows rather than a path.
     let mut starting = box_up_start(binary, &env, &spec, &[]);
-    let pid = env
-        .state
-        .join("pinfold")
-        .join("boxes")
-        .join(&name)
-        .join("pid");
+    let owner = starting.child.id();
     let deadline = Instant::now() + Duration::from_secs(60);
-    while !pid.exists() {
-        assert!(
-            Instant::now() < deadline,
-            "up never wrote {}",
-            pid.display()
-        );
+    let state = loop {
+        if let Some(state) = find_box_state_dir(&env, owner) {
+            break state;
+        }
+        assert!(Instant::now() < deadline, "up never wrote its pid");
         std::thread::yield_now();
-    }
+    };
     let kill = Command::new("kill")
         .args(["-TERM", &starting.child.id().to_string()])
         .status()
@@ -331,7 +331,6 @@ fn box_lifecycle_works_for_a_caller() {
             .any(|box_| box_["name"].as_str() == Some(name.as_str())),
         "the box survived a SIGTERM before ready: {listed:?}"
     );
-    let state = env.state.join("pinfold").join("boxes").join(&name);
     assert!(
         !state.exists(),
         "a SIGTERM before ready left the state dir: {}",
@@ -1074,12 +1073,12 @@ fn losing_the_owner_fails_closed() {
 
     // The state dir's `pid` now names pid 1, which is alive and which this
     // test cannot signal: pid reuse and EPERM in one write. Only the lock
-    // tells the owner is gone.
+    // tells the owner is gone. State dirs are keyed by a hash of the name,
+    // so the test finds one by the owner it records.
+    let owner = up.pid();
     fs::write(
-        env.state
-            .join("pinfold")
-            .join("boxes")
-            .join(&name)
+        find_box_state_dir(&env, owner)
+            .expect("find the dead owner's state dir")
             .join("pid"),
         "1",
     )
@@ -1087,7 +1086,6 @@ fn losing_the_owner_fails_closed() {
 
     // Pinfold's own liveness test reports the owner gone before prune acts:
     // the box is still listed, with `owner_alive` false.
-    let owner = up.pid();
     let listed = box_list(binary, &env, label);
     let leftover = listed
         .iter()
@@ -2686,14 +2684,32 @@ fn box_name(test: &str) -> String {
     format!("pinfold-e2e-{}-{test}", std::process::id())
 }
 
-/// Assert that the `what` up (`refused` or `failed`) left no state dir for
-/// `name` and no box labeled `label`.
+/// The state dir whose `pid` file names `owner`, if it is there yet. State
+/// dirs are keyed by a hash of the box name, so a test finds one by the
+/// owner it recorded.
+fn find_box_state_dir(env: &TestEnv, owner: u32) -> Option<PathBuf> {
+    let boxes = env.state.join("pinfold").join("boxes");
+    for entry in fs::read_dir(boxes).ok()?.flatten() {
+        let dir = entry.path();
+        if fs::read_to_string(dir.join("pid")).is_ok_and(|text| text.trim() == owner.to_string()) {
+            return Some(dir);
+        }
+    }
+    None
+}
+
+/// Assert that the `what` up (`refused` or `failed`) left no state dir and no
+/// box labeled `label`. State dirs are keyed by a hash of the name, so the
+/// test cannot name one; this test has no live box at any call, so `boxes/`
+/// must be empty.
 fn assert_left_nothing(binary: &Path, env: &TestEnv, name: &str, label: &str, what: &str) {
-    let state = env.state.join("pinfold").join("boxes").join(name);
+    let boxes = env.state.join("pinfold").join("boxes");
+    let leftovers: Vec<PathBuf> = fs::read_dir(&boxes)
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
     assert!(
-        !state.exists(),
-        "the {what} up left a state dir: {}",
-        state.display()
+        leftovers.is_empty(),
+        "the {what} up for {name} left a state dir: {leftovers:?}"
     );
     assert!(
         box_list(binary, env, label).is_empty(),
