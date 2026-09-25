@@ -9,7 +9,7 @@ use std::fs;
 use e2e::{TestEnv, pinfold};
 
 /// A fresh host with no runtime on PATH: `pinfold --version` and `pinfold
-/// box up --help` answer from the binary alone, spawn nothing and leave the
+/// box list --help` answer from the binary alone, spawn nothing and leave the
 /// state dir untouched.
 #[test]
 fn version_needs_no_runtime() {
@@ -19,9 +19,10 @@ fn version_needs_no_runtime() {
     // writes under the state dir, so the stderr and both empty-state
     // assertions fail. Sabotage: print `pinfold 0.0.0` in main.rs's
     // `--version` arm instead of `CARGO_PKG_VERSION`; stdout lacks the
-    // workspace version and the version assertion fails. Sabotage: drop the
-    // `cli::help` call from main.rs; `box up --help` reaches `up`, which
-    // refuses the argument, and its exit assertion fails.
+    // workspace version and the version assertion fails. Sabotage: in
+    // main.rs, answer `--help` after the daily pass instead of before it;
+    // `box list --help` then writes the maintenance state first, and its
+    // empty-state assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("version");
     let empty = env.root.join("empty-path");
@@ -60,14 +61,14 @@ fn version_needs_no_runtime() {
 
     let help = env
         .command(binary)
-        .args(["box", "up", "--help"])
+        .args(["box", "list", "--help"])
         .env("PATH", &empty)
         .output()
-        .expect("run pinfold box up --help");
+        .expect("run pinfold box list --help");
     assert!(
         help.status.success(),
-        "pinfold box up --help failed: {}",
+        "pinfold box list --help failed: {}",
         String::from_utf8_lossy(&help.stderr)
     );
-    assert_eq!(state_entries(), 0, "pinfold box up --help wrote state");
+    assert_eq!(state_entries(), 0, "pinfold box list --help wrote state");
 }

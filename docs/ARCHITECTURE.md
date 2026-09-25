@@ -649,7 +649,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 22 | A caller-owned box cannot write .git | With REPO/.git read-only listed before REPO writable, and safe.directory set by the caller: a worktree write succeeds, git log and git status succeed, and a hook write fails. |
 | 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref and the labels; three builds of one name move latest, and the first build's ref still comes up; a failed build prints its log and makes no image. |
 | 24 | Every build reruns its steps | A second build of one source does not reuse the first's `RUN` layer; on podman it leaves no untagged image. |
-| 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box up --help` exits 0, with no runtime and leaving the state dir untouched. |
+| 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box list --help` exits 0, with no runtime and leaving the state dir untouched. |
 
 Both run in the merge queue on the exact ref being merged: Linux (podman)
 on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm` runners, dispatched by
