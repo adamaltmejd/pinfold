@@ -2,6 +2,8 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 
+use crate::core::plan::Target;
+
 /// The address a host names when it is an IP literal. The bracketed IPv6
 /// form counts too.
 pub fn literal(host: &str) -> Option<IpAddr> {
@@ -127,6 +129,32 @@ fn forbidden_v6(ip: Ipv6Addr) -> Option<&'static str> {
         return Some("multicast");
     }
     None
+}
+
+/// Split an `http://` or `https://` absolute URL into its origin and the
+/// rest, from the path on. The port defaults to the scheme's. An empty
+/// authority or one with userinfo, which would make it ambiguous, is none.
+pub fn absolute_url(url: &str) -> Option<(Target, &str)> {
+    let (scheme, rest) = url.split_once("://")?;
+    let https = if scheme.eq_ignore_ascii_case("https") {
+        true
+    } else if scheme.eq_ignore_ascii_case("http") {
+        false
+    } else {
+        return None;
+    };
+    let (authority, path) = rest.split_at(rest.find(['/', '?', '#']).unwrap_or(rest.len()));
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    let (host, port) = authority_host(authority, if https { 443 } else { 80 })?;
+    let target = Target {
+        https,
+        host: host.to_string(),
+        port,
+        authority: authority.to_string(),
+    };
+    Some((target, path))
 }
 
 /// Split an authority into its host and port, handling a bracketed IPv6

@@ -9,18 +9,11 @@ const MAX_HELLO: usize = 16 * 1024;
 
 const MALFORMED: &str = "malformed clienthello";
 
-/// A ClientHello read from the client.
-pub struct ClientHello {
-    /// The TLS records read, to forward to the server unchanged.
-    pub bytes: Vec<u8>,
-    /// The `host_name` from the SNI extension, when the client sent one.
-    pub sni: Option<String>,
-}
-
 /// Read one ClientHello, ending exactly after the handshake message's last
-/// record, so the tunnel starts where the ClientHello ends. The error is the
-/// refusal's log reason.
-pub fn read_client_hello(reader: &mut impl Read) -> Result<ClientHello, &'static str> {
+/// record, so the tunnel starts where the ClientHello ends, and check that
+/// its SNI names `host`. It returns the TLS records read, to forward to the
+/// server unchanged; the error is the refusal's log reason.
+pub fn read_client_hello(reader: &mut impl Read, host: &str) -> Result<Vec<u8>, &'static str> {
     let mut bytes = Vec::new();
     let mut handshake = Vec::new();
     loop {
@@ -53,8 +46,11 @@ pub fn read_client_hello(reader: &mut impl Read) -> Result<ClientHello, &'static
         return Err("not a clienthello");
     }
     let length = handshake_length(&handshake);
-    let sni = parse_sni(&handshake[4..4 + length])?;
-    Ok(ClientHello { bytes, sni })
+    match parse_sni(&handshake[4..4 + length])? {
+        None => Err("sni missing"),
+        Some(sni) if !sni.eq_ignore_ascii_case(host) => Err("sni mismatch"),
+        Some(_) => Ok(bytes),
+    }
 }
 
 /// The three-byte handshake message length.

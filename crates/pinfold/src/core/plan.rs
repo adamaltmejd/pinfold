@@ -91,7 +91,8 @@ pub struct Header {
     pub prefix: String,
 }
 
-/// An injecting route's `to`, parsed.
+/// An absolute URL's origin, parsed: an injecting route's `to`, or a plain
+/// HTTP request's target.
 #[derive(Debug, Clone)]
 pub struct Target {
     pub https: bool,
@@ -150,29 +151,15 @@ impl Inject {
 /// Parse `http(s)://host[:port]`, with at most a trailing `/`. No userinfo,
 /// path, query or fragment.
 fn parse_target(to: &str) -> Option<Target> {
-    let (scheme, rest) = to.split_once("://")?;
-    let https = if scheme.eq_ignore_ascii_case("https") {
-        true
-    } else if scheme.eq_ignore_ascii_case("http") {
-        false
-    } else {
-        return None;
-    };
-    let authority = rest.strip_suffix('/').unwrap_or(rest);
-    if authority.is_empty() || authority.contains(['/', '?', '#', '@']) {
+    let (target, path) = network::absolute_url(to)?;
+    if !path.is_empty() && path != "/" {
         return None;
     }
-    let (host, port) = network::authority_host(authority, if https { 443 } else { 80 })?;
     // The host is the TLS server name, so it must be one.
-    if https && rustls::pki_types::ServerName::try_from(host).is_err() {
+    if target.https && rustls::pki_types::ServerName::try_from(target.host.as_str()).is_err() {
         return None;
     }
-    Some(Target {
-        https,
-        host: host.to_string(),
-        port,
-        authority: authority.to_string(),
-    })
+    Some(target)
 }
 
 /// An HTTP token that pinfold's own framing does not own.
