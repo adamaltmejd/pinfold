@@ -254,22 +254,22 @@ pub fn untagged_images() -> usize {
 
 /// The stable ref of the built-in default profile's image, built once per
 /// suite run. Every box and `pinfold pi` run starts from it.
-pub fn default_image(binary: &Path, env: &TestEnv) -> &'static str {
+pub fn default_image(env: &TestEnv) -> &'static str {
     static IMAGE: OnceLock<()> = OnceLock::new();
     // The runtime store is shared by both test binaries; a stale image is
     // fine, the tests read its labels and run boxes from it.
     const STABLE: &str = "pinfold/profile-default:latest";
     IMAGE.get_or_init(|| {
         if image_id(STABLE).is_none() {
-            build_profile(binary, env, "default");
+            build_profile(env, "default");
         }
     });
     STABLE
 }
 
 /// Run `pinfold build --profile NAME` and assert it succeeded.
-pub fn build_profile(binary: &Path, env: &TestEnv, name: &str) {
-    run_ok(env.command(binary).args(["build", "--profile", name]));
+pub fn build_profile(env: &TestEnv, name: &str) {
+    run_ok(env.command(pinfold()).args(["build", "--profile", name]));
 }
 
 /// Write a user profile's Containerfile under the test's config dir and
@@ -356,9 +356,9 @@ pub fn assert_ok(output: &ExecOutput, what: &str) {
     assert_eq!(output.code, 0, "{what} failed: {}", output.stderr);
 }
 
-pub fn box_exec(binary: &Path, env: &TestEnv, name: &str, argv: &[&str]) -> ExecOutput {
+pub fn box_exec(env: &TestEnv, name: &str, argv: &[&str]) -> ExecOutput {
     let output = env
-        .command(binary)
+        .command(pinfold())
         .args(["box", "exec", name, "--"])
         .args(argv)
         .output()
@@ -371,20 +371,23 @@ pub fn box_exec(binary: &Path, env: &TestEnv, name: &str, argv: &[&str]) -> Exec
 }
 
 /// Run `curl -sS --max-time SECONDS ARGS...` in the box.
-pub fn curl(binary: &Path, env: &TestEnv, name: &str, seconds: &str, args: &[&str]) -> ExecOutput {
+pub fn curl(env: &TestEnv, name: &str, seconds: &str, args: &[&str]) -> ExecOutput {
     let mut argv = vec!["curl", "-sS", "--max-time", seconds];
     argv.extend_from_slice(args);
-    box_exec(binary, env, name, &argv)
+    box_exec(env, name, &argv)
 }
 
-pub fn box_list(binary: &Path, env: &TestEnv, label: &str) -> Vec<serde_json::Value> {
-    let output = run_ok(env.command(binary).args(["box", "list", "--label", label]));
+pub fn box_list(env: &TestEnv, label: &str) -> Vec<serde_json::Value> {
+    let output = run_ok(
+        env.command(pinfold())
+            .args(["box", "list", "--label", label]),
+    );
     json_lines(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// Run `box stat` on a live box and parse its one JSON object.
-pub fn box_stat(binary: &Path, env: &TestEnv, name: &str) -> serde_json::Value {
-    let output = run_ok(env.command(binary).args(["box", "stat", name]));
+pub fn box_stat(env: &TestEnv, name: &str) -> serde_json::Value {
+    let output = run_ok(env.command(pinfold()).args(["box", "stat", name]));
     serde_json::from_slice(&output.stdout).expect("stat output is one JSON object")
 }
 
