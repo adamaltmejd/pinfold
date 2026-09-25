@@ -311,7 +311,12 @@ pub fn down(name: &str) -> io::Result<()> {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
-    runtime().down(name)?;
+    // No box can hold the empty name, and podman refuses it ("name or ID
+    // cannot be empty"), so an empty name is an absent box and the runtime
+    // is never asked.
+    if !name.is_empty() {
+        runtime().down(name)?;
+    }
     let _ = fs::remove_dir_all(&state);
     Ok(())
 }
