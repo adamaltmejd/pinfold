@@ -1,7 +1,5 @@
-//! The CONNECT SNI check's ClientHello parser.
-//!
-//! Small and ours: the proxy carries no TLS dependency. Only the SNI is
-//! read; the exact bytes are returned to be forwarded unchanged.
+//! The CONNECT SNI check's ClientHello parser. Only the SNI is read; the
+//! exact bytes are returned to be forwarded unchanged.
 
 use std::io::Read;
 
@@ -18,7 +16,6 @@ pub struct ClientHello {
 }
 
 /// Why a ClientHello could not be read.
-#[derive(Debug)]
 pub enum HelloError {
     /// The client did not start with a TLS handshake record.
     NotTls,
@@ -92,23 +89,17 @@ fn handshake_length(handshake: &[u8]) -> usize {
 /// The SNI host name, when the ClientHello carries one.
 fn parse_sni(hello: &[u8]) -> Result<Option<String>, HelloError> {
     let mut cursor = Cursor::new(hello);
-    cursor.take(2)?; // legacy_version
-    cursor.take(32)?; // random
-    let session = cursor.length_u8()?;
-    cursor.take(session)?;
-    let suites = cursor.length_u16()?;
-    cursor.take(suites)?;
-    let methods = cursor.length_u8()?;
-    cursor.take(methods)?;
+    cursor.take(34)?; // legacy_version, random
+    cursor.vec_u8()?; // session id
+    cursor.vec_u16()?; // cipher suites
+    cursor.vec_u8()?; // compression methods
     if cursor.is_empty() {
         return Ok(None);
     }
-    let extensions = cursor.length_u16()?;
-    let mut extensions = Cursor::new(cursor.take(extensions)?);
+    let mut extensions = Cursor::new(cursor.vec_u16()?);
     while !extensions.is_empty() {
         let kind = extensions.u16()?;
-        let length = extensions.length_u16()?;
-        let data = extensions.take(length)?;
+        let data = extensions.vec_u16()?;
         if kind == 0 {
             return server_name(data);
         }
@@ -119,12 +110,10 @@ fn parse_sni(hello: &[u8]) -> Result<Option<String>, HelloError> {
 /// The `host_name` from one server_name extension.
 fn server_name(data: &[u8]) -> Result<Option<String>, HelloError> {
     let mut cursor = Cursor::new(data);
-    let list = cursor.length_u16()?;
-    let mut list = Cursor::new(cursor.take(list)?);
+    let mut list = Cursor::new(cursor.vec_u16()?);
     while !list.is_empty() {
         let kind = list.u8()?;
-        let length = list.length_u16()?;
-        let name = list.take(length)?;
+        let name = list.vec_u16()?;
         if kind == 0 {
             let name = std::str::from_utf8(name).map_err(|_| HelloError::Malformed)?;
             return Ok(Some(name.to_string()));
@@ -163,12 +152,16 @@ impl<'a> Cursor<'a> {
         Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
     }
 
-    fn length_u8(&mut self) -> Result<usize, HelloError> {
-        Ok(usize::from(self.u8()?))
+    /// A vector with a one-byte length prefix.
+    fn vec_u8(&mut self) -> Result<&'a [u8], HelloError> {
+        let length = usize::from(self.u8()?);
+        self.take(length)
     }
 
-    fn length_u16(&mut self) -> Result<usize, HelloError> {
-        Ok(usize::from(self.u16()?))
+    /// A vector with a two-byte length prefix.
+    fn vec_u16(&mut self) -> Result<&'a [u8], HelloError> {
+        let length = usize::from(self.u16()?);
+        self.take(length)
     }
 
     fn is_empty(&self) -> bool {

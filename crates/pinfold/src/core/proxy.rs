@@ -114,7 +114,9 @@ impl Proxy {
 
 /// One box's egress rules: the allowlist and the routes.
 struct Rules {
-    allow: Allow,
+    /// Lowercased allowlist entries: a name, or `.name` for the name and
+    /// its subdomains.
+    allow: Vec<String>,
     /// Lowercased route names mapped to where they lead.
     routes: BTreeMap<String, Upstream>,
     /// The TLS client for `https` routes, with the host's roots. Present when
@@ -158,10 +160,24 @@ impl Rules {
             .any(|upstream| matches!(upstream, Upstream::Inject { target, .. } if target.https));
         let tls = if https { Some(tls_config()?) } else { None };
         Ok(Rules {
-            allow: Allow::new(&egress.allow),
+            allow: egress
+                .allow
+                .iter()
+                .map(|entry| entry.to_ascii_lowercase())
+                .collect(),
             routes,
             tls,
         })
+    }
+
+    fn allows(&self, host: &str) -> bool {
+        let host = host.to_ascii_lowercase();
+        self.allow
+            .iter()
+            .any(|entry| match entry.strip_prefix('.') {
+                Some(name) if !name.is_empty() => host == name || host.ends_with(entry.as_str()),
+                _ => host == *entry,
+            })
     }
 }
 
@@ -177,38 +193,6 @@ fn tls_config() -> io::Result<Arc<ClientConfig>> {
             .with_root_certificates(roots)
             .with_no_client_auth();
     Ok(Arc::new(config))
-}
-
-/// One box's allowlist.
-struct Allow {
-    /// Names that match only themselves.
-    exact: Vec<String>,
-    /// Names that match themselves and any subdomain.
-    suffix: Vec<String>,
-}
-
-impl Allow {
-    fn new(entries: &[String]) -> Allow {
-        let mut exact = Vec::new();
-        let mut suffix = Vec::new();
-        for entry in entries {
-            let entry = entry.to_ascii_lowercase();
-            match entry.strip_prefix('.') {
-                Some(name) if !name.is_empty() => suffix.push(name.to_string()),
-                _ => exact.push(entry),
-            }
-        }
-        Allow { exact, suffix }
-    }
-
-    fn allows(&self, host: &str) -> bool {
-        let host = host.to_ascii_lowercase();
-        self.exact.iter().any(|name| name == &host)
-            || self.suffix.iter().any(|name| {
-                host.strip_suffix(name)
-                    .is_some_and(|prefix| prefix.is_empty() || prefix.ends_with('.'))
-            })
-    }
 }
 
 fn serve(listener: UnixListener, stop: Arc<AtomicBool>, rules: Arc<Rules>, log: PathBuf) {
@@ -247,11 +231,11 @@ fn handle(mut client: UnixStream, rules: &Rules, log: &Path) {
     }
     let head = match read_head(&mut client) {
         Ok(head) => head,
-        Err(HeadError::Timeout) => {
+        Err(error) if timed_out(&error) => {
             record(log, "", "refused", "header timeout");
             return;
         }
-        Err(HeadError::Closed) => return,
+        Err(_) => return,
     };
     if !head_well_formed(&head) {
         return refuse(&mut client, log, "", 400, "ambiguous framing");
@@ -288,7 +272,7 @@ fn connect(client: &mut UnixStream, rules: &Rules, log: &Path, target: &str) {
     if rules.routes.contains_key(&host.to_ascii_lowercase()) {
         return refuse(client, log, host, 403, "route");
     }
-    if !rules.allow.allows(host) {
+    if !rules.allows(host) {
         return refuse(client, log, host, 403, "not allowlisted");
     }
     if port.parse::<u16>() != Ok(443) {
@@ -347,7 +331,7 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, head: &[u8]) {
         route(client, rules, log, &request, upstream);
         return;
     }
-    if !rules.allow.allows(&host) {
+    if !rules.allows(&host) {
         return refuse(client, log, &request.host, 403, "not allowlisted");
     }
     let Some(address) = resolve_checked(client, log, &request.host, &host, 80) else {
@@ -448,7 +432,8 @@ fn dial_tls(
 /// One parsed plain HTTP request head.
 struct Plain {
     method: String,
-    version: &'static str,
+    /// The minor version: httparse yields 0 or 1.
+    version: u8,
     /// Origin-form target for the upstream server.
     target: String,
     /// The authority from the absolute-form target, for the Host header.
@@ -474,11 +459,7 @@ fn parse_plain(head: &[u8]) -> Result<Plain, &'static str> {
         _ => return Err("malformed request"),
     }
     let method = request.method.ok_or("malformed request")?.to_string();
-    let version = match request.version.ok_or("malformed request")? {
-        0 => "HTTP/1.0",
-        1 => "HTTP/1.1",
-        _ => return Err("malformed request"),
-    };
+    let version = request.version.ok_or("malformed request")?;
     let raw_target = request.path.ok_or("malformed request")?;
     let (scheme, rest) = raw_target.split_once("://").ok_or("malformed request")?;
     if !scheme.eq_ignore_ascii_case("http") {
@@ -508,19 +489,17 @@ fn parse_plain(head: &[u8]) -> Result<Plain, &'static str> {
         if header.name.eq_ignore_ascii_case("transfer-encoding") {
             return Err("ambiguous framing");
         }
-        if header.name.eq_ignore_ascii_case("content-length") {
-            if content_length.is_some() {
-                return Err("ambiguous framing");
-            }
-            let value = std::str::from_utf8(header.value).map_err(|_| "malformed request")?;
-            content_length = Some(value.parse::<u64>().map_err(|_| "malformed request")?);
-            forwarded.push((header.name.to_string(), value.to_string()));
-            continue;
+        let length = header.name.eq_ignore_ascii_case("content-length");
+        if length && content_length.is_some() {
+            return Err("ambiguous framing");
         }
         if header.name.eq_ignore_ascii_case("host") || hop_by_hop(header.name) {
             continue;
         }
         let value = std::str::from_utf8(header.value).map_err(|_| "malformed request")?;
+        if length {
+            content_length = Some(value.parse::<u64>().map_err(|_| "malformed request")?);
+        }
         forwarded.push((header.name.to_string(), value.to_string()));
     }
     Ok(Plain {
@@ -578,7 +557,7 @@ fn send(
     let mut head = Vec::with_capacity(256);
     write!(
         head,
-        "{} {} {}\r\n",
+        "{} {} HTTP/1.{}\r\n",
         request.method, request.target, request.version
     )?;
     write!(head, "Host: {host}\r\n")?;
@@ -627,39 +606,28 @@ pub fn hop_by_hop(name: &str) -> bool {
 }
 
 /// Read one request head, ending at the blank line. A bare-LF blank line
-/// also ends the read, so the caller can refuse it instead of blocking.
-fn read_head(client: &mut UnixStream) -> Result<Vec<u8>, HeadError> {
+/// also ends the read, so the caller can refuse it instead of blocking. EOF
+/// and a head over the cap are `UnexpectedEof`; a timeout keeps its kind.
+fn read_head(client: &mut UnixStream) -> io::Result<Vec<u8>> {
     let mut head = Vec::with_capacity(1024);
     let mut byte = [0u8; 1];
     loop {
-        match client.read(&mut byte) {
-            Ok(0) => return Err(HeadError::Closed),
-            Ok(_) => {
-                head.push(byte[0]);
-                if head.ends_with(b"\r\n\r\n") || head.ends_with(b"\n\n") {
-                    return Ok(head);
-                }
-                if head.len() > MAX_HEAD {
-                    return Err(HeadError::Closed);
-                }
-            }
-            Err(error)
-                if error.kind() == io::ErrorKind::WouldBlock
-                    || error.kind() == io::ErrorKind::TimedOut =>
-            {
-                return Err(HeadError::Timeout);
-            }
-            Err(_) => return Err(HeadError::Closed),
+        if client.read(&mut byte)? == 0 || head.len() >= MAX_HEAD {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        head.push(byte[0]);
+        if head.ends_with(b"\r\n\r\n") || head.ends_with(b"\n\n") {
+            return Ok(head);
         }
     }
 }
 
-/// Why the request head could not be read.
-enum HeadError {
-    /// The peer closed or the socket failed.
-    Closed,
-    /// The header timeout expired.
-    Timeout,
+/// Whether a read failed because its socket timeout expired.
+fn timed_out(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
 }
 
 /// A head with only CRLF line endings and no folded header. httparse accepts
@@ -746,10 +714,7 @@ where
                     return;
                 }
             }
-            Err(error)
-                if error.kind() == io::ErrorKind::WouldBlock
-                    || error.kind() == io::ErrorKind::TimedOut =>
-            {
+            Err(error) if timed_out(&error) => {
                 let elapsed = activity
                     .lock()
                     .map_or(Duration::ZERO, |last| last.elapsed());
