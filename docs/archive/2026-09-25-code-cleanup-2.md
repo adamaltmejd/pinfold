@@ -31,6 +31,13 @@ parentheses (5d7a4f2, f896d00).
 
 Gate and host times are not comparable, as the last report noted.
 
+Every push ran the Mac suite first and Linux CI after. One Linux run
+failed: at 4349b93, `the_proxy_refuses_the_tricks`'s plain-HTTP control
+(`curl http://api.github.com/`) timed out with no bytes on the x86
+runner, right after its HTTPS control passed; arm passed, and the next
+commit, the same code, passed on both. A second occurrence is a ticket
+against that block.
+
 ## Step 1
 
 The nine dependencies match the spec's list. Clippy with `dead_code` and
