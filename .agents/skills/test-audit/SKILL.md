@@ -6,7 +6,7 @@ description: Judge pinfold's end-to-end tests — gate a candidate that adds or 
 # /test-audit
 
 The Tests section of AGENTS.md is the policy. This file is what the
-operator does with it, at three moments. The unit throughout is the
+operator does with it, at two moments. The unit throughout is the
 assertion block, because a test is a guarantee row.
 
 ## At approval: the candidate touches a test
