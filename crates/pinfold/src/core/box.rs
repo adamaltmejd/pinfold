@@ -166,11 +166,15 @@ impl Box {
     /// profile, the host's runtime and the image are checked first. Then
     /// `up` claims the name, and only the claim's owner creates anything.
     ///
-    /// With `signals`, SIGTERM and SIGINT are handled from the claim on:
-    /// before ready they remove what the start made and `up` returns
-    /// [`UpError::Signal`]; after ready [`Box::hold`] watches them. Without,
-    /// the caller handles its own.
-    pub async fn up(plan: &Plan, init: &Path, signals: bool) -> Result<Box, UpError> {
+    /// With `signals`, the caller registered SIGTERM and SIGINT before
+    /// reading the spec: before ready they remove what the start made and
+    /// `up` returns [`UpError::Signal`]; after ready [`Box::hold`] watches
+    /// them. Without, the caller handles its own.
+    pub async fn up(
+        plan: &Plan,
+        init: &Path,
+        mut signals: Option<Signals>,
+    ) -> Result<Box, UpError> {
         if init.parent().is_none_or(|parent| parent == Path::new("/")) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -228,9 +232,6 @@ impl Box {
             std::process::id().to_string(),
         );
 
-        // The handlers come before the claim, so a signal from here on tears
-        // down; one before this point finds nothing created.
-        let mut signals = if signals { Some(Signals::new()?) } else { None };
         let (state_dir, lock) = claim(&plan)?;
         match runtime.list() {
             Ok(boxes) if boxes.iter().all(|box_| box_.id != plan.name) => {}
@@ -356,21 +357,22 @@ pub fn down(name: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// SIGTERM and SIGINT, handled by `box up` from its claim to its exit.
-struct Signals {
+/// SIGTERM and SIGINT, handled by `box up` from before its spec is read to
+/// its exit.
+pub struct Signals {
     terminate: Signal,
     interrupt: Signal,
 }
 
 impl Signals {
-    fn new() -> io::Result<Signals> {
+    pub fn new() -> io::Result<Signals> {
         Ok(Signals {
             terminate: signal(SignalKind::terminate())?,
             interrupt: signal(SignalKind::interrupt())?,
         })
     }
 
-    async fn recv(&mut self) {
+    pub async fn recv(&mut self) {
         tokio::select! {
             _ = self.terminate.recv() => {}
             _ = self.interrupt.recv() => {}

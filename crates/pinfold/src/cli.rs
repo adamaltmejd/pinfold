@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use crate::config::Config;
 use crate::core::artifacts;
-use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, UpError};
+use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, Signals, UpError};
 use crate::core::clean;
 use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
 use crate::core::plan::Plan;
@@ -198,85 +198,102 @@ fn up(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(usage("box", "up takes no arguments"));
     }
-    let plan = match Plan::from_reader(io::stdin()) {
-        Ok(plan) => plan,
-        Err(error) => {
-            return Ok(refused(Refusal {
-                box_name: None,
-                reason: RefusalReason::Spec,
-                detail: error.to_string(),
-            }));
-        }
-    };
-    // Every error from here on has removed what the start made; it ends the
-    // stream as one `failed` line.
-    Ok(match hold_up(&plan) {
-        Ok(code) => code,
-        Err(error) => {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "event": "failed",
-                    "box": &plan.name,
-                    "detail": error.to_string(),
-                })
-            );
-            1
-        }
-    })
-}
-
-/// Start the validated box, report it ready, hold it, and print the `down`
-/// line. A refusal prints its own line.
-fn hold_up(plan: &Plan) -> io::Result<i32> {
-    let init = artifacts::init()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let result = runtime.block_on(async {
-        // This process owns the box, so `up` takes SIGTERM and SIGINT.
-        let mut box_ = match Box::up(plan, &init, true).await {
-            Ok(box_) => box_,
-            Err(UpError::Refused(refusal)) => return Ok(refused(refusal)),
-            Err(UpError::Signal) => {
-                println!("{}", down_line(&plan.name, Shutdown::Signal));
+        // This process owns the box, so it takes SIGTERM and SIGINT. The
+        // handlers come before the spec is read, so a signal from the first
+        // instant ends the stream with one `down` line, its box null until
+        // the spec parsed.
+        let mut signals = Signals::new()?;
+        let plan = tokio::select! {
+            biased;
+            () = signals.recv() => {
+                println!("{}", down_line(None, Shutdown::Signal));
                 io::stdout().flush()?;
                 return Ok(0);
             }
-            Err(UpError::Other(error)) => return Err(error),
+            plan = tokio::task::spawn_blocking(|| Plan::from_reader(io::stdin())) => {
+                match plan {
+                    Ok(Ok(plan)) => plan,
+                    Ok(Err(error)) => {
+                        return Ok(refused(Refusal {
+                            box_name: None,
+                            reason: RefusalReason::Spec,
+                            detail: error.to_string(),
+                        }));
+                    }
+                    Err(error) => return Err(io::Error::other(error)),
+                }
+            }
         };
-        println!(
-            "{}",
-            serde_json::json!({
-                "event": "ready",
-                "box": &plan.name,
-                "owner": std::process::id(),
-                "labels": &box_.labels,
-                "image": { "id": &box_.image_id, "ref": &box_.image_ref },
-            })
-        );
-        io::stdout().flush()?;
-        let shutdown = box_.hold().await?;
-        // Teardown is done, so the down line names a box the caller can
-        // start again. It ends the stream.
-        println!("{}", down_line(&plan.name, shutdown));
-        io::stdout().flush()?;
-        Ok(match shutdown {
-            Shutdown::StdinEof | Shutdown::Signal => 0,
-            Shutdown::BoxExited(_) => 1,
-        })
+        // Every error from here on has removed what the start made; it ends
+        // the stream as one `failed` line.
+        match hold_up(&plan, signals).await {
+            Ok(code) => Ok(code),
+            Err(error) => {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "failed",
+                        "box": &plan.name,
+                        "detail": error.to_string(),
+                    })
+                );
+                Ok(1)
+            }
+        }
     });
     // `Box::hold` watches stdin through tokio's blocking pool. A caller that
     // keeps stdin open leaves that read parked, and dropping the runtime
     // waits for it forever. Teardown is done, so leak the read and let the
-    // process exit.
+    // process exit. The spec read above parks the same way when a signal
+    // ends `up` first.
     runtime.shutdown_background();
     result
 }
 
+/// Start the validated box, report it ready, hold it, and print the `down`
+/// line. A refusal prints its own line.
+async fn hold_up(plan: &Plan, signals: Signals) -> io::Result<i32> {
+    let init = artifacts::init()?;
+    let mut box_ = match Box::up(plan, &init, Some(signals)).await {
+        Ok(box_) => box_,
+        Err(UpError::Refused(refusal)) => return Ok(refused(refusal)),
+        Err(UpError::Signal) => {
+            println!("{}", down_line(Some(&plan.name), Shutdown::Signal));
+            io::stdout().flush()?;
+            return Ok(0);
+        }
+        Err(UpError::Other(error)) => return Err(error),
+    };
+    println!(
+        "{}",
+        serde_json::json!({
+            "event": "ready",
+            "box": &plan.name,
+            "owner": std::process::id(),
+            "labels": &box_.labels,
+            "image": { "id": &box_.image_id, "ref": &box_.image_ref },
+        })
+    );
+    io::stdout().flush()?;
+    let shutdown = box_.hold().await?;
+    // Teardown is done, so the down line names a box the caller can
+    // start again. It ends the stream.
+    println!("{}", down_line(Some(&plan.name), shutdown));
+    io::stdout().flush()?;
+    Ok(match shutdown {
+        Shutdown::StdinEof | Shutdown::Signal => 0,
+        Shutdown::BoxExited(_) => 1,
+    })
+}
+
 /// The one `down` line that ends `up`'s stream: why the box ended, after
-/// teardown. Only `exited` carries a detail, the init's exit status.
-fn down_line(name: &str, shutdown: Shutdown) -> serde_json::Value {
+/// teardown. Only `exited` carries a detail, the init's exit status. `name`
+/// is null when a signal ended `up` before its spec parsed.
+fn down_line(name: Option<&str>, shutdown: Shutdown) -> serde_json::Value {
     let mut line = serde_json::json!({
         "event": "down",
         "box": name,

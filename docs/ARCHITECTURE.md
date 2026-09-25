@@ -186,7 +186,8 @@ The caller keeps `up`'s stdin open for the life of the box; closing it is
 `REASON` is one of `stdin-closed`, `signal` (SIGTERM or SIGINT, which is
 also what `box down` sends), or `exited` (the box's init ended on its own;
 `detail` carries its exit status). `up` exits 0 for `stdin-closed` and
-`signal`, and 1 for `exited`.
+`signal`, and 1 for `exited`; `box` is null when a signal ended `up` before
+its spec parsed.
 
 When `up` refuses, it prints one JSON line instead of `ready` and exits 1:
 
