@@ -182,7 +182,7 @@ fn up(args: &[OsString]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(usage(BOX_USAGE, "up takes no arguments"));
     }
-    let mut plan = match Plan::from_reader(io::stdin()) {
+    let plan = match Plan::from_reader(io::stdin()) {
         Ok(plan) => plan,
         Err(error) => {
             return Ok(refused(Refusal {
@@ -192,10 +192,6 @@ fn up(args: &[OsString]) -> io::Result<i32> {
             }));
         }
     };
-    // The owner label names this process to `list`. For a state dir other
-    // than this one, it is also how the owner is judged alive.
-    plan.labels
-        .insert(clean::OWNER_LABEL.into(), std::process::id().to_string());
     // Every error from here on has removed what the start made; it ends the
     // stream as one `failed` line.
     Ok(match hold_up(&plan) {

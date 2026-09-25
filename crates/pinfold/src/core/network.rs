@@ -20,7 +20,6 @@ pub fn literal(host: &str) -> Option<IpAddr> {
 }
 
 /// Why a name could not be dialed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolveError {
     /// The name did not resolve.
     Unresolved,
@@ -36,15 +35,12 @@ pub fn resolve(host: &str, port: u16) -> Result<SocketAddr, ResolveError> {
         .to_socket_addrs()
         .map_err(|_| ResolveError::Unresolved)?
         .collect();
-    let Some(first) = addresses.first().copied() else {
-        return Err(ResolveError::Unresolved);
-    };
     for address in &addresses {
         if let Some(reason) = forbidden(address.ip()) {
             return Err(ResolveError::Forbidden(reason));
         }
     }
-    Ok(first)
+    addresses.first().copied().ok_or(ResolveError::Unresolved)
 }
 
 /// Whether an address must not be dialed, and the log reason.
@@ -102,19 +98,12 @@ fn forbidden_v6(ip: Ipv6Addr) -> Option<&'static str> {
     if ip.is_unspecified() {
         return Some("unspecified");
     }
+    // IPv4-mapped ::ffff:0:0/96 and IPv4-compatible ::/96 dial the IPv4
+    // address in the last 32 bits.
+    if let Some(v4) = ip.to_ipv4() {
+        return forbidden_v4(v4);
+    }
     let octets = ip.octets();
-    // IPv4-mapped ::ffff:0:0/96 dials the IPv4 address in the last 32 bits.
-    if octets[..10] == [0; 10] && octets[10] == 0xff && octets[11] == 0xff {
-        return forbidden_v4(Ipv4Addr::new(
-            octets[12], octets[13], octets[14], octets[15],
-        ));
-    }
-    // IPv4-compatible ::/96 dials the IPv4 address in the last 32 bits.
-    if octets[..12] == [0; 12] {
-        return forbidden_v4(Ipv4Addr::new(
-            octets[12], octets[13], octets[14], octets[15],
-        ));
-    }
     // NAT64 well-known prefix 64:ff9b::/96 dials the IPv4 address in the
     // last 32 bits.
     if octets[..12] == [0x00, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0] {
@@ -131,20 +120,17 @@ fn forbidden_v6(ip: Ipv6Addr) -> Option<&'static str> {
     if octets[..6] == [0x00, 0x64, 0xff, 0x9b, 0x00, 0x01] {
         return Some("nat64 local-use");
     }
-    // fc00::/7.
-    if ip.segments()[0] & 0xfe00 == 0xfc00 {
+    if ip.is_unique_local() {
         return Some("private");
     }
-    // fe80::/10.
-    if ip.segments()[0] & 0xffc0 == 0xfe80 {
+    if ip.is_unicast_link_local() {
         return Some("link-local");
     }
     // fec0::/10.
     if ip.segments()[0] & 0xffc0 == 0xfec0 {
         return Some("site-local");
     }
-    // ff00::/8.
-    if octets[0] == 0xff {
+    if ip.is_multicast() {
         return Some("multicast");
     }
     None

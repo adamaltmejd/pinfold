@@ -1,6 +1,6 @@
 //! The box spec: the JSON a caller gives `box up`, parsed into a [`Plan`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::io::Read;
@@ -226,7 +226,7 @@ impl Plan {
             .into_iter::<Plan>()
             .next()
             .ok_or_else(|| PlanError::Invalid("no box spec on stdin".into()))?
-            .map_err(PlanError::from)
+            .map_err(|error| PlanError::Invalid(error.to_string()))
     }
 
     /// Check a parsed spec.
@@ -240,6 +240,9 @@ impl Plan {
         if self.image.as_deref() == Some("") {
             return Err(PlanError::Invalid("image must not be empty".into()));
         }
+        // Two mounts at one guest path would be ambiguous: the runtime
+        // applies both, and whichever comes last shadows the other.
+        let mut guests = BTreeSet::new();
         if self.image.is_none() && self.profile.is_none() {
             return Err(PlanError::Invalid(
                 "a box spec needs an image or a profile".into(),
@@ -267,6 +270,12 @@ impl Plan {
                         path
                     )));
                 }
+            }
+            if !guests.insert(mount.guest.as_path()) {
+                return Err(PlanError::Invalid(format!(
+                    "two mounts name the same guest path {}",
+                    mount.guest.display()
+                )));
             }
         }
         for (name, value) in &self.env {
@@ -327,7 +336,6 @@ fn valid_name(name: &str) -> bool {
 /// Why a box spec was refused.
 #[derive(Debug)]
 pub enum PlanError {
-    Json(serde_json::Error),
     Invalid(String),
     MissingEnv(String),
 }
@@ -335,7 +343,6 @@ pub enum PlanError {
 impl fmt::Display for PlanError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PlanError::Json(error) => write!(formatter, "invalid box spec: {error}"),
             PlanError::Invalid(message) => write!(formatter, "invalid box spec: {message}"),
             PlanError::MissingEnv(name) => {
                 write!(formatter, "environment variable {name} is not set")
@@ -344,17 +351,4 @@ impl fmt::Display for PlanError {
     }
 }
 
-impl Error for PlanError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            PlanError::Json(error) => Some(error),
-            PlanError::Invalid(_) | PlanError::MissingEnv(_) => None,
-        }
-    }
-}
-
-impl From<serde_json::Error> for PlanError {
-    fn from(error: serde_json::Error) -> PlanError {
-        PlanError::Json(error)
-    }
-}
+impl Error for PlanError {}

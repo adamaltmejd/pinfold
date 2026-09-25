@@ -146,12 +146,6 @@ fn build_plan(config: &Config, state: &ProjectState, image: &str, git: &Git) -> 
     })?;
     let mut labels = BTreeMap::new();
     labels.insert(clean::PROJECT_LABEL.to_string(), state.id.clone());
-    // Maintenance prunes boxes whose owning process is gone; without the
-    // owner label a live pi box would look like a leftover.
-    labels.insert(
-        clean::OWNER_LABEL.to_string(),
-        std::process::id().to_string(),
-    );
 
     let mut env = BTreeMap::new();
     env.insert("HOME".to_string(), Env::Exact(home.to_string()));

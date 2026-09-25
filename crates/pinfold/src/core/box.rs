@@ -171,11 +171,6 @@ impl Box {
     /// [`UpError::Signal`]; after ready [`Box::hold`] watches them. Without,
     /// the caller handles its own.
     pub async fn up(plan: &Plan, init: &Path, signals: bool) -> Result<Box, UpError> {
-        if !init.is_absolute() {
-            return Err(
-                io::Error::new(io::ErrorKind::InvalidInput, "init path must be absolute").into(),
-            );
-        }
         if init.parent().is_none_or(|parent| parent == Path::new("/")) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -188,17 +183,6 @@ impl Box {
         // or resolved.
         plan.validate()
             .map_err(|error| refused(plan, RefusalReason::Spec, error.to_string()))?;
-
-        // Two mounts at one guest path would be ambiguous: the runtime
-        // applies both, and whichever comes last shadows the other. Refuse
-        // before the claim, naming the path.
-        if let Some(guest) = duplicate_guest(&plan.mounts) {
-            return Err(refused(
-                plan,
-                RefusalReason::Spec,
-                format!("two mounts name the same guest path {}", guest.display()),
-            ));
-        }
 
         // The profile's image, share and home seeds are the box's to apply;
         // the runtime sees the resolved plan. Resolving writes nothing; the
@@ -237,6 +221,13 @@ impl Box {
                 plan.labels.entry(key).or_insert(value);
             }
         }
+        // The owner label names this process to `list` and to Maintenance,
+        // which prunes a box whose owner is gone; for a state dir other than
+        // this one, it is also how the owner is judged alive.
+        plan.labels.insert(
+            clean::OWNER_LABEL.to_string(),
+            std::process::id().to_string(),
+        );
 
         // The handlers come before the claim, so a signal from here on tears
         // down; one before this point finds nothing created.
@@ -313,10 +304,10 @@ impl Box {
     /// Wait until the box exits, stdin closes, or a termination signal
     /// arrives, then stop and remove the box.
     pub async fn hold(&mut self) -> io::Result<Shutdown> {
-        let signals = match &mut self.signals {
-            Some(signals) => signals,
-            None => self.signals.insert(Signals::new()?),
-        };
+        let signals = self
+            .signals
+            .as_mut()
+            .expect("hold follows an up that took the signals");
         let reason = tokio::select! {
             reason = wait_for_shutdown(signals) => reason,
             status = self.child.wait() => status.map(Shutdown::BoxExited),
@@ -590,18 +581,6 @@ async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
     }
 }
 
-/// The first guest path two mounts share, if any.
-fn duplicate_guest(mounts: &[Mount]) -> Option<&Path> {
-    let mut guests: Vec<&Path> = Vec::with_capacity(mounts.len());
-    for mount in mounts {
-        if guests.contains(&mount.guest.as_path()) {
-            return Some(mount.guest.as_path());
-        }
-        guests.push(mount.guest.as_path());
-    }
-    None
-}
-
 /// Fold the spec's harness into the plan: fetch the pinned artifact if it is
 /// not cached, mount it read-only, and set its environment. The spec's own
 /// env wins over the harness defaults.
@@ -610,11 +589,11 @@ fn resolve_harness(plan: &mut Plan) -> io::Result<()> {
         return Ok(());
     }
     let pi = artifacts::pi()?;
-    let dir = pi.parent().ok_or_else(|| {
-        io::Error::other(format!("pi artifact {} has no directory", pi.display()))
-    })?;
     plan.mounts.push(Mount {
-        host: dir.to_path_buf(),
+        host: pi
+            .parent()
+            .expect("the pi artifact is a file")
+            .to_path_buf(),
         guest: PathBuf::from(artifacts::GUEST_PI),
         readonly: true,
     });
@@ -759,9 +738,13 @@ fn home_mount<'a>(plan: &'a Plan, name: &str, home: &Path) -> io::Result<(&'a Mo
 /// outside it.
 fn seed_home(mount: &Mount, relative: &Path, seeds: &[Seed]) -> io::Result<()> {
     let root = open_mount_dir(&mount.host)?;
-    let (home, home_path) = open_seed_path(&root, relative, &mount.host)?;
     for seed in seeds {
-        seed_file(&home, &home_path, &seed.path, &seed.contents)?;
+        seed_file(
+            &root,
+            &mount.host,
+            &relative.join(&seed.path),
+            &seed.contents,
+        )?;
     }
     Ok(())
 }
@@ -773,36 +756,12 @@ fn open_mount_dir(host: &Path) -> io::Result<OwnedFd> {
         .map_err(|error| seed_error(error, &format!("open mount {}", host.display())))
 }
 
-/// Walk `relative` from `dir`, creating missing directories with `mkdirat`
-/// and refusing a symlink at any component. `display` names `dir` in errors.
-fn open_seed_path(
-    dir: &OwnedFd,
-    relative: &Path,
-    display: &Path,
-) -> io::Result<(OwnedFd, PathBuf)> {
-    let mut dir = dir.try_clone()?;
-    let mut current = display.to_path_buf();
-    for component in relative.components() {
-        let Component::Normal(name) = component else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "seed path {} is not a plain directory path",
-                    relative.display()
-                ),
-            ));
-        };
-        current.push(name);
-        dir = open_seed_dir(&dir, name, &current)?;
-    }
-    Ok((dir, current))
-}
-
-/// Write one seed with `openat` and `mkdirat`, following no symlink. Anything
-/// already at the destination, a dangling symlink included, is left alone.
-fn seed_file(root: &OwnedFd, home: &Path, relative: &Path, contents: &[u8]) -> io::Result<()> {
+/// Write one seed at `relative` below `root`, walking it with `openat` and
+/// `mkdirat` and following no symlink. Anything already at the destination,
+/// a dangling symlink included, is left alone. `display` names `root`.
+fn seed_file(root: &OwnedFd, display: &Path, relative: &Path, contents: &[u8]) -> io::Result<()> {
     let mut dir = root.try_clone()?;
-    let mut current = home.to_path_buf();
+    let mut current = display.to_path_buf();
     let mut components = relative.components().peekable();
     while let Some(component) = components.next() {
         let Component::Normal(name) = component else {
