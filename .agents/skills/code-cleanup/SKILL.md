@@ -57,14 +57,20 @@ These answer without judgment. Run them first.
 
 ## 2. Read, one agent per module, in parallel
 
-Launch one read-only agent per module in a single message. Modules: `cli`,
-`core/box`, `core/runtime` (all three files), `core/proxy`, `core/clean`
-with `core/image` and `core/artifacts`, `config` with `dirs`, `trust` and
-`init`, `pi/`, the e2e crate, and the docs (ARCHITECTURE.md, README.md,
-`share/`). Each agent gets ARCHITECTURE.md, AGENTS.md, its files, the
-findings from step 1 that touch them, and the format below. The agent
-hunts what the spec does not ask for, what the platform already does, and
-what is said twice. Its best outcome is a shorter module.
+Do not read the modules yourself. Launch one subagent per module through
+the Agent tool, all in one message so they run concurrently, type
+`general-purpose` (the Explore type locates code and does not audit it),
+told to edit nothing. Modules: `cli`, `core/box`, `core/runtime` (all
+three files), `core/proxy`, `core/clean` with `core/image` and
+`core/artifacts`, `config` with `dirs`, `trust` and `init`, `pi/`, the
+e2e crate, and the docs (ARCHITECTURE.md, README.md, `share/`).
+
+Each prompt carries: the module's file paths; an instruction to read
+ARCHITECTURE.md and AGENTS.md first and the module's files whole; the
+step 1 findings that touch it; and the rest of this section verbatim,
+from "The agent hunts" to the closing `Lean already.` The agent hunts
+what the spec does not ask for, what the platform already does, and what
+is said twice. Its best outcome is a shorter module.
 
 One line per finding, no hedging:
 
