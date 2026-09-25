@@ -8,7 +8,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -222,27 +222,16 @@ fn connect(client: &mut UnixStream, rules: &Rules, log: &Path, target: &str) {
     }
     // The client sends its ClientHello only after the 200, so it is read
     // here and forwarded unchanged once the SNI checks out.
-    let hello = match tls::read_client_hello(client) {
+    let hello = match tls::read_client_hello(client, host) {
         Ok(hello) => hello,
         Err(reason) => {
             record(log, host, "refused", reason);
             return;
         }
     };
-    match hello.sni.as_deref() {
-        None => {
-            record(log, host, "refused", "sni missing");
-            return;
-        }
-        Some(sni) if !sni.eq_ignore_ascii_case(host) => {
-            record(log, host, "refused", "sni mismatch");
-            return;
-        }
-        Some(_) => {}
-    }
     record(log, host, "allowed", "allowlisted");
-    if let Ok(mut server) = TcpStream::connect(address) {
-        if server.write_all(&hello.bytes).is_err() {
+    if let Some(mut server) = dial(address) {
+        if server.write_all(&hello).is_err() {
             return;
         }
         tunnel(client, server, log, host);
@@ -274,11 +263,11 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, request: &httparse:
         return;
     };
     record(log, &request.host, "allowed", "allowlisted");
-    match TcpStream::connect(address) {
-        Ok(mut server) => {
+    match dial(address) {
+        Some(mut server) => {
             let _ = forward(client, &mut server, &request, &request.authority, &[]);
         }
-        Err(_) => {
+        None => {
             let _ = respond(client, 502);
         }
     }
@@ -290,12 +279,12 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, request: &httparse:
 fn route(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain, upstream: &Upstream) {
     let (server, authority, headers) = match upstream {
         Upstream::Address(address) => (
-            dial_address(address.as_str()),
+            dial(address.as_str()),
             request.authority.as_str(),
             [].as_slice(),
         ),
         Upstream::Inject { target, headers } if !target.https => (
-            dial_address((target.host.as_str(), target.port)),
+            dial((target.host.as_str(), target.port)),
             target.authority.as_str(),
             headers.as_slice(),
         ),
@@ -314,7 +303,7 @@ fn route(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain, up
                 let _ = respond(client, 502);
                 return;
             };
-            let _ = forward_tls(client, &mut server, request, &target.authority, headers);
+            let _ = forward(client, &mut server, request, &target.authority, headers);
             return;
         }
     };
@@ -357,8 +346,7 @@ fn dial_tls(
 ) -> Option<StreamOwned<ClientConnection, TcpStream>> {
     let name = ServerName::try_from(host.to_string()).ok()?;
     let mut connection = ClientConnection::new(Arc::clone(config), name).ok()?;
-    let mut server = TcpStream::connect(address).ok()?;
-    server.set_read_timeout(Some(IDLE_TIMEOUT)).ok()?;
+    let mut server = dial(address)?;
     while connection.is_handshaking() {
         connection.complete_io(&mut server).ok()?;
     }
@@ -391,20 +379,10 @@ fn parse_plain(request: &httparse::Request) -> Result<Plain, &'static str> {
     let method = request.method.ok_or("malformed request")?.to_string();
     let version = request.version.ok_or("malformed request")?;
     let raw_target = request.path.ok_or("malformed request")?;
-    let (scheme, rest) = raw_target.split_once("://").ok_or("malformed request")?;
-    if !scheme.eq_ignore_ascii_case("http") {
+    let (url, path) = network::absolute_url(raw_target).ok_or("malformed request")?;
+    if url.https {
         return Err("malformed request");
     }
-    let authority = rest
-        .split(['/', '?', '#'])
-        .next()
-        .ok_or("malformed request")?;
-    // Userinfo would make the authority ambiguous.
-    if authority.is_empty() || authority.contains('@') {
-        return Err("malformed request");
-    }
-    let (host, port) = network::authority_host(authority, 80).ok_or("malformed request")?;
-    let path = &rest[authority.len()..];
     // A fragment is client-side only; a query without a path still needs the
     // origin-form's leading slash.
     let path = path.split('#').next().unwrap_or("");
@@ -436,49 +414,23 @@ fn parse_plain(request: &httparse::Request) -> Result<Plain, &'static str> {
         method,
         version,
         target,
-        authority: authority.to_string(),
-        host: host.to_string(),
-        port,
+        authority: url.authority,
+        host: url.host,
+        port: url.port,
         headers: forwarded,
         content_length: content_length.unwrap_or(0),
     })
 }
 
-/// Forward one parsed request and its Content-Length body, then stream the
-/// response back until the upstream closes. One request per connection.
+/// Forward one parsed request with `host` as its Host header, then its
+/// Content-Length body, and stream the response back until the upstream
+/// closes. One request per connection. Each injected header replaces any
+/// the box sent under the same name. There is no upstream half-close: over
+/// TLS a close_notify before the response would end the exchange, and the
+/// server's close ends the response, with or without its own close_notify.
 fn forward(
     client: &mut UnixStream,
-    server: &mut TcpStream,
-    request: &Plain,
-    host: &str,
-    inject: &[(String, String)],
-) -> io::Result<()> {
-    let _ = server.set_read_timeout(Some(IDLE_TIMEOUT));
-    send(client, server, request, host, inject)?;
-    let _ = server.shutdown(Shutdown::Write);
-    relay(server, client)
-}
-
-/// [`forward`] over TLS. There is no half-close: a close_notify before the
-/// response would end the exchange. The server's close ends the response,
-/// with or without its own close_notify.
-fn forward_tls(
-    client: &mut UnixStream,
-    server: &mut StreamOwned<ClientConnection, TcpStream>,
-    request: &Plain,
-    host: &str,
-    inject: &[(String, String)],
-) -> io::Result<()> {
-    send(client, server, request, host, inject)?;
-    server.flush()?;
-    relay(server, client)
-}
-
-/// Write the request head with `host` as its Host header, then the body.
-/// Each injected header replaces any the box sent under the same name.
-fn send(
-    client: &mut UnixStream,
-    server: &mut impl Write,
+    server: &mut (impl Read + Write),
     request: &Plain,
     host: &str,
     inject: &[(String, String)],
@@ -510,11 +462,7 @@ fn send(
         let mut body = Read::take(&mut *client, request.content_length);
         io::copy(&mut body, server)?;
     }
-    Ok(())
-}
-
-/// Stream the response back until the upstream closes.
-fn relay(server: &mut impl Read, client: &mut UnixStream) -> io::Result<()> {
+    server.flush()?;
     io::copy(server, client)?;
     let _ = client.shutdown(Shutdown::Write);
     Ok(())
@@ -572,70 +520,37 @@ fn head_well_formed(head: &[u8]) -> bool {
         })
 }
 
-/// Resolve a route's address once and connect to the first. A route's
-/// target is a host service, so its address is not checked.
-fn dial_address(address: impl ToSocketAddrs) -> Option<TcpStream> {
+/// Connect to the first address and time its reads out after
+/// `IDLE_TIMEOUT`. Only a route's host service is given a name, resolved
+/// here unchecked; every other caller passes the address it checked.
+fn dial(address: impl ToSocketAddrs) -> Option<TcpStream> {
     let address = address.to_socket_addrs().ok()?.next()?;
-    TcpStream::connect(address).ok()
+    let server = TcpStream::connect(address).ok()?;
+    server.set_read_timeout(Some(IDLE_TIMEOUT)).ok()?;
+    Some(server)
 }
 
-/// The socket calls a tunnel direction needs besides reading and writing.
-trait TunnelSocket {
-    fn set_timeout(&self, timeout: Option<Duration>);
-    fn close(&self, how: Shutdown);
-}
-
-impl TunnelSocket for UnixStream {
-    fn set_timeout(&self, timeout: Option<Duration>) {
-        let _ = self.set_read_timeout(timeout);
-    }
-    fn close(&self, how: Shutdown) {
-        let _ = self.shutdown(how);
-    }
-}
-
-impl TunnelSocket for TcpStream {
-    fn set_timeout(&self, timeout: Option<Duration>) {
-        let _ = self.set_read_timeout(timeout);
-    }
-    fn close(&self, how: Shutdown) {
-        let _ = self.shutdown(how);
-    }
-}
-
-impl<T: TunnelSocket + ?Sized> TunnelSocket for &mut T {
-    fn set_timeout(&self, timeout: Option<Duration>) {
-        (**self).set_timeout(timeout);
-    }
-    fn close(&self, how: Shutdown) {
-        (**self).close(how);
-    }
-}
-
-/// Copy one direction for the life of the tunnel. Every read that moves
-/// bytes stamps the shared activity. A read timeout waits out the rest of
-/// `IDLE_TIMEOUT` while either direction has moved bytes; when none has,
-/// both sockets close and the tunnel is marked idle. EOF or an error
-/// half-closes the peer's write side.
-fn copy_direction<R, W>(mut reader: R, mut writer: W, activity: &Mutex<Instant>, idle: &AtomicBool)
-where
-    R: Read + TunnelSocket,
-    W: Write + TunnelSocket,
-{
+/// Copy one direction of a tunnel until EOF, an error, or idleness, and
+/// return whether it went idle. Every read that moves bytes stamps the
+/// shared activity. A read timeout waits out the rest of `IDLE_TIMEOUT`
+/// through `rearm` while either direction has moved bytes; when none has,
+/// the direction is idle. It never shuts a socket down.
+fn copy_direction(
+    mut reader: impl Read,
+    mut writer: impl Write,
+    rearm: impl Fn(Duration),
+    activity: &Mutex<Instant>,
+) -> bool {
     let mut buffer = [0u8; 8 * 1024];
     loop {
         match reader.read(&mut buffer) {
-            Ok(0) => {
-                writer.close(Shutdown::Write);
-                return;
-            }
+            Ok(0) => return false,
             Ok(n) => {
                 if let Ok(mut last) = activity.lock() {
                     *last = Instant::now();
                 }
                 if writer.write_all(&buffer[..n]).is_err() {
-                    writer.close(Shutdown::Write);
-                    return;
+                    return false;
                 }
             }
             Err(error) if timed_out(&error) => {
@@ -643,45 +558,51 @@ where
                     .lock()
                     .map_or(Duration::ZERO, |last| last.elapsed());
                 let Some(remaining) = IDLE_TIMEOUT.checked_sub(elapsed) else {
-                    idle.store(true, Ordering::SeqCst);
-                    reader.close(Shutdown::Both);
-                    writer.close(Shutdown::Both);
-                    return;
+                    return true;
                 };
-                reader.set_timeout(Some(remaining.max(Duration::from_millis(1))));
+                rearm(remaining.max(Duration::from_millis(1)));
             }
-            Err(_) => {
-                writer.close(Shutdown::Write);
-                return;
-            }
+            Err(_) => return false,
         }
     }
 }
 
-/// Copy both directions for the life of the tunnel. It is idle, and logged
-/// closed, only when neither direction has moved bytes for `IDLE_TIMEOUT`.
-fn tunnel(client: &mut UnixStream, server: TcpStream, log: &Path, host: &str) {
+/// Copy both directions for the life of the tunnel. A direction that ends
+/// shuts its writer down by [`shutdown_after`]. The tunnel is logged closed
+/// idle when either direction went idle, which is only when neither has
+/// moved bytes for `IDLE_TIMEOUT`.
+fn tunnel(client: &UnixStream, server: TcpStream, log: &Path, host: &str) {
     let _ = client.set_read_timeout(Some(IDLE_TIMEOUT));
-    let _ = server.set_read_timeout(Some(IDLE_TIMEOUT));
-    let Ok(client_reader) = client.try_clone() else {
-        return;
-    };
-    let Ok(server_writer) = server.try_clone() else {
-        return;
-    };
-    let activity = Arc::new(Mutex::new(Instant::now()));
-    let idle = Arc::new(AtomicBool::new(false));
-    let up = {
-        let activity = Arc::clone(&activity);
-        let idle = Arc::clone(&idle);
-        thread::spawn(move || {
-            copy_direction(client_reader, server_writer, &activity, &idle);
-        })
-    };
-    copy_direction(server, client, &activity, &idle);
-    let _ = up.join();
-    if idle.load(Ordering::SeqCst) {
+    let activity = Mutex::new(Instant::now());
+    let idle = thread::scope(|scope| {
+        let up = scope.spawn(|| {
+            let rearm = |timeout| {
+                let _ = client.set_read_timeout(Some(timeout));
+            };
+            let idle = copy_direction(client, &server, rearm, &activity);
+            let _ = server.shutdown(shutdown_after(idle));
+            idle
+        });
+        let rearm = |timeout| {
+            let _ = server.set_read_timeout(Some(timeout));
+        };
+        let idle = copy_direction(&server, client, rearm, &activity);
+        let _ = client.shutdown(shutdown_after(idle));
+        up.join().unwrap_or(false) || idle
+    });
+    if idle {
         record(log, host, "closed", "idle timeout");
+    }
+}
+
+/// How a tunnel direction shuts its writer down once it ends: whole when it
+/// went idle, which ends the other direction's read too, else only the
+/// write half.
+fn shutdown_after(idle: bool) -> Shutdown {
+    if idle {
+        Shutdown::Both
+    } else {
+        Shutdown::Write
     }
 }
 
