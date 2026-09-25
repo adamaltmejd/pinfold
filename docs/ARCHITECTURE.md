@@ -451,10 +451,11 @@ pi's two config levels both load in every run:
 
 The default profile's seed settings name its `share/pi` package, rtk and
 ponytail, and set `defaultProjectTrust: "always"`: the box, not pi's prompt,
-is the boundary. Its `share/pi` holds the operating-context extension,
-which writes the box's facts into the system prompt: the
+is the boundary. Its `share/pi` is a pi package: the operating-context
+extension, which writes the box's facts into the system prompt (the
 allowlist from `PINFOLD_ALLOW`, that a 403 is final, and that commits are
-made on the host.
+made on the host), and a `skills/` directory for the profile's skills, live
+and read-only in every box.
 
 The default profile's `pinfold.toml` sets no config, so it gets the
 built-in defaults. `PI_OFFLINE` is unset, so pi's package installs go
