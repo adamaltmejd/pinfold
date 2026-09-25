@@ -12,16 +12,12 @@ harnessfile="$root/crates/pinfold/harnesses.toml"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp" "$containerfile.new" "$harnessfile.new"' EXIT
 
-# The sha256 of stdin.
-sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -d' ' -f1
-}
-
 # Download $1 and print its sha256. The download lands in a file first so a
 # failed curl is fatal instead of hashing an empty stream.
 pin() {
     curl -fsSL -o "$tmp/asset" "$1"
-    sha256 < "$tmp/asset"
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi \
+        < "$tmp/asset" | cut -d' ' -f1
 }
 
 # The value of the first "key": "value" in the pretty-printed JSON $1.
