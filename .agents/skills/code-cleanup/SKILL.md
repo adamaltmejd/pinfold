@@ -181,5 +181,7 @@ the landed net, each commit or ticket and what it removed, Adam's list
 with his answers, and the rejected list with its conditions.
 
 Before a release, the same file then carries the spec pass from AGENTS.md.
-Then bump the workspace version, tag `v<version>` and push the tag; the
-release workflow refuses a tag that does not match the version.
+Then run `scripts/bump-pins.sh`: a release is how pins move, harnesses
+included. Commit the moved pins with the workspace version bump, run the
+Mac suite and wait for CI on the push, then tag `v<version>` and push the
+tag; the release workflow refuses a tag that does not match the version.
