@@ -162,6 +162,21 @@ environment = "host"
 platform = "darwin"
 architecture = "arm64"
 
+# The Linux end-to-end suite, on GitHub's runners. The script pushes the
+# batch head to a queue/<sha> branch, dispatches CI at it, waits for the
+# verdict and deletes the branch, so nothing of the candidate runs on this
+# Mac. Host-stage so it can reach the network and the user's gh login; the
+# fresh HOME is replaced by the real one for git and gh only. If Actions
+# minutes run short, an ephemeral self-hosted runner in a homelab VM takes
+# over by changing the workflow's runs-on; this gate does not change.
+[gates.e2e-linux]
+command = 'h=$(eval echo "~$(id -un)"); HOME="$h" sh scripts/e2e-linux.sh'
+timeout_minutes = 30
+stage = "batch"
+environment = "host"
+platform = "darwin"
+architecture = "arm64"
+
 # Review runs on every candidate whose workflow selects a panel of seats.
 [review]
 # blocking is the priority at which a finding sends the candidate back for
