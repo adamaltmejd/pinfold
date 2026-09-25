@@ -549,8 +549,8 @@ Automatic, never prompting:
 
 ### Git
 
-The box never writes the host's `.git`. `<root>/.git` is mounted read-only
-at its own path, and the mount point cannot be renamed. A `core.hooksPath`
+`<root>/.git` is mounted read-only at its own path, and the mount point
+cannot be renamed. A `core.hooksPath`
 inside the project, as host git resolves it (global config included), is
 read-only too. The agent reads history and diffs;
 commits are made on the host. A caller-owned box protects its repository

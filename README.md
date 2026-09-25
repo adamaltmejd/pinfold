@@ -112,11 +112,8 @@ spec).
 
 ## Configuration
 
-Layers, highest first: the environment, `.pinfold.toml`, the selected
-profile's `pinfold.toml`, built-in defaults. The keys, their environment
-variables and defaults are the table under Configuration in
-[ARCHITECTURE.md](docs/ARCHITECTURE.md#configuration). A list set in a
-layer replaces the lists below it.
+The layers, keys, their environment variables and defaults are under
+Configuration in [ARCHITECTURE.md](docs/ARCHITECTURE.md#configuration).
 
 Credentials enter the box only as `PINFOLD_ENV_<NAME>`; the same table
 says how.
