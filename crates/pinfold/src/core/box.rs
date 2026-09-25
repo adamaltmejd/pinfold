@@ -201,11 +201,13 @@ impl Box {
             )
         })?;
         // The image's identity labels are the box's too: Apple copies no
-        // image label onto a box. A caller spec cannot name this namespace,
-        // so a clash cannot happen.
+        // image label onto a box. Every image also carries the other
+        // families empty, so pinfold's own label (`dev.pinfold.project` for
+        // `pinfold pi`) must win over the image's empty one. A caller spec
+        // cannot name this namespace, so no other clash can happen.
         for (key, value) in identity.labels {
             if key.starts_with("dev.pinfold.") {
-                plan.labels.insert(key, value);
+                plan.labels.entry(key).or_insert(value);
             }
         }
         // The owner label names this process to `list` and to Maintenance,
