@@ -46,9 +46,6 @@ pinfold --help                   print this usage";
 /// The box verbs, which the table above does not spell out.
 const BOX_USAGE: &str = "pinfold box up|exec BOX [--tty] [--workdir DIR] -- argv|stat BOX|down BOX|list --label k=v [--label k]|prune";
 
-/// `doctor` suggests `pinfold clean` above this much measured disk use.
-const CLEAN_SUGGESTION_BYTES: u64 = 20 * 1024 * 1024 * 1024;
-
 /// A verb's process exit code: its own, or 1 after printing
 /// `pinfold VERB: ERROR` on stderr.
 pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
@@ -75,10 +72,10 @@ fn syntax(verb: &str) -> String {
     let prefix = format!("pinfold {verb} ");
     USAGE
         .lines()
-        .filter(|line| line.starts_with(&prefix))
-        .map(|line| line.split("   ").next().unwrap_or(line))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .find(|line| line.starts_with(&prefix))
+        .and_then(|line| line.split("   ").next())
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// Whether `args` hold a `--help`/`-h` before any `--`; if so, print
@@ -430,12 +427,16 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
 }
 
 /// Everything one `clean` pass measures and would remove, measured before
-/// anything is removed. `doctor` measures with it too, and removes nothing.
+/// anything is removed, so `remove` removes exactly what was printed.
+/// `doctor` measures with it too, and removes nothing.
 struct CleanPlan {
-    boxes: clean::Boxes,
+    dead: Vec<clean::DeadBox>,
+    /// Dead boxes' state dirs, leftover socket dirs, unpinned artifact
+    /// versions and old egress logs.
+    automatic: BTreeSet<PathBuf>,
     caches: Vec<PathBuf>,
     stale: Vec<PathBuf>,
-    automatic: u64,
+    automatic_bytes: u64,
     project_caches: u64,
     project_state: u64,
 }
@@ -445,15 +446,14 @@ impl CleanPlan {
     /// project state as `clean --unused` does.
     fn measure(runtime: &dyn Runtime, unused: Option<Duration>) -> io::Result<CleanPlan> {
         let boxes = clean::boxes(runtime)?;
-        let sockets = clean::leftover_socket_dirs()?;
-        let mut box_dirs: BTreeSet<PathBuf> = boxes
+        let mut automatic: BTreeSet<PathBuf> = boxes
             .dead
             .iter()
             .map(|dead| dead.state_dir.clone())
             .collect();
-        box_dirs.extend(sockets);
-        let artifacts = artifacts::unpinned_versions()?;
-        let egress = clean::old_egress_logs()?;
+        automatic.extend(clean::leftover_socket_dirs()?);
+        automatic.extend(artifacts::unpinned_versions()?);
+        automatic.extend(clean::old_egress_logs()?);
 
         let projects = crate::pi::state::state_dirs()?;
         let mut caches = Vec::new();
@@ -474,16 +474,15 @@ impl CleanPlan {
             }
         }
 
-        let automatic = clean::total_bytes(&box_dirs)
-            + clean::total_bytes(&artifacts)
-            + clean::total_bytes(&egress);
+        let automatic_bytes = clean::total_bytes(&automatic);
         let project_caches = clean::total_bytes(&caches);
         let project_state = clean::total_bytes(&stale);
         Ok(CleanPlan {
-            boxes,
+            dead: boxes.dead,
+            automatic,
             caches,
             stale,
-            automatic,
+            automatic_bytes,
             project_caches,
             project_state,
         })
@@ -492,33 +491,30 @@ impl CleanPlan {
     /// The bytes a real `clean` would reclaim, the unmeasured build cache
     /// aside.
     fn total(&self) -> u64 {
-        self.automatic + self.project_caches + self.project_state
+        self.automatic_bytes + self.project_caches + self.project_state
     }
 
     /// List the categories, as `clean` and `doctor` both show them.
     fn print(&self, runtime: &dyn Runtime) {
-        println!("  automatic maintenance: {} B", self.automatic);
+        println!("  automatic maintenance: {} B", self.automatic_bytes);
         println!("  build cache: {}", runtime.build_cache());
         println!("  project caches: {} B", self.project_caches);
         println!("  project state: {} B", self.project_state);
     }
 
     /// Remove everything the plan measured.
-    fn remove(&self, runtime: &dyn Runtime) -> io::Result<()> {
-        for dead in &self.boxes.dead {
+    fn remove(self, runtime: &dyn Runtime) -> io::Result<()> {
+        for dead in &self.dead {
             dead.remove(runtime)?;
         }
-        clean::remove_paths(clean::leftover_socket_dirs()?)?;
-        clean::remove_paths(artifacts::unpinned_versions()?)?;
-        clean::remove_paths(clean::old_egress_logs()?)?;
         runtime.purge_build_cache()?;
-        for cache in &self.caches {
-            fs::remove_dir_all(cache)?;
-        }
-        for dir in &self.stale {
-            fs::remove_dir_all(dir)?;
-        }
-        Ok(())
+        clean::remove_paths(
+            self.automatic
+                .into_iter()
+                .chain(self.caches)
+                .chain(self.stale)
+                .collect(),
+        )
     }
 }
 
@@ -632,7 +628,7 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         Ok(plan) => {
             plan.print(runtime);
             let total = plan.total();
-            if total > CLEAN_SUGGESTION_BYTES {
+            if total > 20 << 30 {
                 println!("  {total} B is over 20 GB; run `pinfold clean`");
             }
         }
@@ -957,10 +953,9 @@ fn profile_new(args: &[String]) -> io::Result<()> {
     profile::check_name("profile", &name)?;
     let project_agent = from_project.as_deref().map(project_agent_dir).transpose()?;
     let source = Profile::load(&from);
-    let target = dirs::config_dir()?.join("profiles").join(&name);
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    let profiles = dirs::config_dir()?.join("profiles");
+    fs::create_dir_all(&profiles)?;
+    let target = profiles.join(&name);
     fs::create_dir(&target).map_err(|error| {
         if error.kind() == io::ErrorKind::AlreadyExists {
             io::Error::new(
@@ -1051,7 +1046,7 @@ fn parse_profile_new(args: &[String]) -> io::Result<(String, String, Option<Path
     let mut name = None;
     let mut from = None;
     let mut from_project = None;
-    let mut args = args.iter();
+    let mut args = args.iter().peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--from" => {
@@ -1064,14 +1059,8 @@ fn parse_profile_new(args: &[String]) -> io::Result<(String, String, Option<Path
             "--from-project" => {
                 // The path is optional; without one, or before another
                 // option, the project root of the current directory.
-                let path = match args.clone().next() {
-                    Some(value) if !value.starts_with("--") => {
-                        args.next();
-                        PathBuf::from(value)
-                    }
-                    _ => PathBuf::from("."),
-                };
-                from_project = Some(path);
+                let path = args.next_if(|value| !value.starts_with("--"));
+                from_project = Some(PathBuf::from(path.map_or(".", String::as_str)));
             }
             option if option.starts_with("--") => {
                 return Err(usage(
