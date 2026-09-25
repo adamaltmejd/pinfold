@@ -1566,6 +1566,9 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // `up` is refused `image-missing`. Sabotage: make `build_id` in
     // core/image.rs return a fixed string; the three builds then share one
     // ref, which names the third build, and the box reads `third`.
+    // Sabotage: report `local_image_id(runtime, &latest)` resolved before
+    // the build; the first build's id is absent and each later build's is
+    // stale, so the `built["id"]` assertion fails.
     let env = TestEnv::new("image-build");
     // The cleanup test's `clean` deletes the runtime's builder; a build
     // racing that deletion fails. Hold the same lock it does, and wait for
@@ -1609,6 +1612,11 @@ fn a_caller_builds_an_image_from_its_own_tree() {
             image_id(&latest),
             image_id(&reference),
             "{latest} does not name the {marker} build"
+        );
+        assert_eq!(
+            built["id"].as_str(),
+            image_id(&reference).as_deref(),
+            "the {marker} built line names another image id"
         );
         refs.push(reference);
     }

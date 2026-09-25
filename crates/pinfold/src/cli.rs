@@ -859,6 +859,7 @@ fn image_build(args: &[String]) -> i32 {
                 "image": name,
                 "ref": built.reference,
                 "latest": built.latest,
+                "id": built.id,
                 "base": built
                     .labels
                     .get(clean::BASE_LABEL)

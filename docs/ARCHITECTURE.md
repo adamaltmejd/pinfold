@@ -131,11 +131,14 @@ pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]�
 stdout; the build's progress never reaches stdout. On success, exit 0:
 
 ```json
-{"event":"built","image":NAME,"ref":"pinfold/image-<NAME>:<build>","latest":"pinfold/image-<NAME>:latest","labels":{…},"base":DIGEST|null}
+{"event":"built","image":NAME,"ref":"pinfold/image-<NAME>:<build>","latest":"pinfold/image-<NAME>:latest","id":ID,"labels":{…},"base":DIGEST|null}
 ```
 
-`labels` is every label the build put on the image. A failed build exits 1
-with the last 40 lines of the runtime's build output:
+`id` is the image's runtime id, the same value a box's `ready` and `list`
+report as `image.id`; it is null when the runtime cannot resolve the built
+ref after a successful build. `labels` is every label the build put on the
+image. A failed build exits 1 with the last 40 lines of the runtime's
+build output:
 
 ```json
 {"event":"failed","image":NAME,"log":[LINE,…]}
@@ -650,7 +653,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, every field is present, and `exec`'d processes carry `oom_score_adj` 1000, so init is never the victim. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
 | 22 | A caller-owned box cannot write .git | With REPO/.git read-only listed before REPO writable, and safe.directory set by the caller: a worktree write succeeds, git log and git status succeed, and a hook write fails. |
-| 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref and the labels; three builds of one name move latest, and the first build's ref still comes up; a failed build prints its log and makes no image. |
+| 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref, the image's id and the labels; three builds of one name move latest, and the first build's ref still comes up; a failed build prints its log and makes no image. |
 | 24 | Every build reruns its steps | A second build of one source does not reuse the first's `RUN` layer; on podman it leaves no untagged image. |
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box list --help` exits 0, with no runtime and leaving the state dir untouched. |
 

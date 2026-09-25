@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::core::r#box::RefusalReason;
 use crate::core::clean;
 use crate::core::profile;
-use crate::core::runtime::{BuildRequest, Runtime, runtime};
+use crate::core::runtime::{BuildRequest, Runtime, local_image_id, runtime};
 use crate::dirs;
 
 /// Where a build's files come from.
@@ -47,6 +47,9 @@ pub struct Built {
     pub reference: String,
     /// The stable ref, `<repository>:latest`, now naming the same image.
     pub latest: String,
+    /// The image's id in the runtime, what a box's `ready` and `list`
+    /// report as `image.id`; `None` when the runtime cannot resolve it.
+    pub id: Option<String>,
     /// Every label the build put on the image.
     pub labels: BTreeMap<String, String>,
 }
@@ -111,9 +114,14 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
     if let Err(error) = clean::keep_two_images(runtime, build.label, build.source) {
         eprintln!("pinfold: maintenance: {error}");
     }
+    // The id a box started from this reference would report as `image.id`.
+    // A runtime that cannot answer it does not fail a build that succeeded;
+    // the built line reports a null id.
+    let id = local_image_id(runtime, &reference).unwrap_or(None);
     Ok(Ok(Built {
         reference,
         latest,
+        id,
         labels,
     }))
 }
