@@ -456,6 +456,22 @@ pub fn box_list(binary: &Path, env: &TestEnv, label: &str) -> Vec<serde_json::Va
     json_lines(&String::from_utf8_lossy(&output.stdout))
 }
 
+/// Run `box stat` on a live box and parse its one JSON object.
+pub fn box_stat(binary: &Path, env: &TestEnv, name: &str) -> serde_json::Value {
+    let output = env
+        .command(binary)
+        .args(["box", "stat", name])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold box stat");
+    assert!(
+        output.status.success(),
+        "box stat failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("stat output is one JSON object")
+}
+
 /// The box's egress log, at the fixed path under pinfold's state dir.
 pub fn egress_log(env: &TestEnv, name: &str) -> PathBuf {
     env.state

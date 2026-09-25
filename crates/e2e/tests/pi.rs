@@ -18,8 +18,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use e2e::{
-    ImageCleanup, TestDir, TestEnv, box_exec, box_list, build_profile, curl, default_image,
-    egress_log_lines, exit_code, git_init, git_status, pinfold, project_home, project_id,
+    ImageCleanup, TestDir, TestEnv, box_exec, box_list, box_stat, build_profile, curl,
+    default_image, egress_log_lines, exit_code, git_init, git_status, pinfold, project_home,
+    project_id,
 };
 
 #[test]
@@ -132,7 +133,9 @@ fn project_state_persists_and_stays_separate() {
     // then share a home, and the assert_ne "two checkouts share a home"
     // fails. Sabotage: seed $HOME on every run instead of only when missing;
     // the edited marker is overwritten and the survives-a-run assertion
-    // fails.
+    // fails. Sabotage: copy every agent entry in `profile new --from-project`
+    // (drop `agent_entry_excluded`); `auth.json` lands in the profile and
+    // its assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("pi-state");
     default_image(binary, &env);
@@ -176,6 +179,33 @@ fn project_state_persists_and_stays_separate() {
     assert!(
         !seeded_b.contains("project-a"),
         "the second project sees the first's marker"
+    );
+
+    // `profile new --from-project` copies the project's agent config, the
+    // edited settings included, and leaves the login behind.
+    let agent_a = home_a.join(".pi/agent");
+    fs::write(agent_a.join("auth.json"), "{\"secret\":true}\n").expect("plant auth.json");
+    let output = env
+        .command(binary)
+        .args(["profile", "new", "from-a", "--from-project"])
+        .arg(a.path())
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold profile new --from-project");
+    assert!(
+        output.status.success(),
+        "pinfold profile new --from-project failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let profile_agent = env.config.join("pinfold/profiles/from-a/home/.pi/agent");
+    assert_eq!(
+        fs::read_to_string(profile_agent.join("settings.json")).expect("read the copied settings"),
+        marker,
+        "the profile did not take the project's settings"
+    );
+    assert!(
+        !profile_agent.join("auth.json").exists(),
+        "the profile took the project's auth.json"
     );
 
     // A deleted seed comes back on the next run.
@@ -358,7 +388,9 @@ fn the_box_cannot_write_git_or_protected_config() {
     // followed, the run starts, and the refusal assertion fails.
     // Sabotage: skip reading `core.hooksPath` in pi::git; the
     // `.husky/_/pre-commit` write succeeds, the hook exists on the host, and
-    // those assertions fail. Sabotage: drop the GIT_CONFIG_* entries from
+    // those assertions fail. Sabotage: ignore the configured `protect` list
+    // in `Git::prepare`; the `tooling/hooks.sh` write succeeds and its
+    // assertion fails. Sabotage: drop the GIT_CONFIG_* entries from
     // the pi box's env. The sabotage bites only while Apple presents the
     // mount top as root-owned; the Y-55 gate saw that on 2026-09-24, when
     // the positive control's `git status` and `git log` exited 128 with
@@ -627,13 +659,42 @@ fn the_box_cannot_write_git_or_protected_config() {
         "the created .vscode was not removed after the run"
     );
 
-    // A project that already has `.vscode/`: its settings stay read-only.
+    // A project that already has `.vscode/`: its settings stay read-only,
+    // and so does a directory the project's `protect` list names.
     let with = TestDir::new(&env, "with-vscode");
     git_init(with.path());
     let settings = with.path().join(".vscode/settings.json");
     fs::create_dir(with.path().join(".vscode")).unwrap();
     fs::write(&settings, "{\"keep\":true}\n").unwrap();
+    let tooling = with.path().join("tooling/hooks.sh");
+    fs::create_dir(with.path().join("tooling")).unwrap();
+    fs::write(&tooling, "#!/bin/sh\n").unwrap();
+    fs::write(
+        with.path().join(".pinfold.toml"),
+        "protect = [\"tooling\"]\n",
+    )
+    .unwrap();
+    allow(binary, &env, with.path());
     let (run, _, name) = PiRpc::start(binary, &env, with.path());
+    let denied = box_exec(
+        binary,
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!("printf 'pwned' > '{}'", tooling.display()),
+        ],
+    );
+    assert_ne!(
+        denied.code, 0,
+        "the box wrote the protected tooling/hooks.sh"
+    );
+    assert!(
+        denied.stderr.contains("Read-only file system"),
+        "the tooling write failed for another reason: {}",
+        denied.stderr
+    );
     let denied = box_exec(
         binary,
         &env,
@@ -659,6 +720,11 @@ fn the_box_cannot_write_git_or_protected_config() {
     assert!(
         with.path().join(".vscode").is_dir(),
         "the existing .vscode was removed"
+    );
+    assert_eq!(
+        fs::read_to_string(&tooling).expect("read tooling/hooks.sh"),
+        "#!/bin/sh\n",
+        "the host's protected tooling/hooks.sh changed"
     );
 
     // A protected path the host planted as a symlink is refused: the runtime
@@ -793,7 +859,9 @@ fn both_pi_config_levels_load_behind_a_route() {
 fn the_highest_layer_sets_the_allowlist() {
     // Sabotage: union DEFAULT_ALLOW under the merged allow in
     // `Config::load`; the default hosts stay in the box's PINFOLD_ALLOW and
-    // npm is let through, so the exact-list assertion fails.
+    // npm is let through, so the exact-list assertion fails. Sabotage: drop
+    // `cpus` and `memory` from the Plan in `build_plan`; the box gets the
+    // runtime's defaults and the memory-limit assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("pi-allow");
     default_image(binary, &env);
@@ -824,11 +892,33 @@ fn the_highest_layer_sets_the_allowlist() {
     );
 
     // A project list replaces the built-in one: the box's allowlist is
-    // exactly the host the file names.
+    // exactly the host the file names. The same file sets the box's
+    // resources.
     let config = project.path().join(".pinfold.toml");
-    fs::write(&config, "allow = [\"api.github.com\"]\n").expect("write .pinfold.toml");
+    fs::write(
+        &config,
+        "allow = [\"api.github.com\"]\ncpus = 2\nmemory = \"1G\"\n",
+    )
+    .expect("write .pinfold.toml");
     allow(binary, &env, project.path());
     let (run, _, name) = PiRpc::start(binary, &env, project.path());
+
+    // `cpus` and `memory` reach the box: stat reports the memory limit, and
+    // the box's cgroup shows the CPU quota, on both runtimes (the Apple
+    // guest kernel exposes it too).
+    let stat = box_stat(binary, &env, &name);
+    assert_eq!(
+        stat["memory"]["limit"].as_u64(),
+        Some(1024 * 1024 * 1024),
+        "the box's memory limit is not the project's 1G: {stat}"
+    );
+    let cpus = box_exec(binary, &env, &name, &["cat", "/sys/fs/cgroup/cpu.max"]);
+    assert_eq!(cpus.code, 0, "reading cpu.max failed: {}", cpus.stderr);
+    assert_eq!(
+        cpus.stdout.trim(),
+        "200000 100000",
+        "the box's cpu quota is not the project's 2 cpus"
+    );
     let project_allow = box_exec(
         binary,
         &env,

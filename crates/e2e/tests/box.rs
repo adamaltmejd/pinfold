@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use e2e::{
-    HttpFixture, ImageCleanup, TestDir, TestEnv, box_exec, box_list, build_profile, curl,
+    HttpFixture, ImageCleanup, TestDir, TestEnv, box_exec, box_list, box_stat, build_profile, curl,
     default_image, egress_log, egress_log_lines, exit_code, git_init, git_status, image_cli,
     image_digest, image_id, image_named, json_lines, labeled_images, pinfold,
     profile_containerfile, project_id, project_state_dir, runtime_images, untagged_images,
@@ -1223,7 +1223,9 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // Sabotage: set only the build's own family label, as before; build 4
     // then counts x1 and x2 as P's newest images and removes b3, so the "b3
     // is still listed" assertion fails, and x's base label carries P's own
-    // base, so the base assertion fails.
+    // base, so the base assertion fails. Sabotage: make `--unused` skip the
+    // live-box check (drop `live_projects` from `CleanPlan::measure`'s
+    // stale test); the live project's state goes and its assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("cleanup");
     // `clean` deletes the runtime's builder, so hold off the other tests'
@@ -1568,6 +1570,29 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert!(
         box_list(binary, &env, dead_label).is_empty(),
         "clean left a box whose owner is gone"
+    );
+
+    // `--unused AGE` removes the state of projects not run for that long,
+    // except one with a live box. Both projects last ran seconds ago, so
+    // `0s` ages them out and only the live one survives.
+    let unused = env
+        .command(binary)
+        .args(["clean", "--unused", "0s"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold clean --unused");
+    assert!(
+        unused.status.success(),
+        "pinfold clean --unused failed: {}",
+        String::from_utf8_lossy(&unused.stderr)
+    );
+    assert!(
+        !other_state.exists(),
+        "clean --unused kept the state of a project that has not run"
+    );
+    assert!(
+        live_state.is_dir(),
+        "clean --unused removed the state of a project with a live box"
     );
 }
 
@@ -2074,16 +2099,26 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
         "the box's environment holds the value"
     );
 
-    // An https route reaches api.github.com over TLS.
+    // An https route reaches api.github.com over TLS. GitHub's answer is the
+    // proof, whatever its status: its runners are sometimes rate-limited to
+    // a 403, and a failed TLS dial would be the proxy's 502 with no GitHub
+    // header at all.
     let github = curl(
         binary,
         &env,
         &name,
         "20",
-        &["-o", "/dev/null", "-w", "%{http_code}", "http://gh/"],
+        &["-o", "/dev/null", "-D", "-", "http://gh/"],
     );
     assert_eq!(github.code, 0, "the https route failed: {}", github.stderr);
-    assert_eq!(github.stdout, "200", "the https route answered");
+    assert!(
+        github
+            .stdout
+            .to_ascii_lowercase()
+            .contains("x-github-request-id"),
+        "the https route did not reach GitHub: {}",
+        github.stdout
+    );
 
     // The log names the routes and never the value.
     let log = fs::read_to_string(egress_log(&env, &name)).expect("read egress log");
@@ -2723,22 +2758,6 @@ fn box_up_refused(
     let line = starting.first_line();
     let status = starting.child.wait().expect("wait for box up");
     (exit_code(status), line)
-}
-
-/// Run `box stat` on a live box and parse its one JSON object.
-fn box_stat(binary: &Path, env: &TestEnv, name: &str) -> serde_json::Value {
-    let output = env
-        .command(binary)
-        .args(["box", "stat", name])
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold box stat");
-    assert!(
-        output.status.success(),
-        "box stat failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("stat output is one JSON object")
 }
 
 /// The test's box name, unique to this run.
