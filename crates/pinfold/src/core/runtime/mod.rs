@@ -217,26 +217,45 @@ pub trait Runtime: Sync {
     /// Stop and remove the box.
     fn down(&self, name: &str) -> io::Result<()>;
 
-    /// Run a command in a running box with inherited stdio. Callers wrap
-    /// `argv` with [`exec_through_init`] first, so the box's init raises its
-    /// `oom_score_adj` before exec'ing it.
+    /// Run `argv` in a running box with inherited stdio, through the box's
+    /// init: init raises its own `oom_score_adj` to 1000 and then becomes
+    /// `argv`, so the kernel's OOM killer takes a box process before init.
+    /// `init` is the host path `up` mounts at the same guest path. The
+    /// process inherits the run's user, so box-created files stay the host
+    /// user's.
     fn exec(
         &self,
         name: &str,
+        init: &Path,
         tty: bool,
         workdir: Option<&Path>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
         let program = self.program();
-        let argv = exec_argv(program, name, tty, workdir, argv);
         let mut command = std::process::Command::new(program);
-        command.args(&argv[1..]);
-        if !tty {
+        command.args(["exec", "-i"]);
+        if tty {
+            // Keep the host's terminal identity: the runtime otherwise
+            // reports its own `TERM`.
+            command.arg("-t");
+            for variable in ["TERM", "COLORTERM"] {
+                if let Ok(value) = std::env::var(variable) {
+                    command.arg("--env").arg(format!("{variable}={value}"));
+                }
+            }
+        } else {
             // Without a TTY the runtime's exec gets its own process group, so
             // a terminal signal reaches pinfold and not the exec.
             command.process_group(0);
         }
+        if let Some(dir) = workdir {
+            command.arg("--workdir").arg(dir);
+        }
         command
+            .arg(name)
+            .arg(init)
+            .args(["init", "exec", "--"])
+            .args(argv)
             .status()
             .map_err(|error| spawn_error(program, error))
     }
@@ -299,21 +318,6 @@ pub trait Runtime: Sync {
         let stdout = output(&[self.program(), "--version"])?;
         Ok(String::from_utf8_lossy(&stdout).trim().to_string())
     }
-}
-
-/// The argv that runs `argv` in a box through its init: init raises its own
-/// `oom_score_adj` to 1000 and then becomes `argv`, so the kernel's OOM
-/// killer takes a box process before init. `init` is the host path
-/// `up` mounts at the same guest path and runs as `<init> init`, so the
-/// composed command also carries the binary's `init` verb.
-pub fn exec_through_init(init: &Path, argv: &[String]) -> Vec<String> {
-    let mut wrapped = Vec::with_capacity(argv.len() + 4);
-    wrapped.push(init.to_string_lossy().into_owned());
-    wrapped.push("init".to_string());
-    wrapped.push("exec".to_string());
-    wrapped.push("--".to_string());
-    wrapped.extend_from_slice(argv);
-    wrapped
 }
 
 /// The attached `<program> run` command that owns a box: stdin and stdout
@@ -407,39 +411,6 @@ fn up<'a>(
         .arg("init")
         .args(guest_socket);
     command
-}
-
-/// The `<program> exec` argv, as data.
-///
-/// The process inherits the run's user, so box-created files stay the host
-/// user's. With a TTY, keep the host's terminal identity: the runtime
-/// otherwise reports its own `TERM`.
-fn exec_argv(
-    program: &str,
-    name: &str,
-    tty: bool,
-    workdir: Option<&Path>,
-    argv: &[String],
-) -> Vec<OsString> {
-    let mut args: Vec<OsString> = vec![program.into(), "exec".into(), "-i".into()];
-    if tty {
-        args.push("-t".into());
-        for variable in ["TERM", "COLORTERM"] {
-            if let Ok(value) = std::env::var(variable) {
-                args.push("--env".into());
-                args.push(format!("{variable}={value}").into());
-            }
-        }
-    }
-    if let Some(dir) = workdir {
-        args.push("--workdir".into());
-        args.push(dir.as_os_str().to_os_string());
-    }
-    args.push(name.into());
-    for arg in argv {
-        args.push(OsString::from(arg));
-    }
-    args
 }
 
 /// Build `request` with `program`; `cache_flags` is how that runtime spells

@@ -17,7 +17,7 @@ use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
 use crate::core::plan::Plan;
 use crate::core::profile::{self, Profile};
 use crate::core::runtime::{
-    BoxInfo, ImageStatus, Runtime, exec_through_init, image_status, local_image_id, podman, runtime,
+    BoxInfo, ImageStatus, Runtime, image_status, local_image_id, podman, runtime,
 };
 use crate::dirs;
 use crate::pi::launch::utf8;
@@ -137,7 +137,7 @@ pub fn attach(args: &[String]) -> io::Result<i32> {
     let name = select_box(&boxes, box_name)?;
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
     let init = artifacts::init()?;
-    let status = runtime.exec(&name, tty, Some(&cwd), &exec_through_init(&init, &argv))?;
+    let status = runtime.exec(&name, &init, tty, Some(&cwd), &argv)?;
     Ok(exit_code(status))
 }
 
@@ -326,12 +326,7 @@ fn exec(args: &[String]) -> io::Result<i32> {
     // for callers that drive pinfold through their own pty.
     let tty = tty || (io::stdin().is_terminal() && io::stdout().is_terminal());
     let init = artifacts::init()?;
-    let status = runtime.exec(
-        &name,
-        tty,
-        workdir.as_deref(),
-        &exec_through_init(&init, &argv),
-    )?;
+    let status = runtime.exec(&name, &init, tty, workdir.as_deref(), &argv)?;
     Ok(exit_code(status))
 }
 

@@ -15,7 +15,7 @@ use crate::core::artifacts::{self, GUEST_PI};
 use crate::core::r#box::{Box, RefusalReason, Signals, UpError};
 use crate::core::clean;
 use crate::core::plan::{Egress, Env, HARNESS_PI, Mount, Plan};
-use crate::core::runtime::{ImageStatus, exec_through_init, image_status, runtime};
+use crate::core::runtime::{ImageStatus, image_status, runtime};
 use crate::pi::git::{Git, git};
 use crate::pi::state::{self, canonical, project_id};
 use crate::trust;
@@ -202,7 +202,6 @@ fn run_box(plan: &Plan, cwd: &Path, args: &[String]) -> io::Result<i32> {
     let argv: Vec<String> = std::iter::once(format!("{GUEST_PI}/pi"))
         .chain(args.iter().cloned())
         .collect();
-    let command = exec_through_init(&init, &argv);
     let (name, workdir) = (plan.name.clone(), cwd.to_path_buf());
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
     let box_runtime = runtime();
@@ -222,7 +221,7 @@ fn run_box(plan: &Plan, cwd: &Path, args: &[String]) -> io::Result<i32> {
             Err(error) => return Err(error.into()),
         };
         let exec = tokio::task::spawn_blocking(move || {
-            box_runtime.exec(&name, tty, Some(&workdir), &command)
+            box_runtime.exec(&name, &init, tty, Some(&workdir), &argv)
         });
         let code = tokio::select! {
             status = exec => status
