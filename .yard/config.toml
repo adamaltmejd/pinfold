@@ -39,7 +39,7 @@ ref = "main"
 # whatever approve says.
 # .yard/ is protected whatever this list holds: a project can only add to that.
 # The spec and the working rules: a design change is always the operator's.
-protected_paths = ["docs/ARCHITECTURE.md", "AGENTS.md", "Cargo.toml", "Cargo.lock", ".github/"]
+protected_paths = ["docs/ARCHITECTURE.md", "AGENTS.md", "Cargo.toml", "Cargo.lock", ".github"]
 
 [isolation]
 # dockerfile names the Dockerfile lanes and container gates are built from, as a
