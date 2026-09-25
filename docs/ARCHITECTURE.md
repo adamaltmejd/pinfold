@@ -172,7 +172,8 @@ absent box, `stat` exits 3 with `pinfold box stat: no box named ...`, like
 `owner` is the `box up` process; `labels` is the box's full label set, as
 the runtime reports them, image labels included. `image.id` is the image the
 runtime resolved `image` to; `image.ref` is the reference as the spec (or its
-profile) gave it. At `up`, the image's `dev.pinfold.*` identity labels are copied onto the box;
+profile) gave it. `list` spells `ref` as the runtime records it (podman adds
+`localhost/`), so a caller compares images by `id`. At `up`, the image's `dev.pinfold.*` identity labels are copied onto the box;
 the spec's labels win on a clash.
 
 The caller keeps `up`'s stdin open for the life of the box; closing it is
