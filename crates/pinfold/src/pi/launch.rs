@@ -234,7 +234,7 @@ fn run_box(plan: &Plan, cwd: &Path, argv: &[String]) -> io::Result<i32> {
         let mut shutdown = Shutdown::new()?;
         // The handlers above are the run's; `up` installs none of its own.
         // A spec refusal reads as the pi layer's own input error.
-        let mut box_ = match Box::up(plan, &init, false).await {
+        let mut box_ = match Box::up(plan, &init, None).await {
             Ok(box_) => box_,
             Err(UpError::Refused(refusal)) if refusal.reason == RefusalReason::Spec => {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, refusal.detail));
