@@ -234,6 +234,13 @@ impl Plan {
                 "harness {harness:?} is not supported; the only harness is {HARNESS_PI:?}"
             )));
         }
+        if let Some(memory) = &self.memory
+            && !valid_memory(memory)
+        {
+            return Err(invalid(format!(
+                "memory {memory:?} must be a whole number of M or G, at least 256M"
+            )));
+        }
         for mount in &self.mounts {
             if !mount.host.is_absolute() || !mount.guest.is_absolute() {
                 return Err(invalid(format!(
@@ -278,6 +285,24 @@ impl Plan {
                     inject.resolve()?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Refuse a caller spec label in pinfold's `dev.pinfold.` namespace:
+    /// `dev.pinfold.owner` drives `list`'s owner and `prune`, and the
+    /// identity labels name the image. `pinfold pi` builds pinfold's own
+    /// plan, which carries `dev.pinfold.project`, so this is not part of
+    /// [`Plan::validate`].
+    pub fn validate_reserved_labels(&self) -> Result<(), String> {
+        if let Some(key) = self
+            .labels
+            .keys()
+            .find(|key| key.starts_with("dev.pinfold."))
+        {
+            return Err(invalid(format!(
+                "label {key:?} is pinfold's: a box spec label may not start with dev.pinfold."
+            )));
         }
         Ok(())
     }
@@ -329,6 +354,28 @@ fn valid_mount_path(path: &Path) -> bool {
         .as_encoded_bytes()
         .iter()
         .any(|byte| *byte == b',' || *byte < 0x20 || *byte == 0x7f)
+}
+
+/// A memory limit is a whole number of mebibytes or gibibytes, at least
+/// 256M. The value reaches the runtime's `--memory` unparsed, and a
+/// unitless number is bytes on podman and something else on Apple.
+fn valid_memory(memory: &str) -> bool {
+    let (number, multiplier) = if let Some(number) = memory.strip_suffix('M') {
+        (number, 1u64)
+    } else if let Some(number) = memory.strip_suffix('G') {
+        (number, 1024)
+    } else {
+        return false;
+    };
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    let Ok(number) = number.parse::<u64>() else {
+        return false;
+    };
+    number
+        .checked_mul(multiplier)
+        .is_some_and(|mebibytes| mebibytes >= 256)
 }
 
 fn valid_name(name: &str) -> bool {

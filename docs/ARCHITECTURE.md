@@ -175,8 +175,7 @@ absent box, `stat` exits 3 with `pinfold box stat: no box named ...`, like
 the runtime reports them, image labels included. `image.id` is the image the
 runtime resolved `image` to; `image.ref` is the reference as the spec (or its
 profile) gave it. `list` spells `ref` as the runtime records it (podman adds
-`localhost/`), so a caller compares images by `id`. At `up`, the image's `dev.pinfold.*` identity labels are copied onto the box;
-the spec's labels win on a clash.
+`localhost/`), so a caller compares images by `id`. At `up`, the image's `dev.pinfold.*` identity labels are copied onto the box.
 
 The caller keeps `up`'s stdin open for the life of the box; closing it is
 `down`. The stream ends with one `down` line after teardown:
@@ -264,6 +263,8 @@ The box spec `up` reads from stdin:
   `[A-Za-z_][A-Za-z0-9_]*`; any other name is refused as `spec`, naming it.
   `{ "from": "NAME" }` is read from the caller's environment and passed as
   `--env NAME`, so values never reach argv.
+- A label key starting with `dev.pinfold.` is refused as `spec`, naming
+  it: the namespace is pinfold's.
 - `profile` applies the profile's `home/` and `share/` (see Profiles), and
   its image if `image` is absent; egress, env and resources come only
   from the spec.
@@ -278,6 +279,8 @@ The box spec `up` reads from stdin:
   mounts at one guest path are refused.
 - A mount path holding `,` or an ASCII control character is refused as
   `spec`, naming the path.
+- `memory` is a whole number followed by `M` or `G`, at least `256M`;
+  anything else is refused as `spec`, naming it.
 - An unknown key at any level of the spec is refused as `spec`, naming the
   key; pinfold never applies a spec partially.
 
@@ -644,7 +647,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 14 | Both pi config levels load behind a route | `pi -p` through the shim, against a fake model reached through a route: the model's request carries a skill from the profile and one from the project's `.pi/`. |
 | 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself; an image built on a profile's is its own family. An unlabeled image, a live box, its project's state and `~/.cache` survive `pinfold clean`; a dead box is removed. |
 | 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW carries the default list's hosts; with PINFOLD_ALLOW=api.github.com over a project's allow = ["registry.npmjs.org"], it is exactly that host, and registry.npmjs.org is refused as not allowlisted. |
-| 17 | up refuses before it creates | A missing image, a misspelled spec key, a bad env name, a mount path with a comma, a file mount, a mount at a path pinfold mounts and a live name are refused as data, naming the cause, and a missing host path fails after the claim; each leaves no box and no state dir. The box whose name was reused still answers exec, and of two `up`s racing for one name exactly one wins. |
+| 17 | up refuses before it creates | A missing image, a misspelled spec key, a bad env name, a `dev.pinfold.` label, a memory below 256M or without a unit, a mount path with a comma, a file mount, a mount at a path pinfold mounts and a live name are refused as data, naming the cause, and a missing host path fails after the claim; each leaves no box and no state dir. The box whose name was reused still answers exec, and of two `up`s racing for one name exactly one wins. |
 | 18 | A caller reads the effective configuration as data | pinfold config reports a project's allow list, its trust state before and after pinfold allow, and the project home pinfold pi then mounts. |
 | 19 | A caller-owned box launches the pinned harness | A spec with harness: pi runs /opt/pinfold/pi/pi --version at the pinned version, and the box's PINFOLD_ALLOW is the spec's allow list. |
 | 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, every field is present, and `exec`'d processes carry `oom_score_adj` 1000, so init is never the victim. |
