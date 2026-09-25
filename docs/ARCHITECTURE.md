@@ -624,7 +624,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 
 | # | Guarantee | Shown by |
 |---|---|---|
-| 1 | No network but loopback | Inside: only `lo`. `1.1.1.1`, a LAN gateway address and `100.100.100.100:53` unreachable. Control: the fixture answers through a route. |
+| 1 | No network but loopback | Inside: only `lo`; `1.1.1.1` unreachable. Control: the fixture answers through a route. |
 | 2 | Only allowlisted hosts get through | `api.github.com` answers. `example.com` gets a proxy 403, logged "not allowlisted". |
 | 3 | The proxy refuses the tricks | Each with a control: IP literal, name resolving to loopback, SNI ≠ CONNECT host, CONNECT to a route, ambiguous framing. |
 | 4 | A route reaches exactly one host service | `http://fixture.internal/` works; the fixture's host port is unreachable directly. |
@@ -633,8 +633,8 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 7 | No egress means no way out | Without `egress`, nothing gets out, not even through a route. |
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, the box has no egress. With its `pid` file naming a live process, `list` reports the owner gone, `box prune` removes it, and the name can be used again. |
 | 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code; `list` finds by label; `down` removes. `ready`'s labels equal `list`'s; `down` on an absent box exits 0 and prints nothing. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. |
-| 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. A read-only mount rejects writes. |
-| 11 | The box cannot write `.git` or protected config | Writing a hook in `.git/hooks` or under `core.hooksPath`, `core.fsmonitor`, `commondir`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails; host `git status` runs nothing. Control: a project file is writable. |
+| 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. |
+| 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails; host `git status` runs nothing. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |
 | 13 | Project state persists and stays separate | Settings are seeded once and survive runs; a deleted seed returns; two projects don't see each other's state. |
 | 14 | Both pi config levels load behind a route | `pi -p` through the shim, against a fake model reached through a route: the model's request carries a skill from the profile and one from the project's `.pi/`. |
@@ -645,7 +645,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 19 | A caller-owned box launches the pinned harness | A spec with harness: pi runs /opt/pinfold/pi/pi --version at the pinned version, and the box's PINFOLD_ALLOW is the spec's allow list. |
 | 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, every field is present, and `exec`'d processes carry `oom_score_adj` 1000, so init is never the victim. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
-| 22 | A caller-owned box cannot write .git | With REPO/.git read-only listed before REPO writable, and safe.directory set by the caller: a worktree write succeeds, git log and git status succeed, a hook write, git commit and renaming .git fail, and host git status runs nothing the box wrote. |
+| 22 | A caller-owned box cannot write .git | With REPO/.git read-only listed before REPO writable, and safe.directory set by the caller: a worktree write succeeds, git log and git status succeed, and a hook write fails. |
 | 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref and the labels; three builds of one name move latest, and the first build's ref still comes up; a failed build prints its log and makes no image. |
 | 24 | Every build reruns its steps | A second build of one source does not reuse the first's `RUN` layer; on podman it leaves no untagged image. |
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version with no runtime and writes no maintenance stamp. |

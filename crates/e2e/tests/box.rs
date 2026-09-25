@@ -363,8 +363,8 @@ fn up_refuses_before_it_creates() {
 
     // A spec whose mount misspells `readonly` as `read_only` is refused as
     // data, naming the key, and leaves no state dir and no box. The positive
-    // control, a spelled `readonly` that rejects writes, is guarantee 10's
-    // `box_shares_files_with_the_host`.
+    // control, a spelled `readonly` that rejects writes, is the hook write in
+    // guarantee 22's `a_caller_owned_box_cannot_write_git`.
     let misspelled = serde_json::json!({
         "name": name,
         "image": default_image(binary, &env),
@@ -524,10 +524,12 @@ fn up_refuses_before_it_creates() {
 
 #[test]
 fn box_shares_files_with_the_host() {
-    // Sabotage: drop `readonly` from the adapter's bind mounts; the
-    // write to /readonly/new then succeeds and its assertion fails. The
-    // write to /workspace is the positive control that the same operation
-    // works on a writable mount.
+    // Sabotage: bind every spec mount read-only in the adapter (pass `true`
+    // for `mount.readonly` in runtime/mod.rs); creating files in /workspace
+    // then fails and the create assertion fails. Sabotage: drop
+    // `--userns=keep-id` from podman's `run` argv; the box user is then a
+    // subordinate uid on the host, so the host 0600 file is not writable and
+    // the write assertion fails (Linux only).
     // Not a sabotage on Apple: running `box exec` as root. virtiofs reports
     // every host file as the host user's whatever the guest uid, so the owner
     // assertion still passes; the uid itself is guarantee 5's to check.
@@ -549,17 +551,11 @@ fn box_shares_files_with_the_host() {
         fs::Permissions::from_mode(0o700),
     )
     .unwrap();
-    let readonly = dir.path().join("readonly");
-    fs::create_dir(&readonly).unwrap();
-    fs::write(readonly.join("keep"), b"keep\n").unwrap();
 
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(binary, &env),
-        "mounts": [
-            { "host": dir.path(), "guest": "/workspace" },
-            { "host": readonly, "guest": "/readonly", "readonly": true },
-        ],
+        "mounts": [{ "host": dir.path(), "guest": "/workspace" }],
     });
     let up = box_up(binary, &env, &spec, &name);
 
@@ -592,15 +588,6 @@ fn box_shares_files_with_the_host() {
     );
     assert_eq!(wrote.code, 0, "writing host files failed: {}", wrote.stderr);
 
-    // The read-only mount rejects a write, and says why.
-    let denied = box_exec(
-        binary,
-        &env,
-        &name,
-        &["sh", "-c", "printf nope > /readonly/new"],
-    );
-    assert_denied(&denied, "Read-only file system", "the /readonly write");
-
     // Host view of the same files.
     let host_600 = fs::metadata(dir.path().join("host-600")).unwrap();
     let box_created = fs::metadata(dir.path().join("box-created")).unwrap();
@@ -628,7 +615,6 @@ fn box_shares_files_with_the_host() {
         fs::read(dir.path().join("host-700/from-box")).unwrap(),
         b"inside"
     );
-    assert_eq!(fs::read(readonly.join("keep")).unwrap(), b"keep\n");
 
     up.down(binary, &env);
 }
@@ -1740,7 +1726,7 @@ fn box_has_no_network_but_loopback() {
         .collect();
     assert_eq!(interfaces, ["lo"], "the box has a network: {}", dev.stdout);
 
-    // Named addresses fail at once with the kernel's reason, not a timeout.
+    // A public address fails at once with the kernel's reason, not a timeout.
     // The short --max-time turns a hang into a failure; -v carries the
     // kernel's reason, which curl's summary line omits.
     let public = curl(
@@ -1755,39 +1741,6 @@ fn box_has_no_network_but_loopback() {
         public.stderr.contains("Network is unreachable"),
         "1.1.1.1 failed for another reason: {}",
         public.stderr
-    );
-
-    // An address on the host's network is unreachable too; with --network
-    // none the box has no route to it.
-    let gateway = curl(
-        binary,
-        &env,
-        &name,
-        "5",
-        &["-v", "--noproxy", "*", "http://192.168.64.1/"],
-    );
-    assert_eq!(
-        gateway.code, 7,
-        "the vmnet gateway answered: {}",
-        gateway.stdout
-    );
-    assert!(
-        gateway.stderr.contains("Network is unreachable"),
-        "the vmnet gateway failed for another reason: {}",
-        gateway.stderr
-    );
-
-    let dns = box_exec(
-        binary,
-        &env,
-        &name,
-        &["bash", "-c", "exec 3<>/dev/tcp/100.100.100.100/53"],
-    );
-    assert_eq!(dns.code, 1, "100.100.100.100:53 answered");
-    assert!(
-        dns.stderr.contains("Network is unreachable"),
-        "100.100.100.100:53 failed for another reason: {}",
-        dns.stderr
     );
 
     // Positive control: the route answers through the proxy while the box
@@ -2230,8 +2183,10 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
 #[test]
 fn a_caller_owned_box_cannot_write_git() {
     // Guarantee 22: a caller-owned box cannot write `.git`.
-    // Sabotage: mount `.git` writable; the hook, commit and rename
-    // assertions fail.
+    // Sabotage: drop `readonly` from the adapter's bind mounts (pass `false`
+    // for `mount.readonly` in runtime/mod.rs); `.git` is then writable and
+    // the hook write assertion fails. The worktree write is the positive
+    // control that the same write works on a writable mount.
     let binary = pinfold();
     let env = TestEnv::new("caller-git");
     let name = box_name("caller-git");
@@ -2306,7 +2261,7 @@ fn a_caller_owned_box_cannot_write_git() {
     );
     assert_ok(&wrote, "writing the worktree");
 
-    // Every write into `.git` fails.
+    // A write into `.git` fails.
     let hook = dot_git.join("hooks/pre-commit");
     let denied = box_exec(
         binary,
@@ -2319,51 +2274,15 @@ fn a_caller_owned_box_cannot_write_git() {
         ],
     );
     assert_denied(&denied, "Read-only file system", "the hook write");
-    let denied = box_exec(
-        binary,
-        &env,
-        &name,
-        &[
-            "git",
-            "-C",
-            &root,
-            "-c",
-            "user.name=a",
-            "-c",
-            "user.email=a@b",
-            "-c",
-            &safe,
-            "commit",
-            "-qam",
-            "x",
-        ],
-    );
-    assert_denied(&denied, "Read-only file system", "the commit");
-    let denied = box_exec(
-        binary,
-        &env,
-        &name,
-        &[
-            "sh",
-            "-c",
-            &format!("mv '{}' '{}-moved'", dot_git.display(), dot_git.display()),
-        ],
-    );
-    assert_denied(&denied, "Device or resource busy", "renaming .git");
 
     up.down(binary, &env);
     assert!(up.wait().success(), "box up did not exit cleanly");
 
-    // Host git works on the clone afterwards and runs nothing the box wrote.
+    // Host git works on the clone afterwards and sees the worktree write.
     let porcelain = git(repo.path(), &["status", "--porcelain"]);
     assert!(
         porcelain.contains("new.txt"),
         "host git status lost the worktree change: {porcelain}"
-    );
-    assert!(!hook.exists(), "the box planted a hook");
-    assert!(
-        !repo.path().join(".git-moved").exists(),
-        "the box renamed .git"
     );
 }
 

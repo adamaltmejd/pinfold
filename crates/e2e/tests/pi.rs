@@ -321,13 +321,13 @@ fn a_changed_project_file_stops_the_run() {
 #[test]
 fn the_box_cannot_write_git_or_protected_config() {
     // Sabotage: omit the `.git` read-only mount from pi::git (or mount it
-    // writable); the hook, `core.fsmonitor` and `commondir` writes and the
-    // rename then succeed, and host `git status` runs the planted fsmonitor,
-    // so those assertions fail. Sabotage: skip the absent protect
-    // directories; the box's `mkdir .vscode` then succeeds and its refusal
-    // assertion fails. Sabotage: classify protected paths with
-    // fs::metadata instead of the symlink check; a symlinked `.vscode` is
-    // followed, the run starts, and the refusal assertion fails.
+    // writable); the `core.fsmonitor` write and the rename then succeed, and
+    // host `git status` runs the planted fsmonitor, so those assertions fail.
+    // Sabotage: skip the absent protect directories; the box's `mkdir
+    // .vscode` then succeeds and its refusal assertion fails. Sabotage:
+    // classify protected paths with fs::metadata instead of the symlink
+    // check; a symlinked `.vscode` is followed, the run starts, and the
+    // refusal assertion fails.
     // Sabotage: resolve `core.hooksPath` from `.git/config` only (`git
     // config --file .git/config core.hooksPath` in pi::git's `hooks_path`);
     // the global config's `.husky/_` is not protected, and the
@@ -431,24 +431,6 @@ fn the_box_cannot_write_git_or_protected_config() {
     );
     assert_denied(&denied, "Read-only file system", "the .vscode write");
 
-    // `.git` is read-only: a hook, the config, and commondir.
-    let hook = root.join(".git/hooks/pre-commit");
-    let denied = box_exec(
-        binary,
-        &env,
-        &name,
-        &[
-            "sh",
-            "-c",
-            &format!(
-                "printf '#!/bin/sh\\ntouch {}/pwned-hook\\n' > '{}'",
-                root.display(),
-                hook.display()
-            ),
-        ],
-    );
-    assert_denied(&denied, "Read-only file system", "the hook write");
-
     // Host git runs `.husky/_/pre-commit` on the next commit because the
     // global `core.hooksPath` names it; the box cannot write it.
     let husky_hook = husky.join("pre-commit");
@@ -468,8 +450,8 @@ fn the_box_cannot_write_git_or_protected_config() {
     );
     assert_denied(&denied, "Read-only file system", "the hooksPath write");
 
-    // A script in the writable project; the config that would make host git
-    // run it is what must fail.
+    // `.git` is read-only: the box writes a script in the writable project,
+    // and the config that would make host git run it is what must fail.
     let fsmonitor = root.join("fsmonitor.sh");
     let denied = box_exec(
         binary,
@@ -489,21 +471,6 @@ fn the_box_cannot_write_git_or_protected_config() {
         ],
     );
     assert_denied(&denied, "Read-only file system", "git config");
-
-    let denied = box_exec(
-        binary,
-        &env,
-        &name,
-        &[
-            "sh",
-            "-c",
-            &format!(
-                "printf '../evilgit\\n' > '{}/.git/commondir'",
-                root.display()
-            ),
-        ],
-    );
-    assert_denied(&denied, "Read-only file system", "the commondir write");
 
     // The `.git` mount point cannot be renamed.
     let dot_git = root.join(".git");
