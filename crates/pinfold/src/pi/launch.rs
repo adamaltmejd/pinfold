@@ -7,7 +7,6 @@
 
 use std::collections::BTreeMap;
 use std::env;
-use std::ffi::OsString;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,7 +27,7 @@ use crate::pi::state::{ProjectState, canonical};
 use crate::trust;
 
 /// Run a `pi`/`pinfold pi` invocation and return pi's exit code.
-pub fn run(args: &[OsString]) -> io::Result<i32> {
+pub fn run(args: &[String]) -> io::Result<i32> {
     let cwd = canonical(&env::current_dir()?)?;
     let root = project_root(&cwd)?;
     let config = Config::load(&root)?;
@@ -36,7 +35,7 @@ pub fn run(args: &[OsString]) -> io::Result<i32> {
     let state = ProjectState::load_or_create(&root)?;
     let image = resolve_image(&config, &state.id);
     ensure_image(&config, &image)?;
-    let argv = pi_argv(args)?;
+    let argv = pi_argv(args);
     // The read-only mounts are prepared after trust, so a refused run leaves
     // no created directory behind.
     let git = Git::prepare(&root, &config.protect)?;
@@ -126,22 +125,10 @@ fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
 
 /// pi's argv in the box: the mounted artifact and the caller's arguments,
 /// unchanged.
-fn pi_argv(args: &[OsString]) -> io::Result<Vec<String>> {
-    let mut argv = Vec::with_capacity(args.len() + 1);
-    argv.push(format!("{GUEST_PI}/pi"));
-    for arg in args {
-        argv.push(
-            arg.to_str()
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "pi arguments must be valid UTF-8",
-                    )
-                })?
-                .to_string(),
-        );
-    }
-    Ok(argv)
+fn pi_argv(args: &[String]) -> Vec<String> {
+    std::iter::once(format!("{GUEST_PI}/pi"))
+        .chain(args.iter().cloned())
+        .collect()
 }
 
 /// The complete box spec for one project.

@@ -9,7 +9,6 @@
 //! `init exec -- ARGV...` is the second entry: it raises its own
 //! `oom_score_adj` and becomes ARGV, and every exec session runs through it.
 
-use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -41,8 +40,8 @@ extern "C" fn on_child(_signal: i32) {}
 ///
 /// `exec` is the other entry: `init exec -- ARGV...` raises this process's
 /// OOM score and becomes ARGV, and every exec session is started through it.
-pub fn run(args: &[OsString]) -> ! {
-    if args.first().and_then(|arg| arg.to_str()) == Some("exec") {
+pub fn run(args: &[String]) -> ! {
+    if args.first().map(String::as_str) == Some("exec") {
         exec(&args[1..]);
     }
 
@@ -87,9 +86,9 @@ pub fn run(args: &[OsString]) -> ! {
 /// `init exec -- ARGV...`: raise this process's `oom_score_adj` to 1000 and
 /// become ARGV. Every process pinfold starts in a box other than init runs
 /// through here, so the kernel's OOM killer takes one of them before init.
-fn exec(args: &[OsString]) -> ! {
+fn exec(args: &[String]) -> ! {
     let argv = match args.split_first() {
-        Some((separator, argv)) if separator.as_os_str() == "--" => argv,
+        Some((separator, argv)) if separator == "--" => argv,
         _ => {
             eprintln!("pinfold init exec: usage: pinfold init exec -- argv...");
             process::exit(1);
@@ -106,7 +105,7 @@ fn exec(args: &[OsString]) -> ! {
         process::exit(1);
     }
     let error = process::Command::new(&argv[0]).args(&argv[1..]).exec();
-    eprintln!("pinfold init exec: {}: {error}", argv[0].to_string_lossy());
+    eprintln!("pinfold init exec: {}: {error}", argv[0]);
     // The shell's convention for a command that could not be run.
     process::exit(if error.kind() == io::ErrorKind::NotFound {
         127

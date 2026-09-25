@@ -183,9 +183,7 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
         }
     };
     let mut labels = request.labels;
-    if let Some(base) = profile::base_image(&containerfile)
-        && let Some(digest) = runtime.image_digest(base).map_err(failed)?
-    {
+    if let Some(digest) = base_digest(runtime, &containerfile).map_err(failed)? {
         labels.insert(clean::BASE_LABEL.to_string(), digest);
     }
     build(
@@ -214,4 +212,13 @@ fn build_id() -> String {
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
     format!("{nanos:x}-{}", std::process::id())
+}
+
+/// The digest of the image a Containerfile's first `FROM` pulls, when it
+/// names one the runtime can resolve.
+pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Option<String>> {
+    Ok(profile::base_image(containerfile)
+        .map(|base| runtime.image_digest(base))
+        .transpose()?
+        .flatten())
 }

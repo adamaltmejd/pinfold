@@ -17,7 +17,7 @@ use nix::sys::signal::kill;
 use nix::unistd::Pid;
 
 use crate::core::artifacts;
-use crate::core::runtime::{Runtime, runtime};
+use crate::core::runtime::{BoxInfo, Runtime, runtime};
 use crate::dirs;
 
 /// The label naming a profile source on an image.
@@ -179,12 +179,9 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
         {
             continue;
         }
-        let owner = box_
-            .labels
-            .get(OWNER_LABEL)
-            .and_then(|pid| pid.parse::<i32>().ok());
+        let (owner, alive) = owner(&box_)?;
         let state_dir = dirs::box_state_dir(&box_.id)?;
-        if box_owner_alive(&state_dir, owner) {
+        if alive {
             if let Some(project) = box_.labels.get(PROJECT_LABEL) {
                 live_projects.insert(project.clone());
             }
@@ -200,6 +197,16 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
         dead,
         live_projects,
     })
+}
+
+/// A box's owner pid from its label, and whether that owner is alive.
+pub fn owner(box_: &BoxInfo) -> io::Result<(Option<i32>, bool)> {
+    let owner = box_
+        .labels
+        .get(OWNER_LABEL)
+        .and_then(|pid| pid.parse::<i32>().ok());
+    let alive = box_owner_alive(&dirs::box_state_dir(&box_.id)?, owner);
+    Ok((owner, alive))
 }
 
 /// Remove boxes pinfold labeled whose owning `box up` process is gone, and

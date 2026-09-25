@@ -10,7 +10,7 @@
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 fn main() {
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
@@ -25,15 +25,6 @@ fn main() {
     }
     for path in ["src", "Cargo.toml", "build.rs"] {
         println!("cargo:rerun-if-changed={path}");
-    }
-
-    for tool in ["zig", "cargo-zigbuild"] {
-        if !available(tool) {
-            panic!(
-                "the macOS build needs `zig` and `cargo-zigbuild` to cross-build the Linux \
-                 init: install zig and run `cargo install cargo-zigbuild`"
-            );
-        }
     }
 
     let manifest = env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
@@ -54,7 +45,8 @@ fn main() {
         .expect("run cargo zigbuild");
     assert!(
         status.success(),
-        "cargo zigbuild for the embedded init failed"
+        "cargo zigbuild for the embedded init failed; the macOS build needs `zig` and \
+         `cargo-zigbuild`: install zig and run `cargo install cargo-zigbuild`"
     );
 
     let built = target_dir
@@ -64,14 +56,4 @@ fn main() {
     fs::copy(&built, &embedded)
         .unwrap_or_else(|error| panic!("copy embedded init {}: {error}", built.display()));
     println!("cargo:rustc-env=PINFOLD_INIT={}", embedded.display());
-}
-
-fn available(tool: &str) -> bool {
-    Command::new(tool)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok()
 }
