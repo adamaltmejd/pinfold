@@ -5,6 +5,7 @@
 //! Linux. macOS applications usually use `~/Library`, but pinfold's paths are
 //! the same on every host it runs on.
 
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -39,6 +40,38 @@ pub fn egress_dir() -> io::Result<PathBuf> {
 /// box NAME. An empty name is the directory that holds them all.
 pub fn box_state_dir(name: &str) -> io::Result<PathBuf> {
     Ok(state_dir()?.join("boxes").join(name))
+}
+
+/// Create `dir` in one step: `fill` writes into a staging sibling, which is
+/// then renamed into place, so a failed or killed fill never leaves a
+/// half-written directory where the next caller looks. A concurrent caller
+/// may win the rename; its directory is accepted.
+pub fn install_dir(dir: &Path, fill: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    let parent = dir
+        .parent()
+        .ok_or_else(|| io::Error::other(format!("{} has no parent", dir.display())))?;
+    let staging = parent.join(format!(".tmp-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&staging);
+    fs::create_dir_all(&staging)?;
+    if let Err(error) = fill(&staging).and_then(|()| fs::rename(&staging, dir)) {
+        let _ = fs::remove_dir_all(&staging);
+        if !dir.is_dir() {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+/// The entries of `dir`; a missing `dir` has none.
+pub fn entries(dir: &Path) -> io::Result<Vec<fs::DirEntry>> {
+    match fs::read_dir(dir) {
+        Ok(entries) => entries.collect(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error),
+    }
 }
 
 fn xdg(variable: &str, fallback: &str) -> io::Result<PathBuf> {

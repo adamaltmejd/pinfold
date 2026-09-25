@@ -18,7 +18,7 @@ use tokio::signal::unix::{SignalKind, signal};
 
 use crate::cli;
 use crate::config::Config;
-use crate::core::artifacts::GUEST_PI;
+use crate::core::artifacts::{self, GUEST_PI};
 use crate::core::r#box::{Box, RefusalReason, UpError};
 use crate::core::clean;
 use crate::core::plan::{Egress, Env, HARNESS_PI, Mount, Plan};
@@ -232,7 +232,7 @@ fn build_plan(config: &Config, state: &ProjectState, image: &str, git: &Git) -> 
 }
 
 fn run_box(plan: &Plan, cwd: &Path, argv: &[String]) -> io::Result<i32> {
-    let init = cli::init_path()?;
+    let init = artifacts::init()?;
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
     let runtime = Builder::new_current_thread().enable_all().build()?;
     let result = runtime.block_on(async {

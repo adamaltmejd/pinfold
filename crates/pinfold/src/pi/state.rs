@@ -143,15 +143,8 @@ impl StateDir {
 /// is a first start that failed before it recorded anything; it names no
 /// checkout, so Maintenance leaves it alone.
 pub fn state_dirs() -> io::Result<Vec<StateDir>> {
-    let projects = dirs::state_dir()?.join("projects");
-    let entries = match fs::read_dir(&projects) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
     let mut dirs = Vec::new();
-    for entry in entries {
-        let entry = entry?;
+    for entry in dirs::entries(&dirs::state_dir()?.join("projects"))? {
         let dir = entry.path();
         let Some(id) = entry.file_name().to_str().map(str::to_string) else {
             continue;

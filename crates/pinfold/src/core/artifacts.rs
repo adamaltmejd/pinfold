@@ -1,4 +1,4 @@
-//! Pinned release binaries.
+//! Pinned release binaries, and the init the CLI's own build provides.
 //!
 //! A pin names a version and the sha256 of each supported `os-arch` release
 //! archive. First use downloads, verifies and unpacks it into
@@ -6,7 +6,7 @@
 //! the cache.
 
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -20,73 +20,66 @@ pub const GUEST_PI: &str = "/opt/pinfold/pi";
 /// pi's pinned release.
 const PI_VERSION: &str = "0.87.1";
 
-/// The sha256 of pi's release archive per `os-arch`.
-const PI_PINS: &[(&str, &str)] = &[
-    (
-        "linux-arm64",
-        "364b4a9f8491450b27a4857d4e3c780dbaf696790821c176a873e860cbbc3b89",
-    ),
-    (
-        "linux-x64",
-        "80d78dd62d50049a006b981d994c61255bcc10e730b0c278d4ea0a755909764c",
-    ),
-];
-
 /// The host path of the pinned pi binary for a box on this host.
 ///
 /// On first use the release is downloaded, verified against its pin and
 /// unpacked into the artifact cache; a checksum mismatch leaves nothing in
 /// the cache. Later calls use the cache and touch no network.
 pub fn pi() -> io::Result<PathBuf> {
-    let os_arch = box_os_arch()?;
-    let sha256 = pi_sha256(os_arch);
-    let binary = pi_binary(os_arch)?;
-    if binary.is_file() {
-        return Ok(binary);
-    }
-
-    let dir = binary
-        .parent()
-        .and_then(Path::parent)
-        .expect("the pi binary path has an os-arch directory")
-        .to_path_buf();
-    let version_dir = dir
-        .parent()
-        .expect("the os-arch directory has a version directory")
-        .to_path_buf();
-    fs::create_dir_all(&version_dir)?;
-    // Stage and rename, like the embedded init: a failed or killed unpack
-    // never leaves a half-written artifact where the next call looks.
-    let staging = version_dir.join(format!(".tmp-{os_arch}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&staging);
-    fs::create_dir_all(&staging)?;
+    let (os_arch, sha256) = pin()?;
+    let dir = pi_dir(os_arch)?;
     let url = format!(
         "https://github.com/earendil-works/pi/releases/download/v{PI_VERSION}/pi-{os_arch}.tar.gz"
     );
-    if let Err(error) = unpack(&staging, &url, sha256, os_arch) {
-        let _ = fs::remove_dir_all(&staging);
-        return Err(error);
-    }
-    match fs::rename(&staging, &dir) {
-        Ok(()) => Ok(binary),
-        Err(error) => {
-            let _ = fs::remove_dir_all(&staging);
-            // A concurrent call may have installed the same version first.
-            if binary.is_file() {
-                Ok(binary)
-            } else {
-                Err(error)
-            }
-        }
+    dirs::install_dir(&dir, |staging| unpack(staging, &url, sha256, os_arch))?;
+    Ok(dir.join("pi").join("pi"))
+}
+
+/// The `os-arch` of pi's release for a box on this host (Apple `container`
+/// and podman run native images) and the pinned sha256 of its archive.
+fn pin() -> io::Result<(&'static str, &'static str)> {
+    match std::env::consts::ARCH {
+        "aarch64" => Ok((
+            "linux-arm64",
+            "364b4a9f8491450b27a4857d4e3c780dbaf696790821c176a873e860cbbc3b89",
+        )),
+        "x86_64" => Ok((
+            "linux-x64",
+            "80d78dd62d50049a006b981d994c61255bcc10e730b0c278d4ea0a755909764c",
+        )),
+        arch => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("no pinned pi release for host architecture {arch}"),
+        )),
     }
 }
 
-/// The pinned sha256 of pi's release archive for `os_arch`.
-fn pi_sha256(os_arch: &str) -> &'static str {
-    PI_PINS
-        .iter()
-        .find_map(|(name, sha256)| (*name == os_arch).then_some(*sha256))
-        .expect("every supported os-arch has a pin")
+/// The Linux init binary to mount into a box.
+///
+/// On macOS the CLI embeds the `aarch64-unknown-linux-musl` build and
+/// extracts it once per content into the artifact cache. On Linux the CLI
+/// is itself a static Linux binary and mounts its own executable.
+pub fn init() -> io::Result<PathBuf> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::os::unix::fs::PermissionsExt;
+
+    if cfg!(not(target_os = "macos")) {
+        return std::env::current_exe();
+    }
+    const INIT: &[u8] = include_bytes!(env!("PINFOLD_INIT"));
+    let mut hasher = DefaultHasher::new();
+    INIT.hash(&mut hasher);
+    let dir = dirs::artifacts_dir()?
+        .join("init")
+        .join(format!("{:016x}", hasher.finish()))
+        .join("linux-arm64");
+    dirs::install_dir(&dir, |staging| {
+        let path = staging.join("pinfold");
+        fs::write(&path, INIT)?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+    })?;
+    Ok(dir.join("pinfold"))
 }
 
 /// One pinned artifact's cache state, as `doctor` and `artifacts` report it.
@@ -108,39 +101,31 @@ pub struct Pin {
 
 /// Every pinned artifact and whether the cache holds it. Never downloads.
 pub fn pins() -> io::Result<Vec<Pin>> {
-    let os_arch = box_os_arch()?;
-    let path = pi_binary(os_arch)?;
+    let (os_arch, sha256) = pin()?;
+    let path = pi_dir(os_arch)?.join("pi").join("pi");
     Ok(vec![Pin {
         name: "pi",
         version: PI_VERSION,
-        sha256: pi_sha256(os_arch),
+        sha256,
         cached: path.is_file(),
         path,
     }])
 }
 
-/// The host path of the pinned pi binary for `os_arch`, cached or not.
-fn pi_binary(os_arch: &str) -> io::Result<PathBuf> {
+/// The cache directory of the pinned pi release for `os_arch`, unpacked or
+/// not; the binary is its `pi/pi`.
+fn pi_dir(os_arch: &str) -> io::Result<PathBuf> {
     Ok(dirs::artifacts_dir()?
         .join("pi")
         .join(PI_VERSION)
-        .join(os_arch)
-        .join("pi")
-        .join("pi"))
+        .join(os_arch))
 }
 
 /// Artifact versions under `pi/` that no pin names. The embedded init lives
 /// under `init/` and is named by no pin, so it is never listed.
 pub fn unpinned_versions() -> io::Result<Vec<PathBuf>> {
-    let pi = dirs::artifacts_dir()?.join("pi");
-    let entries = match fs::read_dir(&pi) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
     let mut unpinned = Vec::new();
-    for entry in entries {
-        let entry = entry?;
+    for entry in dirs::entries(&dirs::artifacts_dir()?.join("pi"))? {
         if entry.file_name().to_str() == Some(PI_VERSION) {
             continue;
         }
@@ -163,19 +148,6 @@ fn remove(path: &Path) -> io::Result<()> {
         Ok(_) => fs::remove_file(path),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
-    }
-}
-
-/// The `os-arch` of a box on this host. Apple `container` and podman run
-/// native images.
-fn box_os_arch() -> io::Result<&'static str> {
-    match std::env::consts::ARCH {
-        "aarch64" => Ok("linux-arm64"),
-        "x86_64" => Ok("linux-x64"),
-        arch => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("no pinned pi release for host architecture {arch}"),
-        )),
     }
 }
 
@@ -228,15 +200,5 @@ fn unpack(staging: &Path, url: &str, expected: &str, os_arch: &str) -> io::Resul
 }
 
 fn sha256(path: &Path) -> io::Result<String> {
-    let mut file = fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(super::hex(&hasher.finalize()))
+    Ok(super::hex(&Sha256::digest(fs::read(path)?)))
 }

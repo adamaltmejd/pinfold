@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use nix::fcntl::{Flock, FlockArg};
 use nix::sys::signal::kill;
@@ -50,21 +50,22 @@ pub fn maintain() {
     }
 }
 
+/// The stamp's mtime is the last pass.
 fn maintain_due() -> io::Result<()> {
     let state = dirs::state_dir()?;
     let stamp = state.join("maintenance");
-    let now = unix_seconds();
-    if let Some(last) = fs::read_to_string(&stamp)
+    if fs::metadata(&stamp)
+        .and_then(|metadata| metadata.modified())
         .ok()
-        .and_then(|last| last.trim().parse::<u64>().ok())
-        && now.saturating_sub(last) < PASS_INTERVAL.as_secs()
+        .and_then(|last| last.elapsed().ok())
+        .is_some_and(|age| age < PASS_INTERVAL)
     {
         return Ok(());
     }
     // Claim the day before the work, so a failed pass waits for the next day
     // instead of running before every command.
     fs::create_dir_all(&state)?;
-    fs::write(&stamp, now.to_string())?;
+    fs::write(&stamp, [])?;
     daily();
     Ok(())
 }
@@ -85,13 +86,6 @@ fn report(what: &str, result: io::Result<()>) {
     if let Err(error) = result {
         eprintln!("pinfold: maintenance: {what}: {error}");
     }
-}
-
-fn unix_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }
 
 /// Whether the `box up` that claimed `state_dir` is alive: it holds the lock
@@ -223,15 +217,8 @@ pub fn prune_boxes(runtime: &dyn Runtime) -> io::Result<Vec<DeadBox>> {
 /// live `box up` locks its `pid` file before it binds the socket, so a
 /// socket whose `pid` no lock holds is leftover.
 pub fn leftover_socket_dirs() -> io::Result<Vec<PathBuf>> {
-    let boxes = dirs::box_state_dir("")?;
-    let entries = match fs::read_dir(&boxes) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
     let mut leftover = Vec::new();
-    for entry in entries {
-        let entry = entry?;
+    for entry in dirs::entries(&dirs::box_state_dir("")?)? {
         let dir = entry.path();
         if owner_alive(&dir) {
             continue;
@@ -256,22 +243,16 @@ pub fn prune_sockets() -> io::Result<()> {
 
 /// Egress logs older than [`EGRESS_LOG_AGE`].
 pub fn old_egress_logs() -> io::Result<Vec<PathBuf>> {
-    let dir = dirs::egress_dir()?;
-    let entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    let Some(cutoff) = SystemTime::now().checked_sub(EGRESS_LOG_AGE) else {
-        return Ok(Vec::new());
-    };
     let mut old = Vec::new();
-    for entry in entries {
-        let entry = entry?;
+    for entry in dirs::entries(&dirs::egress_dir()?)? {
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
-        if metadata.is_file() && metadata.modified().is_ok_and(|modified| modified < cutoff) {
+        let age = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.elapsed().ok());
+        if metadata.is_file() && age.is_some_and(|age| age > EGRESS_LOG_AGE) {
             old.push(entry.path());
         }
     }

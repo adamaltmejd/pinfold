@@ -85,7 +85,7 @@ pub fn attach(args: &[OsString]) -> io::Result<i32> {
         .collect();
     let name = select_box(&boxes, box_name.as_deref())?;
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-    let init = init_path()?;
+    let init = artifacts::init()?;
     let status = runtime.exec(&name, tty, Some(&cwd), &exec_through_init(&init, &argv))?;
     Ok(exit_code(status))
 }
@@ -217,7 +217,7 @@ fn up(args: &[OsString]) -> io::Result<i32> {
 /// Start the validated box, report it ready, hold it, and print the `down`
 /// line. A refusal prints its own line.
 fn hold_up(plan: &Plan) -> io::Result<i32> {
-    let init = init_path()?;
+    let init = artifacts::init()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -309,7 +309,7 @@ fn exec(args: &[OsString]) -> io::Result<i32> {
     // A TTY only makes sense when both ends are terminals; `--tty` forces it
     // for callers that drive pinfold through their own pty.
     let tty = args.tty || (io::stdin().is_terminal() && io::stdout().is_terminal());
-    let init = init_path()?;
+    let init = artifacts::init()?;
     let status = runtime.exec(
         &args.name,
         tty,
@@ -1037,45 +1037,6 @@ pub(crate) fn exit_code(status: ExitStatus) -> i32 {
         Some(code) => code,
         None => 128 + status.signal().unwrap_or(0),
     }
-}
-
-/// The Linux init binary to mount into a box.
-///
-/// On macOS the CLI embeds the `aarch64-unknown-linux-musl` build and
-/// extracts it once per content into the artifact cache. On Linux the CLI
-/// is itself a static Linux binary and mounts its own executable.
-pub(crate) fn init_path() -> io::Result<PathBuf> {
-    if cfg!(target_os = "macos") {
-        embedded_init()
-    } else {
-        std::env::current_exe()
-    }
-}
-
-fn embedded_init() -> io::Result<PathBuf> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    use std::os::unix::fs::PermissionsExt;
-
-    const INIT: &[u8] = include_bytes!(env!("PINFOLD_INIT"));
-    let mut hasher = DefaultHasher::new();
-    INIT.hash(&mut hasher);
-    let dir = dirs::artifacts_dir()?
-        .join("init")
-        .join(format!("{:016x}", hasher.finish()))
-        .join("linux-arm64");
-    let path = dir.join("pinfold");
-    if path.is_file() {
-        return Ok(path);
-    }
-    fs::create_dir_all(&dir)?;
-    // Write and chmod beside the destination, then rename, so a concurrent
-    // `box up` never mounts a half-written init.
-    let temp = dir.join(format!(".pinfold-init-{}", std::process::id()));
-    fs::write(&temp, INIT)?;
-    fs::set_permissions(&temp, fs::Permissions::from_mode(0o755))?;
-    fs::rename(&temp, &path)?;
-    Ok(path)
 }
 
 /// `pinfold build`: `--profile NAME`'s image; else the project's own image

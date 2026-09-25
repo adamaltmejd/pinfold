@@ -121,51 +121,32 @@ pub fn base_image(containerfile: &[u8]) -> Option<&str> {
 
 /// Read a profile from a user's directory.
 fn load_dir(name: &str, root: &Path) -> io::Result<Profile> {
-    let containerfile_path = root.join("Containerfile");
-    let containerfile = match fs::read(&containerfile_path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("profile {name:?} has no {}", containerfile_path.display()),
-            ));
-        }
-        Err(error) => {
-            return Err(io::Error::new(
+    let read = |file: &str| {
+        let path = root.join(file);
+        fs::read(&path).map_err(|error| {
+            io::Error::new(
                 error.kind(),
-                format!("read {}: {error}", containerfile_path.display()),
-            ));
-        }
+                format!("profile {name:?}: read {}: {error}", path.display()),
+            )
+        })
     };
-    let config_path = root.join("pinfold.toml");
-    let config = match fs::read(&config_path) {
-        Ok(bytes) => bytes,
+    let containerfile = read("Containerfile")?;
+    let config = match read("pinfold.toml") {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => {
-            return Err(io::Error::new(
-                error.kind(),
-                format!("read {}: {error}", config_path.display()),
-            ));
-        }
+        config => config?,
     };
     let home_dir = root.join("home");
-    let home = if home_dir.is_dir() {
-        read_seeds(&home_dir)?
-    } else {
-        Vec::new()
-    };
-    let share_dir = root.join("share");
-    let share = if share_dir.is_dir() {
-        Some(share_dir)
-    } else {
-        None
-    };
+    let mut home = Vec::new();
+    if home_dir.is_dir() {
+        read_seed_dir(&home_dir, &home_dir, &mut home)?;
+    }
+    let share = root.join("share");
     Ok(Profile {
         name: name.to_string(),
         containerfile,
         config,
         home,
-        share,
+        share: share.is_dir().then_some(share),
     })
 }
 
@@ -194,39 +175,20 @@ fn embedded_share() -> io::Result<PathBuf> {
         .join("profiles")
         .join(super::hex(&hasher.finalize()))
         .join("share");
-    if dir.is_dir() {
-        return Ok(dir);
-    }
-    let staging = dir
-        .parent()
-        .expect("the share directory has a parent")
-        .join(format!(".tmp-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&staging);
-    fs::create_dir_all(&staging)?;
-    for (path, contents) in DEFAULT_SHARE {
-        let target = staging.join(path);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
+    dirs::install_dir(&dir, |staging| {
+        for (path, contents) in DEFAULT_SHARE {
+            let target = staging.join(path);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&target, contents)?;
         }
-        fs::write(&target, contents)?;
-    }
-    match fs::rename(&staging, &dir) {
-        Ok(()) => Ok(dir),
-        Err(error) => {
-            let _ = fs::remove_dir_all(&staging);
-            // A concurrent load may have extracted the same files first.
-            if dir.is_dir() { Ok(dir) } else { Err(error) }
-        }
-    }
+        Ok(())
+    })?;
+    Ok(dir)
 }
 
 /// Every regular file under `home/`, at its path relative to it.
-fn read_seeds(home: &Path) -> io::Result<Vec<Seed>> {
-    let mut seeds = Vec::new();
-    read_seed_dir(home, home, &mut seeds)?;
-    Ok(seeds)
-}
-
 fn read_seed_dir(root: &Path, dir: &Path, seeds: &mut Vec<Seed>) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
