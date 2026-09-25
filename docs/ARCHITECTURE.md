@@ -92,11 +92,13 @@ need `loginctl enable-linger`.
 
 ### Lifecycle
 
-1. Claim the name: create the state dir `boxes/<name>` exclusively and write
+1. Claim the name: create the state dir `boxes/<key>` exclusively and write
    the owner's pid, and hold an exclusive lock on that `pid` file for `up`'s
-   whole life. The owner is alive while the lock is held. A live owner
-   already there is `name-in-use`; a dead owner's dir is reclaimed. Nothing
-   (seeds, proxy, box) is created before the claim.
+   whole life. `<key>` is the first 16 hex digits of the sha256 of the name,
+   so the socket path's length does not depend on the name. The owner is
+   alive while the lock is held. A live owner already there is `name-in-use`;
+   a dead owner's dir is reclaimed. Nothing (seeds, proxy, box) is created
+   before the claim.
 2. Start the box's proxy on a new unix socket in the state dir. Keep the path
    under macOS's 104-byte limit.
 3. Run the box with `--network none` and the socket carried in (Transport).
@@ -627,7 +629,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 6 | The environment is exactly the spec | An unprefixed host variable is absent; `PINFOLD_ENV_X` arrives as `X`; the secret never shows in host `ps`; a `PINFOLD_ENV_` name that is not a POSIX name is refused. |
 | 7 | No egress means no way out | Without `egress`, nothing gets out, not even through a route. |
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, the box has no egress. With its `pid` file naming a live process, `list` reports the owner gone, `box prune` removes it, and the name can be used again. |
-| 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code; `list` finds by label; `down` removes. `ready`'s labels equal `list`'s; `down` on an absent box exits 0 and prints nothing. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. |
+| 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code; `list` finds by label; `down` removes. `ready`'s labels equal `list`'s; `down` on an absent box exits 0 and prints nothing. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. A read-only mount rejects writes. |
 | 11 | The box cannot write `.git` or protected config | Writing a hook in `.git/hooks` or under `core.hooksPath`, `core.fsmonitor`, `commondir`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails; host `git status` runs nothing. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |
