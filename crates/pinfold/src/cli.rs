@@ -203,9 +203,9 @@ fn up(args: &[String]) -> io::Result<i32> {
         .build()?;
     let result = runtime.block_on(async {
         // This process owns the box, so it takes SIGTERM and SIGINT. The
-        // handlers come before the spec is read, so a signal from the first
-        // instant ends the stream with one `down` line, its box null until
-        // the spec parsed.
+        // handlers come before the daily pass and the spec read, so a signal
+        // from the first instant ends the stream with one `down` line, its
+        // box null until the spec parsed.
         let mut signals = Signals::new()?;
         let plan = tokio::select! {
             biased;
@@ -214,7 +214,12 @@ fn up(args: &[String]) -> io::Result<i32> {
                 io::stdout().flush()?;
                 return Ok(0);
             }
-            plan = tokio::task::spawn_blocking(|| Plan::from_reader(io::stdin())) => {
+            plan = tokio::task::spawn_blocking(|| {
+                // `main` leaves the pass to `up`, so the handlers above
+                // cover the pass; it still runs before the spec is read.
+                clean::maintain();
+                Plan::from_reader(io::stdin())
+            }) => {
                 match plan {
                     Ok(Ok(plan)) => plan,
                     Ok(Err(error)) => {

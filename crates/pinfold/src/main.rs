@@ -61,7 +61,10 @@ fn main() -> ExitCode {
     };
     // The daily pass runs before any working command, the `pi` shim
     // included; `init` is PID 1 in a box with no runtime to prune, and the
-    // options above touch nothing.
-    pinfold::core::clean::maintain();
+    // options above touch nothing. `box up` runs the pass itself, so its
+    // SIGTERM and SIGINT handlers come before the pass lists the runtime.
+    if verb != "box" || args.first().map(String::as_str) != Some("up") {
+        pinfold::core::clean::maintain();
+    }
     ExitCode::from(cli::report(verb, run(args)) as u8)
 }
