@@ -231,7 +231,7 @@ fn run_box(plan: &Plan, cwd: &Path, argv: &[String]) -> io::Result<i32> {
     let result = runtime.block_on(async {
         // Register the handlers before the box starts, so a closed terminal
         // during startup is caught and the box is removed once it is up.
-        let mut shutdown = Shutdown::new(tty)?;
+        let mut shutdown = Shutdown::new()?;
         // The handlers above are the run's; `up` installs none of its own.
         // A spec refusal reads as the pi layer's own input error.
         let mut box_ = match Box::up(plan, &init, false).await {
@@ -289,39 +289,29 @@ async fn exec_pi(
     })
 }
 
-/// The signals that end a run. With a TTY, Ctrl-C and Ctrl-\ are bytes on
-/// the terminal and never signals here; SIGHUP and SIGTERM still remove the
-/// box. The handlers are installed before the box starts.
+/// The signals that end a run. Once pi runs on a TTY, Ctrl-C and Ctrl-\
+/// are bytes on the terminal; a SIGINT before that, a closed terminal and
+/// SIGTERM remove the box. The handlers are installed before the box starts.
 struct Shutdown {
     hangup: tokio::signal::unix::Signal,
     terminate: tokio::signal::unix::Signal,
-    interrupt: Option<tokio::signal::unix::Signal>,
+    interrupt: tokio::signal::unix::Signal,
 }
 
 impl Shutdown {
-    fn new(tty: bool) -> io::Result<Shutdown> {
+    fn new() -> io::Result<Shutdown> {
         Ok(Shutdown {
             hangup: signal(SignalKind::hangup())?,
             terminate: signal(SignalKind::terminate())?,
-            interrupt: if tty {
-                None
-            } else {
-                Some(signal(SignalKind::interrupt())?)
-            },
+            interrupt: signal(SignalKind::interrupt())?,
         })
     }
 
     async fn recv(&mut self) -> Signal {
-        match self.interrupt.as_mut() {
-            Some(interrupt) => tokio::select! {
-                _ = self.hangup.recv() => Signal::SIGHUP,
-                _ = self.terminate.recv() => Signal::SIGTERM,
-                _ = interrupt.recv() => Signal::SIGINT,
-            },
-            None => tokio::select! {
-                _ = self.hangup.recv() => Signal::SIGHUP,
-                _ = self.terminate.recv() => Signal::SIGTERM,
-            },
+        tokio::select! {
+            _ = self.hangup.recv() => Signal::SIGHUP,
+            _ = self.terminate.recv() => Signal::SIGTERM,
+            _ = self.interrupt.recv() => Signal::SIGINT,
         }
     }
 }

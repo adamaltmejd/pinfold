@@ -295,8 +295,8 @@ Runtime command lines are built as data.
 - TTY: the runtime's exec stays in pinfold's foreground process group and
   handles raw mode and SIGWINCH itself. No TTY: its own process group.
 - The box is the unit of lifetime; pinfold never signals a process in it.
-  With a TTY, Ctrl-C and Ctrl-\ reach pi as bytes. A closed terminal,
-  SIGTERM, SIGHUP, or SIGINT without a TTY removes the box.
+  Once pi runs on a TTY, Ctrl-C and Ctrl-\ reach it as bytes. A closed
+  terminal, SIGTERM, SIGHUP or SIGINT removes the box.
   Revisit when apple/container#1941 lands: add a graceful SIGTERM before
   removal.
 - Exit codes pass through; `128+n` for a signal death.
@@ -543,7 +543,8 @@ Automatic, never prompting:
 
 The box never writes the host's `.git`. `<root>/.git` is mounted read-only
 at its own path, and the mount point cannot be renamed. A `core.hooksPath`
-inside the project is read-only too. The agent reads history and diffs;
+inside the project, as host git resolves it (global config included), is
+read-only too. The agent reads history and diffs;
 commits are made on the host. A caller-owned box protects its repository
 the same way by mounting `.git` read-only; its commits are the caller's own
 host-side operation, hooks and signing off.

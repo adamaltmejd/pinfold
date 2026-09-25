@@ -111,46 +111,40 @@ impl Git {
     }
 }
 
-/// The protected path of host git's `core.hooksPath`, when it is set
-/// inside the project and outside `.git`.
+/// The protected path of host git's hooks directory, when `core.hooksPath`
+/// puts it inside the project and outside `.git`.
 ///
-/// Host git runs the hooks there on the next commit. git's own parser reads
-/// the value, because the config file has quoting, escapes, subsections,
-/// case-insensitive keys and include directives a hand parser would get
-/// wrong. A relative value is taken relative to the project root, as git
-/// does for a non-bare repository; an absolute value outside the project
-/// cannot be reached by the box, so it adds nothing.
+/// Host git runs the hooks there on the next commit. git resolves the value
+/// itself (`rev-parse --git-path hooks`): the config file has quoting,
+/// escapes, includes and case-insensitive keys a hand parser would get
+/// wrong, and a global config that points inside the project counts too. A
+/// relative value is relative to the project root, as git takes it for a
+/// non-bare repository; an absolute value outside the project cannot be
+/// reached by the box, so it adds nothing.
 fn hooks_path(root: &Path) -> io::Result<Option<PathBuf>> {
     let dot_git = root.join(".git");
-    let config = dot_git.join("config");
     let output = Command::new("git")
-        .arg("config")
-        .arg("--file")
-        .arg(&config)
-        .args(["--type=path", "--get", "core.hooksPath"])
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--git-path", "hooks"])
         .output()
         .map_err(|error| {
             io::Error::new(
                 error.kind(),
-                format!("run git config for {}: {error}", config.display()),
+                format!("run git rev-parse in {}: {error}", root.display()),
             )
         })?;
-    match output.status.code() {
-        Some(0) => {}
-        // The key is unset.
-        Some(1) => return Ok(None),
-        _ => {
-            return Err(io::Error::other(format!(
-                "git config --file {} --type=path --get core.hooksPath failed: {}",
-                config.display(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "git -C {} rev-parse --git-path hooks failed: {}",
+            root.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
     }
     let stdout = String::from_utf8(output.stdout).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("core.hooksPath is not valid UTF-8: {error}"),
+            format!("the hooks path is not valid UTF-8: {error}"),
         )
     })?;
     let value = stdout.strip_suffix('\n').unwrap_or(&stdout);
