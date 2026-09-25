@@ -158,3 +158,56 @@ landed in 7e348e0.
 spec agent keeps ARCHITECTURE.md and `profile/`, and a user-facing docs
 agent reads README and the CLI's help for what a user acts on. 4349b93
 drops `-W unreachable_pub` with the library target.
+
+## Release 0.0.4
+
+The six tickets landed through the merge queue, then this section, the
+version bump and the tag. Y-83 and Y-84 were admitted on e794e9b: this
+pass's commits reached GitHub but not Yard's canonical main until a
+`yard sync` at 29e1451. Y-83 was retargeted and resolved there; Y-84's
+first attempt put the fake proxy values into the shared `PiRpc::start`,
+where a cold harness cache would fetch through them, and was abandoned
+for a second attempt on the new base. Y-83's first merge-queue run failed
+the Linux gate: podman refuses an empty name, so `down ""` now never asks
+the runtime. Y-85 went back twice for its test: a `box list` check that
+could not fail and a `state.json` scan, replaced by a check of the
+state dir's names.
+
+### The six tickets
+
+| Ticket | Commit | Possible | Landed |
+|---|---|---|---|
+| Y-83 | 2585977, cfca68c | bug | +66 / -11, net +55 |
+| Y-84 | cf4361d | bug | +43 / -3, net +40 |
+| Y-85 | aae7cab | bug | +69 / -4, net +65 |
+| Y-88 | 0ea30a8 | bug | +106 / -24, net +82 |
+| Y-87 | d7e9936 | about -100 | +124 / -192, net -68 |
+| Y-86 | cc87a34 | about -140 | +250 / -435, net -185 |
+| Total | | | +658 / -669, net -11 |
+
+### Numbers at the tag
+
+Measured on bb95645, the release commit's parent.
+
+| Measure | After the pass (4349b93) | At v0.0.4 |
+|---|---|---|
+| Commits since v0.0.3 | 38 | 52 |
+| Lines added / deleted since v0.0.3, whole tree | 1665 / 2913 (1.75) | 2401 / 3500 (delete/add 1.46) |
+| Lines added / deleted since v0.0.3, `crates/` | 1588 / 2853 | 2160 / 3438 (1.59) |
+| Largest source file | `crates/e2e/tests/box.rs`, 2518 | 2478 |
+| Largest file in the binary crate | `cli.rs`, 1084 | 1084 |
+| `docs/ARCHITECTURE.md` | 706 lines | 708 |
+| Tickets landed since the last report (Y-82) | 0 | 6 (Y-83 to Y-88) |
+| Tickets born from a lane proposal | 0 | 0 |
+| Suite wall time | box 80.6 s, pi 39.0 s, cli 0.3 s (host run) | box 105.4 s, pi 35.5 s, cli 0.3 s (Y-86's macOS gate) |
+
+### Spec pass
+
+ARCHITECTURE.md and README.md against the tree at bb95645. The
+guarantees table has 25 rows and 25 tests, one each. Y-83, Y-85 and Y-88
+extended rows 9, 11 and 17 in place, and Y-84 extended row 6's test
+under its existing text (a proxy variable is an unprefixed host
+variable). Their spec edits state current contract; row 9's double "and"
+is cut in the release commit. Open questions: none of the four is
+answered by the suite, so all four stay. README's install examples move
+to `version=0.0.4`.
