@@ -10,7 +10,7 @@ use std::env;
 use std::ffi::OsString;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::Command;
 
 use nix::sys::signal::Signal;
 use tokio::runtime::Builder;
@@ -35,15 +35,12 @@ pub fn run(args: &[OsString]) -> io::Result<i32> {
     trust::check(&root, &config)?;
     let state = ProjectState::load_or_create(&root)?;
     let image = resolve_image(&config, &state.id);
-    // A missing profile image is `Box::up`'s refusal.
-    if config.containerfile.is_some() {
-        ensure_project_image(&config, &image)?;
-    }
+    ensure_image(&config, &image)?;
     let argv = pi_argv(args)?;
     // The read-only mounts are prepared after trust, so a refused run leaves
     // no created directory behind.
     let git = Git::prepare(&root, &config.protect)?;
-    let plan = build_plan(&config, &state, &image, &git)?;
+    let plan = build_plan(&config, &state, &root, &image, &git)?;
     let code = run_box(&plan, &cwd, &argv);
     // The box is down; remove the protected directories this run created.
     git.cleanup();
@@ -96,13 +93,24 @@ pub(crate) fn resolve_image(config: &Config, project: &str) -> String {
     }
 }
 
-/// Refuse when the project image has not been built, and report when the
-/// profile image it records is no longer the current one.
-fn ensure_project_image(config: &Config, image: &str) -> io::Result<()> {
-    match image_status(runtime()?, image, Some(&config.profile.image_ref()))? {
+/// Refuse when the image has not been built, naming its build command, and
+/// report when a project image's recorded profile image is no longer the
+/// current one.
+fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
+    let (base, build) = match config.containerfile {
+        Some(_) => (
+            Some(config.profile.image_ref()),
+            "pinfold build".to_string(),
+        ),
+        None => (
+            None,
+            format!("pinfold build --profile {}", config.profile.name),
+        ),
+    };
+    match image_status(runtime()?, image, base.as_deref())? {
         ImageStatus::Missing => Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("image {image} is missing; run `pinfold build`"),
+            format!("image {image} is missing; run `{build}`"),
         )),
         ImageStatus::Current => Ok(()),
         ImageStatus::Stale { recorded, current } => {
@@ -137,13 +145,14 @@ fn pi_argv(args: &[OsString]) -> io::Result<Vec<String>> {
 }
 
 /// The complete box spec for one project.
-fn build_plan(config: &Config, state: &ProjectState, image: &str, git: &Git) -> io::Result<Plan> {
-    let home = state.home.to_str().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("project home {} is not valid UTF-8", state.home.display()),
-        )
-    })?;
+fn build_plan(
+    config: &Config,
+    state: &ProjectState,
+    root: &Path,
+    image: &str,
+    git: &Git,
+) -> io::Result<Plan> {
+    let home = utf8(&state.home, "project home")?;
     let mut labels = BTreeMap::new();
     labels.insert(clean::PROJECT_LABEL.to_string(), state.id.clone());
 
@@ -165,16 +174,9 @@ fn build_plan(config: &Config, state: &ProjectState, image: &str, git: &Git) -> 
     // `safe.directory` through git's environment config skips the check. A
     // host `PINFOLD_ENV_GIT_CONFIG_COUNT` pass-through keeps its entries, so
     // the pi entry goes at its next index.
-    let root = git.root().to_str().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("project root {} is not valid UTF-8", git.root().display()),
-        )
-    })?;
     let count = match env.get("GIT_CONFIG_COUNT") {
-        Some(Env::Exact(value)) => value.parse::<usize>().ok(),
         Some(Env::From { from }) => env::var(from).ok().and_then(|value| value.parse().ok()),
-        None => None,
+        _ => None,
     }
     .unwrap_or(0);
     env.insert(
@@ -187,13 +189,13 @@ fn build_plan(config: &Config, state: &ProjectState, image: &str, git: &Git) -> 
     );
     env.insert(
         format!("GIT_CONFIG_VALUE_{count}"),
-        Env::Exact(root.to_string()),
+        Env::Exact(utf8(root, "project root")?.to_string()),
     );
 
     let mut mounts = vec![
         Mount {
-            host: git.root().to_path_buf(),
-            guest: git.root().to_path_buf(),
+            host: root.to_path_buf(),
+            guest: root.to_path_buf(),
             readonly: false,
         },
         Mount {
@@ -225,6 +227,16 @@ fn build_plan(config: &Config, state: &ProjectState, image: &str, git: &Git) -> 
     Ok(plan)
 }
 
+/// `path` as a string, for a spec value; `what` names it in the error.
+fn utf8<'a>(path: &'a Path, what: &str) -> io::Result<&'a str> {
+    path.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{what} {} is not valid UTF-8", path.display()),
+        )
+    })
+}
+
 fn run_box(plan: &Plan, cwd: &Path, argv: &[String]) -> io::Result<i32> {
     let init = artifacts::init()?;
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
@@ -234,25 +246,11 @@ fn run_box(plan: &Plan, cwd: &Path, argv: &[String]) -> io::Result<i32> {
         // during startup is caught and the box is removed once it is up.
         let mut shutdown = Shutdown::new(tty)?;
         // The handlers above are the run's; `up` installs none of its own.
-        // `Box::up` owns the spec rules now: a spec refusal reads as the pi
-        // layer's old validate error, and every other refusal keeps its
-        // reason.
+        // A spec refusal reads as the pi layer's own input error.
         let mut box_ = match Box::up(plan, &init, false).await {
             Ok(box_) => box_,
             Err(UpError::Refused(refusal)) if refusal.reason == RefusalReason::Spec => {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, refusal.detail));
-            }
-            // The project image was checked before the run, so a missing
-            // image is the profile's; name its build command.
-            Err(UpError::Refused(refusal)) if refusal.reason == RefusalReason::ImageMissing => {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!(
-                        "image {} is missing; run `pinfold build --profile {}`",
-                        plan.image.as_deref().unwrap_or_default(),
-                        plan.profile.as_deref().unwrap_or_default()
-                    ),
-                ));
             }
             Err(error) => return Err(error.into()),
         };
@@ -277,12 +275,6 @@ fn run_box(plan: &Plan, cwd: &Path, argv: &[String]) -> io::Result<i32> {
     result
 }
 
-/// How the pi run ended.
-enum Stop {
-    Exited(ExitStatus),
-    Signal(Signal),
-}
-
 /// Run pi with this process's stdio and return its exit code. The caller
 /// removes the box; a signal that ends the run reports `128+n`.
 async fn exec_pi(
@@ -302,16 +294,11 @@ async fn exec_pi(
         runtime.exec(&name, tty, Some(&workdir), &exec_through_init(&init, &argv))
     });
     tokio::pin!(exec);
-    let stop = tokio::select! {
-        status = &mut exec => Stop::Exited(
-            status
-                .map_err(|error| io::Error::other(format!("pi exec failed: {error}")))??,
+    Ok(tokio::select! {
+        status = &mut exec => cli::exit_code(
+            status.map_err(|error| io::Error::other(format!("pi exec failed: {error}")))??,
         ),
-        signal = shutdown.recv() => Stop::Signal(signal),
-    };
-    Ok(match stop {
-        Stop::Exited(status) => cli::exit_code(status),
-        Stop::Signal(signal) => 128 + signal as i32,
+        signal = shutdown.recv() => 128 + signal as i32,
     })
 }
 

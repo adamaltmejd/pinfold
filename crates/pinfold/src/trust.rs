@@ -100,7 +100,7 @@ fn read(root: &Path) -> io::Result<Option<Trust>> {
 fn record_path(root: &Path) -> io::Result<PathBuf> {
     Ok(dirs::state_dir()?
         .join("trust")
-        .join(format!("{}.json", state::project_id(root)?)))
+        .join(format!("{}.json", state::project_id(root))))
 }
 
 /// The sha256 of `bytes`, hex-encoded.

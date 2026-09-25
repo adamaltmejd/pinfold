@@ -76,7 +76,7 @@ pub fn attach(args: &[OsString]) -> io::Result<i32> {
     }
     let cwd = fs::canonicalize(std::env::current_dir()?)?;
     let root = crate::pi::launch::project_root(&cwd)?;
-    let id = crate::pi::state::project_id(&root)?;
+    let id = crate::pi::state::project_id(&root);
     let runtime = runtime()?;
     let boxes: Vec<BoxInfo> = runtime
         .list()?
@@ -570,7 +570,7 @@ pub fn doctor(args: &[OsString]) -> io::Result<i32> {
     let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
     // The config must parse; a broken `.pinfold.toml` is itself the answer.
     let config = Config::load(&root)?;
-    let project = crate::pi::state::project_id(&root)?;
+    let project = crate::pi::state::project_id(&root);
     let profile = &config.profile.name;
     let mut problems = 0;
 
@@ -886,7 +886,7 @@ pub fn config(args: &[OsString]) -> io::Result<i32> {
         }
     };
     let config = Config::load(&root)?;
-    let project = crate::pi::state::project_id(&root)?;
+    let project = crate::pi::state::project_id(&root);
     let home = crate::pi::state::project_home(&root)?;
     let image = crate::pi::launch::resolve_image(&config, &project);
     let image_built = !matches!(
@@ -1052,8 +1052,7 @@ pub fn build(args: &[OsString]) -> io::Result<i32> {
             trust::check(&root, &config)?;
             let project = config
                 .containerfile
-                .map(|bytes| crate::pi::state::project_id(&root).map(|id| (id, bytes)))
-                .transpose()?;
+                .map(|bytes| (crate::pi::state::project_id(&root), bytes));
             (config.profile, project)
         }
     };

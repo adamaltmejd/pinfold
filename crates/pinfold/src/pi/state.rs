@@ -58,7 +58,7 @@ impl ProjectState {
 /// The project's state dir and its id, for an already canonical `root`.
 /// Computes paths only; creates nothing.
 fn state_dir_for(root: &Path) -> io::Result<(String, PathBuf)> {
-    let id = id_for(root);
+    let id = project_id(root);
     let dir = dirs::state_dir()?.join("projects").join(&id);
     Ok((id, dir))
 }
@@ -68,11 +68,6 @@ fn state_dir_for(root: &Path) -> io::Result<(String, PathBuf)> {
 pub fn project_home(root: &Path) -> io::Result<PathBuf> {
     let (_, dir) = state_dir_for(root)?;
     Ok(dir.join("home"))
-}
-
-/// The id for a canonical `root`. Trust records use the same id.
-pub fn project_id(root: &Path) -> io::Result<String> {
-    Ok(id_for(root))
 }
 
 /// Canonicalize `path`, naming it in the error.
@@ -85,8 +80,8 @@ pub(crate) fn canonical(path: &Path) -> io::Result<PathBuf> {
     })
 }
 
-/// The id for an already canonical `root`.
-fn id_for(root: &Path) -> String {
+/// The id for an already canonical `root`. Trust records use the same id.
+pub fn project_id(root: &Path) -> String {
     let name = root
         .file_name()
         .and_then(|name| name.to_str())

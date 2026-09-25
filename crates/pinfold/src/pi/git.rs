@@ -9,6 +9,7 @@
 //! resolves a bind-mount source on the host, and the box can write the
 //! project.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -23,8 +24,6 @@ const ALWAYS_PROTECT: [&str; 3] = [".vscode", ".claude", ".idea"];
 /// One run's read-only mounts and the absent protected directories it
 /// created for them.
 pub struct Git {
-    /// The project root the mounts are relative to.
-    root: PathBuf,
     /// Read-only mounts at their own absolute paths.
     readonly: Vec<Mount>,
     /// Protected directories that did not exist and were created empty.
@@ -40,13 +39,13 @@ impl Git {
     /// removes it after the run when it is still empty.
     pub fn prepare(root: &Path, protect: &[String]) -> io::Result<Git> {
         let dot_git = root.join(".git");
-        let mut paths = Vec::new();
+        let mut paths = BTreeSet::new();
         match path_kind(&dot_git)? {
             PathKind::Absent => {}
             PathKind::Directory => {
-                paths.push(dot_git);
+                paths.insert(dot_git);
                 if let Some(hooks) = hooks_path(root)? {
-                    paths.push(hooks);
+                    paths.insert(hooks);
                 }
             }
             PathKind::File => {
@@ -61,18 +60,15 @@ impl Git {
             PathKind::Other => return Err(not_real_dir(&dot_git)),
         }
         for name in ALWAYS_PROTECT {
-            paths.push(root.join(name));
+            paths.insert(root.join(name));
         }
         for entry in protect {
-            paths.push(protected_path(root, entry)?);
+            paths.insert(protected_path(root, entry)?);
         }
 
         let mut readonly = Vec::new();
         let mut created = Vec::new();
         for path in paths {
-            if readonly.iter().any(|mount: &Mount| mount.guest == path) {
-                continue;
-            }
             match path_kind(&path)? {
                 PathKind::Directory => {}
                 PathKind::Absent => {
@@ -98,16 +94,7 @@ impl Git {
                 readonly: true,
             });
         }
-        Ok(Git {
-            root: root.to_path_buf(),
-            readonly,
-            created,
-        })
-    }
-
-    /// The project root the mounts belong to.
-    pub fn root(&self) -> &Path {
-        &self.root
+        Ok(Git { readonly, created })
     }
 
     /// The read-only mounts, at their own absolute paths.
