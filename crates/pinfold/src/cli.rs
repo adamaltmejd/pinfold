@@ -256,6 +256,16 @@ fn up(args: &[String]) -> io::Result<i32> {
 /// Start the validated box, report it ready, hold it, and print the `down`
 /// line. A refusal prints its own line.
 async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
+    // A caller's spec may not name pinfold's label namespace. The check is
+    // here, not in `Plan::validate`, because `pinfold pi` runs its own plan,
+    // which carries `dev.pinfold.project`, through the same `Box::up`.
+    if let Err(detail) = plan.validate_reserved_labels() {
+        return Ok(refused(Refusal {
+            box_name: Some(plan.name.clone()),
+            reason: RefusalReason::Spec,
+            detail,
+        }));
+    }
     let init = artifacts::init()?;
     let mut box_ = match Box::up(plan, &init, Some(&mut signals)).await {
         Ok(box_) => box_,
