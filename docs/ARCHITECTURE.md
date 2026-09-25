@@ -509,8 +509,7 @@ Automatic, never prompting:
 `pinfold clean` lists sizes, then removes:
 - everything automatic, now
 - the runtime's build cache (Apple: the builder container; podman: the
-  `dev.pinfold.layer` intermediate images no image builds on, listed with
-  their size)
+  `dev.pinfold.layer` intermediate images no image builds on)
 - caches in project homes (`~/.cache`), except a project's with a live box
 - state of projects whose checkout is gone
 - with `--unused AGE`, state of projects not run for that long. Never

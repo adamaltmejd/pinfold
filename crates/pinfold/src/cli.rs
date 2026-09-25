@@ -17,8 +17,7 @@ use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
 use crate::core::plan::Plan;
 use crate::core::profile::{self, Profile};
 use crate::core::runtime::{
-    BoxInfo, BuildCache, ImageStatus, Runtime, exec_through_init, image_status, local_image_id,
-    podman, runtime,
+    BoxInfo, ImageStatus, Runtime, exec_through_init, image_status, local_image_id, podman, runtime,
 };
 use crate::dirs;
 use crate::pi::launch::utf8;
@@ -418,7 +417,7 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
     } else {
         println!("pinfold clean: reclaiming {} B", plan.total());
     }
-    plan.print();
+    plan.print(runtime);
     if !dry_run {
         plan.remove(runtime)?;
     }
@@ -434,7 +433,6 @@ struct CleanPlan {
     automatic: u64,
     project_caches: u64,
     project_state: u64,
-    build_cache: BuildCache,
 }
 
 impl CleanPlan {
@@ -476,7 +474,6 @@ impl CleanPlan {
             + clean::total_bytes(&egress);
         let project_caches = clean::total_bytes(&caches);
         let project_state = clean::total_bytes(&stale);
-        let build_cache = runtime.build_cache()?;
         Ok(CleanPlan {
             boxes,
             caches,
@@ -484,26 +481,19 @@ impl CleanPlan {
             automatic,
             project_caches,
             project_state,
-            build_cache,
         })
     }
 
-    /// The bytes a real `clean` would reclaim.
+    /// The bytes a real `clean` would reclaim, the unmeasured build cache
+    /// aside.
     fn total(&self) -> u64 {
-        let build_cache = match self.build_cache {
-            BuildCache::Bytes(bytes) => bytes,
-            BuildCache::Named(_) => 0,
-        };
-        self.automatic + build_cache + self.project_caches + self.project_state
+        self.automatic + self.project_caches + self.project_state
     }
 
     /// List the categories, as `clean` and `doctor` both show them.
-    fn print(&self) {
+    fn print(&self, runtime: &dyn Runtime) {
         println!("  automatic maintenance: {} B", self.automatic);
-        match self.build_cache {
-            BuildCache::Bytes(bytes) => println!("  build cache: {bytes} B"),
-            BuildCache::Named(name) => println!("  build cache: {name}"),
-        }
+        println!("  build cache: {}", runtime.build_cache());
         println!("  project caches: {} B", self.project_caches);
         println!("  project state: {} B", self.project_state);
     }
@@ -635,7 +625,7 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     println!("disk:");
     match CleanPlan::measure(runtime, None) {
         Ok(plan) => {
-            plan.print();
+            plan.print(runtime);
             let total = plan.total();
             if total > CLEAN_SUGGESTION_BYTES {
                 println!("  {total} B is over 20 GB; run `pinfold clean`");

@@ -1,7 +1,7 @@
 //! The rootless podman runtime adapter. Linux boxes share the host kernel,
 //! so it adds the controls the spec's "podman adds" list names.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
@@ -15,8 +15,8 @@ use crate::core::clean::LAYER_LABEL;
 use crate::core::plan::{Env, Plan};
 use crate::core::rfc3339;
 use crate::core::runtime::{
-    BoxInfo, BoxStat, BuildCache, BuildRequest, ImageIdentity, ImageInfo, MemoryStat, PidsStat,
-    Preflight, Runtime, bind, inspect, output, parse_json, run, spawn_error,
+    BoxInfo, BoxStat, BuildRequest, ImageIdentity, ImageInfo, MemoryStat, PidsStat, Preflight,
+    Runtime, bind, inspect, output, parse_json, run, spawn_error,
 };
 use crate::dirs;
 
@@ -184,8 +184,10 @@ impl Runtime for Podman {
     }
 
     fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
+        let json = output(&["podman", "image", "list", "--format", "json"])?;
+        let images: Vec<ListedImage> = parse_json("podman image list", &json)?;
         let mut infos = Vec::new();
-        for image in listed_images(false)? {
+        for image in images {
             // One entry per name, so Maintenance can remove every tag of an
             // old image; a dangling image is removed by its id.
             let references = if image.names.is_empty() {
@@ -227,8 +229,8 @@ impl Runtime for Podman {
         output(&["podman", "image", "prune", "--force", "--filter", &filter]).map(|_| ())
     }
 
-    fn build_cache(&self) -> io::Result<BuildCache> {
-        Ok(BuildCache::Bytes(build_cache_bytes(&listed_images(true)?)))
+    fn build_cache(&self) -> &'static str {
+        "the dev.pinfold.layer intermediate images no image builds on"
     }
 
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
@@ -419,67 +421,6 @@ struct ListedImage {
     names: Vec<String>,
     #[serde(rename = "Labels", default, deserialize_with = "empty_default")]
     labels: BTreeMap<String, String>,
-    #[serde(rename = "ParentId", default)]
-    parent: String,
-    /// The bytes of every layer the image stacks, its parents' included.
-    #[serde(rename = "Size", default)]
-    size: i64,
-}
-
-/// The bytes `image prune --filter label=dev.pinfold.layer` would reclaim:
-/// the untagged images carrying the layer label that no image outside that
-/// set builds on. Each counts the bytes it adds to its parent.
-fn build_cache_bytes(images: &[ListedImage]) -> u64 {
-    let by_id: BTreeMap<&str, &ListedImage> = images
-        .iter()
-        .map(|image| (image.id.as_str(), image))
-        .collect();
-    let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for image in images {
-        children
-            .entry(image.parent.as_str())
-            .or_default()
-            .push(&image.id);
-    }
-    // Prune's own convergence: an image goes once every child has gone.
-    let mut cache: BTreeSet<&str> = BTreeSet::new();
-    loop {
-        let before = cache.len();
-        for image in images {
-            if image.names.is_empty()
-                && image.labels.contains_key(LAYER_LABEL)
-                && children
-                    .get(image.id.as_str())
-                    .is_none_or(|ids| ids.iter().all(|id| cache.contains(id)))
-            {
-                cache.insert(&image.id);
-            }
-        }
-        if cache.len() == before {
-            break;
-        }
-    }
-    cache
-        .iter()
-        .map(|id| {
-            let image = by_id[id];
-            let parent = by_id
-                .get(image.parent.as_str())
-                .map_or(0, |parent| parent.size);
-            u64::try_from(image.size - parent).unwrap_or(0)
-        })
-        .sum()
-}
-
-/// Every image `podman image list` reports; with `all`, intermediate
-/// images too.
-fn listed_images(all: bool) -> io::Result<Vec<ListedImage>> {
-    let argv: &[&str] = if all {
-        &["podman", "image", "list", "--all", "--format", "json"]
-    } else {
-        &["podman", "image", "list", "--format", "json"]
-    };
-    parse_json("podman image list", &output(argv)?)
 }
 
 /// One `podman image inspect` entry, as much as pinfold needs.

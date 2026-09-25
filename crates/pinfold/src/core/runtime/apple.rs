@@ -10,8 +10,8 @@ use tokio::process::Child;
 
 use crate::core::plan::Plan;
 use crate::core::runtime::{
-    BoxInfo, BoxStat, BuildCache, BuildRequest, ImageIdentity, ImageInfo, MemoryStat, PidsStat,
-    Preflight, Runtime, inspect, output, parse_json, run, spawn_error,
+    BoxInfo, BoxStat, BuildRequest, ImageIdentity, ImageInfo, MemoryStat, PidsStat, Preflight,
+    Runtime, inspect, output, parse_json, run, spawn_error,
 };
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
@@ -163,8 +163,8 @@ impl Runtime for Apple {
         run(&["container", "builder", "delete", "--force"])
     }
 
-    fn build_cache(&self) -> io::Result<BuildCache> {
-        Ok(BuildCache::Named("the runtime's builder container"))
+    fn build_cache(&self) -> &'static str {
+        "the runtime's builder container"
     }
 
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {

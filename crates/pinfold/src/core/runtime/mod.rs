@@ -193,14 +193,6 @@ pub struct BuildRequest<'a> {
     pub cache: bool,
 }
 
-/// The runtime's build cache, as `pinfold clean` lists it.
-pub enum BuildCache {
-    /// The bytes [`Runtime::purge_build_cache`] would reclaim.
-    Bytes(u64),
-    /// A cache the runtime does not measure, named.
-    Named(&'static str),
-}
-
 /// One OS's container runtime. Command lines are built as data.
 pub trait Runtime: Sync {
     /// Start the attached `container run` process that owns the box. When
@@ -272,8 +264,9 @@ pub trait Runtime: Sync {
     /// left that no image builds on.
     fn purge_build_cache(&self) -> io::Result<()>;
 
-    /// What [`Runtime::purge_build_cache`] would remove, for `pinfold clean`.
-    fn build_cache(&self) -> io::Result<BuildCache>;
+    /// What [`Runtime::purge_build_cache`] removes, named for `pinfold
+    /// clean` and `doctor`. Its size is not measured.
+    fn build_cache(&self) -> &'static str;
 
     /// Build an image from [`BuildRequest`]. The inner `Err` is the build's
     /// output, stdout and stderr in order, when the build ran and failed.
