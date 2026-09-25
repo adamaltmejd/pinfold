@@ -67,7 +67,7 @@ impl Profile {
     /// `~/.config/pinfold/profiles/<name>/` wins whole; only when no such
     /// directory exists does `default` fall back to the embedded copy.
     pub fn load(name: &str) -> io::Result<Profile> {
-        check_name(name)?;
+        check_name("profile", name)?;
         let root = dirs::config_dir()?.join("profiles").join(name);
         if root.is_dir() {
             return load_dir(name, &root);
@@ -77,7 +77,13 @@ impl Profile {
                 name: name.to_string(),
                 containerfile: DEFAULT_CONTAINERFILE.to_vec(),
                 config: DEFAULT_CONFIG.to_vec(),
-                home: embedded_home(),
+                home: DEFAULT_HOME
+                    .iter()
+                    .map(|(path, contents)| Seed {
+                        path: PathBuf::from(path),
+                        contents: contents.to_vec(),
+                    })
+                    .collect(),
                 share: Some(embedded_share()?),
             });
         }
@@ -91,32 +97,6 @@ impl Profile {
     pub fn image_ref(&self) -> String {
         format!("pinfold/profile-{}:latest", self.name)
     }
-}
-
-/// The image a Containerfile's first `FROM` builds on, when it is a plain
-/// reference. A `FROM` that names a variable has none.
-pub fn base_image(containerfile: &[u8]) -> Option<&str> {
-    let text = std::str::from_utf8(containerfile).ok()?;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let mut words = line.split_whitespace();
-        if !words.next()?.eq_ignore_ascii_case("FROM") {
-            continue;
-        }
-        for word in words {
-            if word.starts_with("--") {
-                continue;
-            }
-            if word.contains('$') {
-                return None;
-            }
-            return Some(word);
-        }
-    }
-    None
 }
 
 /// Read a profile from a user's directory.
@@ -148,17 +128,6 @@ fn load_dir(name: &str, root: &Path) -> io::Result<Profile> {
         home,
         share: share.is_dir().then_some(share),
     })
-}
-
-/// The embedded default's `home/` files.
-fn embedded_home() -> Vec<Seed> {
-    DEFAULT_HOME
-        .iter()
-        .map(|(path, contents)| Seed {
-            path: PathBuf::from(path),
-            contents: contents.to_vec(),
-        })
-        .collect()
 }
 
 /// The embedded default's `share/`, written under the cache. The content
@@ -210,31 +179,25 @@ fn read_seed_dir(root: &Path, dir: &Path, seeds: &mut Vec<Seed>) -> io::Result<(
     Ok(())
 }
 
-/// Refuse a name that is not safe as a profile directory name, with the
-/// sentence `profile new` and [`Profile::load`] share.
-pub fn check_name(name: &str) -> io::Result<()> {
-    if valid_name(name) {
+/// Refuse a name that is not safe as a directory name: one path component
+/// with no traversal. `what` names the kind of name, a profile or an image.
+pub fn check_name(what: &str, name: &str) -> io::Result<()> {
+    let mut bytes = name.bytes();
+    let valid = bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_lowercase() || first.is_ascii_digit())
+        && bytes.all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || byte == b'-'
+                || byte == b'_'
+                || byte == b'.'
+        });
+    if valid {
         return Ok(());
     }
     Err(io::Error::new(
         io::ErrorKind::InvalidInput,
-        format!("profile name {name:?} must start alphanumeric and hold only [a-z0-9._-]"),
+        format!("{what} name {name:?} must start alphanumeric and hold only [a-z0-9._-]"),
     ))
-}
-
-/// Whether `name` is safe as a profile directory name: one path component
-/// with no traversal.
-pub fn valid_name(name: &str) -> bool {
-    let mut bytes = name.bytes();
-    match bytes.next() {
-        Some(first) if first.is_ascii_lowercase() || first.is_ascii_digit() => {}
-        _ => return false,
-    }
-    bytes.all(|byte| {
-        byte.is_ascii_lowercase()
-            || byte.is_ascii_digit()
-            || byte == b'-'
-            || byte == b'_'
-            || byte == b'.'
-    })
 }

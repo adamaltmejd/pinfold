@@ -66,14 +66,12 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
         clean::PROJECT_LABEL,
         clean::IMAGE_LABEL,
     ] {
-        labels.insert(
-            family.to_string(),
-            if family == build.label {
-                build.source.to_string()
-            } else {
-                String::new()
-            },
-        );
+        let value = if family == build.label {
+            build.source
+        } else {
+            ""
+        };
+        labels.insert(family.to_string(), value.to_string());
     }
     // Likewise the base: the caller set the resolved digest, or this makes
     // it empty, never an inherited copy.
@@ -145,12 +143,7 @@ pub enum ImageError {
 /// Build a caller's image `pinfold/image-<name>` from its own context.
 pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
     let spec = |detail: String| ImageError::Refused(RefusalReason::Spec, detail);
-    if !profile::valid_name(&request.name) {
-        return Err(spec(format!(
-            "image name {:?} must start alphanumeric and hold only [a-z0-9._-]",
-            request.name
-        )));
-    }
+    profile::check_name("image", &request.name).map_err(|error| spec(error.to_string()))?;
     if let Some(key) = request
         .labels
         .keys()
@@ -214,10 +207,23 @@ fn build_id() -> String {
 }
 
 /// The digest of the image a Containerfile's first `FROM` pulls, when it
-/// names one the runtime can resolve.
+/// names one the runtime can resolve. A `FROM` that names a variable has
+/// none.
 pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Option<String>> {
-    Ok(profile::base_image(containerfile)
-        .map(|base| runtime.image_digest(base))
-        .transpose()?
-        .flatten())
+    let Ok(text) = std::str::from_utf8(containerfile) else {
+        return Ok(None);
+    };
+    let base = text
+        .lines()
+        .map(str::split_whitespace)
+        .find_map(|mut words| {
+            if !words.next()?.eq_ignore_ascii_case("FROM") {
+                return None;
+            }
+            words.find(|word| !word.starts_with("--"))
+        });
+    match base {
+        Some(base) if !base.contains('$') => runtime.image_digest(base),
+        _ => Ok(None),
+    }
 }

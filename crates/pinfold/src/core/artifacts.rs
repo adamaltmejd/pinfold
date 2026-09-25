@@ -21,10 +21,6 @@ pub const GUEST_PI: &str = "/opt/pinfold/pi";
 const PI_VERSION: &str = "0.87.1";
 
 /// The host path of the pinned pi binary for a box on this host.
-///
-/// On first use the release is downloaded, verified against its pin and
-/// unpacked into the artifact cache; a checksum mismatch leaves nothing in
-/// the cache. Later calls use the cache and touch no network.
 pub fn pi() -> io::Result<PathBuf> {
     let (os_arch, sha256) = pin()?;
     let dir = pi_dir(os_arch)?;
@@ -60,19 +56,15 @@ fn pin() -> io::Result<(&'static str, &'static str)> {
 /// extracts it once per content into the artifact cache. On Linux the CLI
 /// is itself a static Linux binary and mounts its own executable.
 pub fn init() -> io::Result<PathBuf> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
     use std::os::unix::fs::PermissionsExt;
 
     if cfg!(not(target_os = "macos")) {
         return std::env::current_exe();
     }
     const INIT: &[u8] = include_bytes!(env!("PINFOLD_INIT"));
-    let mut hasher = DefaultHasher::new();
-    INIT.hash(&mut hasher);
     let dir = dirs::artifacts_dir()?
         .join("init")
-        .join(format!("{:016x}", hasher.finish()))
+        .join(super::hex(&Sha256::digest(INIT)))
         .join("linux-arm64");
     dirs::install_dir(&dir, |staging| {
         let path = staging.join("pinfold");
@@ -124,31 +116,11 @@ fn pi_dir(os_arch: &str) -> io::Result<PathBuf> {
 /// Artifact versions under `pi/` that no pin names. The embedded init lives
 /// under `init/` and is named by no pin, so it is never listed.
 pub fn unpinned_versions() -> io::Result<Vec<PathBuf>> {
-    let mut unpinned = Vec::new();
-    for entry in dirs::entries(&dirs::artifacts_dir()?.join("pi"))? {
-        if entry.file_name().to_str() == Some(PI_VERSION) {
-            continue;
-        }
-        unpinned.push(entry.path());
-    }
-    Ok(unpinned)
-}
-
-/// Remove artifact versions no pin names.
-pub fn prune_unpinned() -> io::Result<()> {
-    for path in unpinned_versions()? {
-        remove(&path)?;
-    }
-    Ok(())
-}
-
-fn remove(path: &Path) -> io::Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path),
-        Ok(_) => fs::remove_file(path),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
+    Ok(dirs::entries(&dirs::artifacts_dir()?.join("pi"))?
+        .into_iter()
+        .filter(|entry| entry.file_name() != PI_VERSION)
+        .map(|entry| entry.path())
+        .collect())
 }
 
 /// Download `url` into `staging`, verify its sha256, and unpack it there.
@@ -176,7 +148,7 @@ fn unpack(staging: &Path, url: &str, expected: &str, os_arch: &str) -> io::Resul
     if !status.success() {
         return Err(io::Error::other(format!("curl {url}: {status}")));
     }
-    let actual = sha256(&archive)?;
+    let actual = super::hex(&Sha256::digest(fs::read(&archive)?));
     if actual != expected {
         return Err(io::Error::other(format!(
             "pi {PI_VERSION} {os_arch}: checksum mismatch: expected {expected}, got {actual}"
@@ -191,14 +163,5 @@ fn unpack(staging: &Path, url: &str, expected: &str, os_arch: &str) -> io::Resul
     if !status.success() {
         return Err(io::Error::other(format!("tar {url}: {status}")));
     }
-    if !staging.join("pi").join("pi").is_file() {
-        return Err(io::Error::other(format!(
-            "pi {PI_VERSION} {os_arch}: archive has no pi/pi binary"
-        )));
-    }
     fs::remove_file(&archive)
-}
-
-fn sha256(path: &Path) -> io::Result<String> {
-    Ok(super::hex(&Sha256::digest(fs::read(path)?)))
 }

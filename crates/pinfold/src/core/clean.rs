@@ -1,17 +1,10 @@
 //! Automatic maintenance: pinfold only removes what it created.
-//!
-//! After a build, keep the newest two images per source; a caller image
-//! built in the last hour stays whatever its rank. At most once a day,
-//! at the start of any command, prune leftovers: boxes whose owner is gone,
-//! sockets in state dirs no live owner holds, artifact versions no pin names,
-//! and egress logs older than 14 days. The pass reports a problem on stderr
-//! and never fails the command it runs before.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nix::fcntl::{Flock, FlockArg};
 use nix::sys::signal::kill;
@@ -70,17 +63,15 @@ fn maintain_due() -> io::Result<()> {
     // instead of running before every command.
     fs::create_dir_all(&state)?;
     fs::write(&stamp, [])?;
-    daily();
-    Ok(())
-}
-
-/// The pass itself. Every step is attempted; a failure is reported and the
-/// rest continue.
-fn daily() {
+    // Every step is attempted; a failure is reported and the rest continue.
     report("boxes", prune_boxes(runtime()).map(drop));
-    report("sockets", prune_sockets());
-    report("artifacts", artifacts::prune_unpinned());
-    report("egress logs", prune_egress_logs());
+    report("sockets", leftover_socket_dirs().and_then(remove_paths));
+    report(
+        "artifacts",
+        artifacts::unpinned_versions().and_then(remove_paths),
+    );
+    report("egress logs", old_egress_logs().and_then(remove_paths));
+    Ok(())
 }
 
 fn report(what: &str, result: io::Result<()>) {
@@ -112,30 +103,6 @@ pub fn owner_pid(state_dir: &Path) -> Option<i32> {
         .trim()
         .parse()
         .ok()
-}
-
-/// Whether a listed box's owner is alive. A box whose state dir exists under
-/// this state root is judged by its lock. One from another state root keeps
-/// the label pid check: judging it by a lock this root cannot see would call
-/// every other root's live box dead.
-pub fn box_owner_alive(state_dir: &Path, owner: Option<i32>) -> bool {
-    if state_dir.is_dir() {
-        owner_alive(state_dir)
-    } else {
-        owner.is_some_and(pid_alive)
-    }
-}
-
-/// Whether a process with this pid exists. Only for a box from another state
-/// root; everything else goes by [`owner_alive`].
-fn pid_alive(pid: i32) -> bool {
-    if pid <= 0 {
-        return false;
-    }
-    match kill(Pid::from_raw(pid), None) {
-        Ok(()) | Err(nix::errno::Errno::EPERM) => true,
-        Err(_) => false,
-    }
 }
 
 /// A pinfold box whose owning `box up` process is gone: the runtime removes
@@ -200,13 +167,29 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
     })
 }
 
-/// A box's owner pid from its label, and whether that owner is alive.
+/// A box's owner pid from its label, and whether that owner is alive. A box
+/// whose state dir exists under this state root is judged by its lock. One
+/// from another state root is judged by whether its label's pid exists:
+/// judging it by a lock this root cannot see would call every other root's
+/// live box dead.
 pub fn owner(box_: &BoxInfo) -> io::Result<(Option<i32>, bool)> {
     let owner = box_
         .labels
         .get(OWNER_LABEL)
         .and_then(|pid| pid.parse::<i32>().ok());
-    let alive = box_owner_alive(&dirs::box_state_dir(&box_.id)?, owner);
+    let state_dir = dirs::box_state_dir(&box_.id)?;
+    let alive = if state_dir.is_dir() {
+        owner_alive(&state_dir)
+    } else {
+        // Given a pid of 0 or below, kill probes a group of processes.
+        owner.is_some_and(|pid| {
+            pid > 0
+                && matches!(
+                    kill(Pid::from_raw(pid), None),
+                    Ok(()) | Err(nix::errno::Errno::EPERM)
+                )
+        })
+    };
     Ok((owner, alive))
 }
 
@@ -241,14 +224,6 @@ pub fn leftover_socket_dirs() -> io::Result<Vec<PathBuf>> {
     Ok(leftover)
 }
 
-/// Remove state dirs whose owner is gone.
-pub fn prune_sockets() -> io::Result<()> {
-    for dir in leftover_socket_dirs()? {
-        let _ = fs::remove_dir_all(&dir);
-    }
-    Ok(())
-}
-
 /// Egress logs older than [`EGRESS_LOG_AGE`].
 pub fn old_egress_logs() -> io::Result<Vec<PathBuf>> {
     let mut old = Vec::new();
@@ -267,10 +242,16 @@ pub fn old_egress_logs() -> io::Result<Vec<PathBuf>> {
     Ok(old)
 }
 
-/// Remove egress logs older than [`EGRESS_LOG_AGE`].
-pub fn prune_egress_logs() -> io::Result<()> {
-    for log in old_egress_logs()? {
-        fs::remove_file(log)?;
+/// Remove each path, a directory with everything under it. A path already
+/// gone counts as removed.
+pub fn remove_paths(paths: Vec<PathBuf>) -> io::Result<()> {
+    for path in paths {
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&path)?,
+            Ok(_) => fs::remove_file(&path)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
     }
     Ok(())
 }
@@ -302,61 +283,36 @@ pub fn total_bytes<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> u64 {
 }
 
 /// Keep the newest two images carrying `label = source`, removing older ones
-/// and the layers no image references. Called after a successful build. A
-/// caller image built in the last hour is kept whatever its rank, so the ref
-/// its `built` line named still comes up later. Every older image is tried;
-/// a failure keeps that image and the rest still run, so one in-use image
-/// never stops the others from going. An image a listed box reports is never
-/// offered to the runtime: Apple's delete would remove it under the box, so
-/// pinfold skips it itself and reports it like a failed removal.
+/// and the layers no image references. Called after a successful build.
+/// Every older image is tried; a failure keeps that image and the rest still
+/// run, so one in-use image never stops the others from going. An image a
+/// listed box reports is never offered to the runtime: Apple's delete would
+/// remove it under the box, so pinfold skips it itself and reports it like a
+/// failed removal.
 pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result<()> {
     // One list before anything goes: the ids of the images boxes pin.
-    let mut in_use: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut in_use: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for box_ in runtime.list()? {
-        in_use.entry(box_.image_id).or_default().insert(box_.id);
+        in_use.entry(box_.image_id).or_default().push(box_.id);
     }
-    let mut groups: BTreeMap<String, (u128, Vec<String>)> = BTreeMap::new();
+    let mut images: BTreeMap<(SystemTime, String), Vec<String>> = BTreeMap::new();
     for image in runtime.list_images()? {
         if image.labels.get(label).map(String::as_str) != Some(source) {
             continue;
         }
-        let rank = build_rank(&image.labels);
-        let group = groups.entry(image.id).or_insert((0, Vec::new()));
-        group.0 = group.0.max(rank);
-        group.1.push(image.reference);
+        images
+            .entry((build_time(&image.labels), image.id))
+            .or_default()
+            .push(image.reference);
     }
-    let mut images: Vec<(u128, String, Vec<String>)> = groups
-        .into_iter()
-        .map(|(id, (rank, references))| (rank, id, references))
-        .collect();
-    // Newest first; the digest orders equal ranks deterministically.
-    images.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-    // A caller's `built` ref is used later, after other builds of the name,
-    // so hold every caller image built in the last hour whatever its rank.
-    let recent_caller = if label == IMAGE_LABEL {
-        Some(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or_default()
-                .saturating_sub(CALLER_IMAGE_GRACE.as_nanos()),
-        )
-    } else {
-        None
-    };
     let mut failures = Vec::new();
-    for (rank, id, references) in images.into_iter().skip(2) {
-        if recent_caller.is_some_and(|since| rank >= since) {
+    for ((built, id), references) in images.into_iter().rev().skip(2) {
+        if label == IMAGE_LABEL && !built.elapsed().is_ok_and(|age| age > CALLER_IMAGE_GRACE) {
             continue;
         }
         if let Some(boxes) = in_use.get(&id) {
-            // Count a skip like a failed removal: the image stays, the next
-            // build tries again, and the one line names it and its boxes.
             for reference in references {
-                failures.push(format!(
-                    "{reference}: in use by box {}",
-                    boxes.iter().cloned().collect::<Vec<_>>().join(", ")
-                ));
+                failures.push(format!("{reference}: in use by box {}", boxes.join(", ")));
             }
             continue;
         }
@@ -376,10 +332,11 @@ pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::
 
 /// The build time of an image from its build label, which starts with the
 /// build's nanoseconds since the epoch in hex.
-fn build_rank(labels: &BTreeMap<String, String>) -> u128 {
-    labels
+fn build_time(labels: &BTreeMap<String, String>) -> SystemTime {
+    let nanos = labels
         .get(BUILD_LABEL)
         .and_then(|value| value.split('-').next())
-        .and_then(|nanos| u128::from_str_radix(nanos, 16).ok())
-        .unwrap_or(0)
+        .and_then(|nanos| u64::from_str_radix(nanos, 16).ok())
+        .unwrap_or(0);
+    UNIX_EPOCH + Duration::from_nanos(nanos)
 }

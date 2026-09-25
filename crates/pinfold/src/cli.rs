@@ -571,9 +571,9 @@ impl CleanPlan {
         for dead in &self.boxes.dead {
             dead.remove(runtime)?;
         }
-        clean::prune_sockets()?;
-        artifacts::prune_unpinned()?;
-        clean::prune_egress_logs()?;
+        clean::remove_paths(clean::leftover_socket_dirs()?)?;
+        clean::remove_paths(artifacts::unpinned_versions()?)?;
+        clean::remove_paths(clean::old_egress_logs()?)?;
         runtime.purge_build_cache()?;
         for cache in &self.caches {
             fs::remove_dir_all(cache)?;
@@ -1137,7 +1137,7 @@ pub fn profile(args: &[String]) -> io::Result<i32> {
 /// agent config into the new profile after the copy.
 fn profile_new(args: &[String]) -> io::Result<()> {
     let (name, from, from_project) = parse_profile_new(args)?;
-    profile::check_name(&name)?;
+    profile::check_name("profile", &name)?;
     let project_agent = from_project.as_deref().map(project_agent_dir).transpose()?;
     let source = Profile::load(&from);
     let target = dirs::config_dir()?.join("profiles").join(&name);
