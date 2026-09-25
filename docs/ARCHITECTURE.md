@@ -494,7 +494,9 @@ Automatic, never prompting:
 - After a build: keep the newest two images per source (a profile, a
   project or a caller image name), the second for rollback. Remove older
   ones and their dangling layers. An image a box still uses stays, and pins
-  only itself.
+  only itself. A caller image built in the last hour stays, so the ref its
+  `built` line named still comes up; past the hour the newest two rule
+  applies.
 - At most once a day, at the start of any working command (not
   `--version`, `--help` or `init`): prune boxes whose owner
   is gone (nothing holds the lock on its `pid` file), leftover sockets,
@@ -639,7 +641,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, every field is present, and `exec`'d processes carry `oom_score_adj` 1000, so init is never the victim. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
 | 22 | A caller-owned box cannot write .git | With REPO/.git read-only listed before REPO writable, and safe.directory set by the caller: a worktree write succeeds, git log and git status succeed, a hook write, git commit and renaming .git fail, and host git status runs nothing the box wrote. |
-| 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref and the labels; three builds of one name keep the newest two and move latest; a failed build prints its log and makes no image. |
+| 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref and the labels; three builds of one name move latest, and the first build's ref still comes up; a failed build prints its log and makes no image. |
 | 24 | Every build reruns its steps | A second build of one source does not reuse the first's `RUN` layer; on podman it leaves no untagged image. |
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version with no runtime and writes no maintenance stamp. |
 

@@ -1608,7 +1608,10 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     //
     // Sabotage: tag the build but skip the `--context` argument, so the
     // runtime gets no context holding marker.txt; the COPY fails and the
-    // first `built` assertion fails.
+    // first `built` assertion fails. Sabotage: set the caller image window
+    // to zero; the third build removes the first build's ref, so its
+    // existence assertion fails and the ref's `up` is refused
+    // `image-missing`.
     let binary = pinfold();
     let env = TestEnv::new("image-build");
     // The cleanup test's `clean` deletes the runtime's builder; a build
@@ -1672,14 +1675,20 @@ fn a_caller_builds_an_image_from_its_own_tree() {
 
     let names_ids = || labeled_images("dev.pinfold.image", &name);
     let kept = names_ids();
-    assert_eq!(
-        kept.len(),
-        2,
-        "after three builds of one name, two images should remain: {kept:?}"
-    );
+    // A caller's `built` ref is a handle for later, so later builds of the
+    // name do not reclaim it: the first build's ref still names an image.
     assert!(
-        !image_named(&refs[0]) && image_named(&refs[1]) && image_named(&refs[2]),
-        "the two images left are not the second and third builds: {refs:?}"
+        image_named(&refs[0]),
+        "the first build's ref is gone after three builds: {refs:?}"
+    );
+    // And it still comes up, as the caller's later `box up` uses it.
+    let again = box_name("image-again");
+    let spec = serde_json::json!({ "name": again, "image": refs[0] });
+    let mut up = box_up(binary, &env, &spec, &again);
+    up.down(binary, &env);
+    assert!(
+        up.wait().success(),
+        "the first ref's box up did not exit cleanly"
     );
 
     // A failed build carries its log and makes no image.
