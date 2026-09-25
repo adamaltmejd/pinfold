@@ -30,7 +30,7 @@ use crate::trust;
 /// One line per verb from the CLI table in docs/ARCHITECTURE.md, plus the
 /// options that answer before a verb is chosen: the syntax, three or more
 /// spaces, the description. Printed on stdout by `--help`, on stderr for a
-/// malformed invocation, and one line at a time by [`usage`].
+/// malformed invocation, and one line at a time by [`syntax`].
 pub const USAGE: &str = "\
 pinfold pi [pi args…]            pi in a box for this project; `pi` is a symlink to this
 pinfold attach [--box NAME] [cmd…]   bash (or cmd) in this project's running pi box
@@ -62,23 +62,72 @@ pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
     })
 }
 
-/// A malformed invocation: `message`, then the verb's syntax from [`USAGE`].
+/// A malformed invocation: `message`, then the verb's syntax from [`syntax`].
 fn usage(verb: &str, message: &str) -> io::Error {
-    let prefix = format!("pinfold {verb} ");
-    let syntax = if verb == "box" {
-        BOX_USAGE.to_string()
-    } else {
-        USAGE
-            .lines()
-            .filter(|line| line.starts_with(&prefix))
-            .map(|line| line.split("   ").next().unwrap_or(line))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        format!("{message}\nusage: {syntax}"),
+        format!("{message}\nusage: {}", syntax(verb)),
     )
+}
+
+/// `verb`'s syntax: [`BOX_USAGE`] for box, else its [`USAGE`] line up to the
+/// three-space gap. The one place [`usage`] and [`help`] read a syntax line.
+fn syntax(verb: &str) -> String {
+    if verb == "box" {
+        return BOX_USAGE.to_string();
+    }
+    let prefix = format!("pinfold {verb} ");
+    USAGE
+        .lines()
+        .filter(|line| line.starts_with(&prefix))
+        .map(|line| line.split("   ").next().unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A `--help`/`-h` before any `--` in `args`: print `verb`'s syntax from
+/// [`syntax`] on stdout and answer 0, touching no runtime and no state, as
+/// top-level `--help` does. `attach` counts one only before its command, and
+/// `pi`'s arguments are all pi's. A verb with no syntax line is left to the
+/// dispatcher.
+pub fn help(verb: &str, args: &[String]) -> Option<i32> {
+    if !asks_help(verb, args) {
+        return None;
+    }
+    let line = syntax(verb);
+    if line.is_empty() {
+        return None;
+    }
+    println!("{line}");
+    Some(0)
+}
+
+/// Whether `args` ask for `verb`'s help.
+fn asks_help(verb: &str, args: &[String]) -> bool {
+    match verb {
+        "pi" => false,
+        "attach" => attach_asks_help(args),
+        _ => args
+            .iter()
+            .take_while(|arg| arg.as_str() != "--")
+            .any(|arg| arg == "--help" || arg == "-h"),
+    }
+}
+
+/// `attach --help` counts only before its command: `attach ls --help` gives
+/// `--help` to `ls`. `--box` consumes its next argument whatever it is.
+fn attach_asks_help(args: &[String]) -> bool {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--help" | "-h" => return true,
+            "--box" => {
+                args.next();
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// `pinfold allow`: trust this project's `.pinfold.toml` and Containerfile.
