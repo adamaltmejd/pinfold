@@ -162,7 +162,20 @@ impl Box {
         // the runtime sees the resolved plan. Resolving writes nothing; the
         // seeds wait until the name is claimed.
         let mut plan = plan.clone();
-        let seeding = resolve_profile(&mut plan)
+        let profile = resolve_profile(&mut plan)
+            .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
+
+        // Pinfold adds the profile's `share/` above and the harness mount in
+        // `start`. Check the spec's mounts against both before `home_mount`
+        // picks the mount behind `$HOME`, so a clash is refused as spec and
+        // no tie can hide it.
+        let harness =
+            (plan.harness.as_deref() == Some(HARNESS_PI)).then(|| Path::new(artifacts::GUEST_PI));
+        plan.validate_guests(harness)
+            .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
+        let seeding = profile
+            .map(|profile| resolve_seeding(&plan, profile))
+            .transpose()
             .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
 
         let runtime = runtime();
@@ -554,8 +567,8 @@ fn resolve_harness(plan: &mut Plan) -> io::Result<()> {
     Ok(())
 }
 
-/// A profile's `home/` seeds, resolved before the refusal checks, and the
-/// writable mount behind `$HOME` to copy them into.
+/// A profile's `home/` seeds and the writable mount behind `$HOME` to copy
+/// them into.
 struct Seeding {
     mount: Mount,
     /// The plain path from the mount's guest root to `$HOME`.
@@ -563,11 +576,17 @@ struct Seeding {
     seeds: Vec<Seed>,
 }
 
+/// A loaded profile's name and `home/` seeds, before the mount behind
+/// `$HOME` is chosen from the final mount list.
+struct ResolvedProfile {
+    name: String,
+    seeds: Vec<Seed>,
+}
+
 /// Load the spec's profile and fold its image and `share/` mount into the
-/// plan. The seed target is computed here but nothing is written, so every
-/// refusal that depends on the profile is decided before creation. Returns
-/// the seeding when the profile has `home/` seeds.
-fn resolve_profile(plan: &mut Plan) -> io::Result<Option<Seeding>> {
+/// plan. The `$HOME` seeds wait until the name is claimed. Returns the
+/// seeds when the profile has `home/`.
+fn resolve_profile(plan: &mut Plan) -> io::Result<Option<ResolvedProfile>> {
     let Some(name) = plan.profile.clone() else {
         return Ok(None);
     };
@@ -585,12 +604,21 @@ fn resolve_profile(plan: &mut Plan) -> io::Result<Option<Seeding>> {
     if profile.home.is_empty() {
         return Ok(None);
     }
-    let (mount, relative) = home_mount(plan, &name)?;
-    Ok(Some(Seeding {
-        mount,
-        relative,
+    Ok(Some(ResolvedProfile {
+        name,
         seeds: profile.home,
     }))
+}
+
+/// The writable mount behind `$HOME` and the seeds to copy into it. Called
+/// after the duplicate-guest check, so no two mounts can hold `$HOME`.
+fn resolve_seeding(plan: &Plan, profile: ResolvedProfile) -> io::Result<Seeding> {
+    let (mount, relative) = home_mount(plan, &profile.name)?;
+    Ok(Seeding {
+        mount,
+        relative,
+        seeds: profile.seeds,
+    })
 }
 
 /// A refusal carrying `plan`'s box name.
@@ -616,12 +644,11 @@ fn home_mount(plan: &Plan, name: &str) -> io::Result<(Mount, PathBuf)> {
         return Err(refuse("the box spec has no exact HOME env entry".into()));
     };
     let home = Path::new(home);
-    // The deepest mount holding `$HOME`. `rev` keeps the first on a tie,
-    // which only a spec mount at the profile's share path can make.
+    // The deepest mount holding `$HOME`. The duplicate check ran first, so
+    // no two mounts can name one guest path and the pick is unambiguous.
     let Some((mount, relative)) = plan
         .mounts
         .iter()
-        .rev()
         .filter_map(|mount| Some((mount, home.strip_prefix(&mount.guest).ok()?)))
         .max_by_key(|(mount, _)| mount.guest.components().count())
     else {
