@@ -162,7 +162,7 @@ impl Box {
         // the runtime sees the resolved plan. Resolving writes nothing; the
         // seeds wait until the name is claimed.
         let mut plan = plan.clone();
-        let profile = resolve_profile(&mut plan)
+        let seeds = resolve_profile(&mut plan)
             .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
 
         // Pinfold adds the profile's `share/` above and the harness mount in
@@ -172,8 +172,8 @@ impl Box {
         let harness = plan.harness.as_deref().map(artifacts::guest);
         plan.validate_guests(harness.as_deref())
             .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
-        let seeding = profile
-            .map(|profile| resolve_seeding(&plan, profile))
+        let seeding = seeds
+            .map(|seeds| home_mount(&plan, seeds))
             .transpose()
             .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
 
@@ -221,7 +221,7 @@ impl Box {
         match runtime.list() {
             Ok(boxes) if boxes.iter().all(|box_| box_.id != plan.name) => {}
             listed => {
-                abort(&plan.name, &state_dir, Parts::default()).await;
+                abort(&plan.name, &state_dir, None).await;
                 return Err(match listed {
                     Ok(_) => refused(
                         &plan,
@@ -234,15 +234,15 @@ impl Box {
         }
 
         // Dropping a start part-way tears nothing down, so a signal ends it
-        // here and `parts` says what to remove.
-        let mut parts = Parts::default();
+        // here and `child` says what to remove.
+        let mut child = None;
         let starting = start(
             &mut plan,
             init,
             &preflight,
             seeding.as_ref(),
             &state_dir,
-            &mut parts,
+            &mut child,
         );
         let started = match signals {
             Some(signals) => tokio::select! {
@@ -255,7 +255,7 @@ impl Box {
         let labels = match started {
             Ok(labels) => labels,
             Err(stop) => {
-                let status = abort(&plan.name, &state_dir, parts).await;
+                let status = abort(&plan.name, &state_dir, child).await;
                 return Err(match stop {
                     Stop::Signal => UpError::Signal,
                     Stop::Failed(error) => UpError::Other(error),
@@ -275,10 +275,7 @@ impl Box {
             image_ref: image,
             state_dir,
             _lock: lock,
-            child: parts
-                .child
-                .take()
-                .expect("a started box has a runtime child"),
+            child: child.expect("a started box has a runtime child"),
         })
     }
 
@@ -373,17 +370,15 @@ impl From<io::Error> for Stop {
     }
 }
 
-/// What a start has made so far besides the claimed state dir.
-#[derive(Default)]
-struct Parts {
-    child: Option<Child>,
-}
-
 /// Remove what a failed start left: stop the runtime child, take the box
 /// down, then remove the claimed state dir. The box goes down first, so no
 /// checker sees a box whose state dir is gone.
-async fn abort(name: &str, state_dir: &Path, parts: Parts) -> Option<io::Result<ExitStatus>> {
-    let status = match parts.child {
+async fn abort(
+    name: &str,
+    state_dir: &Path,
+    child: Option<Child>,
+) -> Option<io::Result<ExitStatus>> {
+    let status = match child {
         Some(mut child) => {
             // The client goes first, so one still creating the box cannot
             // finish after the removal. The box exists by name even when
@@ -450,7 +445,7 @@ fn lock_pid(state_dir: &Path) -> io::Result<Flock<File>> {
 }
 
 /// The start after the claim: harness, seeds, proxy, runtime, readiness.
-/// What it creates goes into `parts` as soon as it exists, so a failure, or
+/// The runtime child goes into `child` as soon as it exists, so a failure, or
 /// a signal at any await, removes exactly that. Returns the box's labels as
 /// the runtime reports them.
 async fn start(
@@ -459,7 +454,7 @@ async fn start(
     preflight: &Preflight,
     seeding: Option<&Seeding>,
     state_dir: &Path,
-    parts: &mut Parts,
+    child: &mut Option<Child>,
 ) -> Result<BTreeMap<String, String>, Stop> {
     // The harness artifact is fetched and folded in after the claim, so a
     // refused box downloads nothing. The spec's own env wins.
@@ -485,9 +480,7 @@ async fn start(
     // before the runtime is asked to create anything.
     tokio::task::yield_now().await;
     let runtime = runtime();
-    let child = parts
-        .child
-        .insert(runtime.up(plan, init, socket.as_deref(), preflight)?);
+    let child = child.insert(runtime.up(plan, init, socket.as_deref(), preflight)?);
     let stdout = child
         .stdout
         .take()
@@ -577,17 +570,10 @@ struct Seeding {
     seeds: Vec<Seed>,
 }
 
-/// A loaded profile's name and `home/` seeds, before the mount behind
-/// `$HOME` is chosen from the final mount list.
-struct ResolvedProfile {
-    name: String,
-    seeds: Vec<Seed>,
-}
-
 /// Load the spec's profile and fold its image and `share/` mount into the
 /// plan. The `$HOME` seeds wait until the name is claimed. Returns the
 /// seeds when the profile has `home/`.
-fn resolve_profile(plan: &mut Plan) -> io::Result<Option<ResolvedProfile>> {
+fn resolve_profile(plan: &mut Plan) -> io::Result<Option<Vec<Seed>>> {
     let Some(name) = plan.profile.clone() else {
         return Ok(None);
     };
@@ -602,24 +588,7 @@ fn resolve_profile(plan: &mut Plan) -> io::Result<Option<ResolvedProfile>> {
             readonly: true,
         });
     }
-    if profile.home.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(ResolvedProfile {
-        name,
-        seeds: profile.home,
-    }))
-}
-
-/// The writable mount behind `$HOME` and the seeds to copy into it. Called
-/// after the duplicate-guest check, so no two mounts can hold `$HOME`.
-fn resolve_seeding(plan: &Plan, profile: ResolvedProfile) -> io::Result<Seeding> {
-    let (mount, relative) = home_mount(plan, &profile.name)?;
-    Ok(Seeding {
-        mount,
-        relative,
-        seeds: profile.seeds,
-    })
+    Ok((!profile.home.is_empty()).then_some(profile.home))
 }
 
 /// A refusal carrying `plan`'s box name.
@@ -632,9 +601,11 @@ fn refused(plan: &Plan, reason: RefusalReason, detail: impl Into<String>) -> UpE
 }
 
 /// The mount behind the spec's exact `$HOME` and the plain path from its
-/// guest root to `$HOME`, for profile `name`'s seeds. The mount must be
-/// writable and the path must not step out of it.
-fn home_mount(plan: &Plan, name: &str) -> io::Result<(Mount, PathBuf)> {
+/// guest root to `$HOME`, for the profile's `seeds`. The mount must be
+/// writable and the path must not step out of it. Called after the
+/// duplicate-guest check, so no two mounts can hold `$HOME`.
+fn home_mount(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
+    let name = plan.profile.as_deref().unwrap_or_default();
     let refuse = |why: String| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -677,7 +648,11 @@ fn home_mount(plan: &Plan, name: &str) -> io::Result<(Mount, PathBuf)> {
             mount.guest.display()
         )));
     }
-    Ok((mount.clone(), relative.to_path_buf()))
+    Ok(Seeding {
+        mount: mount.clone(),
+        relative: relative.to_path_buf(),
+        seeds,
+    })
 }
 
 /// Copy seeds into the host `$HOME`, skipping anything already there. The
@@ -686,7 +661,10 @@ fn home_mount(plan: &Plan, name: &str) -> io::Result<(Mount, PathBuf)> {
 /// outside it.
 fn seed_home(seeding: &Seeding) -> io::Result<()> {
     let host = &seeding.mount.host;
-    let root = open_mount_dir(host)?;
+    // The spec names the mount's host directory and the runtime mounts it,
+    // so it is the seed walk's trust root.
+    let root = nix::fcntl::open(host, OFlag::O_DIRECTORY | OFlag::O_CLOEXEC, Mode::empty())
+        .map_err(|error| seed_error(error, &format!("open mount {}", host.display())))?;
     for seed in &seeding.seeds {
         seed_file(
             &root,
@@ -696,13 +674,6 @@ fn seed_home(seeding: &Seeding) -> io::Result<()> {
         )?;
     }
     Ok(())
-}
-
-/// Open the mount's host directory. The spec names it and the runtime mounts
-/// it, so it is the seed walk's trust root.
-fn open_mount_dir(host: &Path) -> io::Result<OwnedFd> {
-    nix::fcntl::open(host, OFlag::O_DIRECTORY | OFlag::O_CLOEXEC, Mode::empty())
-        .map_err(|error| seed_error(error, &format!("open mount {}", host.display())))
 }
 
 /// Write one seed at `relative` below `root`, walking it with `openat` and

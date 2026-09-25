@@ -13,7 +13,6 @@ use crate::core::{artifacts, network, proxy};
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
-    /// The box's name.
     pub name: String,
     /// The image to run. When absent, the profile's image is used.
     #[serde(default)]
@@ -181,7 +180,6 @@ pub struct Mount {
     pub readonly: bool,
 }
 
-/// The box user.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct User {
@@ -315,21 +313,13 @@ impl Plan {
     /// final list too.
     pub fn validate_guests(&self, extra: Option<&Path>) -> Result<(), String> {
         let mut guests = BTreeSet::new();
-        for mount in &self.mounts {
-            if !guests.insert(mount.guest.as_path()) {
+        for guest in self.mounts.iter().map(|m| m.guest.as_path()).chain(extra) {
+            if !guests.insert(guest) {
                 return Err(invalid(format!(
                     "two mounts name the same guest path {}",
-                    mount.guest.display()
+                    guest.display()
                 )));
             }
-        }
-        if let Some(extra) = extra
-            && guests.contains(extra)
-        {
-            return Err(invalid(format!(
-                "two mounts name the same guest path {}",
-                extra.display()
-            )));
         }
         Ok(())
     }
@@ -362,22 +352,19 @@ fn valid_mount_path(path: &Path) -> bool {
 /// 256M. The value reaches the runtime's `--memory` unparsed, and a
 /// unitless number is bytes on podman and something else on Apple.
 fn valid_memory(memory: &str) -> bool {
-    let (number, multiplier) = if let Some(number) = memory.strip_suffix('M') {
-        (number, 1u64)
-    } else if let Some(number) = memory.strip_suffix('G') {
-        (number, 1024)
-    } else {
-        return false;
+    let multiplier: u64 = match memory.bytes().last() {
+        Some(b'M') => 1,
+        Some(b'G') => 1024,
+        _ => return false,
     };
-    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
-        return false;
-    }
-    let Ok(number) = number.parse::<u64>() else {
-        return false;
-    };
-    number
-        .checked_mul(multiplier)
-        .is_some_and(|mebibytes| mebibytes >= 256)
+    // `parse` alone would take a leading `+`; `all` alone the empty string.
+    let number = &memory[..memory.len() - 1];
+    number.bytes().all(|byte| byte.is_ascii_digit())
+        && number
+            .parse::<u64>()
+            .ok()
+            .and_then(|number| number.checked_mul(multiplier))
+            .is_some_and(|mebibytes| mebibytes >= 256)
 }
 
 fn valid_name(name: &str) -> bool {
