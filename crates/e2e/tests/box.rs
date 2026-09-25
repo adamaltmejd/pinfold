@@ -390,7 +390,9 @@ fn up_refuses_before_it_creates() {
     // Sabotage: drop the reserved-label check; the `dev.pinfold.owner` spec
     // comes up `ready`, so its `refused` assertion fails.
     // Sabotage: drop the memory check; the `1000` spec reaches the runtime
-    // and ends `failed`, not `refused`, so its `refused` assertion fails.
+    // unchecked and is not refused as spec, so its `refused` assertion
+    // fails. Sabotage: drop the 256M floor, keeping the unit check; the
+    // `255M` spec likewise reaches the runtime and its assertion fails.
     let env = TestEnv::new("refuses");
     let name = box_name("refuses");
     let label = "dev.example.test=refuses";
@@ -483,28 +485,29 @@ fn up_refuses_before_it_creates() {
     );
     assert_left_nothing(&env, &name, label, "refused");
 
-    // A spec memory without a unit is refused as data, naming `memory` and
-    // the value, and leaves no state dir and no box: the value would reach
-    // the runtime unparsed, so podman reads it as bytes and the host's OOM
-    // killer takes the box. The positive control, the `256M` box coming up
-    // on both runtimes, is guarantee 20's
-    // `a_caller_can_tell_an_oom_kill_from_a_failure`.
-    let unitless = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "labels": { "dev.example.test": "refuses" },
-        "memory": "1000",
-    });
-    let (code, refused) = box_up_refused(&env, &unitless, &[]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["event"], "refused");
-    assert_eq!(refused["reason"], "spec");
-    let detail = refused["detail"].as_str().unwrap_or_default();
-    assert!(
-        detail.contains("memory") && detail.contains("1000"),
-        "the refusal did not name memory and its value: {refused}"
-    );
-    assert_left_nothing(&env, &name, label, "refused");
+    // A spec memory without a unit, or below the 256M floor, is refused as
+    // data, naming `memory` and the value, and leaves no state dir and no
+    // box: the value would otherwise reach the runtime unchecked. The
+    // positive control, the `256M` box coming up on both runtimes, is
+    // guarantee 20's `a_caller_can_tell_an_oom_kill_from_a_failure`.
+    for memory in ["1000", "255M"] {
+        let spec = serde_json::json!({
+            "name": name,
+            "image": default_image(&env),
+            "labels": { "dev.example.test": "refuses" },
+            "memory": memory,
+        });
+        let (code, refused) = box_up_refused(&env, &spec, &[]);
+        assert_eq!(code, 1, "a refused up exits 1: {refused}");
+        assert_eq!(refused["event"], "refused");
+        assert_eq!(refused["reason"], "spec");
+        let detail = refused["detail"].as_str().unwrap_or_default();
+        assert!(
+            detail.contains("memory") && detail.contains(memory),
+            "the refusal did not name memory and its value: {refused}"
+        );
+        assert_left_nothing(&env, &name, label, "refused");
+    }
 
     // A spec whose mount path holds a comma is refused as data, naming the
     // path, and leaves no state dir and no box: the bind value is built by
@@ -1263,6 +1266,9 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // base, so the base assertion fails. Sabotage: make `--unused` skip the
     // live-box check (drop `live_projects` from `CleanPlan::measure`'s
     // stale test); the live project's state goes and its assertion fails.
+    // Sabotage: in `clean::boxes`, insert into `live_projects` above `if
+    // alive`; the dead box then protects the other project, whose marker
+    // survives, and the removal assertion fails.
     let env = TestEnv::new("cleanup");
     // `clean` deletes the runtime's builder, so hold off the other tests'
     // builds through this test's `clean`: a build racing the deletion fails.
@@ -1389,21 +1395,27 @@ fn cleanup_removes_only_pinfolds_garbage() {
     up_b.down(&env);
     assert!(up_b.wait().success(), "box B's up did not exit cleanly");
 
+    // The runtime's own build of the `FROM scratch` Containerfile, so the
+    // image carries only the labels given here.
+    let runtime_build = |tag: &str, labels: &[&str]| {
+        let status = Command::new(image_cli())
+            .args(["build", "--file"])
+            .arg(&containerfile)
+            .args(["--tag", tag])
+            .args(labels.iter().flat_map(|label| ["--label", label]))
+            .arg(containerfile.parent().unwrap())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .status()
+            .expect("run the runtime's build");
+        assert!(status.success(), "building {tag} failed");
+    };
+
     // An unlabeled image: no `dev.pinfold` label, so `clean` must leave it.
     // Its tag shares the profile prefix, so the guard above deletes it.
-    let context = containerfile.parent().unwrap();
     let unlabeled = format!("pinfold/profile-{profile}:unlabeled");
-    let status = Command::new(image_cli())
-        .args(["build", "--file"])
-        .arg(&containerfile)
-        .args(["--tag", &unlabeled])
-        .arg(context)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .status()
-        .expect("run the runtime's build");
-    assert!(status.success(), "building the unlabeled image failed");
+    runtime_build(&unlabeled, &[]);
     assert!(
         image_id(&unlabeled).is_some(),
         "the unlabeled image is missing before clean"
@@ -1441,12 +1453,12 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let other_project = TestDir::new(&env, "other-project");
     let other_marker = seed_project(&other_project, b"other\n");
     let other_state = project_state_dir(&env, other_project.path());
+    let other_id = project_id(&env, other_project.path());
 
-    // A live pinfold box for the live project, and a dead box that names
-    // no project. A caller spec may not name pinfold's label namespace, so
-    // the live box's `dev.pinfold.project` label comes from its image, as a
-    // real project image carries it. `FROM scratch` as the profile above,
-    // and the runtime's own build command, as the unlabeled image does.
+    // A live pinfold box for the live project, and a dead box for the other
+    // project: a dead box protects nothing. A caller spec may not name
+    // pinfold's label namespace, so each box's `dev.pinfold.project` label
+    // comes from its image, as a real project image carries it.
     let live_label = format!("dev.pinfold.project={live_id}");
     let live = box_name("cleanup-live");
     let live_repository = format!("e2e-cleanup-live-{}", std::process::id());
@@ -1454,25 +1466,21 @@ fn cleanup_removes_only_pinfolds_garbage() {
         repository: live_repository.clone(),
     };
     let live_ref = format!("{live_repository}:latest");
-    let status = Command::new(image_cli())
-        .args(["build", "--file"])
-        .arg(&containerfile)
-        .args(["--tag", &live_ref, "--label", &live_label])
-        .arg(containerfile.parent().unwrap())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .status()
-        .expect("run the runtime's build");
-    assert!(status.success(), "building the live box's image failed");
+    runtime_build(&live_ref, &[&live_label]);
     let live_spec = serde_json::json!({ "name": live, "image": live_ref });
     let _live = box_up(&env, &live_spec, &live);
 
     let dead_label = "dev.example.test=e2e-cleanup-dead";
     let dead = box_name("cleanup-dead");
+    let dead_repository = format!("e2e-cleanup-dead-{}", std::process::id());
+    let _dead_images = ImageCleanup {
+        repository: dead_repository.clone(),
+    };
+    let dead_ref = format!("{dead_repository}:latest");
+    runtime_build(&dead_ref, &[&format!("dev.pinfold.project={other_id}")]);
     let dead_spec = serde_json::json!({
         "name": dead,
-        "image": format!("pinfold/profile-{profile}:latest"),
+        "image": dead_ref,
         "labels": { "dev.example.test": "e2e-cleanup-dead" },
     });
     let mut dead_up = box_up(&env, &dead_spec, &dead);
@@ -2230,13 +2238,11 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
         );
 
         // The harness environment is the spec's allow list, exactly.
-        if harness == "pi" {
-            let allow = box_exec(&env, &name, &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""]);
-            assert_eq!(
-                allow.stdout, "api.github.com",
-                "the box's PINFOLD_ALLOW is not the spec's allow list"
-            );
-        }
+        let allow = box_exec(&env, &name, &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""]);
+        assert_eq!(
+            allow.stdout, "api.github.com",
+            "the box's PINFOLD_ALLOW is not the spec's allow list"
+        );
 
         up.down(&env);
         assert!(up.wait().success(), "box up did not exit cleanly");
