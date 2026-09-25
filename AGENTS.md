@@ -32,10 +32,11 @@ rules for changing the repository.
   consolidation that adds an abstraction and removes nothing is
   rejected. A proposal born in a lane is rejected unless it names the
   guarantee or bug it serves.
-- Before each release, the `code-cleanup` skill: a whole-tree read for
-  yagni, duplication, wrong-altitude fixes and unmeasured cost, landed
-  one commit per module, or as a heavy ticket when a module is
-  reworked; then the operator's spec pass over ARCHITECTURE.md and
+- Before each release, the `code-cleanup` skill with `test-audit`'s
+  sweep: a whole-tree read for yagni, duplication, wrong-altitude fixes,
+  unmeasured cost and assertion blocks under the bar, landed one commit
+  per module, or as a heavy ticket when a module is reworked; then the
+  operator's spec pass over ARCHITECTURE.md and
   README.md (cut restatement and rationale, reconcile the guarantees
   table with the tests, close resolved open questions). The pass
   reports the release's delete/add ratio, the largest source file,

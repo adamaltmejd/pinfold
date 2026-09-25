@@ -68,8 +68,10 @@ modules take the family's mid tier, the one below its largest model; the
 docs take a small model. Modules:
 `cli`, `core/box`, `core/runtime` (all three files), `core/proxy`,
 `core/clean` with `core/image` and `core/artifacts`, `config` with
-`dirs`, `trust` and `init`, `pi/`, the e2e crate, and the docs
-(ARCHITECTURE.md, README.md, `share/`).
+`dirs`, `trust` and `init`, `pi/`, `crates/e2e/src/lib.rs`, and the docs
+(ARCHITECTURE.md, README.md, `share/`). The test files are the
+`test-audit` skill's: run its sweep in the same message and merge its
+list into step 3.
 
 Each prompt carries: the module's file paths; an instruction to read
 ARCHITECTURE.md and AGENTS.md first and the module's files whole; the
@@ -98,18 +100,6 @@ Tags:
 - `spec:` a cut that touches a control (the Always applied list, the proxy
   rules, the threat model's controls, trust), removes a feature, or deletes
   a guarantee row. Not the agent's call; it goes to Adam.
-
-Two more for the e2e crate, where the unit is the assertion block and the
-bar is the one in AGENTS.md (a spec line, an outside observer, an expected
-value from outside pinfold, no twin):
-
-- `taut:` an expected value from pinfold's own output or a copy of its
-  logic. Name the outside source, or delete.
-- `easy:` a scenario that is the guarantee's simplest case. Name the
-  harder one.
-
-A change-detector assertion (wording, layout, a count that is not the
-guarantee) is `delete:`.
 
 Examples, invented to show the shape:
 
