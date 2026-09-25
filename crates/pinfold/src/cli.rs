@@ -36,7 +36,7 @@ pinfold allow                    trust this project's .pinfold.toml and Containe
 pinfold profile new NAME [--from PROFILE] [--from-project [PATH]]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim disk (see Maintenance)
 pinfold doctor                   runtime, kernel, image, artifacts, trust, config, disk use
-pinfold artifacts                the pinned artifacts as JSON: name, version, sha256, path, cached
+pinfold artifacts                the pinned harnesses as JSON: name, version, path, cached, assets
 pinfold config [ROOT]            the effective configuration and project facts as JSON, for callers
 pinfold box …                    the process interface
 pinfold init                     PID 1 in the box (Linux builds)
@@ -641,8 +641,8 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// `pinfold artifacts`: print the pinned artifacts as one JSON array, an
-/// object per pin. Reads only: nothing is downloaded.
+/// `pinfold artifacts`: print the pinned harnesses as one JSON array, an
+/// object per harness. Reads only: nothing is downloaded.
 pub fn artifacts(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(usage("artifacts", "artifacts takes no arguments"));
@@ -651,7 +651,7 @@ pub fn artifacts(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// The pinned artifacts as one JSON array, an object per pin.
+/// The pinned harnesses as one JSON array, an object per harness.
 fn pins_json() -> io::Result<serde_json::Value> {
     serde_json::to_value(artifacts::pins()?).map_err(io::Error::other)
 }

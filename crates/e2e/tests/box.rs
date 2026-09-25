@@ -2180,56 +2180,67 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
 
 #[test]
 fn a_caller_owned_box_launches_the_pinned_harness() {
-    // Guarantee 19: a caller-owned box launches the pinned harness.
+    // Guarantee 19: a caller-owned box launches the pinned harness, for
+    // each of pi, claude and codex.
     // Sabotage: drop the harness mount (or mount the wrong directory); the
-    // `/opt/pinfold/pi/pi --version` assertion fails. Sabotage: mount pi but
-    // leave `PINFOLD_ALLOW` unset; the second assertion fails.
+    // `/opt/pinfold/<name>/<name> --version` assertion fails. Sabotage:
+    // mount the harness but leave `PINFOLD_ALLOW` unset; the allow list
+    // assertion fails. Sabotage: install codex under its target triple's
+    // name instead of `codex`; its `--version` exec fails.
+    // codex's `codex-code-mode-host` companion is not asserted: only a
+    // model-driven MCP tool call observes it.
     let env = TestEnv::new("harness");
-    let name = box_name("harness");
     let home = TestDir::new(&env, "home");
     default_image(&env);
 
-    // The version `pinfold artifacts` pins. The caller records which pi it
-    // ran from the same report.
+    // The versions `pinfold artifacts` pins. The caller records which
+    // harness it ran from the same report.
     let output = run_ok(env.command(pinfold()).arg("artifacts"));
     let pins: Vec<serde_json::Value> =
         serde_json::from_slice(&output.stdout).expect("pinfold artifacts output is JSON");
-    let pi = pins
-        .iter()
-        .find(|pin| pin["name"] == "pi")
-        .unwrap_or_else(|| panic!("pinfold artifacts does not name pi: {pins:?}"));
-    let version = pi["version"].as_str().expect("pin version is a string");
 
-    // A caller-owned box: the spec names the harness and the allow list; the
-    // profile supplies the image and home seeds.
-    let spec = serde_json::json!({
-        "name": name,
-        "profile": "default",
-        "harness": "pi",
-        "mounts": [{ "host": home.path(), "guest": "/home/harness" }],
-        "env": { "HOME": "/home/harness" },
-        "egress": { "allow": ["api.github.com"] },
-    });
-    let mut up = box_up(&env, &spec, &name);
+    for harness in ["pi", "claude", "codex"] {
+        let pin = pins
+            .iter()
+            .find(|pin| pin["name"] == harness)
+            .unwrap_or_else(|| panic!("pinfold artifacts does not name {harness}: {pins:?}"));
+        let version = pin["version"].as_str().expect("pin version is a string");
 
-    // The pinned pi is in the box and runs at the pinned version.
-    let ran = box_exec(&env, &name, &["/opt/pinfold/pi/pi", "--version"]);
-    assert_ok(&ran, "/opt/pinfold/pi/pi --version");
-    assert!(
-        ran.stdout.contains(version),
-        "the box's pi is not the pinned {version}: {}",
-        ran.stdout
-    );
+        // A caller-owned box: the spec names the harness and the allow list;
+        // the profile supplies the image and home seeds.
+        let name = box_name(&format!("harness-{harness}"));
+        let spec = serde_json::json!({
+            "name": name,
+            "profile": "default",
+            "harness": harness,
+            "mounts": [{ "host": home.path(), "guest": "/home/harness" }],
+            "env": { "HOME": "/home/harness" },
+            "egress": { "allow": ["api.github.com"] },
+        });
+        let mut up = box_up(&env, &spec, &name);
 
-    // The harness environment is the spec's allow list, exactly.
-    let allow = box_exec(&env, &name, &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""]);
-    assert_eq!(
-        allow.stdout, "api.github.com",
-        "the box's PINFOLD_ALLOW is not the spec's allow list"
-    );
+        // The pinned harness is in the box and runs at the pinned version.
+        let binary = format!("/opt/pinfold/{harness}/{harness}");
+        let ran = box_exec(&env, &name, &[&binary, "--version"]);
+        assert_ok(&ran, &format!("{binary} --version"));
+        assert!(
+            ran.stdout.contains(version),
+            "the box's {harness} is not the pinned {version}: {}",
+            ran.stdout
+        );
 
-    up.down(&env);
-    assert!(up.wait().success(), "box up did not exit cleanly");
+        // The harness environment is the spec's allow list, exactly.
+        if harness == "pi" {
+            let allow = box_exec(&env, &name, &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""]);
+            assert_eq!(
+                allow.stdout, "api.github.com",
+                "the box's PINFOLD_ALLOW is not the spec's allow list"
+            );
+        }
+
+        up.down(&env);
+        assert!(up.wait().success(), "box up did not exit cleanly");
+    }
 }
 
 #[test]

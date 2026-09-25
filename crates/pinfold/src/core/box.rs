@@ -20,7 +20,7 @@ use tokio::process::Child;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::core::clean;
-use crate::core::plan::{Env, HARNESS_PI, Mount, Plan};
+use crate::core::plan::{Env, Mount, Plan};
 use crate::core::profile::{Profile, Seed};
 use crate::core::runtime::{Preflight, runtime};
 use crate::core::{artifacts, proxy};
@@ -169,9 +169,8 @@ impl Box {
         // `start`. Check the spec's mounts against both before `home_mount`
         // picks the mount behind `$HOME`, so a clash is refused as spec and
         // no tie can hide it.
-        let harness =
-            (plan.harness.as_deref() == Some(HARNESS_PI)).then(|| Path::new(artifacts::GUEST_PI));
-        plan.validate_guests(harness)
+        let harness = plan.harness.as_deref().map(artifacts::guest);
+        plan.validate_guests(harness.as_deref())
             .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
         let seeding = profile
             .map(|profile| resolve_seeding(&plan, profile))
@@ -541,24 +540,23 @@ async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
     }
 }
 
-/// Fold the spec's harness into the plan: fetch the pinned artifact if it is
-/// not cached, mount it read-only, and set its environment. The spec's own
-/// env wins over the harness defaults.
+/// Fold the spec's harness into the plan: install the pinned harness if it
+/// is not cached, mount it read-only, and set its environment. The spec's
+/// own env wins over the harness defaults.
 fn resolve_harness(plan: &mut Plan) -> io::Result<()> {
-    if plan.harness.as_deref() != Some(HARNESS_PI) {
+    let Some(harness) = plan.harness.as_deref().and_then(artifacts::harness) else {
         return Ok(());
-    }
+    };
     plan.mounts.push(Mount {
-        host: artifacts::pi()?,
-        guest: PathBuf::from(artifacts::GUEST_PI),
+        host: harness.install()?,
+        guest: artifacts::guest(&harness.name),
         readonly: true,
     });
-    plan.env
-        .entry("PI_TELEMETRY".to_string())
-        .or_insert(Env::Exact("0".to_string()));
-    plan.env
-        .entry("PI_SKIP_VERSION_CHECK".to_string())
-        .or_insert(Env::Exact("1".to_string()));
+    for (name, value) in &harness.env {
+        plan.env
+            .entry(name.clone())
+            .or_insert_with(|| Env::Exact(value.clone()));
+    }
     let allow = plan
         .egress
         .as_ref()

@@ -1,0 +1,83 @@
+# The pinned harnesses, embedded in the binary at build time.
+#
+# A harness's assets for a box's os-arch install into
+# ~/.cache/pinfold/artifacts/<name>/<version>/<os-arch>/, and its
+# <name>/ directory there is mounted read-only at /opt/pinfold/<name>.
+# An asset is a literal url and its sha256. install = "tar.gz" extracts
+# the archive, whose one top-level entry is installed at `as`;
+# install = "executable" installs the download itself at `as`, mode 0755.
+# `as` is relative to <os-arch>/. `env` holds the harness's env defaults.
+
+[[harness]]
+name = "pi"
+version = "0.87.1"
+env = { PI_TELEMETRY = "0", PI_SKIP_VERSION_CHECK = "1" }
+
+[[harness.asset]]
+os-arch = "linux-arm64"
+url = "https://github.com/earendil-works/pi/releases/download/v0.87.1/pi-linux-arm64.tar.gz"
+sha256 = "364b4a9f8491450b27a4857d4e3c780dbaf696790821c176a873e860cbbc3b89"
+install = "tar.gz"
+as = "pi"
+
+[[harness.asset]]
+os-arch = "linux-x64"
+url = "https://github.com/earendil-works/pi/releases/download/v0.87.1/pi-linux-x64.tar.gz"
+sha256 = "80d78dd62d50049a006b981d994c61255bcc10e730b0c278d4ea0a755909764c"
+install = "tar.gz"
+as = "pi"
+
+# The glibc builds: the box image must be glibc.
+[[harness]]
+name = "claude"
+version = "2.1.282"
+env = { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
+
+[[harness.asset]]
+os-arch = "linux-arm64"
+url = "https://downloads.claude.ai/claude-code-releases/2.1.282/linux-arm64/claude"
+sha256 = "6764ffc39e9fed425a493ff61ea28506d1ba83996ce81a48d1177dbb393419c9"
+install = "executable"
+as = "claude/claude"
+
+[[harness.asset]]
+os-arch = "linux-x64"
+url = "https://downloads.claude.ai/claude-code-releases/2.1.282/linux-x64/claude"
+sha256 = "3afe8535c0cc33f0e24f7b25dab7a1727b8b592196f8496a8bc302ba2161eed3"
+install = "executable"
+as = "claude/claude"
+
+# codex spawns codex-code-mode-host from beside its own executable; every
+# MCP tool call fails closed without it.
+[[harness]]
+name = "codex"
+version = "0.157.0"
+env = {}
+
+[[harness.asset]]
+os-arch = "linux-arm64"
+url = "https://github.com/openai/codex/releases/download/rust-v0.157.0/codex-aarch64-unknown-linux-musl.tar.gz"
+sha256 = "e6fbe2798e941b833f7e3bc34010f7443240ac4a149ce1876f32cbfa0ba7d25f"
+install = "tar.gz"
+as = "codex/codex"
+
+[[harness.asset]]
+os-arch = "linux-arm64"
+url = "https://github.com/openai/codex/releases/download/rust-v0.157.0/codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz"
+sha256 = "3b31358135e16bf8090efcb0404c44807c512a4fd82387de03a52a51ed05c910"
+install = "tar.gz"
+as = "codex/codex-code-mode-host"
+
+[[harness.asset]]
+os-arch = "linux-x64"
+url = "https://github.com/openai/codex/releases/download/rust-v0.157.0/codex-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "db3fe3adaa35c50edfb68a988a117782fe3492960fb63d7003eb6748ccc0657b"
+install = "tar.gz"
+as = "codex/codex"
+
+[[harness.asset]]
+os-arch = "linux-x64"
+url = "https://github.com/openai/codex/releases/download/rust-v0.157.0/codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "47d32419e895c9cddbb664a2890bfb250ef0e3fded3da70e5f2bc61479f1989c"
+install = "tar.gz"
+as = "codex/codex-code-mode-host"

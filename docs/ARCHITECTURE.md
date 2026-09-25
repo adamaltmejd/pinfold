@@ -273,10 +273,17 @@ The box spec `up` reads from stdin:
 - `profile` applies the profile's `home/` and `share/` (see Profiles), and
   its image if `image` is absent; egress, env and resources come only
   from the spec.
-- `harness: pi` mounts the pinned pi's directory read-only at
-  `/opt/pinfold/pi` and sets `PI_TELEMETRY=0`, `PI_SKIP_VERSION_CHECK=1` and
+- `harness` is `pi`, `claude` or `codex` (see Pinned artifacts); any other
+  value is refused as `spec`, naming it and the accepted names. It mounts
+  that harness's directory read-only at `/opt/pinfold/<name>`, its
+  executable `/opt/pinfold/<name>/<name>`, and sets its env defaults (pi:
+  `PI_TELEMETRY=0`, `PI_SKIP_VERSION_CHECK=1`; claude:
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`; codex: none) and
   `PINFOLD_ALLOW` (the spec's `egress.allow`, empty without egress). The
-  spec's own `env` wins. It needs no profile.
+  spec's own `env` wins; a spec mount at `/opt/pinfold/<name>` is refused.
+  claude is the glibc build, so it needs a glibc image (the default profile
+  is Debian). codex's `codex-code-mode-host` sits beside it: codex spawns it
+  from there for every MCP tool call. It needs no profile.
 - Mounts are directories. A host path that exists and is not a directory
   is refused as `spec`, naming it. Both runtimes apply a mount nested in
   another inside it whatever the spec's order, so a read-only `REPO/.git`
@@ -425,9 +432,17 @@ The default profile's image:
 
 ## Pinned artifacts
 
-Checksummed release binaries in
-`~/.cache/pinfold/artifacts/<name>/<version>/<os-arch>/`, mounted read-only:
-pi.
+`crates/pinfold/harnesses.toml`, embedded at build time, pins each harness
+(pi, claude, codex): a version, env defaults, and per box `os-arch`
+(`linux-arm64`, `linux-x64`) its release assets, each a literal URL, its
+sha256, and how it installs (a `tar.gz` whose one top-level entry is
+installed, or a bare executable) and at which path. On a box's first use of
+a harness, its assets are downloaded, checked and installed into
+`~/.cache/pinfold/artifacts/<name>/<version>/<os-arch>/`; its `<name>/`
+directory there is mounted read-only at `/opt/pinfold/<name>`. A checksum
+mismatch fails the start, naming the harness, version and asset. A harness
+no box asks for is never downloaded. A harness moves only with a pinfold
+release.
 
 The init is not an artifact: it always comes from the CLI's own build. The
 macOS CLI embeds the `aarch64-unknown-linux-musl` build and writes it to the
@@ -514,7 +529,8 @@ Automatic, never prompting:
 - At most once a day, at the start of any working command (not
   `--version`, `--help` or `init`): prune boxes whose owner
   is gone (nothing holds the lock on its `pid` file), leftover sockets,
-  artifact versions no pin names, and egress logs older than 14 days.
+  artifact `<name>/<version>` directories no pin names (`init/` aside),
+  and egress logs older than 14 days.
 
 `pinfold clean` lists sizes, then removes:
 - everything automatic, now
@@ -530,7 +546,7 @@ Automatic, never prompting:
 
 ## pi layer
 
-- **Harness:** pi, a pinned artifact at `/opt/pinfold/pi`; `pinfold pi`
+- **Harness:** pi, a pinned harness at `/opt/pinfold/pi`; `pinfold pi`
   asks core for it with `"harness": "pi"`.
 - **State:** `~/.local/state/pinfold/projects/<name>-<hash>/home`, mounted as
   `$HOME`, where the hash is of the canonical project root path. pi's agent
@@ -616,11 +632,16 @@ pinfold allow                    trust this project's .pinfold.toml and Containe
 pinfold profile new NAME [--from PROFILE] [--from-project [PATH]]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim disk (see Maintenance)
 pinfold doctor                   runtime, kernel, image, artifacts, trust, config, disk use
-pinfold artifacts                the pinned artifacts as JSON: name, version, sha256, path, cached
+pinfold artifacts                the pinned harnesses as JSON: name, version, path, cached, assets
 pinfold config [ROOT]            the effective configuration and project facts as JSON, for callers
 pinfold box …                    the process interface
 pinfold init                     PID 1 in the box (Linux builds)
 ```
+
+`artifacts` prints one JSON array, an object per harness: `name`, `version`,
+`path` (the host directory mounted at `/opt/pinfold/<name>`), `cached`,
+and `assets`, a list of `{url, sha256}` for this host's `os-arch`. Nothing
+is downloaded. `doctor` reports the same list.
 
 `pinfold --version` and `pinfold --help` answer without touching the runtime
 or the state dir; `--help` or `-h` after a subcommand, before any `--`,
@@ -654,7 +675,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW carries the default list's hosts; with PINFOLD_ALLOW=api.github.com over a project's allow = ["registry.npmjs.org"], it is exactly that host, and registry.npmjs.org is refused as not allowlisted. |
 | 17 | up refuses before it creates | A missing image, a misspelled spec key, a bad env name, a `dev.pinfold.` label, a memory below 256M or without a unit, a mount path with a comma, a file mount, a mount at a path pinfold mounts and a live name are refused as data, naming the cause, and a missing host path fails after the claim; each leaves no box and no state dir. The box whose name was reused still answers exec, and of two `up`s racing for one name exactly one wins. |
 | 18 | A caller reads the effective configuration as data | pinfold config reports a project's allow list, its trust state before and after pinfold allow, and the project home pinfold pi then mounts. |
-| 19 | A caller-owned box launches the pinned harness | A spec with harness: pi runs /opt/pinfold/pi/pi --version at the pinned version, and the box's PINFOLD_ALLOW is the spec's allow list. |
+| 19 | A caller-owned box launches the pinned harness | A spec with each harness (pi, claude, codex) runs `/opt/pinfold/<name>/<name> --version` at the version `pinfold artifacts` pins, and the box's PINFOLD_ALLOW is the spec's allow list. |
 | 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, every field is present, and `exec`'d processes carry `oom_score_adj` 1000, so init is never the victim. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
 | 22 | A caller-owned box cannot write .git | With REPO/.git read-only listed before REPO writable, and safe.directory set by the caller: a worktree write succeeds, git log and git status succeed, and a hook write fails. |
@@ -703,6 +724,7 @@ crates/pinfold/src/
   init.rs  socket mode, TCP relay, reaping, readiness
   pi/      launch.rs state.rs git.rs
   cli.rs main.rs config.rs trust.rs dirs.rs
+crates/pinfold/harnesses.toml  the harness pins
 crates/e2e/  the end-to-end suite: src/lib.rs (harness, fixtures, helpers), tests/{box,pi,cli}.rs
 profile/   the built-in default profile
 ```

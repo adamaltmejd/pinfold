@@ -11,14 +11,17 @@ use tokio::signal::unix::{SignalKind, signal};
 
 use crate::cli;
 use crate::config::Config;
-use crate::core::artifacts::{self, GUEST_PI};
+use crate::core::artifacts;
 use crate::core::r#box::{Box, RefusalReason, Signals, UpError};
 use crate::core::clean;
-use crate::core::plan::{Egress, Env, HARNESS_PI, Mount, Plan};
+use crate::core::plan::{Egress, Env, Mount, Plan};
 use crate::core::runtime::{ImageStatus, image_status, runtime};
 use crate::pi::git::{Git, git};
 use crate::pi::state::{self, canonical, project_id};
 use crate::trust;
+
+/// The harness `pinfold pi` asks core for.
+const HARNESS: &str = "pi";
 
 /// Run a `pi`/`pinfold pi` invocation and return pi's exit code.
 pub fn run(args: &[String]) -> io::Result<i32> {
@@ -179,7 +182,7 @@ fn build_plan(
         name: format!("pi-{id}-{}", std::process::id()),
         image: Some(image.to_string()),
         profile: Some(config.profile.name.clone()),
-        harness: Some(HARNESS_PI.to_string()),
+        harness: Some(HARNESS.to_string()),
         labels,
         mounts,
         user: None,
@@ -207,7 +210,7 @@ pub(crate) fn utf8<'a>(path: &'a Path, what: &str) -> io::Result<&'a str> {
 
 fn run_box(plan: &Plan, cwd: &Path, args: &[String]) -> io::Result<i32> {
     let init = artifacts::init()?;
-    let argv: Vec<String> = std::iter::once(format!("{GUEST_PI}/pi"))
+    let argv: Vec<String> = std::iter::once(format!("{}/pi", artifacts::guest(HARNESS).display()))
         .chain(args.iter().cloned())
         .collect();
     let (name, workdir) = (plan.name.clone(), cwd.to_path_buf());

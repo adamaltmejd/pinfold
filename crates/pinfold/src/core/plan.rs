@@ -7,10 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::{network, proxy};
-
-/// The only harness a box spec may select.
-pub const HARNESS_PI: &str = "pi";
+use crate::core::{artifacts, network, proxy};
 
 /// A parsed box spec.
 #[derive(Debug, Clone, Deserialize)]
@@ -25,7 +22,8 @@ pub struct Plan {
     /// seeds and its `share/`.
     #[serde(default)]
     pub profile: Option<String>,
-    /// The pinned harness to install in the box. Only `pi` exists.
+    /// The pinned harness to install in the box, by its name in
+    /// `harnesses.toml`.
     #[serde(default)]
     pub harness: Option<String>,
     #[serde(default)]
@@ -228,10 +226,14 @@ impl Plan {
             return Err(invalid("a box spec needs an image or a profile"));
         }
         if let Some(harness) = &self.harness
-            && harness != HARNESS_PI
+            && artifacts::harness(harness).is_none()
         {
+            let names: Vec<&str> = artifacts::harnesses()
+                .iter()
+                .map(|harness| harness.name.as_str())
+                .collect();
             return Err(invalid(format!(
-                "harness {harness:?} is not supported; the only harness is {HARNESS_PI:?}"
+                "harness {harness:?} is not supported; the harnesses are {names:?}"
             )));
         }
         if let Some(memory) = &self.memory

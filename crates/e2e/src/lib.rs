@@ -73,8 +73,8 @@ impl TestEnv {
         // unix socket paths at 104 bytes. `$TMPDIR` is too long for that, so
         // the state dir gets its own short path under /tmp.
         let state = PathBuf::from("/tmp").join(format!("pf-e2e-{}-{test}", std::process::id()));
-        // One cache for every test and both test binaries, so
-        // `artifacts::pi()` fetches the pinned release once.
+        // One cache for every test and both test binaries, so each pinned
+        // harness is fetched once.
         let cache = temp.join("pinfold-e2e-cache");
         let config = root.join("config");
         fs::create_dir_all(&state).unwrap();
