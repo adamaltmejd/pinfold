@@ -44,7 +44,12 @@ const MAX_CONNECTIONS: usize = 64;
 /// socket.
 pub fn start(socket: &Path, egress: &Egress, log: PathBuf) -> io::Result<()> {
     let rules = Arc::new(Rules::new(egress)?);
-    let listener = UnixListener::bind(socket)?;
+    let listener = UnixListener::bind(socket).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("proxy socket {}: {error}", socket.display()),
+        )
+    })?;
     if let Some(parent) = log.parent() {
         fs::create_dir_all(parent)?;
     }
