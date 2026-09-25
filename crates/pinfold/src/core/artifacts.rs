@@ -10,8 +10,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use sha2::{Digest, Sha256};
-
 use crate::dirs;
 
 /// Where the pinned harness directory is mounted in the box.
@@ -65,7 +63,7 @@ pub fn init() -> io::Result<PathBuf> {
     const INIT: &[u8] = include_bytes!(env!("PINFOLD_INIT"));
     let dir = dirs::artifacts_dir()?
         .join("init")
-        .join(super::hex(&Sha256::digest(INIT)))
+        .join(super::sha256_hex(INIT))
         .join("linux-arm64");
     dirs::install_dir(&dir, |staging| {
         let path = staging.join("pinfold");
@@ -149,7 +147,7 @@ fn unpack(staging: &Path, url: &str, expected: &str, os_arch: &str) -> io::Resul
     if !status.success() {
         return Err(io::Error::other(format!("curl {url}: {status}")));
     }
-    let actual = super::hex(&Sha256::digest(fs::read(&archive)?));
+    let actual = super::sha256_hex(fs::read(&archive)?);
     if actual != expected {
         return Err(io::Error::other(format!(
             "pi {PI_VERSION} {os_arch}: checksum mismatch: expected {expected}, got {actual}"

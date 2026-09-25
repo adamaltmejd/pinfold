@@ -8,9 +8,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use sha2::{Digest, Sha256};
-
-use crate::core::hex;
+use crate::core::sha256_hex;
 
 /// `$XDG_CONFIG_HOME/pinfold`, else `~/.config/pinfold`.
 pub fn config_dir() -> io::Result<PathBuf> {
@@ -48,7 +46,7 @@ pub fn box_state_dir(name: &str) -> io::Result<PathBuf> {
     if name.is_empty() {
         return Ok(boxes);
     }
-    Ok(boxes.join(hex(&Sha256::digest(name.as_bytes())[..8])))
+    Ok(boxes.join(&sha256_hex(name)[..16]))
 }
 
 /// Create `dir` in one step: `fill` writes into a staging sibling, which is

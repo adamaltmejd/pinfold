@@ -5,8 +5,6 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use sha2::{Digest, Sha256};
-
 use crate::dirs;
 
 /// The built-in default profile's image, from `profile/` in this repo.
@@ -133,16 +131,16 @@ fn load_dir(name: &str, root: &Path) -> io::Result<Profile> {
 /// The embedded default's `share/`, written under the cache. The content
 /// hash in the path keeps a new binary from mounting an old extraction.
 fn embedded_share() -> io::Result<PathBuf> {
-    let mut hasher = Sha256::new();
+    let mut bytes = Vec::new();
     for (path, contents) in DEFAULT_SHARE {
-        hasher.update(path.as_bytes());
+        bytes.extend_from_slice(path.as_bytes());
         // A separator, so a path and contents cannot run together.
-        hasher.update([0]);
-        hasher.update(contents);
+        bytes.push(0);
+        bytes.extend_from_slice(contents);
     }
     let dir = dirs::cache_dir()?
         .join("profiles")
-        .join(super::hex(&hasher.finalize()))
+        .join(super::sha256_hex(bytes))
         .join("share");
     dirs::install_dir(&dir, |staging| {
         for (path, contents) in DEFAULT_SHARE {

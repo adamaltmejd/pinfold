@@ -6,9 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-use crate::core::hex;
+use crate::core::sha256_hex;
 use crate::dirs;
 
 /// Hex characters of the root hash in a project id.
@@ -69,7 +68,7 @@ pub fn project_id(root: &Path) -> String {
             )
         })
         .unwrap_or_else(|| "root".to_string());
-    let hash = hex(&Sha256::digest(root.as_os_str().as_encoded_bytes()));
+    let hash = sha256_hex(root.as_os_str().as_encoded_bytes());
     format!("{name}-{}", &hash[..HASH_LENGTH])
 }
 

@@ -13,10 +13,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::config::Config;
-use crate::core::hex;
+use crate::core::sha256_hex;
 use crate::dirs;
 use crate::pi::state;
 
@@ -70,8 +69,11 @@ pub fn check(root: &Path, config: &Config) -> io::Result<()> {
 /// The hashes of the project's config inputs as they are now.
 fn current(config: &Config) -> Trust {
     Trust {
-        toml: config.project_toml.as_deref().map(hash),
-        containerfile: config.containerfile.as_ref().map(|(_, bytes)| hash(bytes)),
+        toml: config.project_toml.as_deref().map(sha256_hex),
+        containerfile: config
+            .containerfile
+            .as_ref()
+            .map(|(_, bytes)| sha256_hex(bytes)),
     }
 }
 
@@ -80,9 +82,4 @@ fn record_path(root: &Path) -> io::Result<PathBuf> {
     Ok(dirs::state_dir()?
         .join("trust")
         .join(format!("{}.json", state::project_id(root))))
-}
-
-/// The sha256 of `bytes`, hex-encoded.
-fn hash(bytes: &[u8]) -> String {
-    hex(&Sha256::digest(bytes))
 }
