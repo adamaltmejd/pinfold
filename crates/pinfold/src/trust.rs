@@ -20,9 +20,6 @@ use crate::core::hex;
 use crate::dirs;
 use crate::pi::state;
 
-/// The project config file trust covers.
-const TOML_FILE: &str = ".pinfold.toml";
-
 /// The recorded hashes of a project's config inputs. `None` is a recorded
 /// absence.
 #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,53 +43,35 @@ pub fn allow(root: &Path) -> io::Result<()> {
     fs::write(path, json)
 }
 
-/// Refuse when the project's config inputs no longer match the record. No
-/// record is a record of two absences: a project with no `.pinfold.toml`
-/// and no project Containerfile has nothing to trust.
+/// Refuse when the project's config inputs no longer match the record.
 pub fn check(root: &Path, config: &Config) -> io::Result<()> {
     let current = current(config);
-    let stored = read(root)?.unwrap_or_default();
-    if stored.toml != current.toml {
-        return Err(refused(format!(
-            "{TOML_FILE} is new or changed; run `pinfold allow` to trust it"
-        )));
+    let path = record_path(root)?;
+    let stored: Trust = match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Trust::default()),
+        Err(error) => Err(error),
     }
-    if stored.containerfile != current.containerfile {
-        return Err(refused(
-            "the project Containerfile is new or changed; run `pinfold allow` to trust it",
-        ));
-    }
-    Ok(())
+    .map_err(|error| io::Error::new(error.kind(), format!("read {}: {error}", path.display())))?;
+    let changed = if stored.toml != current.toml {
+        ".pinfold.toml"
+    } else if stored.containerfile != current.containerfile {
+        "the project Containerfile"
+    } else {
+        return Ok(());
+    };
+    Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!("{changed} is new or changed; run `pinfold allow` to trust it"),
+    ))
 }
 
 /// The hashes of the project's config inputs as they are now.
 fn current(config: &Config) -> Trust {
     Trust {
-        // Hash the bytes `Config` read, not a second read a live box could
-        // rewrite in between.
         toml: config.project_toml.as_deref().map(hash),
-        containerfile: config.containerfile.as_deref().map(hash),
-    }
-}
-
-/// The recorded hashes for `root`, or `None` when nothing was recorded.
-fn read(root: &Path) -> io::Result<Option<Trust>> {
-    let path = record_path(root)?;
-    match fs::read(&path) {
-        Ok(bytes) => {
-            let trust = serde_json::from_slice(&bytes).map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("read {}: {error}", path.display()),
-                )
-            })?;
-            Ok(Some(trust))
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(io::Error::new(
-            error.kind(),
-            format!("read {}: {error}", path.display()),
-        )),
+        containerfile: config.containerfile.as_ref().map(|(_, bytes)| hash(bytes)),
     }
 }
 
@@ -106,8 +85,4 @@ fn record_path(root: &Path) -> io::Result<PathBuf> {
 /// The sha256 of `bytes`, hex-encoded.
 fn hash(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
-}
-
-fn refused(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::PermissionDenied, message.into())
 }

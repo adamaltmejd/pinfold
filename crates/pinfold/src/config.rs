@@ -21,7 +21,6 @@ use crate::core::profile::Profile;
 const DEFAULT_PROFILE: &str = "default";
 const DEFAULT_CPUS: f64 = 4.0;
 const DEFAULT_MEMORY: &str = "8G";
-/// The built-in allowlist, in effect until a layer sets `allow`.
 const DEFAULT_ALLOW: [&str; 9] = [
     "api.anthropic.com",
     "platform.claude.com",
@@ -38,23 +37,16 @@ const DEFAULT_ALLOW: [&str; 9] = [
 pub struct Config {
     /// The selected profile, loaded.
     pub profile: Profile,
-    /// The project's Containerfile path from `.pinfold.toml`, relative to
-    /// the project root. `None` means the profile's image.
-    pub containerfile_path: Option<String>,
-    /// The project's Containerfile, read once at load time, `None` when
-    /// `containerfile` names none. Trust hashes these bytes and the build
+    /// The project's Containerfile: its path from `.pinfold.toml`, relative
+    /// to the project root, and its bytes, read once at load time. `None`
+    /// means the profile's image. Trust hashes these bytes and the build
     /// uses them, so a live box cannot swap the file in between.
-    pub containerfile: Option<Vec<u8>>,
+    pub containerfile: Option<(String, Vec<u8>)>,
     /// The raw bytes of the project's `.pinfold.toml` that were parsed,
     /// `None` when the file is absent. Trust hashes these bytes.
     pub project_toml: Option<Vec<u8>>,
-    /// The effective allowlist: the highest layer that sets `allow`, else
-    /// the built-in default.
     pub allow: Vec<String>,
-    /// The effective routes: the highest layer that sets `routes`, else `{}`.
     pub routes: BTreeMap<String, Route>,
-    /// The effective extra read-only directories: the highest layer that
-    /// sets `protect`, else `[]`.
     pub protect: Vec<String>,
     /// The box's vCPUs.
     pub cpus: f64,
@@ -69,31 +61,22 @@ impl Config {
     /// Load and merge the layers for the project rooted at `root`.
     pub fn load(root: &Path) -> io::Result<Config> {
         let (project, project_toml) = Layer::read(&root.join(".pinfold.toml"))?;
-        let environment = Layer::from_env()?;
-        let profile_name = environment
-            .profile
-            .clone()
-            .or_else(|| project.profile.clone())
-            .unwrap_or_else(|| DEFAULT_PROFILE.to_string());
-        let profile = Profile::load(&profile_name)?;
-        let profile_layer = Layer::parse(
-            &profile.config,
-            &format!("profile {profile_name:?} pinfold.toml"),
-        )?;
+        let top = project.over(Layer::from_env()?);
+        let profile_name = top.profile.as_deref().unwrap_or(DEFAULT_PROFILE);
+        let profile = Profile::load(profile_name)?;
+        let source = format!("profile {profile_name:?} pinfold.toml");
+        let profile_layer = Layer::parse(&profile.config, &source)?;
         if profile_layer.containerfile.is_some() {
             return Err(invalid(
-                &format!("profile {profile_name:?} pinfold.toml"),
+                &source,
                 "`containerfile` is a project key; a profile's image is its own Containerfile",
             ));
         }
-        let merged = profile_layer.over(project).over(environment);
-        let containerfile_path = merged.containerfile.clone();
-        // The bytes are read here so trust and the build see the same ones.
-        let containerfile = match &containerfile_path {
+        let merged = profile_layer.over(top);
+        let containerfile = match merged.containerfile {
             None => None,
             Some(path) => {
-                let relative = Path::new(path);
-                if !relative.is_relative() {
+                if Path::new(&path).is_absolute() {
                     return Err(invalid(
                         ".pinfold.toml",
                         &format!(
@@ -101,12 +84,13 @@ impl Config {
                         ),
                     ));
                 }
-                let joined = root.join(relative);
+                let joined = root.join(&path);
+                let read = |error: io::Error| {
+                    io::Error::new(error.kind(), format!("read {}: {error}", joined.display()))
+                };
                 // Resolve symlinks, so a path that stays under the root but
                 // leaves the project is refused too.
-                let canonical = fs::canonicalize(&joined).map_err(|error| {
-                    io::Error::new(error.kind(), format!("read {}: {error}", joined.display()))
-                })?;
+                let canonical = fs::canonicalize(&joined).map_err(read)?;
                 if !canonical.starts_with(root) {
                     return Err(invalid(
                         ".pinfold.toml",
@@ -114,14 +98,12 @@ impl Config {
                     ));
                 }
                 // Read the canonical path, the same one the check saw.
-                Some(fs::read(&canonical).map_err(|error| {
-                    io::Error::new(error.kind(), format!("read {}: {error}", joined.display()))
-                })?)
+                let bytes = fs::read(&canonical).map_err(read)?;
+                Some((path, bytes))
             }
         };
         Ok(Config {
             profile,
-            containerfile_path,
             containerfile,
             project_toml,
             allow: merged
@@ -145,8 +127,6 @@ struct Layer {
     /// profile's own file is read after the selection, so its value is
     /// ignored.
     profile: Option<String>,
-    /// A project key; a profile's `pinfold.toml` that sets it fails to
-    /// load.
     containerfile: Option<String>,
     allow: Option<Vec<String>>,
     routes: Option<BTreeMap<String, Route>>,
@@ -157,7 +137,6 @@ struct Layer {
 
 impl Layer {
     /// Read a `.pinfold.toml`; an absent file is an empty layer and `None`.
-    /// The bytes are returned so trust hashes exactly what was parsed.
     fn read(path: &Path) -> io::Result<(Layer, Option<Vec<u8>>)> {
         match fs::read(path) {
             Ok(bytes) => {
@@ -174,24 +153,24 @@ impl Layer {
 
     /// Parse one layer. `source` names the file in errors.
     fn parse(bytes: &[u8], source: &str) -> io::Result<Layer> {
-        let text =
-            std::str::from_utf8(bytes).map_err(|error| invalid(source, &error.to_string()))?;
-        toml::from_str(text).map_err(|error| invalid(source, &error.to_string()))
+        toml::from_slice(bytes).map_err(|error| invalid(source, &error.to_string()))
     }
 
     /// The environment layer. An absent variable is not a layer; a present
     /// variable, even empty, sets its key.
     fn from_env() -> io::Result<Layer> {
         Ok(Layer {
-            profile: var("PINFOLD_PROFILE"),
+            profile: env::var("PINFOLD_PROFILE").ok(),
             containerfile: None,
-            allow: var("PINFOLD_ALLOW").as_deref().map(split_list),
-            routes: var("PINFOLD_ROUTES")
+            allow: env::var("PINFOLD_ALLOW").ok().as_deref().map(split_list),
+            routes: env::var("PINFOLD_ROUTES")
+                .ok()
                 .as_deref()
                 .map(parse_routes)
                 .transpose()?,
-            protect: var("PINFOLD_PROTECT").as_deref().map(split_list),
-            cpus: var("PINFOLD_CPUS")
+            protect: env::var("PINFOLD_PROTECT").ok().as_deref().map(split_list),
+            cpus: env::var("PINFOLD_CPUS")
+                .ok()
                 .map(|value| {
                     value.parse::<f64>().map_err(|error| {
                         io::Error::new(
@@ -201,7 +180,7 @@ impl Layer {
                     })
                 })
                 .transpose()?,
-            memory: var("PINFOLD_MEMORY"),
+            memory: env::var("PINFOLD_MEMORY").ok(),
         })
     }
 
@@ -216,11 +195,6 @@ impl Layer {
         self.protect = higher.protect.or(self.protect);
         self
     }
-}
-
-/// The value of `name`, or `None` when it is absent.
-fn var(name: &str) -> Option<String> {
-    env::var(name).ok()
 }
 
 /// A comma-separated list, trimmed; blank entries are ignored.
@@ -253,16 +227,12 @@ fn parse_routes(value: &str) -> io::Result<BTreeMap<String, Route>> {
 
 /// The `<NAME>`s of the host's `PINFOLD_ENV_<NAME>` variables, sorted.
 fn env_names() -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    for (name, _) in env::vars_os() {
-        if let Some(name) = name.to_str()
-            && let Some(name) = name.strip_prefix("PINFOLD_ENV_")
-            && !name.is_empty()
-        {
-            names.insert(name.to_string());
-        }
-    }
-    names
+    env::vars_os()
+        .filter_map(|(name, _)| {
+            let name = name.to_str()?.strip_prefix("PINFOLD_ENV_")?;
+            (!name.is_empty()).then(|| name.to_string())
+        })
+        .collect()
 }
 
 fn invalid(source: &str, message: &str) -> io::Error {

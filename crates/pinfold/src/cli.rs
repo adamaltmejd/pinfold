@@ -824,7 +824,7 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
         "profile": &config.profile.name,
         "image": image,
         "image_built": image_built,
-        "containerfile": config.containerfile_path.as_deref().unwrap_or("profile"),
+        "containerfile": config.containerfile.as_ref().map_or("profile", |(path, _)| path.as_str()),
         "egress": { "allow": &config.allow, "routes": &config.routes },
         "protect": &config.protect,
         "cpus": config.cpus,
@@ -949,7 +949,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
             trust::check(&root, &config)?;
             let project = config
                 .containerfile
-                .map(|bytes| (crate::pi::state::project_id(&root), bytes));
+                .map(|(_, bytes)| (crate::pi::state::project_id(&root), bytes));
             (config.profile, project)
         }
     };

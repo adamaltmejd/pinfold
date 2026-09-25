@@ -2,8 +2,7 @@
 //!
 //! The XDG variables win when they name an absolute path; otherwise the
 //! literal XDG-style paths under the user's home are used on both macOS and
-//! Linux. macOS applications usually use `~/Library`, but pinfold's paths are
-//! the same on every host it runs on.
+//! Linux.
 
 use std::fs;
 use std::io;
@@ -12,9 +11,6 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::core::hex;
-
-/// Hex digits of the name hash in a box's state dir key.
-const BOX_KEY_LENGTH: usize = 16;
 
 /// `$XDG_CONFIG_HOME/pinfold`, else `~/.config/pinfold`.
 pub fn config_dir() -> io::Result<PathBuf> {
@@ -52,8 +48,7 @@ pub fn box_state_dir(name: &str) -> io::Result<PathBuf> {
     if name.is_empty() {
         return Ok(boxes);
     }
-    let hash = hex(&Sha256::digest(name.as_bytes()));
-    Ok(boxes.join(&hash[..BOX_KEY_LENGTH]))
+    Ok(boxes.join(hex(&Sha256::digest(name.as_bytes())[..8])))
 }
 
 /// Create `dir` in one step: `fill` writes into a staging sibling, which is
@@ -64,10 +59,7 @@ pub fn install_dir(dir: &Path, fill: impl FnOnce(&Path) -> io::Result<()>) -> io
     if dir.is_dir() {
         return Ok(());
     }
-    let parent = dir
-        .parent()
-        .ok_or_else(|| io::Error::other(format!("{} has no parent", dir.display())))?;
-    let staging = parent.join(format!(".tmp-{}", std::process::id()));
+    let staging = dir.with_file_name(format!(".tmp-{}", std::process::id()));
     let _ = fs::remove_dir_all(&staging);
     fs::create_dir_all(&staging)?;
     if let Err(error) = fill(&staging).and_then(|()| fs::rename(&staging, dir)) {
@@ -89,14 +81,11 @@ pub fn entries(dir: &Path) -> io::Result<Vec<fs::DirEntry>> {
 }
 
 fn xdg(variable: &str, fallback: &str) -> io::Result<PathBuf> {
-    match std::env::var_os(variable) {
-        Some(value) if Path::new(&value).is_absolute() => Ok(PathBuf::from(value).join("pinfold")),
-        _ => Ok(home_dir()?.join(fallback).join("pinfold")),
-    }
-}
-
-/// `HOME`, else the passwd entry, which std reads for a stripped environment.
-fn home_dir() -> io::Result<PathBuf> {
-    std::env::home_dir()
-        .ok_or_else(|| io::Error::other("HOME is not set and the uid has no passwd entry"))
+    let base = match std::env::var_os(variable) {
+        Some(value) if Path::new(&value).is_absolute() => PathBuf::from(value),
+        _ => std::env::home_dir()
+            .ok_or_else(|| io::Error::other("HOME is not set and the uid has no passwd entry"))?
+            .join(fallback),
+    };
+    Ok(base.join("pinfold"))
 }
