@@ -40,11 +40,19 @@ pub fn run(args: &[String]) -> io::Result<i32> {
 }
 
 /// The canonical project root for `cwd`: the git top level, else `cwd`.
-/// Refuses a `cwd` outside the root.
+/// Refuses a `cwd` inside a git directory, and one outside the root.
 pub(crate) fn project_root(cwd: &Path) -> io::Result<PathBuf> {
     let cwd = canonical(cwd)?;
+    // `--show-toplevel` fails inside `.git`, and the fallback would mount
+    // `.git` writable as the project, so refuse before anything is created.
+    if git(&cwd, &["rev-parse", "--is-inside-git-dir"]).is_ok_and(|inside| inside == "true") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("refusing to run inside a git directory: {}", cwd.display()),
+        ));
+    }
     let top = git(&cwd, &["rev-parse", "--show-toplevel"]).ok();
-    let top = top.as_deref().map(str::trim).filter(|top| !top.is_empty());
+    let top = top.as_deref().filter(|top| !top.is_empty());
     let root = canonical(top.map_or(&cwd, Path::new))?;
     if !cwd.starts_with(&root) {
         return Err(io::Error::new(

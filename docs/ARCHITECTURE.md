@@ -617,7 +617,8 @@ or the state dir; `--help` or `-h` after a subcommand, before any `--`,
 prints that subcommand's syntax line and exits 0, touching neither. `pi`
 passes it to pi, and `attach` to its command once one is given.
 
-The project root is the git top level, else `$PWD`.
+The project root is the git top level, else `$PWD`. Inside a git directory,
+the command refuses.
 
 ## Guarantees
 
@@ -635,7 +636,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, the box has no egress. With its `pid` file naming a live process, `list` reports the owner gone, `box prune` removes it, and the name can be used again. |
 | 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code; `list` finds by label; `down` removes. `ready`'s labels equal `list`'s; `down` on an absent box or an empty name exits 0 and prints nothing and leaves live boxes alone. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. |
-| 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails, and a symlinked protected path refuses the run; host `git status` runs nothing. Control: a project file is writable. |
+| 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails, and a symlinked protected path refuses the run; starting inside `.git` is refused; host `git status` runs nothing. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |
 | 13 | Project state persists and stays separate | Settings are seeded once and survive runs; a deleted seed returns; two projects don't see each other's state. |
 | 14 | Both pi config levels load behind a route | `pi -p` through the shim, against a fake model reached through a route: the model's request carries a skill from the profile and one from the project's `.pi/`. |

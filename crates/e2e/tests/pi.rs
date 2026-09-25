@@ -584,6 +584,62 @@ fn the_box_cannot_write_git_or_protected_config() {
         "the refusal did not name {}: {stderr}",
         link.display()
     );
+
+    // `pinfold pi` started inside the repository's `.git` refuses before it
+    // creates a box or a project state: the fallback root would be `.git`
+    // itself, mounted writable, so host git would run what the box writes
+    // there. Sabotage: drop the `--is-inside-git-dir` check from
+    // `project_root`; the run starts, exits 0, and the exit assertion fails.
+    let dot_git = fs::canonicalize(root.join(".git")).expect("canonicalize .git");
+    let refused = pi_version_output(binary, &env, &dot_git);
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        !refused.status.success(),
+        "pinfold pi started inside .git: {stderr}"
+    );
+    assert!(
+        stderr.contains(&dot_git.display().to_string()),
+        "the refusal did not name {}: {stderr}",
+        dot_git.display()
+    );
+    // No project state dir names `.git` as its root: the refusal came before
+    // `record_run`. A state dir is `<name>-<hash>`, so the `.git` root's
+    // would be `.git-<hash>`.
+    let mut leftover = Vec::new();
+    if let Ok(entries) = fs::read_dir(env.state.join("pinfold/projects")) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(".git-") {
+                leftover.push(entry.path());
+            }
+        }
+    }
+    assert!(
+        leftover.is_empty(),
+        "the refused run left project state for .git: {leftover:?}"
+    );
+
+    // A top level whose name is a space is the root: only git's trailing
+    // newline comes off, so trimming would resolve to the parent and leave
+    // the repository's `.git` inside the parent unprotected. Sabotage: trim
+    // git's `--show-toplevel` output again; `pinfold config` reports the
+    // parent as the root and its id starts with the parent's name.
+    let parent = TestDir::new(&env, "space-parent");
+    let spaced = parent.path().join(" ");
+    fs::create_dir(&spaced).expect("create the space-named top level");
+    git(&spaced, &["init", "-q"]);
+    let report = config_json(binary, &env, &spaced);
+    let id = report["project"]["id"]
+        .as_str()
+        .expect("project.id is a string");
+    let parent_name = parent
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("the parent's name is UTF-8");
+    assert!(
+        !id.starts_with(parent_name),
+        "pinfold config resolved the space-named top level to its parent {parent_name}: {id}"
+    );
 }
 
 #[test]
