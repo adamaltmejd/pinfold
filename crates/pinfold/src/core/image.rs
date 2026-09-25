@@ -52,8 +52,8 @@ pub struct Built {
 }
 
 /// Build one source's image, tag it uniquely and move the stable ref to it,
-/// then keep the source's newest two images. The inner `Err` is the build's
-/// output when the build ran and failed.
+/// then run retention for the source's images. The inner `Err` is the
+/// build's output when the build ran and failed.
 pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, String>> {
     let id = build_id();
     let mut labels = build.labels;

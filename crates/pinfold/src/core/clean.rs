@@ -1,6 +1,7 @@
 //! Automatic maintenance: pinfold only removes what it created.
 //!
-//! After a build, keep the newest two images per source. At most once a day,
+//! After a build, keep the newest two images per source; a caller image
+//! built in the last hour stays whatever its rank. At most once a day,
 //! at the start of any command, prune leftovers: boxes whose owner is gone,
 //! sockets in state dirs no live owner holds, artifact versions no pin names,
 //! and egress logs older than 14 days. The pass reports a problem on stderr
@@ -41,6 +42,9 @@ pub const OWNER_LABEL: &str = "dev.pinfold.owner";
 const EGRESS_LOG_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 /// The daily pass runs at most once in this interval.
 const PASS_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+/// A caller image built within this window is never removed: the ref its
+/// `built` line named must still come up when the caller uses it later.
+const CALLER_IMAGE_GRACE: Duration = Duration::from_secs(60 * 60);
 
 /// Run the daily pass if a day has passed. A problem goes to stderr; the
 /// caller's command continues.
@@ -298,12 +302,13 @@ pub fn total_bytes<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> u64 {
 }
 
 /// Keep the newest two images carrying `label = source`, removing older ones
-/// and the layers no image references. Called after a successful build. Every
-/// older image is tried; a failure keeps that image and the rest still run,
-/// so one in-use image never stops the others from going. An image a listed
-/// box reports is never offered to the runtime: Apple's delete would remove
-/// it under the box, so pinfold skips it itself and reports it like a failed
-/// removal.
+/// and the layers no image references. Called after a successful build. A
+/// caller image built in the last hour is kept whatever its rank, so the ref
+/// its `built` line named still comes up later. Every older image is tried;
+/// a failure keeps that image and the rest still run, so one in-use image
+/// never stops the others from going. An image a listed box reports is never
+/// offered to the runtime: Apple's delete would remove it under the box, so
+/// pinfold skips it itself and reports it like a failed removal.
 pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result<()> {
     // One list before anything goes: the ids of the images boxes pin.
     let mut in_use: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -326,8 +331,24 @@ pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::
         .collect();
     // Newest first; the digest orders equal ranks deterministically.
     images.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    // A caller's `built` ref is used later, after other builds of the name,
+    // so hold every caller image built in the last hour whatever its rank.
+    let recent_caller = if label == IMAGE_LABEL {
+        Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+                .saturating_sub(CALLER_IMAGE_GRACE.as_nanos()),
+        )
+    } else {
+        None
+    };
     let mut failures = Vec::new();
-    for (_, id, references) in images.into_iter().skip(2) {
+    for (rank, id, references) in images.into_iter().skip(2) {
+        if recent_caller.is_some_and(|since| rank >= since) {
+            continue;
+        }
         if let Some(boxes) = in_use.get(&id) {
             // Count a skip like a failed removal: the image stays, the next
             // build tries again, and the one line names it and its boxes.
