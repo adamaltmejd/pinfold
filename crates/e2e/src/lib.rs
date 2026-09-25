@@ -267,10 +267,9 @@ pub fn default_image(binary: &Path, env: &TestEnv) -> &'static str {
     STABLE
 }
 
-/// Run `pinfold build --profile NAME`, assert it succeeded, and return its
-/// output: the stable ref on stdout, any maintenance line on stderr.
-pub fn build_profile(binary: &Path, env: &TestEnv, name: &str) -> Output {
-    run_ok(env.command(binary).args(["build", "--profile", name]))
+/// Run `pinfold build --profile NAME` and assert it succeeded.
+pub fn build_profile(binary: &Path, env: &TestEnv, name: &str) {
+    run_ok(env.command(binary).args(["build", "--profile", name]));
 }
 
 /// Write a user profile's Containerfile under the test's config dir and

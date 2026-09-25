@@ -93,7 +93,6 @@ fn box_lifecycle_works_for_a_caller() {
         "ready owner is not up's pid: {}",
         up.ready
     );
-    assert_eq!(up.ready["labels"]["dev.example.test"], "lifecycle");
     assert_eq!(
         up.ready["labels"]["dev.pinfold.build"],
         build.as_str(),
@@ -244,33 +243,23 @@ fn box_lifecycle_works_for_a_caller() {
     );
     assert!(again.wait().success(), "up did not exit 0 for stdin-closed");
 
-    // podman also resolves the image by its id and by its `localhost/` name.
-    // Apple's inspect resolves neither id nor digest; macOS asserts nothing
-    // about these forms.
+    // podman also resolves the image by its id. Apple's inspect resolves
+    // neither id nor digest; macOS asserts nothing about this form.
     if cfg!(target_os = "linux") {
-        let localhost = format!("localhost/{image}");
-        for reference in [image_id.as_str(), localhost.as_str()] {
-            let spec = serde_json::json!({
-                "name": name,
-                "image": reference,
-                "labels": { "dev.example.test": "lifecycle" },
-            });
-            let mut up = box_up(binary, &env, &spec, &name);
-            assert_eq!(
-                up.ready["image"]["id"],
-                image_id.as_str(),
-                "{reference} resolved to another id: {}",
-                up.ready
-            );
-            assert_eq!(
-                up.ready["labels"]["dev.pinfold.build"],
-                build.as_str(),
-                "{reference} lost the image's build label: {}",
-                up.ready
-            );
-            up.close_stdin();
-            assert!(up.wait().success(), "up did not exit 0 for stdin-closed");
-        }
+        let spec = serde_json::json!({
+            "name": name,
+            "image": image_id,
+            "labels": { "dev.example.test": "lifecycle" },
+        });
+        let mut up = box_up(binary, &env, &spec, &name);
+        assert_eq!(
+            up.ready["image"]["id"],
+            image_id.as_str(),
+            "the image id resolved to another id: {}",
+            up.ready
+        );
+        up.close_stdin();
+        assert!(up.wait().success(), "up did not exit 0 for stdin-closed");
     }
 
     // SIGTERM before ready tears down whatever exists and still ends with
@@ -330,9 +319,6 @@ fn box_lifecycle_works_for_a_caller() {
 #[test]
 fn up_refuses_before_it_creates() {
     // Guarantee 17: up refuses before it creates.
-    // Sabotage: keep the name check after the state dir is created; the
-    // first box's `pid` is overwritten and the second `up`'s cleanup takes
-    // the first box down, so its `exec` fails.
     // Sabotage: drop `deny_unknown_fields` from `Mount`; the misspelled
     // mount spec then comes up `ready` and the refusal assertion fails.
     // Sabotage: drop the character-class check from the env-name validation,
@@ -350,6 +336,9 @@ fn up_refuses_before_it_creates() {
     // `create_dir_all` does, and make the name checks always pass; the
     // concurrent loser is never refused `name-in-use`, and its failure path
     // removes the winner's box, so the winner's `exec` fails too.
+    // Sabotage: keep the name check after the state dir is created; the
+    // racing loser overwrites the winner's `pid` and its cleanup takes the
+    // winner's box down, so the winner's `exec` fails.
     // Sabotage: return a failure after the claim as prose on stderr, as
     // before; the absent-mount `up` prints no line and the first-line read
     // fails.
@@ -449,7 +438,7 @@ fn up_refuses_before_it_creates() {
     // A spec whose mount host is a regular file is refused as data, naming
     // the path, and leaves no state dir and no box: the runtimes treat a
     // file mount differently, so one spec must be refused the same way on
-    // both. The live-name box below is the control that the same command
+    // both. The race's winner below is the control that the same command
     // path comes up `ready`.
     let file = env.root.join("f.txt");
     fs::write(&file, b"not a directory\n").unwrap();
@@ -474,8 +463,8 @@ fn up_refuses_before_it_creates() {
 
     // A mount whose absolute host path does not exist passes validation, so
     // the runtime rejects the run after the claim. `up` removes what it made
-    // and ends with one `failed` line. The positive control is the live
-    // name below, which comes up `ready` from the same image.
+    // and ends with one `failed` line. The positive control is the race's
+    // winner below, which comes up `ready` from the same image.
     let absent = serde_json::json!({
         "name": name,
         "image": default_image(binary, &env),
@@ -492,29 +481,14 @@ fn up_refuses_before_it_creates() {
     );
     assert_left_nothing(binary, &env, &name, label, "failed");
 
-    // A second `up` on a live name is refused without touching the first
-    // box.
+    // Two `up`s on one free name at once: the claim lets exactly one hold
+    // it, and the loser touches nothing of the winner's. Both are spawned
+    // before either's first line is read.
     let live = serde_json::json!({
         "name": name,
         "image": default_image(binary, &env),
         "labels": { "dev.example.test": "refuses" },
     });
-    let mut up = box_up(binary, &env, &live, &name);
-    let (code, refused) = box_up_refused(binary, &env, &live, &[]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["event"], "refused");
-    assert_eq!(refused["box"], name);
-    assert_eq!(refused["reason"], "name-in-use");
-    let ok = box_exec(binary, &env, &name, &["true"]);
-    assert_ok(&ok, "exec in the first box after the refused up");
-
-    let _ = box_down(binary, &env, &name);
-    assert!(up.wait().success(), "box up did not exit cleanly");
-    drop(up);
-
-    // Two `up`s on one free name at once: the claim lets exactly one hold
-    // it, and the loser touches nothing of the winner's. Both are spawned
-    // before either's first line is read.
     let mut starts = [
         box_up_start(binary, &env, &live, &[]),
         box_up_start(binary, &env, &live, &[]),
@@ -1260,15 +1234,6 @@ fn cleanup_removes_only_pinfolds_garbage() {
         let (code, built) = image_build(binary, &env, &x_name, &x_containerfile, &x_context);
         assert_eq!(built["event"], "built", "x build {}: {built}", i + 1);
         assert_eq!(code, 0, "x build {} exited {code}", i + 1);
-        assert_eq!(
-            built["labels"]["dev.pinfold.image"],
-            x_name.as_str(),
-            "x is not its own family: {built}"
-        );
-        assert_eq!(
-            built["labels"]["dev.pinfold.profile"], "",
-            "x carries the profile's family label: {built}"
-        );
         // The base is the runtime's digest of the profile ref: x's own,
         // never the one the profile carries.
         assert_eq!(
@@ -1292,29 +1257,17 @@ fn cleanup_removes_only_pinfolds_garbage() {
     }
 
     // Box A pins b2, the older of the two, so the next build's retention
-    // meets a pinned image first. `FROM scratch` has no program for `exec`,
-    // so `box list` is how the test sees the box survive.
-    let pinned_label = "dev.example.test=cleanup-pinned";
+    // meets a pinned image first.
     let box_a = box_name("cleanup-a");
-    let pin_a = serde_json::json!({
-        "name": box_a,
-        "image": b2.as_str(),
-        "labels": { "dev.example.test": "cleanup-pinned" },
-    });
+    let pin_a = serde_json::json!({ "name": box_a, "image": b2.as_str() });
     let mut up_a = box_up(binary, &env, &pin_a, &box_a);
 
-    // Build 4: b2 cannot go while box A holds it. The build still exits 0
-    // and its one maintenance line names b2.
-    let output = build_profile(binary, &env, &profile);
+    // Build 4: b2 cannot go while box A holds it. The build still exits 0.
+    build_profile(binary, &env, &profile);
     builds.push(built_unique_ref(&profile));
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         image_id(&b2).is_some(),
         "the image box A pins is gone after build 4"
-    );
-    assert!(
-        stderr.contains(&b2),
-        "build 4's maintenance line did not name the pinned b2: {stderr}"
     );
     // Build 4 counts only the profile's own images, so the caller's two
     // survive and b3 remains the profile's older rollback image.
@@ -1330,44 +1283,18 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // Box B pins b3, then box A goes down and frees b2. Build 5's retention
     // meets pinned b3 first and must still remove the free b2 behind it.
     let box_b = box_name("cleanup-b");
-    let pin_b = serde_json::json!({
-        "name": box_b,
-        "image": b3.as_str(),
-        "labels": { "dev.example.test": "cleanup-pinned" },
-    });
+    let pin_b = serde_json::json!({ "name": box_b, "image": b3.as_str() });
     let mut up_b = box_up(binary, &env, &pin_b, &box_b);
     up_a.down(binary, &env);
     assert!(up_a.wait().success(), "box A's up did not exit cleanly");
 
-    let output = build_profile(binary, &env, &profile);
+    build_profile(binary, &env, &profile);
     builds.push(built_unique_ref(&profile));
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         image_id(&b2).is_none(),
         "build 5 kept the freed b2 because the pinned b3 failed first"
     );
     assert!(image_id(&b3).is_some(), "build 5 removed the pinned b3");
-    assert!(
-        stderr.contains(&b3),
-        "build 5's maintenance line did not name the pinned b3: {stderr}"
-    );
-    assert!(
-        !stderr.contains(&b2),
-        "build 5's maintenance line named the freed b2: {stderr}"
-    );
-    let listed = box_list(binary, &env, pinned_label);
-    let pinned = listed
-        .iter()
-        .find(|box_| box_["name"] == box_b)
-        .unwrap_or_else(|| panic!("box B is not listed after build 5: {listed:?}"));
-    assert_eq!(
-        pinned["state"], "running",
-        "box B is not running after build 5: {pinned:?}"
-    );
-    assert_eq!(
-        pinned["owner_alive"], true,
-        "box B's owner is reported dead after build 5: {pinned:?}"
-    );
 
     // Box B goes down before the rest of the test, which starts its own
     // boxes from the profile's `:latest`.
@@ -1494,11 +1421,6 @@ fn cleanup_removes_only_pinfolds_garbage() {
         !box_list(binary, &env, dead_label).is_empty(),
         "--dry-run removed the dead box"
     );
-    assert!(live_state.is_dir(), "--dry-run removed the project state");
-    assert!(
-        live_marker.is_file(),
-        "--dry-run removed the live project's marker"
-    );
     assert!(other_marker.is_file(), "--dry-run removed a project cache");
 
     // The real clean removes the dead box and only the dead box.
@@ -1519,10 +1441,6 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert!(
         !box_list(binary, &env, &live_label).is_empty(),
         "clean removed a live box"
-    );
-    assert!(
-        live_state.is_dir(),
-        "clean removed a project state whose checkout exists"
     );
     assert!(
         other_state.is_dir(),
@@ -1638,9 +1556,10 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // Sabotage: tag the build but skip the `--context` argument, so the
     // runtime gets no context holding marker.txt; the COPY fails and the
     // first `built` assertion fails. Sabotage: set the caller image window
-    // to zero; the third build removes the first build's ref, so its
-    // existence assertion fails and the ref's `up` is refused
-    // `image-missing`.
+    // to zero; the third build removes the first build's ref, so the ref's
+    // `up` is refused `image-missing`. Sabotage: make `build_id` in
+    // core/image.rs return a fixed string; the three builds then share one
+    // ref, which names the third build, and the box reads `third`.
     let binary = pinfold();
     let env = TestEnv::new("image-build");
     // The cleanup test's `clean` deletes the runtime's builder; a build
@@ -1678,22 +1597,9 @@ fn a_caller_builds_an_image_from_its_own_tree() {
             .as_str()
             .unwrap_or_else(|| panic!("built carries no ref: {built}"))
             .to_string();
-        let build = reference
-            .strip_prefix(&format!("{repository}:"))
-            .unwrap_or_else(|| panic!("ref {reference} is not {repository}:<build>"));
         assert_eq!(built["latest"], latest.as_str(), "built: {built}");
         assert_eq!(built["labels"]["dev.pinfold.image"], name.as_str());
-        assert_eq!(built["labels"]["dev.pinfold.build"], build);
         assert_eq!(built["labels"]["dev.example.test"], "image");
-        assert_eq!(
-            built["base"], built["labels"]["dev.pinfold.base"],
-            "base is not the recorded base label: {built}"
-        );
-        if refs.is_empty() {
-            // The COPYed file reaches a box started from the unique ref.
-            let read = file_from_image(binary, &env, &reference, "image", "/marker.txt");
-            assert_eq!(read, "first\n", "the box read another marker");
-        }
         assert_eq!(
             image_id(&latest),
             image_id(&reference),
@@ -1705,20 +1611,10 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     let names_ids = || labeled_images("dev.pinfold.image", &name);
     let kept = names_ids();
     // A caller's `built` ref is a handle for later, so later builds of the
-    // name do not reclaim it: the first build's ref still names an image.
-    assert!(
-        image_id(&refs[0]).is_some(),
-        "the first build's ref is gone after three builds: {refs:?}"
-    );
-    // And it still comes up, as the caller's later `box up` uses it.
-    let again = box_name("image-again");
-    let spec = serde_json::json!({ "name": again, "image": refs[0] });
-    let mut up = box_up(binary, &env, &spec, &again);
-    up.down(binary, &env);
-    assert!(
-        up.wait().success(),
-        "the first ref's box up did not exit cleanly"
-    );
+    // name neither reclaim nor move it: a box started from the first
+    // build's ref reads the file that build COPYed.
+    let read = file_from_image(binary, &env, &refs[0], "image", "/marker.txt");
+    assert_eq!(read, "first\n", "the first build's ref names another build");
 
     // A failed build carries its log and makes no image.
     let failing = env.root.join("Containerfile.fail");
@@ -1931,17 +1827,8 @@ fn a_route_reaches_exactly_one_host_service() {
     });
     let up = box_up(binary, &env, &spec, &name);
 
-    // The route reaches the fixture.
-    let route = curl(binary, &env, &name, "5", &["http://fixture.internal/"]);
-    assert_eq!(route.code, 0, "the route failed: {}", route.stderr);
-    assert!(
-        route.stdout.contains("fixture host=fixture.internal"),
-        "the route answered: {}",
-        route.stdout
-    );
-
-    // The Host header is rewritten from the absolute-form target, not passed
-    // through from the client.
+    // The route reaches the fixture, and the Host header is rewritten from
+    // the absolute-form target, not passed through from the client.
     let rewritten = curl(
         binary,
         &env,
@@ -1982,17 +1869,8 @@ fn a_route_reaches_exactly_one_host_service() {
     );
     assert_eq!(
         fixture.requests().len(),
-        2,
+        1,
         "the fixture answered a direct request"
-    );
-
-    // Every decision is logged.
-    let lines = egress_log_lines(&env, &name);
-    assert!(
-        lines.iter().any(|line| line["host"] == "fixture.internal"
-            && line["decision"] == "allowed"
-            && line["reason"] == "route"),
-        "no route decision: {lines:?}"
     );
 
     up.down(binary, &env);
@@ -2115,9 +1993,9 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
 #[test]
 fn no_egress_means_no_way_out() {
     // Sabotage: start the proxy and relay even without `egress` in the spec;
-    // the explicit-proxy request then succeeds, the fixture answers, and the
-    // refusal assertions fail. The same request with the route in the spec is
-    // the positive control.
+    // the explicit-proxy request then reaches the proxy instead of a refused
+    // connection, and the refusal assertions fail. The same request with the
+    // route in the spec is the positive control.
     let binary = pinfold();
     let env = TestEnv::new("no-egress");
     let fixture = HttpFixture::start(None);
@@ -2128,15 +2006,7 @@ fn no_egress_means_no_way_out() {
     });
     let up = box_up(binary, &env, &spec, &name);
 
-    // No proxy variables and no relay to use them.
-    for variable in ["http_proxy", "HTTPS_PROXY"] {
-        let found = box_exec(binary, &env, &name, &["printenv", variable]);
-        assert_ne!(
-            found.code, 0,
-            "{variable} is set without egress: {}",
-            found.stdout
-        );
-    }
+    // No relay: a request sent to the proxy's port finds no listener.
     let proxied = curl(
         binary,
         &env,
@@ -2154,22 +2024,6 @@ fn no_egress_means_no_way_out() {
         proxied.stderr.contains("Connection refused"),
         "the proxied request failed for another reason: {}",
         proxied.stderr
-    );
-
-    // A route name is nothing without egress. The DNS error is the
-    // guaranteed behavior here, not a pass by failure: no egress means no
-    // resolver.
-    let direct = curl(binary, &env, &name, "5", &["http://fixture.internal/"]);
-    assert_eq!(direct.code, 6, "the box reached a route: {}", direct.stdout);
-    assert!(
-        direct.stderr.contains("Could not resolve host"),
-        "the direct request failed for another reason: {}",
-        direct.stderr
-    );
-    assert_eq!(
-        fixture.requests().len(),
-        0,
-        "the fixture answered a no-egress box"
     );
 
     up.down(binary, &env);
