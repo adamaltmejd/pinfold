@@ -149,9 +149,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test -p e2e --locked
 ```
 
-The Mac suite runs here; CI runs the Linux suite on the push. A commit
-that touches a test body reruns that test's named sabotage first, and a
-sabotage that no longer bites is a finding of its own.
+The Mac suite runs here; CI runs the Linux suite on the push.
 
 A Yard ticket instead, filed `--parked` through `yard-file` with
 `--workflow heavy`, when the change is a rework: it redesigns a module's

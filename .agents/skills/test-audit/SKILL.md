@@ -1,6 +1,6 @@
 ---
 name: test-audit
-description: Judge pinfold's end-to-end tests — gate a candidate that adds or changes a test, rerun a sabotage after a merge, and sweep the suite for assertion blocks that fail the bar in AGENTS.md, deleting by default. Load this when a candidate touches a test, when a merge that touched a test lands, or when asked to audit, prune or review tests.
+description: Judge pinfold's end-to-end tests — gate a candidate that adds or changes a test, and sweep the suite for assertion blocks that fail the bar in AGENTS.md, deleting by default. Load this when a candidate touches a test, or when asked to audit, prune or review tests.
 ---
 
 # /test-audit
@@ -16,18 +16,14 @@ candidate back.
 
 1. Which guarantee row. A new test needs a new row; a bug extends its
    row's test.
-2. Which sabotage makes it fail, named in the test's comment.
+2. Which change to the binary makes it fail, named in the test's comment.
 3. Why the row's existing blocks do not already catch that failure, and
    whether this is the row's hardest case.
 4. Which outside source gives each expected value.
 
-Then run the named sabotage on the host (labvm for a Linux-only path). A
-sabotage that does not bite sends the candidate back.
-
-## After a merge that touched a test
-
-Rerun the named sabotage on main. One that no longer bites is a ticket: a
-bug through the CLI, or a spec change if the row no longer holds.
+Nobody runs the sabotage by hand; that is the operator step the queue
+replaced on 2026-09-25. Until a sabotage gate applies it, the review
+seat's reading of the sabotage is the proof.
 
 ## The sweep
 
@@ -61,8 +57,7 @@ block and the helpers it orphans, one commit per test file. A kept block
 that fails on main is a product bug: reproduce it through the CLI and
 ticket it, never delete it.
 
-Before each push: the suite on the host, and the sabotage of every edited
-test rerun. Report in the code-cleanup archive file when run inside that
-pass, otherwise in `docs/archive/YYYY-MM-DD-test-audit.md`: each
-disposition with its row, the sabotages rerun, and test lines beside
-binary lines.
+Before each push: the suite on the host. Report in the code-cleanup
+archive file when run inside that pass, otherwise in
+`docs/archive/YYYY-MM-DD-test-audit.md`: each disposition with its row,
+and test lines beside binary lines.

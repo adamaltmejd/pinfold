@@ -642,9 +642,10 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 24 | Every build reruns its steps | A second build of one source does not reuse the first's `RUN` layer; on podman it leaves no untagged image. |
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version with no runtime and writes no maintenance stamp. |
 
-Linux (podman) runs in GitHub CI on `ubuntu-26.04` and `ubuntu-26.04-arm` as
-the required gate. macOS (Apple `container`) runs on a macOS host before
-each merge, on the exact commit being merged.
+Both run in the merge queue on the exact ref being merged: Linux (podman)
+on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm` runners, dispatched by
+the queue; macOS (Apple `container`) on the operator's Mac. Linux also
+runs on every push to main.
 
 ## Code
 

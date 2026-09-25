@@ -73,8 +73,9 @@ rules for changing the repository.
      succeeding in the same box.
   2. Assert the reason, not only the failure: a proxy 403 plus the log entry
      naming why. A timeout or DNS error is not a pass.
-  3. Seen failing once. Before merge, the test ran against a deliberate
-     sabotage and failed. Its comment names the sabotage.
+  3. Names its sabotage: the change to the binary that makes it fail, in
+     the test's comment. Nothing reruns it on an edit that changes no
+     assertion.
 - **Deterministic.** No sleeps: wait on pinfold's readiness signals. No
   retries: a flaky test is a bug to fix or delete. Fixtures run on the host
   (an HTTP service behind a route, a fake OpenAI-compatible model). The only
