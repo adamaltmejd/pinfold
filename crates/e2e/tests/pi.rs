@@ -27,7 +27,9 @@ fn the_environment_is_exactly_the_spec() {
     // child's environment; `shhh` then appears in host `ps` while the box
     // runs and the ps assertion fails. Sabotage: let the box inherit the
     // host environment; the unprefixed variable is then present and its
-    // assertion fails. Sabotage: skip the `validate` call in `Box::up`;
+    // assertion fails. Sabotage: drop `--http-proxy=false` from podman's
+    // run argv; the box inherits the host's proxy variables and the proxy
+    // assertions fail. Sabotage: skip the `validate` call in `Box::up`;
     // the `PINFOLD_ENV_BAD-NAME` run does not refuse and the refusal
     // assertions fail.
     let binary = pinfold();
@@ -36,7 +38,21 @@ fn the_environment_is_exactly_the_spec() {
     let project = TestDir::new(&env, "project");
     git(project.path(), &["init", "-q"]);
 
-    let (run, _, name) = PiRpc::start(binary, &env, project.path());
+    // Warm the shared harness cache while no proxy variable is set: pinfold
+    // fetches the harness on the host with curl, which honors https_proxy,
+    // so the recognisable values below would break the fetch.
+    pi_version(binary, &env, project.path());
+
+    let (run, _, name) = PiRpc::start_with_env(
+        binary,
+        &env,
+        project.path(),
+        &[
+            ("HTTP_PROXY", "http://upper-proxy.invalid:3128"),
+            ("https_proxy", "http://lower-proxy.invalid:3128"),
+            ("NO_PROXY", "proxy-marker.invalid"),
+        ],
+    );
 
     // PINFOLD_ENV_SECRET arrives as SECRET.
     let secret = box_exec(binary, &env, &name, &["sh", "-c", "printf %s \"$SECRET\""]);
@@ -51,6 +67,27 @@ fn the_environment_is_exactly_the_spec() {
         &["sh", "-c", "printf %s \"$E2E_HOST_ONLY\""],
     );
     assert_eq!(host_only.stdout, "", "an unprefixed host variable leaked");
+
+    // The host's proxy variables are absent: podman's run would otherwise
+    // copy them in, and curl prefers lowercase https_proxy, so every HTTPS
+    // request would go to the host's unreachable proxy.
+    let boxed_env = box_exec(binary, &env, &name, &["env"]);
+    assert_eq!(
+        boxed_env.code, 0,
+        "reading the box environment failed: {}",
+        boxed_env.stderr
+    );
+    for value in [
+        "http://upper-proxy.invalid:3128",
+        "http://lower-proxy.invalid:3128",
+        "proxy-marker.invalid",
+    ] {
+        assert!(
+            !boxed_env.stdout.contains(value),
+            "{value} leaked into the box environment:\n{}",
+            boxed_env.stdout
+        );
+    }
 
     // The secret never shows in host `ps` while the box runs.
     let ps = Command::new("ps")
