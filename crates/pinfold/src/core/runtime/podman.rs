@@ -7,7 +7,6 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{ExitStatus, Stdio};
 
 use serde::Deserialize;
 use tokio::process::Child;
@@ -16,7 +15,7 @@ use crate::core::clean::LAYER_LABEL;
 use crate::core::plan::{Env, Plan};
 use crate::core::runtime::{
     BoxInfo, BoxStat, BuildCache, BuildRequest, ImageIdentity, ImageInfo, MemoryStat, PidsStat,
-    Preflight, Runtime, bind, output, run, spawn_error, up_command, user,
+    Preflight, Runtime, bind, inspect, output, parse_json, run, spawn_error,
 };
 use crate::dirs;
 
@@ -52,11 +51,43 @@ impl Runtime for Podman {
             .ok_or_else(|| io::Error::other("preflight found no podman seccomp profile"))?;
         let seccomp = seccomp_profile(source)?;
         let resolv_conf = empty_resolv_conf()?;
-        let argv = up_argv(plan, init, proxy_socket, &seccomp, &resolv_conf);
-        // HOME is not exported: it goes on argv because changing the podman
-        // client's own HOME would move its rootless storage.
-        let mut env = plan.env.iter().filter(|(name, _)| name.as_str() != "HOME");
-        up_command(&argv, &mut env, plan.egress.is_some())
+        let mut extra: Vec<OsString> = vec![
+            "--userns=keep-id".into(),
+            "--security-opt".into(),
+            "no-new-privileges".into(),
+            "--security-opt".into(),
+            format!("seccomp={}", seccomp.display()).into(),
+            "--no-hosts".into(),
+            // `--dns none` conflicts with `--network none` on podman 5.4.2.
+            // An empty read-only file leaves the box with no resolvers either
+            // way, and podman's own generated resolv.conf never appears.
+            "--mount".into(),
+            bind(&resolv_conf, Path::new("/etc/resolv.conf"), true),
+            "--pids-limit".into(),
+            PIDS_LIMIT.to_string().into(),
+        ];
+        if let Some(memory) = &plan.memory {
+            // Swap equal to memory: the limit is the memory the box gets, and
+            // no swap beyond it.
+            extra.push("--memory-swap".into());
+            extra.push(memory.into());
+        }
+        // HOME is explicit: keep-id's injected passwd entry gives `/`, which
+        // is read-only, so the box needs a real value. It goes on argv as a
+        // literal and is not exported, because changing the podman client's
+        // own HOME would move its rootless storage; HOME is a path, never a
+        // secret.
+        let mut home = OsString::from("HOME=");
+        home.push(home_value(plan));
+        extra.push("--env".into());
+        extra.push(home);
+        if let Some(socket) = proxy_socket {
+            extra.push("--mount".into());
+            extra.push(bind(socket, Path::new(GUEST_PROXY_SOCKET), true));
+        }
+        let guest_socket = proxy_socket.map(|_| GUEST_PROXY_SOCKET);
+        let env = plan.env.iter().filter(|(name, _)| name.as_str() != "HOME");
+        super::up("podman", plan, init, guest_socket, extra, env)
             .spawn()
             .map_err(|error| spawn_error("podman", error))
     }
@@ -78,16 +109,6 @@ impl Runtime for Podman {
         // `-f` makes removing a box that is already gone succeed; `-t 0`
         // skips the stop grace period the spec does not grant.
         run(&["podman", "rm", "-f", "-t", "0", name])
-    }
-
-    fn exec(
-        &self,
-        name: &str,
-        tty: bool,
-        workdir: Option<&Path>,
-        argv: &[String],
-    ) -> io::Result<ExitStatus> {
-        super::exec("podman", name, tty, workdir, argv)
     }
 
     fn stat(&self, name: &str) -> io::Result<BoxStat> {
@@ -115,21 +136,37 @@ impl Runtime for Podman {
     }
 
     fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
-        parse_images(&output(&["podman", "image", "list", "--format", "json"])?)
+        let mut infos = Vec::new();
+        for image in listed_images(false)? {
+            let ListedImage {
+                id, names, labels, ..
+            } = image;
+            // One entry per name, so Maintenance can remove every tag of an
+            // old image; a dangling image is removed by its id.
+            if names.is_empty() {
+                infos.push(ImageInfo {
+                    id: id.clone(),
+                    reference: id,
+                    labels,
+                });
+                continue;
+            }
+            for name in names {
+                infos.push(ImageInfo {
+                    id: id.clone(),
+                    reference: local_reference(&name),
+                    labels: labels.clone(),
+                });
+            }
+        }
+        Ok(infos)
     }
 
     fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageIdentity, String>> {
-        let output = std::process::Command::new("podman")
-            .args(["image", "inspect", reference])
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|error| spawn_error("podman", error))?;
-        if !output.status.success() {
-            return Ok(Err(String::from_utf8_lossy(&output.stderr)
-                .trim()
-                .to_string()));
+        match inspect("podman", reference)? {
+            Ok(json) => parse_identity(&json).map(Ok),
+            Err(message) => Ok(Err(message)),
         }
-        parse_identity(&output.stdout).map(Ok)
     }
 
     fn remove_image(&self, reference: &str) -> io::Result<()> {
@@ -146,11 +183,7 @@ impl Runtime for Podman {
     }
 
     fn build_cache(&self) -> io::Result<BuildCache> {
-        let json = output(&["podman", "image", "list", "--all", "--format", "json"])?;
-        let images: Vec<ListedImage> = serde_json::from_slice(&json).map_err(|error| {
-            io::Error::other(format!("podman image list returned invalid JSON: {error}"))
-        })?;
-        Ok(BuildCache::Bytes(build_cache_bytes(&images)))
+        Ok(BuildCache::Bytes(build_cache_bytes(&listed_images(true)?)))
     }
 
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
@@ -167,8 +200,8 @@ impl Runtime for Podman {
         super::build("podman", cache_flags, request)
     }
 
-    fn image_digest(&self, reference: &str) -> io::Result<Option<String>> {
-        super::image_digest("podman", reference, parse_digest)
+    fn program(&self) -> &'static str {
+        "podman"
     }
 
     fn name(&self) -> &'static str {
@@ -177,10 +210,6 @@ impl Runtime for Podman {
 
     fn isolation(&self) -> &'static str {
         "the host kernel, shared with every box"
-    }
-
-    fn version(&self) -> io::Result<String> {
-        super::cli_version("podman")
     }
 }
 
@@ -261,8 +290,7 @@ struct InfoSecurity {
 /// Run and parse `podman info`. A missing CLI is named by the spawn helper.
 fn podman_info() -> io::Result<Info> {
     let json = output(&["podman", "info", "--format", "json"])?;
-    serde_json::from_slice(&json)
-        .map_err(|error| io::Error::other(format!("podman info returned invalid JSON: {error}")))
+    parse_json("podman info", &json)
 }
 
 /// Refuse a host pinfold will not run a box on, naming the problem. Runs
@@ -435,8 +463,7 @@ struct ListedContainer {
 }
 
 fn parse_list(json: &[u8]) -> io::Result<Vec<BoxInfo>> {
-    let containers: Vec<ListedContainer> = serde_json::from_slice(json)
-        .map_err(|error| io::Error::other(format!("podman ps returned invalid JSON: {error}")))?;
+    let containers: Vec<ListedContainer> = parse_json("podman ps", json)?;
     Ok(containers
         .into_iter()
         .map(|container| {
@@ -547,34 +574,15 @@ fn build_cache_bytes(images: &[ListedImage]) -> u64 {
         .sum()
 }
 
-fn parse_images(json: &[u8]) -> io::Result<Vec<ImageInfo>> {
-    let images: Vec<ListedImage> = serde_json::from_slice(json).map_err(|error| {
-        io::Error::other(format!("podman image list returned invalid JSON: {error}"))
-    })?;
-    let mut infos = Vec::new();
-    for image in images {
-        let ListedImage {
-            id, names, labels, ..
-        } = image;
-        // One entry per name, so Maintenance can remove every tag of an old
-        // image; a dangling image is removed by its id.
-        if names.is_empty() {
-            infos.push(ImageInfo {
-                id: id.clone(),
-                reference: id,
-                labels,
-            });
-            continue;
-        }
-        for name in names {
-            infos.push(ImageInfo {
-                id: id.clone(),
-                reference: local_reference(&name),
-                labels: labels.clone(),
-            });
-        }
-    }
-    Ok(infos)
+/// Every image `podman image list` reports; with `all`, intermediate
+/// images too.
+fn listed_images(all: bool) -> io::Result<Vec<ListedImage>> {
+    let argv: &[&str] = if all {
+        &["podman", "image", "list", "--all", "--format", "json"]
+    } else {
+        &["podman", "image", "list", "--format", "json"]
+    };
+    parse_json("podman image list", &output(argv)?)
 }
 
 /// Podman prefixes locally built images with `localhost/`; the rest of
@@ -595,11 +603,7 @@ struct InspectedImage {
 }
 
 fn parse_identity(json: &[u8]) -> io::Result<ImageIdentity> {
-    let images: Vec<InspectedImage> = serde_json::from_slice(json).map_err(|error| {
-        io::Error::other(format!(
-            "podman image inspect returned invalid JSON: {error}"
-        ))
-    })?;
+    let images: Vec<InspectedImage> = parse_json("podman image inspect", json)?;
     let image = images
         .into_iter()
         .next()
@@ -607,20 +611,8 @@ fn parse_identity(json: &[u8]) -> io::Result<ImageIdentity> {
     Ok(ImageIdentity {
         id: image.id,
         labels: image.labels,
+        digest: Some(image.digest).filter(|digest| !digest.is_empty()),
     })
-}
-
-fn parse_digest(json: &[u8]) -> io::Result<Option<String>> {
-    let images: Vec<InspectedImage> = serde_json::from_slice(json).map_err(|error| {
-        io::Error::other(format!(
-            "podman image inspect returned invalid JSON: {error}"
-        ))
-    })?;
-    Ok(images
-        .into_iter()
-        .next()
-        .map(|image| image.digest)
-        .filter(|digest| !digest.is_empty()))
 }
 
 /// A field podman marshals as `null` when it is empty.
@@ -630,116 +622,6 @@ where
     T: Deserialize<'de> + Default,
 {
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-/// The `podman run` argv for a box, as data.
-///
-/// `init` is a host path; it and its directory are mounted read-only at the
-/// same path, so it is also the path PID 1 runs. When `proxy_socket` is set,
-/// the socket is bind-mounted read-only at [`GUEST_PROXY_SOCKET`] and init
-/// relays to it as its argument.
-fn up_argv(
-    plan: &Plan,
-    init: &Path,
-    proxy_socket: Option<&Path>,
-    seccomp: &Path,
-    resolv_conf: &Path,
-) -> Vec<OsString> {
-    let mut argv: Vec<OsString> = vec![
-        "podman".into(),
-        "run".into(),
-        "-i".into(),
-        "--name".into(),
-        plan.name.clone().into(),
-        "--network".into(),
-        "none".into(),
-        "--cap-drop".into(),
-        "ALL".into(),
-        "--read-only".into(),
-        "--tmpfs".into(),
-        "/tmp".into(),
-        "--user".into(),
-        user(plan),
-        "--userns=keep-id".into(),
-        "--security-opt".into(),
-        "no-new-privileges".into(),
-        "--security-opt".into(),
-        format!("seccomp={}", seccomp.display()).into(),
-        "--no-hosts".into(),
-        // `--dns none` conflicts with `--network none` on podman 5.4.2. An
-        // empty read-only file leaves the box with no resolvers either way,
-        // and podman's own generated resolv.conf never appears.
-        "--mount".into(),
-        bind(resolv_conf, Path::new("/etc/resolv.conf"), true),
-        "--pids-limit".into(),
-        PIDS_LIMIT.to_string().into(),
-    ];
-    if let Some(cpus) = plan.cpus {
-        argv.push("--cpus".into());
-        argv.push(cpus.to_string().into());
-    }
-    if let Some(memory) = &plan.memory {
-        argv.push("--memory".into());
-        argv.push(memory.into());
-        // Swap equal to memory: the limit is the memory the box gets, and
-        // no swap beyond it.
-        argv.push("--memory-swap".into());
-        argv.push(memory.into());
-    }
-    for (key, value) in &plan.labels {
-        argv.push("--label".into());
-        argv.push(format!("{key}={value}").into());
-    }
-    for name in plan.env.keys().filter(|name| name.as_str() != "HOME") {
-        // Names only: podman reads the value from our environment.
-        argv.push("--env".into());
-        argv.push(name.into());
-    }
-    // HOME is explicit: keep-id's injected passwd entry gives `/`, which is
-    // read-only, so the box needs a real value. It goes on argv as a literal
-    // because changing the podman client's own HOME would move its rootless
-    // storage; HOME is a path, never a secret.
-    argv.push("--env".into());
-    let mut home = OsString::from("HOME=");
-    home.push(home_value(plan));
-    argv.push(home);
-    // Always applied: Node's fetch reads the proxy variables only with this
-    // set.
-    argv.push("--env".into());
-    argv.push("NODE_USE_ENV_PROXY".into());
-    if plan.egress.is_some() {
-        argv.push("--env".into());
-        argv.push("HTTPS_PROXY".into());
-        argv.push("--env".into());
-        argv.push("http_proxy".into());
-    }
-    for mount in &plan.mounts {
-        argv.push("--mount".into());
-        argv.push(bind(&mount.host, &mount.guest, mount.readonly));
-    }
-
-    // The init binary comes from the host and runs as PID 1. box::up refuses
-    // an init without a directory, so the parent is a real directory here.
-    let init_dir = init.parent().unwrap_or(Path::new("/"));
-    argv.push("--mount".into());
-    argv.push(bind(init_dir, init_dir, true));
-    if let Some(socket) = proxy_socket {
-        argv.push("--mount".into());
-        argv.push(bind(socket, Path::new(GUEST_PROXY_SOCKET), true));
-    }
-    argv.push("--entrypoint".into());
-    argv.push(init.into());
-    argv.push(
-        plan.image
-            .clone()
-            .expect("box up resolves the profile's image before the runtime runs")
-            .into(),
-    );
-    argv.push("init".into());
-    if proxy_socket.is_some() {
-        argv.push(GUEST_PROXY_SOCKET.into());
-    }
-    argv
 }
 
 /// The HOME the box sees: the spec's, else `/tmp`, the one writable path.
