@@ -37,16 +37,17 @@ pub fn egress_dir() -> io::Result<PathBuf> {
     Ok(state_dir()?.join("egress"))
 }
 
+/// `$XDG_STATE_HOME/pinfold/boxes`: the directory holding one state dir per
+/// box.
+pub fn boxes_dir() -> io::Result<PathBuf> {
+    Ok(state_dir()?.join("boxes"))
+}
+
 /// `$XDG_STATE_HOME/pinfold/boxes/KEY`: the state dir `box up` claims for a
 /// box. KEY is the first 16 hex digits of the sha256 of the name, so the
-/// socket path's length does not depend on the name. An empty name is the
-/// directory that holds them all.
+/// socket path's length does not depend on the name.
 pub fn box_state_dir(name: &str) -> io::Result<PathBuf> {
-    let boxes = state_dir()?.join("boxes");
-    if name.is_empty() {
-        return Ok(boxes);
-    }
-    Ok(boxes.join(&sha256_hex(name)[..16]))
+    Ok(boxes_dir()?.join(&sha256_hex(name)[..16]))
 }
 
 /// Create `dir` in one step: `fill` writes into a staging sibling, which is

@@ -383,7 +383,7 @@ async fn abort(name: &str, state_dir: &Path, parts: Parts) -> Option<io::Result<
 /// write the `pid` file. A dir whose owner is alive is `name-in-use`; a dead
 /// owner's dir is removed and the claim tried once more.
 fn claim(plan: &Plan) -> Result<(PathBuf, Flock<File>), UpError> {
-    fs::create_dir_all(dirs::box_state_dir("")?)?;
+    fs::create_dir_all(dirs::boxes_dir()?)?;
     let state_dir = dirs::box_state_dir(&plan.name)?;
     for retry in [true, false] {
         match fs::create_dir(&state_dir) {

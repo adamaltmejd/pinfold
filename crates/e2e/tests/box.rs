@@ -34,6 +34,9 @@ static BUILDER_RACE: Mutex<()> = Mutex::new(());
 fn box_lifecycle_works_for_a_caller() {
     // Guarantee 9: the lifecycle works for a caller.
     // Sabotage: make `box down` a no-op; the post-down list assertion fails.
+    // Sabotage: restore the empty-name sentinel in `box_state_dir`; the
+    // `down ""` before the box's teardown removes the whole boxes directory
+    // and the state-dir assertion fails.
     // Sabotage: drop the final `down` line; the last-line assertion fails.
     // Sabotage: make `box exec` drop the runtime's exit status and return 0;
     // the exit-3 assertion fails, and the zero-exit command below is the
@@ -164,6 +167,52 @@ fn box_lifecycle_works_for_a_caller() {
         line["image"]["id"],
         image_id.as_str(),
         "list names the wrong image id: {line}"
+    );
+
+    // An empty name is not a box: `down ""` behaves as for any absent box
+    // and leaves the live box's state alone.
+    let live_state = find_box_state_dir(&env, up.pid()).expect("find the live box's state dir");
+    let empty = env
+        .command(binary)
+        .args(["box", "down", ""])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold box down");
+    assert!(
+        empty.status.success(),
+        "down with an empty name failed: {}: {}",
+        empty.status,
+        String::from_utf8_lossy(&empty.stderr)
+    );
+    assert!(
+        empty.stdout.is_empty(),
+        "down with an empty name printed on stdout: {}",
+        String::from_utf8_lossy(&empty.stdout)
+    );
+    assert!(
+        empty.stderr.is_empty(),
+        "down with an empty name printed on stderr: {}",
+        String::from_utf8_lossy(&empty.stderr)
+    );
+    assert!(
+        live_state.is_dir(),
+        "down with an empty name removed the live box's state dir: {}",
+        live_state.display()
+    );
+    let still = box_exec(binary, &env, &name, &["sh", "-c", "exit 0"]);
+    assert_eq!(
+        still.code, 0,
+        "the live box stopped answering exec after down \"\": {}",
+        still.stderr
+    );
+    let survivors = box_list(binary, &env, label);
+    let live = survivors
+        .iter()
+        .find(|box_| box_["name"].as_str() == Some(name.as_str()))
+        .unwrap_or_else(|| panic!("down \"\" took the live box out of list: {survivors:?}"));
+    assert_eq!(
+        live["owner_alive"], true,
+        "list reports the live box's owner gone after down \"\": {live}"
     );
 
     // `down` removes the box and the owner exits.

@@ -209,7 +209,7 @@ pub fn prune_boxes(runtime: &dyn Runtime) -> io::Result<Vec<DeadBox>> {
 /// socket whose `pid` no lock holds is leftover.
 pub fn leftover_socket_dirs() -> io::Result<Vec<PathBuf>> {
     let mut leftover = Vec::new();
-    for entry in dirs::entries(&dirs::box_state_dir("")?)? {
+    for entry in dirs::entries(&dirs::boxes_dir()?)? {
         let dir = entry.path();
         if owner_alive(&dir) {
             continue;
