@@ -28,7 +28,7 @@ seat's reading of the sabotage is the proof.
 ## The sweep
 
 Read-only first. One subagent per test file (`box.rs`; `pi.rs` with
-`cli.rs`) on the family's mid tier, told to edit nothing, given AGENTS.md,
+`cli.rs`) on Opus, told to edit nothing, given AGENTS.md,
 the guarantees table, `crates/e2e/src/lib.rs` and the file whole.
 
 One line per block that fails the bar, no hedging:
