@@ -289,24 +289,6 @@ impl Plan {
         Ok(())
     }
 
-    /// Refuse a caller spec label in pinfold's `dev.pinfold.` namespace:
-    /// `dev.pinfold.owner` drives `list`'s owner and `prune`, and the
-    /// identity labels name the image. `pinfold pi` builds pinfold's own
-    /// plan, which carries `dev.pinfold.project`, so this is not part of
-    /// [`Plan::validate`].
-    pub fn validate_reserved_labels(&self) -> Result<(), String> {
-        if let Some(key) = self
-            .labels
-            .keys()
-            .find(|key| key.starts_with("dev.pinfold."))
-        {
-            return Err(invalid(format!(
-                "label {key:?} is pinfold's: a box spec label may not start with dev.pinfold."
-            )));
-        }
-        Ok(())
-    }
-
     /// Refuse two mounts at one guest path: the runtime applies both, and
     /// whichever comes last shadows the other. `extra` is a guest path
     /// pinfold mounts after `validate` has run, so `Box::up` checks the
@@ -322,6 +304,18 @@ impl Plan {
             }
         }
         Ok(())
+    }
+}
+
+/// Refuse a caller label in pinfold's `dev.pinfold.` namespace:
+/// `dev.pinfold.owner` drives `list`'s owner and `prune`, and the identity
+/// labels name the image.
+pub fn check_reserved_labels(labels: &BTreeMap<String, String>) -> Result<(), String> {
+    match labels.keys().find(|key| key.starts_with("dev.pinfold.")) {
+        Some(key) => Err(format!(
+            "label {key:?} is pinfold's: a caller label may not start with dev.pinfold."
+        )),
+        None => Ok(()),
     }
 }
 

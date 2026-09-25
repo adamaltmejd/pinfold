@@ -14,7 +14,7 @@ use crate::core::artifacts;
 use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, Signals, UpError};
 use crate::core::clean;
 use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
-use crate::core::plan::Plan;
+use crate::core::plan::{self, Plan};
 use crate::core::profile::{self, Profile};
 use crate::core::runtime::{
     BoxInfo, ImageStatus, Runtime, image_status, local_image_id, podman, runtime,
@@ -259,7 +259,7 @@ async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
     // A caller's spec may not name pinfold's label namespace. The check is
     // here, not in `Plan::validate`, because `pinfold pi` runs its own plan,
     // which carries `dev.pinfold.project`, through the same `Box::up`.
-    if let Err(detail) = plan.validate_reserved_labels() {
+    if let Err(detail) = plan::check_reserved_labels(&plan.labels) {
         return Ok(refused(Refusal {
             box_name: Some(plan.name.clone()),
             reason: RefusalReason::Spec,

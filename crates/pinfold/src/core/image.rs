@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::r#box::RefusalReason;
 use crate::core::clean;
+use crate::core::plan;
 use crate::core::profile;
 use crate::core::runtime::{BuildRequest, Runtime, local_image_id, runtime};
 use crate::dirs;
@@ -152,15 +153,7 @@ pub enum ImageError {
 pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
     let spec = |detail: String| ImageError::Refused(RefusalReason::Spec, detail);
     profile::check_name("image", &request.name).map_err(|error| spec(error.to_string()))?;
-    if let Some(key) = request
-        .labels
-        .keys()
-        .find(|key| key.starts_with("dev.pinfold."))
-    {
-        return Err(spec(format!(
-            "label {key:?} is pinfold's: a caller label may not start with dev.pinfold."
-        )));
-    }
+    plan::check_reserved_labels(&request.labels).map_err(spec)?;
     if !request.context.is_dir() {
         return Err(spec(format!(
             "context {} is not a directory",
