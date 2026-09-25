@@ -1,9 +1,4 @@
 //! The per-box egress proxy.
-//!
-//! It lives in the `box up` process and listens only on the box's unix
-//! socket, so it has no network listener. CONNECT is port 443 to an
-//! allowlisted host; plain HTTP is port 80 to an allowlisted host or to a
-//! route.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -25,9 +20,6 @@ use crate::core::{network, rfc3339, tls};
 
 /// The loopback URL clients reach through `pinfold init`'s relay.
 pub const PROXY_URL: &str = "http://127.0.0.1:3128";
-
-/// macOS `sun_path` is 104 bytes including the terminator.
-const SOCKET_PATH_LIMIT: usize = 104;
 
 /// One request head. The cap only keeps a client from growing the buffer
 /// without bound.
@@ -57,20 +49,8 @@ pub struct Proxy {
 impl Proxy {
     /// Bind the box's socket, create its log, and serve until closed.
     pub fn start(socket: PathBuf, egress: &Egress, log: PathBuf) -> io::Result<Proxy> {
-        if socket.as_os_str().len() >= SOCKET_PATH_LIMIT {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "proxy socket path is {} bytes; macOS allows {}: {}",
-                    socket.as_os_str().len(),
-                    SOCKET_PATH_LIMIT - 1,
-                    socket.display()
-                ),
-            ));
-        }
-        // Before anything is created, so a route that cannot be served
-        // leaves nothing behind.
         let rules = Arc::new(Rules::new(egress)?);
+        let listener = UnixListener::bind(&socket)?;
         if let Some(parent) = log.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -80,7 +60,6 @@ impl Proxy {
             .create(true)
             .append(true)
             .open(&log)?;
-        let listener = UnixListener::bind(&socket)?;
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let stop = Arc::clone(&stop);
@@ -144,12 +123,7 @@ impl Rules {
             let upstream = match route {
                 Route::Address(address) => Upstream::Address(address.clone()),
                 Route::Inject(inject) => {
-                    let (target, headers) = inject.resolve().map_err(|error| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!("route {name}: {error}"),
-                        )
-                    })?;
+                    let (target, headers) = inject.resolve().map_err(io::Error::other)?;
                     Upstream::Inject { target, headers }
                 }
             };
@@ -287,8 +261,8 @@ fn connect(client: &mut UnixStream, rules: &Rules, log: &Path, target: &str) {
     // here and forwarded unchanged once the SNI checks out.
     let hello = match tls::read_client_hello(client) {
         Ok(hello) => hello,
-        Err(error) => {
-            record(log, host, "refused", error.reason());
+        Err(reason) => {
+            record(log, host, "refused", reason);
             return;
         }
     };
@@ -554,15 +528,16 @@ fn send(
         request.method, request.target, request.version
     )?;
     write!(head, "Host: {host}\r\n")?;
-    for (name, value) in &request.headers {
-        if !inject
-            .iter()
-            .any(|(injected, _)| injected.eq_ignore_ascii_case(name))
-        {
-            write!(head, "{name}: {value}\r\n")?;
-        }
-    }
-    for (name, value) in inject {
+    for (name, value) in request
+        .headers
+        .iter()
+        .filter(|(name, _)| {
+            !inject
+                .iter()
+                .any(|(injected, _)| injected.eq_ignore_ascii_case(name))
+        })
+        .chain(inject)
+    {
         write!(head, "{name}: {value}\r\n")?;
     }
     // Keep-alive is out of scope, so the upstream closes after answering.
@@ -748,20 +723,19 @@ fn tunnel(client: &mut UnixStream, server: TcpStream, log: &Path, host: &str) {
 }
 
 fn respond(client: &mut UnixStream, code: u16) -> io::Result<()> {
-    let response = match code {
-        200 => "HTTP/1.1 200 Connection Established\r\n\r\n".to_string(),
-        _ => {
-            let reason = match code {
-                400 => "Bad Request",
-                403 => "Forbidden",
-                502 => "Bad Gateway",
-                503 => "Service Unavailable",
-                _ => "Error",
-            };
-            format!("HTTP/1.1 {code} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-        }
+    let reason = match code {
+        200 => "Connection Established",
+        400 => "Bad Request",
+        403 => "Forbidden",
+        502 => "Bad Gateway",
+        _ => "Service Unavailable",
     };
-    client.write_all(response.as_bytes())
+    let framing = if code == 200 {
+        ""
+    } else {
+        "Content-Length: 0\r\nConnection: close\r\n"
+    };
+    client.write_all(format!("HTTP/1.1 {code} {reason}\r\n{framing}\r\n").as_bytes())
 }
 
 /// Record one refusal and answer with its status.
