@@ -9,16 +9,15 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
-    box_stat, build_profile, curl, default_image, egress_log, egress_log_lines, exit_code,
-    git_init, git_status, image_cli, image_digest, image_id, image_named, json_lines,
-    labeled_images, pinfold, profile_containerfile, project_id, project_state_dir, runtime_images,
-    untagged_images,
+    box_stat, build_profile, curl, default_image, egress_log, egress_log_lines, exit_code, git,
+    image_cli, image_digest, image_id, json_lines, labeled_images, pinfold, profile_containerfile,
+    project_id, project_state_dir, run_ok, runtime_image, runtime_images, untagged_images,
 };
 
 /// The two owner-gone tests share one hazard: either one's removal can take
@@ -81,16 +80,7 @@ fn box_lifecycle_works_for_a_caller() {
 
     // `ready` carries the owner, the box's full label set, the image's
     // identity labels included, and the image it runs.
-    let default = runtime_images()
-        .expect("list the runtime's images")
-        .into_iter()
-        .find(|known| {
-            known
-                .names
-                .iter()
-                .any(|name| name.strip_prefix("localhost/").unwrap_or(name) == image)
-        })
-        .expect("the runtime lists the default image");
+    let default = runtime_image(image).expect("the runtime lists the default image");
     let image_id = default.id;
     let build = default
         .labels
@@ -193,7 +183,6 @@ fn box_lifecycle_works_for_a_caller() {
     let second = env
         .command(binary)
         .args(["box", "down", &name])
-        .stdin(Stdio::null())
         .output()
         .expect("run pinfold box down");
     assert!(
@@ -867,7 +856,7 @@ fn the_proxy_refuses_the_tricks() {
     // new refusal-line assertion for it fails.
     let binary = pinfold();
     let env = TestEnv::new("tricks");
-    let fixture = HttpFixture::start();
+    let fixture = HttpFixture::start(None);
     let name = box_name("tricks");
     let spec = serde_json::json!({
         "name": name,
@@ -1154,17 +1143,8 @@ fn losing_the_owner_fails_closed() {
     );
 
     // `box prune` removes the leftover by label and reports the removal.
-    let output = box_prune(binary, &env);
-    assert!(
-        output.status.success(),
-        "box prune failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let pruned: Vec<serde_json::Value> = String::from_utf8(output.stdout)
-        .expect("prune output is UTF-8")
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("prune line is JSON"))
-        .collect();
+    let output = run_ok(env.command(binary).args(["box", "prune"]));
+    let pruned = json_lines(&String::from_utf8_lossy(&output.stdout));
     let line = pruned
         .iter()
         .find(|line| line["box"] == name)
@@ -1253,7 +1233,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "after three builds of one source, two images should remain: {images:?}"
     );
     assert!(
-        image_named(&b2) && image_named(&b3),
+        image_id(&b2).is_some() && image_id(&b3).is_some(),
         "the two images left are not b2 and b3: {images:?}"
     );
 
@@ -1329,7 +1309,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     builds.push(built_unique_ref(&profile));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        image_named(&b2),
+        image_id(&b2).is_some(),
         "the image box A pins is gone after build 4"
     );
     assert!(
@@ -1339,11 +1319,11 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // Build 4 counts only the profile's own images, so the caller's two
     // survive and b3 remains the profile's older rollback image.
     assert!(
-        x_refs.iter().all(|reference| image_named(reference)),
+        x_refs.iter().all(|reference| image_id(reference).is_some()),
         "build 4 removed a caller image built on the profile: {x_refs:?}"
     );
     assert!(
-        image_named(&b3),
+        image_id(&b3).is_some(),
         "build 4 removed the profile's b3 for its caller images"
     );
 
@@ -1363,10 +1343,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
     builds.push(built_unique_ref(&profile));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !image_named(&b2),
+        image_id(&b2).is_none(),
         "build 5 kept the freed b2 because the pinned b3 failed first"
     );
-    assert!(image_named(&b3), "build 5 removed the pinned b3");
+    assert!(image_id(&b3).is_some(), "build 5 removed the pinned b3");
     assert!(
         stderr.contains(&b3),
         "build 5's maintenance line did not name the pinned b3: {stderr}"
@@ -1410,7 +1390,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         .expect("run the runtime's build");
     assert!(status.success(), "building the unlabeled image failed");
     assert!(
-        image_named(&unlabeled),
+        image_id(&unlabeled).is_some(),
         "the unlabeled image is missing before clean"
     );
 
@@ -1426,7 +1406,6 @@ fn cleanup_removes_only_pinfolds_garbage() {
             .args(["pi", "--version"])
             .env("PINFOLD_PROFILE", &missing)
             .current_dir(project.path())
-            .stdin(Stdio::null())
             .output()
             .expect("run pinfold pi");
         assert!(!refused.status.success(), "pi ran a profile with no image");
@@ -1504,7 +1483,6 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let dry = env
         .command(binary)
         .args(["clean", "--dry-run"])
-        .stdin(Stdio::null())
         .output()
         .expect("run pinfold clean --dry-run");
     assert!(
@@ -1527,7 +1505,6 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let clean = env
         .command(binary)
         .args(["clean"])
-        .stdin(Stdio::null())
         .output()
         .expect("run pinfold clean");
     assert!(
@@ -1535,7 +1512,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "pinfold clean failed: {}",
         String::from_utf8_lossy(&clean.stderr)
     );
-    assert!(image_named(&unlabeled), "clean removed an unlabeled image");
+    assert!(
+        image_id(&unlabeled).is_some(),
+        "clean removed an unlabeled image"
+    );
     assert!(
         !box_list(binary, &env, &live_label).is_empty(),
         "clean removed a live box"
@@ -1567,7 +1547,6 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let unused = env
         .command(binary)
         .args(["clean", "--unused", "0s"])
-        .stdin(Stdio::null())
         .output()
         .expect("run pinfold clean --unused");
     assert!(
@@ -1728,7 +1707,7 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // A caller's `built` ref is a handle for later, so later builds of the
     // name do not reclaim it: the first build's ref still names an image.
     assert!(
-        image_named(&refs[0]),
+        image_id(&refs[0]).is_some(),
         "the first build's ref is gone after three builds: {refs:?}"
     );
     // And it still comes up, as the caller's later `box up` uses it.
@@ -1780,11 +1759,10 @@ fn image_build(
         .arg("--context")
         .arg(context)
         .args(["--label", "dev.example.test=image"])
-        .stdin(Stdio::null())
         .output()
         .expect("run pinfold image build");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let lines: Vec<&str> = stdout.lines().collect();
+    let mut lines = json_lines(&stdout);
     assert_eq!(
         lines.len(),
         1,
@@ -1792,8 +1770,7 @@ fn image_build(
         lines.len(),
         String::from_utf8_lossy(&output.stderr)
     );
-    let line = serde_json::from_str(lines[0]).expect("the image build line is JSON");
-    (exit_code(output.status), line)
+    (exit_code(output.status), lines.remove(0))
 }
 
 /// The file at `path` in the image `reference`, read through a box named
@@ -1842,7 +1819,7 @@ fn box_has_no_network_but_loopback() {
     // the positive control that the same box still has its one way out.
     let binary = pinfold();
     let env = TestEnv::new("network");
-    let fixture = HttpFixture::start();
+    let fixture = HttpFixture::start(None);
     let name = box_name("network");
     let spec = serde_json::json!({
         "name": name,
@@ -1927,7 +1904,7 @@ fn box_has_no_network_but_loopback() {
         route.stdout
     );
     assert_eq!(
-        fixture.requests(),
+        fixture.requests().len(),
         1,
         "the fixture did not answer the route"
     );
@@ -1943,7 +1920,7 @@ fn a_route_reaches_exactly_one_host_service() {
     // loopback port is not reachable from the box without it.
     let binary = pinfold();
     let env = TestEnv::new("route");
-    let fixture = HttpFixture::start();
+    let fixture = HttpFixture::start(None);
     let name = box_name("route");
     let spec = serde_json::json!({
         "name": name,
@@ -2004,7 +1981,7 @@ fn a_route_reaches_exactly_one_host_service() {
         direct.stderr
     );
     assert_eq!(
-        fixture.requests(),
+        fixture.requests().len(),
         2,
         "the fixture answered a direct request"
     );
@@ -2030,7 +2007,7 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
     // which the proxy replaces.
     let binary = pinfold();
     let env = TestEnv::new("inject");
-    let fixture = HttpFixture::start();
+    let fixture = HttpFixture::start(None);
     let secret = format!("pf-secret-{}", std::process::id());
     let name = box_name("inject");
     let spec = serde_json::json!({
@@ -2076,9 +2053,10 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
         "the route answered: {}",
         route.stdout
     );
-    let requests = fixture.headers();
+    let requests = fixture.requests();
     assert_eq!(requests.len(), 1, "the fixture saw {requests:?}");
     let authorization: Vec<&str> = requests[0]
+        .0
         .iter()
         .filter(|(header, _)| header.eq_ignore_ascii_case("authorization"))
         .map(|(_, value)| value.as_str())
@@ -2142,7 +2120,7 @@ fn no_egress_means_no_way_out() {
     // the positive control.
     let binary = pinfold();
     let env = TestEnv::new("no-egress");
-    let fixture = HttpFixture::start();
+    let fixture = HttpFixture::start(None);
     let name = box_name("no-egress");
     let spec = serde_json::json!({
         "name": name,
@@ -2189,7 +2167,7 @@ fn no_egress_means_no_way_out() {
         direct.stderr
     );
     assert_eq!(
-        fixture.requests(),
+        fixture.requests().len(),
         0,
         "the fixture answered a no-egress box"
     );
@@ -2215,7 +2193,7 @@ fn no_egress_means_no_way_out() {
         route.stdout
     );
     assert_eq!(
-        fixture.requests(),
+        fixture.requests().len(),
         1,
         "the fixture did not answer the control"
     );
@@ -2314,7 +2292,6 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
     let absent = env
         .command(binary)
         .args(["box", "stat", &name])
-        .stdin(Stdio::null())
         .output()
         .expect("run pinfold box stat");
     assert_eq!(
@@ -2344,7 +2321,6 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
     let output = env
         .command(binary)
         .arg("artifacts")
-        .stdin(Stdio::null())
         .output()
         .expect("run pinfold artifacts");
     assert!(
@@ -2416,19 +2392,12 @@ fn a_caller_owned_box_cannot_write_git() {
     let safe = format!("safe.directory={root}");
 
     // One host commit, so the box has history to read.
-    git_init(repo.path());
+    git(repo.path(), &["init", "-q"]);
     fs::write(repo.path().join("committed.txt"), b"one\n").expect("write committed.txt");
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(repo.path())
-        .args(["add", "committed.txt"])
-        .status()
-        .expect("run host git add");
-    assert!(status.success(), "host git add failed");
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(repo.path())
-        .args([
+    git(repo.path(), &["add", "committed.txt"]);
+    git(
+        repo.path(),
+        &[
             "-c",
             "user.name=a",
             "-c",
@@ -2437,10 +2406,8 @@ fn a_caller_owned_box_cannot_write_git() {
             "-q",
             "-m",
             "one",
-        ])
-        .status()
-        .expect("run host git commit");
-    assert!(status.success(), "host git commit failed");
+        ],
+    );
 
     // The `.git` mount first and read-only, the repository second and
     // writable: a runtime that applied mounts in spec order would let the
@@ -2534,7 +2501,7 @@ fn a_caller_owned_box_cannot_write_git() {
     assert!(up.wait().success(), "box up did not exit cleanly");
 
     // Host git works on the clone afterwards and runs nothing the box wrote.
-    let porcelain = git_status(repo.path());
+    let porcelain = git(repo.path(), &["status", "--porcelain"]);
     assert!(
         porcelain.contains("new.txt"),
         "host git status lost the worktree change: {porcelain}"
@@ -2767,14 +2734,6 @@ fn assert_left_nothing(binary: &Path, env: &TestEnv, name: &str, label: &str, wh
         box_list(binary, env, label).is_empty(),
         "the {what} up left a box"
     );
-}
-
-fn box_prune(binary: &Path, env: &TestEnv) -> Output {
-    env.command(binary)
-        .args(["box", "prune"])
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold box prune")
 }
 
 fn box_down(binary: &Path, env: &TestEnv, name: &str) -> ExitStatus {

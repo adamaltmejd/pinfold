@@ -16,8 +16,8 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, 
 
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
-    box_stat, build_profile, curl, default_image, egress_log_lines, exit_code, git_init,
-    git_status, pinfold, project_home, project_id,
+    box_stat, build_profile, curl, default_image, egress_log_lines, exit_code, git, pinfold,
+    project_home, project_id, run_ok,
 };
 
 #[test]
@@ -34,7 +34,7 @@ fn the_environment_is_exactly_the_spec() {
     let env = TestEnv::new("pi-env");
     default_image(binary, &env);
     let project = TestDir::new(&env, "project");
-    git_init(project.path());
+    git(project.path(), &["init", "-q"]);
 
     let (run, id, name) = PiRpc::start(binary, &env, project.path());
 
@@ -103,7 +103,6 @@ fn the_environment_is_exactly_the_spec() {
         .args(["pi", "--version"])
         .current_dir(project.path())
         .env("PINFOLD_ENV_BAD-NAME", "x")
-        .stdin(Stdio::null())
         .output()
         .expect("run pinfold pi with a bad env name");
     assert_eq!(
@@ -138,8 +137,8 @@ fn project_state_persists_and_stays_separate() {
     default_image(binary, &env);
     let a = TestDir::new(&env, "a/checkout");
     let b = TestDir::new(&env, "b/checkout");
-    git_init(a.path());
-    git_init(b.path());
+    git(a.path(), &["init", "-q"]);
+    git(b.path(), &["init", "-q"]);
 
     // The first run seeds the default profile's settings.json.
     pi_version(binary, &env, a.path());
@@ -186,7 +185,6 @@ fn project_state_persists_and_stays_separate() {
         .command(binary)
         .args(["profile", "new", "from-a", "--from-project"])
         .arg(a.path())
-        .stdin(Stdio::null())
         .output()
         .expect("run pinfold profile new --from-project");
     assert!(
@@ -230,7 +228,7 @@ fn a_changed_project_file_stops_the_run() {
     let env = TestEnv::new("pi-trust");
     default_image(binary, &env);
     let project = TestDir::new(&env, "project");
-    git_init(project.path());
+    git(project.path(), &["init", "-q"]);
     let config = project.path().join(".pinfold.toml");
 
     // A project with no `.pinfold.toml` has nothing to trust: it runs
@@ -390,14 +388,13 @@ fn the_box_cannot_write_git_or_protected_config() {
     // directories empty before the run, so the box cannot create them, and
     // removes them after the run when they are still empty.
     let bare = TestDir::new(&env, "bare");
-    git_init(bare.path());
+    git(bare.path(), &["init", "-q"]);
     let root = bare.path();
     // A commit for the box's `git log` positive control below. The author is
     // on the command line, so the fixture does not need host git config.
-    let status = Command::new("git")
-        .args(["-C"])
-        .arg(root)
-        .args([
+    git(
+        root,
+        &[
             "-c",
             "user.name=pinfold-e2e",
             "-c",
@@ -408,20 +405,12 @@ fn the_box_cannot_write_git_or_protected_config() {
             "--allow-empty",
             "-m",
             "pinfold-e2e",
-        ])
-        .status()
-        .expect("run git commit");
-    assert!(status.success(), "git commit failed");
+        ],
+    );
     // Host git runs the hooks named by `core.hooksPath`; a value inside the
     // project must be read-only like `.git` itself.
     let husky = root.join(".husky/_");
-    let status = Command::new("git")
-        .args(["-C"])
-        .arg(root)
-        .args(["config", "core.hooksPath", ".husky/_"])
-        .status()
-        .expect("run git config core.hooksPath");
-    assert!(status.success(), "git config core.hooksPath failed");
+    git(root, &["config", "core.hooksPath", ".husky/_"]);
     fs::create_dir_all(&husky).expect("create .husky/_");
     let vscode = root.join(".vscode");
     assert!(!vscode.exists(), "the fixture already has .vscode");
@@ -589,7 +578,7 @@ fn the_box_cannot_write_git_or_protected_config() {
 
     // Host git runs nothing the box planted: the fsmonitor was never set,
     // no hook exists, and .git was not renamed.
-    git_status(root);
+    git(root, &["status", "--porcelain"]);
     assert!(
         !root.join("pwned-fsmonitor").exists(),
         "host git status ran the box's fsmonitor"
@@ -608,7 +597,7 @@ fn the_box_cannot_write_git_or_protected_config() {
     // A project that already has `.vscode/`: its settings stay read-only,
     // and so does a directory the project's `protect` list names.
     let with = TestDir::new(&env, "with-vscode");
-    git_init(with.path());
+    git(with.path(), &["init", "-q"]);
     let settings = with.path().join(".vscode/settings.json");
     fs::create_dir(with.path().join(".vscode")).unwrap();
     fs::write(&settings, "{\"keep\":true}\n").unwrap();
@@ -665,7 +654,7 @@ fn the_box_cannot_write_git_or_protected_config() {
     // the target into the box.
     let outside = TestDir::new(&env, "outside");
     let symlinked = TestDir::new(&env, "symlinked");
-    git_init(symlinked.path());
+    git(symlinked.path(), &["init", "-q"]);
     let link = symlinked.path().join(".vscode");
     std::os::unix::fs::symlink(outside.path(), &link).expect("create .vscode symlink");
     let refused = pi_version_output(binary, &env, symlinked.path());
@@ -693,7 +682,7 @@ fn both_pi_config_levels_load_behind_a_route() {
     let binary = pinfold();
     let env = TestEnv::new("pi-levels");
     let project = TestDir::new(&env, "project");
-    git_init(project.path());
+    git(project.path(), &["init", "-q"]);
 
     // The profile carries the user level: a skill in its share/pi package,
     // and the agent dir's models.json, where pi reads provider settings
@@ -703,7 +692,6 @@ fn both_pi_config_levels_load_behind_a_route() {
     let output = env
         .command(binary)
         .args(["profile", "new", profile, "--from", "default"])
-        .stdin(Stdio::null())
         .output()
         .expect("run pinfold profile new");
     assert!(
@@ -747,14 +735,14 @@ fn both_pi_config_levels_load_behind_a_route() {
     // The fake model listens on the host; only the route can reach it. It
     // answers pi's one streaming request with a chat completion and keeps
     // the request body, so the test can assert what pi loaded.
-    let model = HttpFixture::answering(
+    let model = HttpFixture::start(Some((
         "text/event-stream",
         concat!(
             "data: {\"id\":\"chatcmpl-e2e\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"fake-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\n",
             "data: {\"id\":\"chatcmpl-e2e\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"fake-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
             "data: [DONE]\n\n"
         ),
-    );
+    )));
 
     // `pi -p` through the shim, without a TTY. The provider and model pin the
     // request to the fake model in the profile's models.json.
@@ -774,7 +762,6 @@ fn both_pi_config_levels_load_behind_a_route() {
         .env("PINFOLD_PROFILE", profile)
         .env("PINFOLD_ROUTES", format!("fake.model={}", model.route()))
         .env("PINFOLD_ENV_OPENAI_API_KEY", "sk-fake")
-        .stdin(Stdio::null())
         .output()
         .expect("run pi -p");
     assert!(
@@ -783,8 +770,8 @@ fn both_pi_config_levels_load_behind_a_route() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let bodies = model.bodies();
-    let request = bodies.first().expect("the fake model got no request");
+    let requests = model.requests();
+    let (_, request) = requests.first().expect("the fake model got no request");
     assert!(
         request.contains(profile_marker),
         "the profile skill never reached the model; the profile config level did not load"
@@ -806,7 +793,7 @@ fn the_highest_layer_sets_the_allowlist() {
     let env = TestEnv::new("pi-allow");
     default_image(binary, &env);
     let project = TestDir::new(&env, "project");
-    git_init(project.path());
+    git(project.path(), &["init", "-q"]);
 
     // No `.pinfold.toml`: the built-in defaults are the box's allowlist.
     let (run, _, name) = PiRpc::start(binary, &env, project.path());
@@ -912,7 +899,7 @@ fn a_caller_reads_the_effective_configuration_as_data() {
     let env = TestEnv::new("pi-config");
     default_image(binary, &env);
     let project = TestDir::new(&env, "project");
-    git_init(project.path());
+    git(project.path(), &["init", "-q"]);
     fs::write(
         project.path().join(".pinfold.toml"),
         "allow = [\"api.github.com\"]\n",
@@ -1034,11 +1021,10 @@ impl Drop for PiRpc {
 
 /// Run `pinfold pi --version` in `project` and assert it exits cleanly.
 fn pi_version(binary: &Path, env: &TestEnv, project: &Path) {
-    let output = pi_version_output(binary, env, project);
-    assert!(
-        output.status.success(),
-        "pinfold pi --version failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+    run_ok(
+        env.command(binary)
+            .args(["pi", "--version"])
+            .current_dir(project),
     );
 }
 
@@ -1047,52 +1033,24 @@ fn pi_version_output(binary: &Path, env: &TestEnv, project: &Path) -> Output {
     env.command(binary)
         .args(["pi", "--version"])
         .current_dir(project)
-        .stdin(Stdio::null())
         .output()
         .expect("run pinfold pi --version")
 }
 
 /// Run `pinfold allow` in `project` and assert it succeeds.
 fn allow(binary: &Path, env: &TestEnv, project: &Path) {
-    let output = env
-        .command(binary)
-        .arg("allow")
-        .current_dir(project)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold allow");
-    assert!(
-        output.status.success(),
-        "pinfold allow failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    run_ok(env.command(binary).arg("allow").current_dir(project));
 }
 
 /// Run `pinfold config` in `project` and parse its JSON object.
 fn config_json(binary: &Path, env: &TestEnv, project: &Path) -> serde_json::Value {
-    let output = env
-        .command(binary)
-        .arg("config")
-        .current_dir(project)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold config");
-    assert!(
-        output.status.success(),
-        "pinfold config failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let output = run_ok(env.command(binary).arg("config").current_dir(project));
     serde_json::from_slice(&output.stdout).expect("pinfold config output is one JSON object")
 }
 
 /// Run `pinfold build` in `project` and assert it exits cleanly.
 fn build(binary: &Path, env: &TestEnv, project: &Path) {
-    let output = build_output(binary, env, project);
-    assert!(
-        output.status.success(),
-        "pinfold build failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    run_ok(env.command(binary).arg("build").current_dir(project));
 }
 
 /// Run `pinfold build` in `project` and return its output.
@@ -1100,7 +1058,6 @@ fn build_output(binary: &Path, env: &TestEnv, project: &Path) -> Output {
     env.command(binary)
         .arg("build")
         .current_dir(project)
-        .stdin(Stdio::null())
         .output()
         .expect("run pinfold build")
 }

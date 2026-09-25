@@ -13,7 +13,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{Command, ExitStatus, Output};
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -77,7 +77,6 @@ impl TestEnv {
         // `artifacts::pi()` fetches the pinned release once.
         let cache = temp.join("pinfold-e2e-cache");
         let config = root.join("config");
-        fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&state).unwrap();
         fs::create_dir_all(&cache).unwrap();
         fs::create_dir_all(&config).unwrap();
@@ -115,21 +114,6 @@ pub fn image_cli() -> &'static str {
     }
 }
 
-/// Remove one image by reference from the runtime, best effort.
-pub fn remove_runtime_image(reference: &str) {
-    let mut command = Command::new(image_cli());
-    if cfg!(target_os = "linux") {
-        command.args(["image", "rm", reference]);
-    } else {
-        command.args(["image", "delete", reference]);
-    }
-    let _ = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
-
 /// One runtime image, normalized across podman and Apple `container`.
 pub struct RuntimeImage {
     pub id: String,
@@ -158,50 +142,21 @@ pub fn runtime_images() -> Result<Vec<RuntimeImage>, String> {
 /// One image list entry, whatever the runtime's schema.
 fn normalize_image(image: &serde_json::Value) -> RuntimeImage {
     // podman: `Id`, `Names` and `Labels`, the last two null when empty.
+    let labels = |value: &serde_json::Value| -> BTreeMap<String, String> {
+        serde_json::from_value(value.clone()).unwrap_or_default()
+    };
     if let Some(id) = image["Id"].as_str() {
         return RuntimeImage {
             id: id.to_string(),
-            names: image["Names"]
-                .as_array()
-                .map(|names| {
-                    names
-                        .iter()
-                        .filter_map(|name| Some(name.as_str()?.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            labels: image["Labels"]
-                .as_object()
-                .map(|labels| {
-                    labels
-                        .iter()
-                        .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            names: serde_json::from_value(image["Names"].clone()).unwrap_or_default(),
+            labels: labels(&image["Labels"]),
         };
     }
     // Apple `container`: build labels are OCI image config labels; a locally
     // built image also carries name annotations on its index descriptor.
-    let mut labels: BTreeMap<String, String> = image["configuration"]["descriptor"]["annotations"]
-        .as_object()
-        .map(|labels| {
-            labels
-                .iter()
-                .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
-    if let Some(variants) = image["variants"].as_array() {
-        for variant in variants {
-            if let Some(config) = variant["config"]["config"]["Labels"].as_object() {
-                for (key, value) in config {
-                    if let Some(value) = value.as_str() {
-                        labels.insert(key.clone(), value.to_string());
-                    }
-                }
-            }
-        }
+    let mut all = labels(&image["configuration"]["descriptor"]["annotations"]);
+    for variant in image["variants"].as_array().into_iter().flatten() {
+        all.extend(labels(&variant["config"]["config"]["Labels"]));
     }
     RuntimeImage {
         id: image["id"].as_str().unwrap_or_default().to_string(),
@@ -209,14 +164,8 @@ fn normalize_image(image: &serde_json::Value) -> RuntimeImage {
             .as_str()
             .map(|name| vec![name.to_string()])
             .unwrap_or_default(),
-        labels,
+        labels: all,
     }
-}
-
-/// Whether the runtime lists an image under `reference`, ignoring podman's
-/// `localhost/` prefix.
-pub fn image_named(reference: &str) -> bool {
-    image_id(reference).is_some()
 }
 
 /// The id of the image the runtime lists under `reference`, ignoring
@@ -269,7 +218,9 @@ impl Drop for ImageCleanup {
         for image in runtime_images().unwrap_or_default() {
             for reference in image.names {
                 if reference.contains(&prefix) {
-                    remove_runtime_image(&reference);
+                    let _ = Command::new(image_cli())
+                        .args(["image", "rm", &reference])
+                        .output();
                 }
             }
         }
@@ -280,16 +231,7 @@ impl Drop for ImageCleanup {
 /// manifest digest, which is not the image id; Apple's descriptor digest,
 /// which is.
 pub fn image_digest(reference: &str) -> String {
-    let output = Command::new(image_cli())
-        .args(["image", "inspect", reference])
-        .output()
-        .unwrap_or_else(|error| panic!("run {} image inspect: {error}", image_cli()));
-    assert!(
-        output.status.success(),
-        "{} image inspect {reference} failed: {}",
-        image_cli(),
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
+    let output = run_ok(Command::new(image_cli()).args(["image", "inspect", reference]));
     let images: Vec<serde_json::Value> =
         serde_json::from_slice(&output.stdout).expect("image inspect is JSON");
     let image = images.first().expect("image inspect returned an image");
@@ -303,15 +245,7 @@ pub fn image_digest(reference: &str) -> String {
 /// The number of untagged images `podman images -a` lists, including the
 /// intermediate layers a cached build leaves behind. Linux only.
 pub fn untagged_images() -> usize {
-    let output = Command::new("podman")
-        .args(["images", "-a"])
-        .output()
-        .expect("run podman images -a");
-    assert!(
-        output.status.success(),
-        "podman images -a failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let output = run_ok(Command::new("podman").args(["images", "-a"]));
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter(|line| line.split_whitespace().next() == Some("<none>"))
@@ -326,7 +260,7 @@ pub fn default_image(binary: &Path, env: &TestEnv) -> &'static str {
     // fine, the tests read its labels and run boxes from it.
     const STABLE: &str = "pinfold/profile-default:latest";
     IMAGE.get_or_init(|| {
-        if !image_named(STABLE) {
+        if image_id(STABLE).is_none() {
             build_profile(binary, env, "default");
         }
     });
@@ -336,18 +270,7 @@ pub fn default_image(binary: &Path, env: &TestEnv) -> &'static str {
 /// Run `pinfold build --profile NAME`, assert it succeeded, and return its
 /// output: the stable ref on stdout, any maintenance line on stderr.
 pub fn build_profile(binary: &Path, env: &TestEnv, name: &str) -> Output {
-    let output = env
-        .command(binary)
-        .args(["build", "--profile", name])
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold build --profile");
-    assert!(
-        output.status.success(),
-        "pinfold build --profile {name} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    output
+    run_ok(env.command(binary).args(["build", "--profile", name]))
 }
 
 /// Write a user profile's Containerfile under the test's config dir and
@@ -364,30 +287,27 @@ pub fn profile_containerfile(env: &TestEnv, profile: &str, contents: &str) -> Pa
     path
 }
 
-/// Create a git repository at `path`, so launch finds the project root.
-pub fn git_init(path: &Path) {
-    let status = Command::new("git")
-        .args(["init", "-q"])
-        .arg(path)
-        .status()
-        .expect("run git init");
-    assert!(status.success(), "git init failed in {}", path.display());
+/// Run host `git -C path ARGS...`, assert it succeeded, and return its
+/// stdout. `path` must be an existing directory.
+#[track_caller]
+pub fn git(path: &Path, args: &[&str]) -> String {
+    let output = run_ok(Command::new("git").arg("-C").arg(path).args(args));
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-/// Host `git status --porcelain` in `path`, asserting it ran.
-pub fn git_status(path: &Path) -> String {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["status", "--porcelain"])
+/// Run `command`, assert it exited 0 with its stderr in the panic message,
+/// and return its output.
+#[track_caller]
+pub fn run_ok(command: &mut Command) -> Output {
+    let output = command
         .output()
-        .expect("run host git status");
+        .unwrap_or_else(|error| panic!("run {command:?}: {error}"));
     assert!(
         output.status.success(),
-        "host git status failed: {}",
+        "{command:?} failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8_lossy(&output.stdout).into_owned()
+    output
 }
 
 /// One JSON value per line of `text`.
@@ -442,7 +362,6 @@ pub fn box_exec(binary: &Path, env: &TestEnv, name: &str, argv: &[&str]) -> Exec
         .command(binary)
         .args(["box", "exec", name, "--"])
         .args(argv)
-        .stdin(Stdio::null())
         .output()
         .expect("run pinfold box exec");
     ExecOutput {
@@ -460,32 +379,13 @@ pub fn curl(binary: &Path, env: &TestEnv, name: &str, seconds: &str, args: &[&st
 }
 
 pub fn box_list(binary: &Path, env: &TestEnv, label: &str) -> Vec<serde_json::Value> {
-    let output = env
-        .command(binary)
-        .args(["box", "list", "--label", label])
-        .output()
-        .expect("run pinfold box list");
-    assert!(
-        output.status.success(),
-        "box list failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let output = run_ok(env.command(binary).args(["box", "list", "--label", label]));
     json_lines(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// Run `box stat` on a live box and parse its one JSON object.
 pub fn box_stat(binary: &Path, env: &TestEnv, name: &str) -> serde_json::Value {
-    let output = env
-        .command(binary)
-        .args(["box", "stat", name])
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold box stat");
-    assert!(
-        output.status.success(),
-        "box stat failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let output = run_ok(env.command(binary).args(["box", "stat", name]));
     serde_json::from_slice(&output.stdout).expect("stat output is one JSON object")
 }
 
@@ -548,29 +448,19 @@ pub struct HttpFixture {
 pub type Headers = Vec<(String, String)>;
 
 /// A fixed answer's content type and body.
-type Answer = Option<(&'static str, &'static str)>;
+pub type Answer = Option<(&'static str, &'static str)>;
 
 impl HttpFixture {
-    /// Bind on loopback and answer every request with the Host header it
-    /// carried, until the process exits.
-    pub fn start() -> HttpFixture {
-        HttpFixture::listen(None)
-    }
-
-    /// Bind on loopback and answer every request with `body`, until the
-    /// process exits.
-    pub fn answering(content_type: &'static str, body: &'static str) -> HttpFixture {
-        HttpFixture::listen(Some((content_type, body)))
-    }
-
-    fn listen(answer: Answer) -> HttpFixture {
+    /// Bind on loopback and answer every request with `answer`, or with the
+    /// Host header it carried when `answer` is `None`, until the process
+    /// exits.
+    pub fn start(answer: Answer) -> HttpFixture {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the fixture");
         let port = listener.local_addr().expect("fixture address").port();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&requests);
         thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(stream) = stream else { continue };
+            for stream in listener.incoming().flatten() {
                 let seen = Arc::clone(&seen);
                 thread::spawn(move || serve(stream, &seen, answer));
             }
@@ -583,34 +473,17 @@ impl HttpFixture {
         format!("127.0.0.1:{}", self.port)
     }
 
-    /// How many requests the fixture has answered.
-    pub fn requests(&self) -> usize {
-        self.headers().len()
-    }
-
-    /// The headers of each request the fixture has answered, in order.
-    pub fn headers(&self) -> Vec<Headers> {
-        let requests = self.requests.lock().expect("fixture requests");
-        requests
-            .iter()
-            .map(|(headers, _)| headers.clone())
-            .collect()
-    }
-
-    /// The body of each request the fixture has answered, in order.
-    pub fn bodies(&self) -> Vec<String> {
-        let requests = self.requests.lock().expect("fixture requests");
-        requests.iter().map(|(_, body)| body.clone()).collect()
+    /// The headers and body of each request the fixture has answered, in
+    /// order.
+    pub fn requests(&self) -> Vec<(Headers, String)> {
+        self.requests.lock().expect("fixture requests").clone()
     }
 }
 
 /// Read one Content-Length-framed request, record its headers and body, and
 /// answer it.
-fn serve(mut stream: TcpStream, seen: &Mutex<Vec<(Headers, String)>>, answer: Answer) {
-    let Ok(clone) = stream.try_clone() else {
-        return;
-    };
-    let mut reader = BufReader::new(clone);
+fn serve(stream: TcpStream, seen: &Mutex<Vec<(Headers, String)>>, answer: Answer) {
+    let mut reader = BufReader::new(&stream);
     let mut line = String::new();
     if reader.read_line(&mut line).unwrap_or(0) == 0 {
         return;
@@ -649,6 +522,5 @@ fn serve(mut stream: TcpStream, seen: &Mutex<Vec<(Headers, String)>>, answer: An
         "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    let _ = stream.write_all(response.as_bytes());
-    let _ = stream.flush();
+    let _ = (&stream).write_all(response.as_bytes());
 }
