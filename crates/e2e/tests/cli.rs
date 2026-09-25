@@ -23,7 +23,6 @@ fn version_needs_no_runtime() {
     // main.rs, answer `--help` after the daily pass instead of before it;
     // `box list --help` then writes the maintenance state first, and its
     // empty-state assertion fails.
-    let binary = pinfold();
     let env = TestEnv::new("version");
     let empty = env.root.join("empty-path");
     fs::create_dir_all(&empty).unwrap();
@@ -35,7 +34,7 @@ fn version_needs_no_runtime() {
     };
 
     let output = env
-        .command(binary)
+        .command(pinfold())
         .arg("--version")
         .env("PATH", &empty)
         .output()
@@ -60,7 +59,7 @@ fn version_needs_no_runtime() {
     assert_eq!(state_entries(), 0, "pinfold --version wrote state");
 
     let help = env
-        .command(binary)
+        .command(pinfold())
         .args(["box", "list", "--help"])
         .env("PATH", &empty)
         .output()
