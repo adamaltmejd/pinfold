@@ -273,8 +273,6 @@ The box spec `up` reads from stdin:
   one guest path are refused.
 - A mount path holding `,` or an ASCII control character is refused as
   `spec`, naming the path.
-- `.git` protection belongs to the pi layer; a box spec gets only the
-  mounts it names.
 - An unknown key at any level of the spec is refused as `spec`, naming the
   key; pinfold never applies a spec partially.
 
@@ -401,7 +399,8 @@ profile image.
 The default profile's image:
 - `debian:trixie-slim` by tag, `apt-get upgrade` at every build. The
   resolved base digest is recorded as a label.
-- Debian: ca-certificates, git, curl, ripgrep, fd-find (as `fd`), jq, less.
+- Debian: ca-certificates, git, curl, ripgrep, fd-find (as `fd`), jq, less,
+  and unzip for bun's release archive.
 - gh from GitHub's signed apt repository.
 - `ADD --checksum=sha256:…`: bun, rtk, and the ponytail pi package. A bump
   script updates the pins.
@@ -419,9 +418,8 @@ cache once; a Linux CLI mounts its own executable.
 
 ## Profiles
 
-A profile is data: box defaults, an image, and pi's user-level config. It
-works the same for interactive runs and programmatic boxes, with or
-without a TTY.
+A profile works the same for interactive runs and programmatic boxes,
+with or without a TTY.
 
 ```
 ~/.config/pinfold/profiles/<name>/
@@ -439,8 +437,7 @@ without a TTY.
   current project root by default) merges the project's `home/.pi/agent/`
   into the copy, minus `auth.json`, `sessions/`, `npm/` and caches.
 - Selected by `profile` in config or `"profile"` in a box spec.
-- `home/` needs `$HOME` on a read-write mount. Seeds are copied at start,
-  never at build.
+- `home/` needs `$HOME` on a read-write mount.
 - pinfold does not manage pi settings: `pi install` in a box changes that
   project home only.
 
@@ -455,8 +452,7 @@ ponytail, and set `defaultProjectTrust: "always"`: the box, not pi's prompt,
 is the boundary. Its `share/pi` holds the operating-context extension,
 which writes the box's facts into the system prompt: the
 allowlist from `PINFOLD_ALLOW`, that a 403 is final, and that commits are
-made on the host. Extensions run in the box; nothing security-relevant
-lives in one.
+made on the host.
 
 The default profile's `pinfold.toml` sets no config, so it gets the
 built-in defaults. `PI_OFFLINE` is unset, so pi's package installs go
@@ -464,8 +460,7 @@ through the proxy.
 
 ## Shared files
 
-Ownership needs no work. Box-created files land on the host as the user's,
-644 or 755; the exec bit and symlinks survive. Apple `container` can show
+Box-created files land on the host as the user's, 644 or 755; the exec bit and symlinks survive. Apple `container` can show
 the top directory of a mount as root-owned inside the box, so git needs
 `safe.directory` for a mounted repository: the pi layer sets it for the
 project root in the box's environment; a caller-owned box sets it in its
@@ -487,8 +482,7 @@ Apple `container` limitations, documented for users:
 
 ## Maintenance
 
-Disk use stays bounded without the user thinking about it. pinfold only
-removes what it created: its images and boxes carry `dev.pinfold.*` labels,
+pinfold only removes what it created: its images and boxes carry `dev.pinfold.*` labels,
 and its state lives under its own dirs. Each project's state records its
 checkout path and last run.
 
@@ -526,10 +520,10 @@ Automatic, never prompting:
 - **Arguments** pass through unchanged. The project is mounted at its own
   absolute path; the box starts in the invoking directory. Paths outside the
   project fail, and pi reports them.
-- **Environment:** `PI_TELEMETRY=0`, `PI_SKIP_VERSION_CHECK=1`, the core's
-  proxy variables, `PINFOLD_ALLOW` (the effective allowlist, for the
-  operating-context extension), and `PINFOLD_ENV_*`.
-- **TTY** whenever the host has one; otherwise pi runs in print mode.
+- **Environment:** the harness's variables (Box spec, `harness`), the
+  core's proxy variables, `HERDR_AGENT`, git's `safe.directory` entry
+  (Shared files), and `PINFOLD_ENV_*`.
+- **TTY** whenever the host has one.
 - **Auth:** OAuth `/login` once per project; API keys through the
   environment.
 - **`protect`:** read-only directory mounts for editor config the host runs
@@ -650,7 +644,7 @@ each merge, on the exact commit being merged.
 
 ## Code
 
-Rust. Each Linux build is a static musl binary and doubles as `pinfold init`.
+Rust. Each Linux build is a static musl binary.
 
 Every process-interface operation is a `core` function that returns data;
 `cli.rs` parses arguments and serializes results. The one exception is
@@ -663,8 +657,8 @@ lives in `cli.rs`.
 | `aarch64-unknown-linux-musl` | Linux arm64 CLI; init on Macs and arm64 hosts |
 | `x86_64-unknown-linux-musl` | Linux x64 CLI; init on x64 hosts |
 
-Linux targets build on a Mac with `cargo zigbuild`. The default profile and,
-in the macOS CLI, the arm64 Linux init are embedded with `include_bytes!`.
+Linux targets build on a Mac with `cargo zigbuild`. The default profile is
+embedded with `include_bytes!`.
 
 Dependencies: `tokio`, `httparse`, `serde`, `serde_json`, `sha2`, `toml`, `nix`,
 and the TLS client for injecting routes: `rustls` (ring) with

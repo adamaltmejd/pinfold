@@ -1,3 +1,2 @@
-# The default profile's config defaults. The pi layer merges this file under
-# a project's .pinfold.toml when it writes a box spec; core never reads it.
-# It sets no keys, so a profile made from it takes the built-in defaults.
+# The default profile sets no keys; the Configuration table in
+# docs/ARCHITECTURE.md lists them.

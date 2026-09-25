@@ -1,9 +1,5 @@
-# The built-in default profile's image. pinfold embeds this file and builds
-# it with an empty context; profile/bump-pins.sh updates the ADD pins.
-#
-# The base floats on the tag and is upgraded on every build, so security
-# fixes land on rebuild. pinfold records the digest the tag resolved to as
-# the dev.pinfold.base label.
+# The built-in default profile's image; profile/bump-pins.sh updates the
+# ADD pins.
 FROM debian:trixie-slim
 
 # The tools Debian ships. fd-find is named fdfind there; pi looks for fd.

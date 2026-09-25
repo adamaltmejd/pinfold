@@ -9,20 +9,14 @@ containerfile="$dir/Containerfile"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+# The sha256 of stdin.
 sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | cut -d' ' -f1
-    else
-        shasum -a 256 "$1" | cut -d' ' -f1
-    fi
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -d' ' -f1
 }
 
 # Download one release asset and print its sha256.
 pin() {
-    url=$1
-    name=$(basename "$url")
-    curl -fsSL -o "$tmp/$name" "$url"
-    sha256 "$tmp/$name"
+    curl -fsSL "$1" | sha256
 }
 
 github_tag() {

@@ -1,7 +1,6 @@
 // The box's operating context, written into pi's system prompt at start.
 // pinfold's proxy enforces the allowlist; this only states the facts so the
-// model does not spend turns rediscovering them. Nothing here is
-// security-relevant.
+// model does not spend turns rediscovering them.
 export default function operatingContext(pi) {
     pi.on("before_agent_start", (event) => {
         const allow = (process.env.PINFOLD_ALLOW ?? "")

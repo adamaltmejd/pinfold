@@ -107,8 +107,8 @@ In a project:
    arrive through the environment instead.
 
 To reuse one project's pi configuration in another, `pinfold profile new
-NAME --from-project [PATH]` copies its settings, provider and skills into a
-profile; `auth.json`, `sessions/`, `npm/` and caches stay behind.
+NAME --from-project [PATH]` copies it into a profile (see Profiles in the
+spec).
 
 ## Configuration
 
@@ -118,48 +118,11 @@ variables and defaults are the table under Configuration in
 [ARCHITECTURE.md](docs/ARCHITECTURE.md#configuration). A list set in a
 layer replaces the lists below it.
 
-Credentials need no pinfold code: `op run -- pi …` for 1Password,
-`PINFOLD_ENV_GH_TOKEN` for gh and git, direnv for per-repo tokens, and
-`PINFOLD_ENV_GIT_*` for identity. `PINFOLD_ENV_<NAME>` is the only way a
-host environment variable enters the box.
+Credentials enter the box only as `PINFOLD_ENV_<NAME>`; the same table
+says how.
 
-## What pinfold does not protect
+## What pinfold does not protect, and what Apple `container` cannot do
 
-- Project contents: an agent with a model API can put them in a prompt.
-- Files the host runs by explicit command: build scripts, tests, package
-  scripts, and scripts a hook calls from the project, such as husky's
-  `.husky/pre-commit`.
-- A planted repo (`sub/.git`, or `.git` in a project that has none) runs
-  code if a host tool runs git in it (VS Code does by default).
-- CDN fronting beyond the SNI check (Host-header fronting needs TLS
-  interception).
-- Allowlisted services that accept writes (GitHub with a token,
-  registries).
-- Image builds: user- or caller-run, trusted, unrestricted egress.
-
-## Shared files
-
-Box-created files land on the host as the user's, 644 or 755; the exec bit
-and symlinks survive. Apple `container` can show the top directory of a
-mount as root-owned inside the box, so git needs `safe.directory` for a
-mounted repository; `pinfold pi` sets it for the project root.
-
-Apple `container` limitations:
-
-| Limitation | Handling |
-|---|---|
-| ~1 s metadata and name cache: ENOENT or stale `stat` after a host atomic save | Not handled; a reader retries. |
-| A mount's top directory may be root-owned inside the box | `safe.directory`, as above. |
-| No inotify for host changes | The box polls (`CHOKIDAR_USEPOLLING`, `WATCHPACK_POLLING`); pinfold sets neither. |
-| `flock`/`fcntl` locks not shared; O_EXCL lockfiles are safe | Don't open one SQLite database from both sides. |
-| A case-only rename is a no-op | Rename in two steps. |
-| Small-file I/O 4–10× slower | Accepted. `/tmp` is tmpfs. |
-| setuid and setgid bits cannot be set | Harmless. |
-
-## Roadmap
-
-1. Core, proxy, pi layer, and CLI, in Rust. Code landed; a week of daily
-   use on macOS is the exit criterion.
-2. Linux podman end-to-end suite in GitHub CI, and this README. Both
-   landed. Daily use then moves from agentbox to pinfold, and agentbox is
-   archived.
+The threat model's "Not protected" list and the Shared files table in
+[ARCHITECTURE.md](docs/ARCHITECTURE.md#threat-model) are the contract;
+read both before trusting a box with a repository.
