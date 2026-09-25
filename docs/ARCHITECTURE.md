@@ -392,8 +392,9 @@ profile image.
   uniquely `pinfold/image-<NAME>:<build>` and moves the stable
   `pinfold/image-<NAME>:latest` to it; a box spec's `image` names either.
   It carries `dev.pinfold.image=<NAME>`, `dev.pinfold.build`,
-  `dev.pinfold.base=<digest>` when the first `FROM` resolves to one, and the
-  caller's `--label`s, none of which may start with `dev.pinfold.`. It uses
+  `dev.pinfold.base` (the first `FROM`'s digest when it resolves to one,
+  else empty), empty `dev.pinfold.profile` and `dev.pinfold.project`, and
+  the caller's `--label`s, none of which may start with `dev.pinfold.`. It uses
   the runtime's layer cache unless the caller passes `--no-cache`; podman
   labels the cache's intermediate images `dev.pinfold.layer`.
 - A project build is tagged uniquely `pinfold/project-<id>:<build>` and
