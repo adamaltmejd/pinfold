@@ -325,7 +325,9 @@ network listener, no token: the socket identifies the box.
   `.suffix` for the name and its subdomains). The ClientHello SNI must equal
   the CONNECT host.
 - **Plain HTTP:** port 80 only, one request per connection, Content-Length
-  framing only. Ambiguous framing, folded headers and bare LF get 400.
+  framing only. Ambiguous framing and bare LF get 400, as does any head the
+  parser rejects, folded headers included; a CONNECT head is parsed the
+  same way.
 - **Refused:** IP literals, and names resolving to loopback, unspecified
   (`0/8`), private, link-local, CGNAT (`100.64/10`), benchmark
   (`198.18/15`), IETF protocol (`192.0.0/24`), multicast, reserved (`240/4`,

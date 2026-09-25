@@ -240,20 +240,19 @@ fn handle(mut client: UnixStream, rules: &Rules, log: &Path) {
     if !head_well_formed(&head) {
         return refuse(&mut client, log, "", 400, "ambiguous framing");
     }
-    let head_text = String::from_utf8_lossy(&head);
-    let request_line = head_text.split("\r\n").next().unwrap_or("");
-    let mut parts = request_line.split(' ');
-    let (Some(method), Some(target), Some(_version)) = (parts.next(), parts.next(), parts.next())
+    // One parse for both methods; httparse rejects a folded header, a
+    // fourth token on the request line and more than MAX_HEADERS headers.
+    let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
+    let mut request = httparse::Request::new(&mut headers);
+    let (Ok(httparse::Status::Complete(_)), Some(method), Some(target)) =
+        (request.parse(&head), request.method, request.path)
     else {
         return refuse(&mut client, log, "", 400, "malformed request");
     };
-    if parts.next().is_some() {
-        return refuse(&mut client, log, "", 400, "malformed request");
-    }
     if method == "CONNECT" {
         connect(&mut client, rules, log, target);
     } else {
-        plain(&mut client, rules, log, &head);
+        plain(&mut client, rules, log, &request);
     }
 }
 
@@ -315,8 +314,8 @@ fn connect(client: &mut UnixStream, rules: &Rules, log: &Path, target: &str) {
 
 /// Handle one plain HTTP request: an allowlisted host or a route, port 80
 /// only, framed by Content-Length, one request per connection.
-fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, head: &[u8]) {
-    let request = match parse_plain(head) {
+fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, request: &httparse::Request) {
+    let request = match parse_plain(request) {
         Ok(request) => request,
         Err(reason) => return refuse(client, log, "", 400, reason),
     };
@@ -451,13 +450,7 @@ struct Plain {
 /// Parse and check a plain HTTP request head. The error is the 400's log
 /// reason: not absolute-form, `https`, userinfo, ambiguous framing or an
 /// invalid header.
-fn parse_plain(head: &[u8]) -> Result<Plain, &'static str> {
-    let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
-    let mut request = httparse::Request::new(&mut headers);
-    match request.parse(head) {
-        Ok(httparse::Status::Complete(_)) => {}
-        _ => return Err("malformed request"),
-    }
+fn parse_plain(request: &httparse::Request) -> Result<Plain, &'static str> {
     let method = request.method.ok_or("malformed request")?.to_string();
     let version = request.version.ok_or("malformed request")?;
     let raw_target = request.path.ok_or("malformed request")?;
@@ -630,22 +623,15 @@ fn timed_out(error: &io::Error) -> bool {
     )
 }
 
-/// A head with only CRLF line endings and no folded header. httparse accepts
-/// bare LF and continuations, so the framing checks are done on the bytes.
+/// A head with only CRLF line endings. httparse accepts bare LF, so this
+/// framing check is done on the bytes; a folded header it rejects itself.
 fn head_well_formed(head: &[u8]) -> bool {
-    if !head.ends_with(b"\r\n\r\n") {
-        return false;
-    }
-    for (index, byte) in head.iter().enumerate() {
-        match byte {
-            b'\n' if index == 0 || head[index - 1] != b'\r' => return false,
-            b'\r' if head.get(index + 1) != Some(&b'\n') => return false,
-            _ => {}
-        }
-    }
-    head.split(|byte| *byte == b'\n')
-        .skip(1)
-        .all(|line| !matches!(line.first(), Some(b' ' | b'\t')))
+    head.ends_with(b"\r\n\r\n")
+        && head.iter().enumerate().all(|(index, byte)| match byte {
+            b'\n' => index > 0 && head[index - 1] == b'\r',
+            b'\r' => head.get(index + 1) == Some(&b'\n'),
+            _ => true,
+        })
 }
 
 /// Resolve a route's address once and connect to the first. A route's
