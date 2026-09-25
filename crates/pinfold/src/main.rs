@@ -42,16 +42,9 @@ fn main() -> ExitCode {
         }
         _ => {}
     }
-    // A subcommand's help flag answers too, before `init` and the daily
-    // pass, so it touches no runtime and no state dir.
-    if let Some(code) = cli::help(verb, args) {
-        return ExitCode::from(code as u8);
-    }
-    // PID 1 never returns, so it never reaches `report`.
-    if verb == "init" {
-        init::run(args)
-    }
     let run: fn(&[String]) -> io::Result<i32> = match verb {
+        // PID 1 never returns, so it never reaches `report`.
+        "init" => |args| init::run(args),
         "box" => cli::run,
         "allow" => cli::allow,
         "attach" => cli::attach,
@@ -68,13 +61,19 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    // A subcommand's help flag answers too, before `init` and the daily
+    // pass, so it touches no runtime and no state dir.
+    if cli::help(verb, args) {
+        return ExitCode::SUCCESS;
+    }
     // The daily pass runs before any working command, the `pi` shim
     // included; `init` is PID 1 in a box with no runtime to prune, and the
     // options and help above touch nothing. `box up` runs the pass itself,
     // so its SIGTERM and SIGINT handlers come before the pass lists the
     // runtime.
-    if verb != "box" || args.first().map(String::as_str) != Some("up") {
-        pinfold::core::clean::maintain();
+    match (verb, args.first().map(String::as_str)) {
+        ("init", _) | ("box", Some("up")) => {}
+        _ => pinfold::core::clean::maintain(),
     }
     ExitCode::from(cli::report(verb, run(args)) as u8)
 }

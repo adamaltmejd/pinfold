@@ -1,7 +1,3 @@
-//! `pinfold box` and `pinfold image`: the JSON-on-stdio process interface
-//! for programmatic callers, and `pinfold build`: the profile and project
-//! image build.
-//!
 //! The verbs are parsed by hand: the set is small, and ARCHITECTURE.md's
 //! dependency list has no argument parser.
 
@@ -25,6 +21,7 @@ use crate::core::runtime::{
     podman, runtime,
 };
 use crate::dirs;
+use crate::pi::launch::utf8;
 use crate::trust;
 
 /// One line per verb from the CLI table in docs/ARCHITECTURE.md, plus the
@@ -35,7 +32,7 @@ pub const USAGE: &str = "\
 pinfold pi [pi args…]            pi in a box for this project; `pi` is a symlink to this
 pinfold attach [--box NAME] [cmd…]   bash (or cmd) in this project's running pi box
 pinfold build [--profile NAME]   build this project's image, or a profile's; prints the ref
-pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]... [--no-cache]   a caller's image from its own context; one JSON line
+pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache]   a caller's image from its own context; one JSON line
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
 pinfold profile new NAME [--from PROFILE] [--from-project [PATH]]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim disk (see Maintenance)
@@ -85,49 +82,26 @@ fn syntax(verb: &str) -> String {
         .join("\n")
 }
 
-/// A `--help`/`-h` before any `--` in `args`: print `verb`'s syntax from
-/// [`syntax`] on stdout and answer 0, touching no runtime and no state, as
-/// top-level `--help` does. `attach` counts one only before its command, and
-/// `pi`'s arguments are all pi's. A verb with no syntax line is left to the
-/// dispatcher.
-pub fn help(verb: &str, args: &[String]) -> Option<i32> {
-    if !asks_help(verb, args) {
-        return None;
-    }
-    let line = syntax(verb);
-    if line.is_empty() {
-        return None;
-    }
-    println!("{line}");
-    Some(0)
-}
-
-/// Whether `args` ask for `verb`'s help.
-fn asks_help(verb: &str, args: &[String]) -> bool {
-    match verb {
+/// Whether `args` hold a `--help`/`-h` before any `--`; if so, print
+/// `verb`'s syntax from [`syntax`] on stdout, touching no runtime and no
+/// state, as top-level `--help` does. `attach` counts one only as its
+/// command's first word (`attach ls --help` gives `--help` to `ls`), and
+/// `pi`'s arguments are all pi's.
+pub fn help(verb: &str, args: &[String]) -> bool {
+    let asks = match verb {
         "pi" => false,
-        "attach" => attach_asks_help(args),
+        "attach" => {
+            matches!(parse_attach(args), Ok((_, [first, ..])) if first == "--help" || first == "-h")
+        }
         _ => args
             .iter()
             .take_while(|arg| arg.as_str() != "--")
             .any(|arg| arg == "--help" || arg == "-h"),
+    };
+    if asks {
+        println!("{}", syntax(verb));
     }
-}
-
-/// `attach --help` counts only before its command: `attach ls --help` gives
-/// `--help` to `ls`. `--box` consumes its next argument whatever it is.
-fn attach_asks_help(args: &[String]) -> bool {
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--help" | "-h" => return true,
-            "--box" => {
-                args.next();
-            }
-            _ => return false,
-        }
-    }
-    false
+    asks
 }
 
 /// `pinfold allow`: trust this project's `.pinfold.toml` and Containerfile.
@@ -144,7 +118,11 @@ pub fn allow(args: &[String]) -> io::Result<i32> {
 /// pi box. The box's owner keeps its lifetime; attach streams one exec and
 /// adds none of its own.
 pub fn attach(args: &[String]) -> io::Result<i32> {
-    let (box_name, mut argv) = parse_attach(args)?;
+    let (box_name, command) = parse_attach(args)?;
+    let mut argv = match command {
+        [dashes, rest @ ..] if dashes == "--" => rest.to_vec(),
+        _ => command.to_vec(),
+    };
     if argv.is_empty() {
         argv.push("bash".to_string());
     }
@@ -157,7 +135,7 @@ pub fn attach(args: &[String]) -> io::Result<i32> {
         .into_iter()
         .filter(|box_| box_.labels.get(crate::core::clean::PROJECT_LABEL) == Some(&id))
         .collect();
-    let name = select_box(&boxes, box_name.as_deref())?;
+    let name = select_box(&boxes, box_name)?;
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
     let init = artifacts::init()?;
     let status = runtime.exec(&name, tty, Some(&cwd), &exec_through_init(&init, &argv))?;
@@ -167,61 +145,41 @@ pub fn attach(args: &[String]) -> io::Result<i32> {
 /// The box to attach to: the named one, or the project's only one. Several
 /// without a name is the caller's to resolve.
 fn select_box(boxes: &[BoxInfo], requested: Option<&str>) -> io::Result<String> {
-    if let Some(name) = requested {
-        return boxes
-            .iter()
-            .find(|box_| box_.id == name)
-            .map(|box_| box_.id.clone())
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("no running pi box named {name:?} for this project"),
-                )
-            });
-    }
-    match boxes {
-        [] => Err(io::Error::new(
+    let mut names: Vec<&str> = boxes
+        .iter()
+        .map(|box_| box_.id.as_str())
+        .filter(|id| requested.is_none_or(|name| name == *id))
+        .collect();
+    names.sort_unstable();
+    match (names.as_slice(), requested) {
+        ([only], _) => Ok(only.to_string()),
+        ([], Some(name)) => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no running pi box named {name:?} for this project"),
+        )),
+        ([], None) => Err(io::Error::new(
             io::ErrorKind::NotFound,
             "no running pi box for this project; start one with `pinfold pi`",
         )),
-        [only] => Ok(only.id.clone()),
-        several => {
-            let mut names: Vec<&str> = several.iter().map(|box_| box_.id.as_str()).collect();
-            names.sort_unstable();
-            Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "several pi boxes are running for this project; select one with `--box NAME`: {}",
-                    names.join(", ")
-                ),
-            ))
-        }
+        (several, _) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "several pi boxes are running for this project; select one with `--box NAME`: {}",
+                several.join(", ")
+            ),
+        )),
     }
 }
 
-/// `attach`'s options and command. Options end at the first command word or
-/// `--`, so a command keeps every argument after it.
-fn parse_attach(args: &[String]) -> io::Result<(Option<String>, Vec<String>)> {
-    let mut name = None;
-    let mut index = 0;
-    while let Some(arg) = args.get(index) {
-        match arg.as_str() {
-            "--box" => {
-                name = Some(
-                    args.get(index + 1)
-                        .ok_or_else(|| usage("attach", "--box needs a box name"))?
-                        .clone(),
-                );
-                index += 2;
-            }
-            "--" => {
-                index += 1;
-                break;
-            }
-            _ => break,
-        }
+/// `attach`'s `--box NAME` and the command after it, which keeps every
+/// argument. A leading `--` stays, so [`help`] can tell `attach -- --help`
+/// from `attach --help`.
+fn parse_attach(args: &[String]) -> io::Result<(Option<&str>, &[String])> {
+    match args {
+        [flag, name, command @ ..] if flag == "--box" => Ok((Some(name), command)),
+        [flag] if flag == "--box" => Err(usage("attach", "--box needs a box name")),
+        command => Ok((None, command)),
     }
-    Ok((name, args[index..].to_vec()))
 }
 
 /// `pinfold box`: the process interface.
@@ -258,46 +216,34 @@ fn up(args: &[String]) -> io::Result<i32> {
         let mut signals = Signals::new()?;
         let plan = tokio::select! {
             biased;
-            _ = signals.recv() => {
-                println!("{}", down_line(None, Shutdown::Signal));
-                io::stdout().flush()?;
-                return Ok(0);
-            }
+            _ = signals.recv() => return Ok(down(None, Shutdown::Signal)),
             plan = tokio::task::spawn_blocking(|| {
-                // `main` leaves the pass to `up`, so the handlers above
-                // cover the pass; it still runs before the spec is read.
                 clean::maintain();
                 Plan::from_reader(io::stdin())
-            }) => {
-                match plan {
-                    Ok(Ok(plan)) => plan,
-                    Ok(Err(error)) => {
-                        return Ok(refused(Refusal {
-                            box_name: None,
-                            reason: RefusalReason::Spec,
-                            detail: error,
-                        }));
-                    }
-                    Err(error) => return Err(io::Error::other(error)),
+            }) => match plan.map_err(io::Error::other)? {
+                Ok(plan) => plan,
+                Err(detail) => {
+                    return Ok(refused(Refusal {
+                        box_name: None,
+                        reason: RefusalReason::Spec,
+                        detail,
+                    }));
                 }
             }
         };
         // Every error from here on has removed what the start made; it ends
         // the stream as one `failed` line.
-        match hold_up(&plan, signals).await {
-            Ok(code) => Ok(code),
-            Err(error) => {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "event": "failed",
-                        "box": &plan.name,
-                        "detail": error.to_string(),
-                    })
-                );
-                Ok(1)
-            }
-        }
+        Ok(hold_up(&plan, signals).await.unwrap_or_else(|error| {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "event": "failed",
+                    "box": &plan.name,
+                    "detail": error.to_string(),
+                })
+            );
+            1
+        }))
     });
     // `Box::hold` watches stdin through tokio's blocking pool. A caller that
     // keeps stdin open leaves that read parked, and dropping the runtime
@@ -315,11 +261,7 @@ async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
     let mut box_ = match Box::up(plan, &init, Some(&mut signals)).await {
         Ok(box_) => box_,
         Err(UpError::Refused(refusal)) => return Ok(refused(refusal)),
-        Err(UpError::Signal) => {
-            println!("{}", down_line(Some(&plan.name), Shutdown::Signal));
-            io::stdout().flush()?;
-            return Ok(0);
-        }
+        Err(UpError::Signal) => return Ok(down(Some(&plan.name), Shutdown::Signal)),
         Err(UpError::Other(error)) => return Err(error),
     };
     println!(
@@ -336,27 +278,27 @@ async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
     let shutdown = box_.hold(&mut signals).await?;
     // Teardown is done, so the down line names a box the caller can
     // start again. It ends the stream.
-    println!("{}", down_line(Some(&plan.name), shutdown));
-    io::stdout().flush()?;
-    Ok(match shutdown {
-        Shutdown::StdinEof | Shutdown::Signal => 0,
-        Shutdown::BoxExited(_) => 1,
-    })
+    Ok(down(Some(&plan.name), shutdown))
 }
 
-/// The one `down` line that ends `up`'s stream: why the box ended, after
-/// teardown. Only `exited` carries a detail, the init's exit status. `name`
-/// is null when a signal ended `up` before its spec parsed.
-fn down_line(name: Option<&str>, shutdown: Shutdown) -> serde_json::Value {
+/// Print the one `down` line that ends `up`'s stream, why the box ended
+/// after teardown, and return `up`'s exit code: 1 for `exited`, else 0.
+/// Only `exited` carries a detail, the init's exit status. `name` is null
+/// when a signal ended `up` before its spec parsed.
+fn down(name: Option<&str>, shutdown: Shutdown) -> i32 {
     let mut line = serde_json::json!({
         "event": "down",
         "box": name,
         "reason": shutdown.as_str(),
     });
-    if let Shutdown::BoxExited(status) = shutdown {
+    let code = if let Shutdown::BoxExited(status) = shutdown {
         line["detail"] = status.to_string().into();
-    }
-    line
+        1
+    } else {
+        0
+    };
+    println!("{line}");
+    code
 }
 
 /// Print one `refused` line on stdout and return exit code 1.
@@ -376,20 +318,20 @@ fn refused(refusal: Refusal) -> i32 {
 /// Run a command in a running box with this process's stdio and return its
 /// exit code.
 fn exec(args: &[String]) -> io::Result<i32> {
-    let args = ExecArgs::parse(args)?;
+    let (name, tty, workdir, argv) = parse_exec(args)?;
     let runtime = runtime();
-    if !present(runtime, "exec", &args.name)? {
+    if !present(runtime, "exec", &name)? {
         return Ok(3);
     }
     // A TTY only makes sense when both ends are terminals; `--tty` forces it
     // for callers that drive pinfold through their own pty.
-    let tty = args.tty || (io::stdin().is_terminal() && io::stdout().is_terminal());
+    let tty = tty || (io::stdin().is_terminal() && io::stdout().is_terminal());
     let init = artifacts::init()?;
     let status = runtime.exec(
-        &args.name,
+        &name,
         tty,
-        args.workdir.as_deref(),
-        &exec_through_init(&init, &args.argv),
+        workdir.as_deref(),
+        &exec_through_init(&init, &argv),
     )?;
     Ok(exit_code(status))
 }
@@ -610,32 +552,27 @@ fn parse_clean(args: &[String]) -> io::Result<(bool, Option<Duration>)> {
 
 /// `AGE` is a whole number and one unit: `s`, `m`, `h` or `d`.
 fn parse_age(value: &str) -> io::Result<Duration> {
-    let mut chars = value.chars();
-    let Some(unit) = chars.next_back() else {
-        return Err(usage("clean", "--unused needs an age like 30d"));
-    };
-    let seconds = match unit {
-        's' => 1,
-        'm' => 60,
-        'h' => 60 * 60,
-        'd' => 24 * 60 * 60,
-        _ => {
-            return Err(usage(
-                "clean",
-                &format!("age {value:?} needs a unit: s, m, h or d"),
-            ));
-        }
-    };
-    let number: u64 = chars.collect::<String>().parse().map_err(|_| {
+    let invalid = || {
         usage(
             "clean",
-            &format!("age {value:?} is not a whole number and a unit"),
+            &format!("invalid age {value:?}; an age is a whole number and a unit, s, m, h or d"),
         )
-    })?;
-    number
-        .checked_mul(seconds)
+    };
+    let mut chars = value.chars();
+    let seconds = match chars.next_back() {
+        Some('s') => 1,
+        Some('m') => 60,
+        Some('h') => 60 * 60,
+        Some('d') => 24 * 60 * 60,
+        _ => return Err(invalid()),
+    };
+    chars
+        .as_str()
+        .parse::<u64>()
+        .ok()
+        .and_then(|number| number.checked_mul(seconds))
         .map(Duration::from_secs)
-        .ok_or_else(|| usage("clean", &format!("age {value:?} is too large")))
+        .ok_or_else(invalid)
 }
 
 /// `pinfold doctor`: print one report of what `pinfold pi` depends on and
@@ -684,8 +621,12 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         }
     }
 
-    match kernel() {
-        Ok(kernel) => println!("kernel: {kernel}"),
+    match nix::sys::utsname::uname() {
+        Ok(uname) => println!(
+            "kernel: {} {}",
+            uname.sysname().to_string_lossy(),
+            uname.release().to_string_lossy()
+        ),
         Err(error) => println!("kernel: unavailable: {error}"),
     }
 
@@ -781,16 +722,6 @@ fn report_image(config: &Config, runtime: &dyn Runtime, image: &str) -> io::Resu
     Ok(0)
 }
 
-/// The host kernel, as `uname -sr` reports it.
-fn kernel() -> io::Result<String> {
-    let uname = nix::sys::utsname::uname().map_err(io::Error::other)?;
-    Ok(format!(
-        "{} {}",
-        uname.sysname().to_string_lossy(),
-        uname.release().to_string_lossy()
-    ))
-}
-
 /// `pinfold config`: print one JSON object, the effective configuration and
 /// the project facts a caller needs to compose a box. `ROOT` defaults to the
 /// project root `pinfold pi` would use from the current directory. Reads
@@ -820,7 +751,7 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
         Err(error) => serde_json::json!({ "ok": false, "detail": error.to_string() }),
     };
     Ok(serde_json::json!({
-        "root": path_string(root)?,
+        "root": utf8(root, "project root")?,
         "profile": &config.profile.name,
         "image": image,
         "image_built": image_built,
@@ -830,68 +761,41 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
         "cpus": config.cpus,
         "memory": &config.memory,
         "env": &config.env,
-        "project": { "id": project, "home": path_string(&home)? },
+        "project": { "id": project, "home": utf8(&home, "project home")? },
         "trust": trust,
     }))
 }
 
-/// A path as a string for the `config` report. The report is JSON, so a
-/// non-UTF-8 path is a refusal, not a lossy value.
-fn path_string(path: &Path) -> io::Result<&str> {
-    path.to_str().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("path {} is not valid UTF-8", path.display()),
-        )
-    })
-}
-
-struct ExecArgs {
-    name: String,
-    tty: bool,
-    workdir: Option<PathBuf>,
-    argv: Vec<String>,
-}
-
-impl ExecArgs {
-    fn parse(args: &[String]) -> io::Result<ExecArgs> {
-        let mut args = args.iter();
-        let name = args
-            .next()
-            .ok_or_else(|| usage("box", "exec needs a box name"))?
-            .clone();
-        let mut tty = false;
-        let mut workdir = None;
-        let argv;
-        loop {
-            match args.next().map(String::as_str) {
-                Some("--") => {
-                    argv = args.cloned().collect::<Vec<_>>();
-                    break;
-                }
-                Some("--tty") => tty = true,
-                Some("--workdir") => {
-                    workdir =
-                        Some(PathBuf::from(args.next().ok_or_else(|| {
-                            usage("box", "--workdir needs a directory")
-                        })?));
-                }
-                Some(option) => {
-                    return Err(usage("box", &format!("unknown exec option {option:?}")));
-                }
-                None => return Err(usage("box", "exec needs `-- argv`")),
+/// `exec`'s box name, `--tty`, `--workdir` and the command after `--`.
+fn parse_exec(args: &[String]) -> io::Result<(String, bool, Option<PathBuf>, Vec<String>)> {
+    let mut args = args.iter();
+    let name = args
+        .next()
+        .ok_or_else(|| usage("box", "exec needs a box name"))?
+        .clone();
+    let mut tty = false;
+    let mut workdir = None;
+    loop {
+        match args.next().map(String::as_str) {
+            Some("--") => break,
+            Some("--tty") => tty = true,
+            Some("--workdir") => {
+                workdir =
+                    Some(PathBuf::from(args.next().ok_or_else(|| {
+                        usage("box", "--workdir needs a directory")
+                    })?));
             }
+            Some(option) => {
+                return Err(usage("box", &format!("unknown exec option {option:?}")));
+            }
+            None => return Err(usage("box", "exec needs `-- argv`")),
         }
-        if argv.is_empty() {
-            return Err(usage("box", "exec needs a command after `--`"));
-        }
-        Ok(ExecArgs {
-            name,
-            tty,
-            workdir,
-            argv,
-        })
     }
+    let argv: Vec<String> = args.cloned().collect();
+    if argv.is_empty() {
+        return Err(usage("box", "exec needs a command after `--`"));
+    }
+    Ok((name, tty, workdir, argv))
 }
 
 fn single_name(args: &[String], verb: &str) -> io::Result<String> {
@@ -939,9 +843,9 @@ pub(crate) fn exit_code(status: ExitStatus) -> i32 {
 /// other files are not build inputs. Prints the stable ref, or the build's
 /// captured output on stderr when it failed.
 pub fn build(args: &[String]) -> io::Result<i32> {
-    let (profile, project) = match parse_profile(args)? {
-        Some(name) => (Profile::load(&name)?, None),
-        None => {
+    let (profile, project) = match args {
+        [flag, name] if flag == "--profile" => (Profile::load(name)?, None),
+        [] => {
             let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
             let config = Config::load(&root)?;
             // A project build is a run of its config: an untrusted change
@@ -952,6 +856,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
                 .map(|(_, bytes)| (crate::pi::state::project_id(&root), bytes));
             (config.profile, project)
         }
+        _ => return Err(usage("build", "build takes no arguments or --profile NAME")),
     };
     let runtime = runtime();
     // A project image records the profile image it was built from, so
@@ -1000,26 +905,6 @@ pub fn build(args: &[String]) -> io::Result<i32> {
             )))
         }
     }
-}
-
-fn parse_profile(args: &[String]) -> io::Result<Option<String>> {
-    let mut name = None;
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--profile" => {
-                name = Some(
-                    args.next()
-                        .ok_or_else(|| usage("build", "--profile needs a name"))?
-                        .clone(),
-                );
-            }
-            option => {
-                return Err(usage("build", &format!("unknown build option {option:?}")));
-            }
-        }
-    }
-    Ok(name)
 }
 
 /// `pinfold image`: a caller's image build.
@@ -1160,7 +1045,12 @@ fn profile_new(args: &[String]) -> io::Result<()> {
             // The project's `home/.pi/agent/` replaces the seeds of the same
             // path; pi's login, session history, npm install and caches stay
             // behind, and nothing else from the project home is copied.
-            Some(agent) => copy_tree(agent, &target.join("home/.pi/agent"), agent_entry_excluded),
+            Some(agent) => copy_tree(agent, &target.join("home/.pi/agent"), |name| {
+                matches!(
+                    name.to_str(),
+                    Some("auth.json" | "sessions" | "npm" | "cache" | ".cache")
+                )
+            }),
             None => Ok(()),
         });
     if result.is_err() {
@@ -1187,15 +1077,6 @@ fn project_agent_dir(path: &Path) -> io::Result<PathBuf> {
         ));
     }
     Ok(agent)
-}
-
-/// Entries that never enter a profile: pi's credentials, session history,
-/// package install and cache directories.
-fn agent_entry_excluded(name: &OsStr) -> bool {
-    matches!(
-        name.to_str(),
-        Some("auth.json" | "sessions" | "npm" | "cache" | ".cache")
-    )
 }
 
 fn write_profile(source: &Profile, target: &Path) -> io::Result<()> {

@@ -186,8 +186,9 @@ fn build_plan(
     Ok(plan)
 }
 
-/// `path` as a string, for a spec value; `what` names it in the error.
-fn utf8<'a>(path: &'a Path, what: &str) -> io::Result<&'a str> {
+/// `path` as a string, for a spec or report value; `what` names it in the
+/// error. Both are JSON, so a non-UTF-8 path is refused, not made lossy.
+pub(crate) fn utf8<'a>(path: &'a Path, what: &str) -> io::Result<&'a str> {
     path.to_str().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
