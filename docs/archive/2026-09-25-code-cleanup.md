@@ -178,3 +178,51 @@ all four stay. Restatements cut are in 906fdae. Adam's answers landed
 the same day (the table above); the guarantees table still has one test
 per row, and no row changed. No release tag was requested with this
 pass.
+
+## Release 0.0.3
+
+Y-71, Y-72 and Y-73 landed through the merge queue, then this section,
+the version bump and the tag. Y-71's first attempt failed the Linux queue
+gate on one 502 from the runner's dial to `api.github.com` in
+`losing_the_owner_fails_closed`'s positive control, with the other 16 box
+tests passing; it was abandoned and replayed from its retained candidate,
+and the replay passed both gates. A second occurrence is a ticket against
+that test.
+
+### The three tickets
+
+| Ticket | Commit | Possible | Landed |
+|---|---|---|---|
+| Y-71 | f5eef28 | about -150 | +232 / -414, net -182 |
+| Y-72 | d8bcc69 | about -220 | +132 / -351, net -219 |
+| Y-73 | c45c042 | about -60 | +46 / -76, net -30 |
+| Total | | about -430 | +410 / -841, net -431 |
+
+### Numbers at the tag
+
+| Measure | After the pass | At v0.0.3 |
+|---|---|---|
+| Commits since v0.0.2 | 69 | 81 |
+| Lines added / deleted since v0.0.2, whole tree | 5385 / 4136 (0.77) | 5765 / 4810 (delete/add 0.83) |
+| Lines added / deleted since v0.0.2, `crates/` | 4710 / 3942 (0.84) | 4944 / 4607 (0.93) |
+| Largest source file | `crates/e2e/tests/box.rs`, 2797 | 2709 |
+| Largest file in the binary crate | `cli.rs`, 1208 | 1208 |
+| `docs/ARCHITECTURE.md` | 696 lines | 697 |
+| Tickets landed since the last report (Y-70) | 0 | 3 (Y-71 to Y-73) |
+| Tickets born from a lane proposal | 0 | 0 |
+| Suite wall time, last macOS gate (Y-71/2) | box 67 s, pi 25 s, cli 0.3 s | box 86 s, pi 26 s, cli 0.3 s |
+
+The macOS gate times are the merge queue's, the "after the pass" times a
+host run, so the box difference is not a regression measured.
+
+### Spec pass
+
+ARCHITECTURE.md and README.md against the tree at the tag. The
+guarantees table has 25 rows and 25 tests, one each; Y-72's helpers are
+not cited by any row, and row 14's "fake model" is still what the test
+runs, now served by the one HTTP fixture. Y-73 keeps the Lifecycle's
+"reaps children" true through `SIG_IGN`. Nothing restated or argued was
+found beyond the pass's own 906fdae; the edits since (27da786, 480202e,
+6d85229, 8699e63) state current contract. Open questions: none of the
+four is answered by the suite, so all four stay. README's install
+examples move to `version=0.0.3`.
