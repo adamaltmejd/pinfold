@@ -522,7 +522,7 @@ impl CleanPlan {
                 // The whole state dir goes; its cache is part of its size.
                 stale.push(project.dir.clone());
             } else {
-                let cache = project.home.join(".cache");
+                let cache = project.dir.join("home/.cache");
                 if cache.exists() {
                     caches.push(cache);
                 }
