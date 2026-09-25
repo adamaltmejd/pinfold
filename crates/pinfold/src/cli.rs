@@ -796,16 +796,14 @@ pub fn build(args: &[String]) -> io::Result<i32> {
     // A project image records the profile image it was built from, so
     // `pinfold pi` warns when the profile image moves past it; a profile
     // image records the image its FROM pulls.
-    let (repository, label, source, containerfile, base) = match &project {
+    let (label, source, containerfile, base) = match &project {
         Some((id, bytes)) => (
-            format!("pinfold/project-{id}"),
             clean::PROJECT_LABEL,
             id,
             bytes,
             local_image_id(runtime, &profile.image_ref())?,
         ),
         None => (
-            format!("pinfold/profile-{}", profile.name),
             clean::PROFILE_LABEL,
             &profile.name,
             &profile.containerfile,
@@ -815,7 +813,6 @@ pub fn build(args: &[String]) -> io::Result<i32> {
     let built = image::build(
         runtime,
         Build {
-            repository,
             label,
             source,
             context: Context::Alone(containerfile),

@@ -29,8 +29,6 @@ pub enum Context<'a> {
 
 /// One build of one source.
 pub struct Build<'a> {
-    /// The image name both tags share, e.g. `pinfold/profile-default`.
-    pub repository: String,
     /// The label naming the source on the image, which retention groups by.
     pub label: &'static str,
     /// The source: a profile name, a project id or a caller image name.
@@ -44,9 +42,10 @@ pub struct Build<'a> {
 
 /// The image one build made.
 pub struct Built {
-    /// The unique ref, `<repository>:<build>`.
+    /// The unique ref, `pinfold/<family>-<source>:<build>`.
     pub reference: String,
-    /// The stable ref, `<repository>:latest`, now naming the same image.
+    /// The stable ref, `pinfold/<family>-<source>:latest`, now naming the
+    /// same image.
     pub latest: String,
     /// The image's id in the runtime, what a box's `ready` and `list`
     /// report as `image.id`; `None` when the runtime cannot resolve it.
@@ -83,8 +82,15 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
     // The unique build label is what makes every build a distinct image,
     // cached or not.
     labels.insert(clean::BUILD_LABEL.to_string(), id.clone());
-    let latest = format!("{}:latest", build.repository);
-    let reference = format!("{}:{id}", build.repository);
+    // `pinfold/profile-<name>`, `pinfold/project-<id>` or
+    // `pinfold/image-<name>`.
+    let repository = format!(
+        "pinfold/{}-{}",
+        build.label.trim_start_matches("dev.pinfold."),
+        build.source
+    );
+    let latest = format!("{repository}:latest");
+    let reference = format!("{repository}:{id}");
     let tags = [latest.clone(), reference.clone()];
     let request = |context: &Path, containerfile: &Path| {
         runtime.build(&BuildRequest {
@@ -115,9 +121,7 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
     if let Err(error) = clean::keep_two_images(runtime, build.label, build.source) {
         eprintln!("pinfold: maintenance: {error}");
     }
-    // The id a box started from this reference would report as `image.id`.
-    // A runtime that cannot answer it does not fail a build that succeeded;
-    // the built line reports a null id.
+    // A runtime that cannot answer does not fail a build that succeeded.
     let id = local_image_id(runtime, &reference).unwrap_or(None);
     Ok(Ok(Built {
         reference,
@@ -182,7 +186,6 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
     build(
         runtime,
         Build {
-            repository: format!("pinfold/image-{}", request.name),
             label: clean::IMAGE_LABEL,
             source: &request.name,
             context: Context::Dir {
@@ -197,8 +200,7 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
     .map_err(ImageError::Failed)
 }
 
-/// A new build's id. It starts with the nanoseconds since the epoch in hex,
-/// so it orders builds.
+/// A new build's id, the value of [`clean::BUILD_LABEL`].
 fn build_id() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

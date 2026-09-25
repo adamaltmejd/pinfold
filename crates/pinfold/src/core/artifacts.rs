@@ -1,10 +1,4 @@
 //! Pinned harnesses, and the init the CLI's own build provides.
-//!
-//! `harnesses.toml` pins each harness: a version, env defaults, and per
-//! `os-arch` its release assets with their sha256. First use downloads,
-//! verifies and installs a harness's assets into
-//! `~/.cache/pinfold/artifacts/<name>/<version>/<os-arch>/`; later calls use
-//! the cache.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,7 +14,7 @@ use crate::dirs;
 
 /// The pin file, parsed once. It is embedded, so a parse error is a bug in
 /// this build.
-static HARNESSES: LazyLock<Vec<Harness>> = LazyLock::new(|| {
+pub static HARNESSES: LazyLock<Vec<Harness>> = LazyLock::new(|| {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct PinFile {
@@ -68,14 +62,9 @@ enum Install {
     Executable,
 }
 
-/// Every pinned harness, in the pin file's order.
-pub fn harnesses() -> &'static [Harness] {
-    &HARNESSES
-}
-
 /// The pinned harness named `name`.
 pub fn harness(name: &str) -> Option<&'static Harness> {
-    harnesses().iter().find(|harness| harness.name == name)
+    HARNESSES.iter().find(|harness| harness.name == name)
 }
 
 /// Where the harness `name` is mounted in the box.
@@ -87,9 +76,8 @@ impl Harness {
     /// The host directory to mount at [`guest`] for a box on this host,
     /// downloading and installing the assets if the cache lacks them.
     pub fn install(&self) -> io::Result<PathBuf> {
-        let os_arch = os_arch()?;
-        let assets = self.assets(os_arch)?;
-        let dir = self.dir(os_arch)?;
+        let assets = self.assets();
+        let dir = self.dir()?;
         dirs::install_dir(&dir, |staging| {
             assets
                 .iter()
@@ -98,28 +86,20 @@ impl Harness {
         Ok(dir.join(&self.name))
     }
 
-    /// This harness's assets for `os_arch`.
-    fn assets(&self, os_arch: &str) -> io::Result<Vec<&Asset>> {
-        let assets: Vec<&Asset> = self
-            .asset
+    /// This harness's assets for [`OS_ARCH`].
+    fn assets(&self) -> Vec<&Asset> {
+        self.asset
             .iter()
-            .filter(|asset| asset.os_arch == os_arch)
-            .collect();
-        if assets.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!("no pinned {} release for {os_arch}", self.name),
-            ));
-        }
-        Ok(assets)
+            .filter(|asset| asset.os_arch == OS_ARCH)
+            .collect()
     }
 
-    /// The cache directory of this harness for `os_arch`, installed or not.
-    fn dir(&self, os_arch: &str) -> io::Result<PathBuf> {
+    /// The cache directory of this harness for [`OS_ARCH`], installed or not.
+    fn dir(&self) -> io::Result<PathBuf> {
         Ok(dirs::artifacts_dir()?
             .join(&self.name)
             .join(&self.version)
-            .join(os_arch))
+            .join(OS_ARCH))
     }
 
     /// Download `asset` into `staging`, verify its sha256, and install it at
@@ -194,16 +174,11 @@ impl Harness {
 
 /// The `os-arch` of a box on this host: Apple `container` and podman run
 /// native images.
-fn os_arch() -> io::Result<&'static str> {
-    match std::env::consts::ARCH {
-        "aarch64" => Ok("linux-arm64"),
-        "x86_64" => Ok("linux-x64"),
-        arch => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("no pinned harness for host architecture {arch}"),
-        )),
-    }
-}
+const OS_ARCH: &str = if cfg!(target_arch = "aarch64") {
+    "linux-arm64"
+} else {
+    "linux-x64"
+};
 
 /// The Linux init binary to mount into a box.
 ///
@@ -243,17 +218,16 @@ pub struct Pin {
 
 /// Every pinned harness and whether the cache holds it. Never downloads.
 pub fn pins() -> io::Result<Vec<Pin>> {
-    let os_arch = os_arch()?;
-    harnesses()
+    HARNESSES
         .iter()
         .map(|harness| {
-            let dir = harness.dir(os_arch)?;
+            let dir = harness.dir()?;
             Ok(Pin {
                 name: &harness.name,
                 version: &harness.version,
                 path: dir.join(&harness.name),
                 cached: dir.is_dir(),
-                assets: harness.assets(os_arch)?,
+                assets: harness.assets(),
             })
         })
         .collect()
@@ -269,7 +243,7 @@ pub fn unpinned_versions() -> io::Result<Vec<PathBuf>> {
             continue;
         }
         for version in dirs::entries(&name.path())? {
-            let pinned = harnesses().iter().any(|harness| {
+            let pinned = HARNESSES.iter().any(|harness| {
                 name.file_name() == harness.name.as_str()
                     && version.file_name() == harness.version.as_str()
             });

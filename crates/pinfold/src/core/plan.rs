@@ -226,7 +226,7 @@ impl Plan {
         if let Some(harness) = &self.harness
             && artifacts::harness(harness).is_none()
         {
-            let names: Vec<&str> = artifacts::harnesses()
+            let names: Vec<&str> = artifacts::HARNESSES
                 .iter()
                 .map(|harness| harness.name.as_str())
                 .collect();

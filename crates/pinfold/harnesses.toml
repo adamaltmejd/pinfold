@@ -1,8 +1,5 @@
 # The pinned harnesses, embedded in the binary at build time.
 #
-# A harness's assets for a box's os-arch install into
-# ~/.cache/pinfold/artifacts/<name>/<version>/<os-arch>/, and its
-# <name>/ directory there is mounted read-only at /opt/pinfold/<name>.
 # An asset is a literal url and its sha256. install = "tar.gz" extracts
 # the archive, whose one top-level entry is installed at `as`;
 # install = "executable" installs the download itself at `as`, mode 0755.

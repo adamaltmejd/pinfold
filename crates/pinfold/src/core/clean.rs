@@ -259,22 +259,18 @@ pub fn remove_paths(paths: Vec<PathBuf>) -> io::Result<()> {
 /// The bytes a file or directory holds, without following symlinks. An
 /// unreadable entry counts as nothing.
 pub fn path_bytes(path: &Path) -> u64 {
-    let Ok(metadata) = fs::symlink_metadata(path) else {
-        return 0;
-    };
-    if metadata.is_file() {
-        return metadata.len();
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => metadata.len(),
+        Ok(metadata) if metadata.is_dir() => fs::read_dir(path)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| path_bytes(&entry.path()))
+                    .sum()
+            })
+            .unwrap_or(0),
+        _ => 0,
     }
-    if !metadata.is_dir() {
-        return 0;
-    }
-    let mut total = 0;
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() {
-            total += path_bytes(&entry.path());
-        }
-    }
-    total
 }
 
 /// The total bytes of `paths`.
@@ -330,8 +326,7 @@ pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::
     Err(io::Error::other(failures.join("; ")))
 }
 
-/// The build time of an image from its build label, which starts with the
-/// build's nanoseconds since the epoch in hex.
+/// An image's build time, from its [`BUILD_LABEL`].
 fn build_time(labels: &BTreeMap<String, String>) -> SystemTime {
     let nanos = labels
         .get(BUILD_LABEL)
