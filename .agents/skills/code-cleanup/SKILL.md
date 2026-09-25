@@ -43,12 +43,13 @@ These answer without judgment. Run them first.
 - **Dead and over-public code.**
   `cargo clippy --all-targets --locked -- -W dead_code -W unreachable_pub`.
   Every warning is a finding.
-- **Trace tables.** Three, built with `rg`, kept in the scratchpad:
-  every key `config.rs` reads, to its line under `## Configuration`, to the
-  test that sets it; every verb and flag `cli.rs` parses, to its line under
-  `## CLI`, to a test; every guarantee row, to its test. A row with a gap is
-  a finding: code without a spec line is yagni, and a spec line without a
-  test is either an untested guarantee or a line to cut.
+- **Trace tables.** Three, built with `rg`, kept in the scratchpad, by
+  one `sonnet` subagent (the work is lookup, not judgment): every key
+  `config.rs` reads, to its line under `## Configuration`, to the test
+  that sets it; every verb and flag `cli.rs` parses, to its line under
+  `## CLI`, to a test; every guarantee row, to its test. A row with a gap
+  is a finding: code without a spec line is yagni, and a spec line without
+  a test is either an untested guarantee or a line to cut.
 - **Deferrals.** `rg -n -i 'TODO|FIXME|XXX|revisit' crates share` and the
   `## Open questions` list in ARCHITECTURE.md. A TODO is a violation
   (follow-up work is a ticket). A revisit trigger that has fired, or one
@@ -60,10 +61,13 @@ These answer without judgment. Run them first.
 Do not read the modules yourself. Launch one subagent per module through
 the Agent tool, all in one message so they run concurrently, type
 `general-purpose` (the Explore type locates code and does not audit it),
-told to edit nothing. Modules: `cli`, `core/box`, `core/runtime` (all
-three files), `core/proxy`, `core/clean` with `core/image` and
-`core/artifacts`, `config` with `dirs`, `trust` and `init`, `pi/`, the
-e2e crate, and the docs (ARCHITECTURE.md, README.md, `share/`).
+told to edit nothing. Set `model` on every call: a subagent that names no
+model inherits the session's, and the session's model is too costly for
+a read. `opus` for the code modules; `sonnet` for the docs. Modules:
+`cli`, `core/box`, `core/runtime` (all three files), `core/proxy`,
+`core/clean` with `core/image` and `core/artifacts`, `config` with
+`dirs`, `trust` and `init`, `pi/`, the e2e crate, and the docs
+(ARCHITECTURE.md, README.md, `share/`).
 
 Each prompt carries: the module's file paths; an instruction to read
 ARCHITECTURE.md and AGENTS.md first and the module's files whole; the
