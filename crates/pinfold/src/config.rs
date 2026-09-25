@@ -63,52 +63,6 @@ pub struct Config {
     /// The `<NAME>`s of the host's `PINFOLD_ENV_<NAME>` variables. Their
     /// values stay on the host; a box spec passes each by name only.
     pub env: BTreeSet<String>,
-    /// The layer each effective value came from, for `doctor`.
-    pub origins: Origins,
-}
-
-/// The layer an effective configuration value came from, lowest first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Origin {
-    /// The built-in defaults.
-    Default,
-    /// The selected profile's `pinfold.toml`.
-    Profile,
-    /// The project's `.pinfold.toml`.
-    Project,
-    /// The host environment.
-    Environment,
-}
-
-impl Origin {
-    /// The layer's name, for `doctor`.
-    pub fn name(self) -> &'static str {
-        match self {
-            Origin::Default => "built-in default",
-            Origin::Profile => "profile",
-            Origin::Project => ".pinfold.toml",
-            Origin::Environment => "environment",
-        }
-    }
-}
-
-/// The layer each effective configuration value came from. A list key
-/// carries the one layer the whole list came from.
-pub struct Origins {
-    /// The selected profile.
-    pub profile: Origin,
-    /// The effective `containerfile` value.
-    pub containerfile: Origin,
-    /// The effective `cpus` value.
-    pub cpus: Origin,
-    /// The effective `memory` value.
-    pub memory: Origin,
-    /// The layer the effective allowlist came from.
-    pub allow: Origin,
-    /// The layer the effective routes came from.
-    pub routes: Origin,
-    /// The layer the effective protect list came from.
-    pub protect: Origin,
 }
 
 impl Config {
@@ -132,40 +86,6 @@ impl Config {
                 "`containerfile` is a project key; a profile's image is its own Containerfile",
             ));
         }
-        // Provenance is read before `over` consumes the layers.
-        let origins = Origins {
-            profile: scalar_origin(
-                environment.profile.is_some(),
-                project.profile.is_some(),
-                false,
-            ),
-            containerfile: scalar_origin(false, project.containerfile.is_some(), false),
-            cpus: scalar_origin(
-                environment.cpus.is_some(),
-                project.cpus.is_some(),
-                profile_layer.cpus.is_some(),
-            ),
-            memory: scalar_origin(
-                environment.memory.is_some(),
-                project.memory.is_some(),
-                profile_layer.memory.is_some(),
-            ),
-            allow: scalar_origin(
-                environment.allow.is_some(),
-                project.allow.is_some(),
-                profile_layer.allow.is_some(),
-            ),
-            routes: scalar_origin(
-                environment.routes.is_some(),
-                project.routes.is_some(),
-                profile_layer.routes.is_some(),
-            ),
-            protect: scalar_origin(
-                environment.protect.is_some(),
-                project.protect.is_some(),
-                profile_layer.protect.is_some(),
-            ),
-        };
         let merged = profile_layer.over(project).over(environment);
         let containerfile_path = merged.containerfile.clone();
         // The bytes are read here so trust and the build see the same ones.
@@ -212,7 +132,6 @@ impl Config {
             cpus: merged.cpus.unwrap_or(DEFAULT_CPUS),
             memory: merged.memory.unwrap_or_else(|| DEFAULT_MEMORY.to_string()),
             env: env_names(),
-            origins,
         })
     }
 }
@@ -330,19 +249,6 @@ fn parse_routes(value: &str) -> io::Result<BTreeMap<String, Route>> {
         routes.insert(name.to_string(), Route::Address(target.to_string()));
     }
     Ok(routes)
-}
-
-/// The origin of a key: the highest layer that set it, else the default.
-fn scalar_origin(environment: bool, project: bool, profile: bool) -> Origin {
-    if environment {
-        Origin::Environment
-    } else if project {
-        Origin::Project
-    } else if profile {
-        Origin::Profile
-    } else {
-        Origin::Default
-    }
 }
 
 /// The `<NAME>`s of the host's `PINFOLD_ENV_<NAME>` variables, sorted.

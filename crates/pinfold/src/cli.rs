@@ -13,12 +13,12 @@ use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::Duration;
 
-use crate::config::{Config, Origin};
+use crate::config::Config;
 use crate::core::artifacts;
 use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, UpError};
 use crate::core::clean;
 use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
-use crate::core::plan::{Plan, Route};
+use crate::core::plan::Plan;
 use crate::core::profile::{self, Profile};
 use crate::core::runtime::{
     BoxInfo, BuildCache, ImageStatus, Runtime, exec_through_init, image_status, local_image_id,
@@ -578,7 +578,6 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     // The config must parse; a broken `.pinfold.toml` is itself the answer.
     let config = Config::load(&root)?;
     let project = crate::pi::state::project_id(&root);
-    let profile = &config.profile.name;
     let mut problems = 0;
 
     println!("pinfold doctor: {}", root.display());
@@ -597,7 +596,21 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         }
     }
     if runtime.name() == "podman" {
-        problems += report_podman();
+        // preflight is what refuses a host; doctor only reports its verdict.
+        match runtime.preflight() {
+            Ok(_) => println!("  preflight: ok"),
+            Err(error) => {
+                println!("  preflight: {error}");
+                problems += usize::from(!runtime_missing);
+            }
+        }
+        match podman::linger() {
+            Ok(true) => println!("  linger: enabled"),
+            Ok(false) => println!(
+                "  linger: disabled; long-lived boxes stop at logout; run `loginctl enable-linger`"
+            ),
+            Err(error) => println!("  linger: unavailable: {error}"),
+        }
     }
 
     match kernel() {
@@ -615,27 +628,8 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         }
     }
 
-    match artifacts::pins() {
-        Ok(pins) => {
-            println!("artifacts:");
-            for pin in pins {
-                if pin.cached {
-                    println!(
-                        "  {} {}: cached at {}",
-                        pin.name,
-                        pin.version,
-                        pin.path.display()
-                    );
-                } else {
-                    println!(
-                        "  {} {}: not cached; `pinfold pi` downloads it on first run ({})",
-                        pin.name,
-                        pin.version,
-                        pin.path.display()
-                    );
-                }
-            }
-        }
+    match pins_json() {
+        Ok(pins) => println!("artifacts: {pins}"),
         Err(error) => {
             println!("artifacts: unavailable: {error}");
             problems += 1;
@@ -650,40 +644,7 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         }
     }
 
-    println!("config:");
-    println!(
-        "  profile: {} ({})",
-        profile,
-        origin_label(config.origins.profile, profile)
-    );
-    println!(
-        "  containerfile: {} ({})",
-        config
-            .containerfile_path
-            .as_deref()
-            .unwrap_or("(the profile image)"),
-        origin_label(config.origins.containerfile, profile)
-    );
-    println!(
-        "  cpus: {} ({})",
-        config.cpus,
-        origin_label(config.origins.cpus, profile)
-    );
-    println!(
-        "  memory: {} ({})",
-        config.memory,
-        origin_label(config.origins.memory, profile)
-    );
-    print_list("allow", &config.allow, config.origins.allow, profile);
-    print_routes(&config.routes, config.origins.routes, profile);
-    print_list("protect", &config.protect, config.origins.protect, profile);
-    println!("  env:");
-    if config.env.is_empty() {
-        println!("    (none)");
-    }
-    for name in &config.env {
-        println!("    {name} (environment)");
-    }
+    println!("config: {}", config_report(&root, &config)?);
 
     println!("disk:");
     match CleanPlan::measure(runtime, None) {
@@ -715,83 +676,13 @@ pub fn artifacts(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(usage("artifacts", "artifacts takes no arguments"));
     }
-    let pins = serde_json::to_value(artifacts::pins()?).map_err(io::Error::other)?;
-    println!("{pins}");
+    println!("{}", pins_json()?);
     Ok(0)
 }
 
-/// The podman lines in `doctor`'s runtime report, and the problems they add:
-/// a host `preflight` refuses cannot start a box. Report only: `preflight`
-/// is what refuses, and `doctor` changes nothing. A missing tun device and a
-/// short subordinate-id mapping do not refuse a box, but they fail
-/// `pinfold build`, so they are counted for a rootless host.
-///
-/// A missing podman is named here, not counted: `runtime.version()` has
-/// already counted it, and a host is counted once.
-fn report_podman() -> usize {
-    // Debian's `_apt` runs as gid 65534; the default image's apt step
-    // `setegid`s to it.
-    const APT_GID: u32 = 65534;
-    let problems = match podman::detect() {
-        Ok(podman::Detected::RootlessPodman(info)) => {
-            println!("  detected: rootless podman");
-            print_cgroup_manager(&info.host.cgroup_manager);
-            let mut problems = usize::from(info.host.cgroup_manager != "systemd");
-            if podman::tun_present() {
-                println!("  tun: /dev/net/tun present");
-            } else {
-                println!(
-                    "  tun: /dev/net/tun missing; pinfold build cannot give RUN steps a network (add the device, or set netns = \"host\" in containers.conf)"
-                );
-                problems += 1;
-            }
-            if podman::subordinate_ids_cover(&info, APT_GID) {
-                println!("  subordinate ids: cover {APT_GID}");
-            } else {
-                println!(
-                    "  subordinate ids: the mapping does not reach {APT_GID}; the default image's apt step fails (extend /etc/subuid and /etc/subgid, then podman system migrate)"
-                );
-                problems += 1;
-            }
-            problems
-        }
-        Ok(podman::Detected::RootfulPodman(info)) => {
-            println!("  detected: rootful podman; pinfold requires rootless podman");
-            print_cgroup_manager(&info.host.cgroup_manager);
-            // Rootful alone is the problem; the cgroup manager is not
-            // counted twice for one host.
-            1
-        }
-        Ok(podman::Detected::Missing) => {
-            println!("  podman: not installed or not on PATH; install rootless podman");
-            if podman::docker_present() {
-                println!("  docker is on PATH; pinfold does not use it");
-            }
-            0
-        }
-        Err(error) => {
-            println!("  detected: unavailable: {error}");
-            1
-        }
-    };
-    match podman::linger() {
-        Ok(true) => println!("  linger: enabled"),
-        Ok(false) => println!(
-            "  linger: disabled; long-lived boxes stop at logout; run `loginctl enable-linger`"
-        ),
-        Err(error) => println!("  linger: unavailable: {error}"),
-    }
-    problems
-}
-
-/// `doctor`'s cgroup-manager line. Under cgroupfs podman accepts `--cpus`
-/// and `--memory` and silently ignores them; preflight refuses the host.
-fn print_cgroup_manager(manager: &str) {
-    if manager == "systemd" {
-        println!("  cgroupManager: systemd");
-    } else {
-        println!("  cgroupManager: {manager}; --cpus and --memory are silently not enforced");
-    }
+/// The pinned artifacts as one JSON array, an object per pin.
+fn pins_json() -> io::Result<serde_json::Value> {
+    serde_json::to_value(artifacts::pins()?).map_err(io::Error::other)
 }
 
 /// Report the image `pinfold pi` would run, and whether it was built from the
@@ -829,40 +720,6 @@ fn kernel() -> io::Result<String> {
     ))
 }
 
-/// One list key's effective entries, each with the layer the list came from.
-fn print_list(key: &str, entries: &[String], origin: Origin, profile: &str) {
-    println!("  {key}:");
-    if entries.is_empty() {
-        println!("    (none)");
-    }
-    for entry in entries {
-        println!("    {entry} ({})", origin_label(origin, profile));
-    }
-}
-
-/// The effective routes, each with the layer the list came from and target.
-fn print_routes(routes: &BTreeMap<String, Route>, origin: Origin, profile: &str) {
-    println!("  routes:");
-    if routes.is_empty() {
-        println!("    (none)");
-    }
-    for (name, target) in routes {
-        let target = match target {
-            Route::Address(address) => address,
-            Route::Inject(inject) => &inject.to,
-        };
-        println!("    {name} -> {target} ({})", origin_label(origin, profile));
-    }
-}
-
-/// The layer a value came from, naming the selected profile.
-fn origin_label(origin: Origin, profile: &str) -> String {
-    match origin {
-        Origin::Profile => format!("profile {profile}"),
-        other => other.name().to_string(),
-    }
-}
-
 /// `pinfold config`: print one JSON object, the effective configuration and
 /// the project facts a caller needs to compose a box. `ROOT` defaults to the
 /// project root `pinfold pi` would use from the current directory. Reads
@@ -876,17 +733,23 @@ pub fn config(args: &[String]) -> io::Result<i32> {
         }
     };
     let config = Config::load(&root)?;
-    let project = crate::pi::state::project_id(&root);
-    let home = crate::pi::state::project_home(&root)?;
-    let image = crate::pi::launch::resolve_image(&config, &project);
+    println!("{}", config_report(&root, &config)?);
+    Ok(0)
+}
+
+/// The `pinfold config` object for the project rooted at `root`, with its
+/// `config` loaded. `doctor` prints the same object.
+fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> {
+    let project = crate::pi::state::project_id(root);
+    let home = crate::pi::state::project_home(root)?;
+    let image = crate::pi::launch::resolve_image(config, &project);
     let image_built = !matches!(image_status(runtime(), &image, None)?, ImageStatus::Missing);
-    let trust = match trust::check(&root, &config) {
+    let trust = match trust::check(root, config) {
         Ok(()) => serde_json::json!({ "ok": true, "detail": "ok" }),
         Err(error) => serde_json::json!({ "ok": false, "detail": error.to_string() }),
     };
-    let origin = |value: Origin| origin_label(value, &config.profile.name);
-    let report = serde_json::json!({
-        "root": path_string(&root)?,
+    Ok(serde_json::json!({
+        "root": path_string(root)?,
         "profile": &config.profile.name,
         "image": image,
         "image_built": image_built,
@@ -896,20 +759,9 @@ pub fn config(args: &[String]) -> io::Result<i32> {
         "cpus": config.cpus,
         "memory": &config.memory,
         "env": &config.env,
-        "origins": {
-            "profile": origin(config.origins.profile),
-            "containerfile": origin(config.origins.containerfile),
-            "cpus": origin(config.origins.cpus),
-            "memory": origin(config.origins.memory),
-            "allow": origin(config.origins.allow),
-            "routes": origin(config.origins.routes),
-            "protect": origin(config.origins.protect),
-        },
         "project": { "id": project, "home": path_string(&home)? },
         "trust": trust,
-    });
-    println!("{report}");
-    Ok(0)
+    }))
 }
 
 /// A path as a string for the `config` report. The report is JSON, so a

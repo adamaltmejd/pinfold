@@ -225,40 +225,6 @@ fn cgroup_event(dir: &Path, file: &str, key: &str) -> Option<u64> {
     None
 }
 
-/// One entry in podman's user-namespace id maps: container ids
-/// `container_id` through `container_id + size - 1`.
-#[derive(Debug, Deserialize)]
-struct IdMap {
-    container_id: u32,
-    size: u32,
-}
-
-/// What `doctor` finds of podman on this host. Preflight refuses all but
-/// rootless podman; `doctor` reports what it finds instead.
-#[derive(Debug)]
-pub enum Detected {
-    RootlessPodman(Info),
-    RootfulPodman(Info),
-    Missing,
-}
-
-/// Ask the host what podman reports, for `doctor`. Reads only: a rootful,
-/// cgroupfs or missing podman is an answer, not a failure.
-pub fn detect() -> io::Result<Detected> {
-    let info = match podman_info() {
-        Ok(info) => info,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(Detected::Missing);
-        }
-        Err(error) => return Err(error),
-    };
-    Ok(if info.host.security.rootless {
-        Detected::RootlessPodman(info)
-    } else {
-        Detected::RootfulPodman(info)
-    })
-}
-
 /// Whether `loginctl enable-linger` is on for this user, for `doctor`. A box
 /// outlives the login that started it only with linger.
 pub fn linger() -> io::Result<bool> {
@@ -271,47 +237,18 @@ pub fn linger() -> io::Result<bool> {
         .is_some_and(|value| value == "yes"))
 }
 
-/// Whether `/dev/net/tun` exists, for `doctor`. pasta opens the device to
-/// give a `RUN` step a network; a box itself runs with `--network none`, so
-/// a missing device is a diagnosis, not a preflight refusal.
-pub fn tun_present() -> bool {
-    Path::new("/dev/net/tun").exists()
-}
-
-/// Whether both of podman's user-namespace id maps contain `id`, for
-/// `doctor`. Debian's `_apt` is gid 65534 and cannot `setegid` to it when
-/// the mapping stops short.
-pub fn subordinate_ids_cover(info: &Info, id: u32) -> bool {
-    let covered = |map: &[IdMap]| {
-        map.iter()
-            .any(|entry| entry.container_id <= id && id - entry.container_id < entry.size)
-    };
-    covered(&info.host.id_mappings.uidmap) && covered(&info.host.id_mappings.gidmap)
-}
-
-/// What preflight and `doctor` read from `podman info`.
+/// What preflight reads from `podman info`.
 #[derive(Debug, Deserialize)]
-pub struct Info {
-    pub host: InfoHost,
+struct Info {
+    host: InfoHost,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct InfoHost {
+struct InfoHost {
     /// `systemd`, `cgroupfs`, or another backend.
     #[serde(rename = "cgroupManager")]
-    pub cgroup_manager: String,
+    cgroup_manager: String,
     security: InfoSecurity,
-    // Rootful podman reports no maps; rootless always does.
-    #[serde(rename = "idMappings", default, deserialize_with = "empty_default")]
-    id_mappings: InfoIdMappings,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct InfoIdMappings {
-    #[serde(default, deserialize_with = "empty_default")]
-    uidmap: Vec<IdMap>,
-    #[serde(default, deserialize_with = "empty_default")]
-    gidmap: Vec<IdMap>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -321,8 +258,7 @@ struct InfoSecurity {
     seccomp_profile_path: String,
 }
 
-/// Run and parse `podman info`. A missing CLI is named by the spawn helper,
-/// so preflight and `doctor` say the same thing about it.
+/// Run and parse `podman info`. A missing CLI is named by the spawn helper.
 fn podman_info() -> io::Result<Info> {
     let json = output(&["podman", "info", "--format", "json"])?;
     serde_json::from_slice(&json)
@@ -350,18 +286,6 @@ fn preflight() -> io::Result<Info> {
         ));
     }
     Ok(info)
-}
-
-/// Whether the docker CLI is on `PATH`, for `doctor`'s second line: pinfold
-/// never runs docker.
-pub fn docker_present() -> bool {
-    std::process::Command::new("docker")
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
 }
 
 /// Podman's default seccomp profile with nested user namespaces blocked.
