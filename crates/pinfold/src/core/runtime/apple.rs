@@ -101,14 +101,10 @@ impl Runtime for Apple {
             name: name.to_string(),
             oom_kills: None,
             memory: MemoryStat {
-                current: None,
-                peak: None,
                 limit: resources.memory,
+                ..MemoryStat::default()
             },
-            pids: PidsStat {
-                current: None,
-                limit: None,
-            },
+            pids: PidsStat::default(),
         })
     }
 
@@ -116,22 +112,17 @@ impl Runtime for Apple {
         Ok(containers()?
             .into_iter()
             .map(|container| {
-                let ListedConfiguration {
-                    labels,
-                    image,
-                    created,
-                    ..
-                } = container.configuration;
-                let digest = image.descriptor.digest;
+                let configuration = container.configuration;
+                let digest = configuration.image.descriptor.digest;
                 BoxInfo {
                     id: container.id,
-                    labels,
+                    labels: configuration.labels,
                     image_id: digest
                         .strip_prefix("sha256:")
                         .unwrap_or(&digest)
                         .to_string(),
-                    image_ref: image.reference,
-                    created,
+                    image_ref: configuration.image.reference,
+                    created: configuration.created,
                     running: container.status.state == "running",
                 }
             })
@@ -140,27 +131,25 @@ impl Runtime for Apple {
 
     fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
         let json = output(&["container", "image", "list", "--format", "json"])?;
-        Ok(parse_images("container image list", &json)?
+        let images: Vec<ListedImage> = parse_json("container image list", &json)?;
+        Ok(images
             .into_iter()
-            .map(|(image, _)| image)
+            .map(|image| image_info(image).0)
             .collect())
     }
 
     fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageIdentity, String>> {
-        let json = match inspect("container", reference)? {
-            Ok(json) => json,
-            Err(message) => return Ok(Err(message)),
-        };
         // `image inspect` prints the same entries as `image list`.
-        let (image, digest) = parse_images("container image inspect", &json)?
-            .into_iter()
-            .next()
-            .ok_or_else(|| io::Error::other("container image inspect returned no image"))?;
-        Ok(Ok(ImageIdentity {
-            id: image.id,
-            labels: image.labels,
-            digest,
-        }))
+        Ok(
+            inspect::<ListedImage>("container", reference)?.map(|image| {
+                let (image, digest) = image_info(image);
+                ImageIdentity {
+                    id: image.id,
+                    labels: image.labels,
+                    digest,
+                }
+            }),
+        )
     }
 
     fn remove_image(&self, reference: &str) -> io::Result<()> {
@@ -237,8 +226,7 @@ struct ListedBoxImageDescriptor {
     digest: String,
 }
 
-/// The limits the runtime reports for a box. The VM exposes no kill or use
-/// counters, so `stat` answers null for those.
+/// The limits the runtime reports for a box.
 #[derive(Default, Deserialize)]
 struct ListedResources {
     #[serde(default, rename = "memoryInBytes")]
@@ -296,38 +284,24 @@ struct ListedImageLabels {
     labels: BTreeMap<String, String>,
 }
 
-/// Parse `what`'s image entries, each with its descriptor's digest.
-fn parse_images(what: &str, json: &[u8]) -> io::Result<Vec<(ImageInfo, Option<String>)>> {
-    let images: Vec<ListedImage> = parse_json(what, json)?;
-    Ok(images
-        .into_iter()
-        .map(|image| {
-            let ListedImage {
-                id,
-                configuration,
-                variants,
-            } = image;
-            // Build labels are OCI image config labels; a locally built
-            // image also carries name annotations on its index descriptor.
-            let (mut labels, digest) = configuration
-                .descriptor
-                .map(|descriptor| (descriptor.annotations, descriptor.digest))
-                .unwrap_or_default();
-            for variant in &variants {
-                if let Some(config) = variant
-                    .config
-                    .as_ref()
-                    .and_then(|config| config.config.as_ref())
-                {
-                    labels.extend(config.labels.clone());
-                }
-            }
-            let image = ImageInfo {
-                id,
-                reference: configuration.name,
-                labels,
-            };
-            (image, digest)
-        })
-        .collect())
+/// One image entry, with its descriptor's digest.
+fn image_info(image: ListedImage) -> (ImageInfo, Option<String>) {
+    // Build labels are OCI image config labels; a locally built image also
+    // carries name annotations on its index descriptor.
+    let (mut labels, digest) = image
+        .configuration
+        .descriptor
+        .map(|descriptor| (descriptor.annotations, descriptor.digest))
+        .unwrap_or_default();
+    for variant in image.variants {
+        if let Some(config) = variant.config.and_then(|config| config.config) {
+            labels.extend(config.labels);
+        }
+    }
+    let info = ImageInfo {
+        id: image.id,
+        reference: image.configuration.name,
+        labels,
+    };
+    (info, digest)
 }

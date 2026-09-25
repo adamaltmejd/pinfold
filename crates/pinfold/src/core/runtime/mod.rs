@@ -39,22 +39,27 @@ fn spawn_error(program: &str, error: io::Error) -> io::Error {
     }
 }
 
-/// Run `argv` with stdin closed and return its stdout. A failed run's error
-/// names the command and carries its stderr; a failed spawn keeps its kind.
-fn output(argv: &[&str]) -> io::Result<Vec<u8>> {
+/// Run `argv` with stdin closed and return its stdout. The inner `Err` is
+/// its stderr when the run fails; a failed spawn keeps its kind.
+fn captured(argv: &[&str]) -> io::Result<Result<Vec<u8>, String>> {
     let (program, arguments) = argv.split_first().expect("argv is never empty");
     let output = std::process::Command::new(program)
         .args(arguments)
+        .stdin(Stdio::null())
         .output()
         .map_err(|error| spawn_error(program, error))?;
     if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "{}: {}",
-            argv.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
+        return Ok(Err(String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .to_string()));
     }
-    Ok(output.stdout)
+    Ok(Ok(output.stdout))
+}
+
+/// Run `argv` with stdin closed and return its stdout. A failed run's error
+/// names the command and carries its stderr; a failed spawn keeps its kind.
+fn output(argv: &[&str]) -> io::Result<Vec<u8>> {
+    captured(argv)?.map_err(|stderr| io::Error::other(format!("{}: {stderr}", argv.join(" "))))
 }
 
 /// Run `argv` for its status, with stdin and stdout closed and stderr passed
@@ -74,20 +79,20 @@ fn run(argv: &[&str]) -> io::Result<()> {
     }
 }
 
-/// Run `<program> image inspect <reference>` and return its stdout. The
+/// Run `<program> image inspect <reference>` and return its first entry. The
 /// inner `Err` is the runtime's stderr when it cannot resolve the reference.
-fn inspect(program: &str, reference: &str) -> io::Result<Result<Vec<u8>, String>> {
-    let output = std::process::Command::new(program)
-        .args(["image", "inspect", reference])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| spawn_error(program, error))?;
-    if !output.status.success() {
-        return Ok(Err(String::from_utf8_lossy(&output.stderr)
-            .trim()
-            .to_string()));
-    }
-    Ok(Ok(output.stdout))
+fn inspect<T: DeserializeOwned>(program: &str, reference: &str) -> io::Result<Result<T, String>> {
+    let json = match captured(&[program, "image", "inspect", reference])? {
+        Ok(json) => json,
+        Err(stderr) => return Ok(Err(stderr)),
+    };
+    let what = format!("{program} image inspect");
+    let images: Vec<T> = parse_json(&what, &json)?;
+    images
+        .into_iter()
+        .next()
+        .map(Ok)
+        .ok_or_else(|| io::Error::other(format!("{what} returned no image")))
 }
 
 /// Parse `json`, the output of the command `what` names.
@@ -337,17 +342,24 @@ fn up<'a>(
     extra: Vec<OsString>,
     env: impl Iterator<Item = (&'a String, &'a Env)>,
 ) -> Command {
+    // PID 1 and all work run as the spec's uid:gid, else the host user's.
+    let (uid, gid) = match plan.user {
+        Some(user) => (user.uid, user.gid),
+        None => (
+            nix::unistd::getuid().as_raw(),
+            nix::unistd::getgid().as_raw(),
+        ),
+    };
     let mut command = Command::new(program);
     command
         .args(["run", "-i", "--name", &plan.name])
         .args(["--network", "none", "--cap-drop", "ALL"])
         .args(["--read-only", "--tmpfs", "/tmp"])
         .arg("--user")
-        .arg(user(plan))
+        .arg(format!("{uid}:{gid}"))
         .args(extra)
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stdout(Stdio::piped());
     if let Some(cpus) = plan.cpus {
         command.arg("--cpus").arg(cpus.to_string());
     }
@@ -385,9 +397,10 @@ fn up<'a>(
             .arg("--mount")
             .arg(bind(&mount.host, &mount.guest, mount.readonly));
     }
-    // The init binary comes from the host and runs as PID 1. box::up refuses
-    // an init without a directory, so the parent is a real directory here.
-    let init_dir = init.parent().unwrap_or(Path::new("/"));
+    // The init binary comes from the host and runs as PID 1.
+    let init_dir = init
+        .parent()
+        .expect("box::up refuses an init without a directory");
     command
         .arg("--mount")
         .arg(bind(init_dir, init_dir, true))
@@ -445,11 +458,21 @@ fn build(
     cache_flags: &[&str],
     request: &BuildRequest,
 ) -> io::Result<Result<(), String>> {
-    let argv = build_argv(program, cache_flags, request);
     let (mut reader, writer) = io::pipe()?;
     let mut command = std::process::Command::new(program);
     command
-        .args(&argv[1..])
+        .arg("build")
+        .args(cache_flags)
+        .arg("--file")
+        .arg(request.containerfile);
+    for tag in request.tags {
+        command.arg("--tag").arg(tag);
+    }
+    for (key, value) in request.labels {
+        command.arg("--label").arg(format!("{key}={value}"));
+    }
+    command
+        .arg(request.context)
         .stdin(Stdio::null())
         .stdout(writer.try_clone()?)
         .stderr(writer);
@@ -465,24 +488,6 @@ fn build(
     } else {
         Ok(Err(String::from_utf8_lossy(&output).into_owned()))
     }
-}
-
-/// The `<program> build` argv for one build, as data.
-fn build_argv(program: &str, cache_flags: &[&str], request: &BuildRequest) -> Vec<OsString> {
-    let mut argv: Vec<OsString> = vec![program.into(), "build".into()];
-    argv.extend(cache_flags.iter().map(OsString::from));
-    argv.push("--file".into());
-    argv.push(request.containerfile.into());
-    for tag in request.tags {
-        argv.push("--tag".into());
-        argv.push(tag.into());
-    }
-    for (key, value) in request.labels {
-        argv.push("--label".into());
-        argv.push(format!("{key}={value}").into());
-    }
-    argv.push(request.context.into());
-    argv
 }
 
 /// The content digest of the image `reference` resolves to. `None` when the
@@ -530,18 +535,6 @@ pub fn image_status(
     } else {
         ImageStatus::Stale { recorded, current }
     })
-}
-
-/// The uid:gid PID 1 and all work run as: the spec's, else the host user's.
-pub(crate) fn user(plan: &Plan) -> OsString {
-    let (uid, gid) = match plan.user {
-        Some(user) => (user.uid, user.gid),
-        None => (
-            nix::unistd::getuid().as_raw(),
-            nix::unistd::getgid().as_raw(),
-        ),
-    };
-    format!("{uid}:{gid}").into()
 }
 
 /// A `type=bind` mount value, as both runtimes spell it.

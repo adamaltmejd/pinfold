@@ -42,14 +42,20 @@ impl Runtime for Podman {
         preflight: &Preflight,
     ) -> io::Result<Child> {
         // Tighten the socket before anything slow, so it is not connectable
-        // by another host user while the profile is derived.
+        // by another host user while the profile is derived: 0600 in its
+        // 0700 state directory. The box user is the same uid under keep-id,
+        // so it can still connect.
         if let Some(socket) = proxy_socket {
-            tighten(socket)?;
+            let dir = socket
+                .parent()
+                .expect("the proxy socket lives in the box's state directory");
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+            fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
         }
         let source = preflight
             .seccomp_profile
             .as_deref()
-            .ok_or_else(|| io::Error::other("preflight found no podman seccomp profile"))?;
+            .expect("podman's preflight refuses a host with no seccomp profile");
         let seccomp = seccomp_profile(source)?;
         let resolv_conf = empty_resolv_conf()?;
         let mut extra: Vec<OsString> = vec![
@@ -59,9 +65,6 @@ impl Runtime for Podman {
             "--security-opt".into(),
             format!("seccomp={}", seccomp.display()).into(),
             "--no-hosts".into(),
-            // `--dns none` conflicts with `--network none` on podman 5.4.2.
-            // An empty read-only file leaves the box with no resolvers either
-            // way, and podman's own generated resolv.conf never appears.
             "--mount".into(),
             bind(&resolv_conf, Path::new("/etc/resolv.conf"), true),
             "--pids-limit".into(),
@@ -100,7 +103,25 @@ impl Runtime for Podman {
     }
 
     fn preflight(&self) -> io::Result<Preflight> {
-        let info = preflight()?;
+        // A misconfigured host fails closed here, before any box starts.
+        let json = output(&["podman", "info", "--format", "json"])?;
+        let info: Info = parse_json("podman info", &json)?;
+        if !info.host.security.rootless {
+            return Err(io::Error::other(
+                "rootful podman is not supported; pinfold requires rootless podman",
+            ));
+        }
+        if info.host.cgroup_manager != "systemd" {
+            return Err(io::Error::other(format!(
+                "podman uses the {:?} cgroup manager; pinfold requires systemd, because cgroupfs silently ignores --cpus and --memory",
+                info.host.cgroup_manager
+            )));
+        }
+        if info.host.security.seccomp_profile_path.is_empty() {
+            return Err(io::Error::other(
+                "podman reports no seccomp profile; pinfold requires seccomp",
+            ));
+        }
         Ok(Preflight {
             seccomp_profile: Some(PathBuf::from(info.host.security.seccomp_profile_path)),
         })
@@ -115,7 +136,20 @@ impl Runtime for Podman {
     fn stat(&self, name: &str) -> io::Result<BoxStat> {
         // The cgroup path comes from the runtime; pinfold never composes the
         // systemd scope name. Every field is a plain cgroup v2 file under it.
-        let cgroup = cgroup_path(name)?;
+        let stdout = output(&[
+            "podman",
+            "inspect",
+            "--format",
+            "{{.State.CgroupPath}}",
+            name,
+        ])?;
+        let cgroup = String::from_utf8_lossy(&stdout);
+        let cgroup = cgroup.trim();
+        if cgroup.is_empty() {
+            return Err(io::Error::other(format!(
+                "podman inspect {name} reports no cgroup path"
+            )));
+        }
         let dir = Path::new("/sys/fs/cgroup").join(cgroup.trim_start_matches('/'));
         Ok(BoxStat {
             name: name.to_string(),
@@ -133,30 +167,37 @@ impl Runtime for Podman {
     }
 
     fn list(&self) -> io::Result<Vec<BoxInfo>> {
-        parse_list(&output(&["podman", "ps", "--all", "--format", "json"])?)
+        let json = output(&["podman", "ps", "--all", "--format", "json"])?;
+        let containers: Vec<ListedContainer> = parse_json("podman ps", &json)?;
+        Ok(containers
+            .into_iter()
+            .map(|container| BoxInfo {
+                // `down` and prune name the box, so its name is its id.
+                id: container.names.into_iter().next().unwrap_or(container.id),
+                labels: container.labels,
+                image_id: container.image_id,
+                image_ref: container.image,
+                created: rfc3339(container.created),
+                running: container.state == "running",
+            })
+            .collect())
     }
 
     fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
         let mut infos = Vec::new();
         for image in listed_images(false)? {
-            let ListedImage {
-                id, names, labels, ..
-            } = image;
             // One entry per name, so Maintenance can remove every tag of an
             // old image; a dangling image is removed by its id.
-            if names.is_empty() {
+            let references = if image.names.is_empty() {
+                vec![image.id.clone()]
+            } else {
+                image.names
+            };
+            for reference in references {
                 infos.push(ImageInfo {
-                    id: id.clone(),
-                    reference: id,
-                    labels,
-                });
-                continue;
-            }
-            for name in names {
-                infos.push(ImageInfo {
-                    id: id.clone(),
-                    reference: local_reference(&name),
-                    labels: labels.clone(),
+                    id: image.id.clone(),
+                    reference,
+                    labels: image.labels.clone(),
                 });
             }
         }
@@ -164,10 +205,13 @@ impl Runtime for Podman {
     }
 
     fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageIdentity, String>> {
-        match inspect("podman", reference)? {
-            Ok(json) => parse_identity(&json).map(Ok),
-            Err(message) => Ok(Err(message)),
-        }
+        Ok(
+            inspect::<InspectedImage>("podman", reference)?.map(|image| ImageIdentity {
+                id: image.id,
+                labels: image.labels,
+                digest: Some(image.digest).filter(|digest| !digest.is_empty()),
+            }),
+        )
     }
 
     fn remove_image(&self, reference: &str) -> io::Result<()> {
@@ -214,27 +258,6 @@ impl Runtime for Podman {
     }
 }
 
-/// The box's cgroup path, as `podman inspect` reports it. The path is
-/// relative to `/sys/fs/cgroup`; pinfold reads files under it and never
-/// composes the systemd scope name itself.
-fn cgroup_path(name: &str) -> io::Result<String> {
-    let argv = [
-        "podman",
-        "inspect",
-        "--format",
-        "{{.State.CgroupPath}}",
-        name,
-    ];
-    let stdout = output(&argv)?;
-    let path = String::from_utf8_lossy(&stdout).trim().to_string();
-    if path.is_empty() {
-        return Err(io::Error::other(format!(
-            "podman inspect {name} reports no cgroup path"
-        )));
-    }
-    Ok(path)
-}
-
 /// One cgroup v2 file as a number, or `None` when the kernel does not have
 /// the file (an old kernel's `memory.peak`) or the value is not a number
 /// (`max`, meaning no limit).
@@ -245,26 +268,24 @@ fn cgroup_number(dir: &Path, file: &str) -> Option<u64> {
 /// One named counter from a cgroup v2 events file (`key value` lines). A
 /// missing file is `None`.
 fn cgroup_event(dir: &Path, file: &str, key: &str) -> Option<u64> {
-    let text = fs::read_to_string(dir.join(file)).ok()?;
-    for line in text.lines() {
-        let mut fields = line.split_whitespace();
-        if fields.next() == Some(key) {
-            return fields.next().and_then(|value| value.parse().ok());
-        }
-    }
-    None
+    fs::read_to_string(dir.join(file))
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix(key)?.strip_prefix(' ')?.parse().ok())
 }
 
 /// Whether `loginctl enable-linger` is on for this user, for `doctor`. A box
 /// outlives the login that started it only with linger.
 pub fn linger() -> io::Result<bool> {
     let uid = nix::unistd::getuid().to_string();
-    let stdout = output(&["loginctl", "show-user", &uid, "--property=Linger"])?;
-    let text = String::from_utf8_lossy(&stdout);
-    Ok(text
-        .lines()
-        .find_map(|line| line.strip_prefix("Linger="))
-        .is_some_and(|value| value == "yes"))
+    let stdout = output(&[
+        "loginctl",
+        "show-user",
+        &uid,
+        "--property=Linger",
+        "--value",
+    ])?;
+    Ok(String::from_utf8_lossy(&stdout).trim() == "yes")
 }
 
 /// What preflight reads from `podman info`.
@@ -288,35 +309,6 @@ struct InfoSecurity {
     seccomp_profile_path: String,
 }
 
-/// Run and parse `podman info`. A missing CLI is named by the spawn helper.
-fn podman_info() -> io::Result<Info> {
-    let json = output(&["podman", "info", "--format", "json"])?;
-    parse_json("podman info", &json)
-}
-
-/// Refuse a host pinfold will not run a box on, naming the problem. Runs
-/// before any box starts; a misconfigured host fails closed here.
-fn preflight() -> io::Result<Info> {
-    let info = podman_info()?;
-    if !info.host.security.rootless {
-        return Err(io::Error::other(
-            "rootful podman is not supported; pinfold requires rootless podman",
-        ));
-    }
-    if info.host.cgroup_manager != "systemd" {
-        return Err(io::Error::other(format!(
-            "podman uses the {:?} cgroup manager; pinfold requires systemd, because cgroupfs silently ignores --cpus and --memory",
-            info.host.cgroup_manager
-        )));
-    }
-    if info.host.security.seccomp_profile_path.is_empty() {
-        return Err(io::Error::other(
-            "podman reports no seccomp profile; pinfold requires seccomp",
-        ));
-    }
-    Ok(info)
-}
-
 /// Podman's default seccomp profile with nested user namespaces blocked.
 ///
 /// The default allows `clone`, `clone3` and `unshare` unconditionally in one
@@ -328,49 +320,27 @@ fn preflight() -> io::Result<Info> {
 /// back to `clone`, where the flag is visible. `source` is the default
 /// profile's path, as `podman info` reports it.
 fn seccomp_profile(source: &Path) -> io::Result<PathBuf> {
-    let text = fs::read_to_string(source).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!(
-                "read podman's seccomp profile {}: {error}",
-                source.display()
-            ),
-        )
-    })?;
-    let mut profile: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
-        io::Error::other(format!(
-            "podman's seccomp profile {} is not JSON: {error}",
-            source.display()
-        ))
-    })?;
+    let what = format!("podman's seccomp profile {}", source.display());
+    let text = fs::read(source)
+        .map_err(|error| io::Error::new(error.kind(), format!("read {what}: {error}")))?;
+    let mut profile: serde_json::Value = parse_json(&what, &text)?;
     let syscalls = profile
         .get_mut("syscalls")
         .and_then(serde_json::Value::as_array_mut)
-        .ok_or_else(|| {
-            io::Error::other(format!(
-                "podman's seccomp profile {} has no syscalls list",
-                source.display()
-            ))
-        })?;
-    for rule in syscalls.iter_mut() {
+        .ok_or_else(|| io::Error::other(format!("{what} has no syscalls list")))?;
+    syscalls.retain_mut(|rule| {
         if rule.get("action").and_then(serde_json::Value::as_str) != Some("SCMP_ACT_ALLOW") {
-            continue;
+            return true;
         }
         let Some(names) = rule
             .get_mut("names")
             .and_then(serde_json::Value::as_array_mut)
         else {
-            continue;
+            return true;
         };
         names.retain(|name| !matches!(name.as_str(), Some("clone" | "clone3" | "unshare")));
-    }
-    // An allow rule whose names were all removed is dead; drop it.
-    syscalls.retain(|rule| {
-        rule.get("action").and_then(serde_json::Value::as_str) != Some("SCMP_ACT_ALLOW")
-            || rule
-                .get("names")
-                .and_then(serde_json::Value::as_array)
-                .is_none_or(|names| !names.is_empty())
+        // An allow rule whose names were all removed is dead; drop it.
+        !names.is_empty()
     });
     for name in ["clone", "unshare"] {
         syscalls.push(serde_json::json!({
@@ -410,37 +380,14 @@ fn seccomp_profile(source: &Path) -> io::Result<PathBuf> {
 }
 
 /// The empty `/etc/resolv.conf` every box sees, owned by pinfold under the
-/// cache dir and created once. `--dns none` cannot be combined with
-/// `--network none` on podman 5.4.2; without this bind podman writes a
-/// resolver of its own.
+/// cache dir. `--dns none` cannot be combined with `--network none` on
+/// podman 5.4.2; without this bind podman writes a resolver of its own.
 fn empty_resolv_conf() -> io::Result<PathBuf> {
-    let path = dirs::cache_dir()?.join("resolv.conf");
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-    {
-        Ok(_) => Ok(path),
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(path),
-        Err(error) => Err(error),
-    }
-}
-
-/// Keep the proxy socket 0600 in its 0700 state directory. The box user is
-/// the same uid under keep-id, so it can still connect.
-fn tighten(socket: &Path) -> io::Result<()> {
-    let dir = socket.parent().ok_or_else(|| {
-        io::Error::other(format!(
-            "proxy socket {} has no directory",
-            socket.display()
-        ))
-    })?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
-    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
-    Ok(())
+    let dir = dirs::cache_dir()?;
+    fs::create_dir_all(&dir)?;
+    let path = dir.join("resolv.conf");
+    fs::write(&path, "")?;
+    Ok(path)
 }
 
 /// One `podman ps --format json` entry, as much as pinfold needs.
@@ -461,33 +408,6 @@ struct ListedContainer {
     created: i64,
     #[serde(rename = "State")]
     state: String,
-}
-
-fn parse_list(json: &[u8]) -> io::Result<Vec<BoxInfo>> {
-    let containers: Vec<ListedContainer> = parse_json("podman ps", json)?;
-    Ok(containers
-        .into_iter()
-        .map(|container| {
-            let ListedContainer {
-                id,
-                names,
-                labels,
-                image_id,
-                image,
-                created,
-                state,
-            } = container;
-            BoxInfo {
-                // `down` and prune name the box, so its name is its id.
-                id: names.into_iter().next().unwrap_or(id),
-                labels,
-                image_id,
-                image_ref: image,
-                created: rfc3339(created),
-                running: state == "running",
-            }
-        })
-        .collect())
 }
 
 /// One `podman image list --format json` entry, as much as pinfold needs.
@@ -562,12 +482,6 @@ fn listed_images(all: bool) -> io::Result<Vec<ListedImage>> {
     parse_json("podman image list", &output(argv)?)
 }
 
-/// Podman prefixes locally built images with `localhost/`; the rest of
-/// pinfold names them as they were tagged.
-fn local_reference(name: &str) -> String {
-    name.strip_prefix("localhost/").unwrap_or(name).to_string()
-}
-
 /// One `podman image inspect` entry, as much as pinfold needs.
 #[derive(Deserialize)]
 struct InspectedImage {
@@ -577,19 +491,6 @@ struct InspectedImage {
     digest: String,
     #[serde(rename = "Labels", default, deserialize_with = "empty_default")]
     labels: BTreeMap<String, String>,
-}
-
-fn parse_identity(json: &[u8]) -> io::Result<ImageIdentity> {
-    let images: Vec<InspectedImage> = parse_json("podman image inspect", json)?;
-    let image = images
-        .into_iter()
-        .next()
-        .ok_or_else(|| io::Error::other("podman image inspect returned no image"))?;
-    Ok(ImageIdentity {
-        id: image.id,
-        labels: image.labels,
-        digest: Some(image.digest).filter(|digest| !digest.is_empty()),
-    })
 }
 
 /// A field podman marshals as `null` when it is empty.
