@@ -8,20 +8,30 @@ use std::fs;
 
 use e2e::{TestEnv, pinfold};
 
-/// A fresh host with no runtime on PATH: `pinfold --version` answers from
-/// the binary alone, spawns nothing and leaves the state dir untouched.
+/// A fresh host with no runtime on PATH: `pinfold --version` and `pinfold
+/// box up --help` answer from the binary alone, spawn nothing and leave the
+/// state dir untouched.
 #[test]
 fn version_needs_no_runtime() {
-    // Sabotage: run `pinfold::core::clean::maintain()` before dispatch as
-    // the code did; with the empty PATH the pass prints the
-    // missing-runtime sentence on stderr and writes the `maintenance` stamp,
-    // failing both assertions. Sabotage: print `pinfold 0.0.0` in main.rs's
+    // Sabotage: run `pinfold::core::clean::maintain()` first in main.rs,
+    // before the options and the help check, as the code once did; with the
+    // empty PATH the pass prints the missing-runtime sentence on stderr and
+    // writes under the state dir, so the stderr and both empty-state
+    // assertions fail. Sabotage: print `pinfold 0.0.0` in main.rs's
     // `--version` arm instead of `CARGO_PKG_VERSION`; stdout lacks the
-    // workspace version and the version assertion fails.
+    // workspace version and the version assertion fails. Sabotage: drop the
+    // `cli::help` call from main.rs; `box up --help` reaches `up`, which
+    // refuses the argument, and its exit assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("version");
     let empty = env.root.join("empty-path");
     fs::create_dir_all(&empty).unwrap();
+    // TestEnv creates the state dir, so untouched means still empty.
+    let state_entries = || {
+        fs::read_dir(&env.state)
+            .expect("read the state dir")
+            .count()
+    };
 
     let output = env
         .command(binary)
@@ -46,8 +56,18 @@ fn version_needs_no_runtime() {
         "pinfold --version wrote to stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert_eq!(state_entries(), 0, "pinfold --version wrote state");
+
+    let help = env
+        .command(binary)
+        .args(["box", "up", "--help"])
+        .env("PATH", &empty)
+        .output()
+        .expect("run pinfold box up --help");
     assert!(
-        !env.state.join("pinfold").join("maintenance").exists(),
-        "pinfold --version left a maintenance stamp"
+        help.status.success(),
+        "pinfold box up --help failed: {}",
+        String::from_utf8_lossy(&help.stderr)
     );
+    assert_eq!(state_entries(), 0, "pinfold box up --help wrote state");
 }

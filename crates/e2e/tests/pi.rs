@@ -324,10 +324,10 @@ fn the_box_cannot_write_git_or_protected_config() {
     // writable); the `core.fsmonitor` write and the rename then succeed, and
     // host `git status` runs the planted fsmonitor, so those assertions fail.
     // Sabotage: skip the absent protect directories; the box's `mkdir
-    // .vscode` then succeeds and its refusal assertion fails. Sabotage:
-    // classify protected paths with fs::metadata instead of the symlink
-    // check; a symlinked `.vscode` is followed, the run starts, and the
-    // refusal assertion fails.
+    // .vscode` then succeeds and its refusal assertion fails. Sabotage: skip
+    // the symlink check in pi::git's `path_kind` (classify with fs::metadata
+    // and drop the canonical comparison); a symlinked `.vscode` is followed,
+    // the run starts, and the exit assertion fails.
     // Sabotage: resolve `core.hooksPath` from `.git/config` only (`git
     // config --file .git/config core.hooksPath` in pi::git's `hooks_path`);
     // the global config's `.husky/_` is not protected, and the
@@ -563,23 +563,25 @@ fn the_box_cannot_write_git_or_protected_config() {
         "the host's protected tooling/hooks.sh changed"
     );
 
-    // A protected path the host planted as a symlink is refused: the runtime
-    // resolves a bind-mount source on the host, so following it would mount
-    // the target into the box.
+    // A protected path the host planted as a symlink refuses the run, naming
+    // the link: the runtime resolves a bind-mount source on the host, so
+    // following it would mount the target into the box. Sabotage: drop the
+    // path from pi::git's `not_real_dir` message; the refusal no longer
+    // names the link and the naming assertion fails.
     let outside = TestDir::new(&env, "outside");
     let symlinked = TestDir::new(&env, "symlinked");
     git(symlinked.path(), &["init", "-q"]);
     let link = symlinked.path().join(".vscode");
     std::os::unix::fs::symlink(outside.path(), &link).expect("create .vscode symlink");
     let refused = pi_version_output(binary, &env, symlinked.path());
-    assert!(
-        !refused.status.success(),
-        "pinfold pi started with a symlinked .vscode"
-    );
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(
-        stderr.contains("not a real directory") && stderr.contains(&link.display().to_string()),
-        "the refusal did not name {} as not a real directory: {stderr}",
+        !refused.status.success(),
+        "pinfold pi started with a symlinked .vscode: {stderr}"
+    );
+    assert!(
+        stderr.contains(&link.display().to_string()),
+        "the refusal did not name {}: {stderr}",
         link.display()
     );
 }
@@ -700,9 +702,13 @@ fn both_pi_config_levels_load_behind_a_route() {
 fn the_highest_layer_sets_the_allowlist() {
     // Sabotage: union DEFAULT_ALLOW under the merged allow in
     // `Config::load`; the default hosts stay in the box's PINFOLD_ALLOW and
-    // npm is let through, so the exact-list assertion fails. Sabotage: drop
-    // `cpus` and `memory` from the Plan in `build_plan`; the box gets the
-    // runtime's defaults and the memory-limit assertion fails.
+    // npm is let through, so the exact-list assertion fails. Sabotage: merge
+    // the environment layer below the project's in `Config::load` (or drop
+    // `Layer::from_env`'s allow); the box's PINFOLD_ALLOW is then the
+    // project's registry.npmjs.org, so the exact-list assertion fails and npm
+    // is let through. Sabotage: drop `cpus` and `memory` from the Plan in
+    // `build_plan`; the box gets the runtime's defaults and the memory-limit
+    // assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("pi-allow");
     default_image(binary, &env);
@@ -727,17 +733,23 @@ fn the_highest_layer_sets_the_allowlist() {
         "the default run did not exit cleanly"
     );
 
-    // A project list replaces the built-in one: the box's allowlist is
-    // exactly the host the file names. The same file sets the box's
-    // resources.
+    // The environment's list replaces the project's, which replaces the
+    // built-in one: the box's allowlist is exactly the host PINFOLD_ALLOW
+    // names, though the project allows another. The project file still sets
+    // the box's resources.
     let config = project.path().join(".pinfold.toml");
     fs::write(
         &config,
-        "allow = [\"api.github.com\"]\ncpus = 2\nmemory = \"1G\"\n",
+        "allow = [\"registry.npmjs.org\"]\ncpus = 2\nmemory = \"1G\"\n",
     )
     .expect("write .pinfold.toml");
     allow(binary, &env, project.path());
-    let (run, _, name) = PiRpc::start(binary, &env, project.path());
+    let (run, _, name) = PiRpc::start_with_env(
+        binary,
+        &env,
+        project.path(),
+        &[("PINFOLD_ALLOW", "api.github.com")],
+    );
 
     // `cpus` and `memory` reach the box: stat reports the memory limit, and
     // the box's cgroup shows the CPU quota, on both runtimes (the Apple
@@ -755,15 +767,15 @@ fn the_highest_layer_sets_the_allowlist() {
         "200000 100000",
         "the box's cpu quota is not the project's 2 cpus"
     );
-    let project_allow = box_exec(
+    let env_allow = box_exec(
         binary,
         &env,
         &name,
         &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""],
     );
     assert_eq!(
-        project_allow.stdout, "api.github.com",
-        "the project's allowlist did not replace the built-in one"
+        env_allow.stdout, "api.github.com",
+        "PINFOLD_ALLOW did not replace the project's allowlist"
     );
 
     // The one listed host works.
@@ -776,8 +788,8 @@ fn the_highest_layer_sets_the_allowlist() {
     );
     assert_ok(&allowed, "allowlisted host");
 
-    // A host the built-in list allowed is refused now; the proxy decides
-    // before dialing, so no request reaches npm.
+    // A host the project's list allows is refused: the environment layer is
+    // higher. The proxy decides before dialing, so no request reaches npm.
     let denied = curl(
         binary,
         &env,

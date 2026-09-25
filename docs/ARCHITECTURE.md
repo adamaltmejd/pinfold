@@ -539,7 +539,8 @@ Automatic, never prompting:
 - **`protect`:** read-only directory mounts for editor config the host runs
   on open. Always `.vscode/`, `.claude/` and `.idea/`, plus the configured
   list. One that is absent is created empty on the host before the run, so
-  the box cannot create it, and removed after the run if still empty.
+  the box cannot create it, and removed after the run if still empty. One
+  that is a symlink, or is reached through one, refuses the run.
 - **herdr:** no socket in v1. The TTY passes through, so screen detection
   works, and the shim sets `HERDR_AGENT=pi`.
 - **Attach:** `pinfold attach [--box NAME] [cmd…]` execs bash (or cmd) in
@@ -634,12 +635,12 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, the box has no egress. With its `pid` file naming a live process, `list` reports the owner gone, `box prune` removes it, and the name can be used again. |
 | 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code; `list` finds by label; `down` removes. `ready`'s labels equal `list`'s; `down` on an absent box exits 0 and prints nothing. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. |
-| 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails; host `git status` runs nothing. Control: a project file is writable. |
+| 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails, and a symlinked protected path refuses the run; host `git status` runs nothing. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |
 | 13 | Project state persists and stays separate | Settings are seeded once and survive runs; a deleted seed returns; two projects don't see each other's state. |
 | 14 | Both pi config levels load behind a route | `pi -p` through the shim, against a fake model reached through a route: the model's request carries a skill from the profile and one from the project's `.pi/`. |
 | 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself; an image built on a profile's is its own family. An unlabeled image, a live box, its project's state and `~/.cache` survive `pinfold clean`; a dead box is removed. |
-| 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW carries the default list's hosts; a project's allow = ["api.github.com"] makes it exactly that host, and registry.npmjs.org is refused as not allowlisted. |
+| 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW carries the default list's hosts; with PINFOLD_ALLOW=api.github.com over a project's allow = ["registry.npmjs.org"], it is exactly that host, and registry.npmjs.org is refused as not allowlisted. |
 | 17 | up refuses before it creates | A missing image, a misspelled spec key, a bad env name, a mount path with a comma, a file mount and a live name are refused as data, naming the cause, and a missing host path fails after the claim; each leaves no box and no state dir. The box whose name was reused still answers exec, and of two `up`s racing for one name exactly one wins. |
 | 18 | A caller reads the effective configuration as data | pinfold config reports a project's allow list, its trust state before and after pinfold allow, and the project home pinfold pi then mounts. |
 | 19 | A caller-owned box launches the pinned harness | A spec with harness: pi runs /opt/pinfold/pi/pi --version at the pinned version, and the box's PINFOLD_ALLOW is the spec's allow list. |
@@ -648,7 +649,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 22 | A caller-owned box cannot write .git | With REPO/.git read-only listed before REPO writable, and safe.directory set by the caller: a worktree write succeeds, git log and git status succeed, and a hook write fails. |
 | 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref and the labels; three builds of one name move latest, and the first build's ref still comes up; a failed build prints its log and makes no image. |
 | 24 | Every build reruns its steps | A second build of one source does not reuse the first's `RUN` layer; on podman it leaves no untagged image. |
-| 25 | `--version` needs no runtime | `pinfold --version` prints the version with no runtime and writes no maintenance stamp. |
+| 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box up --help` exits 0, with no runtime and leaving the state dir untouched. |
 
 Both run in the merge queue on the exact ref being merged: Linux (podman)
 on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm` runners, dispatched by
