@@ -1,7 +1,6 @@
 //! Profile lookup: the user's copy under the config dir, else the embedded
 //! default.
 
-use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -191,11 +190,10 @@ fn embedded_share() -> io::Result<PathBuf> {
         hasher.update([0]);
         hasher.update(contents);
     }
-    let mut id = String::with_capacity(64);
-    for byte in hasher.finalize() {
-        write!(id, "{byte:02x}").expect("writing to a string cannot fail");
-    }
-    let dir = dirs::cache_dir()?.join("profiles").join(id).join("share");
+    let dir = dirs::cache_dir()?
+        .join("profiles")
+        .join(super::hex(&hasher.finalize()))
+        .join("share");
     if dir.is_dir() {
         return Ok(dir);
     }

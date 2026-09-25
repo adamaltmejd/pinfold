@@ -6,7 +6,6 @@
 //! home lives outside the checkout, under the state dir, and belongs to the
 //! project from its first start.
 
-use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -15,6 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::core::hex;
 use crate::dirs;
 
 /// Hex characters of the root hash in a project id.
@@ -93,13 +93,8 @@ fn id_for(root: &Path) -> String {
         .map(sanitize)
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "root".to_string());
-    let mut hasher = Sha256::new();
-    hasher.update(root.as_os_str().as_encoded_bytes());
-    let mut hash = String::with_capacity(HASH_LENGTH);
-    for byte in hasher.finalize().iter().take(HASH_LENGTH / 2) {
-        write!(hash, "{byte:02x}").expect("writing to a string cannot fail");
-    }
-    format!("{name}-{hash}")
+    let hash = hex(&Sha256::digest(root.as_os_str().as_encoded_bytes()));
+    format!("{name}-{}", &hash[..HASH_LENGTH])
 }
 
 /// A path component: ASCII alphanumerics, `-`, `_` and `.` stay, everything

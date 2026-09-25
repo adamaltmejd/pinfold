@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::time::Duration;
 
-use crate::config::{Config, Containerfile, Origin};
+use crate::config::{Config, Origin};
 use crate::core::artifacts;
 use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, UpError};
 use crate::core::clean;
@@ -812,10 +812,10 @@ fn print_cgroup_manager(manager: &str) {
 /// current profile image. Returns 1 when the image is missing.
 fn report_image(config: &Config, runtime: &dyn Runtime, project: &str) -> io::Result<usize> {
     let image = crate::pi::launch::resolve_image(config, project);
-    let base = match config.containerfile {
-        Containerfile::Project(_) => Some(config.profile.image_ref()),
-        Containerfile::Profile(_) => None,
-    };
+    let base = config
+        .containerfile
+        .is_some()
+        .then(|| config.profile.image_ref());
     let status = image_status(runtime, &image, base.as_deref())?;
     if let ImageStatus::Missing = status {
         println!("  missing; run `pinfold build`");
@@ -1093,12 +1093,10 @@ pub fn build(args: &[OsString]) -> io::Result<i32> {
             // A project build is a run of its config: an untrusted change
             // stops it like it stops `pinfold pi`.
             trust::check(&root, &config)?;
-            let project = match config.containerfile {
-                Containerfile::Project(bytes) => {
-                    Some((crate::pi::state::project_id(&root)?, bytes))
-                }
-                Containerfile::Profile(_) => None,
-            };
+            let project = config
+                .containerfile
+                .map(|bytes| crate::pi::state::project_id(&root).map(|id| (id, bytes)))
+                .transpose()?;
             (config.profile, project)
         }
     };

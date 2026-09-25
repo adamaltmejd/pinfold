@@ -48,14 +48,8 @@ fn xdg(variable: &str, fallback: &str) -> io::Result<PathBuf> {
     }
 }
 
+/// `HOME`, else the passwd entry, which std reads for a stripped environment.
 fn home_dir() -> io::Result<PathBuf> {
-    if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
-        return Ok(PathBuf::from(home));
-    }
-    // HOME can be unset in a stripped environment; the passwd entry still
-    // names the user's home.
-    nix::unistd::User::from_uid(nix::unistd::getuid())
-        .map_err(io::Error::other)?
-        .map(|user| user.dir)
+    std::env::home_dir()
         .ok_or_else(|| io::Error::other("HOME is not set and the uid has no passwd entry"))
 }

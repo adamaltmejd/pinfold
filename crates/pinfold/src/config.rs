@@ -41,9 +41,10 @@ pub struct Config {
     /// The project's Containerfile path from `.pinfold.toml`, relative to
     /// the project root. `None` means the profile's image.
     pub containerfile_path: Option<String>,
-    /// The Containerfile whose bytes decide the effective image: the
-    /// project's when `containerfile` names one, else the profile's.
-    pub containerfile: Containerfile,
+    /// The project's Containerfile, read once at load time, `None` when
+    /// `containerfile` names none. Trust hashes these bytes and the build
+    /// uses them, so a live box cannot swap the file in between.
+    pub containerfile: Option<Vec<u8>>,
     /// The raw bytes of the project's `.pinfold.toml` that were parsed,
     /// `None` when the file is absent. Trust hashes these bytes.
     pub project_toml: Option<Vec<u8>>,
@@ -110,16 +111,6 @@ pub struct Origins {
     pub protect: Origin,
 }
 
-/// The Containerfile whose bytes decide the effective image.
-pub enum Containerfile {
-    /// The selected profile's Containerfile, held in memory.
-    Profile(Vec<u8>),
-    /// The project's Containerfile, read once at load time. Trust hashes
-    /// these bytes and the build uses them, so a live box cannot swap the
-    /// file in between.
-    Project(Vec<u8>),
-}
-
 impl Config {
     /// Load and merge the layers for the project rooted at `root`.
     pub fn load(root: &Path) -> io::Result<Config> {
@@ -179,6 +170,7 @@ impl Config {
         let containerfile_path = merged.containerfile.clone();
         // The bytes are read here so trust and the build see the same ones.
         let containerfile = match &containerfile_path {
+            None => None,
             Some(path) => {
                 let relative = Path::new(path);
                 if !relative.is_relative() {
@@ -202,12 +194,10 @@ impl Config {
                     ));
                 }
                 // Read the canonical path, the same one the check saw.
-                let bytes = fs::read(&canonical).map_err(|error| {
+                Some(fs::read(&canonical).map_err(|error| {
                     io::Error::new(error.kind(), format!("read {}: {error}", joined.display()))
-                })?;
-                Containerfile::Project(bytes)
+                })?)
             }
-            None => Containerfile::Profile(profile.containerfile.clone()),
         };
         Ok(Config {
             profile,
@@ -282,15 +272,16 @@ impl Layer {
                 .map(parse_routes)
                 .transpose()?,
             protect: var("PINFOLD_PROTECT").as_deref().map(split_list),
-            cpus: match var("PINFOLD_CPUS") {
-                Some(value) => Some(value.parse::<f64>().map_err(|error| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("PINFOLD_CPUS={value:?}: {error}"),
-                    )
-                })?),
-                None => None,
-            },
+            cpus: var("PINFOLD_CPUS")
+                .map(|value| {
+                    value.parse::<f64>().map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("PINFOLD_CPUS={value:?}: {error}"),
+                        )
+                    })
+                })
+                .transpose()?,
             memory: var("PINFOLD_MEMORY"),
         })
     }
@@ -327,18 +318,15 @@ fn split_list(value: &str) -> Vec<String> {
 fn parse_routes(value: &str) -> io::Result<BTreeMap<String, Route>> {
     let mut routes = BTreeMap::new();
     for entry in split_list(value) {
-        let Some((name, target)) = entry.split_once('=') else {
+        let Some((name, target)) = entry
+            .split_once('=')
+            .filter(|(name, target)| !name.is_empty() && !target.is_empty())
+        else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("PINFOLD_ROUTES entry {entry:?} is not name=host:port"),
             ));
         };
-        if name.is_empty() || target.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("PINFOLD_ROUTES entry {entry:?} is not name=host:port"),
-            ));
-        }
         routes.insert(name.to_string(), Route::Address(target.to_string()));
     }
     Ok(routes)

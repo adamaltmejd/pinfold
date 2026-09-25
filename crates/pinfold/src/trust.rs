@@ -8,7 +8,6 @@
 //! `.pinfold.toml` and no project Containerfile has nothing to trust and
 //! runs; the profile's Containerfile is the user's file and is not trusted.
 
-use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -16,7 +15,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::config::{Config, Containerfile};
+use crate::config::Config;
+use crate::core::hex;
 use crate::dirs;
 use crate::pi::state;
 
@@ -25,7 +25,7 @@ const TOML_FILE: &str = ".pinfold.toml";
 
 /// The recorded hashes of a project's config inputs. `None` is a recorded
 /// absence.
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Trust {
     /// sha256 of the project's `.pinfold.toml`.
     toml: Option<String>,
@@ -46,35 +46,20 @@ pub fn allow(root: &Path) -> io::Result<()> {
     fs::write(path, json)
 }
 
-/// Refuse when the project's config inputs no longer match the record. A
-/// project with no `.pinfold.toml` and no project Containerfile has nothing
-/// to trust.
+/// Refuse when the project's config inputs no longer match the record. No
+/// record is a record of two absences: a project with no `.pinfold.toml`
+/// and no project Containerfile has nothing to trust.
 pub fn check(root: &Path, config: &Config) -> io::Result<()> {
     let current = current(config);
-    let Some(stored) = read(root)? else {
-        // Nothing recorded: a project with no `.pinfold.toml` and no project
-        // Containerfile has nothing to trust.
-        return match (&current.toml, &current.containerfile) {
-            (None, None) => Ok(()),
-            (Some(_), Some(_)) => Err(refused(format!(
-                "{TOML_FILE} and the project Containerfile are not trusted; run `pinfold allow`"
-            ))),
-            (Some(_), None) => Err(refused(format!(
-                "{TOML_FILE} is not trusted; run `pinfold allow`"
-            ))),
-            (None, Some(_)) => Err(refused(
-                "the project Containerfile is not trusted; run `pinfold allow`",
-            )),
-        };
-    };
+    let stored = read(root)?.unwrap_or_default();
     if stored.toml != current.toml {
         return Err(refused(format!(
-            "{TOML_FILE} changed since `pinfold allow`; run `pinfold allow` to trust it"
+            "{TOML_FILE} is new or changed; run `pinfold allow` to trust it"
         )));
     }
     if stored.containerfile != current.containerfile {
         return Err(refused(
-            "the project Containerfile changed since `pinfold allow`; run `pinfold allow` to trust it",
+            "the project Containerfile is new or changed; run `pinfold allow` to trust it",
         ));
     }
     Ok(())
@@ -86,10 +71,7 @@ fn current(config: &Config) -> Trust {
         // Hash the bytes `Config` read, not a second read a live box could
         // rewrite in between.
         toml: config.project_toml.as_deref().map(hash),
-        containerfile: match &config.containerfile {
-            Containerfile::Profile(_) => None,
-            Containerfile::Project(bytes) => Some(hash(bytes)),
-        },
+        containerfile: config.containerfile.as_deref().map(hash),
     }
 }
 
@@ -123,13 +105,7 @@ fn record_path(root: &Path) -> io::Result<PathBuf> {
 
 /// The sha256 of `bytes`, hex-encoded.
 fn hash(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let mut hex = String::with_capacity(64);
-    for byte in hasher.finalize() {
-        write!(hex, "{byte:02x}").expect("writing to a string cannot fail");
-    }
-    hex
+    hex(&Sha256::digest(bytes))
 }
 
 fn refused(message: impl Into<String>) -> io::Error {

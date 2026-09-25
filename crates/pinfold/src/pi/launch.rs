@@ -17,7 +17,7 @@ use tokio::runtime::Builder;
 use tokio::signal::unix::{SignalKind, signal};
 
 use crate::cli;
-use crate::config::{Config, Containerfile};
+use crate::config::Config;
 use crate::core::artifacts::GUEST_PI;
 use crate::core::r#box::{Box, RefusalReason, UpError};
 use crate::core::clean;
@@ -36,7 +36,7 @@ pub fn run(args: &[OsString]) -> io::Result<i32> {
     let state = ProjectState::load_or_create(&root)?;
     let image = resolve_image(&config, &state.id);
     // A missing profile image is `Box::up`'s refusal.
-    if let Containerfile::Project(_) = config.containerfile {
+    if config.containerfile.is_some() {
         ensure_project_image(&config, &image)?;
     }
     let argv = pi_argv(args)?;
@@ -89,9 +89,10 @@ fn top_level(cwd: &Path) -> io::Result<PathBuf> {
 /// The image ref the box runs. A project Containerfile runs the project's
 /// image; otherwise the profile's. `doctor` reports it.
 pub(crate) fn resolve_image(config: &Config, project: &str) -> String {
-    match &config.containerfile {
-        Containerfile::Project(_) => format!("pinfold/project-{project}:latest"),
-        Containerfile::Profile(_) => config.profile.image_ref(),
+    if config.containerfile.is_some() {
+        format!("pinfold/project-{project}:latest")
+    } else {
+        config.profile.image_ref()
     }
 }
 
