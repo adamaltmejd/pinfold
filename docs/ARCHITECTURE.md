@@ -615,7 +615,8 @@ pinfold init                     PID 1 in the box (Linux builds)
 
 `pinfold --version` and `pinfold --help` answer without touching the runtime
 or the state dir; `--help` or `-h` after a subcommand, before any `--`,
-prints that subcommand's syntax line and exits 0, touching neither.
+prints that subcommand's syntax line and exits 0, touching neither. `pi`
+passes it to pi, and `attach` to its command once one is given.
 
 The project root is the git top level, else `$PWD`.
 

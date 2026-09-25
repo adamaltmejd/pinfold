@@ -23,12 +23,8 @@ boxes share the host kernel.
 | macOS 26+ | Apple `container` |
 | Linux | rootless podman |
 
-Anything else is refused: podman on macOS, rootful podman, docker.
-
-On Linux, podman must report `rootless=true` and `cgroupManager=systemd`,
-or pinfold refuses to start a box. Under the cgroupfs fallback, `--cpus`
-and `--memory` are silently not enforced. Long-lived boxes need
-`loginctl enable-linger`.
+On Linux, podman must be rootless with `cgroupManager=systemd`, and
+long-lived boxes need `loginctl enable-linger`.
 
 ## Install
 
@@ -60,8 +56,7 @@ install -m 0755 "pinfold-$version-$(uname -m)-unknown-linux-musl" ~/.local/bin/p
 Or build from a checkout of this repository; the Rust toolchain is pinned
 in `rust-toolchain.toml`.
 
-macOS needs `zig` and `cargo-zigbuild` (`cargo install cargo-zigbuild`):
-the build cross-compiles the Linux init the macOS CLI embeds.
+macOS needs `zig` and `cargo-zigbuild` (`cargo install cargo-zigbuild`).
 
 ```sh
 rustup target add aarch64-unknown-linux-musl
@@ -94,13 +89,11 @@ with that project's pinfold state and logins.
 
 In a project:
 
-1. If it has a `.pinfold.toml`, run `pinfold allow` once. The file and the
-   Containerfile it names are used only after that; a change stops the next
-   run until allowed again.
+1. If it has a `.pinfold.toml`, run `pinfold allow`, and again after the
+   file or the Containerfile it names changes.
 2. Build the image: `pinfold build`. Without a project Containerfile it
    builds the selected profile's image; with one it builds the project's.
-   The default profile image pulls `debian:trixie-slim` and runs
-   `apt-get upgrade` at every build, so the first build needs network.
+   Building needs network.
 3. Start pi: `pi`. The first run downloads the pinned pi release and
    creates the project home under `~/.local/state/pinfold/projects/`.
 4. Run `/login` in pi once per project: state is per project. API keys
