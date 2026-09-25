@@ -44,7 +44,7 @@ These answer without judgment. Run them first.
   `cargo clippy --all-targets --locked -- -W dead_code -W unreachable_pub`.
   Every warning is a finding.
 - **Trace tables.** Three, built with `rg`, kept in the scratchpad, by
-  one subagent on Sonnet (the work is lookup, not judgment): every key
+  one subagent on the docs' tier (the work is lookup, not judgment): every key
   `config.rs` reads, to its line under `## Configuration`, to the test
   that sets it; every verb and flag `cli.rs` parses, to its line under
   `## CLI`, to a test; every guarantee row, to its test. A row with a gap
@@ -63,8 +63,9 @@ the harness's subagent tool (in Claude Code, the Agent tool with the
 `general-purpose` type; the Explore type locates code and does not audit
 it), all in one message so they run concurrently, told to edit nothing.
 Set the model on every call: a subagent that names none inherits the
-session's. The code modules take Opus; the docs take Sonnet. Never
-Haiku. Modules:
+session's. The code modules take the family's mid tier, the one below its
+largest model (in Claude, Opus); the docs take the tier below that (in
+Claude, Sonnet), never the smallest. Modules:
 `cli`, `core/box`, `core/runtime` (all three files), `core/proxy`,
 `core/clean` with `core/image` and `core/artifacts`, `config` with
 `dirs`, `trust` and `init`, `pi/`, `crates/e2e/src/lib.rs`, and the docs
