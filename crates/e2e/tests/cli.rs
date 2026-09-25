@@ -13,7 +13,7 @@ use e2e::{TestEnv, pinfold};
 /// state dir untouched.
 #[test]
 fn version_needs_no_runtime() {
-    // Sabotage: run `pinfold::core::clean::maintain()` first in main.rs,
+    // Sabotage: run `crate::core::clean::maintain()` first in main.rs,
     // before the options and the help check, as the code once did; with the
     // empty PATH the pass prints the missing-runtime sentence on stderr and
     // writes under the state dir, so the stderr and both empty-state

@@ -1,9 +1,16 @@
+mod cli;
+mod config;
+mod core;
+mod dirs;
+mod init;
+mod pi;
+mod trust;
+
 use std::io;
 use std::path::Path;
 use std::process::ExitCode;
 
-use pinfold::pi::launch;
-use pinfold::{cli, init};
+use crate::pi::launch;
 
 fn main() -> ExitCode {
     // The one binary doubles as PID 1 in a box on Linux and as the `pi` shim.
@@ -25,7 +32,7 @@ fn main() -> ExitCode {
         }
     };
     if shim {
-        pinfold::core::clean::maintain();
+        crate::core::clean::maintain();
         return ExitCode::from(cli::report("pi", launch::run(&rest)) as u8);
     }
     let verb = rest.first().map(String::as_str).unwrap_or_default();
@@ -73,7 +80,7 @@ fn main() -> ExitCode {
     // runtime.
     match (verb, args.first().map(String::as_str)) {
         ("init", _) | ("box", Some("up")) => {}
-        _ => pinfold::core::clean::maintain(),
+        _ => crate::core::clean::maintain(),
     }
     ExitCode::from(cli::report(verb, run(args)) as u8)
 }

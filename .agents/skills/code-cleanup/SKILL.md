@@ -40,9 +40,9 @@ These answer without judgment. Run them first.
 - **Dependencies.** `cargo tree -p pinfold --depth 1 -e normal` against the
   list under `## Code` in ARCHITECTURE.md. A crate in one and not the other
   is a finding.
-- **Dead and over-public code.**
-  `cargo clippy --all-targets --locked -- -W dead_code -W unreachable_pub`.
-  Every warning is a finding.
+- **Dead code.** `cargo clippy --all-targets --locked -- -W dead_code`.
+  pinfold is a bin crate, so this catches unused `pub` items too. Every
+  warning is a finding.
 - **Trace tables.** Three, built with `rg`, kept in the scratchpad, by
   one subagent on the docs' tier (the work is lookup, not judgment): every key
   `config.rs` reads, to its line under `## Configuration`, to the test
