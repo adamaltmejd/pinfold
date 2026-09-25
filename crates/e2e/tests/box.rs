@@ -38,6 +38,8 @@ fn box_lifecycle_works_for_a_caller() {
     // Sabotage: make `box exec` drop the runtime's exit status and return 0;
     // the exit-3 assertion fails, and the zero-exit command below is the
     // positive control that the same path can succeed.
+    // Sabotage: drop init's SIGCHLD SIG_IGN; the orphaned `true` stays a
+    // zombie of PID 1 and the no-zombie assertion fails.
     // Sabotage: skip exec's existence check; the post-down exec returns the
     // runtime's 125 instead of 3.
     // Sabotage: install `up`'s SIGTERM and SIGINT handlers after `ready`, as
@@ -128,6 +130,28 @@ fn box_lifecycle_works_for_a_caller() {
     // Positive control: the same command path passes a zero exit through.
     let ok = box_exec(binary, &env, &name, &["sh", "-c", "exit 0"]);
     assert_eq!(ok.code, 0);
+
+    // A child orphaned by an exec session is reparented to init and reaped:
+    // after it, no process in the box is a zombie. The image has no `ps`, so
+    // the kernel's own state line is read.
+    let orphan = box_exec(binary, &env, &name, &["sh", "-c", "true & exit 0"]);
+    assert_eq!(orphan.code, 0, "orphaning exec failed: {}", orphan.stderr);
+    let states = box_exec(
+        binary,
+        &env,
+        &name,
+        &["sh", "-c", "grep -Hs '^State:' /proc/[0-9]*/status; exit 0"],
+    );
+    assert!(
+        states.stdout.contains("State:"),
+        "read no process states: {}",
+        states.stderr
+    );
+    assert!(
+        !states.stdout.contains("(zombie)"),
+        "a zombie outlived its exec session:\n{}",
+        states.stdout
+    );
 
     // `list` finds the box by the caller's label, with the labels `ready`
     // reported and the same image id.

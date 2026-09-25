@@ -1,10 +1,11 @@
 //! `pinfold init`: PID 1 in a box.
 //!
-//! It reports readiness on stdout, reaps every child reparented to it, and
-//! exits on SIGTERM. PID 1 has no default signal actions, so the handlers
-//! are what make a stop possible. When the transport carries the proxy socket
-//! in, it also relays `127.0.0.1:3128` to that socket, because clients only
-//! know how to reach a proxy over TCP.
+//! It reports readiness on stdout, has the kernel reap every child
+//! reparented to it, and exits on SIGTERM. PID 1 has no default signal
+//! actions, so waiting for the blocked signal is what makes a stop possible.
+//! When the transport carries the proxy socket in, it also relays
+//! `127.0.0.1:3128` to that socket, because clients only know how to reach a
+//! proxy over TCP.
 //!
 //! `init exec -- ARGV...` is the second entry: it raises its own
 //! `oom_score_adj` and becomes ARGV, and every exec session runs through it.
@@ -16,24 +17,12 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use nix::errno::Errno;
-use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, SigmaskHow, Signal};
-use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
-use nix::unistd::Pid;
-
-static TERMINATE: AtomicBool = AtomicBool::new(false);
+use nix::sys::signal::{SigHandler, SigSet, Signal};
 
 /// The loopback port clients use for the proxy.
 const RELAY_LISTEN: &str = "127.0.0.1:3128";
-
-extern "C" fn on_terminate(_signal: i32) {
-    TERMINATE.store(true, Ordering::SeqCst);
-}
-
-extern "C" fn on_child(_signal: i32) {}
 
 /// Run as PID 1 until SIGTERM. `args` is the optional guest path of the
 /// carried proxy socket; without it the box has no egress and no relay.
@@ -45,7 +34,19 @@ pub fn run(args: &[String]) -> ! {
         exec(&args[1..]);
     }
 
-    let unblocked = install_handlers();
+    // Blocked before the relay thread exists, which inherits the mask, so
+    // both signals stay pending for `wait` below. A blocked signal reaches
+    // PID 1 even with no handler installed.
+    let mut terminate = SigSet::empty();
+    terminate.add(Signal::SIGTERM);
+    terminate.add(Signal::SIGINT);
+    terminate.thread_block().expect("block SIGTERM and SIGINT");
+    // With SIGCHLD ignored the kernel reaps every exited child, the ones
+    // reparented to PID 1 included. init forks nothing, so no wait of its
+    // own can lose a status to this.
+    // Safety: SIG_IGN runs no code.
+    unsafe { nix::sys::signal::signal(Signal::SIGCHLD, SigHandler::SigIgn) }
+        .expect("ignore SIGCHLD");
 
     if let Some(target) = args.first() {
         let target = PathBuf::from(target);
@@ -65,20 +66,8 @@ pub fn run(args: &[String]) -> ! {
     println!("ready");
     io::stdout().flush().expect("write ready");
 
-    loop {
-        if TERMINATE.load(Ordering::SeqCst) {
-            break;
-        }
-        reap();
-        if TERMINATE.load(Ordering::SeqCst) {
-            break;
-        }
-        // sigsuspend returns when any unblocked signal is delivered; a
-        // signal is the normal wakeup, not an error.
-        if let Err(error) = unblocked.suspend() {
-            eprintln!("pinfold init: sigsuspend: {error}");
-            break;
-        }
+    if let Err(error) = terminate.wait() {
+        eprintln!("pinfold init: sigwait: {error}");
     }
     process::exit(0);
 }
@@ -145,47 +134,4 @@ fn relay(client: TcpStream, target: &Path) {
     let _ = io::copy(&mut server, &mut client);
     let _ = client.shutdown(Shutdown::Write);
     let _ = up.join();
-}
-
-/// Install the handlers and block the signals they serve, returning the mask
-/// `suspend` waits with (the mask from before they were blocked).
-fn install_handlers() -> SigSet {
-    let terminate = SigAction::new(
-        SigHandler::Handler(on_terminate),
-        SaFlags::empty(),
-        SigSet::empty(),
-    );
-    let child = SigAction::new(
-        SigHandler::Handler(on_child),
-        SaFlags::empty(),
-        SigSet::empty(),
-    );
-    // Safety: the handlers only store to an atomic.
-    unsafe {
-        nix::sys::signal::sigaction(Signal::SIGTERM, &terminate).expect("sigaction SIGTERM");
-        nix::sys::signal::sigaction(Signal::SIGINT, &terminate).expect("sigaction SIGINT");
-        nix::sys::signal::sigaction(Signal::SIGCHLD, &child).expect("sigaction SIGCHLD");
-    }
-
-    let mut blocked = SigSet::empty();
-    blocked.add(Signal::SIGTERM);
-    blocked.add(Signal::SIGINT);
-    blocked.add(Signal::SIGCHLD);
-    let mut previous = SigSet::empty();
-    nix::sys::signal::sigprocmask(SigmaskHow::SIG_BLOCK, Some(&blocked), Some(&mut previous))
-        .expect("block signals");
-    previous
-}
-
-/// Reap every child that has exited.
-fn reap() {
-    loop {
-        match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
-            Ok(WaitStatus::StillAlive) => break,
-            Ok(_) => continue,
-            Err(Errno::ECHILD) => break,
-            Err(Errno::EINTR) => continue,
-            Err(_) => break,
-        }
-    }
 }
