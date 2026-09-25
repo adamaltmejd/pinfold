@@ -14,10 +14,11 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use e2e::{
-    HttpFixture, ImageCleanup, TestDir, TestEnv, box_exec, box_list, box_stat, build_profile, curl,
-    default_image, egress_log, egress_log_lines, exit_code, git_init, git_status, image_cli,
-    image_digest, image_id, image_named, json_lines, labeled_images, pinfold,
-    profile_containerfile, project_id, project_state_dir, runtime_images, untagged_images,
+    HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
+    box_stat, build_profile, curl, default_image, egress_log, egress_log_lines, exit_code,
+    git_init, git_status, image_cli, image_digest, image_id, image_named, json_lines,
+    labeled_images, pinfold, profile_containerfile, project_id, project_state_dir, runtime_images,
+    untagged_images,
 };
 
 /// The two owner-gone tests share one hazard: either one's removal can take
@@ -464,11 +465,7 @@ fn up_refuses_before_it_creates() {
     assert_eq!(refused["box"], name);
     assert_eq!(refused["reason"], "name-in-use");
     let ok = box_exec(binary, &env, &name, &["true"]);
-    assert_eq!(
-        ok.code, 0,
-        "the first box did not survive the refused up: {}",
-        ok.stderr
-    );
+    assert_ok(&ok, "exec in the first box after the refused up");
 
     let _ = box_down(binary, &env, &name);
     assert!(up.wait().success(), "box up did not exit cleanly");
@@ -502,11 +499,7 @@ fn up_refuses_before_it_creates() {
     let status = loser.child.wait().expect("wait for the losing up");
     assert_eq!(exit_code(status), 1, "the losing up did not exit 1");
     let ok = box_exec(binary, &env, &name, &["true"]);
-    assert_eq!(
-        ok.code, 0,
-        "the winner did not survive the losing up: {}",
-        ok.stderr
-    );
+    assert_ok(&ok, "exec in the winner after the losing up");
     let _ = box_down(binary, &env, &name);
     assert!(
         winner.wait().success(),
@@ -591,12 +584,7 @@ fn box_shares_files_with_the_host() {
         &name,
         &["sh", "-c", "printf nope > /readonly/new"],
     );
-    assert_ne!(denied.code, 0, "the read-only mount accepted a write");
-    assert!(
-        denied.stderr.contains("Read-only file system"),
-        "the write failed for another reason: {}",
-        denied.stderr
-    );
+    assert_denied(&denied, "Read-only file system", "the /readonly write");
 
     // Host view of the same files.
     let host_600 = fs::metadata(dir.path().join("host-600")).unwrap();
@@ -652,11 +640,7 @@ fn nothing_can_gain_privileges() {
     // set. Read /proc: Apple's virtiofs reports host files as the host user's
     // whatever the guest uid, so ownership cannot show a root exec.
     let work = box_exec(binary, &env, &name, &["cat", "/proc/self/status"]);
-    assert_eq!(
-        work.code, 0,
-        "reading /proc/self/status failed: {}",
-        work.stderr
-    );
+    assert_ok(&work, "reading /proc/self/status");
     assert_eq!(
         status_field(&work.stdout, "CapBnd:"),
         "0000000000000000",
@@ -666,11 +650,7 @@ fn nothing_can_gain_privileges() {
 
     // PID 1 is pinfold init, also as the host uid:gid.
     let init = box_exec(binary, &env, &name, &["cat", "/proc/1/status"]);
-    assert_eq!(
-        init.code, 0,
-        "reading /proc/1/status failed: {}",
-        init.stderr
-    );
+    assert_ok(&init, "reading /proc/1/status");
     assert_process_ids(&init.stdout, "PID 1");
 
     // No setuid or setgid files on the root filesystem. The marker proves the
@@ -700,12 +680,7 @@ fn nothing_can_gain_privileges() {
         &name,
         &["sh", "-c", "printf x > /pinfold-root-write-test"],
     );
-    assert_ne!(rootfs.code, 0, "the rootfs accepted a write");
-    assert!(
-        rootfs.stderr.contains("Read-only file system"),
-        "the rootfs write failed for another reason: {}",
-        rootfs.stderr
-    );
+    assert_denied(&rootfs, "Read-only file system", "a rootfs write");
 
     // Positive controls: the same write works on /tmp and the project mount.
     let tmp = box_exec(
@@ -721,11 +696,7 @@ fn nothing_can_gain_privileges() {
         &name,
         &["sh", "-c", "printf x > /workspace/pinfold-write-test"],
     );
-    assert_eq!(
-        workspace.code, 0,
-        "writing /workspace failed: {}",
-        workspace.stderr
-    );
+    assert_ok(&workspace, "writing /workspace");
     assert!(dir.path().join("pinfold-write-test").is_file());
 
     // On Linux, the podman seccomp profile must also block nested user
@@ -737,19 +708,10 @@ fn nothing_can_gain_privileges() {
     // assert nothing there.
     if cfg!(target_os = "linux") {
         let unshare = box_exec(binary, &env, &name, &["unshare", "-U", "true"]);
-        assert_ne!(unshare.code, 0, "unshare -U succeeded in the box");
-        assert!(
-            unshare.stderr.contains("Operation not permitted"),
-            "unshare -U failed for another reason: {}",
-            unshare.stderr
-        );
+        assert_denied(&unshare, "Operation not permitted", "unshare -U");
         // Positive control: the same box still runs a plain child process.
         let child = box_exec(binary, &env, &name, &["true"]);
-        assert_eq!(
-            child.code, 0,
-            "a plain child process failed: {}",
-            child.stderr
-        );
+        assert_ok(&child, "a plain child process");
     }
 
     up.down(binary, &env);
@@ -778,11 +740,7 @@ fn only_allowlisted_hosts_get_through() {
         "30",
         &["-o", "/dev/null", "https://api.github.com/"],
     );
-    assert_eq!(
-        allowed.code, 0,
-        "allowlisted host failed: {}",
-        allowed.stderr
-    );
+    assert_ok(&allowed, "allowlisted host");
 
     let denied = curl(
         binary,
@@ -791,12 +749,7 @@ fn only_allowlisted_hosts_get_through() {
         "30",
         &["-o", "/dev/null", "https://example.com/"],
     );
-    assert_ne!(denied.code, 0, "example.com was allowed through");
-    assert!(
-        denied.stderr.contains("403"),
-        "expected a proxy 403: {}",
-        denied.stderr
-    );
+    assert_denied(&denied, "403", "a request to example.com");
 
     // The log names the host, the decision and its reason.
     let lines = egress_log_lines(&env, &name);
@@ -859,11 +812,7 @@ fn the_proxy_refuses_the_tricks() {
         "30",
         &["-o", "/dev/null", "https://api.github.com/"],
     );
-    assert_eq!(
-        connect.code, 0,
-        "allowlisted CONNECT failed: {}",
-        connect.stderr
-    );
+    assert_ok(&connect, "allowlisted CONNECT");
     let plain = curl(
         binary,
         &env,
@@ -871,11 +820,7 @@ fn the_proxy_refuses_the_tricks() {
         "30",
         &["-o", "/dev/null", "http://api.github.com/"],
     );
-    assert_eq!(
-        plain.code, 0,
-        "allowlisted plain HTTP failed: {}",
-        plain.stderr
-    );
+    assert_ok(&plain, "allowlisted plain HTTP");
     let route = curl(binary, &env, &name, "5", &["http://fixture.internal/"]);
     assert_eq!(route.code, 0, "route control failed: {}", route.stderr);
     assert!(
@@ -892,15 +837,7 @@ fn the_proxy_refuses_the_tricks() {
         "30",
         &["-o", "/dev/null", "https://127.0.0.1/"],
     );
-    assert_ne!(
-        literal_connect.code, 0,
-        "CONNECT to an IP literal succeeded"
-    );
-    assert!(
-        literal_connect.stderr.contains("403"),
-        "CONNECT to an IP literal got no 403: {}",
-        literal_connect.stderr
-    );
+    assert_denied(&literal_connect, "403", "CONNECT to an IP literal");
     let literal_plain = curl(
         binary,
         &env,
@@ -908,15 +845,7 @@ fn the_proxy_refuses_the_tricks() {
         "30",
         &["-f", "-o", "/dev/null", "http://127.0.0.1/"],
     );
-    assert_ne!(
-        literal_plain.code, 0,
-        "plain HTTP to an IP literal succeeded"
-    );
-    assert!(
-        literal_plain.stderr.contains("403"),
-        "plain HTTP to an IP literal got no 403: {}",
-        literal_plain.stderr
-    );
+    assert_denied(&literal_plain, "403", "plain HTTP to an IP literal");
 
     // A name that resolves to loopback.
     let loopback = curl(
@@ -926,12 +855,7 @@ fn the_proxy_refuses_the_tricks() {
         "30",
         &["-o", "/dev/null", "https://localhost/"],
     );
-    assert_ne!(loopback.code, 0, "a name resolving to loopback succeeded");
-    assert!(
-        loopback.stderr.contains("403"),
-        "the loopback name got no 403: {}",
-        loopback.stderr
-    );
+    assert_denied(&loopback, "403", "a name resolving to loopback");
 
     // A ClientHello whose SNI names another host. The proxy answers the
     // CONNECT with 200 and then refuses on the ClientHello, so curl fails
@@ -968,12 +892,7 @@ fn the_proxy_refuses_the_tricks() {
         "30",
         &["-o", "/dev/null", "https://fixture.internal/"],
     );
-    assert_ne!(route_connect.code, 0, "CONNECT to a route succeeded");
-    assert!(
-        route_connect.stderr.contains("403"),
-        "CONNECT to a route got no 403: {}",
-        route_connect.stderr
-    );
+    assert_denied(&route_connect, "403", "CONNECT to a route");
 
     // Ambiguous framing: two Content-Length headers, sent raw because curl
     // will not.
@@ -1085,11 +1004,7 @@ fn losing_the_owner_fails_closed() {
         "30",
         &["-o", "/dev/null", "https://api.github.com/"],
     );
-    assert_eq!(
-        allowed.code, 0,
-        "positive control failed: {}",
-        allowed.stderr
-    );
+    assert_ok(&allowed, "positive control");
 
     // Hold the race against the cleanup test's `clean`, which removes any
     // dead pinfold box, through this test's `box prune`.
@@ -2275,11 +2190,7 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
     // OOM killer then takes a box process before init, so the box survives
     // the hog on every kernel.
     let score = box_exec(binary, &env, &name, &["cat", "/proc/self/oom_score_adj"]);
-    assert_eq!(
-        score.code, 0,
-        "cat /proc/self/oom_score_adj failed: {}",
-        score.stderr
-    );
+    assert_ok(&score, "cat /proc/self/oom_score_adj");
     assert_eq!(
         score.stdout.trim(),
         "1000",
@@ -2380,11 +2291,7 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
 
     // The pinned pi is in the box and runs at the pinned version.
     let ran = box_exec(binary, &env, &name, &["/opt/pinfold/pi/pi", "--version"]);
-    assert_eq!(
-        ran.code, 0,
-        "/opt/pinfold/pi/pi --version failed: {}",
-        ran.stderr
-    );
+    assert_ok(&ran, "/opt/pinfold/pi/pi --version");
     assert!(
         ran.stdout.contains(version),
         "the box's pi is not the pinned {version}: {}",
@@ -2493,11 +2400,7 @@ fn a_caller_owned_box_cannot_write_git() {
         &name,
         &["sh", "-c", &format!("echo x > '{root}/new.txt'")],
     );
-    assert_eq!(
-        wrote.code, 0,
-        "the box could not write the worktree: {}",
-        wrote.stderr
-    );
+    assert_ok(&wrote, "writing the worktree");
 
     // Every write into `.git` fails.
     let hook = dot_git.join("hooks/pre-commit");
@@ -2511,12 +2414,7 @@ fn a_caller_owned_box_cannot_write_git() {
             &format!("printf '#!/bin/sh\\n' > '{}'", hook.display()),
         ],
     );
-    assert_ne!(denied.code, 0, "the box wrote a hook");
-    assert!(
-        denied.stderr.contains("Read-only file system"),
-        "the hook write failed for another reason: {}",
-        denied.stderr
-    );
+    assert_denied(&denied, "Read-only file system", "the hook write");
     let denied = box_exec(
         binary,
         &env,
@@ -2536,12 +2434,7 @@ fn a_caller_owned_box_cannot_write_git() {
             "x",
         ],
     );
-    assert_ne!(denied.code, 0, "the box committed");
-    assert!(
-        denied.stderr.contains("Read-only file system"),
-        "the commit failed for another reason: {}",
-        denied.stderr
-    );
+    assert_denied(&denied, "Read-only file system", "the commit");
     let denied = box_exec(
         binary,
         &env,
@@ -2552,12 +2445,7 @@ fn a_caller_owned_box_cannot_write_git() {
             &format!("mv '{}' '{}-moved'", dot_git.display(), dot_git.display()),
         ],
     );
-    assert_ne!(denied.code, 0, "the box renamed .git");
-    assert!(
-        denied.stderr.contains("Device or resource busy"),
-        "renaming .git failed for another reason: {}",
-        denied.stderr
-    );
+    assert_denied(&denied, "Device or resource busy", "renaming .git");
 
     up.down(binary, &env);
     assert!(up.wait().success(), "box up did not exit cleanly");

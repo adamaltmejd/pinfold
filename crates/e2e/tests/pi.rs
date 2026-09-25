@@ -10,17 +10,14 @@
 //! the host, reached through a route.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio};
-use std::sync::{Arc, Mutex};
-use std::thread;
 
 use e2e::{
-    ImageCleanup, TestDir, TestEnv, box_exec, box_list, box_stat, build_profile, curl,
-    default_image, egress_log_lines, exit_code, git_init, git_status, pinfold, project_home,
-    project_id,
+    HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
+    box_stat, build_profile, curl, default_image, egress_log_lines, exit_code, git_init,
+    git_status, pinfold, project_home, project_id,
 };
 
 #[test]
@@ -257,11 +254,7 @@ fn a_changed_project_file_stops_the_run() {
             ),
         ],
     );
-    assert_eq!(
-        created.code, 0,
-        "writing .pinfold.toml in the box failed: {}",
-        created.stderr
-    );
+    assert_ok(&created, "writing .pinfold.toml in the box");
     assert!(run.finish().success(), "the bare run did not exit cleanly");
 
     // The file that appeared stops the run until `pinfold allow` records it.
@@ -290,11 +283,7 @@ fn a_changed_project_file_stops_the_run() {
             ),
         ],
     );
-    assert_eq!(
-        changed.code, 0,
-        "changing .pinfold.toml in the box failed: {}",
-        changed.stderr
-    );
+    assert_ok(&changed, "changing .pinfold.toml in the box");
     assert!(
         run.finish().success(),
         "the trusted run did not exit cleanly"
@@ -345,11 +334,7 @@ fn a_changed_project_file_stops_the_run() {
             ),
         ],
     );
-    assert_eq!(
-        changed.code, 0,
-        "changing the Containerfile in the box failed: {}",
-        changed.stderr
-    );
+    assert_ok(&changed, "changing the Containerfile in the box");
     assert!(
         run.finish().success(),
         "the trusted run did not exit cleanly"
@@ -481,12 +466,7 @@ fn the_box_cannot_write_git_or_protected_config() {
         &name,
         &["sh", "-c", &format!("mkdir '{}'", vscode.display())],
     );
-    assert_ne!(denied.code, 0, "the box created .vscode");
-    assert!(
-        denied.stderr.contains("File exists"),
-        "mkdir .vscode failed for another reason: {}",
-        denied.stderr
-    );
+    assert_denied(&denied, "File exists", "mkdir .vscode");
     // ...nor write into it.
     let denied = box_exec(
         binary,
@@ -498,12 +478,7 @@ fn the_box_cannot_write_git_or_protected_config() {
             &format!("printf '{{}}' > '{}/settings.json'", vscode.display()),
         ],
     );
-    assert_ne!(denied.code, 0, "the box wrote .vscode/settings.json");
-    assert!(
-        denied.stderr.contains("Read-only file system"),
-        "the .vscode write failed for another reason: {}",
-        denied.stderr
-    );
+    assert_denied(&denied, "Read-only file system", "the .vscode write");
 
     // `.git` is read-only: a hook, the config, and commondir.
     let hook = root.join(".git/hooks/pre-commit");
@@ -521,12 +496,7 @@ fn the_box_cannot_write_git_or_protected_config() {
             ),
         ],
     );
-    assert_ne!(denied.code, 0, "the box wrote a git hook");
-    assert!(
-        denied.stderr.contains("Read-only file system"),
-        "the hook write failed for another reason: {}",
-        denied.stderr
-    );
+    assert_denied(&denied, "Read-only file system", "the hook write");
 
     // Host git runs `.husky/_/pre-commit` on the next commit because the
     // repo's `core.hooksPath` names it; the box cannot write it.
@@ -545,12 +515,7 @@ fn the_box_cannot_write_git_or_protected_config() {
             ),
         ],
     );
-    assert_ne!(denied.code, 0, "the box wrote a core.hooksPath hook");
-    assert!(
-        denied.stderr.contains("Read-only file system"),
-        "the core.hooksPath hook write failed for another reason: {}",
-        denied.stderr
-    );
+    assert_denied(&denied, "Read-only file system", "the hooksPath write");
 
     // A script in the writable project; the config that would make host git
     // run it is what must fail.
@@ -572,12 +537,7 @@ fn the_box_cannot_write_git_or_protected_config() {
             ),
         ],
     );
-    assert_ne!(denied.code, 0, "the box set core.fsmonitor");
-    assert!(
-        denied.stderr.contains("Read-only file system"),
-        "git config failed for another reason: {}",
-        denied.stderr
-    );
+    assert_denied(&denied, "Read-only file system", "git config");
 
     let denied = box_exec(
         binary,
@@ -592,12 +552,7 @@ fn the_box_cannot_write_git_or_protected_config() {
             ),
         ],
     );
-    assert_ne!(denied.code, 0, "the box wrote .git/commondir");
-    assert!(
-        denied.stderr.contains("Read-only file system"),
-        "the commondir write failed for another reason: {}",
-        denied.stderr
-    );
+    assert_denied(&denied, "Read-only file system", "the commondir write");
 
     // The `.git` mount point cannot be renamed.
     let dot_git = root.join(".git");
@@ -611,12 +566,7 @@ fn the_box_cannot_write_git_or_protected_config() {
             &format!("mv '{}' '{}-moved'", dot_git.display(), dot_git.display()),
         ],
     );
-    assert_ne!(denied.code, 0, "the box renamed .git");
-    assert!(
-        denied.stderr.contains("Device or resource busy"),
-        "renaming .git failed for another reason: {}",
-        denied.stderr
-    );
+    assert_denied(&denied, "Device or resource busy", "renaming .git");
 
     // Positive control: the project itself is writable.
     let control = box_exec(
@@ -629,11 +579,7 @@ fn the_box_cannot_write_git_or_protected_config() {
             &format!("printf 'ok\\n' > '{}/control.txt'", root.display()),
         ],
     );
-    assert_eq!(
-        control.code, 0,
-        "the box could not write a project file: {}",
-        control.stderr
-    );
+    assert_ok(&control, "writing a project file");
     assert_eq!(
         fs::read(root.join("control.txt")).expect("read control.txt"),
         b"ok\n"
@@ -686,15 +632,7 @@ fn the_box_cannot_write_git_or_protected_config() {
             &format!("printf 'pwned' > '{}'", tooling.display()),
         ],
     );
-    assert_ne!(
-        denied.code, 0,
-        "the box wrote the protected tooling/hooks.sh"
-    );
-    assert!(
-        denied.stderr.contains("Read-only file system"),
-        "the tooling write failed for another reason: {}",
-        denied.stderr
-    );
+    assert_denied(&denied, "Read-only file system", "the tooling write");
     let denied = box_exec(
         binary,
         &env,
@@ -705,12 +643,7 @@ fn the_box_cannot_write_git_or_protected_config() {
             &format!("printf '{{}}' > '{}'", settings.display()),
         ],
     );
-    assert_ne!(denied.code, 0, "the box overwrote .vscode/settings.json");
-    assert!(
-        denied.stderr.contains("Read-only file system"),
-        "the settings write failed for another reason: {}",
-        denied.stderr
-    );
+    assert_denied(&denied, "Read-only file system", "the settings write");
     assert!(run.finish().success(), "pinfold pi did not exit cleanly");
     assert_eq!(
         fs::read_to_string(&settings).expect("read settings.json"),
@@ -811,8 +744,17 @@ fn both_pi_config_levels_load_behind_a_route() {
         project_marker,
     );
 
-    // The fake model listens on the host; only the route can reach it.
-    let model = FakeModel::start();
+    // The fake model listens on the host; only the route can reach it. It
+    // answers pi's one streaming request with a chat completion and keeps
+    // the request body, so the test can assert what pi loaded.
+    let model = HttpFixture::answering(
+        "text/event-stream",
+        concat!(
+            "data: {\"id\":\"chatcmpl-e2e\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"fake-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-e2e\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"fake-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
+            "data: [DONE]\n\n"
+        ),
+    );
 
     // `pi -p` through the shim, without a TTY. The provider and model pin the
     // request to the fake model in the profile's models.json.
@@ -830,10 +772,7 @@ fn both_pi_config_levels_load_behind_a_route() {
         ])
         .current_dir(project.path())
         .env("PINFOLD_PROFILE", profile)
-        .env(
-            "PINFOLD_ROUTES",
-            format!("fake.model=127.0.0.1:{}", model.port()),
-        )
+        .env("PINFOLD_ROUTES", format!("fake.model={}", model.route()))
         .env("PINFOLD_ENV_OPENAI_API_KEY", "sk-fake")
         .stdin(Stdio::null())
         .output()
@@ -844,7 +783,8 @@ fn both_pi_config_levels_load_behind_a_route() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let request = model.request();
+    let bodies = model.bodies();
+    let request = bodies.first().expect("the fake model got no request");
     assert!(
         request.contains(profile_marker),
         "the profile skill never reached the model; the profile config level did not load"
@@ -938,11 +878,7 @@ fn the_highest_layer_sets_the_allowlist() {
         "30",
         &["-o", "/dev/null", "https://api.github.com/"],
     );
-    assert_eq!(
-        allowed.code, 0,
-        "allowlisted host failed: {}",
-        allowed.stderr
-    );
+    assert_ok(&allowed, "allowlisted host");
 
     // A host the built-in list allowed is refused now; the proxy decides
     // before dialing, so no request reaches npm.
@@ -953,12 +889,7 @@ fn the_highest_layer_sets_the_allowlist() {
         "30",
         &["-o", "/dev/null", "https://registry.npmjs.org/"],
     );
-    assert_ne!(denied.code, 0, "registry.npmjs.org was allowed through");
-    assert!(
-        denied.stderr.contains("403"),
-        "expected a proxy 403: {}",
-        denied.stderr
-    );
+    assert_denied(&denied, "403", "a request to registry.npmjs.org");
 
     // The log names the refused host and the reason.
     let lines = egress_log_lines(&env, &name);
@@ -1184,94 +1115,4 @@ fn write_skill(dir: &Path, name: &str, marker: &str) {
         ),
     )
     .expect("write SKILL.md");
-}
-
-/// A fake OpenAI-compatible chat-completions server on the host. It answers
-/// the one streaming request pi sends and keeps the body, so the test can
-/// assert what pi loaded.
-struct FakeModel {
-    port: u16,
-    requests: Arc<Mutex<Vec<String>>>,
-}
-
-impl FakeModel {
-    fn start() -> FakeModel {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the fake model");
-        let port = listener.local_addr().expect("fake model address").port();
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let captured = Arc::clone(&requests);
-        thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(stream) = stream else { continue };
-                let captured = Arc::clone(&captured);
-                thread::spawn(move || answer(stream, &captured));
-            }
-        });
-        FakeModel { port, requests }
-    }
-
-    fn port(&self) -> u16 {
-        self.port
-    }
-
-    /// The first request body the model answered.
-    fn request(&self) -> String {
-        self.requests
-            .lock()
-            .expect("lock the fake model's requests")
-            .first()
-            .cloned()
-            .expect("the fake model got no request")
-    }
-}
-
-/// Read one Content-Length-framed request, keep its body, and answer with a
-/// streaming chat completion.
-fn answer(mut stream: TcpStream, requests: &Mutex<Vec<String>>) {
-    let mut data = Vec::new();
-    let mut buffer = [0u8; 4096];
-    let head_end = loop {
-        let read = match stream.read(&mut buffer) {
-            Ok(0) | Err(_) => return,
-            Ok(read) => read,
-        };
-        data.extend_from_slice(&buffer[..read]);
-        if let Some(end) = data.windows(4).position(|window| window == b"\r\n\r\n") {
-            break end + 4;
-        }
-    };
-    let head = String::from_utf8_lossy(&data[..head_end]).to_string();
-    let content_length = head
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            if name.eq_ignore_ascii_case("content-length") {
-                value.trim().parse::<usize>().ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0);
-    while data.len() < head_end + content_length {
-        let read = match stream.read(&mut buffer) {
-            Ok(0) | Err(_) => break,
-            Ok(read) => read,
-        };
-        data.extend_from_slice(&buffer[..read]);
-    }
-    requests
-        .lock()
-        .expect("lock the fake model's requests")
-        .push(String::from_utf8_lossy(&data[head_end..]).into_owned());
-    let body = concat!(
-        "data: {\"id\":\"chatcmpl-e2e\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"fake-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\n",
-        "data: {\"id\":\"chatcmpl-e2e\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"fake-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
-        "data: [DONE]\n\n"
-    );
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    let _ = stream.write_all(response.as_bytes());
-    let _ = stream.flush();
 }

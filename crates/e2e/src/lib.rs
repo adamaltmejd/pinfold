@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
@@ -420,6 +420,23 @@ pub struct ExecOutput {
     pub stderr: String,
 }
 
+/// Assert that `output` failed and that its stderr names `reason`.
+#[track_caller]
+pub fn assert_denied(output: &ExecOutput, reason: &str, what: &str) {
+    assert_ne!(output.code, 0, "{what} succeeded");
+    assert!(
+        output.stderr.contains(reason),
+        "{what} failed without {reason}: {}",
+        output.stderr
+    );
+}
+
+/// Assert that `output` exited 0, with its stderr in the panic message.
+#[track_caller]
+pub fn assert_ok(output: &ExecOutput, what: &str) {
+    assert_eq!(output.code, 0, "{what} failed: {}", output.stderr);
+}
+
 pub fn box_exec(binary: &Path, env: &TestEnv, name: &str, argv: &[&str]) -> ExecOutput {
     let output = env
         .command(binary)
@@ -524,27 +541,41 @@ pub fn project_id(env: &TestEnv, project: &Path) -> String {
 /// A host HTTP service, reachable from a box only through a route.
 pub struct HttpFixture {
     port: u16,
-    headers: Arc<Mutex<Vec<Headers>>>,
+    requests: Arc<Mutex<Vec<(Headers, String)>>>,
 }
 
 /// One request's header lines, as `(name, value)` in the order received.
 pub type Headers = Vec<(String, String)>;
 
+/// A fixed answer's content type and body.
+type Answer = Option<(&'static str, &'static str)>;
+
 impl HttpFixture {
-    /// Bind on loopback and serve until the process exits.
+    /// Bind on loopback and answer every request with the Host header it
+    /// carried, until the process exits.
     pub fn start() -> HttpFixture {
+        HttpFixture::listen(None)
+    }
+
+    /// Bind on loopback and answer every request with `body`, until the
+    /// process exits.
+    pub fn answering(content_type: &'static str, body: &'static str) -> HttpFixture {
+        HttpFixture::listen(Some((content_type, body)))
+    }
+
+    fn listen(answer: Answer) -> HttpFixture {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the fixture");
         let port = listener.local_addr().expect("fixture address").port();
-        let headers = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::clone(&headers);
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&requests);
         thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
                 let seen = Arc::clone(&seen);
-                thread::spawn(move || serve(stream, &seen));
+                thread::spawn(move || serve(stream, &seen, answer));
             }
         });
-        HttpFixture { port, headers }
+        HttpFixture { port, requests }
     }
 
     /// The `host:port` a route names to reach the fixture.
@@ -559,13 +590,23 @@ impl HttpFixture {
 
     /// The headers of each request the fixture has answered, in order.
     pub fn headers(&self) -> Vec<Headers> {
-        self.headers.lock().expect("fixture headers").clone()
+        let requests = self.requests.lock().expect("fixture requests");
+        requests
+            .iter()
+            .map(|(headers, _)| headers.clone())
+            .collect()
+    }
+
+    /// The body of each request the fixture has answered, in order.
+    pub fn bodies(&self) -> Vec<String> {
+        let requests = self.requests.lock().expect("fixture requests");
+        requests.iter().map(|(_, body)| body.clone()).collect()
     }
 }
 
-/// Answer one request with the Host header it carried, and record its
-/// headers.
-fn serve(mut stream: TcpStream, seen: &Mutex<Vec<Headers>>) {
+/// Read one Content-Length-framed request, record its headers and body, and
+/// answer it.
+fn serve(mut stream: TcpStream, seen: &Mutex<Vec<(Headers, String)>>, answer: Answer) {
     let Ok(clone) = stream.try_clone() else {
         return;
     };
@@ -575,6 +616,7 @@ fn serve(mut stream: TcpStream, seen: &Mutex<Vec<Headers>>) {
         return;
     }
     let mut host = String::new();
+    let mut length = 0u64;
     let mut headers = Vec::new();
     loop {
         line.clear();
@@ -584,17 +626,27 @@ fn serve(mut stream: TcpStream, seen: &Mutex<Vec<Headers>>) {
         if line == "\r\n" || line == "\n" {
             break;
         }
-        if let Some(value) = line.to_ascii_lowercase().strip_prefix("host:") {
-            host = value.trim().to_string();
-        }
         if let Some((name, value)) = line.split_once(':') {
-            headers.push((name.to_string(), value.trim().to_string()));
+            let value = value.trim();
+            if name.eq_ignore_ascii_case("host") {
+                host = value.to_ascii_lowercase();
+            }
+            if name.eq_ignore_ascii_case("content-length") {
+                length = value.parse().unwrap_or(0);
+            }
+            headers.push((name.to_string(), value.to_string()));
         }
     }
-    seen.lock().expect("fixture headers").push(headers);
-    let body = format!("fixture host={host}\n");
+    let mut body = Vec::new();
+    let _ = reader.by_ref().take(length).read_to_end(&mut body);
+    let body = String::from_utf8_lossy(&body).into_owned();
+    seen.lock().expect("fixture requests").push((headers, body));
+    let (content_type, body) = match answer {
+        Some((content_type, body)) => (content_type, body.to_string()),
+        None => ("text/plain", format!("fixture host={host}\n")),
+    };
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let _ = stream.write_all(response.as_bytes());
