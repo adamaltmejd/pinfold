@@ -30,20 +30,20 @@ as = "pi"
 # The glibc builds: the box image must be glibc.
 [[harness]]
 name = "claude"
-version = "2.1.282"
+version = "2.1.283"
 env = { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
 
 [[harness.asset]]
 os-arch = "linux-arm64"
-url = "https://downloads.claude.ai/claude-code-releases/2.1.282/linux-arm64/claude"
-sha256 = "6764ffc39e9fed425a493ff61ea28506d1ba83996ce81a48d1177dbb393419c9"
+url = "https://downloads.claude.ai/claude-code-releases/2.1.283/linux-arm64/claude"
+sha256 = "346d294f0103d6fc0de11ac953579b5c62dfa90698a4cfc486b6f927c615e697"
 install = "executable"
 as = "claude/claude"
 
 [[harness.asset]]
 os-arch = "linux-x64"
-url = "https://downloads.claude.ai/claude-code-releases/2.1.282/linux-x64/claude"
-sha256 = "3afe8535c0cc33f0e24f7b25dab7a1727b8b592196f8496a8bc302ba2161eed3"
+url = "https://downloads.claude.ai/claude-code-releases/2.1.283/linux-x64/claude"
+sha256 = "1859583ce32920595c61ef868bee52e1b1594f7486db209935e01f1e5e804ae2"
 install = "executable"
 as = "claude/claude"
 

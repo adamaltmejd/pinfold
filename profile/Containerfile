@@ -1,4 +1,4 @@
-# The built-in default profile's image; profile/bump-pins.sh updates the
+# The built-in default profile's image; scripts/bump-pins.sh updates the
 # ADD pins.
 FROM debian:trixie-slim
 
@@ -33,8 +33,8 @@ ARG TARGETARCH
 # >>> pins
 ADD --checksum=sha256:54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7 https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-aarch64.zip /tmp/bun-aarch64.zip
 ADD --checksum=sha256:36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913 https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-x64.zip /tmp/bun-x64.zip
-ADD --checksum=sha256:c8ea4b6560841e73157c134fd4a3293914c6ede42e786ee985cf491fde691ba7 https://github.com/rtk-ai/rtk/releases/download/v0.49.0/rtk-aarch64-unknown-linux-gnu.tar.gz /tmp/rtk-aarch64.tar.gz
-ADD --checksum=sha256:7278231dfd7e6a730a4ab7f847b195bcf02289c2d57622b0dab75a6411100c8f https://github.com/rtk-ai/rtk/releases/download/v0.49.0/rtk-x86_64-unknown-linux-musl.tar.gz /tmp/rtk-x64.tar.gz
+ADD --checksum=sha256:d1cc49dfa2cd443fc32625444b59fe616b6c80478cca210985118347174dd758 https://github.com/rtk-ai/rtk/releases/download/v0.50.0/rtk-aarch64-unknown-linux-gnu.tar.gz /tmp/rtk-aarch64.tar.gz
+ADD --checksum=sha256:bc2b8902b0d9c796c82ef45f16ae2307e17757afeca5ee156235a3dc7bda5f89 https://github.com/rtk-ai/rtk/releases/download/v0.50.0/rtk-x86_64-unknown-linux-musl.tar.gz /tmp/rtk-x64.tar.gz
 ADD --checksum=sha256:e684031df0aa3ac68a55829f13702de53934b1b06d52f1ae8da9954c4c6f1369 https://registry.npmjs.org/@dietrichgebert/ponytail/-/ponytail-4.10.0.tgz /tmp/ponytail.tgz
 # <<< pins
 
