@@ -354,6 +354,9 @@ fn up_refuses_before_it_creates() {
     // mount-path validation; the comma path then reaches the runtime, whose
     // option parser reads the rest as mount options, so the refusal assertion
     // fails.
+    // Sabotage: drop the not-a-directory check from the mount validation;
+    // the file-mount spec then comes up `ready` on podman and ends `failed`
+    // on Apple after the claim, so its `refused` assertion fails on both.
     // Sabotage: make the claim treat an existing state dir as success, as
     // `create_dir_all` does, and make the name checks always pass; the
     // concurrent loser is never refused `name-in-use`, and its failure path
@@ -450,6 +453,32 @@ fn up_refuses_before_it_creates() {
             .as_str()
             .unwrap_or_default()
             .contains("a,b"),
+        "the refusal did not name the path: {refused}"
+    );
+    assert_left_nothing(binary, &env, &name, label, "refused");
+
+    // A spec whose mount host is a regular file is refused as data, naming
+    // the path, and leaves no state dir and no box: the runtimes treat a
+    // file mount differently, so one spec must be refused the same way on
+    // both. The live-name box below is the control that the same command
+    // path comes up `ready`.
+    let file = env.root.join("f.txt");
+    fs::write(&file, b"not a directory\n").unwrap();
+    let file_mount = serde_json::json!({
+        "name": name,
+        "image": default_image(binary, &env),
+        "labels": { "dev.example.test": "refuses" },
+        "mounts": [{ "host": file, "guest": "/yard/f.txt", "readonly": true }],
+    });
+    let (code, refused) = box_up_refused(binary, &env, &file_mount, &[]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["event"], "refused");
+    assert_eq!(refused["reason"], "spec");
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("f.txt"),
         "the refusal did not name the path: {refused}"
     );
     assert_left_nothing(binary, &env, &name, label, "refused");

@@ -271,6 +271,17 @@ impl Plan {
                     )));
                 }
             }
+            // A mount's host path is a directory the runtime binds. A
+            // missing path is left to the runtime; one that exists and is
+            // not a directory is refused here, so both runtimes answer the
+            // same. `metadata` follows symlinks: a symlink to a directory
+            // passes, to a file is refused.
+            if std::fs::metadata(&mount.host).is_ok_and(|metadata| !metadata.is_dir()) {
+                return Err(PlanError::Invalid(format!(
+                    "mount host {} is not a directory",
+                    mount.host.display()
+                )));
+            }
             if !guests.insert(mount.guest.as_path()) {
                 return Err(PlanError::Invalid(format!(
                     "two mounts name the same guest path {}",
