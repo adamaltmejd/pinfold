@@ -44,7 +44,7 @@ These answer without judgment. Run them first.
   `cargo clippy --all-targets --locked -- -W dead_code -W unreachable_pub`.
   Every warning is a finding.
 - **Trace tables.** Three, built with `rg`, kept in the scratchpad, by
-  one `sonnet` subagent (the work is lookup, not judgment): every key
+  one subagent on a small model (the work is lookup, not judgment): every key
   `config.rs` reads, to its line under `## Configuration`, to the test
   that sets it; every verb and flag `cli.rs` parses, to its line under
   `## CLI`, to a test; every guarantee row, to its test. A row with a gap
@@ -59,11 +59,13 @@ These answer without judgment. Run them first.
 ## 2. Read, one agent per module, in parallel
 
 Do not read the modules yourself. Launch one subagent per module through
-the Agent tool, all in one message so they run concurrently, type
-`general-purpose` (the Explore type locates code and does not audit it),
-told to edit nothing. Set `model` on every call: a subagent that names no
-model inherits the session's, and the session's model is too costly for
-a read. `opus` for the code modules; `sonnet` for the docs. Modules:
+the harness's subagent tool (in Claude Code, the Agent tool with the
+`general-purpose` type; the Explore type locates code and does not audit
+it), all in one message so they run concurrently, told to edit nothing.
+Set the model on every call: a subagent that names none inherits the
+session's, and the session's model is too costly for a read. The code
+modules take the family's mid tier, the one below its largest model; the
+docs take a small model. Modules:
 `cli`, `core/box`, `core/runtime` (all three files), `core/proxy`,
 `core/clean` with `core/image` and `core/artifacts`, `config` with
 `dirs`, `trust` and `init`, `pi/`, the e2e crate, and the docs
