@@ -15,7 +15,9 @@ fn version_needs_no_runtime() {
     // Sabotage: run `pinfold::core::clean::maintain()` before dispatch as
     // the code did; with the empty PATH the pass prints the
     // missing-runtime sentence on stderr and writes the `maintenance` stamp,
-    // failing both assertions.
+    // failing both assertions. Sabotage: print `pinfold 0.0.0` in main.rs's
+    // `--version` arm instead of `CARGO_PKG_VERSION`; stdout lacks the
+    // workspace version and the version assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("version");
     let empty = env.root.join("empty-path");
@@ -33,10 +35,11 @@ fn version_needs_no_runtime() {
         "pinfold --version failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    // The e2e crate shares the workspace version with pinfold.
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        output.stdout.starts_with(b"pinfold "),
-        "pinfold --version printed no version: {}",
-        String::from_utf8_lossy(&output.stdout)
+        stdout.contains(env!("CARGO_PKG_VERSION")),
+        "pinfold --version printed no version: {stdout}"
     );
     assert!(
         output.stderr.is_empty(),
