@@ -71,8 +71,8 @@ pub(crate) fn resolve_image(config: &Config, project: &str) -> String {
 
 /// Refuse when the image has not been built, naming its build command, and
 /// report when a project image's recorded profile image is no longer the
-/// current one.
-fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
+/// current one. `doctor` reports it too.
+pub(crate) fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
     let (base, build) = match config.containerfile {
         Some(_) => (
             Some(config.profile.image_ref()),

@@ -576,8 +576,7 @@ fn parse_age(value: &str) -> io::Result<Duration> {
 }
 
 /// `pinfold doctor`: print one report of what `pinfold pi` depends on and
-/// what state it is in, ending with the count of missing dependencies. Reads
-/// only: nothing is created, downloaded or fixed.
+/// what state it is in. Reads only: nothing is created, downloaded or fixed.
 pub fn doctor(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(usage("doctor", "doctor takes no arguments"));
@@ -586,31 +585,20 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     // The config must parse; a broken `.pinfold.toml` is itself the answer.
     let config = Config::load(&root)?;
     let project = crate::pi::state::project_id(&root);
-    let mut problems = 0;
 
     println!("pinfold doctor: {}", root.display());
 
     let runtime = runtime();
     println!("runtime: {} ({})", runtime.name(), runtime.isolation());
-    // A missing runtime binary is this host's one problem; the checks that
-    // need the runtime fail with the same absence and are not counted again.
-    let mut runtime_missing = false;
     match runtime.version() {
         Ok(version) => println!("  version: {version}"),
-        Err(error) => {
-            println!("  version: unavailable: {error}");
-            problems += 1;
-            runtime_missing = error.kind() == io::ErrorKind::NotFound;
-        }
+        Err(error) => println!("  version: unavailable: {error}"),
     }
     if runtime.name() == "podman" {
         // preflight is what refuses a host; doctor only reports its verdict.
         match runtime.preflight() {
             Ok(_) => println!("  preflight: ok"),
-            Err(error) => {
-                println!("  preflight: {error}");
-                problems += usize::from(!runtime_missing);
-            }
+            Err(error) => println!("  preflight: {error}"),
         }
         match podman::linger() {
             Ok(true) => println!("  linger: enabled"),
@@ -632,28 +620,14 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
 
     let image = crate::pi::launch::resolve_image(&config, &project);
     println!("image: {image}");
-    match report_image(&config, runtime, &image) {
-        Ok(missing) => problems += missing,
-        Err(error) => {
-            println!("  unchecked: {error}");
-            problems += usize::from(!runtime_missing);
-        }
+    match crate::pi::launch::ensure_image(&config, &image) {
+        Ok(()) => println!("  exists"),
+        Err(error) => println!("  {error}"),
     }
 
     match pins_json() {
         Ok(pins) => println!("artifacts: {pins}"),
-        Err(error) => {
-            println!("artifacts: unavailable: {error}");
-            problems += 1;
-        }
-    }
-
-    match trust::check(&root, &config) {
-        Ok(()) => println!("trust: ok"),
-        Err(error) => {
-            println!("trust: {error}");
-            problems += 1;
-        }
+        Err(error) => println!("artifacts: unavailable: {error}"),
     }
 
     println!("config: {}", config_report(&root, &config)?);
@@ -667,19 +641,9 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
                 println!("  {total} B is over 20 GB; run `pinfold clean`");
             }
         }
-        Err(error) => {
-            println!("  unavailable: {error}");
-            problems += usize::from(!runtime_missing);
-        }
+        Err(error) => println!("  unavailable: {error}"),
     }
-
-    if problems == 0 {
-        println!("pinfold doctor: ok");
-        Ok(0)
-    } else {
-        eprintln!("pinfold doctor: {problems} problem(s)");
-        Ok(1)
-    }
+    Ok(0)
 }
 
 /// `pinfold artifacts`: print the pinned artifacts as one JSON array, an
@@ -695,31 +659,6 @@ pub fn artifacts(args: &[String]) -> io::Result<i32> {
 /// The pinned artifacts as one JSON array, an object per pin.
 fn pins_json() -> io::Result<serde_json::Value> {
     serde_json::to_value(artifacts::pins()?).map_err(io::Error::other)
-}
-
-/// Report the image `pinfold pi` would run, and whether it was built from the
-/// current profile image. Returns 1 when the image is missing.
-fn report_image(config: &Config, runtime: &dyn Runtime, image: &str) -> io::Result<usize> {
-    let base = config
-        .containerfile
-        .is_some()
-        .then(|| config.profile.image_ref());
-    let status = image_status(runtime, image, base.as_deref())?;
-    if let ImageStatus::Missing = status {
-        println!("  missing; run `pinfold build`");
-        return Ok(1);
-    }
-    println!("  exists");
-    match status {
-        ImageStatus::Stale { recorded, current } => println!(
-            "  built from profile image {}; the current profile image is {}; run `pinfold build`",
-            recorded.as_deref().unwrap_or("(none)"),
-            current.as_deref().unwrap_or("(none)")
-        ),
-        _ if base.is_some() => println!("  built from the current profile image"),
-        _ => {}
-    }
-    Ok(0)
 }
 
 /// `pinfold config`: print one JSON object, the effective configuration and
