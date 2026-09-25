@@ -747,6 +747,8 @@ fn only_allowlisted_hosts_get_through() {
     // then answers and the 403 and "not allowlisted" log assertions fail. The
     // api.github.com request is the positive control that the same path lets
     // an allowlisted host through.
+    // Sabotage: drop `time` from `record`; the refusal's time is absent and
+    // the window assertion fails.
     let binary = pinfold();
     let env = TestEnv::new("egress");
     let name = box_name("egress");
@@ -766,6 +768,19 @@ fn only_allowlisted_hosts_get_through() {
     );
     assert_ok(&allowed, "allowlisted host");
 
+    // The host clock in the log's own shape, so the window compares as
+    // strings.
+    let utc = || {
+        let output = Command::new("date")
+            .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
+            .output()
+            .expect("run date");
+        String::from_utf8(output.stdout)
+            .expect("date writes UTF-8")
+            .trim()
+            .to_owned()
+    };
+    let before = utc();
     let denied = curl(
         binary,
         &env,
@@ -773,9 +788,10 @@ fn only_allowlisted_hosts_get_through() {
         "30",
         &["-o", "/dev/null", "https://example.com/"],
     );
+    let after = utc();
     assert_denied(&denied, "403", "a request to example.com");
 
-    // The log names the host, the decision and its reason.
+    // The log names the time, the host, the decision and its reason.
     let lines = egress_log_lines(&env, &name);
     assert!(
         lines
@@ -783,11 +799,18 @@ fn only_allowlisted_hosts_get_through() {
             .any(|line| line["host"] == "api.github.com" && line["decision"] == "allowed"),
         "no allowed decision for api.github.com: {lines:?}"
     );
+    let refused = lines
+        .iter()
+        .find(|line| {
+            line["host"] == "example.com"
+                && line["decision"] == "refused"
+                && line["reason"] == "not allowlisted"
+        })
+        .unwrap_or_else(|| panic!("no not-allowlisted refusal for example.com: {lines:?}"));
+    let time = refused["time"].as_str().unwrap_or_default();
     assert!(
-        lines.iter().any(|line| line["host"] == "example.com"
-            && line["decision"] == "refused"
-            && line["reason"] == "not allowlisted"),
-        "no not-allowlisted refusal for example.com: {lines:?}"
+        time >= before.as_str() && time <= after.as_str(),
+        "the refusal at {time:?} is outside {before}..{after}: {refused}"
     );
 
     up.down(binary, &env);

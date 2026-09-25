@@ -357,8 +357,8 @@ network listener, no token: the socket identifies the box.
   closed, only when neither direction has carried bytes for 5 minutes.
 - **Log:** one JSON line per decision in the box's egress log at
   `~/.local/state/pinfold/egress/<box>.jsonl` (`$XDG_STATE_HOME` is
-  honored). It names the host, the decision and its reason; no header value
-  is ever written.
+  honored). It names the decision's UTC time (RFC 3339 to the second), the
+  host, the decision and its reason; no header value is ever written.
 
 ## Images
 
