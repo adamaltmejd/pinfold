@@ -40,7 +40,18 @@ impl Runtime for Apple {
     }
 
     fn make_proxy_connectable(&self, name: &str) -> io::Result<()> {
-        run(&chmod_proxy_argv(name))
+        // The one transient root exec, which makes the forwarded socket
+        // connectable by the box user.
+        run(&[
+            "container",
+            "exec",
+            "--user",
+            "0:0",
+            name,
+            "chmod",
+            "666",
+            GUEST_PROXY_SOCKET,
+        ])
     }
 
     fn preflight(&self) -> io::Result<Preflight> {
@@ -52,7 +63,7 @@ impl Runtime for Apple {
     fn down(&self, name: &str) -> io::Result<()> {
         // stderr is captured: an absent box fails `rm` with the runtime's
         // not-found text, which is noise once the box is gone.
-        let Err(error) = output(&down_argv(name)) else {
+        let Err(error) = output(&["container", "rm", "-f", name]) else {
             return Ok(());
         };
         // Another process may have removed the box between the list and this
@@ -158,7 +169,9 @@ impl Runtime for Apple {
     }
 
     fn purge_build_cache(&self) -> io::Result<()> {
-        run(&builder_delete_argv())
+        // The builder container holds the build cache. `--force` removes a
+        // running builder too; a missing builder is not an error.
+        run(&["container", "builder", "delete", "--force"])
     }
 
     fn build_cache(&self) -> io::Result<BuildCache> {
@@ -432,31 +445,4 @@ fn up_argv(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> Vec<OsStrin
         argv.push(GUEST_PROXY_SOCKET.into());
     }
     argv
-}
-
-/// The one transient root exec that makes the forwarded socket connectable
-/// by the box user, as data.
-fn chmod_proxy_argv(name: &str) -> Vec<&str> {
-    vec![
-        "container",
-        "exec",
-        "--user",
-        "0:0",
-        name,
-        "chmod",
-        "666",
-        GUEST_PROXY_SOCKET,
-    ]
-}
-
-/// The `container rm` argv that stops and removes a box, as data.
-fn down_argv(name: &str) -> Vec<&str> {
-    vec!["container", "rm", "-f", name]
-}
-
-/// The `container builder delete` argv that removes the builder container
-/// and its build cache, as data. `--force` removes a running builder too; a
-/// missing builder is not an error.
-fn builder_delete_argv() -> Vec<&'static str> {
-    vec!["container", "builder", "delete", "--force"]
 }

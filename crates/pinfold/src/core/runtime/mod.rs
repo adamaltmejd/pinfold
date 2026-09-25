@@ -15,17 +15,13 @@ use tokio::process::{Child, Command};
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
 
-/// The container runtime for this OS.
-pub fn runtime() -> io::Result<&'static dyn Runtime> {
+/// The container runtime for this OS: Apple `container` on macOS, rootless
+/// podman on Linux, the only targets pinfold builds for.
+pub fn runtime() -> &'static dyn Runtime {
     if cfg!(target_os = "macos") {
-        Ok(&apple::Apple)
-    } else if cfg!(target_os = "linux") {
-        Ok(&podman::Podman)
+        &apple::Apple
     } else {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "no container runtime for this OS",
-        ))
+        &podman::Podman
     }
 }
 
@@ -487,16 +483,14 @@ pub fn image_status(
 
 /// The uid:gid PID 1 and all work run as: the spec's, else the host user's.
 pub(crate) fn user(plan: &Plan) -> OsString {
-    match plan.user {
-        Some(user) => {
-            let (uid, gid) = (user.uid, user.gid);
-            format!("{uid}:{gid}").into()
-        }
-        None => {
-            let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
-            format!("{uid}:{gid}").into()
-        }
-    }
+    let (uid, gid) = match plan.user {
+        Some(user) => (user.uid, user.gid),
+        None => (
+            nix::unistd::getuid().as_raw(),
+            nix::unistd::getgid().as_raw(),
+        ),
+    };
+    format!("{uid}:{gid}").into()
 }
 
 /// A `type=bind` mount value, as both runtimes spell it.

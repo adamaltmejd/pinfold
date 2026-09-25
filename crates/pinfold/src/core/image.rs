@@ -172,8 +172,7 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
             request.containerfile.display()
         ))
     })?;
-    let runtime = runtime()
-        .map_err(|error| ImageError::Refused(RefusalReason::Runtime, error.to_string()))?;
+    let runtime = runtime();
     // A missing runtime binary shows first as a failed spawn; nothing ran.
     let failed = |error: io::Error| {
         if error.kind() == io::ErrorKind::NotFound {

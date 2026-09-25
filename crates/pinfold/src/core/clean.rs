@@ -73,10 +73,7 @@ fn maintain_due() -> io::Result<()> {
 /// The pass itself. Every step is attempted; a failure is reported and the
 /// rest continue.
 fn daily() {
-    match runtime() {
-        Ok(runtime) => report("boxes", prune_boxes(runtime).map(drop)),
-        Err(error) => eprintln!("pinfold: maintenance: boxes: {error}"),
-    }
+    report("boxes", prune_boxes(runtime()).map(drop));
     report("sockets", prune_sockets());
     report("artifacts", artifacts::prune_unpinned());
     report("egress logs", prune_egress_logs());

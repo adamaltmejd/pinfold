@@ -106,7 +106,7 @@ fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
             format!("pinfold build --profile {}", config.profile.name),
         ),
     };
-    match image_status(runtime()?, image, base.as_deref())? {
+    match image_status(runtime(), image, base.as_deref())? {
         ImageStatus::Missing => Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("image {image} is missing; run `{build}`"),
@@ -272,7 +272,7 @@ async fn exec_pi(
     argv: &[String],
     shutdown: &mut Shutdown,
 ) -> io::Result<i32> {
-    let runtime = runtime()?;
+    let runtime = runtime();
     let name = name.to_string();
     let init = init.to_path_buf();
     let workdir = cwd.to_path_buf();

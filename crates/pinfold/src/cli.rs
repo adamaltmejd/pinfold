@@ -102,7 +102,7 @@ pub fn attach(args: &[String]) -> io::Result<i32> {
     let cwd = fs::canonicalize(std::env::current_dir()?)?;
     let root = crate::pi::launch::project_root(&cwd)?;
     let id = crate::pi::state::project_id(&root);
-    let runtime = runtime()?;
+    let runtime = runtime();
     let boxes: Vec<BoxInfo> = runtime
         .list()?
         .into_iter()
@@ -306,7 +306,7 @@ fn refused(refusal: Refusal) -> i32 {
 /// exit code.
 fn exec(args: &[String]) -> io::Result<i32> {
     let args = ExecArgs::parse(args)?;
-    let runtime = runtime()?;
+    let runtime = runtime();
     if !present(runtime, "exec", &args.name)? {
         return Ok(3);
     }
@@ -328,7 +328,7 @@ fn exec(args: &[String]) -> io::Result<i32> {
 /// failure.
 fn stat(args: &[String]) -> io::Result<i32> {
     let name = single_name(args, "stat")?;
-    let runtime = runtime()?;
+    let runtime = runtime();
     if !present(runtime, "stat", &name)? {
         return Ok(3);
     }
@@ -350,7 +350,7 @@ fn present(runtime: &dyn Runtime, verb: &str, name: &str) -> io::Result<bool> {
 /// Print one JSON line per box matching every `--label` filter.
 fn list(args: &[String]) -> io::Result<i32> {
     let filters = parse_labels(args)?;
-    for box_ in runtime()?.list()? {
+    for box_ in runtime().list()? {
         let matches = filters.iter().all(|(key, value)| match value {
             Some(value) => box_.labels.get(key) == Some(value),
             None => box_.labels.contains_key(key),
@@ -381,7 +381,7 @@ fn prune(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(usage("box", "prune takes no arguments"));
     }
-    for dead in clean::prune_boxes(runtime()?)? {
+    for dead in clean::prune_boxes(runtime())? {
         println!(
             "{}",
             serde_json::json!({
@@ -398,7 +398,7 @@ fn prune(args: &[String]) -> io::Result<i32> {
 /// unless `--dry-run`.
 pub fn clean(args: &[String]) -> io::Result<i32> {
     let (dry_run, unused) = parse_clean(args)?;
-    let runtime = runtime()?;
+    let runtime = runtime();
     let plan = CleanPlan::measure(runtime, unused)?;
     if dry_run {
         println!("pinfold clean: dry run; {} B reclaimable", plan.total());
@@ -584,29 +584,20 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     println!("pinfold doctor: {}", root.display());
 
     let runtime = runtime();
+    println!("runtime: {} ({})", runtime.name(), runtime.isolation());
     // A missing runtime binary is this host's one problem; the checks that
     // need the runtime fail with the same absence and are not counted again.
     let mut runtime_missing = false;
-    match &runtime {
-        Ok(runtime) => {
-            let runtime = *runtime;
-            println!("runtime: {} ({})", runtime.name(), runtime.isolation());
-            match runtime.version() {
-                Ok(version) => println!("  version: {version}"),
-                Err(error) => {
-                    println!("  version: unavailable: {error}");
-                    problems += 1;
-                    runtime_missing = error.kind() == io::ErrorKind::NotFound;
-                }
-            }
-            if runtime.name() == "podman" {
-                problems += report_podman();
-            }
-        }
+    match runtime.version() {
+        Ok(version) => println!("  version: {version}"),
         Err(error) => {
-            println!("runtime: unavailable: {error}");
+            println!("  version: unavailable: {error}");
             problems += 1;
+            runtime_missing = error.kind() == io::ErrorKind::NotFound;
         }
+    }
+    if runtime.name() == "podman" {
+        problems += report_podman();
     }
 
     match kernel() {
@@ -616,15 +607,12 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
 
     let image = crate::pi::launch::resolve_image(&config, &project);
     println!("image: {image}");
-    match &runtime {
-        Ok(runtime) => match report_image(&config, *runtime, &image) {
-            Ok(missing) => problems += missing,
-            Err(error) => {
-                println!("  unchecked: {error}");
-                problems += usize::from(!runtime_missing);
-            }
-        },
-        Err(_) => println!("  unchecked: no runtime"),
+    match report_image(&config, runtime, &image) {
+        Ok(missing) => problems += missing,
+        Err(error) => {
+            println!("  unchecked: {error}");
+            problems += usize::from(!runtime_missing);
+        }
     }
 
     match artifacts::pins() {
@@ -698,21 +686,18 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     }
 
     println!("disk:");
-    match &runtime {
-        Ok(runtime) => match CleanPlan::measure(*runtime, None) {
-            Ok(plan) => {
-                plan.print();
-                let total = plan.total();
-                if total > CLEAN_SUGGESTION_BYTES {
-                    println!("  {total} B is over 20 GB; run `pinfold clean`");
-                }
+    match CleanPlan::measure(runtime, None) {
+        Ok(plan) => {
+            plan.print();
+            let total = plan.total();
+            if total > CLEAN_SUGGESTION_BYTES {
+                println!("  {total} B is over 20 GB; run `pinfold clean`");
             }
-            Err(error) => {
-                println!("  unavailable: {error}");
-                problems += usize::from(!runtime_missing);
-            }
-        },
-        Err(_) => println!("  unavailable: no runtime"),
+        }
+        Err(error) => {
+            println!("  unavailable: {error}");
+            problems += usize::from(!runtime_missing);
+        }
     }
 
     if problems == 0 {
@@ -894,10 +879,7 @@ pub fn config(args: &[String]) -> io::Result<i32> {
     let project = crate::pi::state::project_id(&root);
     let home = crate::pi::state::project_home(&root)?;
     let image = crate::pi::launch::resolve_image(&config, &project);
-    let image_built = !matches!(
-        image_status(runtime()?, &image, None)?,
-        ImageStatus::Missing
-    );
+    let image_built = !matches!(image_status(runtime(), &image, None)?, ImageStatus::Missing);
     let trust = match trust::check(&root, &config) {
         Ok(()) => serde_json::json!({ "ok": true, "detail": "ok" }),
         Err(error) => serde_json::json!({ "ok": false, "detail": error.to_string() }),
@@ -1048,7 +1030,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
             (config.profile, project)
         }
     };
-    let runtime = runtime()?;
+    let runtime = runtime();
     // A project image records the profile image it was built from, so
     // `pinfold pi` warns when the profile image moves past it; a profile
     // image records the image its FROM pulls.

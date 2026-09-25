@@ -1,10 +1,5 @@
-//! The rootless podman runtime adapter.
-//!
-//! Linux boxes share the host kernel, so the adapter adds the controls the
-//! spec names for podman: keep-id user namespaces, no-new-privileges, a
-//! seccomp profile that blocks nested user namespaces, no host `/etc/hosts`
-//! or resolvers, swap disabled, a task cap, and the proxy socket bind-mounted
-//! 0600 in a 0700 state directory.
+//! The rootless podman runtime adapter. Linux boxes share the host kernel,
+//! so it adds the controls the spec's "podman adds" list names.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -80,7 +75,9 @@ impl Runtime for Podman {
     }
 
     fn down(&self, name: &str) -> io::Result<()> {
-        run(&down_argv(name))
+        // `-f` makes removing a box that is already gone succeed; `-t 0`
+        // skips the stop grace period the spec does not grant.
+        run(&["podman", "rm", "-f", "-t", "0", name])
     }
 
     fn exec(
@@ -828,10 +825,4 @@ fn home_value(plan: &Plan) -> OsString {
         Some(Env::From { from }) => std::env::var_os(from).unwrap_or_else(|| "/tmp".into()),
         None => "/tmp".into(),
     }
-}
-
-/// The `podman rm` argv that stops and removes a box, as data. `-f` makes
-/// removing a box that is already gone succeed.
-fn down_argv(name: &str) -> Vec<&str> {
-    vec!["podman", "rm", "-f", "-t", "0", name]
 }

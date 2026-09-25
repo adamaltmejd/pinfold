@@ -191,8 +191,7 @@ impl Box {
         let profile = resolve_profile(&mut plan)
             .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
 
-        let runtime =
-            runtime().map_err(|error| refused(&plan, RefusalReason::Runtime, error.to_string()))?;
+        let runtime = runtime();
         let preflight = runtime
             .preflight()
             .map_err(|error| refused(&plan, RefusalReason::Runtime, error.to_string()))?;
@@ -352,7 +351,7 @@ pub fn down(name: &str) -> io::Result<()> {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
-    runtime()?.down(name)?;
+    runtime().down(name)?;
     let _ = fs::remove_dir_all(&state);
     Ok(())
 }
