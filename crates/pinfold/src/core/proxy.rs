@@ -15,13 +15,13 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 use crate::core::plan::{Egress, Route, Target};
-use crate::core::{network, tls};
+use crate::core::{network, rfc3339, tls};
 
 /// The loopback URL clients reach through `pinfold init`'s relay.
 pub const PROXY_URL: &str = "http://127.0.0.1:3128";
@@ -772,7 +772,12 @@ fn refuse(client: &mut UnixStream, log: &Path, host: &str, code: u16, reason: &s
 
 /// Append one decision as a JSON line. No header value is ever written.
 fn record(log: &Path, host: &str, decision: &str, reason: &str) {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default();
     let mut line = serde_json::json!({
+        "time": rfc3339(seconds),
         "host": host,
         "decision": decision,
         "reason": reason,
