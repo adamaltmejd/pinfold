@@ -99,6 +99,18 @@ Tags:
   rules, the threat model's controls, trust), removes a feature, or deletes
   a guarantee row. Not the agent's call; it goes to Adam.
 
+Two more for the e2e crate, where the unit is the assertion block and the
+bar is the one in AGENTS.md (a spec line, an outside observer, an expected
+value from outside pinfold, no twin):
+
+- `taut:` an expected value from pinfold's own output or a copy of its
+  logic. Name the outside source, or delete.
+- `easy:` a scenario that is the guarantee's simplest case. Name the
+  harder one.
+
+A change-detector assertion (wording, layout, a count that is not the
+guarantee) is `delete:`.
+
 Examples, invented to show the shape:
 
 `core/runtime/apple.rs:L210: dup: image inspect parsed twice, once per adapter. Keep runtime/mod.rs::inspect. [spec: none] [-31]`

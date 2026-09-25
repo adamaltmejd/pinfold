@@ -52,8 +52,21 @@ rules for changing the repository.
   env vars, `.pinfold.toml`, and the box spec.
 - **A fixed list.** One test per guarantee in ARCHITECTURE.md, named for it
   (`box_has_no_route_to_host`, not `test_network_3`). A new test needs a new
-  guarantee, or a bug to reproduce through the CLI. Nothing tests argv
-  shapes, file layout, help text or log wording.
+  guarantee. A bug is a scenario its guarantee was missing: the fix extends
+  that test and adds none. A bug no guarantee covers is a missing
+  guarantee, so a spec change. Nothing tests argv shapes, file layout, help
+  text or log wording; a reason is a spec-named token, and the prose around
+  it is never asserted.
+- **The hardest case.** A test's scenario is where the guarantee's mechanism
+  is most likely to give: a race, a second run, a nested or reordered
+  input. Not the first case that passes.
+- **Expected values come from outside pinfold:** the spec, the runtime, the
+  fixture, the host. Never from pinfold's own output or a copy of its logic,
+  unless the guarantee is that two outputs agree.
+- **Every assertion block earns its place:** a spec line, an observer
+  outside the binary, an expected value from outside pinfold, and no twin
+  elsewhere. One that fails the bar is deleted and the guarantee row edited
+  to match; rewriting is the exception.
 - **Tests must be able to fail:**
   1. Positive controls. Every "refused" test shows the allowed version
      succeeding in the same box.
