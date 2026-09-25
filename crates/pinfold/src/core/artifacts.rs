@@ -20,7 +20,8 @@ pub const GUEST_PI: &str = "/opt/pinfold/pi";
 /// pi's pinned release.
 const PI_VERSION: &str = "0.87.1";
 
-/// The host path of the pinned pi binary for a box on this host.
+/// The host directory of the pinned pi release for a box on this host: what
+/// the box mounts at [`GUEST_PI`], holding the `pi` binary.
 pub fn pi() -> io::Result<PathBuf> {
     let (os_arch, sha256) = pin()?;
     let dir = pi_dir(os_arch)?;
@@ -28,7 +29,7 @@ pub fn pi() -> io::Result<PathBuf> {
         "https://github.com/earendil-works/pi/releases/download/v{PI_VERSION}/pi-{os_arch}.tar.gz"
     );
     dirs::install_dir(&dir, |staging| unpack(staging, &url, sha256, os_arch))?;
-    Ok(dir.join("pi").join("pi"))
+    Ok(dir.join("pi"))
 }
 
 /// The `os-arch` of pi's release for a box on this host (Apple `container`

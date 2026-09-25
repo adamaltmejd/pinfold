@@ -18,7 +18,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use crate::cli;
 use crate::config::Config;
 use crate::core::artifacts::{self, GUEST_PI};
-use crate::core::r#box::{Box, RefusalReason, UpError};
+use crate::core::r#box::{Box, RefusalReason, Signals, UpError};
 use crate::core::clean;
 use crate::core::plan::{Egress, Env, HARNESS_PI, Mount, Plan};
 use crate::core::runtime::{ImageStatus, exec_through_init, image_status, runtime};
@@ -231,7 +231,8 @@ fn run_box(plan: &Plan, cwd: &Path, argv: &[String]) -> io::Result<i32> {
     let result = runtime.block_on(async {
         // Register the handlers before the box starts, so a closed terminal
         // during startup is caught and the box is removed once it is up.
-        let mut shutdown = Shutdown::new()?;
+        let mut signals = Signals::new()?;
+        let mut hangup = signal(SignalKind::hangup())?;
         // The handlers above are the run's; `up` installs none of its own.
         // A spec refusal reads as the pi layer's own input error.
         let mut box_ = match Box::up(plan, &init, None).await {
@@ -241,7 +242,7 @@ fn run_box(plan: &Plan, cwd: &Path, argv: &[String]) -> io::Result<i32> {
             }
             Err(error) => return Err(error.into()),
         };
-        let code = exec_pi(&plan.name, &init, tty, cwd, argv, &mut shutdown).await;
+        let code = exec_pi(&plan.name, &init, tty, cwd, argv, &mut signals, &mut hangup).await;
         // Remove the box exactly once, whatever ended the run. A failed
         // removal must not hide the error that ended pi.
         let down = box_.down().await;
@@ -270,7 +271,8 @@ async fn exec_pi(
     tty: bool,
     cwd: &Path,
     argv: &[String],
-    shutdown: &mut Shutdown,
+    signals: &mut Signals,
+    hangup: &mut tokio::signal::unix::Signal,
 ) -> io::Result<i32> {
     let runtime = runtime();
     let name = name.to_string();
@@ -285,33 +287,7 @@ async fn exec_pi(
         status = &mut exec => cli::exit_code(
             status.map_err(|error| io::Error::other(format!("pi exec failed: {error}")))??,
         ),
-        signal = shutdown.recv() => 128 + signal as i32,
+        signal = signals.recv() => 128 + signal as i32,
+        _ = hangup.recv() => 128 + Signal::SIGHUP as i32,
     })
-}
-
-/// The signals that end a run. Once pi runs on a TTY, Ctrl-C and Ctrl-\
-/// are bytes on the terminal; a SIGINT before that, a closed terminal and
-/// SIGTERM remove the box. The handlers are installed before the box starts.
-struct Shutdown {
-    hangup: tokio::signal::unix::Signal,
-    terminate: tokio::signal::unix::Signal,
-    interrupt: tokio::signal::unix::Signal,
-}
-
-impl Shutdown {
-    fn new() -> io::Result<Shutdown> {
-        Ok(Shutdown {
-            hangup: signal(SignalKind::hangup())?,
-            terminate: signal(SignalKind::terminate())?,
-            interrupt: signal(SignalKind::interrupt())?,
-        })
-    }
-
-    async fn recv(&mut self) -> Signal {
-        tokio::select! {
-            _ = self.hangup.recv() => Signal::SIGHUP,
-            _ = self.terminate.recv() => Signal::SIGTERM,
-            _ = self.interrupt.recv() => Signal::SIGINT,
-        }
-    }
 }

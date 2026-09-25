@@ -39,56 +39,23 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// The most connections one box may have open at once.
 const MAX_CONNECTIONS: usize = 64;
 
-/// A running proxy, owned by the `box up` process.
-pub struct Proxy {
-    socket: PathBuf,
-    stop: Arc<AtomicBool>,
-    thread: Option<thread::JoinHandle<()>>,
-}
-
-impl Proxy {
-    /// Bind the box's socket, create its log, and serve until closed.
-    pub fn start(socket: PathBuf, egress: &Egress, log: PathBuf) -> io::Result<Proxy> {
-        let rules = Arc::new(Rules::new(egress)?);
-        let listener = UnixListener::bind(&socket)?;
-        if let Some(parent) = log.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        // The log exists before the first decision, so it is found from the
-        // host even for a box that made no request.
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log)?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread = {
-            let stop = Arc::clone(&stop);
-            thread::spawn(move || serve(listener, stop, rules, log))
-        };
-        Ok(Proxy {
-            socket,
-            stop,
-            thread: Some(thread),
-        })
+/// Bind the box's socket, create its log, and serve. The accept thread is
+/// never stopped: each owner exits right after teardown, which deletes the
+/// socket.
+pub fn start(socket: &Path, egress: &Egress, log: PathBuf) -> io::Result<()> {
+    let rules = Arc::new(Rules::new(egress)?);
+    let listener = UnixListener::bind(socket)?;
+    if let Some(parent) = log.parent() {
+        fs::create_dir_all(parent)?;
     }
-
-    /// The host path of the socket, for the transport to carry in.
-    pub fn socket(&self) -> &Path {
-        &self.socket
-    }
-
-    /// Stop accepting and wait for the accept loop to drop the listener.
-    pub fn close(mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        // Wake the blocked accept so it sees the flag. When the socket is
-        // already gone the accept thread cannot be woken; leave it to the
-        // process exit rather than joining forever.
-        if UnixStream::connect(&self.socket).is_ok()
-            && let Some(thread) = self.thread.take()
-        {
-            let _ = thread.join();
-        }
-    }
+    // The log exists before the first decision, so it is found from the
+    // host even for a box that made no request.
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)?;
+    thread::spawn(move || serve(listener, rules, log));
+    Ok(())
 }
 
 /// One box's egress rules: the allowlist and the routes.
@@ -169,33 +136,24 @@ fn tls_config() -> io::Result<Arc<ClientConfig>> {
     Ok(Arc::new(config))
 }
 
-fn serve(listener: UnixListener, stop: Arc<AtomicBool>, rules: Arc<Rules>, log: PathBuf) {
+fn serve(listener: UnixListener, rules: Arc<Rules>, log: PathBuf) {
     let active = Arc::new(AtomicUsize::new(0));
-    loop {
-        match listener.accept() {
-            Ok((mut client, _)) => {
-                if stop.load(Ordering::SeqCst) {
-                    break;
-                }
-                if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
-                    active.fetch_sub(1, Ordering::SeqCst);
-                    refuse(&mut client, &log, "", 503, "connection cap");
-                    continue;
-                }
-                let rules = Arc::clone(&rules);
-                let log = log.clone();
-                let active = Arc::clone(&active);
-                thread::spawn(move || {
-                    handle(client, &rules, &log);
-                    active.fetch_sub(1, Ordering::SeqCst);
-                });
-            }
-            Err(_) => {
-                if stop.load(Ordering::SeqCst) {
-                    break;
-                }
-            }
+    for client in listener.incoming() {
+        let Ok(mut client) = client else {
+            continue;
+        };
+        if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+            active.fetch_sub(1, Ordering::SeqCst);
+            refuse(&mut client, &log, "", 503, "connection cap");
+            continue;
         }
+        let rules = Arc::clone(&rules);
+        let log = log.clone();
+        let active = Arc::clone(&active);
+        thread::spawn(move || {
+            handle(client, &rules, &log);
+            active.fetch_sub(1, Ordering::SeqCst);
+        });
     }
 }
 

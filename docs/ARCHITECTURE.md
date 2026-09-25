@@ -108,7 +108,7 @@ need `loginctl enable-linger`.
    reports ready.
 6. `exec` work as the host uid:gid, with `HTTPS_PROXY` and `http_proxy` set
    to `http://127.0.0.1:3128`.
-7. Remove the box, close the proxy, delete the socket.
+7. Remove the box and delete the socket.
 
 One `pinfold box up` process owns one box. It does steps 1–5, holds the
 proxy, and does step 7 on `down`, stdin EOF or SIGTERM. If it dies, the

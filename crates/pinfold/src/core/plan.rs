@@ -1,7 +1,6 @@
 //! The box spec: the JSON a caller gives `box up`, parsed into a [`Plan`].
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::error::Error;
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -17,7 +16,7 @@ pub const HARNESS_PI: &str = "pi";
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
-    /// The box's name; also its state directory name.
+    /// The box's name.
     pub name: String,
     /// The image to run. When absent, the profile's image is used.
     #[serde(default)]
@@ -105,9 +104,9 @@ pub struct Target {
 impl Inject {
     /// The parsed target and each header with its value from this process's
     /// environment. Errors name the header and the variable, never a value.
-    pub fn resolve(&self) -> Result<(Target, Vec<(String, String)>), PlanError> {
+    pub fn resolve(&self) -> Result<(Target, Vec<(String, String)>), String> {
         let target = parse_target(&self.to).ok_or_else(|| {
-            PlanError::Invalid(format!(
+            invalid(format!(
                 "route target {:?} must be an http:// or https:// origin",
                 self.to
             ))
@@ -115,22 +114,20 @@ impl Inject {
         let mut headers = Vec::with_capacity(self.headers.len());
         for (name, header) in &self.headers {
             if !valid_header_name(name) {
-                return Err(PlanError::Invalid(format!(
-                    "route header {name:?} cannot be injected"
-                )));
+                return Err(invalid(format!("route header {name:?} cannot be injected")));
             }
             if header.from.is_empty() {
-                return Err(PlanError::Invalid(format!(
+                return Err(invalid(format!(
                     "route header {name:?} needs a from variable"
                 )));
             }
             let value = match std::env::var(&header.from) {
                 Ok(value) => value,
                 Err(std::env::VarError::NotPresent) => {
-                    return Err(PlanError::MissingEnv(header.from.clone()));
+                    return Err(format!("environment variable {} is not set", header.from));
                 }
                 Err(std::env::VarError::NotUnicode(_)) => {
-                    return Err(PlanError::Invalid(format!(
+                    return Err(invalid(format!(
                         "route header {name:?}: {} is not UTF-8",
                         header.from
                     )));
@@ -139,7 +136,7 @@ impl Inject {
             let value = format!("{}{value}", header.prefix);
             // A line break or NUL would let the value frame its own headers.
             if value.contains(['\r', '\n', '\0']) {
-                return Err(PlanError::Invalid(format!(
+                return Err(invalid(format!(
                     "route header {name:?}: its prefix or {} holds CR, LF or NUL",
                     header.from
                 )));
@@ -221,43 +218,41 @@ impl Plan {
     /// Parse one box spec from a reader, leaving any data after the JSON
     /// value unread so `box up` can watch the same stdin for EOF. The caller
     /// validates, so a refusal can name the box when the JSON parsed.
-    pub fn from_reader(reader: impl Read) -> Result<Plan, PlanError> {
+    pub fn from_reader(reader: impl Read) -> Result<Plan, String> {
         serde_json::Deserializer::from_reader(reader)
             .into_iter::<Plan>()
             .next()
-            .ok_or_else(|| PlanError::Invalid("no box spec on stdin".into()))?
-            .map_err(|error| PlanError::Invalid(error.to_string()))
+            .ok_or_else(|| invalid("no box spec on stdin"))?
+            .map_err(invalid)
     }
 
     /// Check a parsed spec.
-    pub fn validate(&self) -> Result<(), PlanError> {
+    pub fn validate(&self) -> Result<(), String> {
         if !valid_name(&self.name) {
-            return Err(PlanError::Invalid(format!(
+            return Err(invalid(format!(
                 "name {:?} must start alphanumeric and hold only [A-Za-z0-9._-]",
                 self.name
             )));
         }
         if self.image.as_deref() == Some("") {
-            return Err(PlanError::Invalid("image must not be empty".into()));
+            return Err(invalid("image must not be empty"));
         }
         // Two mounts at one guest path would be ambiguous: the runtime
         // applies both, and whichever comes last shadows the other.
         let mut guests = BTreeSet::new();
         if self.image.is_none() && self.profile.is_none() {
-            return Err(PlanError::Invalid(
-                "a box spec needs an image or a profile".into(),
-            ));
+            return Err(invalid("a box spec needs an image or a profile"));
         }
         if let Some(harness) = &self.harness
             && harness != HARNESS_PI
         {
-            return Err(PlanError::Invalid(format!(
+            return Err(invalid(format!(
                 "harness {harness:?} is not supported; the only harness is {HARNESS_PI:?}"
             )));
         }
         for mount in &self.mounts {
             if !mount.host.is_absolute() || !mount.guest.is_absolute() {
-                return Err(PlanError::Invalid(format!(
+                return Err(invalid(format!(
                     "mount {}:{} must be absolute",
                     mount.host.display(),
                     mount.guest.display()
@@ -265,25 +260,22 @@ impl Plan {
             }
             for path in [&mount.host, &mount.guest] {
                 if !valid_mount_path(path) {
-                    return Err(PlanError::Invalid(format!(
+                    return Err(invalid(format!(
                         "mount path {:?} must not hold ',' or an ASCII control character",
                         path
                     )));
                 }
             }
-            // A mount's host path is a directory the runtime binds. A
-            // missing path is left to the runtime; one that exists and is
-            // not a directory is refused here, so both runtimes answer the
-            // same. `metadata` follows symlinks: a symlink to a directory
-            // passes, to a file is refused.
+            // A missing host is left to the runtime; `metadata` follows
+            // symlinks, so a symlink to a directory passes.
             if std::fs::metadata(&mount.host).is_ok_and(|metadata| !metadata.is_dir()) {
-                return Err(PlanError::Invalid(format!(
+                return Err(invalid(format!(
                     "mount host {} is not a directory",
                     mount.host.display()
                 )));
             }
             if !guests.insert(mount.guest.as_path()) {
-                return Err(PlanError::Invalid(format!(
+                return Err(invalid(format!(
                     "two mounts name the same guest path {}",
                     mount.guest.display()
                 )));
@@ -291,14 +283,14 @@ impl Plan {
         }
         for (name, value) in &self.env {
             if !valid_env_name(name) {
-                return Err(PlanError::Invalid(format!(
+                return Err(invalid(format!(
                     "env name {name:?} must match [A-Za-z_][A-Za-z0-9_]*"
                 )));
             }
             if let Env::From { from } = value
                 && std::env::var_os(from).is_none()
             {
-                return Err(PlanError::MissingEnv(from.clone()));
+                return Err(format!("environment variable {from} is not set"));
             }
         }
         if let Some(egress) = &self.egress {
@@ -316,12 +308,12 @@ impl Plan {
 /// trailing `*` in `--env NAME` against its own environment, which is the
 /// caller's, so anything else would leak or fail unpredictably.
 fn valid_env_name(name: &str) -> bool {
-    let mut bytes = name.bytes();
-    match bytes.next() {
-        Some(first) if first.is_ascii_alphabetic() || first == b'_' => {}
-        _ => return false,
-    }
-    bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    name.bytes()
+        .next()
+        .is_some_and(|byte| !byte.is_ascii_digit())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 /// A mount path that survives `type=bind,source=HOST,target=GUEST`: the
@@ -336,30 +328,14 @@ fn valid_mount_path(path: &Path) -> bool {
 }
 
 fn valid_name(name: &str) -> bool {
-    let mut bytes = name.bytes();
-    match bytes.next() {
-        Some(first) if first.is_ascii_alphanumeric() => {}
-        _ => return false,
-    }
-    bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' || byte == b'.')
+    name.bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
 }
 
-/// Why a box spec was refused.
-#[derive(Debug)]
-pub enum PlanError {
-    Invalid(String),
-    MissingEnv(String),
+fn invalid(message: impl fmt::Display) -> String {
+    format!("invalid box spec: {message}")
 }
-
-impl fmt::Display for PlanError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PlanError::Invalid(message) => write!(formatter, "invalid box spec: {message}"),
-            PlanError::MissingEnv(name) => {
-                write!(formatter, "environment variable {name} is not set")
-            }
-        }
-    }
-}
-
-impl Error for PlanError {}

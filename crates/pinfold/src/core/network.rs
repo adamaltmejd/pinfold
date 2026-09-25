@@ -1,11 +1,4 @@
 //! Address checks for the egress proxy.
-//!
-//! A name is resolved once and every address it resolves to must pass
-//! [`forbidden`] before the first is dialed. A route's target is a host
-//! service and is dialed without these checks, except an injecting route's
-//! `https` target, which is checked like an allowlisted host. An IPv6
-//! address that embeds an IPv4 one (IPv4-mapped, IPv4-compatible, NAT64
-//! `64:ff9b::/96` or 6to4) is checked as that IPv4 address.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 
@@ -139,31 +132,20 @@ fn forbidden_v6(ip: Ipv6Addr) -> Option<&'static str> {
 /// Split an authority into its host and port, handling a bracketed IPv6
 /// host. `default` is the port when it names none.
 pub fn authority_host(authority: &str, default: u16) -> Option<(&str, u16)> {
-    if let Some(rest) = authority.strip_prefix('[') {
-        let (host, rest) = rest.split_once(']')?;
-        if host.is_empty() {
-            return None;
-        }
-        let port = match rest {
-            "" => default,
-            rest => {
-                let port = rest.strip_prefix(':')?;
-                if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
-                    return None;
-                }
-                port.parse().ok()?
-            }
-        };
-        return Some((host, port));
-    }
-    match authority.rsplit_once(':') {
-        Some((host, port)) => {
-            if host.is_empty() || port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit())
-            {
-                return None;
-            }
-            Some((host, port.parse().ok()?))
-        }
-        None => Some((authority, default)),
-    }
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']')? {
+            (host, "") => (host, None),
+            (host, port) => (host, Some(port.strip_prefix(':')?)),
+        },
+        None => match authority.rsplit_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => return Some((authority, default)),
+        },
+    };
+    let port = match port {
+        None => default,
+        Some(port) if port.bytes().all(|byte| byte.is_ascii_digit()) => port.parse().ok()?,
+        Some(_) => return None,
+    };
+    (!host.is_empty()).then_some((host, port))
 }

@@ -258,7 +258,7 @@ fn up(args: &[String]) -> io::Result<i32> {
         let mut signals = Signals::new()?;
         let plan = tokio::select! {
             biased;
-            () = signals.recv() => {
+            _ = signals.recv() => {
                 println!("{}", down_line(None, Shutdown::Signal));
                 io::stdout().flush()?;
                 return Ok(0);
@@ -275,7 +275,7 @@ fn up(args: &[String]) -> io::Result<i32> {
                         return Ok(refused(Refusal {
                             box_name: None,
                             reason: RefusalReason::Spec,
-                            detail: error.to_string(),
+                            detail: error,
                         }));
                     }
                     Err(error) => return Err(io::Error::other(error)),
@@ -310,9 +310,9 @@ fn up(args: &[String]) -> io::Result<i32> {
 
 /// Start the validated box, report it ready, hold it, and print the `down`
 /// line. A refusal prints its own line.
-async fn hold_up(plan: &Plan, signals: Signals) -> io::Result<i32> {
+async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
     let init = artifacts::init()?;
-    let mut box_ = match Box::up(plan, &init, Some(signals)).await {
+    let mut box_ = match Box::up(plan, &init, Some(&mut signals)).await {
         Ok(box_) => box_,
         Err(UpError::Refused(refusal)) => return Ok(refused(refusal)),
         Err(UpError::Signal) => {
@@ -333,7 +333,7 @@ async fn hold_up(plan: &Plan, signals: Signals) -> io::Result<i32> {
         })
     );
     io::stdout().flush()?;
-    let shutdown = box_.hold().await?;
+    let shutdown = box_.hold(&mut signals).await?;
     // Teardown is done, so the down line names a box the caller can
     // start again. It ends the stream.
     println!("{}", down_line(Some(&plan.name), shutdown));

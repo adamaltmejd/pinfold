@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
-use std::fmt;
 use std::fs;
 use std::fs::File;
 use std::io;
@@ -20,12 +19,11 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Child;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
-use crate::core::artifacts;
 use crate::core::clean;
 use crate::core::plan::{Env, HARNESS_PI, Mount, Plan};
 use crate::core::profile::{Profile, Seed};
-use crate::core::proxy::Proxy;
-use crate::core::runtime::{Preflight, Runtime, runtime};
+use crate::core::runtime::{Preflight, runtime};
+use crate::core::{artifacts, proxy};
 use crate::dirs;
 
 /// A started box, owned by this process.
@@ -44,9 +42,6 @@ pub struct Box {
     /// owner alive to every checker.
     _lock: Flock<File>,
     child: Child,
-    runtime: &'static dyn Runtime,
-    proxy: Option<Proxy>,
-    signals: Option<Signals>,
 }
 
 /// What stopped the box.
@@ -108,14 +103,6 @@ pub struct Refusal {
     pub detail: String,
 }
 
-impl fmt::Display for Refusal {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}: {}", self.reason.as_str(), self.detail)
-    }
-}
-
-impl std::error::Error for Refusal {}
-
 /// Why [`Box::up`] failed: a refusal, SIGTERM or SIGINT before ready, or any
 /// other error. Each removes what the start made before it returns.
 #[derive(Debug)]
@@ -123,25 +110,6 @@ pub enum UpError {
     Refused(Refusal),
     Signal,
     Other(io::Error),
-}
-
-impl fmt::Display for UpError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            UpError::Refused(refusal) => refusal.fmt(formatter),
-            UpError::Signal => formatter.write_str("stopped by a signal before ready"),
-            UpError::Other(error) => error.fmt(formatter),
-        }
-    }
-}
-
-impl std::error::Error for UpError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            UpError::Refused(_) | UpError::Signal => None,
-            UpError::Other(error) => Some(error),
-        }
-    }
 }
 
 impl From<io::Error> for UpError {
@@ -153,8 +121,10 @@ impl From<io::Error> for UpError {
 impl From<UpError> for io::Error {
     fn from(error: UpError) -> io::Error {
         match error {
-            UpError::Refused(refusal) => io::Error::other(refusal),
-            UpError::Signal => io::Error::new(io::ErrorKind::Interrupted, UpError::Signal),
+            UpError::Refused(refusal) => {
+                io::Error::other(format!("{}: {}", refusal.reason.as_str(), refusal.detail))
+            }
+            UpError::Signal => io::ErrorKind::Interrupted.into(),
             UpError::Other(error) => error,
         }
     }
@@ -173,7 +143,7 @@ impl Box {
     pub async fn up(
         plan: &Plan,
         init: &Path,
-        mut signals: Option<Signals>,
+        signals: Option<&mut Signals>,
     ) -> Result<Box, UpError> {
         if init.parent().is_none_or(|parent| parent == Path::new("/")) {
             return Err(io::Error::new(
@@ -186,13 +156,13 @@ impl Box {
         // The spec rules are the first refusal, before anything is created
         // or resolved.
         plan.validate()
-            .map_err(|error| refused(plan, RefusalReason::Spec, error.to_string()))?;
+            .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
 
         // The profile's image, share and home seeds are the box's to apply;
         // the runtime sees the resolved plan. Resolving writes nothing; the
         // seeds wait until the name is claimed.
         let mut plan = plan.clone();
-        let profile = resolve_profile(&mut plan)
+        let seeding = resolve_profile(&mut plan)
             .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
 
         let runtime = runtime();
@@ -236,7 +206,7 @@ impl Box {
         match runtime.list() {
             Ok(boxes) if boxes.iter().all(|box_| box_.id != plan.name) => {}
             listed => {
-                abort(runtime, &plan.name, &state_dir, Parts::default()).await;
+                abort(&plan.name, &state_dir, Parts::default()).await;
                 return Err(match listed {
                     Ok(_) => refused(
                         &plan,
@@ -254,16 +224,15 @@ impl Box {
         let starting = start(
             &mut plan,
             init,
-            runtime,
             &preflight,
-            profile.as_ref(),
+            seeding.as_ref(),
             &state_dir,
             &mut parts,
         );
-        let started = match &mut signals {
+        let started = match signals {
             Some(signals) => tokio::select! {
                 biased;
-                () = signals.recv() => Err(Stop::Signal),
+                _ = signals.recv() => Err(Stop::Signal),
                 started = starting => started,
             },
             None => starting.await,
@@ -271,7 +240,7 @@ impl Box {
         let labels = match started {
             Ok(labels) => labels,
             Err(stop) => {
-                let status = abort(runtime, &plan.name, &state_dir, parts).await;
+                let status = abort(&plan.name, &state_dir, parts).await;
                 return Err(match stop {
                     Stop::Signal => UpError::Signal,
                     Stop::Failed(error) => UpError::Other(error),
@@ -295,19 +264,12 @@ impl Box {
                 .child
                 .take()
                 .expect("a started box has a runtime child"),
-            runtime,
-            proxy: parts.proxy.take(),
-            signals,
         })
     }
 
     /// Wait until the box exits, stdin closes, or a termination signal
     /// arrives, then stop and remove the box.
-    pub async fn hold(&mut self) -> io::Result<Shutdown> {
-        let signals = self
-            .signals
-            .as_mut()
-            .expect("hold follows an up that took the signals");
+    pub async fn hold(&mut self, signals: &mut Signals) -> io::Result<Shutdown> {
         let reason = tokio::select! {
             reason = wait_for_shutdown(signals) => reason,
             status = self.child.wait() => status.map(Shutdown::BoxExited),
@@ -321,11 +283,8 @@ impl Box {
 
     /// Stop and remove the box, then delete its state directory.
     pub async fn down(&mut self) -> io::Result<()> {
-        let result = self.runtime.down(&self.name);
+        let result = runtime().down(&self.name);
         let _ = self.child.wait().await;
-        if let Some(proxy) = self.proxy.take() {
-            proxy.close();
-        }
         let _ = tokio::fs::remove_dir_all(&self.state_dir).await;
         result
     }
@@ -358,7 +317,7 @@ pub fn down(name: &str) -> io::Result<()> {
 }
 
 /// SIGTERM and SIGINT, handled by `box up` from before its spec is read to
-/// its exit.
+/// its exit, and by `pinfold pi` beside SIGHUP.
 pub struct Signals {
     terminate: Signal,
     interrupt: Signal,
@@ -372,10 +331,10 @@ impl Signals {
         })
     }
 
-    pub async fn recv(&mut self) {
+    pub async fn recv(&mut self) -> nix::sys::signal::Signal {
         tokio::select! {
-            _ = self.terminate.recv() => {}
-            _ = self.interrupt.recv() => {}
+            _ = self.terminate.recv() => nix::sys::signal::SIGTERM,
+            _ = self.interrupt.recv() => nix::sys::signal::SIGINT,
         }
     }
 }
@@ -397,19 +356,13 @@ impl From<io::Error> for Stop {
 /// What a start has made so far besides the claimed state dir.
 #[derive(Default)]
 struct Parts {
-    proxy: Option<Proxy>,
     child: Option<Child>,
 }
 
 /// Remove what a failed start left: stop the runtime child, take the box
-/// down, close the proxy, then remove the claimed state dir. The box goes
-/// down first, so no checker sees a box whose state dir is gone.
-async fn abort(
-    runtime: &dyn Runtime,
-    name: &str,
-    state_dir: &Path,
-    parts: Parts,
-) -> Option<io::Result<ExitStatus>> {
+/// down, then remove the claimed state dir. The box goes down first, so no
+/// checker sees a box whose state dir is gone.
+async fn abort(name: &str, state_dir: &Path, parts: Parts) -> Option<io::Result<ExitStatus>> {
     let status = match parts.child {
         Some(mut child) => {
             // The client goes first, so one still creating the box cannot
@@ -417,14 +370,11 @@ async fn abort(
             // readiness failed.
             let _ = child.start_kill();
             let status = child.wait().await;
-            let _ = runtime.down(name);
+            let _ = runtime().down(name);
             Some(status)
         }
         None => None,
     };
-    if let Some(proxy) = parts.proxy {
-        proxy.close();
-    }
     let _ = fs::remove_dir_all(state_dir);
     status
 }
@@ -435,36 +385,24 @@ async fn abort(
 fn claim(plan: &Plan) -> Result<(PathBuf, Flock<File>), UpError> {
     fs::create_dir_all(dirs::box_state_dir("")?)?;
     let state_dir = dirs::box_state_dir(&plan.name)?;
-    let mut reclaimed = false;
-    loop {
+    for retry in [true, false] {
         match fs::create_dir(&state_dir) {
             Ok(()) => break,
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error.into()),
         }
-        if reclaimed {
-            return Err(refused(
-                plan,
-                RefusalReason::NameInUse,
-                format!(
-                    "state dir {} was claimed by another start",
-                    state_dir.display()
-                ),
-            ));
-        }
-        if clean::owner_alive(&state_dir) {
+        if !retry || clean::owner_alive(&state_dir) {
             return Err(refused(
                 plan,
                 RefusalReason::NameInUse,
                 format!("state dir {} is held by a live owner", state_dir.display()),
             ));
         }
-        match fs::remove_dir_all(&state_dir) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+        if let Err(error) = fs::remove_dir_all(&state_dir)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            return Err(error.into());
         }
-        reclaimed = true;
     }
     match lock_pid(&state_dir) {
         Ok(lock) => Ok((state_dir, lock)),
@@ -498,9 +436,8 @@ fn lock_pid(state_dir: &Path) -> io::Result<Flock<File>> {
 async fn start(
     plan: &mut Plan,
     init: &Path,
-    runtime: &'static dyn Runtime,
     preflight: &Preflight,
-    profile: Option<&ResolvedProfile>,
+    seeding: Option<&Seeding>,
     state_dir: &Path,
     parts: &mut Parts,
 ) -> Result<BTreeMap<String, String>, Stop> {
@@ -508,28 +445,29 @@ async fn start(
     // refused box downloads nothing. The spec's own env wins.
     resolve_harness(plan)?;
 
-    if let Some(profile) = profile
-        && let Some((mount, relative)) = &profile.seed
-    {
-        seed_home(mount, relative, &profile.home)?;
+    if let Some(seeding) = seeding {
+        seed_home(seeding)?;
     }
 
     // The proxy comes up before the box, so the socket is listening when
     // the runtime forwards it.
-    if let Some(egress) = &plan.egress {
-        let log = dirs::egress_dir()?.join(format!("{}.jsonl", plan.name));
-        parts.proxy = Some(Proxy::start(state_dir.join("proxy.sock"), egress, log)?);
-    }
+    let socket = match &plan.egress {
+        Some(egress) => {
+            let socket = state_dir.join("proxy.sock");
+            let log = dirs::egress_dir()?.join(format!("{}.jsonl", plan.name));
+            proxy::start(&socket, egress, log)?;
+            Some(socket)
+        }
+        None => None,
+    };
 
     // A signal that arrived during the steps above wins the select here,
     // before the runtime is asked to create anything.
     tokio::task::yield_now().await;
-    let child = parts.child.insert(runtime.up(
-        plan,
-        init,
-        parts.proxy.as_ref().map(Proxy::socket),
-        preflight,
-    )?);
+    let runtime = runtime();
+    let child = parts
+        .child
+        .insert(runtime.up(plan, init, socket.as_deref(), preflight)?);
     let stdout = child
         .stdout
         .take()
@@ -546,7 +484,7 @@ async fn start(
     // Apple only: the forwarded socket arrives root-owned and mode 000.
     // The one root exec happens before ready reaches the caller, so no
     // work can race it.
-    if parts.proxy.is_some() {
+    if socket.is_some() {
         runtime.make_proxy_connectable(&plan.name)?;
     }
     // Keep the pipe drained so a talkative box cannot block on it.
@@ -572,7 +510,7 @@ async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
     let mut buffer = [0u8; 4096];
     loop {
         tokio::select! {
-            () = signals.recv() => return Ok(Shutdown::Signal),
+            _ = signals.recv() => return Ok(Shutdown::Signal),
             read = stdin.read(&mut buffer) => {
                 if read? == 0 {
                     return Ok(Shutdown::StdinEof);
@@ -589,12 +527,8 @@ fn resolve_harness(plan: &mut Plan) -> io::Result<()> {
     if plan.harness.as_deref() != Some(HARNESS_PI) {
         return Ok(());
     }
-    let pi = artifacts::pi()?;
     plan.mounts.push(Mount {
-        host: pi
-            .parent()
-            .expect("the pi artifact is a file")
-            .to_path_buf(),
+        host: artifacts::pi()?,
         guest: PathBuf::from(artifacts::GUEST_PI),
         readonly: true,
     });
@@ -615,17 +549,20 @@ fn resolve_harness(plan: &mut Plan) -> io::Result<()> {
     Ok(())
 }
 
-/// A profile resolved before the refusal checks: its `home/` seeds and,
-/// when it has any, the writable mount behind `$HOME` to copy them into.
-struct ResolvedProfile {
-    home: Vec<Seed>,
-    seed: Option<(Mount, PathBuf)>,
+/// A profile's `home/` seeds, resolved before the refusal checks, and the
+/// writable mount behind `$HOME` to copy them into.
+struct Seeding {
+    mount: Mount,
+    /// The plain path from the mount's guest root to `$HOME`.
+    relative: PathBuf,
+    seeds: Vec<Seed>,
 }
 
 /// Load the spec's profile and fold its image and `share/` mount into the
 /// plan. The seed target is computed here but nothing is written, so every
-/// refusal that depends on the profile is decided before creation.
-fn resolve_profile(plan: &mut Plan) -> io::Result<Option<ResolvedProfile>> {
+/// refusal that depends on the profile is decided before creation. Returns
+/// the seeding when the profile has `home/` seeds.
+fn resolve_profile(plan: &mut Plan) -> io::Result<Option<Seeding>> {
     let Some(name) = plan.profile.clone() else {
         return Ok(None);
     };
@@ -640,35 +577,15 @@ fn resolve_profile(plan: &mut Plan) -> io::Result<Option<ResolvedProfile>> {
             readonly: true,
         });
     }
-    let seed = if profile.home.is_empty() {
-        None
-    } else {
-        let home = exact_home(plan, &name)?;
-        let (mount, relative) = home_mount(plan, &name, &home)?;
-        Some((mount.clone(), relative))
-    };
-    Ok(Some(ResolvedProfile {
-        home: profile.home,
-        seed,
+    if profile.home.is_empty() {
+        return Ok(None);
+    }
+    let (mount, relative) = home_mount(plan, &name)?;
+    Ok(Some(Seeding {
+        mount,
+        relative,
+        seeds: profile.home,
     }))
-}
-
-/// The spec's exact `$HOME` entry, when a profile seeds it.
-fn exact_home(plan: &Plan, name: &str) -> io::Result<PathBuf> {
-    plan.env
-        .get("HOME")
-        .and_then(|value| match value {
-            Env::Exact(value) => Some(PathBuf::from(value)),
-            Env::From { .. } => None,
-        })
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "profile {name:?} seeds $HOME, but the box spec has no exact HOME env entry"
-                ),
-            )
-        })
 }
 
 /// A refusal carrying `plan`'s box name.
@@ -680,40 +597,40 @@ fn refused(plan: &Plan, reason: RefusalReason, detail: impl Into<String>) -> UpE
     })
 }
 
-/// The mount behind a guest `$HOME` and the plain path from its guest root
-/// to `$HOME`. The mount must be writable and the path must not step out of
-/// it.
-fn home_mount<'a>(plan: &'a Plan, name: &str, home: &Path) -> io::Result<(&'a Mount, PathBuf)> {
-    let mut best: Option<(&'a Mount, &Path)> = None;
-    for mount in &plan.mounts {
-        let Ok(relative) = home.strip_prefix(&mount.guest) else {
-            continue;
-        };
-        let deeper = best.as_ref().is_none_or(|(best, _)| {
-            mount.guest.components().count() > best.guest.components().count()
-        });
-        if deeper {
-            best = Some((mount, relative));
-        }
-    }
-    let Some((mount, relative)) = best else {
-        return Err(io::Error::new(
+/// The mount behind the spec's exact `$HOME` and the plain path from its
+/// guest root to `$HOME`, for profile `name`'s seeds. The mount must be
+/// writable and the path must not step out of it.
+fn home_mount(plan: &Plan, name: &str) -> io::Result<(Mount, PathBuf)> {
+    let refuse = |why: String| {
+        io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!(
-                "profile {name:?} seeds $HOME, but $HOME={} is not on a mount",
-                home.display()
-            ),
-        ));
+            format!("profile {name:?} seeds $HOME, but {why}"),
+        )
+    };
+    let Some(Env::Exact(home)) = plan.env.get("HOME") else {
+        return Err(refuse("the box spec has no exact HOME env entry".into()));
+    };
+    let home = Path::new(home);
+    // The deepest mount holding `$HOME`. `rev` keeps the first on a tie,
+    // which only a spec mount at the profile's share path can make.
+    let Some((mount, relative)) = plan
+        .mounts
+        .iter()
+        .rev()
+        .filter_map(|mount| Some((mount, home.strip_prefix(&mount.guest).ok()?)))
+        .max_by_key(|(mount, _)| mount.guest.components().count())
+    else {
+        return Err(refuse(format!(
+            "$HOME={} is not on a mount",
+            home.display()
+        )));
     };
     if mount.readonly {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "profile {name:?} seeds $HOME, but $HOME={} is on the read-only mount {}",
-                home.display(),
-                mount.guest.display()
-            ),
-        ));
+        return Err(refuse(format!(
+            "$HOME={} is on the read-only mount {}",
+            home.display(),
+            mount.guest.display()
+        )));
     }
     // The walk below handles normal components only; `..` would step out of
     // the mount and `.` is noise.
@@ -721,29 +638,27 @@ fn home_mount<'a>(plan: &'a Plan, name: &str, home: &Path) -> io::Result<(&'a Mo
         .components()
         .any(|component| !matches!(component, Component::Normal(_)))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "profile {name:?} seeds $HOME, but $HOME={} is not a plain path under the mount {}",
-                home.display(),
-                mount.guest.display()
-            ),
-        ));
+        return Err(refuse(format!(
+            "$HOME={} is not a plain path under the mount {}",
+            home.display(),
+            mount.guest.display()
+        )));
     }
-    Ok((mount, relative.to_path_buf()))
+    Ok((mount.clone(), relative.to_path_buf()))
 }
 
 /// Copy seeds into the host `$HOME`, skipping anything already there. The
 /// walk starts at the mount's host directory and follows no symlink: the box
 /// can write the mount, so a planted symlink must not redirect a seed
 /// outside it.
-fn seed_home(mount: &Mount, relative: &Path, seeds: &[Seed]) -> io::Result<()> {
-    let root = open_mount_dir(&mount.host)?;
-    for seed in seeds {
+fn seed_home(seeding: &Seeding) -> io::Result<()> {
+    let host = &seeding.mount.host;
+    let root = open_mount_dir(host)?;
+    for seed in &seeding.seeds {
         seed_file(
             &root,
-            &mount.host,
-            &relative.join(&seed.path),
+            host,
+            &seeding.relative.join(&seed.path),
             &seed.contents,
         )?;
     }
