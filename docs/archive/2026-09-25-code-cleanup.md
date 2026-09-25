@@ -10,19 +10,19 @@ one commit per module. Three reworks went to parked heavy tickets.
 
 | Measure | Before (068dcbc) | After (this pass) |
 |---|---|---|
-| Commits since v0.0.2 | 49 | 61 (9 from this pass; 3 skill edits by Adam landed meanwhile) |
-| Lines added / deleted since v0.0.2, whole tree | 4462 / 2481 (ratio 0.56) | 5018 / 3721 (0.74) |
-| Lines added / deleted since v0.0.2, `crates/` | 4000 / 2368 (0.59) | 4523 / 3532 (0.78) |
-| This pass, whole tree | | 985 / 1669 (delete/add 1.69) |
-| This pass, `crates/pinfold` | | 696 / 1147 |
-| This pass, `crates/e2e` | | 231 / 421 |
-| This pass, README, ARCHITECTURE.md, `profile/` | | 31 / 86 |
-| Largest source file | `crates/e2e/tests/box.rs`, 2982 | 2778 |
-| Largest file in the binary crate | `cli.rs`, 1461 | 1356 |
-| `docs/ARCHITECTURE.md` | 698 lines | 692 |
+| Commits since v0.0.2 | 49 | 69 (16 from this pass; 4 by Adam meanwhile) |
+| Lines added / deleted since v0.0.2, whole tree | 4462 / 2481 (ratio 0.56) | 5385 / 4136 (0.77) |
+| Lines added / deleted since v0.0.2, `crates/` | 4000 / 2368 (0.59) | 4710 / 3942 (0.84) |
+| This pass, whole tree | | 1409 / 2141 (delete/add 1.52) |
+| This pass, `crates/pinfold` | | 786 / 1585 |
+| This pass, `crates/e2e` | | 382 / 447 |
+| This pass, README, ARCHITECTURE.md, `profile/` | | 41 / 92 |
+| Largest source file | `crates/e2e/tests/box.rs`, 2982 | 2797 |
+| Largest file in the binary crate | `cli.rs`, 1461 | 1208 |
+| `docs/ARCHITECTURE.md` | 698 lines | 696 |
 | Tickets landed since the last report (Y-70) | 0 | 0 (Y-71 to Y-73 filed, parked) |
 | Tickets born from a lane proposal | 0 | 0 |
-| Suite wall time, last macOS gate (Y-60) | box 90 s, pi 28 s, cli 0.3 s | box 93 s, pi 37 s, cli 0.6 s (this pass, host run) |
+| Suite wall time, last macOS gate (Y-60) | box 90 s, pi 28 s, cli 0.3 s | box 67 s, pi 25 s, cli 0.3 s (this pass, host run) |
 
 Step 1 found nothing mechanical: the nine dependencies match the spec's
 list, clippy with `dead_code` and `unreachable_pub` is clean, there is no
@@ -49,6 +49,11 @@ three tickets. The rest is in "Rejected" with its re-admission condition.
 | 2075993 | runtime | The `io::Result` on `runtime()` for an OS the target table rules out (every caller's `map_err`, doctor's two "no runtime" arms and the daily pass's match with it); four one-caller functions returning an argv literal; `user()`'s duplicated format; the podman module doc's copy of the spec's control list. |
 | 5b9fbb6 | e2e | Six copies of run-and-assert `build --profile`; two image-cleanup Drops; three profile Containerfile writes; two host git inits and two status runs; three "image named by reference minus `localhost/`" scans; four line-by-line JSON parses; `labeled_images`'s `(id, name)` pairs that both callers reduced to ids; `box_up_refused`'s copy of `box_up_start`; `Up`'s own child, stdin and stdout beside `Starting`'s; `TestDir`'s Drop (`TestEnv` removes the root); the fixture's second request counter; two copies of "refused run, then plant a cache marker"; three one-caller helpers. Sabotage comments now name `Box::up`'s validate, podman's `rm` argv and `containerfile: None` where the old names are gone. |
 | 906fdae | docs, profile | From README: the not-protected list, the Shared files paragraph and Apple table, the credentials paragraph, the `--from-project` sentence (each ARCHITECTURE.md's text again) and the Roadmap (history). From ARCHITECTURE.md: the pi layer's environment bullet restating the harness bullet, and five sentences repeating Terms, Images, Pinned artifacts or AGENTS.md; the default image's list now names `unzip`, which the Containerfile installs. The profile's Containerfile and `pinfold.toml` keep one comment line each; the extension drops its restated rule; `bump-pins.sh` hashes from stdin. |
+| 8699e63 | proxy | The hand parse of the request line before httparse's (one parse, both methods; a CONNECT with headers httparse rejects is now a 400); `head_well_formed`'s folded-header pass (httparse refuses obs-fold). A9, A11. |
+| 6d85229 | pi | `Shutdown`'s `Option<interrupt>` and second `select!` (SIGINT always ends a run); `hooks_path`'s `git config --get` (`rev-parse --git-path hooks` resolves it as git does). A7, A8. |
+| 1b62abf | config, cli, runtime | `Origin`, `Origins`, `scalar_origin`, the provenance block and `config`'s `origins` object; doctor's podman diagnostics (`Detected`, `detect`, `tun_present`, `subordinate_ids_cover`, `IdMap`, `InfoIdMappings`, `docker_present`, `report_podman`, `print_cgroup_manager`) and its prose config and artifacts sections (it prints the verbs' JSON). A1, A2, A3. |
+| 480202e | docs | Nothing; the spec names the profile's `share/pi` package and its `skills/` directory. A12. |
+| 5a397dd | e2e | Nothing; the four untested keys and verbs Adam kept get assertions, `box_stat` moves to the library, and guarantee 21 asserts GitHub's header. A4, A5, A6, the flaky test. |
 
 Three unrelated commits (f963c8b, 574d189, 6febb04) edited the
 `code-cleanup` skill itself while this pass ran.
@@ -117,6 +122,34 @@ an ARCHITECTURE.md edit in the same commit as the deletion.
 | A11 | `head_well_formed`'s folded-header pass: httparse 1.10 already rejects obs-fold in requests, so a folded header still gets 400, logged "malformed request" instead of "ambiguous framing". | L328-329 | -3 | Yes if the log reason may change. |
 | A12 | The profile's `share/pi/skills/.gitkeep`, its `"skills": ["skills"]` entry in `package.json` and their embed in `profile.rs` give the profile a user-level skills path the spec does not name; guarantee 14's fixture writes its profile skill there and would move to `home/.pi/agent/skills`. | L456 | -5, one file | Cut the path, or add it to L456? |
 
+### Adam's answers, later the same day
+
+| # | Answer | Landed as |
+|---|---|---|
+| A1 | Delete. | 1b62abf: `Config::origins`, `Origin`, `Origins`, `scalar_origin` and the two printers gone; `pinfold config` has no `origins` object. |
+| A2 | Cut to what the spec names. | 1b62abf: doctor prints preflight's verdict and the linger line; `Detected`, `detect`, `tun_present`, `subordinate_ids_cover`, `IdMap`, `InfoIdMappings`, `docker_present`, `report_podman` and `print_cgroup_manager` gone. |
+| A3 | Yes. | 1b62abf: doctor's config and artifacts sections are the JSON `pinfold config` and `pinfold artifacts` print (`config_report`, `pins_json`). |
+| A4 | Keep; test it. | 5a397dd: `the_highest_layer_sets_the_allowlist` sets `cpus = 2` and `memory = "1G"` and reads them back through `box stat` and the box's `cpu.max`. |
+| A5 | Keep; test it. | 5a397dd: `the_box_cannot_write_git_or_protected_config` names `tooling` in `protect` and shows the write refused and the file unchanged. |
+| A6 | Keep untested, except `--unused` and `--from-project`. | 5a397dd: the cleanup test runs `clean --unused 0s` (the live project survives, the other goes); the state test runs `profile new --from-project` (the edited settings arrive, `auth.json` stays behind). |
+| A7 | Yes. | 6d85229: SIGINT always removes the box; spec, process supervision. |
+| A8 | Yes. | 6d85229: `rev-parse --git-path hooks`; spec, Git. |
+| A9 | Yes. | 8699e63: one httparse pass; spec, plain HTTP bullet. |
+| A10 | Keep (legal input, cheap). | Nothing. |
+| A11 | Yes. | 8699e63: folded headers are httparse's refusal. |
+| A12 | Keep; say it in the spec, on the condition that pi loads the package's skills as skills (guarantee 14's test shows that: the profile skill's description reaches the model). | 480202e. |
+| Flaky test | Fix. | 5a397dd: guarantee 21's https check asserts GitHub's own response header instead of a 200, since GitHub rate-limits its runners to a 403 and a failed TLS dial would be the proxy's 502 with no such header. |
+
+Sabotage reruns for the tests those commits touched, one per test:
+
+| Test | Sabotage rerun | Bit |
+|---|---|---|
+| `the_highest_layer_sets_the_allowlist` | `cpus` and `memory` dropped from the plan | yes |
+| `the_box_cannot_write_git_or_protected_config` | the configured `protect` list ignored | yes |
+| `project_state_persists_and_stays_separate` | every agent entry copied | yes |
+| `cleanup_removes_only_pinfolds_garbage` | `--unused` skips the live-box check | yes |
+| `an_injecting_route_keeps_the_credential_on_the_host` | the https route never dialed | yes |
+
 ## Rejected, with the condition that re-admits it
 
 | Finding | Lines | Why not | Re-admit when |
@@ -141,6 +174,7 @@ Speedups: none proposed with a before-number; none landed.
 
 Guarantees table against the tests: 25 rows, 25 tests, one each; no row
 changed. Open questions: none of the four is answered by the suite, so
-all four stay. Restatements cut are in 906fdae. The release tag is not
-part of this pass: Adam's list is unanswered, and the tag follows his
-answers.
+all four stay. Restatements cut are in 906fdae. Adam's answers landed
+the same day (the table above); the guarantees table still has one test
+per row, and no row changed. No release tag was requested with this
+pass.
