@@ -237,9 +237,6 @@ impl Plan {
         if self.image.as_deref() == Some("") {
             return Err(invalid("image must not be empty"));
         }
-        // Two mounts at one guest path would be ambiguous: the runtime
-        // applies both, and whichever comes last shadows the other.
-        let mut guests = BTreeSet::new();
         if self.image.is_none() && self.profile.is_none() {
             return Err(invalid("a box spec needs an image or a profile"));
         }
@@ -274,13 +271,8 @@ impl Plan {
                     mount.host.display()
                 )));
             }
-            if !guests.insert(mount.guest.as_path()) {
-                return Err(invalid(format!(
-                    "two mounts name the same guest path {}",
-                    mount.guest.display()
-                )));
-            }
         }
+        self.validate_guests(None)?;
         for (name, value) in &self.env {
             if !valid_env_name(name) {
                 return Err(invalid(format!(
@@ -299,6 +291,31 @@ impl Plan {
                     inject.resolve()?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Refuse two mounts at one guest path: the runtime applies both, and
+    /// whichever comes last shadows the other. `extra` is a guest path
+    /// pinfold mounts after `validate` has run, so `Box::up` checks the
+    /// final list too.
+    pub fn validate_guests(&self, extra: Option<&Path>) -> Result<(), String> {
+        let mut guests = BTreeSet::new();
+        for mount in &self.mounts {
+            if !guests.insert(mount.guest.as_path()) {
+                return Err(invalid(format!(
+                    "two mounts name the same guest path {}",
+                    mount.guest.display()
+                )));
+            }
+        }
+        if let Some(extra) = extra
+            && guests.contains(extra)
+        {
+            return Err(invalid(format!(
+                "two mounts name the same guest path {}",
+                extra.display()
+            )));
         }
         Ok(())
     }

@@ -381,6 +381,9 @@ fn up_refuses_before_it_creates() {
     // Sabotage: drop the not-a-directory check from the mount validation;
     // the file-mount spec then comes up `ready` on podman and ends `failed`
     // on Apple after the claim, so its `refused` assertion fails on both.
+    // Sabotage: check duplicate guest paths before pinfold's own mounts are
+    // added, as today; the profile-mount spec then comes up `ready` and its
+    // `refused` assertion fails.
     // Sabotage: make the claim treat an existing state dir as success, as
     // `create_dir_all` does, and make the name checks always pass; the
     // concurrent loser is never refused `name-in-use`, and its failure path
@@ -506,6 +509,41 @@ fn up_refuses_before_it_creates() {
             .as_str()
             .unwrap_or_default()
             .contains("f.txt"),
+        "the refusal did not name the path: {refused}"
+    );
+    assert_left_nothing(binary, &env, &name, label, "refused");
+
+    // A spec whose mount names a guest path pinfold's own mount uses is
+    // refused as data, naming the path, and leaves no state dir and no box:
+    // pinfold adds the profile's `share/` at /opt/pinfold/profile after the
+    // spec's own mounts, so the spec's directory would otherwise be silently
+    // shadowed. The positive control is the race's winner below, which comes
+    // up `ready` from the same image. Sabotage: check duplicates before
+    // pinfold's mounts are added, as today; this spec then comes up `ready`,
+    // so its `refused` assertion fails.
+    let work = env.root.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let spec_mount = env.root.join("spec-share");
+    fs::create_dir_all(&spec_mount).unwrap();
+    let profile_mount = serde_json::json!({
+        "name": name,
+        "profile": "default",
+        "labels": { "dev.example.test": "refuses" },
+        "env": { "HOME": "/work" },
+        "mounts": [
+            { "host": work, "guest": "/work", "readonly": false },
+            { "host": spec_mount, "guest": "/opt/pinfold/profile", "readonly": true },
+        ],
+    });
+    let (code, refused) = box_up_refused(binary, &env, &profile_mount, &[]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["event"], "refused");
+    assert_eq!(refused["reason"], "spec");
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("/opt/pinfold/profile"),
         "the refusal did not name the path: {refused}"
     );
     assert_left_nothing(binary, &env, &name, label, "refused");
