@@ -64,12 +64,12 @@ the harness's subagent tool (in Claude Code, the Agent tool with the
 it), all in one message so they run concurrently, told to edit nothing.
 Set the model on every call: a subagent that names none inherits the
 session's. The code modules take the family's mid tier, the one below its
-largest model (in Claude, Opus); the docs take the tier below that (in
-Claude, Sonnet), never the smallest. Modules:
+largest model (in Claude, Opus); the spec and the user-facing docs take
+the tier below that (in Claude, Sonnet), never the smallest. Modules:
 `cli`, `core/box`, `core/runtime` (all three files), `core/proxy`,
 `core/clean` with `core/image` and `core/artifacts`, `config` with
-`dirs`, `trust` and `init`, `pi/`, `crates/e2e/src/lib.rs`, and the docs
-(ARCHITECTURE.md, README.md, `share/`). The test files are the
+`dirs`, `trust` and `init`, `pi/`, `crates/e2e/src/lib.rs`, and the spec
+(ARCHITECTURE.md, `profile/`). The test files are the
 `test-audit` skill's: run its sweep in the same message and merge its
 list into step 3.
 
@@ -115,11 +115,28 @@ size (`docs/archive/2026-09-24-injecting-routes-binary-size.md`).
 Without one it is dropped, per AGENTS.md.
 
 Out of scope: correctness bugs (a bug goes through the CLI and gets its
-own ticket), test assertions, log and help wording. A test's positive
-control is never bloat.
+own ticket), test assertions, log and help wording (help is the
+user-facing docs agent's, below). A test's positive control is never
+bloat.
 
 The agent ranks its list biggest cut first and ends with
 `net: -<N> lines, -<M> deps possible.` Nothing to cut: `Lean already.`
+
+**The user-facing docs.** In the same message, one more subagent reads
+what a user reads: README.md, and the CLI's help from a build,
+`pinfold --help` and `--help` after each verb (neither touches the
+runtime or the state dir). The bar is AGENTS.md's for living docs, read
+as a user who wants to use the tool: every sentence says how to use the
+current tooling, as briefly as it can. It hunts history, motivation,
+rationale, and references to tickets, bugs, issues or releases; a
+sentence that restates the spec instead of pointing at it; wording longer
+than its meaning; and drift, where help or README disagrees with the
+spec's `## CLI` and Process interface blocks or with what the binary
+does. Its prompt carries the finding line above with three tags, `cut:`,
+`shrink:` (quoting the new text) and `drift:`, and it ends
+`net: -<N> lines.` or `Lean already.` Error and log messages are not its
+to judge. Its findings land with the docs; help text is the usage table
+in `cli.rs`.
 
 ## 3. Judge
 
