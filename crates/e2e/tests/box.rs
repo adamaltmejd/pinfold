@@ -6,17 +6,18 @@
 //! environment variables and the box spec are its only seams.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use e2e::{
-    HttpFixture, TestDir, TestEnv, box_exec, box_list, curl, default_image, egress_log,
-    egress_log_lines, exit_code, image_cli, image_digest, image_id, image_named, pinfold,
-    project_id, project_state_dir, remove_runtime_image, runtime_images, untagged_images,
+    HttpFixture, ImageCleanup, TestDir, TestEnv, box_exec, box_list, build_profile, curl,
+    default_image, egress_log, egress_log_lines, exit_code, git_init, git_status, image_cli,
+    image_digest, image_id, image_named, json_lines, labeled_images, pinfold,
+    profile_containerfile, project_id, project_state_dir, runtime_images, untagged_images,
 };
 
 /// The two owner-gone tests share one hazard: either one's removal can take
@@ -50,7 +51,7 @@ fn box_lifecycle_works_for_a_caller() {
     // Sabotage: let Apple's `down` pass the runtime's stderr through again;
     // on macOS the second `down` prints the runtime's not-found error and the
     // empty-stderr assertion fails.
-    // Sabotage: drop `-f` from podman's `down_argv`; podman then refuses
+    // Sabotage: drop `-f` from podman's `rm` argv in `down`; podman then refuses
     // `-t`, so `down` treats the non-zero `rm` status as an error and on
     // Linux the first `box down` fails the status assertion.
     // Sabotage: find the image in `Box::up` by exact string match against
@@ -1240,42 +1241,23 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let _images = ImageCleanup {
         repository: format!("pinfold/profile-{profile}"),
     };
-    let containerfile = env
-        .config
-        .join("pinfold")
-        .join("profiles")
-        .join(&profile)
-        .join("Containerfile");
-    fs::create_dir_all(containerfile.parent().unwrap()).unwrap();
     // `FROM scratch` keeps the test off the network and fast.
-    fs::write(&containerfile, b"FROM scratch\n").unwrap();
+    let containerfile = profile_containerfile(&env, &profile, "FROM scratch\n");
 
     // Record each build's unique tag. The `:latest` tag moves along, so a
     // box pins the image it started from by this tag. After three builds b1
     // is gone; b2 and b3 remain and b2 is the next removal candidate.
     let mut builds: Vec<String> = Vec::new();
     for _ in 0..3 {
-        let output = env
-            .command(binary)
-            .args(["build", "--profile", &profile])
-            .output()
-            .expect("run pinfold build");
-        assert!(
-            output.status.success(),
-            "pinfold build failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        build_profile(binary, &env, &profile);
         builds.push(built_unique_ref(&profile));
     }
     let b2 = builds[1].clone();
     let b3 = builds[2].clone();
 
     let images = labeled_images("dev.pinfold.profile", &profile);
-    let mut digests: Vec<&str> = images.iter().map(|(digest, _)| digest.as_str()).collect();
-    digests.sort_unstable();
-    digests.dedup();
     assert_eq!(
-        digests.len(),
+        images.len(),
         2,
         "after three builds of one source, two images should remain: {images:?}"
     );
@@ -1352,16 +1334,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
 
     // Build 4: b2 cannot go while box A holds it. The build still exits 0
     // and its one maintenance line names b2.
-    let output = env
-        .command(binary)
-        .args(["build", "--profile", &profile])
-        .output()
-        .expect("run pinfold build");
-    assert!(
-        output.status.success(),
-        "a build that could not remove an image failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let output = build_profile(binary, &env, &profile);
     builds.push(built_unique_ref(&profile));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -1395,16 +1368,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     up_a.down(binary, &env);
     assert!(up_a.wait().success(), "box A's up did not exit cleanly");
 
-    let output = env
-        .command(binary)
-        .args(["build", "--profile", &profile])
-        .output()
-        .expect("run pinfold build");
-    assert!(
-        output.status.success(),
-        "a build that could not remove an image failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let output = build_profile(binary, &env, &profile);
     builds.push(built_unique_ref(&profile));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -1455,13 +1419,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         .expect("run the runtime's build");
     assert!(status.success(), "building the unlabeled image failed");
     assert!(
-        runtime_images()
-            .expect("list images")
-            .iter()
-            .any(|image| image
-                .names
-                .iter()
-                .any(|name| name.contains(unlabeled.as_str()))),
+        image_named(&unlabeled),
         "the unlabeled image is missing before clean"
     );
 
@@ -1470,45 +1428,34 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // no pi artifact. Two projects get a cache marker: one runs a live box,
     // the other does not.
     let missing = format!("{profile}-missing");
-    let missing_containerfile = env
-        .config
-        .join("pinfold")
-        .join("profiles")
-        .join(&missing)
-        .join("Containerfile");
-    fs::create_dir_all(missing_containerfile.parent().unwrap()).unwrap();
-    fs::write(&missing_containerfile, b"FROM scratch\n").unwrap();
+    profile_containerfile(&env, &missing, "FROM scratch\n");
+    let seed_project = |project: &TestDir, text: &[u8]| {
+        let refused = env
+            .command(binary)
+            .args(["pi", "--version"])
+            .env("PINFOLD_PROFILE", &missing)
+            .current_dir(project.path())
+            .stdin(Stdio::null())
+            .output()
+            .expect("run pinfold pi");
+        assert!(!refused.status.success(), "pi ran a profile with no image");
+        let marker = project_state_dir(&env, project.path())
+            .join("home")
+            .join(".cache")
+            .join("marker");
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        fs::write(&marker, text).unwrap();
+        marker
+    };
 
     let live_project = TestDir::new(&env, "live-project");
-    let refused = env
-        .command(binary)
-        .args(["pi", "--version"])
-        .env("PINFOLD_PROFILE", &missing)
-        .current_dir(live_project.path())
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold pi");
-    assert!(!refused.status.success(), "pi ran a profile with no image");
+    let live_marker = seed_project(&live_project, b"live\n");
     let live_state = project_state_dir(&env, live_project.path());
     let live_id = project_id(&env, live_project.path());
-    let live_marker = live_state.join("home").join(".cache").join("marker");
-    fs::create_dir_all(live_marker.parent().unwrap()).unwrap();
-    fs::write(&live_marker, b"live\n").unwrap();
 
     let other_project = TestDir::new(&env, "other-project");
-    let refused = env
-        .command(binary)
-        .args(["pi", "--version"])
-        .env("PINFOLD_PROFILE", &missing)
-        .current_dir(other_project.path())
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold pi");
-    assert!(!refused.status.success(), "pi ran a profile with no image");
+    let other_marker = seed_project(&other_project, b"other\n");
     let other_state = project_state_dir(&env, other_project.path());
-    let other_marker = other_state.join("home").join(".cache").join("marker");
-    fs::create_dir_all(other_marker.parent().unwrap()).unwrap();
-    fs::write(&other_marker, b"other\n").unwrap();
 
     // A live pinfold box for the live project, and a dead box that names
     // no project.
@@ -1597,16 +1544,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "pinfold clean failed: {}",
         String::from_utf8_lossy(&clean.stderr)
     );
-    assert!(
-        runtime_images()
-            .expect("list images")
-            .iter()
-            .any(|image| image
-                .names
-                .iter()
-                .any(|name| name.contains(unlabeled.as_str()))),
-        "clean removed an unlabeled image"
-    );
+    assert!(image_named(&unlabeled), "clean removed an unlabeled image");
     assert!(
         !box_list(binary, &env, &live_label).is_empty(),
         "clean removed a live box"
@@ -1656,20 +1594,13 @@ fn every_build_reruns_its_steps() {
     let _images = ImageCleanup {
         repository: format!("pinfold/profile-{profile}"),
     };
-    let containerfile = env
-        .config
-        .join("pinfold")
-        .join("profiles")
-        .join(&profile)
-        .join("Containerfile");
-    fs::create_dir_all(containerfile.parent().unwrap()).unwrap();
     // Random bytes at build time: a cached `RUN` layer replays the first
     // build's file, so the two builds agree only when the cache is reused.
-    fs::write(
-        &containerfile,
-        b"FROM debian:trixie-slim\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\n",
-    )
-    .unwrap();
+    profile_containerfile(
+        &env,
+        &profile,
+        "FROM debian:trixie-slim\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\n",
+    );
 
     // podman's layer cache would show as untagged intermediate images. The
     // baseline is after the shared default build, so only these builds' own
@@ -1680,7 +1611,8 @@ fn every_build_reruns_its_steps() {
         None
     };
 
-    let first = build_profile(binary, &env, &profile);
+    build_profile(binary, &env, &profile);
+    let first = built_unique_ref(&profile);
     let first_stamp = file_from_image(binary, &env, &first, "rerun-1", "/stamp");
     // Positive control: the first build ran the `RUN` step and wrote /stamp.
     assert!(
@@ -1688,7 +1620,8 @@ fn every_build_reruns_its_steps() {
         "the first build left no /stamp"
     );
 
-    let second = build_profile(binary, &env, &profile);
+    build_profile(binary, &env, &profile);
+    let second = built_unique_ref(&profile);
     let second_stamp = file_from_image(binary, &env, &second, "rerun-2", "/stamp");
     assert_ne!(
         first_stamp, second_stamp,
@@ -1773,15 +1706,7 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         refs.push(reference);
     }
 
-    let names_ids = || {
-        let mut ids: Vec<String> = labeled_images("dev.pinfold.image", &name)
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
-        ids.sort_unstable();
-        ids.dedup();
-        ids
-    };
+    let names_ids = || labeled_images("dev.pinfold.image", &name);
     let kept = names_ids();
     assert_eq!(
         kept.len(),
@@ -1848,24 +1773,6 @@ fn image_build(
     (exit_code(output.status), line)
 }
 
-/// Build `profile` and return the stable ref `pinfold build` printed.
-fn build_profile(binary: &Path, env: &TestEnv, profile: &str) -> String {
-    let output = env
-        .command(binary)
-        .args(["build", "--profile", profile])
-        .output()
-        .expect("run pinfold build");
-    assert!(
-        output.status.success(),
-        "pinfold build failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("build output is UTF-8")
-        .trim()
-        .to_string()
-}
-
 /// The file at `path` in the image `reference`, read through a box named
 /// `name`.
 fn file_from_image(
@@ -1884,53 +1791,6 @@ fn file_from_image(
     output.stdout
 }
 
-/// Removes the run's images from the runtime store on drop, so a failing run
-/// does not leave them for the next run to count or for the operator's disk.
-struct ImageCleanup {
-    /// The image name every build of the source tags, e.g.
-    /// `pinfold/profile-<source>`.
-    repository: String,
-}
-
-impl Drop for ImageCleanup {
-    fn drop(&mut self) {
-        // Best effort: a Drop during unwinding must not panic.
-        let Ok(images) = runtime_images() else {
-            return;
-        };
-        // Every build tags the image `<repository>:<build>`, and the
-        // reference remains even when the label sabotage drops the source
-        // label.
-        let prefix = format!("{}:", self.repository);
-        for image in images {
-            for reference in image.names {
-                if reference.contains(&prefix) {
-                    remove_runtime_image(&reference);
-                }
-            }
-        }
-    }
-}
-
-/// The `(digest, reference)` of every image carrying `label = value`, from
-/// the runtime itself: its image list is the ground truth for what remains.
-fn labeled_images(label: &str, value: &str) -> Vec<(String, String)> {
-    let images = runtime_images().unwrap_or_else(|error| panic!("{error}"));
-    images
-        .into_iter()
-        .filter(|image| image.labels.get(label).map(String::as_str) == Some(value))
-        .flat_map(|image| {
-            let id = image.id;
-            let names = if image.names.is_empty() {
-                vec![id.clone()]
-            } else {
-                image.names
-            };
-            names.into_iter().map(move |name| (id.clone(), name))
-        })
-        .collect()
-}
-
 /// The unique tag of the image that `pinfold/profile-<profile>:latest` names
 /// now, with podman's `localhost/` prefix stripped. Each build tags its image
 /// `:latest` and one unique tag; the stable tag moves to every new build, so
@@ -1939,18 +1799,9 @@ fn labeled_images(label: &str, value: &str) -> Vec<(String, String)> {
 /// runtime may list one entry per tag.
 fn built_unique_ref(profile: &str) -> String {
     let latest = format!("pinfold/profile-{profile}:latest");
-    let images = runtime_images().expect("list the runtime's images");
-    let id = images
-        .iter()
-        .find(|image| {
-            image
-                .names
-                .iter()
-                .any(|name| name.strip_prefix("localhost/").unwrap_or(name) == latest)
-        })
-        .map(|image| image.id.clone())
-        .unwrap_or_else(|| panic!("no image names {latest}"));
-    images
+    let id = image_id(&latest).unwrap_or_else(|| panic!("no image names {latest}"));
+    runtime_images()
+        .expect("list the runtime's images")
         .iter()
         .filter(|image| image.id == id)
         .flat_map(|image| image.names.iter())
@@ -2461,7 +2312,19 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
 
     // The version `pinfold artifacts` pins. The caller records which pi it
     // ran from the same report.
-    let pins = artifacts(binary, &env);
+    let output = env
+        .command(binary)
+        .arg("artifacts")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold artifacts");
+    assert!(
+        output.status.success(),
+        "pinfold artifacts failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let pins: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).expect("pinfold artifacts output is JSON");
     let pi = pins
         .iter()
         .find(|pin| pin["name"] == "pi")
@@ -2528,12 +2391,7 @@ fn a_caller_owned_box_cannot_write_git() {
     let safe = format!("safe.directory={root}");
 
     // One host commit, so the box has history to read.
-    let status = Command::new("git")
-        .args(["init", "-q"])
-        .arg(repo.path())
-        .status()
-        .expect("run host git init");
-    assert!(status.success(), "host git init failed");
+    git_init(repo.path());
     fs::write(repo.path().join("committed.txt"), b"one\n").expect("write committed.txt");
     let status = Command::new("git")
         .arg("-C")
@@ -2670,18 +2528,7 @@ fn a_caller_owned_box_cannot_write_git() {
     assert!(up.wait().success(), "box up did not exit cleanly");
 
     // Host git works on the clone afterwards and runs nothing the box wrote.
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(repo.path())
-        .args(["status", "--porcelain"])
-        .output()
-        .expect("run host git status");
-    assert!(
-        status.status.success(),
-        "host git status failed: {}",
-        String::from_utf8_lossy(&status.stderr)
-    );
-    let porcelain = String::from_utf8_lossy(&status.stdout);
+    let porcelain = git_status(repo.path());
     assert!(
         porcelain.contains("new.txt"),
         "host git status lost the worktree change: {porcelain}"
@@ -2691,22 +2538,6 @@ fn a_caller_owned_box_cannot_write_git() {
         !repo.path().join(".git-moved").exists(),
         "the box renamed .git"
     );
-}
-
-/// `pinfold artifacts` as parsed JSON: one object per pin.
-fn artifacts(binary: &Path, env: &TestEnv) -> Vec<serde_json::Value> {
-    let output = env
-        .command(binary)
-        .arg("artifacts")
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold artifacts");
-    assert!(
-        output.status.success(),
-        "pinfold artifacts failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("pinfold artifacts output is JSON")
 }
 
 /// One `/proc/<pid>/status` field's value.
@@ -2740,28 +2571,25 @@ fn host_id(flag: &str) -> String {
 
 /// A `box up` process and its ready box.
 struct Up {
-    binary: PathBuf,
-    state: PathBuf,
-    cache: PathBuf,
     name: String,
     /// The parsed `ready` line.
     ready: serde_json::Value,
-    child: Child,
-    stdin: Option<ChildStdin>,
-    stdout: Option<BufReader<ChildStdout>>,
+    starting: Starting,
+    /// The `box down` that Drop runs, built while the test env is at hand.
+    down: Command,
 }
 
 impl Up {
     fn pid(&self) -> u32 {
-        self.child.id()
+        self.starting.child.id()
     }
 
     fn wait(&mut self) -> ExitStatus {
-        self.child.wait().expect("wait for box up")
+        self.starting.child.wait().expect("wait for box up")
     }
 
     fn kill(&mut self) {
-        self.child.kill().expect("kill box up");
+        self.starting.child.kill().expect("kill box up");
     }
 
     /// Run `box down` on this box and assert it succeeded.
@@ -2774,31 +2602,17 @@ impl Up {
     /// stream once teardown is done, so reading to EOF waits for the `down`
     /// line without a sleep.
     fn close_stdin(&mut self) -> Vec<serde_json::Value> {
-        drop(self.stdin.take());
-        let stdout = self.stdout.take().expect("box up stdout");
-        stdout
-            .lines()
-            .map(|line| {
-                serde_json::from_str(&line.expect("read box up output"))
-                    .expect("box up line is JSON")
-            })
-            .collect()
+        drop(self.starting.stdin.take());
+        self.starting.rest()
     }
 }
 
 impl Drop for Up {
     fn drop(&mut self) {
         // Best effort, so a panicking test does not leak a box.
-        let _ = Command::new(&self.binary)
-            .args(["box", "down", &self.name])
-            .env("XDG_STATE_HOME", &self.state)
-            .env("XDG_CACHE_HOME", &self.cache)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = self.down.status();
+        let _ = self.starting.child.kill();
+        let _ = self.starting.child.wait();
     }
 }
 
@@ -2825,7 +2639,7 @@ fn box_up_with_env(
 /// any of its output is read.
 struct Starting {
     child: Child,
-    stdin: ChildStdin,
+    stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
 }
 
@@ -2840,28 +2654,27 @@ impl Starting {
             .unwrap_or_else(|error| panic!("box up's first line {line:?} is not JSON: {error}"))
     }
 
-    /// Read the rest of `up`'s stdout to EOF, stdin still open.
+    /// Read the rest of `up`'s stdout to EOF.
     fn rest(&mut self) -> Vec<serde_json::Value> {
-        (&mut self.stdout)
-            .lines()
-            .map(|line| {
-                serde_json::from_str(&line.expect("read box up output"))
-                    .expect("box up line is JSON")
-            })
-            .collect()
+        let mut text = String::new();
+        self.stdout
+            .read_to_string(&mut text)
+            .expect("read box up output");
+        json_lines(&text)
     }
 
     /// The [`Up`] of a start whose first line was `ready`.
     fn into_up(self, binary: &Path, env: &TestEnv, name: &str, ready: serde_json::Value) -> Up {
+        let mut down = env.command(binary);
+        down.args(["box", "down", name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         Up {
-            binary: binary.to_path_buf(),
-            state: env.state.clone(),
-            cache: env.cache.clone(),
             name: name.to_string(),
             ready,
-            child: self.child,
-            stdin: Some(self.stdin),
-            stdout: Some(self.stdout),
+            starting: self,
+            down,
         }
     }
 }
@@ -2890,7 +2703,7 @@ fn box_up_start(
     let stdout = BufReader::new(child.stdout.take().expect("box up stdout"));
     Starting {
         child,
-        stdin,
+        stdin: Some(stdin),
         stdout,
     }
 }
@@ -2905,28 +2718,11 @@ fn box_up_refused(
     spec: &serde_json::Value,
     vars: &[(&str, &str)],
 ) -> (i32, serde_json::Value) {
-    let mut child = env
-        .command(binary)
-        .envs(vars.iter().copied())
-        .args(["box", "up"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("spawn pinfold box up");
-    let mut stdin = child.stdin.take().expect("box up stdin");
-    let spec = serde_json::to_string(spec).expect("serialize spec");
-    stdin.write_all(spec.as_bytes()).expect("write spec");
-    stdin.flush().expect("flush spec");
-    drop(stdin);
-
-    let output = child.wait_with_output().expect("wait for box up");
-    let stdout = String::from_utf8(output.stdout).expect("box up output is UTF-8");
-    let line = stdout.lines().next().expect("a refused up prints a line");
-    (
-        exit_code(output.status),
-        serde_json::from_str(line).expect("refusal line is JSON"),
-    )
+    let mut starting = box_up_start(binary, env, spec, vars);
+    drop(starting.stdin.take());
+    let line = starting.first_line();
+    let status = starting.child.wait().expect("wait for box up");
+    (exit_code(status), line)
 }
 
 /// Run `box stat` on a live box and parse its one JSON object.

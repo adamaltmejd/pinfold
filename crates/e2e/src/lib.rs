@@ -13,9 +13,8 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -223,6 +222,12 @@ pub fn image_named(reference: &str) -> bool {
 /// The id of the image the runtime lists under `reference`, ignoring
 /// podman's `localhost/` prefix.
 pub fn image_id(reference: &str) -> Option<String> {
+    runtime_image(reference).map(|image| image.id)
+}
+
+/// The image the runtime lists under `reference`, ignoring podman's
+/// `localhost/` prefix.
+pub fn runtime_image(reference: &str) -> Option<RuntimeImage> {
     runtime_images()
         .expect("list the runtime's images")
         .into_iter()
@@ -232,7 +237,43 @@ pub fn image_id(reference: &str) -> Option<String> {
                 .iter()
                 .any(|name| name.strip_prefix("localhost/").unwrap_or(name) == reference)
         })
+}
+
+/// The ids of every image carrying `label = value`, from the runtime
+/// itself: its image list is the ground truth for what remains.
+pub fn labeled_images(label: &str, value: &str) -> Vec<String> {
+    let mut ids: Vec<String> = runtime_images()
+        .unwrap_or_else(|error| panic!("{error}"))
+        .into_iter()
+        .filter(|image| image.labels.get(label).map(String::as_str) == Some(value))
         .map(|image| image.id)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// Removes every image tagged `<repository>:<tag>` from the runtime store on
+/// drop, so a failing run does not leave them for the next run to count or
+/// for the operator's disk. Every build tags its image so, and the tag
+/// remains even when a label sabotage drops the source label.
+/// Sabotage: hardcode `container`; `podman image ls` keeps the leak.
+pub struct ImageCleanup {
+    pub repository: String,
+}
+
+impl Drop for ImageCleanup {
+    fn drop(&mut self) {
+        // Best effort: a Drop during unwinding must not panic.
+        let prefix = format!("{}:", self.repository);
+        for image in runtime_images().unwrap_or_default() {
+            for reference in image.names {
+                if reference.contains(&prefix) {
+                    remove_runtime_image(&reference);
+                }
+            }
+        }
+    }
 }
 
 /// The digest the runtime's inspect reports for `reference`: podman's
@@ -285,24 +326,78 @@ pub fn default_image(binary: &Path, env: &TestEnv) -> &'static str {
     // fine, the tests read its labels and run boxes from it.
     const STABLE: &str = "pinfold/profile-default:latest";
     IMAGE.get_or_init(|| {
-        if image_named(STABLE) {
-            return;
+        if !image_named(STABLE) {
+            build_profile(binary, env, "default");
         }
-        let output = env
-            .command(binary)
-            .args(["build", "--profile", "default"])
-            .output()
-            .expect("run pinfold build --profile default");
-        assert!(
-            output.status.success(),
-            "pinfold build --profile default failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
     });
     STABLE
 }
 
-/// A host directory under the test's root, removed on drop.
+/// Run `pinfold build --profile NAME`, assert it succeeded, and return its
+/// output: the stable ref on stdout, any maintenance line on stderr.
+pub fn build_profile(binary: &Path, env: &TestEnv, name: &str) -> Output {
+    let output = env
+        .command(binary)
+        .args(["build", "--profile", name])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold build --profile");
+    assert!(
+        output.status.success(),
+        "pinfold build --profile {name} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+/// Write a user profile's Containerfile under the test's config dir and
+/// return its path.
+pub fn profile_containerfile(env: &TestEnv, profile: &str, contents: &str) -> PathBuf {
+    let path = env
+        .config
+        .join("pinfold")
+        .join("profiles")
+        .join(profile)
+        .join("Containerfile");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, contents).unwrap();
+    path
+}
+
+/// Create a git repository at `path`, so launch finds the project root.
+pub fn git_init(path: &Path) {
+    let status = Command::new("git")
+        .args(["init", "-q"])
+        .arg(path)
+        .status()
+        .expect("run git init");
+    assert!(status.success(), "git init failed in {}", path.display());
+}
+
+/// Host `git status --porcelain` in `path`, asserting it ran.
+pub fn git_status(path: &Path) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["status", "--porcelain"])
+        .output()
+        .expect("run host git status");
+    assert!(
+        output.status.success(),
+        "host git status failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// One JSON value per line of `text`.
+pub fn json_lines(text: &str) -> Vec<serde_json::Value> {
+    text.lines()
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|error| panic!("{line:?}: {error}")))
+        .collect()
+}
+
+/// A host directory under the test's root, removed with it.
 pub struct TestDir {
     path: PathBuf,
 }
@@ -316,12 +411,6 @@ impl TestDir {
 
     pub fn path(&self) -> &Path {
         &self.path
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
     }
 }
 
@@ -364,11 +453,7 @@ pub fn box_list(binary: &Path, env: &TestEnv, label: &str) -> Vec<serde_json::Va
         "box list failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8(output.stdout)
-        .expect("list output is UTF-8")
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("list line is JSON"))
-        .collect()
+    json_lines(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// The box's egress log, at the fixed path under pinfold's state dir.
@@ -381,11 +466,7 @@ pub fn egress_log(env: &TestEnv, name: &str) -> PathBuf {
 
 /// The parsed decision lines of a box's egress log.
 pub fn egress_log_lines(env: &TestEnv, name: &str) -> Vec<serde_json::Value> {
-    fs::read_to_string(egress_log(env, name))
-        .expect("read egress log")
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("log line is JSON"))
-        .collect()
+    json_lines(&fs::read_to_string(egress_log(env, name)).expect("read egress log"))
 }
 
 pub fn exit_code(status: ExitStatus) -> i32 {
@@ -427,7 +508,6 @@ pub fn project_id(env: &TestEnv, project: &Path) -> String {
 /// A host HTTP service, reachable from a box only through a route.
 pub struct HttpFixture {
     port: u16,
-    requests: Arc<AtomicUsize>,
     headers: Arc<Mutex<Vec<Headers>>>,
 }
 
@@ -439,23 +519,16 @@ impl HttpFixture {
     pub fn start() -> HttpFixture {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the fixture");
         let port = listener.local_addr().expect("fixture address").port();
-        let requests = Arc::new(AtomicUsize::new(0));
         let headers = Arc::new(Mutex::new(Vec::new()));
-        let counter = Arc::clone(&requests);
         let seen = Arc::clone(&headers);
         thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
-                let counter = Arc::clone(&counter);
                 let seen = Arc::clone(&seen);
-                thread::spawn(move || serve(stream, &counter, &seen));
+                thread::spawn(move || serve(stream, &seen));
             }
         });
-        HttpFixture {
-            port,
-            requests,
-            headers,
-        }
+        HttpFixture { port, headers }
     }
 
     /// The `host:port` a route names to reach the fixture.
@@ -465,7 +538,7 @@ impl HttpFixture {
 
     /// How many requests the fixture has answered.
     pub fn requests(&self) -> usize {
-        self.requests.load(Ordering::SeqCst)
+        self.headers().len()
     }
 
     /// The headers of each request the fixture has answered, in order.
@@ -476,7 +549,7 @@ impl HttpFixture {
 
 /// Answer one request with the Host header it carried, and record its
 /// headers.
-fn serve(mut stream: TcpStream, requests: &AtomicUsize, seen: &Mutex<Vec<Headers>>) {
+fn serve(mut stream: TcpStream, seen: &Mutex<Vec<Headers>>) {
     let Ok(clone) = stream.try_clone() else {
         return;
     };
@@ -503,7 +576,6 @@ fn serve(mut stream: TcpStream, requests: &AtomicUsize, seen: &Mutex<Vec<Headers
         }
     }
     seen.lock().expect("fixture headers").push(headers);
-    requests.fetch_add(1, Ordering::SeqCst);
     let body = format!("fixture host={host}\n");
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",

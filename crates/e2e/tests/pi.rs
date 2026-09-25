@@ -18,8 +18,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use e2e::{
-    TestDir, TestEnv, box_exec, box_list, curl, default_image, egress_log_lines, exit_code,
-    pinfold, project_home, project_id, remove_runtime_image, runtime_images,
+    ImageCleanup, TestDir, TestEnv, box_exec, box_list, build_profile, curl, default_image,
+    egress_log_lines, exit_code, git_init, git_status, pinfold, project_home, project_id,
 };
 
 #[test]
@@ -29,7 +29,7 @@ fn the_environment_is_exactly_the_spec() {
     // child's environment; `shhh` then appears in host `ps` while the box
     // runs and the ps assertion fails. Sabotage: let the box inherit the
     // host environment; the unprefixed variable is then present and its
-    // assertion fails. Sabotage: skip the `validate` call in the pi layer;
+    // assertion fails. Sabotage: skip the `validate` call in `Box::up`;
     // the `PINFOLD_ENV_BAD-NAME` run does not refuse and the refusal
     // assertions fail.
     let binary = pinfold();
@@ -98,7 +98,7 @@ fn the_environment_is_exactly_the_spec() {
     // A host PINFOLD_ENV_* name outside POSIX is refused as a spec before
     // the box starts, naming the derived name: the shell cannot export such
     // a name, but `Command::env` can set it. Sabotage: skip the `validate`
-    // call in the pi layer; the name reaches the runtime, the run does not
+    // call in `Box::up`; the name reaches the runtime, the run does not
     // refuse, and these assertions fail.
     let refused = env
         .command(binary)
@@ -197,8 +197,8 @@ fn a_changed_project_file_stops_the_run() {
     // recording its absence; the first run, with no `.pinfold.toml` and no
     // record, refuses as "not trusted" and the bare-run control fails.
     // Sabotage: record no Containerfile hash in trust::current
-    // (`Containerfile::Project(_) => None`); the changed Containerfile then
-    // runs and builds, and the two refusal assertions after the change fail.
+    // (`containerfile: None`); the changed Containerfile then runs and
+    // builds, and the two refusal assertions after the change fail.
     let binary = pinfold();
     let env = TestEnv::new("pi-trust");
     default_image(binary, &env);
@@ -284,7 +284,9 @@ fn a_changed_project_file_stops_the_run() {
     // The project's own Containerfile is trusted the same way: the
     // unchanged file builds and runs, and a change to it stops both the run
     // and the build until `pinfold allow` records the new bytes.
-    let _images = ProjectImageCleanup { id: id.clone() };
+    let _images = ImageCleanup {
+        repository: format!("pinfold/project-{id}"),
+    };
     let containerfile = project.path().join("Containerfile.pinfold");
     fs::write(
         &config,
@@ -609,16 +611,7 @@ fn the_box_cannot_write_git_or_protected_config() {
 
     // Host git runs nothing the box planted: the fsmonitor was never set,
     // no hook exists, and .git was not renamed.
-    let status = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(root)
-        .output()
-        .expect("run host git status");
-    assert!(
-        status.status.success(),
-        "host git status failed: {}",
-        String::from_utf8_lossy(&status.stderr)
-    );
+    git_status(root);
     assert!(
         !root.join("pwned-fsmonitor").exists(),
         "host git status ran the box's fsmonitor"
@@ -708,7 +701,17 @@ fn both_pi_config_levels_load_behind_a_route() {
     // (pi's models.md and custom-provider.md). The seeded settings.json from
     // `default` keeps defaultProjectTrust, so the project level loads too.
     let profile = "e2e-fake";
-    profile_new(binary, &env, profile);
+    let output = env
+        .command(binary)
+        .args(["profile", "new", profile, "--from", "default"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold profile new");
+    assert!(
+        output.status.success(),
+        "pinfold profile new {profile} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let profile_dir = env.config.join("pinfold/profiles").join(profile);
     let profile_marker = "pinfold-e2e-profile-skill-marker";
     write_skill(
@@ -1079,67 +1082,6 @@ fn build_output(binary: &Path, env: &TestEnv, project: &Path) -> Output {
         .stdin(Stdio::null())
         .output()
         .expect("run pinfold build")
-}
-
-/// Removes this project's images from the runtime store on drop, so a
-/// repeated run does not accumulate one project image per test project.
-/// Sabotage: hardcode `container`; `podman image ls` keeps the leak.
-struct ProjectImageCleanup {
-    id: String,
-}
-
-impl Drop for ProjectImageCleanup {
-    fn drop(&mut self) {
-        // Best effort: a Drop during unwinding must not panic.
-        let images = runtime_images().unwrap_or_default();
-        // Every build tags `pinfold/project-<id>:<build>` and moves `:latest`.
-        let prefix = format!("pinfold/project-{}:", self.id);
-        for reference in images.iter().flat_map(|image| &image.names) {
-            if reference.contains(&prefix) {
-                remove_runtime_image(reference);
-            }
-        }
-    }
-}
-
-/// Create a git repository at `path`, so launch finds the project root.
-fn git_init(path: &Path) {
-    let status = Command::new("git")
-        .args(["init", "-q"])
-        .arg(path)
-        .status()
-        .expect("run git init");
-    assert!(status.success(), "git init failed in {}", path.display());
-}
-
-/// Copy `default` into a user profile; the caller edits it before building.
-fn profile_new(binary: &Path, env: &TestEnv, name: &str) {
-    let output = env
-        .command(binary)
-        .args(["profile", "new", name, "--from", "default"])
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold profile new");
-    assert!(
-        output.status.success(),
-        "pinfold profile new {name} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-/// Build a user profile's image; `pinfold pi` refuses without it.
-fn build_profile(binary: &Path, env: &TestEnv, name: &str) {
-    let output = env
-        .command(binary)
-        .args(["build", "--profile", name])
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold build --profile");
-    assert!(
-        output.status.success(),
-        "pinfold build --profile {name} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 /// Write one discoverable skill whose description carries `marker`.
