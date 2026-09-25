@@ -289,7 +289,8 @@ The box spec `up` reads from stdin:
 - podman adds: `--userns=keep-id`, `--security-opt no-new-privileges`, a
   seccomp profile that also blocks `CLONE_NEWUSER`, `--no-hosts`, an empty
   read-only `/etc/resolv.conf`, `--memory-swap` equal to `--memory`,
-  `--pids-limit`, an explicit `HOME`, and `rm -f -t 0` at teardown.
+  `--pids-limit`, `--http-proxy=false`, an explicit `HOME`, and `rm -f -t 0`
+  at teardown.
 
 Runtime command lines are built as data.
 

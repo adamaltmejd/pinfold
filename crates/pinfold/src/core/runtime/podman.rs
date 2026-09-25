@@ -69,6 +69,8 @@ impl Runtime for Podman {
             bind(&resolv_conf, Path::new("/etc/resolv.conf"), true),
             "--pids-limit".into(),
             PIDS_LIMIT.to_string().into(),
+            // podman's run copies the client's proxy variables in by default.
+            "--http-proxy=false".into(),
         ];
         if let Some(memory) = &plan.memory {
             // Swap equal to memory: the limit is the memory the box gets, and
