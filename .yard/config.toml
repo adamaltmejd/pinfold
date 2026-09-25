@@ -30,7 +30,7 @@ max_batch = 8
 # transaction that verifies it, and the merge queue gates it before it lands.
 # A protected path, a residual acceptance and any change under .yard are always
 # yours to answer.
-approve = "manual"
+approve = "auto"
 
 [target]
 # ref is the branch finished work lands on.
@@ -39,7 +39,7 @@ ref = "main"
 # whatever approve says.
 # .yard/ is protected whatever this list holds: a project can only add to that.
 # The spec and the working rules: a design change is always the operator's.
-protected_paths = ["docs/ARCHITECTURE.md", "AGENTS.md"]
+protected_paths = ["docs/ARCHITECTURE.md", "AGENTS.md", "Cargo.toml", "Cargo.lock", ".github/"]
 
 [isolation]
 # dockerfile names the Dockerfile lanes and container gates are built from, as a
@@ -147,9 +147,10 @@ command = "git config --global safe.directory '*' && trufflehog git file:///work
 timeout_minutes = 5
 stage = "candidate"
 
-# The end-to-end suite on Apple container. It runs on this Mac, so it is
-# batch-stage only: code reaches the host after the exact head is approved,
-# never from an unreviewed candidate. A host gate gets a fresh HOME, which
+# The end-to-end suite on Apple container. It runs on this Mac, batch-stage,
+# on a candidate the review seat passed and the candidate gates cleared.
+# Under approve = "auto" no human reads it first; the protected paths above
+# and the seat's blocking list are the boundary (decided 2026-09-25). A host gate gets a fresh HOME, which
 # rustup's cargo resolves its toolchain through, so the command names the
 # user's real rustup and cargo homes. zig, cargo-zigbuild and container come
 # from the daemon's PATH.
@@ -187,7 +188,7 @@ effort = "xhigh"
 # Jev skips this seat only when it is confident the diff is outside this scope;
 # a change to .yard or a protected path always gets the full panel.
 when = "The change touches program behavior: Rust source, tests, Cargo or toolchain files, the profile, a Containerfile, or CI."
-instructions = "Judge the change against docs/ARCHITECTURE.md and AGENTS.md. Blocking: a weakened or missing security control, a secret that can reach argv or a log, a unit test or mock, and an end-to-end test that cannot fail (no positive control, or a pass on timeout)."
+instructions = "Judge the change against docs/ARCHITECTURE.md and AGENTS.md. Blocking: a weakened or missing security control, a secret that can reach argv or a log, a unit test or mock, and an end-to-end test that cannot fail (no positive control, or a pass on timeout). Also blocking, because the end-to-end gate runs the candidate on the operator's Mac: a build script, e2e code that reads or writes outside its own test directories and pinfold's state, and a network endpoint beyond the fixtures, api.github.com and example.com."
 context = ["docs/ARCHITECTURE.md", "AGENTS.md"]
 # instructions are one seat's own, appended verbatim to that seat's prompt and
 # to no other's, up to 4096 bytes; changing them invalidates the review evidence
