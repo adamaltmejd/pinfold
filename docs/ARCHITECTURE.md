@@ -299,6 +299,9 @@ The box spec `up` reads from stdin:
   `spec`, naming the path.
 - `memory` is a whole number followed by `M` or `G`, at least `256M`;
   anything else is refused as `spec`, naming it.
+- A string route value must be `host:port`, the port a number in
+  1–65535; anything else is refused as `spec`, naming the route. Only the
+  object form `{ "to": … }` takes an `http://` or `https://` origin.
 - An unknown key at any level of the spec is refused as `spec`, naming the
   key; pinfold never applies a spec partially.
 
@@ -683,7 +686,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 14 | Both pi config levels load behind a route | `pi -p` through the shim, against a fake model reached through a route: the model's request carries a skill from the profile and one from the project's `.pi/`. |
 | 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself; an image built on a profile's is its own family. `--dry-run` removes nothing. An unlabeled image, a live box, its project's state and `~/.cache` survive `pinfold clean`, also with `--unused 0s`, which removes an idle project's state; a dead box is removed and protects no project's cache. |
 | 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW carries the default list's hosts; with PINFOLD_ALLOW=api.github.com over a project's allow = ["registry.npmjs.org"], it is exactly that host, and registry.npmjs.org is refused as not allowlisted. |
-| 17 | up refuses before it creates | A missing image, a misspelled spec key, a bad env name, a `dev.pinfold.` label, a memory below 256M or without a unit, a mount path with a comma, a file mount, a mount at a path pinfold mounts and a live name are refused as data, naming the cause; a misspelled key's refusal also names the box, and a missing host path fails after the claim; each leaves no box and no state dir. The box whose name was reused still answers exec, and of two `up`s racing for one name exactly one wins. |
+| 17 | up refuses before it creates | A missing image, a misspelled spec key, a bad env name, a `dev.pinfold.` label, a memory below 256M or without a unit, a malformed string route, a mount path with a comma, a file mount, a mount at a path pinfold mounts and a live name are refused as data, naming the cause; a misspelled key's refusal also names the box, and a missing host path fails after the claim; each leaves no box and no state dir. The box whose name was reused still answers exec, and of two `up`s racing for one name exactly one wins. |
 | 18 | A caller reads the effective configuration as data | pinfold config reports a project's allow list, its trust state before and after pinfold allow, and the project home pinfold pi then mounts. |
 | 19 | A caller-owned box launches the pinned harness | A spec with each harness (pi, claude, codex) runs `/opt/pinfold/<name>/<name> --version` at the version `pinfold artifacts` pins, and the box's PINFOLD_ALLOW is the spec's allow list. |
 | 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, every field is present, and `exec`'d processes carry `oom_score_adj` 1000, so init is never the victim. |
