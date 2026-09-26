@@ -1888,6 +1888,9 @@ fn a_route_reaches_exactly_one_host_service() {
     // request then reaches the fixture as evil.example and its assertion
     // fails. The route reaches the fixture through the proxy; the fixture's
     // loopback port is not reachable from the box without it.
+    // Sabotage: report the route before dialing, so `status` stays null;
+    // the status assertion fails. Sabotage: log the whole request target;
+    // the query sentinel then appears in the log and that assertion fails.
     let env = TestEnv::new("route");
     let fixture = HttpFixture::start(None);
     let name = box_name("route");
@@ -1942,6 +1945,51 @@ fn a_route_reaches_exactly_one_host_service() {
         fixture.requests().len(),
         1,
         "the fixture answered a direct request"
+    );
+
+    // A route's log line names the method, the request path without its
+    // query, and the status the fixture sent. The expected status comes from
+    // the fixture. The query's sentinel never reaches the log.
+    let sentinel = format!("pf-sentinel-{}", std::process::id());
+    let missing = curl(
+        &env,
+        &name,
+        "5",
+        &[&format!(
+            "http://fixture.internal{}?{sentinel}",
+            HttpFixture::NOT_FOUND_PATH
+        )],
+    );
+    assert_eq!(
+        missing.code, 0,
+        "the missing route failed: {}",
+        missing.stderr
+    );
+    let log = fs::read_to_string(egress_log(&env, &name)).expect("read egress log");
+    assert!(
+        !log.contains(&sentinel),
+        "the egress log holds the query sentinel"
+    );
+    let lines = egress_log_lines(&env, &name);
+    let line = lines
+        .iter()
+        .find(|line| {
+            line["host"] == "fixture.internal"
+                && line["decision"] == "allowed"
+                && line["reason"] == "route"
+                && line["path"] == HttpFixture::NOT_FOUND_PATH
+        })
+        .unwrap_or_else(|| panic!("no route line for the missing path: {lines:?}"));
+    assert_eq!(line["method"], "GET", "the route line's method: {line}");
+    assert_eq!(
+        line["status"],
+        HttpFixture::NOT_FOUND_STATUS,
+        "the route line's status: {line}"
+    );
+    assert_eq!(
+        fixture.requests().len(),
+        2,
+        "the fixture did not answer both route requests"
     );
 
     up.down(&env);
