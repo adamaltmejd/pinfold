@@ -113,7 +113,7 @@ need `loginctl enable-linger`.
 One `pinfold box up` process owns one box. It does steps 1–5, holds the
 proxy, and does step 7 on `down`, stdin EOF or SIGTERM. If it dies, the
 socket dies and the box has no way out (fails closed); `box prune` removes
-leftovers by label. The CLI runs the same code in-process.
+leftovers host-wide. The CLI runs the same code in-process.
 
 ### Process interface
 
@@ -224,7 +224,8 @@ of `refused`, `failed` or `down`.
 
 `list` prints one JSON line per box whose labels match every `--label`.
 `--label KEY=VALUE` matches that value; `--label KEY` matches any value of
-`KEY`. Each line carries the box's labels and the image it runs, as the
+`KEY`; every box carries `dev.pinfold.owner`, so `--label dev.pinfold.owner`
+lists them all. Each line carries the box's labels and the image it runs, as the
 runtime records it, then its `dev.pinfold.owner` pid (or null), whether it still holds the lock on the box's `pid` file (for a box
 from another state dir, whether that pid is alive), and the runtime's RFC
 3339 `created` time and `state` (`running` or `stopped`):
@@ -233,7 +234,7 @@ from another state dir, whether that pid is alive), and the runtime's RFC
 {"name":NAME,"labels":{…},"image":{"id":ID,"ref":REF},"owner":PID,"owner_alive":true,"created":RFC3339,"state":"running"}
 ```
 
-`prune` removes each pinfold box whose `up` is gone and prints one line per
+`prune` removes every pinfold box on the host whose `up` is gone and prints one line per
 removed box, nothing when there was none:
 
 ```json
