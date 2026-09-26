@@ -14,7 +14,7 @@ use crate::core::artifacts;
 use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, Signals, UpError};
 use crate::core::clean;
 use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
-use crate::core::plan::{self, Plan};
+use crate::core::plan::Plan;
 use crate::core::profile::{self, Profile};
 use crate::core::runtime::{
     BoxInfo, ImageStatus, Runtime, image_status, local_image_id, podman, runtime,
@@ -218,13 +218,7 @@ fn up(args: &[String]) -> io::Result<i32> {
                 Plan::from_reader(io::stdin())
             }) => match plan.map_err(io::Error::other)? {
                 Ok(plan) => plan,
-                Err(error) => {
-                    return Ok(refused(Refusal {
-                        box_name: error.name,
-                        reason: RefusalReason::Spec,
-                        detail: error.detail,
-                    }));
-                }
+                Err(refusal) => return Ok(refused(refusal)),
             }
         };
         // Every error from here on has removed what the start made; it ends
@@ -253,16 +247,6 @@ fn up(args: &[String]) -> io::Result<i32> {
 /// Start the validated box, report it ready, hold it, and print the `down`
 /// line. A refusal prints its own line.
 async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
-    // A caller's spec may not name pinfold's label namespace. The check is
-    // here, not in `Plan::validate`, because `pinfold pi` runs its own plan,
-    // which carries `dev.pinfold.project`, through the same `Box::up`.
-    if let Err(detail) = plan::check_reserved_labels(&plan.labels) {
-        return Ok(refused(Refusal {
-            box_name: Some(plan.name.clone()),
-            reason: RefusalReason::Spec,
-            detail,
-        }));
-    }
     let init = artifacts::init()?;
     let mut box_ = match Box::up(plan, &init, Some(&mut signals)).await {
         Ok(box_) => box_,

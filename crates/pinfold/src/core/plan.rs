@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::r#box::{Refusal, RefusalReason};
 use crate::core::{artifacts, network, proxy};
 
 /// A parsed box spec.
@@ -197,40 +198,31 @@ pub enum Env {
     From { from: String },
 }
 
-/// A spec that did not parse: the `name` its first JSON value carried, when
-/// that value was an object with a string one, and why. `box up` names the
-/// box from `name`, so even a refusal from serde carries the name.
-#[derive(Debug)]
-pub struct SpecError {
-    pub name: Option<String>,
-    pub detail: String,
-}
-
 impl Plan {
-    /// Parse one box spec from a reader, leaving any data after the JSON
+    /// Parse `box up`'s spec from a reader, leaving any data after the JSON
     /// value unread so `box up` can watch the same stdin for EOF. Parsing to
     /// a value first keeps a readable `name` even when serde refuses, so a
-    /// refusal names the box.
-    pub fn from_reader(reader: impl Read) -> Result<Plan, SpecError> {
+    /// refusal names the box. A caller's labels may not use pinfold's
+    /// namespace; `pinfold pi`'s own plan carries `dev.pinfold.project`.
+    pub fn from_reader(reader: impl Read) -> Result<Plan, Refusal> {
+        let refusal = |box_name, detail| Refusal {
+            box_name,
+            reason: RefusalReason::Spec,
+            detail,
+        };
         let value = serde_json::Deserializer::from_reader(reader)
             .into_iter::<serde_json::Value>()
             .next()
-            .ok_or_else(|| SpecError {
-                name: None,
-                detail: invalid("no box spec on stdin"),
-            })?
-            .map_err(|error| SpecError {
-                name: None,
-                detail: invalid(error),
-            })?;
+            .unwrap_or_else(|| Err(serde::de::Error::custom("no box spec on stdin")))
+            .map_err(|error| refusal(None, invalid(error)))?;
         let name = value
             .get("name")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned);
-        serde_json::from_value::<Plan>(value).map_err(|error| SpecError {
-            name,
-            detail: invalid(error),
-        })
+        let plan = serde_json::from_value::<Plan>(value)
+            .map_err(|error| refusal(name.clone(), invalid(error)))?;
+        check_reserved_labels(&plan.labels).map_err(|detail| refusal(name, detail))?;
+        Ok(plan)
     }
 
     /// Check a parsed spec.
