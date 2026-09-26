@@ -95,7 +95,7 @@ impl RefusalReason {
 }
 
 /// A refused `up`: why, and the detail the runtime or host gave. `box_name`
-/// is `None` only when the spec did not parse.
+/// is `None` only when the spec's first JSON value holds no string `name`.
 #[derive(Debug)]
 pub struct Refusal {
     pub box_name: Option<String>,

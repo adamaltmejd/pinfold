@@ -218,11 +218,11 @@ fn up(args: &[String]) -> io::Result<i32> {
                 Plan::from_reader(io::stdin())
             }) => match plan.map_err(io::Error::other)? {
                 Ok(plan) => plan,
-                Err(detail) => {
+                Err(error) => {
                     return Ok(refused(Refusal {
-                        box_name: None,
+                        box_name: error.name,
                         reason: RefusalReason::Spec,
-                        detail,
+                        detail: error.detail,
                     }));
                 }
             }

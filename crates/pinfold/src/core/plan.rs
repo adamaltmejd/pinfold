@@ -197,16 +197,40 @@ pub enum Env {
     From { from: String },
 }
 
+/// A spec that did not parse: the `name` its first JSON value carried, when
+/// that value was an object with a string one, and why. `box up` names the
+/// box from `name`, so even a refusal from serde carries the name.
+#[derive(Debug)]
+pub struct SpecError {
+    pub name: Option<String>,
+    pub detail: String,
+}
+
 impl Plan {
     /// Parse one box spec from a reader, leaving any data after the JSON
-    /// value unread so `box up` can watch the same stdin for EOF. The caller
-    /// validates, so a refusal can name the box when the JSON parsed.
-    pub fn from_reader(reader: impl Read) -> Result<Plan, String> {
-        serde_json::Deserializer::from_reader(reader)
-            .into_iter::<Plan>()
+    /// value unread so `box up` can watch the same stdin for EOF. Parsing to
+    /// a value first keeps a readable `name` even when serde refuses, so a
+    /// refusal names the box.
+    pub fn from_reader(reader: impl Read) -> Result<Plan, SpecError> {
+        let value = serde_json::Deserializer::from_reader(reader)
+            .into_iter::<serde_json::Value>()
             .next()
-            .ok_or_else(|| invalid("no box spec on stdin"))?
-            .map_err(invalid)
+            .ok_or_else(|| SpecError {
+                name: None,
+                detail: invalid("no box spec on stdin"),
+            })?
+            .map_err(|error| SpecError {
+                name: None,
+                detail: invalid(error),
+            })?;
+        let name = value
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        serde_json::from_value::<Plan>(value).map_err(|error| SpecError {
+            name,
+            detail: invalid(error),
+        })
     }
 
     /// Check a parsed spec.

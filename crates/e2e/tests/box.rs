@@ -363,6 +363,9 @@ fn up_refuses_before_it_creates() {
     // Guarantee 17: up refuses before it creates.
     // Sabotage: drop `deny_unknown_fields` from `Mount`; the misspelled
     // mount spec then comes up `ready` and the refusal assertion fails.
+    // Sabotage: parse the first JSON value straight into `Plan` again; the
+    // serde refusal is raised before any name is read, so the misspelled
+    // spec's `box` assertion fails.
     // Sabotage: drop the character-class check from the env-name validation,
     // keeping only the old empty-or-`=` test; the wildcard spec then comes up
     // `ready`, so the refusal assertion fails, and on podman the box's
@@ -425,6 +428,7 @@ fn up_refuses_before_it_creates() {
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["event"], "refused");
     assert_eq!(refused["reason"], "spec");
+    assert_eq!(refused["box"], name);
     assert!(
         refused["detail"]
             .as_str()
