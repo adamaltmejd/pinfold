@@ -296,9 +296,23 @@ impl Plan {
             }
         }
         if let Some(egress) = &self.egress {
-            for route in egress.routes.values() {
-                if let Route::Inject(inject) = route {
-                    inject.resolve()?;
+            for (name, route) in &egress.routes {
+                match route {
+                    Route::Address(address) => {
+                        if !valid_route_address(address) {
+                            let mut detail =
+                                format!("route {name:?} target {address:?} must be host:port");
+                            if address.contains("://") {
+                                detail.push_str(
+                                    "; the object form { \"to\": … } is what takes an origin",
+                                );
+                            }
+                            return Err(invalid(detail));
+                        }
+                    }
+                    Route::Inject(inject) => {
+                        inject.resolve()?;
+                    }
                 }
             }
         }
@@ -356,6 +370,22 @@ fn valid_mount_path(path: &Path) -> bool {
         .as_encoded_bytes()
         .iter()
         .any(|byte| *byte == b',' || *byte < 0x20 || *byte == 0x7f)
+}
+
+/// A plain route's value: a host and an explicit port in 1–65535, nothing
+/// else. A URL-shaped value is a caller reaching for the injecting object
+/// form, whose `to` takes the origin, so the refusal points there.
+fn valid_route_address(address: &str) -> bool {
+    if address.contains("://") {
+        return false;
+    }
+    // `authority_host` fills in `default` when the authority names no port;
+    // 0 is not a valid port, so a missing port and `:0` are refused alike.
+    let Some((host, port)) = network::authority_host(address, 0) else {
+        return false;
+    };
+    // A path, query, fragment or userinfo is not a host either.
+    port != 0 && !host.contains(['/', '?', '#', '@'])
 }
 
 /// A memory limit is a whole number of mebibytes or gibibytes, at least

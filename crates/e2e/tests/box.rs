@@ -405,6 +405,8 @@ fn up_refuses_before_it_creates() {
     // unchecked and is not refused as spec, so its `refused` assertion
     // fails. Sabotage: drop the 256M floor, keeping the unit check; the
     // `255M` spec likewise reaches the runtime and its assertion fails.
+    // Sabotage: drop the route check from `Plan::validate`; the URL route
+    // spec comes up `ready`, so its `refused` assertion fails.
     let env = TestEnv::new("refuses");
     let name = box_name("refuses");
     let label = "dev.example.test=refuses";
@@ -521,6 +523,31 @@ fn up_refuses_before_it_creates() {
         );
         assert_left_nothing(&env, &name, label, "refused");
     }
+
+    // A spec whose route value is a URL rather than host:port is refused as
+    // data, naming the route, and leaves no state dir and no box: the proxy
+    // would otherwise dial the string as an address and answer every request
+    // 502. The positive control, a host:port route answering, is guarantee
+    // 3's `the_proxy_refuses_the_tricks`.
+    let url_route = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+        "labels": { "dev.example.test": "refuses" },
+        "egress": { "routes": { "ex": "https://example.com" } },
+    });
+    let (code, refused) = box_up_refused(&env, &url_route, &[]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["event"], "refused");
+    assert_eq!(refused["reason"], "spec");
+    assert_eq!(refused["box"], name);
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("\"ex\""),
+        "the refusal did not name the route: {refused}"
+    );
+    assert_left_nothing(&env, &name, label, "refused");
 
     // A spec whose mount path holds a comma is refused as data, naming the
     // path, and leaves no state dir and no box: the bind value is built by
