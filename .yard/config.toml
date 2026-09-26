@@ -39,7 +39,9 @@ ref = "main"
 # whatever approve says.
 # .yard/ is protected whatever this list holds: a project can only add to that.
 # The spec and the working rules: a design change is always the operator's.
-protected_paths = ["docs/ARCHITECTURE.md", "AGENTS.md", "Cargo.toml", "Cargo.lock", ".github"]
+# scripts/e2e-linux.sh is the e2e-linux gate's own body, run with the user's
+# HOME: a candidate must not rewrite the gate that judges it unread.
+protected_paths = ["docs/ARCHITECTURE.md", "AGENTS.md", "Cargo.toml", "Cargo.lock", ".github", "scripts/e2e-linux.sh"]
 
 [isolation]
 # dockerfile names the Dockerfile lanes and container gates are built from, as a
