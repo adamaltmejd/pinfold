@@ -172,7 +172,7 @@ absent box, `stat` exits 3 with `pinfold box stat: no box named ...`, like
 `up` prints one `ready` line once the box is up:
 
 ```json
-{"event":"ready","box":NAME,"owner":PID,"labels":{…},"image":{"id":ID,"ref":REF}}
+{"event":"ready","box":NAME,"owner":PID,"labels":{…},"image":{"id":ID,"ref":REF},"egress_log":PATH|null}
 ```
 
 `owner` is the `box up` process; `labels` is the box's full label set, as
@@ -182,7 +182,9 @@ runtime resolved `image` to; `image.ref` is the reference as the spec (or its
 profile) gave it. `list` spells `ref` as the runtime records it (podman adds
 `localhost/`), so a caller compares images by `id`. At `up`, the image's
 `dev.pinfold.*` identity labels are copied onto the box, unless pinfold set
-that label itself (a pi box's `dev.pinfold.project`).
+that label itself (a pi box's `dev.pinfold.project`). `egress_log` is the
+absolute path of the box's egress log, the one `up` gave the proxy; it is
+null for a box without `egress`.
 
 The caller keeps `up`'s stdin open for the life of the box; closing it is
 `down`. The stream ends with one `down` line after teardown:
@@ -670,14 +672,14 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | # | Guarantee | Shown by |
 |---|---|---|
 | 1 | No network but loopback | Inside: only `lo`; `1.1.1.1` unreachable. Control: the fixture answers through a route. |
-| 2 | Only allowlisted hosts get through | `api.github.com` answers. `example.com` gets a proxy 403, logged "not allowlisted". |
+| 2 | Only allowlisted hosts get through | `api.github.com` answers. `example.com` gets a proxy 403, logged "not allowlisted"; `ready` names that log's path. |
 | 3 | The proxy refuses the tricks | Each with a control: IP literal, name resolving to loopback, SNI ≠ CONNECT host, CONNECT to a route, ambiguous framing. |
 | 4 | A route reaches exactly one host service | `http://fixture.internal/` works; the fixture's host port is unreachable directly. |
 | 5 | Nothing can gain privileges | `CapBnd` 0 in exec'd processes; PID 1 runs as the host uid; no setuid or setgid files; rootfs not writable; on Linux `unshare -U` fails. |
 | 6 | The environment is exactly the spec | An unprefixed host variable is absent; `PINFOLD_ENV_X` arrives as `X`; the secret never shows in host `ps`; a `PINFOLD_ENV_` name that is not a POSIX name is refused. |
 | 7 | No egress means no way out | Without `egress`, nothing gets out, not even through a route. |
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, the box has no egress. With its `pid` file naming a live process, `list` reports the owner gone, `box prune` removes it, and the name can be used again. |
-| 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code; `list` finds by label; `down` removes. `ready`'s labels equal `list`'s; `down` on an absent box or an empty name exits 0, prints nothing and leaves live boxes alone. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. |
+| 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code; `list` finds by label; `down` removes. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box or an empty name exits 0, prints nothing and leaves live boxes alone. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. |
 | 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails, and a symlinked protected path refuses the run; starting inside `.git` is refused; host `git status` runs nothing. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |

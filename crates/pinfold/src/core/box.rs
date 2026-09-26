@@ -37,6 +37,8 @@ pub struct Box {
     /// The image reference the box was started from: the spec's, or its
     /// profile's.
     pub image_ref: String,
+    /// The egress log `up` gave the proxy; `None` without `egress`.
+    pub egress_log: Option<PathBuf>,
     state_dir: PathBuf,
     /// The lock on the state dir's `pid` file. Holding it is what makes the
     /// owner alive to every checker.
@@ -252,8 +254,8 @@ impl Box {
             },
             None => starting.await,
         };
-        let labels = match started {
-            Ok(labels) => labels,
+        let (labels, egress_log) = match started {
+            Ok(started) => started,
             Err(stop) => {
                 let status = abort(&plan.name, &state_dir, child).await;
                 return Err(match stop {
@@ -273,6 +275,7 @@ impl Box {
             labels,
             image_id: identity.id,
             image_ref: image,
+            egress_log,
             state_dir,
             _lock: lock,
             child: child.expect("a started box has a runtime child"),
@@ -447,7 +450,8 @@ fn lock_pid(state_dir: &Path) -> io::Result<Flock<File>> {
 /// The start after the claim: harness, seeds, proxy, runtime, readiness.
 /// The runtime child goes into `child` as soon as it exists, so a failure, or
 /// a signal at any await, removes exactly that. Returns the box's labels as
-/// the runtime reports them.
+/// the runtime reports them, and the egress log the proxy was given (`None`
+/// without `egress`).
 async fn start(
     plan: &mut Plan,
     init: &Path,
@@ -455,7 +459,7 @@ async fn start(
     seeding: Option<&Seeding>,
     state_dir: &Path,
     child: &mut Option<Child>,
-) -> Result<BTreeMap<String, String>, Stop> {
+) -> Result<(BTreeMap<String, String>, Option<PathBuf>), Stop> {
     // The harness artifact is fetched and folded in after the claim, so a
     // refused box downloads nothing. The spec's own env wins.
     resolve_harness(plan)?;
@@ -466,11 +470,13 @@ async fn start(
 
     // The proxy comes up before the box, so the socket is listening when
     // the runtime forwards it.
+    let mut egress_log = None;
     let socket = match &plan.egress {
         Some(egress) => {
             let socket = state_dir.join("proxy.sock");
             let log = dirs::egress_dir()?.join(format!("{}.jsonl", plan.name));
-            proxy::start(&socket, egress, log)?;
+            proxy::start(&socket, egress, log.clone())?;
+            egress_log = Some(log);
             Some(socket)
         }
         None => None,
@@ -515,7 +521,7 @@ async fn start(
                 plan.name
             ))
         })?;
-    Ok(labels)
+    Ok((labels, egress_log))
 }
 
 async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {

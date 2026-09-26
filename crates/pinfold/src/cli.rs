@@ -270,6 +270,11 @@ async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
         Err(UpError::Signal) => return Ok(down(Some(&plan.name), Shutdown::Signal)),
         Err(UpError::Other(error)) => return Err(error),
     };
+    let egress_log = box_
+        .egress_log
+        .as_deref()
+        .map(|path| utf8(path, "egress log"))
+        .transpose()?;
     println!(
         "{}",
         serde_json::json!({
@@ -278,6 +283,7 @@ async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
             "owner": std::process::id(),
             "labels": &box_.labels,
             "image": { "id": &box_.image_id, "ref": &box_.image_ref },
+            "egress_log": egress_log,
         })
     );
     io::stdout().flush()?;
