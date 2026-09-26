@@ -136,7 +136,8 @@ stdout; the build's progress never reaches stdout. On success, exit 0:
 
 `id` is the image's runtime id, the same value a box's `ready` and `list`
 report as `image.id`; it is null when the runtime cannot resolve the built
-ref after a successful build. `labels` is every label the build put on the
+ref after a successful build. Every build has its own `id`, even for
+unchanged inputs (see Images). `labels` is every label the build put on the
 image. A failed build exits 1 with the last 40 lines of the runtime's
 build output:
 
@@ -175,7 +176,8 @@ absent box, `stat` exits 3 with `pinfold box stat: no box named ...`, like
 ```
 
 `owner` is the `box up` process; `labels` is the box's full label set, as
-the runtime reports them, image labels included. `image.id` is the image the
+the runtime reports them, image labels included; a caller finds its own by
+its own key prefix. `image.id` is the image the
 runtime resolved `image` to; `image.ref` is the reference as the spec (or its
 profile) gave it. `list` spells `ref` as the runtime records it (podman adds
 `localhost/`), so a caller compares images by `id`. At `up`, the image's
@@ -286,7 +288,10 @@ The box spec `up` reads from stdin:
   spec's own `env` wins; a spec mount at `/opt/pinfold/<name>` is refused.
   claude is the glibc build, so it needs a glibc image (the default profile
   is Debian). codex's `codex-code-mode-host` sits beside it: codex spawns it
-  from there for every MCP tool call. It needs no profile.
+  from there for every MCP tool call. codex's own sandbox cannot start in a
+  box (the seccomp profile blocks `CLONE_NEWUSER`, and the pinned build
+  ships no bubblewrap), so a caller runs codex with `sandbox_mode =
+  "danger-full-access"`: the box is the sandbox. It needs no profile.
 - Mounts are directories. A host path that exists and is not a directory
   is refused as `spec`, naming it. Both runtimes apply a mount nested in
   another inside it whatever the spec's order, so a read-only `REPO/.git`
@@ -362,6 +367,9 @@ network listener, no token: the socket identifies the box.
 - **Routes:** a name maps to one host service, e.g.
   `api.internal → 127.0.0.1:7777`. Plain HTTP only, Host header rewritten.
   CONNECT to a route is refused. The host service authenticates its callers.
+  In the box a route is a plain `http://` origin, and `Upgrade` is dropped as
+  hop-by-hop, so a client that requires an `https` origin or a WebSocket
+  cannot use one.
 - **Injecting routes:** a route whose value is `{ "to": ORIGIN, "headers":
   { NAME: { "from": VAR, "prefix": "…" } } }`. `to` is an `http://` or
   `https://` origin. The box sends `http://<route>/path` as for any route;
