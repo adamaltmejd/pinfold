@@ -377,7 +377,9 @@ network listener, no token: the socket identifies the box.
 - **Log:** one JSON line per decision in the box's egress log at
   `~/.local/state/pinfold/egress/<box>.jsonl` (`$XDG_STATE_HOME` is
   honored). It names the decision's UTC time (RFC 3339 to the second), the
-  host, the decision and its reason; no header value is ever written.
+  host, the decision and its reason. A route request's line also names the
+  method, the request path without its query, and the upstream's status
+  (null when no status line arrived). No header value is ever written.
 
 ## Images
 
@@ -661,7 +663,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 1 | No network but loopback | Inside: only `lo`; `1.1.1.1` unreachable. Control: the fixture answers through a route. |
 | 2 | Only allowlisted hosts get through | `api.github.com` answers. `example.com` gets a proxy 403, logged "not allowlisted". |
 | 3 | The proxy refuses the tricks | Each with a control: IP literal, name resolving to loopback, SNI ≠ CONNECT host, CONNECT to a route, ambiguous framing. |
-| 4 | A route reaches exactly one host service | `http://fixture.internal/` works; the fixture's host port is unreachable directly. |
+| 4 | A route reaches exactly one host service | `http://fixture.internal/` works; the request's route line names GET, the queryless path and the fixture's non-200 status, with the query sentinel absent; the fixture's host port is unreachable directly. |
 | 5 | Nothing can gain privileges | `CapBnd` 0 in exec'd processes; PID 1 runs as the host uid; no setuid or setgid files; rootfs not writable; on Linux `unshare -U` fails. |
 | 6 | The environment is exactly the spec | An unprefixed host variable is absent; `PINFOLD_ENV_X` arrives as `X`; the secret never shows in host `ps`; a `PINFOLD_ENV_` name that is not a POSIX name is refused. |
 | 7 | No egress means no way out | Without `egress`, nothing gets out, not even through a route. |
