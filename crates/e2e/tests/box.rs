@@ -66,6 +66,8 @@ fn box_lifecycle_works_for_a_caller() {
     // way.
     // Sabotage: key the state dir by the name again; the 60-character box
     // fails at `up` with the socket-length error, so the ready read panics.
+    // Sabotage: give a box without `egress` a derived log path in `ready`;
+    // the null assertion fails.
     let env = TestEnv::new("lifecycle");
     // A caller's names can be long. The state dir is keyed by the name's
     // hash, so 60 characters, past the old socket-path budget, still come
@@ -110,6 +112,13 @@ fn box_lifecycle_works_for_a_caller() {
     assert_eq!(
         up.ready["image"]["ref"], image,
         "ready's image ref is not the spec's: {}",
+        up.ready
+    );
+    // The spec has no `egress`, so there is no proxy and no log: `ready`
+    // carries the field as null.
+    assert!(
+        up.ready.get("egress_log").is_some_and(|log| log.is_null()),
+        "ready gave a box without egress a log: {}",
         up.ready
     );
 
@@ -857,6 +866,8 @@ fn only_allowlisted_hosts_get_through() {
     // an allowlisted host through.
     // Sabotage: drop `time` from `record`; the refusal's time is absent and
     // the window assertion fails.
+    // Sabotage: drop `egress_log` from `ready`, or report a path other than
+    // the log handed to the proxy; the path assertion fails.
     let env = TestEnv::new("egress");
     let name = box_name("egress");
     let spec = serde_json::json!({
@@ -865,6 +876,17 @@ fn only_allowlisted_hosts_get_through() {
         "egress": { "allow": ["api.github.com"] },
     });
     let up = box_up(&env, &spec, &name);
+
+    // `ready` names the log at the test's own state layout, so a caller
+    // reads or copies it without rebuilding pinfold's path.
+    assert_eq!(
+        up.ready["egress_log"],
+        egress_log(&env, &name)
+            .to_str()
+            .expect("egress log path is UTF-8"),
+        "ready's egress_log is not the box's log: {}",
+        up.ready
+    );
 
     let allowed = curl(
         &env,
