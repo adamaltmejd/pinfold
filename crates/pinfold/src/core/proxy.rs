@@ -196,12 +196,9 @@ fn handle(mut client: UnixStream, rules: &Rules, log: &Path) {
 /// Handle one CONNECT: an allowlisted host on port 443 only, with the
 /// ClientHello's SNI checked before the server is dialed.
 fn connect(client: &mut UnixStream, rules: &Rules, log: &Path, target: &str) {
-    let Some((host, port)) = target.rsplit_once(':') else {
+    let Some((host, port)) = target.rsplit_once(':').filter(|(host, _)| !host.is_empty()) else {
         return refuse(client, log, "", 400, "malformed request");
     };
-    if host.is_empty() {
-        return refuse(client, log, "", 400, "malformed request");
-    }
     if network::literal(host).is_some() {
         return refuse(client, log, host, 403, "ip literal");
     }
@@ -263,44 +260,31 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, request: &httparse:
         return;
     };
     record(log, &request.host, "allowed", "allowlisted", None);
-    match dial(address) {
-        Some(mut server) => {
-            let _ = forward(
-                client,
-                &mut server,
-                &request,
-                &request.authority,
-                &[],
-                &mut |_| {},
-            );
-        }
-        None => {
-            let _ = respond(client, 502);
-        }
-    }
+    let _ = forward(
+        client,
+        dial(address),
+        &request,
+        &request.authority,
+        &[],
+        &mut |_| {},
+    );
 }
 
 /// Serve one request to a route. A host service is dialed unchecked; an
 /// `https` target is resolved and checked like an allowlisted host, then
-/// dialed over TLS. The log line is written once the upstream's status line
-/// has arrived, or with a null status when the exchange ends without one.
+/// dialed over TLS.
 fn route(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain, upstream: &Upstream) {
     let mut report = |status: Option<u16>| {
         let path = request
             .target
             .split_once('?')
             .map_or(request.target.as_str(), |(path, _)| path);
-        record(
-            log,
-            &request.host,
-            "allowed",
-            "route",
-            Some(RouteLine {
-                method: &request.method,
-                path,
-                status,
-            }),
-        );
+        let fields = serde_json::json!({
+            "method": request.method,
+            "path": path,
+            "status": status,
+        });
+        record(log, &request.host, "allowed", "route", Some(fields));
     };
     let (server, authority, headers) = match upstream {
         Upstream::Address(address) => (
@@ -319,18 +303,13 @@ fn route(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain, up
             else {
                 return;
             };
-            let Some(mut server) = rules
+            let server = rules
                 .tls
                 .as_ref()
-                .and_then(|config| dial_tls(address, &target.host, config))
-            else {
-                let _ = respond(client, 502);
-                report(None);
-                return;
-            };
+                .and_then(|config| dial_tls(address, &target.host, config));
             let _ = forward(
                 client,
-                &mut server,
+                server,
                 request,
                 &target.authority,
                 headers,
@@ -339,19 +318,7 @@ fn route(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain, up
             return;
         }
     };
-    let Some(mut server) = server else {
-        let _ = respond(client, 502);
-        report(None);
-        return;
-    };
-    let _ = forward(
-        client,
-        &mut server,
-        request,
-        authority,
-        headers,
-        &mut report,
-    );
+    let _ = forward(client, server, request, authority, headers, &mut report);
 }
 
 /// Resolve once and check every address before anything is dialed. A
@@ -463,20 +430,25 @@ fn parse_plain(request: &httparse::Request) -> Result<Plain, &'static str> {
 
 /// Forward one parsed request with `host` as its Host header, then its
 /// Content-Length body, and stream the response back until the upstream
-/// closes. `report` gets the upstream's status code once its status line
-/// has arrived, or `None` when the exchange ends first. One request per
+/// closes; a failed dial (`None`) is answered 502. `report` gets the
+/// upstream's status code once its status line has arrived, or `None` when
+/// the exchange ends first. One request per
 /// connection. Each injected header replaces any the box sent under the
 /// same name. There is no upstream half-close: over TLS a close_notify
 /// before the response would end the exchange, and the server's close ends
 /// the response, with or without its own close_notify.
 fn forward(
     client: &mut UnixStream,
-    server: &mut (impl Read + Write),
+    server: Option<impl Read + Write>,
     request: &Plain,
     host: &str,
     inject: &[(String, String)],
     report: &mut dyn FnMut(Option<u16>),
 ) -> io::Result<()> {
+    let Some(mut server) = server else {
+        report(None);
+        return respond(client, 502);
+    };
     let _ = client.set_read_timeout(Some(IDLE_TIMEOUT));
     let mut head = Vec::with_capacity(256);
     write!(
@@ -499,20 +471,17 @@ fn forward(
     }
     // Keep-alive is out of scope, so the upstream closes after answering.
     head.extend_from_slice(b"Connection: close\r\n\r\n");
-    let mut send = || -> io::Result<()> {
+    let mut exchange = || -> io::Result<(Vec<u8>, Option<u16>)> {
         server.write_all(&head)?;
         if request.content_length > 0 {
             let mut body = Read::take(&mut *client, request.content_length);
-            io::copy(&mut body, server)?;
+            io::copy(&mut body, &mut server)?;
         }
-        server.flush()
+        server.flush()?;
+        read_status_line(&mut server)
     };
-    if let Err(error) = send() {
-        report(None);
-        return Err(error);
-    }
-    let (line, status) = match read_status_line(server) {
-        Ok(line) => line,
+    let (line, status) = match exchange() {
+        Ok(sent) => sent,
         Err(error) => {
             report(None);
             return Err(error);
@@ -520,7 +489,7 @@ fn forward(
     };
     report(status);
     client.write_all(&line)?;
-    io::copy(server, client)?;
+    io::copy(&mut server, client)?;
     let _ = client.shutdown(Shutdown::Write);
     Ok(())
 }
@@ -529,17 +498,7 @@ fn forward(
 /// the bytes read plus the parsed code. The bytes are relayed as sent; a
 /// line that does not name an HTTP status, or no line at all, is `None`.
 fn read_status_line(server: &mut impl Read) -> io::Result<(Vec<u8>, Option<u16>)> {
-    let mut line = Vec::new();
-    let mut byte = [0u8; 1];
-    while line.len() < MAX_HEAD {
-        if server.read(&mut byte)? == 0 {
-            break;
-        }
-        line.push(byte[0]);
-        if byte[0] == b'\n' {
-            break;
-        }
-    }
+    let line = read_until(server, |line| line.ends_with(b"\n"))?;
     let status = line
         .strip_prefix(b"HTTP/")
         .and_then(|rest| rest.split(|byte| *byte == b' ').nth(1))
@@ -568,17 +527,25 @@ pub fn hop_by_hop(name: &str) -> bool {
 /// also ends the read, so the caller can refuse it instead of blocking. EOF
 /// and a head over the cap are `UnexpectedEof`; a timeout keeps its kind.
 fn read_head(client: &mut UnixStream) -> io::Result<Vec<u8>> {
-    let mut head = Vec::with_capacity(1024);
-    let mut byte = [0u8; 1];
-    loop {
-        if client.read(&mut byte)? == 0 || head.len() >= MAX_HEAD {
-            return Err(io::ErrorKind::UnexpectedEof.into());
-        }
-        head.push(byte[0]);
-        if head.ends_with(b"\r\n\r\n") || head.ends_with(b"\n\n") {
-            return Ok(head);
-        }
+    let end = |head: &[u8]| head.ends_with(b"\r\n\r\n") || head.ends_with(b"\n\n");
+    let head = read_until(client, end)?;
+    if !end(&head) {
+        return Err(io::ErrorKind::UnexpectedEof.into());
     }
+    Ok(head)
+}
+
+/// Read one byte at a time until `done`, EOF or MAX_HEAD bytes.
+fn read_until(reader: &mut impl Read, done: impl Fn(&[u8]) -> bool) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(256);
+    let mut byte = [0u8; 1];
+    while bytes.len() < MAX_HEAD && !done(&bytes) {
+        if reader.read(&mut byte)? == 0 {
+            break;
+        }
+        bytes.push(byte[0]);
+    }
+    Ok(bytes)
 }
 
 /// Whether a read failed because its socket timeout expired.
@@ -708,18 +675,10 @@ fn refuse(client: &mut UnixStream, log: &Path, host: &str, code: u16, reason: &s
     let _ = respond(client, code);
 }
 
-/// A route decision's log fields: the method, the request target without
-/// its query, and the upstream's status, null when no status line arrived.
-struct RouteLine<'a> {
-    method: &'a str,
-    path: &'a str,
-    status: Option<u16>,
-}
-
 /// Append one decision as a JSON line. A route decision also names the
 /// method, the request path and the upstream status. No header value is ever
 /// written.
-fn record(log: &Path, host: &str, decision: &str, reason: &str, route: Option<RouteLine<'_>>) {
+fn record(log: &Path, host: &str, decision: &str, reason: &str, route: Option<serde_json::Value>) {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
@@ -730,13 +689,8 @@ fn record(log: &Path, host: &str, decision: &str, reason: &str, route: Option<Ro
         "decision": decision,
         "reason": reason,
     });
-    if let Some(route) = route {
-        entry["method"] = serde_json::Value::from(route.method);
-        entry["path"] = serde_json::Value::from(route.path);
-        entry["status"] = match route.status {
-            Some(code) => serde_json::Value::from(code),
-            None => serde_json::Value::Null,
-        };
+    if let (Some(entry), Some(serde_json::Value::Object(route))) = (entry.as_object_mut(), route) {
+        entry.extend(route);
     }
     let mut line = entry.to_string();
     line.push('\n');
