@@ -20,6 +20,8 @@ pub const PROFILE_LABEL: &str = "dev.pinfold.profile";
 pub const PROJECT_LABEL: &str = "dev.pinfold.project";
 /// The label naming a caller image's source: the name it built.
 pub const IMAGE_LABEL: &str = "dev.pinfold.image";
+/// The three labels naming an image's source, one per build family.
+pub const FAMILY_LABELS: [&str; 3] = [PROFILE_LABEL, PROJECT_LABEL, IMAGE_LABEL];
 /// The label podman puts on the intermediate images of a cached build, so
 /// `clean` prunes only pinfold's build cache.
 pub const LAYER_LABEL: &str = "dev.pinfold.layer";
@@ -65,6 +67,7 @@ fn maintain_due() -> io::Result<()> {
     fs::write(&stamp, [])?;
     // Every step is attempted; a failure is reported and the rest continue.
     report("boxes", prune_boxes(runtime()).map(drop));
+    report("images", keep_two_images_per_source(runtime()));
     report("sockets", leftover_socket_dirs().and_then(remove_paths));
     report(
         "artifacts",
@@ -276,6 +279,30 @@ pub fn path_bytes(path: &Path) -> u64 {
 /// The total bytes of `paths`.
 pub fn total_bytes<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> u64 {
     paths.into_iter().map(|path| path_bytes(path)).sum()
+}
+
+/// Apply [`keep_two_images`] to every source the runtime lists: each
+/// non-empty value of the three family labels. The daily pass and `pinfold
+/// clean` call it, so the after-build rule reaches a source a build left
+/// above two and never builds again: a caller image inside
+/// [`CALLER_IMAGE_GRACE`] at the last build, or one a box pinned then. A
+/// failure on one source is reported and the rest continue; only listing
+/// the runtime's images fails the step.
+pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
+    let mut sources: BTreeSet<(&'static str, String)> = BTreeSet::new();
+    for image in runtime.list_images()? {
+        for label in FAMILY_LABELS {
+            if let Some(source) = image.labels.get(label).filter(|value| !value.is_empty()) {
+                sources.insert((label, source.clone()));
+            }
+        }
+    }
+    for (label, source) in sources {
+        if let Err(error) = keep_two_images(runtime, label, &source) {
+            eprintln!("pinfold: maintenance: images: {source}: {error}");
+        }
+    }
+    Ok(())
 }
 
 /// Keep the newest two images carrying `label = source`, removing older ones

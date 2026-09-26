@@ -1299,6 +1299,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
     //
     // Sabotage: make `keep_two_images` return before it removes anything;
     // three images remain and the two-image assertion fails. Sabotage: drop
+    // the images step from the shared automatic pass; b3 survives `clean`
+    // and the post-clean two-image assertion fails. Sabotage: drop
     // the in-use skip from `keep_two_images` and restore the `?` on
     // `remove_image`; on Apple build 4 deletes b2 under box A and the "b2 is
     // still listed" assertion fails, and on podman build 5 returns at the
@@ -1583,6 +1585,20 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert!(
         image_id(&unlabeled).is_some(),
         "clean removed an unlabeled image"
+    );
+    // No build follows box B's going down. The profile is left holding b3,
+    // b4 and b5: b3 was pinned at build 5 and the two newer images stayed.
+    // `clean` applies the after-build rule to every source, so the profile
+    // falls to its newest two and b3 goes.
+    let profile_images = labeled_images("dev.pinfold.profile", &profile);
+    assert_eq!(
+        profile_images.len(),
+        2,
+        "clean did not leave the profile at its newest two images: {profile_images:?}"
+    );
+    assert!(
+        image_id(&b3).is_none(),
+        "clean kept b3, an image past the newest two whose box went down"
     );
     assert!(
         !box_list(&env, &live_label).is_empty(),

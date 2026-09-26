@@ -492,7 +492,9 @@ impl CleanPlan {
         println!("  project state: {} B", self.project_state);
     }
 
-    /// Remove everything the plan measured.
+    /// Remove everything the plan measured, then the images past each
+    /// source's newest two. Image sizes are unmeasured: the runtime's image
+    /// list carries none.
     fn remove(self, runtime: &dyn Runtime) -> io::Result<()> {
         for dead in &self.dead {
             dead.remove(runtime)?;
@@ -504,7 +506,8 @@ impl CleanPlan {
                 .chain(self.caches)
                 .chain(self.stale)
                 .collect(),
-        )
+        )?;
+        clean::keep_two_images_per_source(runtime)
     }
 }
 

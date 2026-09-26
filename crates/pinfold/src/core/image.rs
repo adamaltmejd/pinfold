@@ -64,11 +64,7 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
     // every family label goes on every image: its own with its source, the
     // other two empty. Retention then never counts this image as another
     // family's, whatever it builds on.
-    for family in [
-        clean::PROFILE_LABEL,
-        clean::PROJECT_LABEL,
-        clean::IMAGE_LABEL,
-    ] {
+    for family in clean::FAMILY_LABELS {
         let value = if family == build.label {
             build.source
         } else {
