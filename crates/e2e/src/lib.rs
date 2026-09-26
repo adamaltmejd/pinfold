@@ -252,8 +252,8 @@ pub fn untagged_images() -> usize {
         .count()
 }
 
-/// The stable ref of the built-in default profile's image, built once per
-/// suite run. Every box and `pinfold pi` run starts from it.
+/// The stable ref of the built-in default profile's image, built when
+/// missing. Every box and `pinfold pi` run starts from it.
 pub fn default_image(env: &TestEnv) -> &'static str {
     static IMAGE: OnceLock<()> = OnceLock::new();
     // The runtime store is shared by both test binaries; a stale image is
@@ -453,16 +453,12 @@ pub type Headers = Vec<(String, String)>;
 pub type Answer = Option<(&'static str, &'static str)>;
 
 impl HttpFixture {
-    /// The path the fixture answers with `NOT_FOUND_STATUS`, for a test that
-    /// needs a non-200 upstream status.
     pub const NOT_FOUND_PATH: &'static str = "/missing";
-
-    /// The status the fixture answers for `NOT_FOUND_PATH`.
     pub const NOT_FOUND_STATUS: u16 = 404;
 
-    /// Bind on loopback and answer every request with `answer`, or with the
+    /// Bind on loopback and answer each request with `answer`, or with the
     /// Host header it carried when `answer` is `None`, until the process
-    /// exits.
+    /// exits. The status is 200, or `NOT_FOUND_STATUS` at `NOT_FOUND_PATH`.
     pub fn start(answer: Answer) -> HttpFixture {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the fixture");
         let port = listener.local_addr().expect("fixture address").port();
@@ -500,9 +496,8 @@ fn serve(stream: TcpStream, seen: &Mutex<Vec<(Headers, String)>>, answer: Answer
     let path = line
         .split(' ')
         .nth(1)
-        .and_then(|target| target.split('?').next())
-        .unwrap_or("");
-    let (code, reason) = if path == HttpFixture::NOT_FOUND_PATH {
+        .and_then(|target| target.split('?').next());
+    let (code, reason) = if path == Some(HttpFixture::NOT_FOUND_PATH) {
         (HttpFixture::NOT_FOUND_STATUS, "Not Found")
     } else {
         (200, "OK")

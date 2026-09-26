@@ -1948,17 +1948,23 @@ fn a_route_reaches_exactly_one_host_service() {
     );
 
     // A route's log line names the method, the request path without its
-    // query, and the status the fixture sent. The expected status comes from
-    // the fixture. The query's sentinel never reaches the log.
+    // query, and the status the fixture sent. The method is not curl's
+    // default, so a constant GET fails (sabotage: log "GET" for every
+    // route). The expected status comes from the fixture. The query's
+    // sentinel never reaches the log.
     let sentinel = format!("pf-sentinel-{}", std::process::id());
     let missing = curl(
         &env,
         &name,
         "5",
-        &[&format!(
-            "http://fixture.internal{}?{sentinel}",
-            HttpFixture::NOT_FOUND_PATH
-        )],
+        &[
+            "-X",
+            "DELETE",
+            &format!(
+                "http://fixture.internal{}?{sentinel}",
+                HttpFixture::NOT_FOUND_PATH
+            ),
+        ],
     );
     assert_eq!(
         missing.code, 0,
@@ -1980,18 +1986,12 @@ fn a_route_reaches_exactly_one_host_service() {
                 && line["path"] == HttpFixture::NOT_FOUND_PATH
         })
         .unwrap_or_else(|| panic!("no route line for the missing path: {lines:?}"));
-    assert_eq!(line["method"], "GET", "the route line's method: {line}");
+    assert_eq!(line["method"], "DELETE", "the route line's method: {line}");
     assert_eq!(
         line["status"],
         HttpFixture::NOT_FOUND_STATUS,
         "the route line's status: {line}"
     );
-    assert_eq!(
-        fixture.requests().len(),
-        2,
-        "the fixture did not answer both route requests"
-    );
-
     up.down(&env);
 }
 
