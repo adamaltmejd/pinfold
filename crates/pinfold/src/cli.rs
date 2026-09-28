@@ -892,8 +892,8 @@ fn image_build(args: &[String]) -> i32 {
     code
 }
 
-/// `pinfold image rm NAME`: retire a caller image name: remove every image
-/// of NAME that no listed box uses, all its tags, and print the ids removed
+/// `pinfold image rm NAME`: retire a caller image name: remove every tag
+/// of NAME on an image no listed box uses, and print the ids it untagged
 /// and the ids a box still uses. A bad name or argument is refused as
 /// `spec`, like a build's.
 fn image_rm(args: &[String]) -> io::Result<i32> {

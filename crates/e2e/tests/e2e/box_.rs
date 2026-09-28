@@ -17,7 +17,7 @@ use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
     box_stat, build_profile, curl, default_image, egress_log, egress_log_lines, exit_code, git,
     image_cli, image_id, json_lines, labeled_images, pinfold, profile_containerfile, project_id,
-    project_state_dir, run_ok, runtime_images, untagged_images,
+    project_state_dir, run_ok, runtime_images, tagged_images, untagged_images,
 };
 
 #[test]
@@ -1188,7 +1188,12 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // fails. Sabotage: keep
     // podman's repeated `Names` in `list_images`; the second removal of the
     // newest image's tag is `image not known` and the one-line assertion
-    // fails.
+    // fails. Sabotage: write the caller's name into `dev.pinfold.image`
+    // again, as before this change; the twin build makes a second image
+    // under the name and the shared-id assertion fails. Sabotage: make
+    // `remove_images` remove every reference of an image's id instead of
+    // only the name's tags; the twin's tag goes with the shared image and
+    // the twin assertion fails.
     let env = TestEnv::new("cleanup");
     // `clean` deletes the runtime's builder, so hold off the other tests'
     // builds through this test's `clean`: a build racing the deletion fails.
@@ -1338,9 +1343,9 @@ fn cleanup_removes_only_pinfolds_garbage() {
     );
 
     // A caller source whose three builds share one image, all past the
-    // hour's grace: the runtime builds one image carrying the source's
-    // label under three build tags whose `<build>` times fall in 1970, in
-    // one build as pinfold tags its own. `clean` removes only the oldest
+    // hour's grace: the runtime builds one image under three build tags
+    // whose `<build>` times fall in 1970, in one build as pinfold tags its
+    // own. `clean` finds the name by its tags and removes only the oldest
     // tag; the image stays under the newest two.
     let shared = format!("{profile}-shared");
     let shared_repository = format!("pinfold/image-{shared}");
@@ -1348,11 +1353,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         repository: shared_repository.clone(),
     };
     let shared_refs = ["1-1", "2-1", "3-1"].map(|build| format!("{shared_repository}:{build}"));
-    let shared_label = format!("dev.pinfold.image={shared}");
-    runtime_build(
-        &shared_refs.each_ref().map(String::as_str),
-        &[&shared_label],
-    );
+    runtime_build(&shared_refs.each_ref().map(String::as_str), &[]);
     let shared_id = image_id(&shared_refs[0]);
     assert!(
         shared_id.is_some()
@@ -1528,11 +1529,13 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "clean --unused removed the state of a project with a live box"
     );
 
-    // `image rm NAME` retires one caller image name: every image of the
-    // name no listed box uses, whatever its age and all its tags. Three
-    // builds of `retire` are fresh, so the caller grace would keep them
-    // all; a live box pins the oldest, so only the other two go. A second
-    // name extending the first is untouched.
+    // `image rm NAME` retires one caller image name: every tag of the name
+    // on an image no listed box uses, whatever its age. Three builds of
+    // `retire` are fresh, so the caller grace would keep them all; a live
+    // box pins the oldest, so only the other two untag. A second name
+    // extending the first is untouched, and a third built from the second
+    // build's identical inputs shares that build's image and keeps its own
+    // tag after `image rm`.
     let base = default_image(&env);
     let rm_context = env.root.join("image-rm-context");
     fs::create_dir_all(&rm_context).unwrap();
@@ -1572,7 +1575,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "the changed retire builds do not name three images: {retire_refs:?}"
     );
     assert_eq!(
-        labeled_images("dev.pinfold.image", &retire_name),
+        tagged_images(&format!("pinfold/image-{retire_name}")),
         distinct_ids,
         "the runtime does not list the three retire images before image rm"
     );
@@ -1590,6 +1593,26 @@ fn cleanup_removes_only_pinfolds_garbage() {
         .as_str()
         .unwrap_or_else(|| panic!("built carries no latest: {similar}"))
         .to_string();
+
+    // A third name built from the second retire build's identical inputs:
+    // its build returns that image and tags it under the third name.
+    let twin_name = format!("{retire_name}-twin");
+    let _twin_images = ImageCleanup {
+        repository: format!("pinfold/image-{twin_name}"),
+    };
+    fs::write(rm_context.join("marker.txt"), "retire-2\n").unwrap();
+    let (code, twin) = image_build(&env, &twin_name, &rm_containerfile, &rm_context);
+    assert_eq!(twin["event"], "built", "the twin build: {twin}");
+    assert_eq!(code, 0, "the twin build exited {code}");
+    let twin_latest = twin["latest"]
+        .as_str()
+        .unwrap_or_else(|| panic!("built carries no latest: {twin}"))
+        .to_string();
+    assert_eq!(
+        image_id(&twin_latest),
+        Some(retire_ids[1].clone()),
+        "identical inputs under the twin name did not share the retire image"
+    );
 
     // Box the oldest build, so the newest two, `latest` among them, are the
     // free ones.
@@ -1613,6 +1636,19 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let (code, removed) = image_rm(&env, &retire_name);
     assert_eq!(code, 0, "image rm {retire_name} exited {code}: {removed}");
     assert_eq!(removed["event"], "removed", "image rm: {removed}");
+    let mut removed_ids: Vec<String> = removed["ids"]
+        .as_array()
+        .unwrap_or_else(|| panic!("image rm carries no ids: {removed}"))
+        .iter()
+        .map(|id| id.as_str().unwrap_or_default().to_string())
+        .collect();
+    removed_ids.sort_unstable();
+    let mut freed_ids = vec![retire_ids[1].clone(), retire_ids[2].clone()];
+    freed_ids.sort_unstable();
+    assert_eq!(
+        removed_ids, freed_ids,
+        "image rm's ids are not the ids it untagged: {removed}"
+    );
     assert!(
         retire_refs[1..]
             .iter()
@@ -1630,6 +1666,16 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert!(
         image_id(&similar_latest).is_some(),
         "image rm touched the image of a name it prefixes"
+    );
+    assert_eq!(
+        image_id(&twin_latest),
+        Some(retire_ids[1].clone()),
+        "image rm removed the twin's tag with the shared image"
+    );
+    let twin_read = file_from_image(&env, &twin_latest, "retire-twin", "/marker.txt");
+    assert_eq!(
+        twin_read, "retire-2\n",
+        "the twin's tag no longer names the second build's image"
     );
 
     // With the box down, the last image goes, and the name is empty.
@@ -1763,7 +1809,10 @@ fn a_caller_builds_an_image_from_its_own_tree() {
             .as_str()
             .unwrap_or_else(|| panic!("built carries no ref: {built}"))
             .to_string();
-        assert_eq!(built["labels"]["dev.pinfold.image"], name.as_str());
+        assert_eq!(
+            built["labels"]["dev.pinfold.image"], "",
+            "the name must live only in the build's tags"
+        );
         assert_eq!(built["labels"]["dev.example.test"], "image");
         assert_eq!(
             image_id(&latest),
@@ -1778,7 +1827,7 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         refs.push(reference);
     }
 
-    let names_ids = || labeled_images("dev.pinfold.image", &name);
+    let names_ids = || tagged_images(&repository);
     let kept = names_ids();
     // A caller's `built` ref is a handle for later, so later builds of the
     // name neither reclaim nor move it: a box started from the first

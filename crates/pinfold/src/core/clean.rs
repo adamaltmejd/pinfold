@@ -273,8 +273,9 @@ pub fn path_bytes(path: &Path) -> u64 {
     }
 }
 
-/// Apply [`keep_two_images`] to every source any image names; a failing
-/// source is reported and the rest continue.
+/// Apply [`keep_two_images`] to every source any image names: each
+/// non-empty family label, and every caller name a `pinfold/image-<NAME>`
+/// tag names. A failing source is reported and the rest continue.
 pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
     let mut sources: BTreeSet<(&'static str, String)> = BTreeSet::new();
     for image in runtime.list_images()? {
@@ -282,6 +283,9 @@ pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
             if let Some(source) = image.labels.get(label).filter(|value| !value.is_empty()) {
                 sources.insert((label, source.clone()));
             }
+        }
+        if let Some(source) = caller_source(&image.reference) {
+            sources.insert((IMAGE_LABEL, source.to_string()));
         }
     }
     for (label, source) in sources {
@@ -303,20 +307,36 @@ fn in_use_images(runtime: &dyn Runtime) -> io::Result<BTreeMap<String, Vec<Strin
     Ok(in_use)
 }
 
-/// The runtime's image entries carrying `label = source`, one per
-/// reference. The listing [`keep_two_images`] and [`remove_images`] share.
+/// The caller image name a reference tags, `[localhost/]pinfold/image-<NAME>:<tag>`,
+/// in either spelling the runtime lists. `None` for any other reference.
+fn caller_source(reference: &str) -> Option<&str> {
+    let reference = reference.strip_prefix("localhost/").unwrap_or(reference);
+    let (repository, _) = reference.rsplit_once(':')?;
+    repository.strip_prefix("pinfold/image-")
+}
+
+/// The runtime's image entries for a source, one per reference. A profile
+/// and a project carry `label = source`; a caller name lives only in its
+/// `pinfold/image-<NAME>` tags. The listing [`keep_two_images`] and
+/// [`remove_images`] share.
 fn source_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result<Vec<ImageInfo>> {
     Ok(runtime
         .list_images()?
         .into_iter()
-        .filter(|image| image.labels.get(label).map(String::as_str) == Some(source))
+        .filter(|image| {
+            if label == IMAGE_LABEL {
+                caller_source(&image.reference) == Some(source)
+            } else {
+                image.labels.get(label).map(String::as_str) == Some(source)
+            }
+        })
         .collect())
 }
 
-/// Keep the newest two builds of the images carrying `label = source`.
-/// An image a listed box reports is never offered to the runtime: Apple's
-/// delete would remove it under the box, so pinfold skips it itself and
-/// reports it like a failed removal.
+/// Keep the newest two builds in [`source_images`], removing older build
+/// tags. An image a listed box reports is never offered to the runtime:
+/// Apple's delete would remove it under the box, so pinfold skips it
+/// itself and reports it like a failed removal.
 pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result<()> {
     // One list before anything goes: the ids of the images boxes pin.
     let in_use = in_use_images(runtime)?;
@@ -351,20 +371,21 @@ pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::
 /// What [`remove_images`] removed, and what a listed box still uses.
 /// `pinfold image rm` prints both lists.
 pub struct Removed {
-    /// The ids of the images it removed, one each.
+    /// The ids it untagged, one each.
     pub ids: Vec<String>,
     /// The source's images a listed box uses, so their tags stayed.
     pub in_use: Vec<String>,
 }
 
-/// Retire one source's images: remove every image carrying `label = source`
-/// that no listed box uses, all its tags and the layers no image references,
-/// whatever its age. Return the ids removed and the ids a box still uses.
-/// The listing and in-use check are [`keep_two_images`]'s.
+/// Retire one source: remove every [`source_images`] reference that no
+/// listed box uses, whatever its age. For a caller name that is its tags
+/// alone, so another name's tags on a shared image stay; a profile's or a
+/// project's whole image goes. Return the ids it untagged and the ids a box
+/// still uses. The listing and in-use check are [`keep_two_images`]'s.
 pub fn remove_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result<Removed> {
     let in_use = in_use_images(runtime)?;
-    // Every reference of every image carrying the label, grouped by image
-    // id: two builds of unchanged inputs share one image.
+    // Every reference the source lists, grouped by image id: two builds of
+    // unchanged inputs share one image, and two names share one by tag.
     let mut images: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for image in source_images(runtime, label, source)? {
         images.entry(image.id).or_default().push(image.reference);

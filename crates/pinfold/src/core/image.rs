@@ -29,7 +29,9 @@ pub enum Context<'a> {
 
 /// One build of one source.
 pub struct Build<'a> {
-    /// The label naming the source on the image, which retention groups by.
+    /// The family label naming the source on the image, which retention
+    /// groups by; a caller's source lives only in its tags, so its family
+    /// label is [`clean::IMAGE_LABEL`] and stays empty.
     pub label: &'static str,
     /// The source: a profile name, a project id or a caller image name.
     pub source: &'a str,
@@ -61,11 +63,12 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
     let id = build_id();
     let mut labels = build.labels;
     // The runtime copies the base image's labels onto the new image, so
-    // every family label goes on every image: its own with its source, the
-    // other two empty. Retention then never counts this image as another
+    // every family label goes on every image: its own with its source
+    // (empty for a caller, whose name lives only in its tags), the other
+    // two empty. Retention then never counts this image as another
     // family's, whatever it builds on.
     for family in clean::FAMILY_LABELS {
-        let value = if family == build.label {
+        let value = if family == build.label && family != clean::IMAGE_LABEL {
             build.source
         } else {
             ""

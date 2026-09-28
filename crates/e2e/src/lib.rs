@@ -196,6 +196,27 @@ pub fn labeled_images(label: &str, value: &str) -> Vec<String> {
     ids
 }
 
+/// The ids of every image tagged in `repository` (`<repository>:<tag>`),
+/// from the runtime itself. A caller image name's builds are its tags.
+pub fn tagged_images(repository: &str) -> Vec<String> {
+    let mut ids: Vec<String> = runtime_images()
+        .unwrap_or_else(|error| panic!("{error}"))
+        .into_iter()
+        .filter(|image| {
+            image.names.iter().any(|name| {
+                name.strip_prefix("localhost/")
+                    .unwrap_or(name)
+                    .strip_prefix(repository)
+                    .is_some_and(|rest| rest.starts_with(':'))
+            })
+        })
+        .map(|image| image.id)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 /// Removes every image tagged `<repository>:<tag>` from the runtime store on
 /// drop, so a failing run does not leave them for the next run to count or
 /// for the operator's disk. Every build tags its image so, and the tag
