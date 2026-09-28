@@ -98,6 +98,10 @@ impl Rules {
                     let (target, headers) = inject.resolve().map_err(io::Error::other)?;
                     Upstream::Inject { target, headers }
                 }
+                Route::Login(login) => {
+                    let (target, headers) = login.resolve().map_err(io::Error::other)?;
+                    Upstream::Inject { target, headers }
+                }
             };
             routes.insert(name.to_ascii_lowercase(), upstream);
         }

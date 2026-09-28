@@ -81,6 +81,8 @@ pub enum RefusalReason {
     ImageMissing,
     /// The box name is already in use.
     NameInUse,
+    /// A login route's token is missing.
+    Login,
 }
 
 impl RefusalReason {
@@ -92,6 +94,7 @@ impl RefusalReason {
             RefusalReason::Runtime => "runtime",
             RefusalReason::ImageMissing => "image-missing",
             RefusalReason::NameInUse => "name-in-use",
+            RefusalReason::Login => "login",
         }
     }
 }
@@ -159,6 +162,11 @@ impl Box {
         // or resolved.
         plan.validate()
             .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
+
+        // A login route's token is read from this process before the claim,
+        // so a missing variable refuses as `login` and leaves nothing.
+        plan.resolve_login()
+            .map_err(|error| refused(plan, RefusalReason::Login, error))?;
 
         // The profile's image, share and home seeds are the box's to apply;
         // the runtime sees the resolved plan. Resolving writes nothing; the
@@ -555,6 +563,14 @@ fn resolve_harness(plan: &mut Plan) -> io::Result<()> {
         plan.env
             .entry(name.clone())
             .or_insert_with(|| Env::Exact(value.clone()));
+    }
+    // A login route's placeholders go in beside the harness defaults; the
+    // spec's own env still wins.
+    let login = plan.login().map(|(route, login)| login.env(route));
+    for (name, value) in login.into_iter().flatten() {
+        plan.env
+            .entry(name.to_string())
+            .or_insert(Env::Exact(value));
     }
     let allow = plan
         .egress

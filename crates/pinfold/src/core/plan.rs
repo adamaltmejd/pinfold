@@ -67,6 +67,26 @@ pub enum Route {
     /// `{ "to": ORIGIN, "headers": {…} }`: the proxy dials `to` and adds the
     /// headers from its own environment.
     Inject(Inject),
+    /// `{ "login": HARNESS, "from": VAR, "to"?: ORIGIN }`: the proxy dials
+    /// the harness's origin with the harness's own header.
+    Login(Login),
+}
+
+/// A login route: the token stays in the proxy's process and pinfold
+/// supplies the origin, the header and the box's placeholders. Only claude
+/// is served in this build.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Login {
+    /// The harness the login belongs to; it must be the spec's `harness`.
+    pub login: String,
+    /// The variable the token is read from, by name only. claude needs one;
+    /// codex will not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// The origin to dial instead of the harness's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
 }
 
 /// An injecting route: the credential stays in the proxy's process.
@@ -143,6 +163,64 @@ impl Inject {
             headers.push((name.clone(), value));
         }
         Ok((target, headers))
+    }
+}
+
+/// The box's fixed placeholder for a login token; the proxy injects the
+/// real header, so the box never needs the value.
+const LOGIN_PLACEHOLDER: &str = "pinfold-placeholder";
+
+impl Login {
+    /// The origin this login dials: the harness's own, or the spec's `to`.
+    fn origin(&self) -> Result<&str, String> {
+        match self.login.as_str() {
+            "claude" => Ok(self.to.as_deref().unwrap_or("https://api.anthropic.com")),
+            login => Err(invalid(format!("login {login:?} is not supported"))),
+        }
+    }
+
+    /// Check a login route without reading the environment: this build
+    /// serves the login, `from` is present, and `to` parses like an
+    /// injecting route's.
+    fn check(&self, route: &str) -> Result<(), String> {
+        let origin = self.origin()?;
+        if parse_target(origin).is_none() {
+            return Err(invalid(format!(
+                "login route {route:?} target {origin:?} must be an http:// or https:// origin"
+            )));
+        }
+        if self.from.as_deref().is_none_or(str::is_empty) {
+            return Err(invalid(format!(
+                "login route {route:?} needs a from variable"
+            )));
+        }
+        Ok(())
+    }
+
+    /// The dialed target and the Authorization header, from this process's
+    /// environment once at start. The target and the value rules are
+    /// [`Inject::resolve`]'s.
+    pub fn resolve(&self) -> Result<(Target, Vec<(String, String)>), String> {
+        let inject = Inject {
+            to: self.origin()?.to_string(),
+            headers: BTreeMap::from([(
+                "Authorization".to_string(),
+                Header {
+                    from: self.from.clone().unwrap_or_default(),
+                    prefix: "Bearer ".to_string(),
+                },
+            )]),
+        };
+        inject.resolve()
+    }
+
+    /// The box environment a login route adds beside the harness defaults;
+    /// the spec's own `env` still wins. `route` is the route's name.
+    pub fn env(&self, route: &str) -> [(&'static str, String); 2] {
+        [
+            ("ANTHROPIC_BASE_URL", format!("http://{route}")),
+            ("CLAUDE_CODE_OAUTH_TOKEN", LOGIN_PLACEHOLDER.to_string()),
+        ]
     }
 }
 
@@ -296,6 +374,7 @@ impl Plan {
             }
         }
         if let Some(egress) = &self.egress {
+            let mut seen_login = false;
             for (name, route) in &egress.routes {
                 match route {
                     Route::Address(address) => {
@@ -313,10 +392,57 @@ impl Plan {
                     Route::Inject(inject) => {
                         inject.resolve()?;
                     }
+                    Route::Login(login) => {
+                        if self.harness.as_deref() != Some(login.login.as_str()) {
+                            let detail = match &self.harness {
+                                Some(harness) => format!(
+                                    "login route {name:?} names {:?}, but the spec's harness is {harness:?}",
+                                    login.login
+                                ),
+                                None => format!(
+                                    "login route {name:?} names {:?}, but the spec has no harness",
+                                    login.login
+                                ),
+                            };
+                            return Err(invalid(detail));
+                        }
+                        if seen_login {
+                            return Err(invalid(format!(
+                                "login route {name:?} is a second login route"
+                            )));
+                        }
+                        seen_login = true;
+                        login.check(name)?;
+                    }
                 }
             }
         }
         Ok(())
+    }
+
+    /// The spec's login route, with its name.
+    pub fn login(&self) -> Option<(&str, &Login)> {
+        self.egress
+            .as_ref()?
+            .routes
+            .iter()
+            .find_map(|(name, route)| match route {
+                Route::Login(login) => Some((name.as_str(), login)),
+                _ => None,
+            })
+    }
+
+    /// Resolve the login route's credential from this process's environment
+    /// before the claim, so a missing variable refuses as `login` rather
+    /// than `spec`. The value never enters the plan.
+    pub fn resolve_login(&self) -> Result<(), String> {
+        let Some((route, login)) = self.login() else {
+            return Ok(());
+        };
+        login
+            .resolve()
+            .map(|_| ())
+            .map_err(|error| format!("{} login route {route:?}: {error}", login.login))
     }
 
     /// Refuse two mounts at one guest path: the runtime applies both, and

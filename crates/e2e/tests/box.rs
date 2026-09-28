@@ -549,6 +549,38 @@ fn up_refuses_before_it_creates() {
     );
     assert_left_nothing(&env, &name, label, "refused");
 
+    // A login route naming a harness other than the spec's is refused as
+    // data, naming the route, and leaves no state dir and no box: the route
+    // would otherwise carry another harness's login. The positive control,
+    // a matching claude login route coming up, is guarantee 26's
+    // `a_login_route_keeps_the_login_on_the_host`. Sabotage: drop the
+    // login-equals-harness check; the refusal then names only `codex`, so
+    // the route assertion fails.
+    let login_mismatch = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+        "labels": { "dev.example.test": "refuses" },
+        "harness": "claude",
+        "egress": {
+            "routes": {
+                "login.internal": { "login": "codex", "from": "PINFOLD_E2E_LOGIN" },
+            },
+        },
+    });
+    let (code, refused) = box_up_refused(&env, &login_mismatch, &[]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["event"], "refused");
+    assert_eq!(refused["reason"], "spec");
+    assert_eq!(refused["box"], name);
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("login.internal"),
+        "the refusal did not name the route: {refused}"
+    );
+    assert_left_nothing(&env, &name, label, "refused");
+
     // A spec whose mount path holds a comma is refused as data, naming the
     // path, and leaves no state dir and no box: the bind value is built by
     // concatenation, so the runtime reads the rest as mount options. The
@@ -2141,6 +2173,148 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
     }
 
     up.down(&env);
+}
+
+#[test]
+fn a_login_route_keeps_the_login_on_the_host() {
+    // Guarantee 26, claude half. Sabotage: in `resolve_harness`, drop the
+    // `CLAUDE_CODE_OAUTH_TOKEN` placeholder and pass `$VAR` into the box
+    // instead (`Env::From { from: login.from }`); the box environment
+    // assertion fails. The value lives only in `up`'s environment; the box
+    // sends its own Authorization, which the proxy replaces with the login's
+    // Bearer header. The ordinary injecting route is the control that the
+    // same fixture answers in the same box.
+    let env = TestEnv::new("login");
+    let fixture = HttpFixture::start(None);
+    let secret = format!("pf-login-{}", std::process::id());
+    let name = box_name("login");
+    let label = "dev.example.test=login";
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+        "labels": { "dev.example.test": "login" },
+        "harness": "claude",
+        "egress": {
+            "routes": {
+                "claude.internal": {
+                    "login": "claude",
+                    "from": "PINFOLD_E2E_LOGIN",
+                    "to": format!("http://{}", fixture.route()),
+                },
+                "control.internal": { "to": format!("http://{}", fixture.route()) },
+            },
+        },
+    });
+    let mut up = box_up_with_env(&env, &spec, &name, &[("PINFOLD_E2E_LOGIN", &secret)]);
+
+    // The fixture receives the login's Bearer token, not the box's own.
+    let login = curl(
+        &env,
+        &name,
+        "5",
+        &[
+            "-H",
+            "Authorization: Bearer from-box",
+            "http://claude.internal/",
+        ],
+    );
+    assert_eq!(login.code, 0, "the login route failed: {}", login.stderr);
+    assert!(
+        login
+            .stdout
+            .contains(&format!("fixture host={}", fixture.route())),
+        "the login route answered: {}",
+        login.stdout
+    );
+    let requests = fixture.requests();
+    assert_eq!(requests.len(), 1, "the fixture saw {requests:?}");
+    let authorization: Vec<&str> = requests[0]
+        .0
+        .iter()
+        .filter(|(header, _)| header.eq_ignore_ascii_case("authorization"))
+        .map(|(_, value)| value.as_str())
+        .collect();
+    assert_eq!(
+        authorization,
+        [format!("Bearer {secret}")],
+        "the fixture's Authorization headers"
+    );
+
+    // The control injecting route answers in the same box.
+    let control = curl(&env, &name, "5", &["http://control.internal/"]);
+    assert_eq!(
+        control.code, 0,
+        "the control route failed: {}",
+        control.stderr
+    );
+    assert!(
+        control
+            .stdout
+            .contains(&format!("fixture host={}", fixture.route())),
+        "the control route answered: {}",
+        control.stdout
+    );
+
+    // The box gets the base URL and a placeholder, never the value.
+    let environment = box_exec(&env, &name, &["env"]);
+    assert_eq!(environment.code, 0, "env failed: {}", environment.stderr);
+    assert!(
+        environment
+            .stdout
+            .lines()
+            .any(|line| line == "ANTHROPIC_BASE_URL=http://claude.internal"),
+        "the box's ANTHROPIC_BASE_URL is not the route: {}",
+        environment.stdout
+    );
+    let placeholder = environment
+        .stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("CLAUDE_CODE_OAUTH_TOKEN="))
+        .unwrap_or_else(|| {
+            panic!(
+                "the box has no CLAUDE_CODE_OAUTH_TOKEN: {}",
+                environment.stdout
+            )
+        });
+    assert!(
+        !placeholder.is_empty() && placeholder != secret,
+        "the box's CLAUDE_CODE_OAUTH_TOKEN is the login"
+    );
+    assert!(
+        !environment.stdout.contains(&secret),
+        "the box's environment holds the value"
+    );
+
+    // The egress log names the routes and never the value.
+    let log = fs::read_to_string(egress_log(&env, &name)).expect("read egress log");
+    assert!(!log.contains(&secret), "the egress log holds the value");
+    let lines = egress_log_lines(&env, &name);
+    for route in ["claude.internal", "control.internal"] {
+        assert!(
+            lines.iter().any(|line| line["host"] == route
+                && line["decision"] == "allowed"
+                && line["reason"] == "route"),
+            "no route decision for {route}: {lines:?}"
+        );
+    }
+
+    up.down(&env);
+    assert!(up.wait().success(), "box up did not exit cleanly");
+
+    // Without the variable, up is refused as `login` and leaves nothing.
+    let (code, refused) = box_up_refused(&env, &spec, &[]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["event"], "refused");
+    assert_eq!(refused["box"], name);
+    assert_eq!(refused["reason"], "login");
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("claude"),
+        "the refusal did not name the harness: {refused}"
+    );
+    assert_left_nothing(&env, &name, label, "refused");
 }
 
 #[test]
