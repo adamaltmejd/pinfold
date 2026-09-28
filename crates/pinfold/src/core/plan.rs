@@ -538,9 +538,6 @@ fn valid_mount_path(path: &Path) -> bool {
 /// else. A URL-shaped value is a caller reaching for the injecting object
 /// form, whose `to` takes the origin, so the refusal points there.
 fn valid_route_address(address: &str) -> bool {
-    if address.contains("://") {
-        return false;
-    }
     // `authority_host` fills in `default` when the authority names no port;
     // 0 is not a valid port, so a missing port and `:0` are refused alike.
     let Some((host, port)) = network::authority_host(address, 0) else {

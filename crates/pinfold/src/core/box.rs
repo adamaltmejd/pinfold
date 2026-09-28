@@ -573,17 +573,19 @@ fn resolve_harness(plan: &mut Plan, state_dir: &Path) -> io::Result<()> {
     }
     // A login route's placeholders go in beside the harness defaults; the
     // spec's own env still wins.
-    let login = plan.login().map(|(route, login)| login.env(route));
-    for (name, value) in login.into_iter().flatten() {
+    let (login_env, codex_config) = plan
+        .login()
+        .map(|(route, login)| {
+            let config = login.is_codex().then(|| login::codex_config(route));
+            (login.env(route), config)
+        })
+        .unzip();
+    for (name, value) in login_env.into_iter().flatten() {
         plan.env
             .entry(name.to_string())
             .or_insert(Env::Exact(value));
     }
-    let codex_config = plan
-        .login()
-        .filter(|(_, login)| login.is_codex())
-        .map(|(route, _)| login::codex_config(route));
-    if let Some(config) = codex_config {
+    if let Some(config) = codex_config.flatten() {
         let dir = state_dir.join("codex");
         fs::create_dir_all(&dir)?;
         fs::write(dir.join("config.toml"), config)?;
