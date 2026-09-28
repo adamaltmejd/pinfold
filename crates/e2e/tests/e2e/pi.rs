@@ -15,6 +15,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 
 use crate::BUILDER_RACE;
+use crate::box_::{box_name, box_up};
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
     box_stat, build_profile, curl, default_image, egress_log_lines, git, pinfold, project_id,
@@ -112,6 +113,30 @@ fn the_environment_is_exactly_the_spec() {
         stderr.contains("BAD-NAME"),
         "the refusal did not name BAD-NAME: {stderr}"
     );
+
+    // A caller-owned box whose spec PATH is one directory that does not
+    // exist, so the runtime's directory is omitted on both macOS and Linux
+    // (on Ubuntu /bin is /usr/bin, so a list of system dirs would not show
+    // the bug). The runtime is resolved on pinfold's own PATH before the
+    // spec's env, so the box still comes up. Sabotage: spawn the runtime by
+    // its bare name again; Rust then resolves it against the spec PATH, `up`
+    // fails before `ready`, and `box_up` panics on its first line.
+    let path = env.root.join("no-such-path");
+    let name = box_name("env-path");
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+        "env": { "PATH": path },
+    });
+    let up = box_up(&env, &spec, &name);
+    let boxed = box_exec(&env, &name, &["/bin/sh", "-c", "printf %s \"$PATH\""]);
+    assert_eq!(boxed.code, 0, "reading PATH failed: {}", boxed.stderr);
+    assert_eq!(
+        boxed.stdout,
+        path.to_str().expect("the PATH is UTF-8"),
+        "the box's PATH is not the spec's"
+    );
+    drop(up);
 }
 
 #[test]
