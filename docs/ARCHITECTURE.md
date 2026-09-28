@@ -125,6 +125,7 @@ pinfold box down BOX              # signals up to tear down; idempotent: an abse
 pinfold box list --label k=v      # JSON lines; repeat --label to AND filters
 pinfold box prune                 # remove boxes whose `up` is gone, print each removed
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache]   # one JSON line
+pinfold image rm NAME             # one JSON line
 ```
 
 `image build` builds a caller image (see Images) and prints one line on
@@ -150,6 +151,14 @@ builds nothing; `image` is null when no name was given:
 
 ```json
 {"event":"refused","image":NAME,"reason":"spec"|"runtime","detail":TEXT}
+```
+
+`image rm` (see Maintenance) exits 0 with the ids it removed and the ids
+a box still uses, either list possibly empty; a bad name is refused as
+`spec` like a build's:
+
+```json
+{"event":"removed","image":NAME,"ids":[ID,…],"in_use":[ID,…]}
 ```
 
 On a box that is absent, `exec` exits 3 with `pinfold box exec: no box
@@ -437,10 +446,11 @@ profile image.
   alone. For a project build, trust then covers every input. Files come in
   by `ADD --checksum` or from the profile image. Every step reruns at every
   build (no layer cache).
-- Every build is a distinct image, cached or not, through the unique
-  `dev.pinfold.build` label. Every build sets all three family labels and
-  `dev.pinfold.base`, the other families empty, so an image inherits no
-  family and no base from the image it builds on.
+- A build's identity is its unique tag, never an image label. A caller
+  build whose layers and labels are unchanged returns the existing image.
+  Every build sets all three family labels and `dev.pinfold.base`, the
+  other families empty, so an image inherits no family and no base from
+  the image it builds on.
 - A profile build is tagged uniquely `pinfold/profile-<name>:<build>` and
   moves the stable `pinfold/profile-<name>:latest` to it. The stable ref is
   what a project Containerfile `FROM`s and what `doctor` compares against.
@@ -452,9 +462,10 @@ profile image.
   the context. NAME is validated like a profile name. The build is tagged
   uniquely `pinfold/image-<NAME>:<build>` and moves the stable
   `pinfold/image-<NAME>:latest` to it; a box spec's `image` names either.
-  It carries `dev.pinfold.image=<NAME>`, `dev.pinfold.build`,
+  It carries `dev.pinfold.image=<NAME>`,
   `dev.pinfold.base` (the first `FROM`'s digest when it resolves to one,
-  else empty), empty `dev.pinfold.profile` and `dev.pinfold.project`, and
+  else empty; a base pinfold built is read from local storage, never
+  pulled), empty `dev.pinfold.profile` and `dev.pinfold.project`, and
   the caller's `--label`s, none of which may start with `dev.pinfold.`. It uses
   the runtime's layer cache unless the caller passes `--no-cache`; podman
   labels the cache's intermediate images `dev.pinfold.layer`.
@@ -571,18 +582,22 @@ and its state lives under its own dirs. Each project's state records its
 checkout path and last run.
 
 Automatic, never prompting:
-- After a build: keep the newest two images per source (a profile, a
-  project or a caller image name), the second for rollback. Remove older
-  ones and their dangling layers. An image a box still uses stays, and pins
-  only itself. A caller image built in the last hour stays, so the ref its
+- After a build: keep the newest two builds per source (a profile, a
+  project or a caller image name), the second for rollback, ordered by
+  their tags. Remove older builds' tags; an image goes with its last tag,
+  and its dangling layers with it. An image a box still uses stays, and
+  pins only itself. A caller build in the last hour stays, so the ref its
   `built` line named still comes up; past the hour the newest two rule
   applies.
 - At most once a day, at the start of any working command (not
   `--version`, `--help` or `init`): prune boxes whose owner
   is gone (nothing holds the lock on its `pid` file), leftover sockets,
   artifact `<name>/<version>` directories no pin names (`init/` aside),
-  images beyond each source's newest two (the after-build rule, applied
+  builds beyond each source's newest two (the after-build rule, applied
   even when no build follows), and egress logs older than 14 days.
+
+`pinfold image rm NAME` retires a caller image name: it removes every
+image of NAME that no box uses, whatever its age, and no other name's.
 
 `pinfold clean` lists sizes, then removes:
 - everything automatic, now
@@ -681,6 +696,7 @@ pinfold pi [pi args…]            pi in a box for this project; `pi` is a symli
 pinfold attach [--box NAME] [cmd…]   bash (or cmd) in this project's running pi box
 pinfold build [--profile NAME]   build this project's image, or a profile's; prints the ref
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache]   a caller's image from its own context; one JSON line
+pinfold image rm NAME            retire a caller image name; one JSON line
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
 pinfold profile new NAME [--from PROFILE] [--from-project [PATH]]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim disk (see Maintenance)
@@ -724,7 +740,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |
 | 13 | Project state persists and stays separate | Settings are seeded once and survive runs; a deleted seed returns; two projects don't see each other's state. |
 | 14 | Both pi config levels load behind a route | `pi -p` through the shim, against a fake model reached through a route: the model's request carries a skill from the profile and one from the project's `.pi/`. |
-| 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself; an image built on a profile's is its own family; a source a build left above two drops to two on a later `pinfold clean` with no build after. `--dry-run` removes nothing. An unlabeled image, a live box, its project's state and `~/.cache` survive `pinfold clean`, also with `--unused 0s`, which removes an idle project's state; a dead box is removed and protects no project's cache. |
+| 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself; an image built on a profile's is its own family; a source a build left above two drops to two on a later `pinfold clean` with no build after. `--dry-run` removes nothing. `image rm` removes every image of its name but one a box uses, and no other name's. An unlabeled image, a live box, its project's state and `~/.cache` survive `pinfold clean`, also with `--unused 0s`, which removes an idle project's state; a dead box is removed and protects no project's cache. |
 | 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW carries the default list's hosts; with PINFOLD_ALLOW=api.github.com over a project's allow = ["registry.npmjs.org"], it is exactly that host, and registry.npmjs.org is refused as not allowlisted. |
 | 17 | up refuses before it creates | A missing image, a misspelled spec key, a bad env name, a `dev.pinfold.` label, a memory below 256M or without a unit, a malformed string route, a mount path with a comma, a file mount, a mount at a path pinfold mounts and a live name are refused as data, naming the cause; a misspelled key's refusal also names the box, and a missing host path fails after the claim; each leaves no box and no state dir. The box whose name was reused still answers exec, and of two `up`s racing for one name exactly one wins. |
 | 18 | A caller reads the effective configuration as data | pinfold config reports a project's allow list, its trust state before and after pinfold allow, and the project home pinfold pi then mounts. |
@@ -732,7 +748,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, every field is present, and `exec`'d processes carry `oom_score_adj` 1000, so init is never the victim. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
 | 22 | A caller-owned box cannot write .git | With REPO/.git read-only listed before REPO writable, and safe.directory set by the caller: a worktree write succeeds, git log and git status succeed, and a hook write fails. |
-| 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref, the image's id and the labels; three builds of one name move latest, and the first build's ref still comes up; a failed build prints its log and makes no image. |
+| 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref, the image's id and the labels; three builds of one name move latest, and the first build's ref still comes up; two builds of unchanged inputs report one id under two refs; a failed build prints its log and makes no image. |
 | 24 | Every build reruns its steps | A second build of one source does not reuse the first's `RUN` layer; on podman it leaves no untagged image. |
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box list --help` exits 0, with no runtime and leaving the state dir untouched. |
 | 26 | A login route keeps the login on the host | With `to` at a host fixture, claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. An empty `CODEX_HOME` is refused as `login`. Control: an injecting route answers in the same box. On macOS only (the operator's Mac, with a real login), codex completes one tool round trip through a route with no `to`. |
