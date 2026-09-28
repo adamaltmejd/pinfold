@@ -65,15 +65,16 @@ fn maintain_due() -> io::Result<()> {
     // instead of running before every command.
     fs::create_dir_all(&state)?;
     fs::write(&stamp, [])?;
-    // Every step is attempted; a failure is reported and the rest continue.
+    // A failed step is reported and the rest continue; retention waits for
+    // pruning, because its in-use check is the box list minus the dead boxes
+    // pruning removes, and a dead box a failed prune left behind still pins
+    // its image.
     let runtime = runtime();
-    // One box list serves the boxes step and retention's in-use check;
-    // one image list serves every source's retention decision.
     match boxes(runtime) {
-        Ok(boxes) => {
-            report("boxes", prune_boxes(runtime, &boxes));
-            report("images", keep_two_images_per_source(runtime, &boxes));
-        }
+        Ok(boxes) => match prune_boxes(runtime, &boxes) {
+            Ok(()) => report("images", keep_two_images_per_source(runtime, &boxes)),
+            Err(error) => report("boxes", Err(error)),
+        },
         Err(error) => report("boxes", Err(error)),
     }
     report("sockets", leftover_socket_dirs().and_then(remove_paths));
