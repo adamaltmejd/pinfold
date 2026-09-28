@@ -205,9 +205,11 @@ fn build_id() -> String {
     format!("{nanos:x}-{}", std::process::id())
 }
 
-/// The digest of the image a Containerfile's first `FROM` pulls, when it
-/// names one the runtime can resolve. A `FROM` that names a variable has
-/// none.
+/// The digest of the image a Containerfile's first `FROM` names, when the
+/// runtime can resolve it. A pinfold-built base has no registry, so its
+/// digest is read from local storage and nothing is pulled; any other base
+/// is pulled first, so a floating tag's digest is current. A `FROM` that
+/// names a variable has none.
 pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Option<String>> {
     let Ok(text) = std::str::from_utf8(containerfile) else {
         return Ok(None);
@@ -222,7 +224,22 @@ pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Op
             words.find(|word| !word.starts_with("--"))
         });
     match base {
-        Some(base) if !base.contains('$') => runtime.image_digest(base),
+        Some(base) if !base.contains('$') => {
+            // A pinfold-built base can never be pulled, so read its digest
+            // locally before spending the retries on a doomed pull.
+            let local = runtime.resolve_image(base)?.ok().filter(|image| {
+                clean::FAMILY_LABELS.iter().any(|label| {
+                    image
+                        .labels
+                        .get(*label)
+                        .is_some_and(|value| !value.is_empty())
+                })
+            });
+            if let Some(image) = local {
+                return Ok(image.digest);
+            }
+            runtime.image_digest(base)
+        }
         _ => Ok(None),
     }
 }
