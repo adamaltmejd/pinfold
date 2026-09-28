@@ -27,9 +27,6 @@ pub const FAMILY_LABELS: [&str; 3] = [PROFILE_LABEL, PROJECT_LABEL, IMAGE_LABEL]
 pub const LAYER_LABEL: &str = "dev.pinfold.layer";
 /// The label recording the digest of the image an image was built from.
 pub const BASE_LABEL: &str = "dev.pinfold.base";
-/// The label naming the build that produced an image. Its value starts with
-/// the build's nanoseconds since the epoch in hex, so it orders builds.
-pub const BUILD_LABEL: &str = "dev.pinfold.build";
 /// The label naming the `box up` process that owns a box.
 pub const OWNER_LABEL: &str = "dev.pinfold.owner";
 
@@ -37,7 +34,7 @@ pub const OWNER_LABEL: &str = "dev.pinfold.owner";
 const EGRESS_LOG_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 /// The daily pass runs at most once in this interval.
 const PASS_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
-/// A caller image built within this window is never removed: the ref its
+/// A caller build tag made within this window is never removed: the ref its
 /// `built` line named must still come up when the caller uses it later.
 const CALLER_IMAGE_GRACE: Duration = Duration::from_secs(60 * 60);
 
@@ -284,7 +281,7 @@ pub fn total_bytes<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> u64 {
 /// Apply [`keep_two_images`] to every source the runtime lists: each
 /// non-empty value of the three family labels. The daily pass and `pinfold
 /// clean` call it, so the after-build rule reaches a source a build left
-/// above two and never builds again: a caller image inside
+/// above two and never builds again: a caller build tag inside
 /// [`CALLER_IMAGE_GRACE`] at the last build, or one a box pinned then. A
 /// failure on one source is reported and the rest continue; only listing
 /// the runtime's images fails the step.
@@ -305,46 +302,45 @@ pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
     Ok(())
 }
 
-/// Keep the newest two images carrying `label = source`, removing older ones
-/// and the layers no image references. Called after a successful build.
-/// Every older image is tried; a failure keeps that image and the rest still
-/// run, so one in-use image never stops the others from going. An image a
-/// listed box reports is never offered to the runtime: Apple's delete would
-/// remove it under the box, so pinfold skips it itself and reports it like a
-/// failed removal.
+/// Keep the newest two builds of the images carrying `label = source`,
+/// counted by their build tags, and remove older build tags. `latest` is
+/// never counted. Removing a tag untags; the runtime removes an image with
+/// its last tag, and the layers no image references with it, so an image
+/// that newer builds share stays. Called after a successful build. Every
+/// older tag is tried; a failure keeps that tag and the rest still run, so
+/// one in-use image never stops the others from going. An image a listed
+/// box reports keeps every tag and is never offered to the runtime: Apple's
+/// delete would remove it under the box, so pinfold skips it itself and
+/// reports it like a failed removal.
 pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result<()> {
     // One list before anything goes: the ids of the images boxes pin.
     let mut in_use: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for box_ in runtime.list()? {
         in_use.entry(box_.image_id).or_default().push(box_.id);
     }
-    let mut images: BTreeMap<(SystemTime, String), Vec<String>> = BTreeMap::new();
+    // One entry per build tag, oldest first, naming its image.
+    let mut builds: BTreeMap<(SystemTime, String), String> = BTreeMap::new();
     for image in runtime.list_images()? {
         if image.labels.get(label).map(String::as_str) != Some(source) {
             continue;
         }
-        images
-            .entry((build_time(&image.labels), image.id))
-            .or_default()
-            .push(image.reference);
+        if let Some(built) = build_time(&image.reference) {
+            builds.insert((built, image.reference), image.id);
+        }
     }
     let mut failures = Vec::new();
-    for ((built, id), references) in images.into_iter().rev().skip(2) {
+    for ((built, reference), id) in builds.into_iter().rev().skip(2) {
         if label == IMAGE_LABEL && !built.elapsed().is_ok_and(|age| age > CALLER_IMAGE_GRACE) {
             continue;
         }
         if let Some(boxes) = in_use.get(&id) {
-            for reference in references {
-                failures.push(format!("{reference}: in use by box {}", boxes.join(", ")));
-            }
+            failures.push(format!("{reference}: in use by box {}", boxes.join(", ")));
             continue;
         }
-        for reference in references {
-            if let Err(error) = runtime.remove_image(&reference) {
-                // Every removal carries its reference in the runtime's
-                // error; join them into the one line the caller prints.
-                failures.push(error.to_string());
-            }
+        if let Err(error) = runtime.remove_image(&reference) {
+            // Every removal carries its reference in the runtime's error;
+            // join them into the one line the caller prints.
+            failures.push(error.to_string());
         }
     }
     if failures.is_empty() {
@@ -353,12 +349,11 @@ pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::
     Err(io::Error::other(failures.join("; ")))
 }
 
-/// An image's build time, from its [`BUILD_LABEL`].
-fn build_time(labels: &BTreeMap<String, String>) -> SystemTime {
-    let nanos = labels
-        .get(BUILD_LABEL)
-        .and_then(|value| value.split('-').next())
-        .and_then(|nanos| u64::from_str_radix(nanos, 16).ok())
-        .unwrap_or(0);
-    UNIX_EPOCH + Duration::from_nanos(nanos)
+/// A build tag's time: its `<build>` starts with the build's nanoseconds
+/// since the epoch in hex. `None` for `latest`, a dangling image's id and
+/// any other reference that is not a build tag.
+fn build_time(reference: &str) -> Option<SystemTime> {
+    let (_, tag) = reference.rsplit_once(':')?;
+    let nanos = u64::from_str_radix(tag.split('-').next()?, 16).ok()?;
+    Some(UNIX_EPOCH + Duration::from_nanos(nanos))
 }

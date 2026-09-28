@@ -34,7 +34,7 @@ pub struct Build<'a> {
     /// The source: a profile name, a project id or a caller image name.
     pub source: &'a str,
     pub context: Context<'a>,
-    /// Labels beyond the source and build labels.
+    /// Labels beyond the family and base labels.
     pub labels: BTreeMap<String, String>,
     /// Whether the runtime may reuse its layer cache.
     pub cache: bool,
@@ -75,9 +75,6 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
     // Likewise the base: the caller set the resolved digest, or this makes
     // it empty, never an inherited copy.
     labels.entry(clean::BASE_LABEL.to_string()).or_default();
-    // The unique build label is what makes every build a distinct image,
-    // cached or not.
-    labels.insert(clean::BUILD_LABEL.to_string(), id.clone());
     // `pinfold/profile-<name>`, `pinfold/project-<id>` or
     // `pinfold/image-<name>`.
     let repository = format!(
@@ -196,7 +193,10 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
     .map_err(ImageError::Failed)
 }
 
-/// A new build's id, the value of [`clean::BUILD_LABEL`].
+/// A new build's id, the `<build>` of its unique tag. It starts with the
+/// build's nanoseconds since the epoch in hex, which retention orders
+/// builds by. It is never a label, so a cached build of unchanged inputs
+/// returns the existing image.
 fn build_id() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
