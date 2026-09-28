@@ -496,7 +496,8 @@ sha256, and how it installs (a `tar.gz` whose one top-level entry is
 installed, or a bare executable) and at which path. On a box's first use of
 a harness, its assets are downloaded, checked and installed into
 `~/.cache/pinfold/artifacts/<name>/<version>/<os-arch>/`; its `<name>/`
-directory there is mounted read-only at `/opt/pinfold/<name>`. A checksum
+directory there is mounted read-only at `/opt/pinfold/<name>`. An install
+records its files; a use that finds one missing reinstalls it. A checksum
 mismatch fails the start, naming the harness, version and asset. A harness
 no box asks for is never downloaded. A harness moves only with a pinfold
 release.
@@ -744,7 +745,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW carries the default list's hosts; with PINFOLD_ALLOW=api.github.com over a project's allow = ["registry.npmjs.org"], it is exactly that host, and registry.npmjs.org is refused as not allowlisted. |
 | 17 | up refuses before it creates | A missing image, a misspelled spec key, a bad env name, a `dev.pinfold.` label, a memory below 256M or without a unit, a malformed string route, a mount path with a comma, a file mount, a mount at a path pinfold mounts and a live name are refused as data, naming the cause; a misspelled key's refusal also names the box, and a missing host path fails after the claim; each leaves no box and no state dir. The box whose name was reused still answers exec, and of two `up`s racing for one name exactly one wins. |
 | 18 | A caller reads the effective configuration as data | pinfold config reports a project's allow list, its trust state before and after pinfold allow, and the project home pinfold pi then mounts. |
-| 19 | A caller-owned box launches the pinned harness | A spec with each harness (pi, claude, codex) runs `/opt/pinfold/<name>/<name> --version` at the version `pinfold artifacts` pins, and the box's PINFOLD_ALLOW is the spec's allow list. |
+| 19 | A caller-owned box launches the pinned harness | A spec with each harness (pi, claude, codex) runs `/opt/pinfold/<name>/<name> --version` at the version `pinfold artifacts` pins, also after the host deleted that executable from the cache, and the box's PINFOLD_ALLOW is the spec's allow list. |
 | 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, every field is present, and `exec`'d processes carry `oom_score_adj` 1000, so init is never the victim. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
 | 22 | A caller-owned box cannot write .git | With REPO/.git read-only listed before REPO writable, and safe.directory set by the caller: a worktree write succeeds, git log and git status succeed, and a hook write fails. |
