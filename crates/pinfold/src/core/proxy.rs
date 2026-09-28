@@ -85,8 +85,9 @@ struct Rules {
 
 /// A route's upstream. No `Debug`: an injected header holds a credential.
 enum Upstream {
-    /// A host service at `host:port`.
-    Address(String),
+    /// A host service at `host:port`, dialed unchecked. The box's own
+    /// authority stays the Host header.
+    Address(Target),
     /// An injecting route's target and its headers, values already read.
     Inject {
         target: Target,
@@ -104,15 +105,23 @@ impl Rules {
         let mut routes = BTreeMap::new();
         for (name, route) in &egress.routes {
             let upstream = match route {
-                Route::Address(address) => Upstream::Address(address.clone()),
+                Route::Address(address) => {
+                    let (host, port) = network::authority_host(address, 0).ok_or_else(|| {
+                        io::Error::other(format!("route target {address:?} must be host:port"))
+                    })?;
+                    Upstream::Address(Target {
+                        https: false,
+                        host: host.to_string(),
+                        port,
+                        authority: address.clone(),
+                    })
+                }
                 Route::Inject(inject) => {
                     let (target, headers) = inject.resolve().map_err(io::Error::other)?;
                     Upstream::Inject { target, headers }
                 }
                 Route::Login(login) if login.is_codex() => {
-                    let token = codex
-                        .take()
-                        .ok_or_else(|| io::Error::other("a codex login route needs its token"))?;
+                    let token = codex.take().expect("up resolves a codex login's token");
                     Upstream::Codex {
                         target: login.target().map_err(io::Error::other)?,
                         login: login::Codex::new(token),
@@ -126,8 +135,9 @@ impl Rules {
             routes.insert(name.to_ascii_lowercase(), upstream);
         }
         let https = routes.values().any(|upstream| match upstream {
-            Upstream::Inject { target, .. } | Upstream::Codex { target, .. } => target.https,
-            Upstream::Address(_) => false,
+            Upstream::Address(target)
+            | Upstream::Inject { target, .. }
+            | Upstream::Codex { target, .. } => target.https,
         });
         let tls = if https { Some(tls_config()?) } else { None };
         Ok(Rules {
@@ -312,35 +322,19 @@ fn route(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain, up
         });
         record(log, &request.host, "allowed", "route", Some(fields));
     };
-    let (target, headers) = match upstream {
-        Upstream::Address(address) => {
-            let server = dial(address.as_str());
-            let _ = forward(
-                client,
-                server,
-                request,
-                &request.authority,
-                &[],
-                &mut report,
-            );
-            return;
+    let (target, host, headers) = match upstream {
+        Upstream::Address(target) => (target, &request.authority, Cow::Borrowed(&[][..])),
+        Upstream::Inject { target, headers } => {
+            (target, &target.authority, Cow::Borrowed(headers.as_slice()))
         }
-        Upstream::Inject { target, headers } => (target, Cow::Borrowed(headers.as_slice())),
         Upstream::Codex { target, login } => match login.headers() {
-            Some(headers) => (target, Cow::Owned(headers)),
+            Some(headers) => (target, &target.authority, Cow::Owned(headers)),
             None => return refuse(client, log, &request.host, 403, "login lapsed"),
         },
     };
     if !target.https {
         let server = dial((target.host.as_str(), target.port));
-        let _ = forward(
-            client,
-            server,
-            request,
-            &target.authority,
-            &headers,
-            &mut report,
-        );
+        let _ = forward(client, server, request, host, &headers, &mut report);
         return;
     }
     let Some(address) = resolve_checked(client, log, &request.host, &target.host, target.port)
@@ -351,14 +345,7 @@ fn route(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain, up
         .tls
         .as_ref()
         .and_then(|config| dial_tls(address, &target.host, config));
-    let _ = forward(
-        client,
-        server,
-        request,
-        &target.authority,
-        &headers,
-        &mut report,
-    );
+    let _ = forward(client, server, request, host, &headers, &mut report);
 }
 
 /// Resolve once and check every address before anything is dialed. A
