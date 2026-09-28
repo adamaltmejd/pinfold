@@ -50,7 +50,10 @@ rules for changing the repository.
   boxes, and observes from outside (exit codes, output, host files, the
   egress log) or acts from inside through `pinfold box exec`. The e2e crate
   never imports pinfold's internals; its only seams are a user's: the CLI,
-  env vars, `.pinfold.toml`, and the box spec.
+  env vars, `.pinfold.toml`, and the box spec. The suite is one test
+  binary, `crates/e2e/tests/e2e/main.rs`, with a module per area (`box_`,
+  `pi`, `cli`); the harness, fixtures and helpers live in its
+  `crates/e2e/src/lib.rs`.
 - **A fixed list.** One test per guarantee in ARCHITECTURE.md, named for it
   (`box_has_no_route_to_host`, not `test_network_3`). A new test needs a new
   guarantee. A bug is a scenario its guarantee was missing: the fix extends

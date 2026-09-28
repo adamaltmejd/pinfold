@@ -10,25 +10,15 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::{BUILDER_RACE, DEAD_BOX_RACE};
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
     box_stat, build_profile, curl, default_image, egress_log, egress_log_lines, exit_code, git,
     image_cli, image_id, json_lines, labeled_images, pinfold, profile_containerfile, project_id,
     project_state_dir, run_ok, runtime_images, untagged_images,
 };
-
-/// The two owner-gone tests share one hazard: either one's removal can take
-/// the other's dead box before the other expects it. Hold this from killing
-/// an owner until that test's removal has run.
-static DEAD_BOX_RACE: Mutex<()> = Mutex::new(());
-
-/// `cleanup_removes_only_pinfolds_garbage` deletes the runtime's builder in
-/// its `clean`, and a build racing that deletion fails. Every test that
-/// builds holds this from before its first build through its last.
-static BUILDER_RACE: Mutex<()> = Mutex::new(());
 
 #[test]
 fn box_lifecycle_works_for_a_caller() {

@@ -1,6 +1,6 @@
 //! End-to-end tests that drive the `pinfold` binary from outside.
 //!
-//! The tests live in `tests/` and run on a macOS host with the Apple
+//! The tests live in `tests/e2e/` and run on a macOS host with the Apple
 //! `container` CLI, or a Linux host with rootless podman. `cargo test -p e2e`
 //! builds the binary and runs them, so that one command is the whole host
 //! gate.
@@ -73,8 +73,7 @@ impl TestEnv {
         // unix socket paths at 104 bytes. `$TMPDIR` is too long for that, so
         // the state dir gets its own short path under /tmp.
         let state = PathBuf::from("/tmp").join(format!("pf-e2e-{}-{test}", std::process::id()));
-        // One cache for every test and both test binaries, so each pinned
-        // harness is fetched once.
+        // One cache for every test, so each pinned harness is fetched once.
         let cache = temp.join("pinfold-e2e-cache");
         let config = root.join("config");
         fs::create_dir_all(&state).unwrap();
@@ -234,8 +233,8 @@ pub fn untagged_images() -> usize {
 /// missing. Every box and `pinfold pi` run starts from it.
 pub fn default_image(env: &TestEnv) -> &'static str {
     static IMAGE: OnceLock<()> = OnceLock::new();
-    // The runtime store is shared by both test binaries; a stale image is
-    // fine, the tests read its labels and run boxes from it.
+    // The runtime store is shared by every test; a stale image is fine,
+    // the tests read its labels and run boxes from it.
     const STABLE: &str = "pinfold/profile-default:latest";
     IMAGE.get_or_init(|| {
         if image_id(STABLE).is_none() {

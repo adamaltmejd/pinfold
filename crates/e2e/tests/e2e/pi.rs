@@ -14,6 +14,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 
+use crate::BUILDER_RACE;
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
     box_stat, build_profile, curl, default_image, egress_log_lines, git, pinfold, project_id,
@@ -203,6 +204,12 @@ fn a_changed_project_file_stops_the_run() {
     // (`containerfile: None`); the changed Containerfile then runs and
     // builds, and the two refusal assertions after the change fail.
     let env = TestEnv::new("pi-trust");
+    // The cleanup test's `clean` deletes the runtime's builder; a build
+    // racing that deletion fails. Hold the same lock it does, and wait for
+    // the suite's shared default image so the base is already pulled.
+    let _builds = BUILDER_RACE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     default_image(&env);
     let project = TestDir::new(&env, "project");
     git(project.path(), &["init", "-q"]);
@@ -632,6 +639,11 @@ fn both_pi_config_levels_load_behind_a_route() {
 "#,
     )
     .expect("write the profile's models.json");
+    // The cleanup test's `clean` deletes the runtime's builder; a build
+    // racing that deletion fails. Hold the same lock it does.
+    let _builds = BUILDER_RACE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     build_profile(&env, profile);
 
     // The project carries the project level: a skill under .pi/.

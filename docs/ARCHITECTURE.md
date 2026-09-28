@@ -795,7 +795,7 @@ crates/pinfold/src/
   pi/      launch.rs state.rs git.rs
   cli.rs main.rs config.rs trust.rs dirs.rs
 crates/pinfold/harnesses.toml  the harness pins
-crates/e2e/  the end-to-end suite: src/lib.rs (harness, fixtures, helpers), tests/{box,pi,cli}.rs
+crates/e2e/  the end-to-end suite: src/lib.rs (harness, fixtures, helpers), tests/e2e/{main,box_,pi,cli}.rs
 profile/   the built-in default profile
 ```
 
