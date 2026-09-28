@@ -229,15 +229,11 @@ pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Op
     match base {
         Some(base) if !base.contains('$') => {
             // A pinfold-built base can never be pulled, so read its digest
-            // locally before spending the retries on a doomed pull.
-            let pinfold_built = |image: &ImageInfo| {
-                clean::FAMILY_LABELS.iter().any(|label| {
-                    image
-                        .labels
-                        .get(*label)
-                        .is_some_and(|value| !value.is_empty())
-                })
-            };
+            // locally before spending the retries on a doomed pull. Every
+            // pinfold build records [`clean::BASE_LABEL`], empty when its
+            // own base did not resolve, so its presence marks the image; a
+            // caller image's family labels are all empty.
+            let pinfold_built = |image: &ImageInfo| image.labels.contains_key(clean::BASE_LABEL);
             if let Ok(image) = runtime.resolve_image(base)?
                 && pinfold_built(&image)
             {
