@@ -387,7 +387,9 @@ network listener, no token: the socket identifies the box.
   a subscription login for the box's harness; pinfold owns the origin, the
   headers and the harness's config for the pinned version. `login` must
   name the spec's `harness`, and a spec has at most one login route; else
-  `spec`. The box gets only placeholders; the spec's own `env` wins.
+  `spec`. An optional `to` replaces the harness's origin, checked like an
+  injecting route's. The box gets only placeholders; the spec's own `env`
+  wins.
   - `claude`: `{ "login": "claude", "from": VAR }`, where `$VAR` is a
     `claude setup-token` token read once at start like an injecting route's.
     The route goes to `https://api.anthropic.com` with `Authorization:
@@ -733,7 +735,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref, the image's id and the labels; three builds of one name move latest, and the first build's ref still comes up; a failed build prints its log and makes no image. |
 | 24 | Every build reruns its steps | A second build of one source does not reuse the first's `RUN` layer; on podman it leaves no untagged image. |
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box list --help` exits 0, with no runtime and leaving the state dir untouched. |
-| 26 | A login route keeps the login on the host | claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. An empty `CODEX_HOME` is refused as `login`. Control: an injecting route answers in the same box. On macOS only (the operator's Mac, with a real login), codex completes one tool round trip through the route. |
+| 26 | A login route keeps the login on the host | With `to` at a host fixture, claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. An empty `CODEX_HOME` is refused as `login`. Control: an injecting route answers in the same box. On macOS only (the operator's Mac, with a real login), codex completes one tool round trip through a route with no `to`. |
 
 Both run in the merge queue on the exact ref being merged: Linux (podman)
 on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm` runners, dispatched by
