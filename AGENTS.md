@@ -80,7 +80,8 @@ rules for changing the repository.
   retries: a flaky test is a bug to fix or delete. Fixtures run on the host
   (an HTTP service behind a route, a fake OpenAI-compatible model). The only
   public endpoints are `api.github.com` (allowed) and `example.com`
-  (denied).
+  (denied), and on macOS only, codex's live login (`chatgpt.com`,
+  `auth.openai.com`) through guarantee 26's route.
 - **Budget:** the suite runs in under 5 minutes in CI.
 
 ## Checks

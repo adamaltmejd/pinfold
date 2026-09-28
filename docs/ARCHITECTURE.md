@@ -203,7 +203,8 @@ When `up` refuses, it prints one JSON line instead of `ready` and exits 1:
 {"event":"refused","box":NAME,"reason":REASON,"detail":TEXT}
 ```
 
-`REASON` is `spec`, `profile`, `runtime`, `image-missing` or `name-in-use`;
+`REASON` is `spec`, `profile`, `runtime`, `image-missing`, `name-in-use`
+or `login`;
 `box` is the `name` of stdin's first JSON value when that is an object with
 a string `name`, else null.
 Refusals are decided before anything is created; a refused `up` leaves
@@ -382,6 +383,37 @@ network listener, no token: the socket identifies the box.
   box can use the credential but not read it, unless `to` echoes request
   headers back. Header names that frame the request (`Host`,
   `Content-Length`, hop-by-hop) are refused.
+- **Login routes:** a route whose value is `{ "login": HARNESS }` carries
+  a subscription login for the box's harness; pinfold owns the origin, the
+  headers and the harness's config for the pinned version. `login` must
+  name the spec's `harness`, and a spec has at most one login route; else
+  `spec`. The box gets only placeholders; the spec's own `env` wins.
+  - `claude`: `{ "login": "claude", "from": VAR }`, where `$VAR` is a
+    `claude setup-token` token read once at start like an injecting route's.
+    The route goes to `https://api.anthropic.com` with `Authorization:
+    Bearer`. The box gets `ANTHROPIC_BASE_URL=http://<route>` and a
+    placeholder `CLAUDE_CODE_OAUTH_TOKEN`.
+  - `codex`: `{ "login": "codex" }` uses the host's own Codex login, in
+    whatever store Codex keeps it. The proxy gets the access token from
+    the pinned host helper (Pinned artifacts): `codex-app-server` with the
+    built-in `openai` provider forced and `up`'s environment, sent
+    `initialize` and `getAuthStatus { includeToken: true }` on stdio. Codex
+    refreshes and writes its own store; pinfold never reads it, and holds
+    the token in memory only. The token's JWT must carry a future `exp`
+    and an account id; the route goes to `https://chatgpt.com` with
+    `Authorization: Bearer` and `ChatGPT-Account-ID`. Within 5 minutes of
+    `exp`, the proxy asks the helper again under one host-wide lock, at
+    most once a minute per box; a request on a lapsed token is refused and
+    logged `login lapsed`. The box gets `/etc/codex/config.toml`, mounted
+    read-only, selecting a custom provider with `base_url =
+    "http://<route>/backend-api/codex"`, `wire_api = "responses"` and
+    `requires_openai_auth = false`; it is Codex's system layer, so the
+    caller's own config still overrides it.
+  - `up` refuses a login it cannot use (no token, or not a usable JWT) as
+    `login`, naming the harness.
+  - `getAuthStatus` is deprecated at this pin. When a pin drops it, the
+    likely replacement is `account/read` plus reading Codex's file store,
+    which would stop supporting a Keychain store: a spec change.
 - **Limits:** a connection cap and a header timeout. A tunnel is idle, and
   closed, only when neither direction has carried bytes for 5 minutes.
 - **Log:** one JSON line per decision in the box's egress log at
@@ -455,6 +487,11 @@ directory there is mounted read-only at `/opt/pinfold/<name>`. A checksum
 mismatch fails the start, naming the harness, version and asset. A harness
 no box asks for is never downloaded. A harness moves only with a pinfold
 release.
+
+codex also pins a host helper, `codex-app-server`, per host `os-arch`
+(`darwin-arm64`, `linux-arm64`, `linux-x64`), installed the same way into
+`~/.cache/pinfold/artifacts/codex/<version>/host-<os-arch>/` on the first
+`up` with a codex login route. It never enters a box.
 
 The init is not an artifact: it always comes from the CLI's own build. The
 macOS CLI embeds the `aarch64-unknown-linux-musl` build and writes it to the
@@ -696,6 +733,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref, the image's id and the labels; three builds of one name move latest, and the first build's ref still comes up; a failed build prints its log and makes no image. |
 | 24 | Every build reruns its steps | A second build of one source does not reuse the first's `RUN` layer; on podman it leaves no untagged image. |
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box list --help` exits 0, with no runtime and leaving the state dir untouched. |
+| 26 | A login route keeps the login on the host | claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. An empty `CODEX_HOME` is refused as `login`. Control: an injecting route answers in the same box. On macOS only (the operator's Mac, with a real login), codex completes one tool round trip through the route. |
 
 Both run in the merge queue on the exact ref being merged: Linux (podman)
 on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm` runners, dispatched by
