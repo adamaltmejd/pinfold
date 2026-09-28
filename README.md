@@ -4,9 +4,6 @@ Run a coding agent in a disposable box: an Apple `container` micro-VM on
 macOS, a rootless podman container on Linux. The box sees its mounts and
 nothing else of the host. Its only way out is its own allowlisting proxy.
 
-Isolation differs by platform: on macOS each box is its own VM; on Linux,
-boxes share the host kernel.
-
 - **Interactive:** `pi` on the host is a shim for `pinfold pi`.
 - **Programmatic:** a caller such as a CI system or an agent orchestrator
   drives boxes through `pinfold box`, JSON on stdio, and reads a project's
@@ -113,6 +110,7 @@ says how.
 
 ## What pinfold does not protect, and what Apple `container` cannot do
 
-The threat model's "Not protected" list and the Shared files table in
-[ARCHITECTURE.md](docs/ARCHITECTURE.md#threat-model) are the contract;
+The threat model's ["Not protected"](docs/ARCHITECTURE.md#threat-model)
+list and the [Shared files](docs/ARCHITECTURE.md#shared-files) table are
+the contract;
 read both before trusting a box with a repository.
