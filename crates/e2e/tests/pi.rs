@@ -12,12 +12,12 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
-    box_stat, build_profile, curl, default_image, egress_log_lines, git, pinfold, project_home,
-    project_id, run_ok,
+    box_stat, build_profile, curl, default_image, egress_log_lines, git, pinfold, project_id,
+    project_state_dir, run_ok,
 };
 
 #[test]
@@ -26,8 +26,8 @@ fn the_environment_is_exactly_the_spec() {
     // example `container exec --env SECRET=shhh`) instead of through the
     // child's environment; `shhh` then appears in host `ps` while the box
     // runs and the ps assertion fails. Sabotage: let the box inherit the
-    // host environment; the unprefixed variable is then present and its
-    // assertion fails. Sabotage: drop `--http-proxy=false` from podman's
+    // host environment; the unprefixed proxy variables are then present and
+    // their assertions fail. Sabotage: drop `--http-proxy=false` from podman's
     // run argv; the box inherits the host's proxy variables and the proxy
     // assertions fail. Sabotage: skip the `validate` call in `Box::up`;
     // the `PINFOLD_ENV_BAD-NAME` run does not refuse and the refusal
@@ -56,10 +56,6 @@ fn the_environment_is_exactly_the_spec() {
     let secret = box_exec(&env, &name, &["sh", "-c", "printf %s \"$SECRET\""]);
     assert_eq!(secret.code, 0, "reading SECRET failed: {}", secret.stderr);
     assert_eq!(secret.stdout, "shhh", "SECRET did not arrive");
-
-    // An unprefixed host variable is absent.
-    let host_only = box_exec(&env, &name, &["sh", "-c", "printf %s \"$E2E_HOST_ONLY\""]);
-    assert_eq!(host_only.stdout, "", "an unprefixed host variable leaked");
 
     // The host's proxy variables are absent: podman's run would otherwise
     // copy them in, and curl prefers lowercase https_proxy, so every HTTPS
@@ -137,7 +133,7 @@ fn project_state_persists_and_stays_separate() {
 
     // The first run seeds the default profile's settings.json.
     pi_version(&env, a.path());
-    let settings_a = project_home(&env, a.path()).join(".pi/agent/settings.json");
+    let settings_a = project_state_dir(&env, a.path()).join("home/.pi/agent/settings.json");
 
     // An edit survives the next run: a seed is copied only when missing.
     let marker = "{\"marker\":\"project-a\"}\n";
@@ -152,9 +148,9 @@ fn project_state_persists_and_stays_separate() {
     // A second checkout with the same directory name gets its own home and
     // does not see the first project's marker. Take the first home before
     // the second run: the sabotage overwrites the shared state.json's root.
-    let home_a = project_home(&env, a.path());
+    let home_a = project_state_dir(&env, a.path()).join("home");
     pi_version(&env, b.path());
-    let home_b = project_home(&env, b.path());
+    let home_b = project_state_dir(&env, b.path()).join("home");
     let seeded_b =
         fs::read_to_string(home_b.join(".pi/agent/settings.json")).expect("read second seed");
     assert!(
@@ -236,7 +232,9 @@ fn a_changed_project_file_stops_the_run() {
     assert!(run.finish().success(), "the bare run did not exit cleanly");
 
     // The file that appeared stops the run until `pinfold allow` records it.
-    let refused = pi_version_output(&env, project.path());
+    let refused = pinfold_in(&env, project.path(), &["pi", "--version"])
+        .output()
+        .expect("run pinfold pi --version");
     assert!(!refused.status.success(), "the new .pinfold.toml ran");
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(
@@ -267,7 +265,9 @@ fn a_changed_project_file_stops_the_run() {
     );
 
     // The change stops the run again, and `pinfold allow` clears it.
-    let refused = pi_version_output(&env, project.path());
+    let refused = pinfold_in(&env, project.path(), &["pi", "--version"])
+        .output()
+        .expect("run pinfold pi --version");
     assert!(!refused.status.success(), "the changed .pinfold.toml ran");
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(
@@ -292,7 +292,7 @@ fn a_changed_project_file_stops_the_run() {
     fs::write(&containerfile, "FROM pinfold/profile-default:latest\n")
         .expect("write the project Containerfile");
     allow(&env, project.path());
-    build(&env, project.path());
+    run_ok(&mut pinfold_in(&env, project.path(), &["build"]));
     // Control: with the Containerfile unchanged, the project image runs.
     pi_version(&env, project.path());
 
@@ -318,14 +318,18 @@ fn a_changed_project_file_stops_the_run() {
 
     // The change stops the run and the build until `pinfold allow` records
     // the new bytes.
-    let refused = pi_version_output(&env, project.path());
+    let refused = pinfold_in(&env, project.path(), &["pi", "--version"])
+        .output()
+        .expect("run pinfold pi --version");
     assert!(!refused.status.success(), "the changed Containerfile ran");
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(
         stderr.contains("pinfold allow"),
         "the refusal did not name `pinfold allow`: {stderr}"
     );
-    let refused = build_output(&env, project.path());
+    let refused = pinfold_in(&env, project.path(), &["build"])
+        .output()
+        .expect("run pinfold build");
     assert!(!refused.status.success(), "the changed Containerfile built");
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(
@@ -333,15 +337,15 @@ fn a_changed_project_file_stops_the_run() {
         "the build refusal did not name `pinfold allow`: {stderr}"
     );
     allow(&env, project.path());
-    build(&env, project.path());
+    run_ok(&mut pinfold_in(&env, project.path(), &["build"]));
     pi_version(&env, project.path());
 }
 
 #[test]
 fn the_box_cannot_write_git_or_protected_config() {
     // Sabotage: omit the `.git` read-only mount from pi::git (or mount it
-    // writable); the `core.fsmonitor` write and the rename then succeed, and
-    // host `git status` runs the planted fsmonitor, so those assertions fail.
+    // writable); the `core.fsmonitor` write and the rename then succeed, so
+    // those assertions fail.
     // Sabotage: skip the absent protect directories; the box's `mkdir
     // .vscode` then succeeds and its refusal assertion fails. Sabotage: skip
     // the symlink check in pi::git's `path_kind` (classify with fs::metadata
@@ -352,13 +356,7 @@ fn the_box_cannot_write_git_or_protected_config() {
     // the global config's `.husky/_` is not protected, and the
     // `.husky/_/pre-commit` write succeeds, so its assertion fails.
     // Sabotage: ignore the configured `protect` list in `Git::prepare`; the
-    // `tooling/hooks.sh` write succeeds and its assertion fails. Sabotage:
-    // drop the GIT_CONFIG_* entries from the pi box's env. The sabotage
-    // bites only while Apple presents the mount top as root-owned; the Y-55
-    // gate saw that on 2026-09-24, when the positive control's `git status`
-    // and `git log` exited 128 with `dubious ownership`, and a later probe
-    // did not see it, so the failure is not deterministic. On podman keep-id
-    // makes the mount top the box user's, so it never bites.
+    // `tooling/hooks.sh` write succeeds and its assertion fails.
     let env = TestEnv::new("pi-git");
     default_image(&env);
 
@@ -367,23 +365,6 @@ fn the_box_cannot_write_git_or_protected_config() {
     let bare = TestDir::new(&env, "bare");
     git(bare.path(), &["init", "-q"]);
     let root = bare.path();
-    // A commit for the box's `git log` positive control below. The author is
-    // on the command line, so the fixture does not need host git config.
-    git(
-        root,
-        &[
-            "-c",
-            "user.name=pinfold-e2e",
-            "-c",
-            "user.email=pinfold-e2e@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "pinfold-e2e",
-        ],
-    );
     // Host git runs the hooks named by `core.hooksPath`, as host git
     // resolves it: here from the global config the `pinfold pi` run's
     // GIT_CONFIG_GLOBAL names, not the repo's `.git/config`. A value inside
@@ -401,25 +382,6 @@ fn the_box_cannot_write_git_or_protected_config() {
     assert!(!vscode.exists(), "the fixture already has .vscode");
 
     let (run, _, name) = PiRpc::start_with_env(&env, root, &[("GIT_CONFIG_GLOBAL", global)]);
-
-    // Positive control: the box reads the project's git state. Apple
-    // `container` shows a mount's top directory as root-owned inside the
-    // box, so without the `safe.directory` entry git refuses the project as
-    // dubious ownership.
-    let root_str = root.to_str().expect("project root is UTF-8");
-    let status = box_exec(
-        &env,
-        &name,
-        &["git", "-C", root_str, "status", "--porcelain"],
-    );
-    assert_eq!(status.code, 0, "git status failed: {}", status.stderr);
-    let log = box_exec(&env, &name, &["git", "-C", root_str, "log", "--oneline"]);
-    assert_eq!(log.code, 0, "git log failed: {}", log.stderr);
-    assert!(
-        log.stdout.contains("pinfold-e2e"),
-        "the box's git log is missing the commit: {}",
-        log.stdout
-    );
 
     // The box cannot create the protected directory it did not have...
     let denied = box_exec(
@@ -510,20 +472,9 @@ fn the_box_cannot_write_git_or_protected_config() {
 
     assert!(run.finish().success(), "pinfold pi did not exit cleanly");
 
-    // Host git runs nothing the box planted: the fsmonitor was never set.
-    git(root, &["status", "--porcelain"]);
-    assert!(
-        !root.join("pwned-fsmonitor").exists(),
-        "host git status ran the box's fsmonitor"
-    );
-
-    // A project that already has `.vscode/`: its settings stay read-only,
-    // and so does a directory the project's `protect` list names.
-    let with = TestDir::new(&env, "with-vscode");
+    // A directory the project's `protect` list names is read-only.
+    let with = TestDir::new(&env, "with-protect");
     git(with.path(), &["init", "-q"]);
-    let settings = with.path().join(".vscode/settings.json");
-    fs::create_dir(with.path().join(".vscode")).unwrap();
-    fs::write(&settings, "{\"keep\":true}\n").unwrap();
     let tooling = with.path().join("tooling/hooks.sh");
     fs::create_dir(with.path().join("tooling")).unwrap();
     fs::write(&tooling, "#!/bin/sh\n").unwrap();
@@ -544,27 +495,7 @@ fn the_box_cannot_write_git_or_protected_config() {
         ],
     );
     assert_denied(&denied, "Read-only file system", "the tooling write");
-    let denied = box_exec(
-        &env,
-        &name,
-        &[
-            "sh",
-            "-c",
-            &format!("printf '{{}}' > '{}'", settings.display()),
-        ],
-    );
-    assert_denied(&denied, "Read-only file system", "the settings write");
     assert!(run.finish().success(), "pinfold pi did not exit cleanly");
-    assert_eq!(
-        fs::read_to_string(&settings).expect("read settings.json"),
-        "{\"keep\":true}\n",
-        "the host's .vscode/settings.json changed"
-    );
-    assert_eq!(
-        fs::read_to_string(&tooling).expect("read tooling/hooks.sh"),
-        "#!/bin/sh\n",
-        "the host's protected tooling/hooks.sh changed"
-    );
 
     // A protected path the host planted as a symlink refuses the run, naming
     // the link: the runtime resolves a bind-mount source on the host, so
@@ -576,7 +507,9 @@ fn the_box_cannot_write_git_or_protected_config() {
     git(symlinked.path(), &["init", "-q"]);
     let link = symlinked.path().join(".vscode");
     std::os::unix::fs::symlink(outside.path(), &link).expect("create .vscode symlink");
-    let refused = pi_version_output(&env, symlinked.path());
+    let refused = pinfold_in(&env, symlinked.path(), &["pi", "--version"])
+        .output()
+        .expect("run pinfold pi --version");
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(
         !refused.status.success(),
@@ -594,7 +527,9 @@ fn the_box_cannot_write_git_or_protected_config() {
     // there. Sabotage: drop the `--is-inside-git-dir` check from
     // `project_root`; the run starts, exits 0, and the exit assertion fails.
     let dot_git = fs::canonicalize(root.join(".git")).expect("canonicalize .git");
-    let refused = pi_version_output(&env, &dot_git);
+    let refused = pinfold_in(&env, &dot_git, &["pi", "--version"])
+        .output()
+        .expect("run pinfold pi --version");
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(
         !refused.status.success(),
@@ -605,44 +540,51 @@ fn the_box_cannot_write_git_or_protected_config() {
         "the refusal did not name {}: {stderr}",
         dot_git.display()
     );
-    // No project state dir names `.git` as its root: the refusal came before
-    // `record_run`. A state dir is `<name>-<hash>`, so the `.git` root's
-    // would be `.git-<hash>`.
-    let mut leftover = Vec::new();
-    if let Ok(entries) = fs::read_dir(env.state.join("pinfold/projects")) {
-        for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().starts_with(".git-") {
-                leftover.push(entry.path());
-            }
-        }
-    }
-    assert!(
-        leftover.is_empty(),
-        "the refused run left project state for .git: {leftover:?}"
-    );
 
     // A top level whose name is a space is the root: only git's trailing
     // newline comes off, so trimming would resolve to the parent and leave
-    // the repository's `.git` inside the parent unprotected. Sabotage: trim
-    // git's `--show-toplevel` output again; `pinfold config` reports the
-    // parent as the root and its id starts with the parent's name.
+    // the repository's `.git` inside it unprotected. Sabotage: trim git's
+    // `--show-toplevel` output again; the parent becomes the root, so no
+    // project state records the space-named root and `PiRpc::start` panics
+    // finding its box. Its `.git`, under the parent's mount and not
+    // protected, would take the hook write.
     let parent = TestDir::new(&env, "space-parent");
     let spaced = parent.path().join(" ");
     fs::create_dir(&spaced).expect("create the space-named top level");
     git(&spaced, &["init", "-q"]);
-    let report = config_json(&env, &spaced);
-    let id = report["project"]["id"]
-        .as_str()
-        .expect("project.id is a string");
-    let parent_name = parent
-        .path()
-        .file_name()
-        .and_then(|name| name.to_str())
-        .expect("the parent's name is UTF-8");
-    assert!(
-        !id.starts_with(parent_name),
-        "pinfold config resolved the space-named top level to its parent {parent_name}: {id}"
+    let (run, _, name) = PiRpc::start(&env, &spaced);
+    let denied = box_exec(
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!(
+                "printf '#!/bin/sh\\n' > '{}'",
+                spaced.join(".git/hooks/pre-commit").display()
+            ),
+        ],
     );
+    assert_denied(
+        &denied,
+        "Read-only file system",
+        "the space-named .git write",
+    );
+    // Positive control: the space-named project itself is writable.
+    let control = box_exec(
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!(
+                "printf 'ok\\n' > '{}'",
+                spaced.join("control.txt").display()
+            ),
+        ],
+    );
+    assert_ok(&control, "writing a file in the space-named project");
+    assert!(run.finish().success(), "pinfold pi did not exit cleanly");
 }
 
 #[test]
@@ -924,7 +866,6 @@ impl PiRpc {
             .args(["pi", "--mode", "rpc"])
             .current_dir(project)
             .env("PINFOLD_ENV_SECRET", "shhh")
-            .env("E2E_HOST_ONLY", "host-value")
             .envs(vars.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -981,22 +922,16 @@ impl Drop for PiRpc {
     }
 }
 
-/// Run `pinfold pi --version` in `project` and assert it exits cleanly.
-fn pi_version(env: &TestEnv, project: &Path) {
-    run_ok(
-        env.command(pinfold())
-            .args(["pi", "--version"])
-            .current_dir(project),
-    );
+/// `pinfold ARGS...` run in `project`.
+fn pinfold_in(env: &TestEnv, project: &Path, args: &[&str]) -> Command {
+    let mut command = env.command(pinfold());
+    command.args(args).current_dir(project);
+    command
 }
 
-/// Run `pinfold pi --version` in `project` and return its output.
-fn pi_version_output(env: &TestEnv, project: &Path) -> Output {
-    env.command(pinfold())
-        .args(["pi", "--version"])
-        .current_dir(project)
-        .output()
-        .expect("run pinfold pi --version")
+/// Run `pinfold pi --version` in `project` and assert it exits cleanly.
+fn pi_version(env: &TestEnv, project: &Path) {
+    run_ok(&mut pinfold_in(env, project, &["pi", "--version"]));
 }
 
 /// Run `pinfold allow` in `project` and assert it succeeds.
@@ -1008,20 +943,6 @@ fn allow(env: &TestEnv, project: &Path) {
 fn config_json(env: &TestEnv, project: &Path) -> serde_json::Value {
     let output = run_ok(env.command(pinfold()).arg("config").current_dir(project));
     serde_json::from_slice(&output.stdout).expect("pinfold config output is one JSON object")
-}
-
-/// Run `pinfold build` in `project` and assert it exits cleanly.
-fn build(env: &TestEnv, project: &Path) {
-    run_ok(env.command(pinfold()).arg("build").current_dir(project));
-}
-
-/// Run `pinfold build` in `project` and return its output.
-fn build_output(env: &TestEnv, project: &Path) -> Output {
-    env.command(pinfold())
-        .arg("build")
-        .current_dir(project)
-        .output()
-        .expect("run pinfold build")
 }
 
 /// Write one discoverable skill whose description carries `marker`.

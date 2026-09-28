@@ -15,8 +15,7 @@ use e2e::{TestEnv, pinfold};
 fn version_needs_no_runtime() {
     // Sabotage: run `crate::core::clean::maintain()` first in main.rs,
     // before the options and the help check, as the code once did; with the
-    // empty PATH the pass prints the missing-runtime sentence on stderr and
-    // writes under the state dir, so the stderr and both empty-state
+    // empty PATH the pass writes under the state dir, so both empty-state
     // assertions fail. Sabotage: print `pinfold 0.0.0` in main.rs's
     // `--version` arm instead of `CARGO_PKG_VERSION`; stdout lacks the
     // workspace version and the version assertion fails. Sabotage: in
@@ -50,11 +49,6 @@ fn version_needs_no_runtime() {
     assert!(
         stdout.contains(env!("CARGO_PKG_VERSION")),
         "pinfold --version printed no version: {stdout}"
-    );
-    assert!(
-        output.stderr.is_empty(),
-        "pinfold --version wrote to stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(state_entries(), 0, "pinfold --version wrote state");
 

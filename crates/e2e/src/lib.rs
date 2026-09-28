@@ -58,7 +58,7 @@ pub struct TestEnv {
     /// `XDG_STATE_HOME`; pinfold's state dir is `<state>/pinfold`.
     pub state: PathBuf,
     /// `XDG_CACHE_HOME`, shared by every test; see `new`.
-    pub cache: PathBuf,
+    cache: PathBuf,
     /// `XDG_CONFIG_HOME`, where profiles live. Empty, so `default` is the
     /// embedded one.
     pub config: PathBuf,
@@ -67,7 +67,7 @@ pub struct TestEnv {
 impl TestEnv {
     pub fn new(test: &str) -> TestEnv {
         // `/tmp` is a symlink on macOS; the runtime wants the real path.
-        let temp = fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
+        let temp = fs::canonicalize(std::env::temp_dir()).expect("canonicalize the temp dir");
         let root = temp.join(format!("pinfold-e2e-{}-{test}", std::process::id()));
         // The box's proxy socket lives under the state dir, and macOS caps
         // unix socket paths at 104 bytes. `$TMPDIR` is too long for that, so
@@ -171,12 +171,6 @@ fn normalize_image(image: &serde_json::Value) -> RuntimeImage {
 /// The id of the image the runtime lists under `reference`, ignoring
 /// podman's `localhost/` prefix.
 pub fn image_id(reference: &str) -> Option<String> {
-    runtime_image(reference).map(|image| image.id)
-}
-
-/// The image the runtime lists under `reference`, ignoring podman's
-/// `localhost/` prefix.
-pub fn runtime_image(reference: &str) -> Option<RuntimeImage> {
     runtime_images()
         .expect("list the runtime's images")
         .into_iter()
@@ -186,6 +180,7 @@ pub fn runtime_image(reference: &str) -> Option<RuntimeImage> {
                 .iter()
                 .any(|name| name.strip_prefix("localhost/").unwrap_or(name) == reference)
         })
+        .map(|image| image.id)
 }
 
 /// The ids of every image carrying `label = value`, from the runtime
@@ -227,29 +222,12 @@ impl Drop for ImageCleanup {
     }
 }
 
-/// The digest the runtime's inspect reports for `reference`: podman's
-/// manifest digest, which is not the image id; Apple's descriptor digest,
-/// which is.
-pub fn image_digest(reference: &str) -> String {
-    let output = run_ok(Command::new(image_cli()).args(["image", "inspect", reference]));
-    let images: Vec<serde_json::Value> =
-        serde_json::from_slice(&output.stdout).expect("image inspect is JSON");
-    let image = images.first().expect("image inspect returned an image");
-    image["Digest"]
-        .as_str()
-        .or_else(|| image["configuration"]["descriptor"]["digest"].as_str())
-        .unwrap_or_else(|| panic!("{reference} inspect carries no digest: {image}"))
-        .to_string()
-}
-
-/// The number of untagged images `podman images -a` lists, including the
-/// intermediate layers a cached build leaves behind. Linux only.
+/// The number of untagged images podman lists, including the intermediate
+/// layers a cached build leaves behind. Linux only.
 pub fn untagged_images() -> usize {
-    let output = run_ok(Command::new("podman").args(["images", "-a"]));
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|line| line.split_whitespace().next() == Some("<none>"))
-        .count()
+    let output =
+        run_ok(Command::new("podman").args(["images", "-a", "-q", "--filter", "dangling=true"]));
+    String::from_utf8_lossy(&output.stdout).lines().count()
 }
 
 /// The stable ref of the built-in default profile's image, built when
@@ -424,11 +402,6 @@ pub fn project_state_dir(env: &TestEnv, project: &Path) -> PathBuf {
         }
     }
     panic!("no project state for {}", project.display());
-}
-
-/// The project's home, in its state dir.
-pub fn project_home(env: &TestEnv, project: &Path) -> PathBuf {
-    project_state_dir(env, project).join("home")
 }
 
 /// The project's id, which names its state dir.
