@@ -2489,7 +2489,14 @@ fn a_login_route_keeps_the_login_on_the_host() {
     // pinned codex completes one shell tool round trip through a login route
     // to chatgpt.com, stdin closed. The tool's output is computed by the
     // shell, so it is in no prompt; the model's prose is never asserted.
+    // The gate runs with its own HOME, so the caller hands `up` the
+    // operator's Codex home: $CODEX_HOME, else .codex in the passwd home,
+    // which the gate resolves the same way.
     if cfg!(target_os = "macos") {
+        let operator_codex_home = std::env::var("CODEX_HOME").unwrap_or_else(|_| {
+            let home = run_ok(Command::new("sh").args(["-c", "eval echo \"~$(id -un)\""]));
+            format!("{}/.codex", String::from_utf8_lossy(&home.stdout).trim())
+        });
         let home = TestDir::new(&env, "codex-live-home");
         let live_name = box_name("login-live");
         let live_spec = serde_json::json!({
@@ -2501,7 +2508,12 @@ fn a_login_route_keeps_the_login_on_the_host() {
             "env": { "HOME": "/home/codex" },
             "egress": { "routes": { "codex.internal": { "login": "codex" } } },
         });
-        let mut up = box_up(&env, &live_spec, &live_name);
+        let mut up = box_up_with_env(
+            &env,
+            &live_spec,
+            &live_name,
+            &[("CODEX_HOME", &operator_codex_home)],
+        );
         let run = box_exec(
             &env,
             &live_name,

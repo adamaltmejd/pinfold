@@ -82,9 +82,13 @@ pub fn token_from_helper() -> Result<Token, String> {
         .map_err(|error| format!("install the codex host helper: {error}"))?
         .join("codex-app-server");
     let _lock = lock().map_err(|error| format!("lock the codex login: {error}"))?;
-    let token = ask(&helper).map_err(|error| format!("the codex host helper: {error}"))?;
-    let token = token.ok_or("the host has no usable Codex login")?;
-    check(token)
+    let status = ask(&helper).map_err(|error| format!("the codex host helper: {error}"))?;
+    match (status["authToken"].as_str(), status["authMethod"].as_str()) {
+        (Some(token), _) => check(token.to_string()),
+        (None, None) => Err("the host has no Codex login".to_string()),
+        // A ChatGPT login whose refresh failed for good, or an API key.
+        (None, Some(method)) => Err(format!("the host's Codex login ({method}) gave no token")),
+    }
 }
 
 /// Take the host-wide lock file under pinfold's state dir, waiting for a
@@ -103,8 +107,8 @@ fn lock() -> io::Result<Flock<File>> {
 /// Run the helper with `up`'s environment and the built-in `openai` provider
 /// forced (with a custom provider it returns no token), send `initialize`,
 /// `initialized` and `getAuthStatus { includeToken: true }` on stdin, and
-/// return the token it answers with, if any. The helper is stopped after.
-fn ask(helper: &std::path::Path) -> io::Result<Option<String>> {
+/// return its result. The helper is stopped after.
+fn ask(helper: &std::path::Path) -> io::Result<serde_json::Value> {
     let mut child = Command::new(helper)
         .args(["-c", "model_provider=\"openai\""])
         .stdin(Stdio::piped())
@@ -119,7 +123,7 @@ fn ask(helper: &std::path::Path) -> io::Result<Option<String>> {
 
 /// The stdio half of [`ask`]. stdin stays open until the answer arrives, so
 /// the helper does not exit first.
-fn exchange(child: &mut std::process::Child) -> io::Result<Option<String>> {
+fn exchange(child: &mut std::process::Child) -> io::Result<serde_json::Value> {
     let mut stdin = child.stdin.take().expect("piped stdin");
     let stdout = child.stdout.take().expect("piped stdout");
     let requests = [
@@ -146,7 +150,7 @@ fn exchange(child: &mut std::process::Child) -> io::Result<Option<String>> {
     }
     stdin.flush()?;
     for line in BufReader::new(stdout).lines() {
-        let Ok(message) = serde_json::from_str::<serde_json::Value>(&line?) else {
+        let Ok(mut message) = serde_json::from_str::<serde_json::Value>(&line?) else {
             continue;
         };
         if message["id"] != 1 {
@@ -156,7 +160,7 @@ fn exchange(child: &mut std::process::Child) -> io::Result<Option<String>> {
             let text = error["message"].as_str().unwrap_or("no message");
             return Err(io::Error::other(format!("getAuthStatus failed: {text}")));
         }
-        return Ok(message["result"]["authToken"].as_str().map(str::to_owned));
+        return Ok(message["result"].take());
     }
     Err(io::Error::other(
         "it exited without answering getAuthStatus",
