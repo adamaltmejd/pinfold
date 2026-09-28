@@ -39,9 +39,9 @@ ref = "main"
 # whatever approve says.
 # .yard/ is protected whatever this list holds: a project can only add to that.
 # The spec and the working rules: a design change is always the operator's.
-# scripts/e2e-linux.sh is the e2e-linux gate's own body, run with the user's
+# scripts/e2e-gate.sh and scripts/e2e-linux.sh are the e2e gate's own body, run with the user's
 # HOME: a candidate must not rewrite the gate that judges it unread.
-protected_paths = ["docs/ARCHITECTURE.md", "AGENTS.md", "Cargo.toml", "Cargo.lock", ".github", "scripts/e2e-linux.sh"]
+protected_paths = ["docs/ARCHITECTURE.md", "AGENTS.md", "Cargo.toml", "Cargo.lock", ".github", "scripts/e2e-linux.sh", "scripts/e2e-gate.sh"]
 
 [isolation]
 # dockerfile names the Dockerfile lanes and container gates are built from, as a
@@ -149,30 +149,20 @@ command = "git config --global safe.directory '*' && trufflehog git file:///work
 timeout_minutes = 5
 stage = "candidate"
 
-# The end-to-end suite on Apple container. It runs on this Mac, batch-stage,
-# on a candidate the review seat passed and the candidate gates cleared.
-# Under approve = "auto" no human reads it first; the protected paths above
-# and the seat's blocking list are the boundary (decided 2026-09-25). A host gate gets a fresh HOME, which
-# rustup's cargo resolves its toolchain through, so the command names the
-# user's real rustup and cargo homes. zig, cargo-zigbuild and container come
-# from the daemon's PATH.
-[gates.e2e-macos]
-command = 'h=$(eval echo "~$(id -un)"); RUSTUP_HOME="$h/.rustup" CARGO_HOME="$h/.cargo" cargo test -p e2e --locked'
-timeout_minutes = 15
-stage = "batch"
-environment = "host"
-platform = "darwin"
-architecture = "arm64"
-
-# The Linux end-to-end suite, on GitHub's runners. The script pushes the
-# batch head to a queue/<sha> branch, dispatches CI at it, waits for the
-# verdict and deletes the branch, so nothing of the candidate runs on this
-# Mac. Host-stage so it can reach the network and the user's gh login; the
-# fresh HOME is replaced by the real one for git and gh only. If Actions
-# minutes run short, an ephemeral self-hosted runner in a homelab VM takes
-# over by changing the workflow's runs-on; this gate does not change.
-[gates.e2e-linux]
-command = 'h=$(eval echo "~$(id -un)"); HOME="$h" sh scripts/e2e-linux.sh'
+# The end-to-end suites, one gate: scripts/e2e-gate.sh runs the Apple
+# container suite on this Mac and, at the same time, scripts/e2e-linux.sh,
+# which pushes the batch head to a queue/<sha> branch, dispatches CI at it
+# on GitHub's runners, waits for the verdict and deletes the branch. Yard
+# runs host gates one after another, so one gate running both takes the
+# longer suite's time. Batch-stage, on a candidate the review seat passed
+# and the candidate gates cleared. Under approve = "auto" no human reads it
+# first; the protected paths above and the seat's blocking list are the
+# boundary (decided 2026-09-25). zig, cargo-zigbuild and container come
+# from the daemon's PATH. If Actions minutes run short, an ephemeral
+# self-hosted runner in a homelab VM takes over by changing the workflow's
+# runs-on; this gate does not change.
+[gates.e2e]
+command = "sh scripts/e2e-gate.sh"
 timeout_minutes = 30
 stage = "batch"
 environment = "host"

@@ -29,7 +29,7 @@ while [ -z "$run" ]; do
 done
 echo "https://github.com/$repo/actions/runs/$run"
 
-if ! gh run watch -R "$repo" "$run" --exit-status --interval 30 >/dev/null; then
+if ! gh run watch -R "$repo" "$run" --exit-status --interval 10 >/dev/null; then
   gh run view -R "$repo" "$run" --log-failed | tail -n 200
   exit 1
 fi
