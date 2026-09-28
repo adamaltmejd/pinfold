@@ -15,7 +15,7 @@ use crate::core::artifacts;
 use crate::core::r#box::{Box, Signals};
 use crate::core::clean;
 use crate::core::plan::{Egress, Env, Mount, Plan};
-use crate::core::runtime::{ImageStatus, image_status, runtime};
+use crate::core::runtime::{local_image_id, runtime};
 use crate::pi::git::{Git, git};
 use crate::pi::state::{self, canonical, project_id};
 use crate::trust;
@@ -94,21 +94,27 @@ pub(crate) fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
             format!("pinfold build --profile {}", config.profile.name),
         ),
     };
-    match image_status(runtime(), image, base.as_deref())? {
-        ImageStatus::Missing => Err(io::Error::new(
+    let Ok(built) = runtime().resolve_image(image)? else {
+        return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("image {image} is missing; run `{build}`"),
-        )),
-        ImageStatus::Current => Ok(()),
-        ImageStatus::Stale { recorded, current } => {
+        ));
+    };
+    if let Some(base) = base {
+        let recorded = built
+            .labels
+            .get(clean::BASE_LABEL)
+            .filter(|digest| !digest.is_empty());
+        let current = local_image_id(runtime(), &base)?;
+        if recorded != current.as_ref() {
             eprintln!(
                 "pinfold: project image {image} was built from profile image {}; the current profile image is {}; run `pinfold build`",
-                recorded.as_deref().unwrap_or("(none)"),
+                recorded.map_or("(none)", String::as_str),
                 current.as_deref().unwrap_or("(none)")
             );
-            Ok(())
         }
     }
+    Ok(())
 }
 
 /// The complete box spec for one project.
@@ -185,7 +191,6 @@ fn build_plan(
         harness: Some(HARNESS.to_string()),
         labels,
         mounts,
-        user: None,
         env,
         egress: Some(Egress {
             allow: config.allow.clone(),

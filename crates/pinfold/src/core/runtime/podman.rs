@@ -15,8 +15,8 @@ use crate::core::clean::LAYER_LABEL;
 use crate::core::plan::{Env, Plan};
 use crate::core::rfc3339;
 use crate::core::runtime::{
-    BoxInfo, BoxStat, BuildRequest, ImageIdentity, ImageInfo, MemoryStat, PidsStat, Preflight,
-    Runtime, bind, inspect, output, parse_json, run, spawn_error,
+    BoxInfo, BoxStat, BuildRequest, ImageInfo, MemoryStat, PidsStat, Runtime, bind, inspect,
+    output, parse_json, spawn_error,
 };
 use crate::dirs;
 
@@ -39,7 +39,7 @@ impl Runtime for Podman {
         plan: &Plan,
         init: &Path,
         proxy_socket: Option<&Path>,
-        preflight: &Preflight,
+        seccomp: Option<&Path>,
     ) -> io::Result<Child> {
         // Tighten the socket before anything slow, so it is not connectable
         // by another host user while the profile is derived: 0600 in its
@@ -52,10 +52,7 @@ impl Runtime for Podman {
             fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
             fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
         }
-        let source = preflight
-            .seccomp_profile
-            .as_deref()
-            .expect("podman's preflight refuses a host with no seccomp profile");
+        let source = seccomp.expect("podman's preflight refuses a host with no seccomp profile");
         let seccomp = seccomp_profile(source)?;
         let resolv_conf = empty_resolv_conf()?;
         let mut extra: Vec<OsString> = vec![
@@ -98,13 +95,7 @@ impl Runtime for Podman {
             .map_err(|error| spawn_error("podman", error))
     }
 
-    fn make_proxy_connectable(&self, _name: &str) -> io::Result<()> {
-        // The bind-mounted socket already belongs to the box user under
-        // keep-id; there is no root-owned forwarded copy to chmod.
-        Ok(())
-    }
-
-    fn preflight(&self) -> io::Result<Preflight> {
+    fn preflight(&self) -> io::Result<Option<PathBuf>> {
         // A misconfigured host fails closed here, before any box starts.
         let json = output(&["podman", "info", "--format", "json"])?;
         let info: Info = parse_json("podman info", &json)?;
@@ -124,15 +115,13 @@ impl Runtime for Podman {
                 "podman reports no seccomp profile; pinfold requires seccomp",
             ));
         }
-        Ok(Preflight {
-            seccomp_profile: Some(PathBuf::from(info.host.security.seccomp_profile_path)),
-        })
+        Ok(Some(PathBuf::from(info.host.security.seccomp_profile_path)))
     }
 
     fn down(&self, name: &str) -> io::Result<()> {
         // `-f` makes removing a box that is already gone succeed; `-t 0`
         // skips the stop grace period the spec does not grant.
-        run(&["podman", "rm", "-f", "-t", "0", name])
+        output(&["podman", "rm", "-f", "-t", "0", name]).map(drop)
     }
 
     fn stat(&self, name: &str) -> io::Result<BoxStat> {
@@ -192,32 +181,34 @@ impl Runtime for Podman {
         // One entry per name, so Maintenance can remove every tag of an
         // old image; a dangling image is removed by its id. Podman emits
         // one JSON entry per tag and repeats the image's whole `Names` list
-        // on each, so drop the repeated names.
-        let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+        // on each, so keep only the first entry per image.
+        let mut seen = BTreeSet::new();
         for image in images {
+            if !seen.insert(image.id.clone()) {
+                continue;
+            }
             let references = if image.names.is_empty() {
                 vec![image.id.clone()]
             } else {
                 image.names
             };
             for reference in references {
-                if !seen.insert((image.id.clone(), reference.clone())) {
-                    continue;
-                }
                 infos.push(ImageInfo {
                     id: image.id.clone(),
                     reference,
                     labels: image.labels.clone(),
+                    digest: None,
                 });
             }
         }
         Ok(infos)
     }
 
-    fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageIdentity, String>> {
+    fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageInfo, String>> {
         Ok(
-            inspect::<InspectedImage>("podman", reference)?.map(|image| ImageIdentity {
+            inspect::<InspectedImage>("podman", reference)?.map(|image| ImageInfo {
                 id: image.id,
+                reference: reference.to_string(),
                 labels: image.labels,
                 digest: Some(image.digest).filter(|digest| !digest.is_empty()),
             }),

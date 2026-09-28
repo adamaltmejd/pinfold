@@ -23,6 +23,13 @@ pub(crate) fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
         .collect()
 }
 
+/// Seconds since the Unix epoch; 0 for a clock before it.
+pub(crate) fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
 /// The RFC 3339 UTC time for a Unix timestamp in seconds. `box list`'s
 /// `created` and the egress log's `time` share this one shape.
 pub(crate) fn rfc3339(seconds: i64) -> String {

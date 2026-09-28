@@ -273,11 +273,6 @@ pub fn path_bytes(path: &Path) -> u64 {
     }
 }
 
-/// The total bytes of `paths`.
-pub fn total_bytes<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> u64 {
-    paths.into_iter().map(|path| path_bytes(path)).sum()
-}
-
 /// Apply [`keep_two_images`] to every source any image names; a failing
 /// source is reported and the rest continue.
 pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {

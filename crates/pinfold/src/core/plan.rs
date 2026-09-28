@@ -30,9 +30,6 @@ pub struct Plan {
     pub labels: BTreeMap<String, String>,
     #[serde(default)]
     pub mounts: Vec<Mount>,
-    /// The uid:gid for PID 1 and all work. The host uid:gid when absent.
-    #[serde(default)]
-    pub user: Option<User>,
     /// Exact environment. `{ "from": "NAME" }` takes the caller's value.
     #[serde(default)]
     pub env: BTreeMap<String, Env>,
@@ -285,13 +282,6 @@ pub struct Mount {
     pub guest: PathBuf,
     #[serde(default)]
     pub readonly: bool,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct User {
-    pub uid: u32,
-    pub gid: u32,
 }
 
 /// One environment entry.

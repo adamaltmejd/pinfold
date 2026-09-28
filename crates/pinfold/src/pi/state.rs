@@ -3,11 +3,10 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::sha256_hex;
+use crate::core::{now, sha256_hex};
 use crate::dirs;
 
 /// What `state.json` records for Maintenance: the checkout to check and the
@@ -81,15 +80,6 @@ pub struct StateDir {
     pub last_run: u64,
 }
 
-impl StateDir {
-    /// Whether `clean` should remove this state: the checkout is gone, or
-    /// with `unused`, the project has not run for that long.
-    pub fn stale(&self, unused: Option<Duration>) -> bool {
-        !self.root.exists()
-            || unused.is_some_and(|unused| now().saturating_sub(self.last_run) > unused.as_secs())
-    }
-}
-
 /// Every project state dir with a readable `state.json`. A dir without one
 /// is a first start that failed before it recorded anything; it names no
 /// checkout, so Maintenance leaves it alone.
@@ -109,11 +99,4 @@ pub fn state_dirs() -> io::Result<Vec<StateDir>> {
             })
         })
         .collect())
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }

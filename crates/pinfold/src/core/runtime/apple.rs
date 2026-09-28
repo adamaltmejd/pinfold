@@ -3,15 +3,15 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use tokio::process::Child;
 
 use crate::core::plan::Plan;
 use crate::core::runtime::{
-    BoxInfo, BoxStat, BuildRequest, ImageIdentity, ImageInfo, MemoryStat, PidsStat, Preflight,
-    Runtime, inspect, output, parse_json, run, spawn_error,
+    BoxInfo, BoxStat, BuildRequest, ImageInfo, MemoryStat, PidsStat, Runtime, inspect, output,
+    parse_json, spawn_error,
 };
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
@@ -26,7 +26,7 @@ impl Runtime for Apple {
         plan: &Plan,
         init: &Path,
         proxy_socket: Option<&Path>,
-        _preflight: &Preflight,
+        _seccomp: Option<&Path>,
     ) -> io::Result<Child> {
         let mut extra: Vec<OsString> = vec!["--progress".into(), "none".into()];
         if proxy_socket.is_some() {
@@ -51,25 +51,10 @@ impl Runtime for Apple {
             .map_err(|error| spawn_error("container", error))
     }
 
-    fn make_proxy_connectable(&self, name: &str) -> io::Result<()> {
-        // The one transient root exec, which makes the forwarded socket
-        // connectable by the box user.
-        run(&[
-            "container",
-            "exec",
-            "--user",
-            "0:0",
-            name,
-            "chmod",
-            "666",
-            GUEST_PROXY_SOCKET,
-        ])
-    }
-
-    fn preflight(&self) -> io::Result<Preflight> {
+    fn preflight(&self) -> io::Result<Option<PathBuf>> {
         // A missing `container` binary is refused before `up` creates any
         // state.
-        self.version().map(|_| Preflight::default())
+        self.version().map(|_| None)
     }
 
     fn down(&self, name: &str) -> io::Result<()> {
@@ -132,24 +117,15 @@ impl Runtime for Apple {
     fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
         let json = output(&["container", "image", "list", "--format", "json"])?;
         let images: Vec<ListedImage> = parse_json("container image list", &json)?;
-        Ok(images
-            .into_iter()
-            .map(|image| image_info(image).0)
-            .collect())
+        images.into_iter().map(image_info).collect()
     }
 
-    fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageIdentity, String>> {
+    fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageInfo, String>> {
         // `image inspect` prints the same entries as `image list`.
-        Ok(
-            inspect::<ListedImage>("container", reference)?.map(|image| {
-                let (image, digest) = image_info(image);
-                ImageIdentity {
-                    id: image.id,
-                    labels: image.labels,
-                    digest,
-                }
-            }),
-        )
+        match inspect::<ListedImage>("container", reference)? {
+            Ok(image) => image_info(image).map(Ok),
+            Err(stderr) => Ok(Err(stderr)),
+        }
     }
 
     fn remove_image(&self, reference: &str) -> io::Result<()> {
@@ -160,7 +136,7 @@ impl Runtime for Apple {
     fn purge_build_cache(&self) -> io::Result<()> {
         // The builder container holds the build cache. `--force` removes a
         // running builder too; a missing builder is not an error.
-        run(&["container", "builder", "delete", "--force"])
+        output(&["container", "builder", "delete", "--force"]).map(drop)
     }
 
     fn build_cache(&self) -> &'static str {
@@ -187,6 +163,22 @@ impl Runtime for Apple {
     }
 }
 
+/// Make the forwarded proxy socket in box `name` connectable by the box
+/// user: it arrives root-owned and mode 000. The one transient root exec.
+pub fn make_proxy_connectable(name: &str) -> io::Result<()> {
+    output(&[
+        "container",
+        "exec",
+        "--user",
+        "0:0",
+        name,
+        "chmod",
+        "666",
+        GUEST_PROXY_SOCKET,
+    ])
+    .map(drop)
+}
+
 /// One `container list --format json` entry, as much as pinfold needs.
 #[derive(Deserialize)]
 struct ListedContainer {
@@ -198,24 +190,21 @@ struct ListedContainer {
 }
 
 #[derive(Default, Deserialize)]
+#[serde(default)]
 struct ListedConfiguration {
-    #[serde(default)]
     labels: BTreeMap<String, String>,
-    #[serde(default)]
     image: ListedBoxImage,
     /// ISO 8601, which is RFC 3339.
-    #[serde(default, rename = "creationDate")]
+    #[serde(rename = "creationDate")]
     created: String,
-    #[serde(default)]
     resources: ListedResources,
 }
 
 /// The image a box runs, as the runtime records it.
 #[derive(Default, Deserialize)]
+#[serde(default)]
 struct ListedBoxImage {
-    #[serde(default)]
     reference: String,
-    #[serde(default)]
     descriptor: ListedBoxImageDescriptor,
 }
 
@@ -229,7 +218,7 @@ struct ListedBoxImageDescriptor {
 /// The limits the runtime reports for a box.
 #[derive(Default, Deserialize)]
 struct ListedResources {
-    #[serde(default, rename = "memoryInBytes")]
+    #[serde(rename = "memoryInBytes")]
     memory: Option<u64>,
 }
 
@@ -250,8 +239,9 @@ fn containers() -> io::Result<Vec<ListedContainer>> {
 struct ListedImage {
     id: String,
     configuration: ListedImageConfiguration,
+    /// Each variant's OCI image config sits at `/config/config`.
     #[serde(default)]
-    variants: Vec<ListedImageVariant>,
+    variants: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -268,24 +258,8 @@ struct ListedImageDescriptor {
     digest: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct ListedImageVariant {
-    config: Option<ListedImageConfig>,
-}
-
-#[derive(Deserialize)]
-struct ListedImageConfig {
-    config: Option<ListedImageLabels>,
-}
-
-#[derive(Deserialize)]
-struct ListedImageLabels {
-    #[serde(default, rename = "Labels")]
-    labels: BTreeMap<String, String>,
-}
-
 /// One image entry, with its descriptor's digest.
-fn image_info(image: ListedImage) -> (ImageInfo, Option<String>) {
+fn image_info(image: ListedImage) -> io::Result<ImageInfo> {
     // Build labels are OCI image config labels; a locally built image also
     // carries name annotations on its index descriptor.
     let (mut labels, digest) = image
@@ -293,15 +267,19 @@ fn image_info(image: ListedImage) -> (ImageInfo, Option<String>) {
         .descriptor
         .map(|descriptor| (descriptor.annotations, descriptor.digest))
         .unwrap_or_default();
-    for variant in image.variants {
-        if let Some(config) = variant.config.and_then(|config| config.config) {
-            labels.extend(config.labels);
+    for variant in &image.variants {
+        if let Some(found) = variant.pointer("/config/config/Labels") {
+            labels.extend(
+                BTreeMap::<String, String>::deserialize(found).map_err(|error| {
+                    io::Error::other(format!("image {} has invalid labels: {error}", image.id))
+                })?,
+            );
         }
     }
-    let info = ImageInfo {
+    Ok(ImageInfo {
         id: image.id,
         reference: image.configuration.name,
         labels,
-    };
-    (info, digest)
+        digest,
+    })
 }

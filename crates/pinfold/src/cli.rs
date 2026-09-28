@@ -16,9 +16,7 @@ use crate::core::clean;
 use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
 use crate::core::plan::Plan;
 use crate::core::profile::{self, Profile};
-use crate::core::runtime::{
-    BoxInfo, ImageStatus, Runtime, image_status, local_image_id, podman, runtime,
-};
+use crate::core::runtime::{BoxInfo, Runtime, local_image_id, podman, runtime};
 use crate::dirs;
 use crate::pi::launch::utf8;
 use crate::trust;
@@ -318,7 +316,7 @@ fn refused(kind: &str, name: Option<&str>, reason: RefusalReason, detail: &str) 
         serde_json::json!({
             "event": "refused",
             kind: name,
-            "reason": reason.as_str(),
+            "reason": reason,
             "detail": detail,
         })
     );
@@ -467,7 +465,10 @@ impl CleanPlan {
             if boxes.live_projects.contains(&project.id) {
                 continue;
             }
-            if project.stale(unused) {
+            // Stale: the checkout is gone, or with `unused`, the project
+            // has not run for that long.
+            let idle = crate::core::now().saturating_sub(project.last_run);
+            if !project.root.exists() || unused.is_some_and(|unused| idle > unused.as_secs()) {
                 // The whole state dir goes; its cache is part of its size.
                 stale.push(project.dir.clone());
             } else {
@@ -478,17 +479,14 @@ impl CleanPlan {
             }
         }
 
-        let automatic_bytes = clean::total_bytes(&automatic);
-        let project_caches = clean::total_bytes(&caches);
-        let project_state = clean::total_bytes(&stale);
         Ok(CleanPlan {
             dead: boxes.dead,
+            automatic_bytes: automatic.iter().map(|path| clean::path_bytes(path)).sum(),
+            project_caches: caches.iter().map(|path| clean::path_bytes(path)).sum(),
+            project_state: stale.iter().map(|path| clean::path_bytes(path)).sum(),
             automatic,
             caches,
             stale,
-            automatic_bytes,
-            project_caches,
-            project_state,
         })
     }
 
@@ -682,7 +680,7 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
     let project = crate::pi::state::project_id(root);
     let home = crate::pi::state::project_home(root)?;
     let image = crate::pi::launch::resolve_image(config, &project);
-    let image_built = !matches!(image_status(runtime(), &image, None)?, ImageStatus::Missing);
+    let image_built = runtime().resolve_image(&image)?.is_ok();
     let trust = match trust::check(root, config) {
         Ok(()) => serde_json::json!({ "ok": true, "detail": "ok" }),
         Err(error) => serde_json::json!({ "ok": false, "detail": error.to_string() }),

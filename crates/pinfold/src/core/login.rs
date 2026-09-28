@@ -5,11 +5,11 @@ use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, PoisonError};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use nix::fcntl::{Flock, FlockArg};
 
-use crate::core::artifacts;
+use crate::core::{artifacts, now};
 use crate::dirs;
 
 /// Within this much of `exp`, the proxy asks the helper again. Codex's own
@@ -235,10 +235,4 @@ pub fn codex_config(route: &str) -> String {
          wire_api = \"responses\"\n\
          requires_openai_auth = false\n"
     )
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
 }

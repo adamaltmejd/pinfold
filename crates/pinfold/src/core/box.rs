@@ -22,7 +22,7 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use crate::core::clean;
 use crate::core::plan::{Env, Mount, Plan};
 use crate::core::profile::{Profile, Seed};
-use crate::core::runtime::{Preflight, runtime};
+use crate::core::runtime::{apple, runtime};
 use crate::core::{artifacts, login, proxy};
 use crate::dirs;
 
@@ -68,8 +68,10 @@ impl Shutdown {
     }
 }
 
-/// Why `up` refused. A refused `up` leaves nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Why `up` refused, serialized as the reason string of the process
+/// interface's `refused` line. A refused `up` leaves nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum RefusalReason {
     /// The spec did not parse or validate.
     Spec,
@@ -83,20 +85,6 @@ pub enum RefusalReason {
     NameInUse,
     /// A login route's token is missing.
     Login,
-}
-
-impl RefusalReason {
-    /// The reason string of the process interface's `refused` line.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            RefusalReason::Spec => "spec",
-            RefusalReason::Profile => "profile",
-            RefusalReason::Runtime => "runtime",
-            RefusalReason::ImageMissing => "image-missing",
-            RefusalReason::NameInUse => "name-in-use",
-            RefusalReason::Login => "login",
-        }
-    }
 }
 
 /// A refused `up`: why, and the detail the runtime or host gave. `box_name`
@@ -127,7 +115,9 @@ impl From<UpError> for io::Error {
     fn from(error: UpError) -> io::Error {
         match error {
             UpError::Refused(refusal) => {
-                io::Error::other(format!("{}: {}", refusal.reason.as_str(), refusal.detail))
+                let reason = serde_json::to_value(refusal.reason).unwrap_or_default();
+                let reason = reason.as_str().unwrap_or_default();
+                io::Error::other(format!("{reason}: {}", refusal.detail))
             }
             UpError::Signal => io::ErrorKind::Interrupted.into(),
             UpError::Other(error) => error,
@@ -192,7 +182,7 @@ impl Box {
             .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
 
         let runtime = runtime();
-        let preflight = runtime
+        let seccomp = runtime
             .preflight()
             .map_err(|error| refused(&plan, RefusalReason::Runtime, error.to_string()))?;
 
@@ -253,7 +243,7 @@ impl Box {
         let starting = start(
             &mut plan,
             init,
-            &preflight,
+            seccomp.as_deref(),
             seeding.as_ref(),
             &state_dir,
             codex,
@@ -468,7 +458,7 @@ fn lock_pid(state_dir: &Path) -> io::Result<Flock<File>> {
 async fn start(
     plan: &mut Plan,
     init: &Path,
-    preflight: &Preflight,
+    seccomp: Option<&Path>,
     seeding: Option<&Seeding>,
     state_dir: &Path,
     codex: Option<login::Token>,
@@ -500,7 +490,7 @@ async fn start(
     // before the runtime is asked to create anything.
     tokio::task::yield_now().await;
     let runtime = runtime();
-    let child = child.insert(runtime.up(plan, init, socket.as_deref(), preflight)?);
+    let child = child.insert(runtime.up(plan, init, socket.as_deref(), seccomp)?);
     let stdout = child
         .stdout
         .take()
@@ -514,11 +504,10 @@ async fn start(
             Err(error) => return Err(Stop::NotReady(format!("box output failed: {error}"))),
         }
     }
-    // Apple only: the forwarded socket arrives root-owned and mode 000.
     // The one root exec happens before ready reaches the caller, so no
     // work can race it.
-    if socket.is_some() {
-        runtime.make_proxy_connectable(&plan.name)?;
+    if cfg!(target_os = "macos") && socket.is_some() {
+        apple::make_proxy_connectable(&plan.name)?;
     }
     // Keep the pipe drained so a talkative box cannot block on it.
     tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });

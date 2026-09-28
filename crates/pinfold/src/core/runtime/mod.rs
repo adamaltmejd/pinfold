@@ -58,25 +58,8 @@ fn captured(argv: &[&str]) -> io::Result<Result<Vec<u8>, String>> {
 
 /// Run `argv` with stdin closed and return its stdout. A failed run's error
 /// names the command and carries its stderr; a failed spawn keeps its kind.
-fn output(argv: &[&str]) -> io::Result<Vec<u8>> {
+pub(crate) fn output(argv: &[&str]) -> io::Result<Vec<u8>> {
     captured(argv)?.map_err(|stderr| io::Error::other(format!("{}: {stderr}", argv.join(" "))))
-}
-
-/// Run `argv` for its status, with stdin and stdout closed and stderr passed
-/// through. A failed run's error names the command and its status.
-fn run(argv: &[&str]) -> io::Result<()> {
-    let (program, arguments) = argv.split_first().expect("argv is never empty");
-    let status = std::process::Command::new(program)
-        .args(arguments)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .status()
-        .map_err(|error| spawn_error(program, error))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!("{}: {status}", argv.join(" "))))
-    }
 }
 
 /// Run `<program> image inspect <reference>` and return its first entry. The
@@ -156,25 +139,9 @@ pub struct ImageInfo {
     pub reference: String,
     /// The labels recorded on the image.
     pub labels: BTreeMap<String, String>,
-}
-
-/// The local image a reference resolves to.
-#[derive(Debug, Clone)]
-pub struct ImageIdentity {
-    /// The image's content digest, bare hex like [`ImageInfo::id`].
-    pub id: String,
-    /// The labels recorded on the image.
-    pub labels: BTreeMap<String, String>,
-    /// The digest the runtime records for the image, `sha256:<hex>`.
+    /// The digest the runtime records for the image, `sha256:<hex>`. Only
+    /// [`Runtime::resolve_image`] fills it on podman.
     pub digest: Option<String>,
-}
-
-/// What preflight learned of the host that `up` needs, so one `up` asks the
-/// runtime once. A field a runtime does not use is `None`.
-#[derive(Debug, Default)]
-pub struct Preflight {
-    /// The seccomp profile path the runtime reports. podman only.
-    pub seccomp_profile: Option<PathBuf>,
 }
 
 /// One image build: a context, a Containerfile, the names to tag the result
@@ -197,22 +164,19 @@ pub struct BuildRequest<'a> {
 pub trait Runtime: Sync {
     /// Start the attached `container run` process that owns the box. When
     /// `proxy_socket` is set, carry that host unix socket into the box.
-    /// `preflight` is what [`Runtime::preflight`] returned.
+    /// `seccomp` is the profile [`Runtime::preflight`] returned.
     fn up(
         &self,
         plan: &Plan,
         init: &Path,
         proxy_socket: Option<&Path>,
-        preflight: &Preflight,
+        seccomp: Option<&Path>,
     ) -> io::Result<Child>;
 
     /// Refuse a host the runtime cannot serve, before `up` creates any box
-    /// state, and return what `up` needs of the host.
-    fn preflight(&self) -> io::Result<Preflight>;
-
-    /// Make the carried proxy socket connectable by the box user. Apple only:
-    /// the forwarded socket arrives root-owned and mode 000.
-    fn make_proxy_connectable(&self, name: &str) -> io::Result<()>;
+    /// state, and return the seccomp profile the runtime reports, which
+    /// `up` needs. podman only; Apple returns `None`.
+    fn preflight(&self) -> io::Result<Option<PathBuf>>;
 
     /// Stop and remove the box.
     fn down(&self, name: &str) -> io::Result<()>;
@@ -273,7 +237,7 @@ pub trait Runtime: Sync {
     /// Resolve `reference` to a local image with the runtime's own inspect,
     /// so every spelling the runtime resolves is accepted. Never pulls. The
     /// inner `Err` is the runtime's message when it cannot resolve it.
-    fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageIdentity, String>>;
+    fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageInfo, String>>;
 
     /// Remove one image by reference, and any layers no image references.
     fn remove_image(&self, reference: &str) -> io::Result<()>;
@@ -290,19 +254,6 @@ pub trait Runtime: Sync {
     /// Build an image from [`BuildRequest`]. The inner `Err` is the build's
     /// output, stdout and stderr in order, when the build ran and failed.
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>>;
-
-    /// Pull `reference` and return the digest it resolved to. `None` when
-    /// the reference does not resolve, for example `scratch`.
-    fn image_digest(&self, reference: &str) -> io::Result<Option<String>> {
-        // A floating tag must be pulled for its digest to be current and
-        // present to inspect. `scratch` and other non-registry references
-        // cannot be pulled; they simply have no digest.
-        let _ = run(&[self.program(), "image", "pull", reference]);
-        Ok(self
-            .resolve_image(reference)?
-            .ok()
-            .and_then(|image| image.digest))
-    }
 
     /// The runtime CLI's program name.
     fn program(&self) -> &'static str;
@@ -339,14 +290,8 @@ fn up<'a>(
     extra: Vec<OsString>,
     env: impl Iterator<Item = (&'a String, &'a Env)>,
 ) -> Command {
-    // PID 1 and all work run as the spec's uid:gid, else the host user's.
-    let (uid, gid) = match plan.user {
-        Some(user) => (user.uid, user.gid),
-        None => (
-            nix::unistd::getuid().as_raw(),
-            nix::unistd::getgid().as_raw(),
-        ),
-    };
+    // PID 1 and all work run as the host user's uid:gid.
+    let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
     let mut command = Command::new(program);
     command
         .args(["run", "-i", "--name", &plan.name])
@@ -455,50 +400,9 @@ fn build(
 }
 
 /// The content digest of the image `reference` resolves to. `None` when the
-/// runtime cannot resolve it. Unlike [`Runtime::image_digest`], this never
-/// pulls: the reference is local.
+/// runtime cannot resolve it. Never pulls: the reference is local.
 pub fn local_image_id(runtime: &dyn Runtime, reference: &str) -> io::Result<Option<String>> {
     Ok(runtime.resolve_image(reference)?.ok().map(|image| image.id))
-}
-
-/// Whether a local image is built, and whether it was built on what `base`
-/// resolves to now, as `doctor`, `config` and `pinfold pi` report it.
-pub enum ImageStatus {
-    Missing,
-    /// Built, and on the current base when a base was asked about.
-    Current,
-    /// Built on base digest `recorded`; `base` now resolves to `current`.
-    Stale {
-        recorded: Option<String>,
-        current: Option<String>,
-    },
-}
-
-/// The status of image `reference`. With `base`, the digest the image
-/// records in `dev.pinfold.base` is compared with the one `base` resolves
-/// to now. Never pulls.
-pub fn image_status(
-    runtime: &dyn Runtime,
-    reference: &str,
-    base: Option<&str>,
-) -> io::Result<ImageStatus> {
-    let Ok(image) = runtime.resolve_image(reference)? else {
-        return Ok(ImageStatus::Missing);
-    };
-    let Some(base) = base else {
-        return Ok(ImageStatus::Current);
-    };
-    let recorded = image
-        .labels
-        .get(crate::core::clean::BASE_LABEL)
-        .filter(|digest| !digest.is_empty())
-        .cloned();
-    let current = local_image_id(runtime, base)?;
-    Ok(if recorded == current {
-        ImageStatus::Current
-    } else {
-        ImageStatus::Stale { recorded, current }
-    })
 }
 
 /// A `type=bind` mount value, as both runtimes spell it.

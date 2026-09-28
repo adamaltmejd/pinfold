@@ -11,7 +11,7 @@ use crate::core::r#box::RefusalReason;
 use crate::core::clean;
 use crate::core::plan;
 use crate::core::profile;
-use crate::core::runtime::{BuildRequest, Runtime, local_image_id, runtime};
+use crate::core::runtime::{BuildRequest, ImageInfo, Runtime, local_image_id, output, runtime};
 use crate::dirs;
 
 /// Where a build's files come from.
@@ -227,18 +227,27 @@ pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Op
         Some(base) if !base.contains('$') => {
             // A pinfold-built base can never be pulled, so read its digest
             // locally before spending the retries on a doomed pull.
-            let local = runtime.resolve_image(base)?.ok().filter(|image| {
+            let pinfold_built = |image: &ImageInfo| {
                 clean::FAMILY_LABELS.iter().any(|label| {
                     image
                         .labels
                         .get(*label)
                         .is_some_and(|value| !value.is_empty())
                 })
-            });
-            if let Some(image) = local {
+            };
+            if let Ok(image) = runtime.resolve_image(base)?
+                && pinfold_built(&image)
+            {
                 return Ok(image.digest);
             }
-            runtime.image_digest(base)
+            // A floating tag must be pulled for its digest to be current and
+            // present to inspect. `scratch` and other non-registry references
+            // cannot be pulled; they simply have no digest.
+            let _ = output(&[runtime.program(), "image", "pull", base]);
+            Ok(runtime
+                .resolve_image(base)?
+                .ok()
+                .and_then(|image| image.digest))
         }
         _ => Ok(None),
     }

@@ -261,7 +261,6 @@ The box spec `up` reads from stdin:
   "harness": "pi",
   "image": "…",
   "mounts": [{ "host": "/…/clone", "guest": "/workspace", "readonly": false }],
-  "user": { "uid": 501, "gid": 20 },
   "env": { "HOME": "/state/home", "GH_TOKEN": { "from": "GH_TOKEN" } },
   "egress": {
     "allow": ["api.github.com"],
