@@ -76,30 +76,42 @@ impl Harness {
     /// The host directory to mount at [`guest`] for a box on this host,
     /// downloading and installing the assets if the cache lacks them.
     pub fn install(&self) -> io::Result<PathBuf> {
-        let assets = self.assets();
-        let dir = self.dir()?;
+        Ok(self.install_os_arch(OS_ARCH)?.join(&self.name))
+    }
+
+    /// The directory of this harness's host helpers for this host, installed
+    /// the same way. It never enters a box.
+    pub fn install_host(&self) -> io::Result<PathBuf> {
+        self.install_os_arch(HOST_OS_ARCH)
+    }
+
+    /// Download and install the assets for `os_arch` if the cache lacks
+    /// them, and return their directory.
+    fn install_os_arch(&self, os_arch: &str) -> io::Result<PathBuf> {
+        let assets = self.assets(os_arch);
+        let dir = self.dir(os_arch)?;
         dirs::install_dir(&dir, |staging| {
             assets
                 .iter()
                 .try_for_each(|asset| self.fetch(asset, staging))
         })?;
-        Ok(dir.join(&self.name))
+        Ok(dir)
     }
 
-    /// This harness's assets for [`OS_ARCH`].
-    fn assets(&self) -> Vec<&Asset> {
+    /// This harness's assets for `os_arch`.
+    fn assets(&self, os_arch: &str) -> Vec<&Asset> {
         self.asset
             .iter()
-            .filter(|asset| asset.os_arch == OS_ARCH)
+            .filter(|asset| asset.os_arch == os_arch)
             .collect()
     }
 
-    /// The cache directory of this harness for [`OS_ARCH`], installed or not.
-    fn dir(&self) -> io::Result<PathBuf> {
+    /// The cache directory of this harness for `os_arch`, installed or not.
+    fn dir(&self, os_arch: &str) -> io::Result<PathBuf> {
         Ok(dirs::artifacts_dir()?
             .join(&self.name)
             .join(&self.version)
-            .join(OS_ARCH))
+            .join(os_arch))
     }
 
     /// Download `asset` into `staging`, verify its sha256, and install it at
@@ -180,6 +192,16 @@ const OS_ARCH: &str = if cfg!(target_arch = "aarch64") {
     "linux-x64"
 };
 
+/// The `os-arch` of a host helper on this host, as its rows name it. The
+/// macOS CLI is arm64 only.
+const HOST_OS_ARCH: &str = if cfg!(target_os = "macos") {
+    "host-darwin-arm64"
+} else if cfg!(target_arch = "aarch64") {
+    "host-linux-arm64"
+} else {
+    "host-linux-x64"
+};
+
 /// The Linux init binary to mount into a box.
 ///
 /// On macOS the CLI embeds the `aarch64-unknown-linux-musl` build and
@@ -221,13 +243,13 @@ pub fn pins() -> io::Result<Vec<Pin>> {
     HARNESSES
         .iter()
         .map(|harness| {
-            let dir = harness.dir()?;
+            let dir = harness.dir(OS_ARCH)?;
             Ok(Pin {
                 name: &harness.name,
                 version: &harness.version,
                 path: dir.join(&harness.name),
                 cached: dir.is_dir(),
-                assets: harness.assets(),
+                assets: harness.assets(OS_ARCH),
             })
         })
         .collect()

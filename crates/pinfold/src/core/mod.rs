@@ -4,6 +4,7 @@ pub mod artifacts;
 pub mod r#box;
 pub mod clean;
 pub mod image;
+pub mod login;
 pub mod network;
 pub mod plan;
 pub mod profile;

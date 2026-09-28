@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::core::r#box::{Refusal, RefusalReason};
-use crate::core::{artifacts, network, proxy};
+use crate::core::{artifacts, login, network, proxy};
 
 /// A parsed box spec.
 #[derive(Debug, Clone, Deserialize)]
@@ -67,21 +67,21 @@ pub enum Route {
     /// `{ "to": ORIGIN, "headers": {…} }`: the proxy dials `to` and adds the
     /// headers from its own environment.
     Inject(Inject),
-    /// `{ "login": HARNESS, "from": VAR, "to"?: ORIGIN }`: the proxy dials
-    /// the harness's origin with the harness's own header.
+    /// `{ "login": HARNESS, "from"?: VAR, "to"?: ORIGIN }`: the proxy dials
+    /// the harness's origin with the harness's own headers.
     Login(Login),
 }
 
 /// A login route: the token stays in the proxy's process and pinfold
-/// supplies the origin, the header and the box's placeholders. Only claude
-/// is served in this build.
+/// supplies the origin, the headers and what the box's harness needs to use
+/// the route.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Login {
     /// The harness the login belongs to; it must be the spec's `harness`.
     pub login: String,
     /// The variable the token is read from, by name only. claude needs one;
-    /// codex will not.
+    /// codex takes none: its token comes from the host helper.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
     /// The origin to dial instead of the harness's own.
@@ -173,15 +173,23 @@ const LOGIN_PLACEHOLDER: &str = "pinfold-placeholder";
 impl Login {
     /// The origin this login dials: the harness's own, or the spec's `to`.
     fn origin(&self) -> Result<&str, String> {
-        match self.login.as_str() {
-            "claude" => Ok(self.to.as_deref().unwrap_or("https://api.anthropic.com")),
-            login => Err(invalid(format!("login {login:?} is not supported"))),
-        }
+        let default = match self.login.as_str() {
+            "claude" => "https://api.anthropic.com",
+            "codex" => "https://chatgpt.com",
+            login => return Err(invalid(format!("login {login:?} is not supported"))),
+        };
+        Ok(self.to.as_deref().unwrap_or(default))
+    }
+
+    /// Whether this is a codex login, whose token comes from the host
+    /// helper and whose box gets a config file rather than env.
+    pub fn is_codex(&self) -> bool {
+        self.login == "codex"
     }
 
     /// Check a login route without reading the environment: this build
-    /// serves the login, `from` is present, and `to` parses like an
-    /// injecting route's.
+    /// serves the login, `from` is present for claude and absent for codex,
+    /// and `to` parses like an injecting route's.
     fn check(&self, route: &str) -> Result<(), String> {
         let origin = self.origin()?;
         if parse_target(origin).is_none() {
@@ -189,7 +197,13 @@ impl Login {
                 "login route {route:?} target {origin:?} must be an http:// or https:// origin"
             )));
         }
-        if self.from.as_deref().is_none_or(str::is_empty) {
+        if self.is_codex() {
+            if self.from.is_some() {
+                return Err(invalid(format!(
+                    "login route {route:?} takes no from variable: codex's token comes from the host's Codex login"
+                )));
+            }
+        } else if self.from.as_deref().is_none_or(str::is_empty) {
             return Err(invalid(format!(
                 "login route {route:?} needs a from variable"
             )));
@@ -197,7 +211,17 @@ impl Login {
         Ok(())
     }
 
-    /// The dialed target and the Authorization header, from this process's
+    /// The dialed target.
+    pub fn target(&self) -> Result<Target, String> {
+        let origin = self.origin()?;
+        parse_target(origin).ok_or_else(|| {
+            invalid(format!(
+                "login target {origin:?} must be an http:// or https:// origin"
+            ))
+        })
+    }
+
+    /// claude's dialed target and Authorization header, from this process's
     /// environment once at start. The target and the value rules are
     /// [`Inject::resolve`]'s.
     pub fn resolve(&self) -> Result<(Target, Vec<(String, String)>), String> {
@@ -215,9 +239,13 @@ impl Login {
     }
 
     /// The box environment a login route adds beside the harness defaults;
-    /// the spec's own `env` still wins. `route` is the route's name.
-    pub fn env(&self, route: &str) -> [(&'static str, String); 2] {
-        [
+    /// the spec's own `env` still wins. `route` is the route's name. codex
+    /// adds none: its box gets [`login::codex_config`].
+    pub fn env(&self, route: &str) -> Vec<(&'static str, String)> {
+        if self.is_codex() {
+            return Vec::new();
+        }
+        vec![
             ("ANTHROPIC_BASE_URL", format!("http://{route}")),
             ("CLAUDE_CODE_OAUTH_TOKEN", LOGIN_PLACEHOLDER.to_string()),
         ]
@@ -360,7 +388,7 @@ impl Plan {
                 )));
             }
         }
-        self.validate_guests(None)?;
+        self.validate_guests(&[])?;
         for (name, value) in &self.env {
             if !valid_env_name(name) {
                 return Err(invalid(format!(
@@ -432,26 +460,34 @@ impl Plan {
             })
     }
 
-    /// Resolve the login route's credential from this process's environment
-    /// before the claim, so a missing variable refuses as `login` rather
-    /// than `spec`. The value never enters the plan.
-    pub fn resolve_login(&self) -> Result<(), String> {
+    /// Resolve the login route's credential before the claim, so a login
+    /// that cannot be used refuses as `login` rather than `spec`: claude's
+    /// from this process's environment, codex's from the host helper. The
+    /// value never enters the plan; codex's token is returned for the proxy.
+    pub fn resolve_login(&self) -> Result<Option<login::Token>, String> {
         let Some((route, login)) = self.login() else {
-            return Ok(());
+            return Ok(None);
         };
-        login
-            .resolve()
-            .map(|_| ())
-            .map_err(|error| format!("{} login route {route:?}: {error}", login.login))
+        let resolved = if login.is_codex() {
+            login::token_from_helper().map(Some)
+        } else {
+            login.resolve().map(|_| None)
+        };
+        resolved.map_err(|error| format!("{} login route {route:?}: {error}", login.login))
     }
 
     /// Refuse two mounts at one guest path: the runtime applies both, and
-    /// whichever comes last shadows the other. `extra` is a guest path
+    /// whichever comes last shadows the other. `extra` holds the guest paths
     /// pinfold mounts after `validate` has run, so `Box::up` checks the
     /// final list too.
-    pub fn validate_guests(&self, extra: Option<&Path>) -> Result<(), String> {
+    pub fn validate_guests(&self, extra: &[&Path]) -> Result<(), String> {
         let mut guests = BTreeSet::new();
-        for guest in self.mounts.iter().map(|m| m.guest.as_path()).chain(extra) {
+        for guest in self
+            .mounts
+            .iter()
+            .map(|m| m.guest.as_path())
+            .chain(extra.iter().copied())
+        {
             if !guests.insert(guest) {
                 return Err(invalid(format!(
                     "two mounts name the same guest path {}",

@@ -23,7 +23,7 @@ use crate::core::clean;
 use crate::core::plan::{Env, Mount, Plan};
 use crate::core::profile::{Profile, Seed};
 use crate::core::runtime::{Preflight, runtime};
-use crate::core::{artifacts, proxy};
+use crate::core::{artifacts, login, proxy};
 use crate::dirs;
 
 /// A started box, owned by this process.
@@ -163,9 +163,11 @@ impl Box {
         plan.validate()
             .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
 
-        // A login route's token is read from this process before the claim,
-        // so a missing variable refuses as `login` and leaves nothing.
-        plan.resolve_login()
+        // A login route's token is read before the claim, so a missing
+        // variable or an unusable Codex login refuses as `login` and leaves
+        // nothing. codex's token goes to the proxy.
+        let codex = plan
+            .resolve_login()
             .map_err(|error| refused(plan, RefusalReason::Login, error))?;
 
         // The profile's image, share and home seeds are the box's to apply;
@@ -175,12 +177,14 @@ impl Box {
         let seeds = resolve_profile(&mut plan)
             .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
 
-        // Pinfold adds the profile's `share/` above and the harness mount in
-        // `start`. Check the spec's mounts against both before `home_mount`
-        // picks the mount behind `$HOME`, so a clash is refused as spec and
-        // no tie can hide it.
+        // Pinfold adds the profile's `share/` above, and the harness mount
+        // and a codex login's config dir in `start`. Check the spec's mounts
+        // against them before `home_mount` picks the mount behind `$HOME`, so
+        // a clash is refused as spec and no tie can hide it.
         let harness = plan.harness.as_deref().map(artifacts::guest);
-        plan.validate_guests(harness.as_deref())
+        let codex_config = codex.as_ref().map(|_| Path::new(login::CODEX_CONFIG_DIR));
+        let extra: Vec<&Path> = harness.as_deref().into_iter().chain(codex_config).collect();
+        plan.validate_guests(&extra)
             .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
         let seeding = seeds
             .map(|seeds| home_mount(&plan, seeds))
@@ -252,6 +256,7 @@ impl Box {
             &preflight,
             seeding.as_ref(),
             &state_dir,
+            codex,
             &mut child,
         );
         let started = match signals {
@@ -466,11 +471,12 @@ async fn start(
     preflight: &Preflight,
     seeding: Option<&Seeding>,
     state_dir: &Path,
+    codex: Option<login::Token>,
     child: &mut Option<Child>,
 ) -> Result<(BTreeMap<String, String>, Option<PathBuf>), Stop> {
     // The harness artifact is fetched and folded in after the claim, so a
     // refused box downloads nothing. The spec's own env wins.
-    resolve_harness(plan)?;
+    resolve_harness(plan, state_dir)?;
 
     if let Some(seeding) = seeding {
         seed_home(seeding)?;
@@ -483,7 +489,7 @@ async fn start(
         Some(egress) => {
             let socket = state_dir.join("proxy.sock");
             let log = dirs::egress_dir()?.join(format!("{}.jsonl", plan.name));
-            proxy::start(&socket, egress, log.clone())?;
+            proxy::start(&socket, egress, codex, log.clone())?;
             egress_log = Some(log);
             Some(socket)
         }
@@ -549,8 +555,9 @@ async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
 
 /// Fold the spec's harness into the plan: install the pinned harness if it
 /// is not cached, mount it read-only, and set its environment. The spec's
-/// own env wins over the harness defaults.
-fn resolve_harness(plan: &mut Plan) -> io::Result<()> {
+/// own env wins over the harness defaults. A codex login's config is written
+/// into the box's state dir and mounted read-only at `/etc/codex`.
+fn resolve_harness(plan: &mut Plan, state_dir: &Path) -> io::Result<()> {
     let Some(harness) = plan.harness.as_deref().and_then(artifacts::harness) else {
         return Ok(());
     };
@@ -571,6 +578,20 @@ fn resolve_harness(plan: &mut Plan) -> io::Result<()> {
         plan.env
             .entry(name.to_string())
             .or_insert(Env::Exact(value));
+    }
+    let codex_config = plan
+        .login()
+        .filter(|(_, login)| login.is_codex())
+        .map(|(route, _)| login::codex_config(route));
+    if let Some(config) = codex_config {
+        let dir = state_dir.join("codex");
+        fs::create_dir_all(&dir)?;
+        fs::write(dir.join("config.toml"), config)?;
+        plan.mounts.push(Mount {
+            host: dir,
+            guest: PathBuf::from(login::CODEX_CONFIG_DIR),
+            readonly: true,
+        });
     }
     let allow = plan
         .egress
