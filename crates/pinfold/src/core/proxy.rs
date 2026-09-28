@@ -1,5 +1,6 @@
 //! The per-box egress proxy.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -15,6 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
+use crate::core::login;
 use crate::core::plan::{Egress, Route, Target};
 use crate::core::{network, rfc3339, tls};
 
@@ -39,11 +41,17 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// The most connections one box may have open at once.
 const MAX_CONNECTIONS: usize = 64;
 
-/// Bind the box's socket, create its log, and serve. The accept thread is
-/// never stopped: each owner exits right after teardown, which deletes the
-/// socket.
-pub fn start(socket: &Path, egress: &Egress, log: PathBuf) -> io::Result<()> {
-    let rules = Arc::new(Rules::new(egress)?);
+/// Bind the box's socket, create its log, and serve. `codex` is a codex
+/// login route's token, asked of the host helper at `up`. The accept thread
+/// is never stopped: each owner exits right after teardown, which deletes
+/// the socket.
+pub fn start(
+    socket: &Path,
+    egress: &Egress,
+    codex: Option<login::Token>,
+    log: PathBuf,
+) -> io::Result<()> {
+    let rules = Arc::new(Rules::new(egress, codex)?);
     let listener = UnixListener::bind(socket).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -84,12 +92,15 @@ enum Upstream {
         target: Target,
         headers: Vec<(String, String)>,
     },
+    /// A codex login route's target; its headers come from the live token
+    /// on each request.
+    Codex { target: Target, login: login::Codex },
 }
 
 impl Rules {
     /// The rules for one box. Injected header values are read here, once,
-    /// from this process's environment.
-    fn new(egress: &Egress) -> io::Result<Rules> {
+    /// from this process's environment; a codex login route takes `codex`.
+    fn new(egress: &Egress, mut codex: Option<login::Token>) -> io::Result<Rules> {
         let mut routes = BTreeMap::new();
         for (name, route) in &egress.routes {
             let upstream = match route {
@@ -98,6 +109,15 @@ impl Rules {
                     let (target, headers) = inject.resolve().map_err(io::Error::other)?;
                     Upstream::Inject { target, headers }
                 }
+                Route::Login(login) if login.is_codex() => {
+                    let token = codex
+                        .take()
+                        .ok_or_else(|| io::Error::other("a codex login route needs its token"))?;
+                    Upstream::Codex {
+                        target: login.target().map_err(io::Error::other)?,
+                        login: login::Codex::new(token),
+                    }
+                }
                 Route::Login(login) => {
                     let (target, headers) = login.resolve().map_err(io::Error::other)?;
                     Upstream::Inject { target, headers }
@@ -105,9 +125,10 @@ impl Rules {
             };
             routes.insert(name.to_ascii_lowercase(), upstream);
         }
-        let https = routes
-            .values()
-            .any(|upstream| matches!(upstream, Upstream::Inject { target, .. } if target.https));
+        let https = routes.values().any(|upstream| match upstream {
+            Upstream::Inject { target, .. } | Upstream::Codex { target, .. } => target.https,
+            Upstream::Address(_) => false,
+        });
         let tls = if https { Some(tls_config()?) } else { None };
         Ok(Rules {
             allow: egress
@@ -276,7 +297,8 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, request: &httparse:
 
 /// Serve one request to a route. A host service is dialed unchecked; an
 /// `https` target is resolved and checked like an allowlisted host, then
-/// dialed over TLS.
+/// dialed over TLS. A codex login whose token has lapsed is refused before
+/// anything is dialed.
 fn route(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain, upstream: &Upstream) {
     let mut report = |status: Option<u16>| {
         let path = request
@@ -290,39 +312,53 @@ fn route(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain, up
         });
         record(log, &request.host, "allowed", "route", Some(fields));
     };
-    let (server, authority, headers) = match upstream {
-        Upstream::Address(address) => (
-            dial(address.as_str()),
-            request.authority.as_str(),
-            [].as_slice(),
-        ),
-        Upstream::Inject { target, headers } if !target.https => (
-            dial((target.host.as_str(), target.port)),
-            target.authority.as_str(),
-            headers.as_slice(),
-        ),
-        Upstream::Inject { target, headers } => {
-            let Some(address) =
-                resolve_checked(client, log, &request.host, &target.host, target.port)
-            else {
-                return;
-            };
-            let server = rules
-                .tls
-                .as_ref()
-                .and_then(|config| dial_tls(address, &target.host, config));
+    let (target, headers) = match upstream {
+        Upstream::Address(address) => {
+            let server = dial(address.as_str());
             let _ = forward(
                 client,
                 server,
                 request,
-                &target.authority,
-                headers,
+                &request.authority,
+                &[],
                 &mut report,
             );
             return;
         }
+        Upstream::Inject { target, headers } => (target, Cow::Borrowed(headers.as_slice())),
+        Upstream::Codex { target, login } => match login.headers() {
+            Some(headers) => (target, Cow::Owned(headers)),
+            None => return refuse(client, log, &request.host, 403, "login lapsed"),
+        },
     };
-    let _ = forward(client, server, request, authority, headers, &mut report);
+    if !target.https {
+        let server = dial((target.host.as_str(), target.port));
+        let _ = forward(
+            client,
+            server,
+            request,
+            &target.authority,
+            &headers,
+            &mut report,
+        );
+        return;
+    }
+    let Some(address) = resolve_checked(client, log, &request.host, &target.host, target.port)
+    else {
+        return;
+    };
+    let server = rules
+        .tls
+        .as_ref()
+        .and_then(|config| dial_tls(address, &target.host, config));
+    let _ = forward(
+        client,
+        server,
+        request,
+        &target.authority,
+        &headers,
+        &mut report,
+    );
 }
 
 /// Resolve once and check every address before anything is dialed. A

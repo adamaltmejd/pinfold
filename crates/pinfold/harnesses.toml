@@ -4,6 +4,8 @@
 # the archive, whose one top-level entry is installed at `as`;
 # install = "executable" installs the download itself at `as`, mode 0755.
 # `as` is relative to <os-arch>/. `env` holds the harness's env defaults.
+# A box os-arch is linux-arm64 or linux-x64; host-<os-arch> rows are host
+# binaries, never mounted.
 
 [[harness]]
 name = "pi"
@@ -78,3 +80,27 @@ url = "https://github.com/openai/codex/releases/download/rust-v0.158.0/codex-cod
 sha256 = "5455c64be4ba371444710895aff6d74d653985a3bfc454a8b7fe42d6e6d11e3d"
 install = "tar.gz"
 as = "codex/codex-code-mode-host"
+
+# The host helper a codex login route asks for the host's token. Keyed by
+# the host's os-arch, so it installs under host-<os-arch>/ and is never
+# mounted.
+[[harness.asset]]
+os-arch = "host-darwin-arm64"
+url = "https://github.com/openai/codex/releases/download/rust-v0.158.0/codex-app-server-aarch64-apple-darwin.tar.gz"
+sha256 = "9ddddbe15ccb5ae6f1638c89263c93089112bc91b04a556bbeb10a9a44d93360"
+install = "tar.gz"
+as = "codex-app-server"
+
+[[harness.asset]]
+os-arch = "host-linux-arm64"
+url = "https://github.com/openai/codex/releases/download/rust-v0.158.0/codex-app-server-aarch64-unknown-linux-musl.tar.gz"
+sha256 = "34588594be54c98b246514229cb7335a1821c3c346c37a2854c0bb763326f111"
+install = "tar.gz"
+as = "codex-app-server"
+
+[[harness.asset]]
+os-arch = "host-linux-x64"
+url = "https://github.com/openai/codex/releases/download/rust-v0.158.0/codex-app-server-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "336e42f688cf45c2b6180b37511bf55506355b4785dbe78fe96e40857e214a9f"
+install = "tar.gz"
+as = "codex-app-server"

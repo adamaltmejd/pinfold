@@ -11,7 +11,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
@@ -2184,6 +2184,12 @@ fn a_login_route_keeps_the_login_on_the_host() {
     // sends its own Authorization, which the proxy replaces with the login's
     // Bearer header. The ordinary injecting route is the control that the
     // same fixture answers in the same box.
+    // codex half. Sabotage: forward the token into the box env (in
+    // `resolve_harness`, add `CODEX_ACCESS_TOKEN` as an `Env::Exact` of the
+    // token `resolve_login` returned); the codex box environment assertion
+    // fails. The login lapses within 5 minutes, so the pinned host helper
+    // refreshes it through the refresh fixture at `up`, and the model
+    // fixture must see the refreshed token, never the lapsing one.
     let env = TestEnv::new("login");
     let fixture = HttpFixture::start(None);
     let secret = format!("pf-login-{}", std::process::id());
@@ -2315,6 +2321,240 @@ fn a_login_route_keeps_the_login_on_the_host() {
         "the refusal did not name the harness: {refused}"
     );
     assert_left_nothing(&env, &name, label, "refused");
+
+    // codex: a file-store login in its own CODEX_HOME whose access token
+    // lapses in 2 minutes, and a refresh endpoint that answers with a new
+    // token for the same account, hours out.
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock is past 1970")
+        .as_secs();
+    let account = format!("pf-account-{}", std::process::id());
+    let token = |exp: u64| {
+        unsigned_jwt(&serde_json::json!({
+            "exp": exp,
+            "https://api.openai.com/auth": { "chatgpt_account_id": account },
+        }))
+    };
+    let lapsing = token(now + 120);
+    let refreshed = token(now + 4 * 3600);
+    let refresh_token = format!("pf-refresh-{}", std::process::id());
+    let codex_home = TestDir::new(&env, "codex-home");
+    let auth = serde_json::json!({
+        "OPENAI_API_KEY": null,
+        "tokens": {
+            "id_token": token(now + 4 * 3600),
+            "access_token": lapsing,
+            "refresh_token": refresh_token,
+            "account_id": account,
+        },
+    });
+    fs::write(codex_home.path().join("auth.json"), auth.to_string()).unwrap();
+    // The fixture's answer lives for the whole run.
+    let answer = serde_json::json!({ "access_token": refreshed }).to_string();
+    let refresh = HttpFixture::start(Some(("application/json", answer.leak())));
+    let model = HttpFixture::start(None);
+    let codex_name = box_name("login-codex");
+    let codex_spec = serde_json::json!({
+        "name": codex_name,
+        "image": default_image(&env),
+        "labels": { "dev.example.test": "login" },
+        "harness": "codex",
+        "egress": {
+            "routes": {
+                "codex.internal": {
+                    "login": "codex",
+                    "to": format!("http://{}", model.route()),
+                },
+            },
+        },
+    });
+    let codex_home_path = codex_home.path().to_str().expect("a UTF-8 temp path");
+    let refresh_url = format!("http://{}/oauth/token", refresh.route());
+    let mut up = box_up_with_env(
+        &env,
+        &codex_spec,
+        &codex_name,
+        &[
+            ("CODEX_HOME", codex_home_path),
+            ("CODEX_REFRESH_TOKEN_URL_OVERRIDE", &refresh_url),
+        ],
+    );
+
+    // Codex spent the login's refresh token at the refresh fixture.
+    assert!(
+        refresh
+            .requests()
+            .iter()
+            .any(|(_, body)| body.contains(&refresh_token)),
+        "the refresh fixture was not asked with the login's refresh token: {:?}",
+        refresh.requests()
+    );
+
+    // The model fixture receives the refreshed token and its account, not
+    // the box's own Authorization.
+    let login = curl(
+        &env,
+        &codex_name,
+        "5",
+        &[
+            "-H",
+            "Authorization: Bearer from-box",
+            "http://codex.internal/backend-api/codex/responses",
+        ],
+    );
+    assert_eq!(
+        login.code, 0,
+        "the codex login route failed: {}",
+        login.stderr
+    );
+    assert!(
+        login
+            .stdout
+            .contains(&format!("fixture host={}", model.route())),
+        "the codex login route answered: {}",
+        login.stdout
+    );
+    let requests = model.requests();
+    assert_eq!(requests.len(), 1, "the model fixture saw {requests:?}");
+    let values = |name: &str| -> Vec<String> {
+        requests[0]
+            .0
+            .iter()
+            .filter(|(header, _)| header.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.clone())
+            .collect()
+    };
+    assert!(
+        values("authorization") == [format!("Bearer {refreshed}")],
+        "the model fixture's Authorization is not the refreshed token"
+    );
+    assert_eq!(
+        values("chatgpt-account-id"),
+        [account.as_str()],
+        "the model fixture's account header"
+    );
+
+    // Neither token is in the box's environment, its codex config or the
+    // egress log.
+    let environment = box_exec(&env, &codex_name, &["env"]);
+    assert_eq!(environment.code, 0, "env failed: {}", environment.stderr);
+    for (what, value) in [("lapsing", &lapsing), ("refreshed", &refreshed)] {
+        assert!(
+            !environment.stdout.contains(value.as_str()),
+            "the codex box's environment holds the {what} token"
+        );
+    }
+    let config = box_exec(&env, &codex_name, &["cat", "/etc/codex/config.toml"]);
+    assert_eq!(
+        config.code, 0,
+        "the box has no codex config: {}",
+        config.stderr
+    );
+    for (what, value) in [("lapsing", &lapsing), ("refreshed", &refreshed)] {
+        assert!(
+            !config.stdout.contains(value.as_str()),
+            "the box's codex config holds the {what} token"
+        );
+    }
+    let log = fs::read_to_string(egress_log(&env, &codex_name)).expect("read egress log");
+    for (what, value) in [("lapsing", &lapsing), ("refreshed", &refreshed)] {
+        assert!(
+            !log.contains(value.as_str()),
+            "the egress log holds the {what} token"
+        );
+    }
+    up.down(&env);
+    assert!(up.wait().success(), "box up did not exit cleanly");
+
+    // An empty CODEX_HOME has no login: up is refused as `login`, naming
+    // codex, and leaves nothing. The box above is its positive control.
+    let empty = TestDir::new(&env, "codex-empty");
+    let empty_path = empty.path().to_str().expect("a UTF-8 temp path");
+    let (code, refused) = box_up_refused(&env, &codex_spec, &[("CODEX_HOME", empty_path)]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["event"], "refused");
+    assert_eq!(refused["box"], codex_name);
+    assert_eq!(refused["reason"], "login");
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("codex"),
+        "the refusal did not name the harness: {refused}"
+    );
+    assert_left_nothing(&env, &codex_name, label, "refused");
+
+    // Live, on the Apple runtime only: the operator's own Codex login, and
+    // pinned codex completes one shell tool round trip through a login route
+    // to chatgpt.com, stdin closed. The tool's output is computed by the
+    // shell, so it is in no prompt; the model's prose is never asserted.
+    if cfg!(target_os = "macos") {
+        let home = TestDir::new(&env, "codex-live-home");
+        let live_name = box_name("login-live");
+        let live_spec = serde_json::json!({
+            "name": live_name,
+            "image": default_image(&env),
+            "labels": { "dev.example.test": "login" },
+            "harness": "codex",
+            "mounts": [{ "host": home.path(), "guest": "/home/codex" }],
+            "env": { "HOME": "/home/codex" },
+            "egress": { "routes": { "codex.internal": { "login": "codex" } } },
+        });
+        let mut up = box_up(&env, &live_spec, &live_name);
+        let run = box_exec(
+            &env,
+            &live_name,
+            &[
+                "/opt/pinfold/codex/codex",
+                "exec",
+                "--json",
+                "--skip-git-repo-check",
+                "--sandbox",
+                "danger-full-access",
+                "-C",
+                "/home/codex",
+                "Run this exact shell command once and reply with its output: echo pf-$((40+2))-live",
+            ],
+        );
+        assert_ok(&run, "codex exec through the login route");
+        let ran = json_lines(&run.stdout).iter().any(|event| {
+            event["item"]["type"] == "command_execution"
+                && event["item"]["aggregated_output"]
+                    .as_str()
+                    .is_some_and(|output| output.contains("pf-42-live"))
+        });
+        assert!(
+            ran,
+            "codex ran no shell command that printed pf-42-live: {}",
+            run.stdout
+        );
+        up.down(&env);
+        assert!(up.wait().success(), "box up did not exit cleanly");
+    }
+}
+
+/// An unsigned JWT (`alg: none`) carrying `claims`, as a login's token.
+fn unsigned_jwt(claims: &serde_json::Value) -> String {
+    let encode = |bytes: &[u8]| -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut text = String::new();
+        for chunk in bytes.chunks(3) {
+            let word = chunk.iter().enumerate().fold(0u32, |word, (index, byte)| {
+                word | (u32::from(*byte) << (16 - 8 * index))
+            });
+            for index in 0..=chunk.len() {
+                text.push(char::from(
+                    ALPHABET[((word >> (18 - 6 * index)) & 63) as usize],
+                ));
+            }
+        }
+        text
+    };
+    let header = encode(br#"{"alg":"none","typ":"JWT"}"#);
+    let payload = encode(claims.to_string().as_bytes());
+    format!("{header}.{payload}.{}", encode(b"unsigned"))
 }
 
 #[test]
