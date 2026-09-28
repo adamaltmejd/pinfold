@@ -278,13 +278,8 @@ pub fn total_bytes<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> u64 {
     paths.into_iter().map(|path| path_bytes(path)).sum()
 }
 
-/// Apply [`keep_two_images`] to every source the runtime lists: each
-/// non-empty value of the three family labels. The daily pass and `pinfold
-/// clean` call it, so the after-build rule reaches a source a build left
-/// above two and never builds again: a caller build tag inside
-/// [`CALLER_IMAGE_GRACE`] at the last build, or one a box pinned then. A
-/// failure on one source is reported and the rest continue; only listing
-/// the runtime's images fails the step.
+/// Apply [`keep_two_images`] to every source any image names; a failing
+/// source is reported and the rest continue.
 pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
     let mut sources: BTreeSet<(&'static str, String)> = BTreeSet::new();
     for image in runtime.list_images()? {
@@ -323,14 +318,8 @@ fn source_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result
         .collect())
 }
 
-/// Keep the newest two builds of the images carrying `label = source`,
-/// counted by their build tags, and remove older build tags. `latest` is
-/// never counted. Removing a tag untags; the runtime removes an image with
-/// its last tag, and the layers no image references with it, so an image
-/// that newer builds share stays. Called after a successful build. Every
-/// older tag is tried; a failure keeps that tag and the rest still run, so
-/// one in-use image never stops the others from going. An image a listed
-/// box reports keeps every tag and is never offered to the runtime: Apple's
+/// Keep the newest two builds of the images carrying `label = source`.
+/// An image a listed box reports is never offered to the runtime: Apple's
 /// delete would remove it under the box, so pinfold skips it itself and
 /// reports it like a failed removal.
 pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result<()> {

@@ -26,7 +26,6 @@ sha256 = "80d78dd62d50049a006b981d994c61255bcc10e730b0c278d4ea0a755909764c"
 install = "tar.gz"
 as = "pi"
 
-# The glibc builds: the box image must be glibc.
 [[harness]]
 name = "claude"
 version = "2.1.283"
@@ -46,8 +45,6 @@ sha256 = "1859583ce32920595c61ef868bee52e1b1594f7486db209935e01f1e5e804ae2"
 install = "executable"
 as = "claude/claude"
 
-# codex spawns codex-code-mode-host from beside its own executable; every
-# MCP tool call fails closed without it.
 [[harness]]
 name = "codex"
 version = "0.158.0"
@@ -81,9 +78,6 @@ sha256 = "5455c64be4ba371444710895aff6d74d653985a3bfc454a8b7fe42d6e6d11e3d"
 install = "tar.gz"
 as = "codex/codex-code-mode-host"
 
-# The host helper a codex login route asks for the host's token. Keyed by
-# the host's os-arch, so it installs under host-<os-arch>/ and is never
-# mounted.
 [[harness.asset]]
 os-arch = "host-darwin-arm64"
 url = "https://github.com/openai/codex/releases/download/rust-v0.158.0/codex-app-server-aarch64-apple-darwin.tar.gz"
