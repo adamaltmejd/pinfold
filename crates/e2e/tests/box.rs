@@ -1524,19 +1524,33 @@ fn cleanup_removes_only_pinfolds_garbage() {
     );
 
     // A caller source whose three builds share one image, all past the
-    // hour's grace: the runtime tags one image carrying the source's label
-    // with three build tags whose `<build>` times fall in 1970. `clean`
-    // removes only the oldest tag; the image stays under the newest two.
+    // hour's grace: the runtime builds one image carrying the source's
+    // label under three build tags whose `<build>` times fall in 1970, in
+    // one build as pinfold tags its own. `clean` removes only the oldest
+    // tag; the image stays under the newest two.
     let shared = format!("{profile}-shared");
     let shared_repository = format!("pinfold/image-{shared}");
     let _shared_images = ImageCleanup {
         repository: shared_repository.clone(),
     };
     let shared_refs = ["1-1", "2-1", "3-1"].map(|build| format!("{shared_repository}:{build}"));
-    runtime_build(&shared_refs[0], &[&format!("dev.pinfold.image={shared}")]);
-    for reference in &shared_refs[1..] {
-        run_ok(Command::new(image_cli()).args(["image", "tag", &shared_refs[0], reference]));
-    }
+    let shared_label = format!("dev.pinfold.image={shared}");
+    let status = Command::new(image_cli())
+        .args(["build", "--file"])
+        .arg(&containerfile)
+        .args(
+            shared_refs
+                .iter()
+                .flat_map(|reference| ["--tag", reference.as_str()]),
+        )
+        .args(["--label", &shared_label])
+        .arg(containerfile.parent().unwrap())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()
+        .expect("run the runtime's build");
+    assert!(status.success(), "building {shared_repository} failed");
     let shared_id = image_id(&shared_refs[0]);
     assert!(
         shared_id.is_some()
