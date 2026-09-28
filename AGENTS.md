@@ -42,6 +42,9 @@ rules for changing the repository.
   reports the release's delete/add ratio, the largest source file,
   ARCHITECTURE.md's line count and how many of its tickets came from
   lane proposals, in a dated `docs/archive` file.
+- Every GitHub release's notes carry a "Caller changes" heading: each
+  change to the box spec, a JSON line, an exit code or a CLI flag since
+  the last release, or "None". A removal is a hard break named there.
 
 ## Tests
 
