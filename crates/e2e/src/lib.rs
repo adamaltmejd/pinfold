@@ -49,15 +49,17 @@ pub fn pinfold() -> &'static Path {
     })
 }
 
-/// Per-test XDG state and config, and the shared cache, so a test never
-/// touches the operator's. An empty config dir also means `default`
-/// resolves to the embedded profile, not the operator's own copy of it.
+/// Per-test XDG state and config, and a cache (the suite's shared one, or
+/// the test's own; see `with_private_cache`), so a test never touches the
+/// operator's. An empty config dir also means `default` resolves to the
+/// embedded profile, not the operator's own copy of it.
 pub struct TestEnv {
     /// The test's scratch root; projects and fixtures live under it.
     pub root: PathBuf,
     /// `XDG_STATE_HOME`; pinfold's state dir is `<state>/pinfold`.
     pub state: PathBuf,
-    /// `XDG_CACHE_HOME`, shared by every test; see `new`.
+    /// `XDG_CACHE_HOME`: the suite's shared cache, or the test's own when
+    /// `with_private_cache` built it.
     cache: PathBuf,
     /// `XDG_CONFIG_HOME`, where profiles live. Empty, so `default` is the
     /// embedded one.
@@ -85,6 +87,16 @@ impl TestEnv {
             cache,
             config,
         }
+    }
+
+    /// Like `new`, but this env's cache is its own under its root, for a
+    /// scenario that damages the cache: the suite's shared cache is left
+    /// alone.
+    pub fn with_private_cache(test: &str) -> TestEnv {
+        let mut env = TestEnv::new(test);
+        env.cache = env.root.join("cache");
+        fs::create_dir_all(&env.cache).unwrap();
+        env
     }
 
     pub fn command(&self, binary: &Path) -> Command {
