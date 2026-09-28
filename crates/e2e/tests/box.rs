@@ -1366,7 +1366,9 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // newest-two rule or the caller's one-hour grace in `image rm`; a fresh
     // build survives and the removed-ids assertion fails. Sabotage: drop the
     // name filter from `remove_images`; the similar, profile and project
-    // images go and their survival assertions fail.
+    // images go and their survival assertions fail. Sabotage: keep podman's
+    // repeated `Names` in `list_images`; the second removal of the newest
+    // image's tag is `image not known` and the one-line assertion fails.
     let env = TestEnv::new("cleanup");
     // `clean` deletes the runtime's builder, so hold off the other tests'
     // builds through this test's `clean`: a build racing the deletion fails.

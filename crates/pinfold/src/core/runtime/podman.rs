@@ -1,7 +1,7 @@
 //! The rootless podman runtime adapter. Linux boxes share the host kernel,
 //! so it adds the controls the spec's "podman adds" list names.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io;
@@ -189,15 +189,21 @@ impl Runtime for Podman {
         let json = output(&["podman", "image", "list", "--format", "json"])?;
         let images: Vec<ListedImage> = parse_json("podman image list", &json)?;
         let mut infos = Vec::new();
+        // One entry per name, so Maintenance can remove every tag of an
+        // old image; a dangling image is removed by its id. Podman emits
+        // one JSON entry per tag and repeats the image's whole `Names` list
+        // on each, so drop the repeated names.
+        let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
         for image in images {
-            // One entry per name, so Maintenance can remove every tag of an
-            // old image; a dangling image is removed by its id.
             let references = if image.names.is_empty() {
                 vec![image.id.clone()]
             } else {
                 image.names
             };
             for reference in references {
+                if !seen.insert((image.id.clone(), reference.clone())) {
+                    continue;
+                }
                 infos.push(ImageInfo {
                     id: image.id.clone(),
                     reference,
