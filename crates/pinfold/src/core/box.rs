@@ -505,8 +505,10 @@ async fn start(
         }
     }
     // The one root exec happens before ready reaches the caller, so no
-    // work can race it.
+    // work can race it. On Apple the runtime records the box running only
+    // after its first process starts; the wait below covers that gap.
     if cfg!(target_os = "macos") && socket.is_some() {
+        apple::wait_until_running(&plan.name)?;
         apple::make_proxy_connectable(&plan.name)?;
     }
     // Keep the pipe drained so a talkative box cannot block on it.

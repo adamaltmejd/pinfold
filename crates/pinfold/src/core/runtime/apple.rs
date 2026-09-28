@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use tokio::process::Child;
@@ -160,6 +161,37 @@ impl Runtime for Apple {
 
     fn isolation(&self) -> &'static str {
         "one VM per box"
+    }
+}
+
+/// Bound on waiting for Apple to record a ready box `.running`: `ready`
+/// arrives before the state does, and the root exec is refused in the gap.
+const RUNNING_WAIT: Duration = Duration::from_secs(5);
+
+/// How long between the wait's list calls.
+const RUNNING_POLL: Duration = Duration::from_millis(100);
+
+/// Wait, bounded, until `list` reports box `name` running. Apple records
+/// `.running` only after the box's first process starts, so `ready` can
+/// arrive first; the root exec that follows is refused in that gap.
+pub fn wait_until_running(name: &str) -> io::Result<()> {
+    let deadline = Instant::now() + RUNNING_WAIT;
+    loop {
+        let state = Apple
+            .list()?
+            .into_iter()
+            .find(|box_| box_.id == name)
+            .map(|box_| box_.running);
+        match state {
+            Some(true) => return Ok(()),
+            _ if Instant::now() >= deadline => {
+                return Err(io::Error::other(match state {
+                    Some(false) => format!("box {name:?} is not running after ready"),
+                    _ => format!("the runtime does not list box {name:?} after ready"),
+                }));
+            }
+            _ => std::thread::sleep(RUNNING_POLL),
+        }
     }
 }
 
