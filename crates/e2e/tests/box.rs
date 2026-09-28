@@ -2646,7 +2646,12 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
     // `/opt/pinfold/<name>/<name> --version` assertion fails. Sabotage:
     // mount the harness but leave `PINFOLD_ALLOW` unset; the allow list
     // assertion fails. Sabotage: install codex under its target triple's
-    // name instead of `codex`; its `--version` exec fails.
+    // name instead of `codex`; its `--version` exec fails. Sabotage:
+    // restore the directory-exists check in `dirs::install_dir`; after pi's
+    // executable is deleted from the cache the second box mounts the broken
+    // install and its `--version` exec exits 127. Sabotage: `cached:
+    // dir.is_dir()` in `artifacts::pins`; the damaged install is still
+    // reported cached.
     // codex's `codex-code-mode-host` companion is not asserted: only a
     // model-driven MCP tool call observes it.
     let env = TestEnv::new("harness");
@@ -2698,6 +2703,49 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
 
         up.down(&env);
         assert!(up.wait().success(), "box up did not exit cleanly");
+
+        // The host deleted the harness's executable from the cache after
+        // the install, the way the OS's temp cleaner or a partial delete
+        // does. The next use must reinstall rather than mount a directory
+        // whose binary is gone. Only pi: the repair downloads on the host
+        // again, and one harness proves the path without spending the
+        // suite's time three times.
+        if harness == "pi" {
+            let install = pin["path"].as_str().expect("pin path is a string");
+            let host_binary = Path::new(install).join(harness);
+            fs::remove_file(&host_binary)
+                .unwrap_or_else(|error| panic!("remove {}: {error}", host_binary.display()));
+
+            // `artifacts` reads the cache without downloading, so the
+            // damaged install is no longer cached.
+            let output = run_ok(env.command(pinfold()).arg("artifacts"));
+            let report: Vec<serde_json::Value> =
+                serde_json::from_slice(&output.stdout).expect("pinfold artifacts output is JSON");
+            let damaged = report
+                .iter()
+                .find(|pin| pin["name"] == harness)
+                .expect("pinfold artifacts still names pi");
+            assert_eq!(
+                damaged["cached"], false,
+                "the incomplete install is still reported cached: {damaged}"
+            );
+
+            // The second box repairs the install and runs the pinned pi.
+            let mut up = box_up(&env, &spec, &name);
+            let guest_binary = format!("/opt/pinfold/{harness}/{harness}");
+            let ran = box_exec(&env, &name, &[&guest_binary, "--version"]);
+            assert_ok(
+                &ran,
+                &format!("{guest_binary} --version after the cache lost it"),
+            );
+            assert!(
+                ran.stdout.contains(version),
+                "the re-installed {harness} is not the pinned {version}: {}",
+                ran.stdout
+            );
+            up.down(&env);
+            assert!(up.wait().success(), "box up did not exit cleanly");
+        }
     }
 }
 

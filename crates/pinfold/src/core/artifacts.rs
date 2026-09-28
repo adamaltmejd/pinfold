@@ -248,7 +248,7 @@ pub fn pins() -> io::Result<Vec<Pin>> {
                 name: &harness.name,
                 version: &harness.version,
                 path: dir.join(&harness.name),
-                cached: dir.is_dir(),
+                cached: dirs::installed(&dir)?,
                 assets: harness.assets(OS_ARCH),
             })
         })
