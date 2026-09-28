@@ -48,33 +48,33 @@ as = "claude/claude"
 # MCP tool call fails closed without it.
 [[harness]]
 name = "codex"
-version = "0.157.1"
+version = "0.158.0"
 env = {}
 
 [[harness.asset]]
 os-arch = "linux-arm64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.157.1/codex-aarch64-unknown-linux-musl.tar.gz"
-sha256 = "4c6b1c17c1c5fd0d4fb2951b7481867b95ea732b1feab269c98588b15db16253"
+url = "https://github.com/openai/codex/releases/download/rust-v0.158.0/codex-aarch64-unknown-linux-musl.tar.gz"
+sha256 = "91e3fafe5ff845a8f685a05d04919146fb30fdc9245af1a42a2f7f239959e90c"
 install = "tar.gz"
 as = "codex/codex"
 
 [[harness.asset]]
 os-arch = "linux-arm64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.157.1/codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz"
-sha256 = "e83742806da98e9a77ad24309ebd1629e8227755a341ad0b428f885c97bb318e"
+url = "https://github.com/openai/codex/releases/download/rust-v0.158.0/codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz"
+sha256 = "541bebec84765ad0d21a3591bed18e251dc1cf164cef203e05002fb045ab1cec"
 install = "tar.gz"
 as = "codex/codex-code-mode-host"
 
 [[harness.asset]]
 os-arch = "linux-x64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.157.1/codex-x86_64-unknown-linux-musl.tar.gz"
-sha256 = "e98c1e8e028e8137fa2d2415c82ec58e7b3701a627e3554aace5b3ca31454af2"
+url = "https://github.com/openai/codex/releases/download/rust-v0.158.0/codex-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "af9f5aa6e6662accf9d707cef0d9ca083880a173a9c2b6c22947edb7830e5778"
 install = "tar.gz"
 as = "codex/codex"
 
 [[harness.asset]]
 os-arch = "linux-x64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.157.1/codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz"
-sha256 = "3516f9b8bbe6bc06ee7bdb92b293a17eab194b3f10b9b9ea10c5b839e972d7fc"
+url = "https://github.com/openai/codex/releases/download/rust-v0.158.0/codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "5455c64be4ba371444710895aff6d74d653985a3bfc454a8b7fe42d6e6d11e3d"
 install = "tar.gz"
 as = "codex/codex-code-mode-host"

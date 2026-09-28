@@ -20,6 +20,10 @@ pin() {
         < "$tmp/asset" | cut -d' ' -f1
 }
 
+# The parsers below read pretty-printed JSON. Without this Accept header
+# GitHub minifies a large release (codex's, 2026-09-28).
+gh_json='Accept: application/vnd.github+json'
+
 # The value of the first "key": "value" in the pretty-printed JSON $1.
 json_string() {
     sed -n "s/^ *\"$2\": \"\([^\"]*\)\".*/\1/p" "$1" | head -n 1
@@ -38,9 +42,9 @@ github_asset() {
 
 # --- profile pins --------------------------------------------------------
 
-curl -fsSL -o "$tmp/bun.json" https://api.github.com/repos/oven-sh/bun/releases/latest
+curl -fsSL -H "$gh_json" -o "$tmp/bun.json" https://api.github.com/repos/oven-sh/bun/releases/latest
 bun=$(json_string "$tmp/bun.json" tag_name)
-curl -fsSL -o "$tmp/rtk.json" https://api.github.com/repos/rtk-ai/rtk/releases/latest
+curl -fsSL -H "$gh_json" -o "$tmp/rtk.json" https://api.github.com/repos/rtk-ai/rtk/releases/latest
 rtk=$(json_string "$tmp/rtk.json" tag_name)
 curl -fsSL -o "$tmp/ponytail.json" https://registry.npmjs.org/@dietrichgebert/ponytail
 ponytail=$(grep -o '"dist-tags":{[^}]*}' "$tmp/ponytail.json" \
@@ -81,9 +85,9 @@ awk -F'"' '
     /^url = / && name != "" { print "url\t" name "\t" $2 }
 ' "$harnessfile" > "$tmp/current"
 
-curl -fsSL -o "$tmp/pi.json" https://api.github.com/repos/earendil-works/pi/releases/latest
+curl -fsSL -H "$gh_json" -o "$tmp/pi.json" https://api.github.com/repos/earendil-works/pi/releases/latest
 pi_tag=$(json_string "$tmp/pi.json" tag_name)
-curl -fsSL -o "$tmp/codex.json" https://api.github.com/repos/openai/codex/releases/latest
+curl -fsSL -H "$gh_json" -o "$tmp/codex.json" https://api.github.com/repos/openai/codex/releases/latest
 codex_tag=$(json_string "$tmp/codex.json" tag_name)
 claude_version=$(curl -fsSL https://downloads.claude.ai/claude-code-releases/latest \
     | sed 's/[[:space:]]//g')
