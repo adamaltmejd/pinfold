@@ -492,7 +492,7 @@ impl CleanPlan {
         println!("  project state: {} B", self.project_state);
     }
 
-    /// Remove everything the plan measured, then the images past each
+    /// Remove everything the plan measured, then the builds past each
     /// source's newest two. Image sizes are unmeasured: the runtime's image
     /// list carries none.
     fn remove(self, runtime: &dyn Runtime) -> io::Result<()> {

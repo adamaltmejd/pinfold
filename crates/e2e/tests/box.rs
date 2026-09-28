@@ -86,11 +86,11 @@ fn box_lifecycle_works_for_a_caller() {
     // identity labels included, and the image it runs.
     let default = runtime_image(image).expect("the runtime lists the default image");
     let image_id = default.id;
-    let build = default
+    let profile = default
         .labels
-        .get("dev.pinfold.build")
+        .get("dev.pinfold.profile")
         .cloned()
-        .expect("the default image records dev.pinfold.build");
+        .expect("the default image records dev.pinfold.profile");
     assert_eq!(
         up.ready["owner"],
         up.pid(),
@@ -98,9 +98,9 @@ fn box_lifecycle_works_for_a_caller() {
         up.ready
     );
     assert_eq!(
-        up.ready["labels"]["dev.pinfold.build"],
-        build.as_str(),
-        "ready lost the image's build label: {}",
+        up.ready["labels"]["dev.pinfold.profile"],
+        profile.as_str(),
+        "ready lost the image's profile label: {}",
         up.ready
     );
     assert_eq!(
@@ -1355,7 +1355,11 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // stale test); the live project's state goes and its assertion fails.
     // Sabotage: in `clean::boxes`, insert into `live_projects` above `if
     // alive`; the dead box then protects the other project, whose marker
-    // survives, and the removal assertion fails.
+    // survives, and the removal assertion fails. Sabotage: past the newest
+    // two build tags, remove every tag of the tag's image, as retention by
+    // image did; `clean` takes the image the newest two builds share and
+    // the shared-image assertion fails. Sabotage: skip a tag whose image a
+    // newer tag names; the oldest-tag assertion fails.
     let env = TestEnv::new("cleanup");
     // `clean` deletes the runtime's builder, so hold off the other tests'
     // builds through this test's `clean`: a build racing the deletion fails.
@@ -1375,11 +1379,20 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // `FROM scratch` keeps the test off the network and fast.
     let containerfile = profile_containerfile(&env, &profile, "FROM scratch\n");
 
+    // Each build changes the Containerfile, so every build is a distinct
+    // image; unchanged inputs could share one.
+    let mut step = 0;
+    let mut build_changed = || {
+        step += 1;
+        fs::write(&containerfile, format!("FROM scratch\nENV STEP={step}\n")).unwrap();
+        build_profile(&env, &profile);
+    };
+
     // Record each build's unique tag. The `:latest` tag moves along, so a
     // box pins the image it started from by this tag. After three builds b1
     // is gone; b2 and b3 remain and b2 is the next removal candidate.
     let [_, b2, b3] = [(); 3].map(|()| {
-        build_profile(&env, &profile);
+        build_changed();
         built_unique_ref(&profile)
     });
 
@@ -1446,7 +1459,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let mut up_a = box_up(&env, &pin_a, &box_a);
 
     // Build 4: b2 cannot go while box A holds it. The build still exits 0.
-    build_profile(&env, &profile);
+    build_changed();
     assert!(
         image_id(&b2).is_some(),
         "the image box A pins is gone after build 4"
@@ -1470,7 +1483,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     up_a.down(&env);
     assert!(up_a.wait().success(), "box A's up did not exit cleanly");
 
-    build_profile(&env, &profile);
+    build_changed();
     assert!(
         image_id(&b2).is_none(),
         "build 5 kept the freed b2 because the pinned b3 failed first"
@@ -1483,7 +1496,9 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert!(up_b.wait().success(), "box B's up did not exit cleanly");
 
     // The runtime's own build of the `FROM scratch` Containerfile, so the
-    // image carries only the labels given here.
+    // image carries only the labels given here. No profile build's `ENV`
+    // step is in it for the runtime's cache to return.
+    fs::write(&containerfile, "FROM scratch\n").unwrap();
     let runtime_build = |tag: &str, labels: &[&str]| {
         let status = Command::new(image_cli())
             .args(["build", "--file"])
@@ -1506,6 +1521,43 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert!(
         image_id(&unlabeled).is_some(),
         "the unlabeled image is missing before clean"
+    );
+
+    // A caller source whose three builds share one image, all past the
+    // hour's grace: the runtime builds one image carrying the source's
+    // label under three build tags whose `<build>` times fall in 1970, in
+    // one build as pinfold tags its own. `clean` removes only the oldest
+    // tag; the image stays under the newest two.
+    let shared = format!("{profile}-shared");
+    let shared_repository = format!("pinfold/image-{shared}");
+    let _shared_images = ImageCleanup {
+        repository: shared_repository.clone(),
+    };
+    let shared_refs = ["1-1", "2-1", "3-1"].map(|build| format!("{shared_repository}:{build}"));
+    let shared_label = format!("dev.pinfold.image={shared}");
+    let status = Command::new(image_cli())
+        .args(["build", "--file"])
+        .arg(&containerfile)
+        .args(
+            shared_refs
+                .iter()
+                .flat_map(|reference| ["--tag", reference.as_str()]),
+        )
+        .args(["--label", &shared_label])
+        .arg(containerfile.parent().unwrap())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()
+        .expect("run the runtime's build");
+    assert!(status.success(), "building {shared_repository} failed");
+    let shared_id = image_id(&shared_refs[0]);
+    assert!(
+        shared_id.is_some()
+            && shared_refs
+                .iter()
+                .all(|reference| image_id(reference) == shared_id),
+        "the three build tags do not name one image before clean"
     );
 
     // A project's state: a refused `pinfold pi` creates it before it names
@@ -1633,6 +1685,16 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "clean kept b3, an image past the newest two whose box went down"
     );
     assert!(
+        image_id(&shared_refs[0]).is_none(),
+        "clean kept the shared image's oldest build tag"
+    );
+    assert!(
+        shared_refs[1..]
+            .iter()
+            .all(|reference| image_id(reference) == shared_id),
+        "clean removed the image the newest two builds share"
+    );
+    assert!(
         !box_list(&env, &live_label).is_empty(),
         "clean removed a live box"
     );
@@ -1746,7 +1808,9 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // ref, which names the third build, and the box reads `third`.
     // Sabotage: report `local_image_id(runtime, &latest)` resolved before
     // the build; the first build's id is absent and each later build's is
-    // stale, so the `built["id"]` assertion fails.
+    // stale, so the `built["id"]` assertion fails. Sabotage: write a unique
+    // build label into every image again, as `dev.pinfold.build` was; the
+    // repeated build makes a new image and the one-id assertion fails.
     let env = TestEnv::new("image-build");
     // The cleanup test's `clean` deletes the runtime's builder; a build
     // racing that deletion fails. Hold the same lock it does, and wait for
@@ -1828,6 +1892,40 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         image_id(&refs[2]),
         "the failed build moved {latest}"
     );
+
+    // Two builds of unchanged inputs share one image. A build identical to
+    // the second, after the changed third, gets its own ref but the
+    // second's id, and latest moves back to that image. Both refs come up.
+    fs::write(context.join("marker.txt"), "second\n").unwrap();
+    let (code, again) = image_build(&env, &name, &containerfile, &context);
+    assert_eq!(again["event"], "built", "the repeated build: {again}");
+    assert_eq!(code, 0, "the repeated build exited {code}");
+    let again_ref = again["ref"]
+        .as_str()
+        .unwrap_or_else(|| panic!("built carries no ref: {again}"))
+        .to_string();
+    assert_ne!(again_ref, refs[1], "the repeated build reused a ref");
+    let second_id = image_id(&refs[1]);
+    assert!(second_id.is_some(), "the second build's ref is gone");
+    assert_eq!(
+        image_id(&again_ref),
+        second_id,
+        "unchanged inputs made a new image instead of the second build's"
+    );
+    assert_eq!(
+        again["id"].as_str(),
+        second_id.as_deref(),
+        "the repeated build's line names another image id: {again}"
+    );
+    assert_eq!(
+        image_id(&latest),
+        second_id,
+        "{latest} did not move back to the second build's image"
+    );
+    for (reference, box_) in [(&refs[1], "image-second"), (&again_ref, "image-again")] {
+        let read = file_from_image(&env, reference, box_, "/marker.txt");
+        assert_eq!(read, "second\n", "{reference} names another build");
+    }
 }
 
 /// Run `pinfold image build NAME` with the caller label `dev.example.test`,
