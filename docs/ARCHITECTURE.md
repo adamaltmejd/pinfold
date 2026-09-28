@@ -591,9 +591,10 @@ Automatic, never prompting:
   project or a caller image name), the second for rollback, ordered by
   their tags. Remove older builds' tags; an image goes with its last tag,
   and its dangling layers with it. An image a box still uses keeps its
-  last tag, and pins only itself. A caller build in the last hour stays, so the ref its
-  `built` line named still comes up; past the hour the newest two rule
-  applies.
+  last tag, and pins only itself; which boxes use an image is read after
+  dead boxes are pruned, from every box the runtime lists. A caller build
+  in the last hour stays, so the ref its `built` line named still comes
+  up; past the hour the newest two rule applies.
 - At most once a day, at the start of any working command (not
   `--version`, `--help` or `init`): prune boxes whose owner
   is gone (nothing holds the lock on its `pid` file), leftover sockets,
