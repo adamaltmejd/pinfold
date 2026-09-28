@@ -154,8 +154,8 @@ builds nothing; `image` is null when no name was given:
 ```
 
 `image rm` (see Maintenance) exits 0 with the ids it untagged and the ids
-a box still uses, either list possibly empty; an untagged id another name
-still tags stays; a bad name is refused as
+whose last tag it kept because a box uses them, either list possibly
+empty; an untagged id another name still tags stays; a bad name is refused as
 `spec` like a build's:
 
 ```json
@@ -587,8 +587,8 @@ Automatic, never prompting:
 - After a build: keep the newest two builds per source (a profile, a
   project or a caller image name), the second for rollback, ordered by
   their tags. Remove older builds' tags; an image goes with its last tag,
-  and its dangling layers with it. An image a box still uses stays, and
-  pins only itself. A caller build in the last hour stays, so the ref its
+  and its dangling layers with it. An image a box still uses keeps its
+  last tag, and pins only itself. A caller build in the last hour stays, so the ref its
   `built` line named still comes up; past the hour the newest two rule
   applies.
 - At most once a day, at the start of any working command (not
@@ -602,8 +602,8 @@ A caller image name's builds are its `pinfold/image-<NAME>` tags; the
 rules above never touch another name's tags.
 
 `pinfold image rm NAME` retires a caller image name: it removes every
-tag of NAME on an image no box uses, whatever its age, and no other
-name's. An image goes with its last tag.
+tag of NAME, whatever its age, and no other name's, except an image's
+last tag while a box uses it. An image goes with its last tag.
 
 `pinfold clean` lists sizes, then removes:
 - everything automatic, now
@@ -746,7 +746,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |
 | 13 | Project state persists and stays separate | Settings are seeded once and survive runs; a deleted seed returns; two projects don't see each other's state; `profile new --from-project` copies the project's settings but not its `auth.json`. |
 | 14 | Both pi config levels load behind a route | `pi -p` through the shim, against a fake model reached through a route: the model's request carries a skill from the profile and one from the project's `.pi/`. |
-| 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself; an image built on a profile's is its own family; a source a build left above two drops to two on a later `pinfold clean` with no build after. `--dry-run` leaves a project state the real clean removes. Two names built from identical inputs share one image id; `image rm` of one removes its tags but on an image a box uses, and leaves the other name's tags and image. An unlabeled image, a live box, its project's state and `~/.cache` survive `pinfold clean`, also with `--unused 0s`, which removes an idle project's state; a dead box is removed and protects no project's cache. |
+| 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself; an image built on a profile's is its own family; a source a build left above two drops to two on a later `pinfold clean` with no build after. `--dry-run` leaves a project state the real clean removes. Two names built from identical inputs share one image id; `image rm` of one removes its tags while a box of the other name runs the image, and leaves the other name's tags, the image and the box; an image's last tag stays while a box uses it. An unlabeled image, a live box, its project's state and `~/.cache` survive `pinfold clean`, also with `--unused 0s`, which removes an idle project's state; a dead box is removed and protects no project's cache. |
 | 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW carries the default list's hosts; with PINFOLD_ALLOW=api.github.com over a project's allow = ["registry.npmjs.org"], it is exactly that host, and registry.npmjs.org is refused as not allowlisted. The project's cpus and memory reach the box. |
 | 17 | up refuses before it creates | A missing image, a misspelled spec key, a bad env name, a `dev.pinfold.` label, a memory below 256M or without a unit, a malformed string route, a login route naming another harness, a mount path with a comma, a file mount, a mount at a path pinfold mounts and a live name are refused as data, naming the cause; a misspelled key's refusal also names the box, and a missing host path fails after the claim; each leaves no box and no state dir. The box whose name was reused still answers exec, and of two `up`s racing for one name exactly one wins. |
 | 18 | A caller reads the effective configuration as data | pinfold config reports a project's allow list, its trust state before and after pinfold allow, and the project home pinfold pi then mounts. |
