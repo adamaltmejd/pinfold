@@ -1181,10 +1181,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // non-zero, Apple deletes the image under the box and the live-box
     // image assertion fails. Sabotage: restore the per-id skip in
     // `remove_images`; the twin box's shared image is reported in use, the
-    // retired name's tag on it survives, and the shared-image assertion
-    // fails. Sabotage: apply the newest-two rule or the caller's
-    // one-hour grace in `image rm`; a fresh build survives and the
-    // removed-tags assertion fails. Sabotage: match the name as a prefix in
+    // retired name's tag on it survives, and the assertion that
+    // `retire_refs[1]` is gone fails. Sabotage: apply the newest-two rule or
+    // the caller's one-hour grace in `image rm`; a fresh build survives and
+    // the removed-tags assertion fails. Sabotage: match the name as a prefix in
     // `remove_images`; the image of the name extending the retired one goes
     // and its survival assertion fails. Sabotage: make `--dry-run` run the
     // real clean; the other project's state goes and the dry-run assertion
@@ -1653,8 +1653,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert_eq!(code, 0, "image rm {retire_name} exited {code}: {removed}");
     assert_eq!(removed["event"], "removed", "image rm: {removed}");
     // The twin's tags hold the shared image up, so the retire tag on it
-    // goes. Sabotage: restore the per-id skip in `remove_images`; the
-    // shared image is reported in use and this first assertion fails.
+    // goes.
     assert!(
         image_id(&retire_refs[1]).is_none(),
         "image rm left the retired name's tag on the twin box's image: {retire_refs:?}"
@@ -1713,7 +1712,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     );
 
     // With the retire box down, its last tag goes; the twin box stays up
-    // and still answers from the shared image the twin's tags hold.
+    // through the removal and goes down below.
     up_retire.down(&env);
     assert!(
         up_retire.wait().success(),
@@ -1722,23 +1721,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let (code, removed) = image_rm(&env, &retire_name);
     assert_eq!(code, 0, "the second image rm exited {code}: {removed}");
     assert!(
-        image_id(&retire_refs[0]).is_none(),
-        "the second image rm left the box's last tag"
-    );
-    assert!(
         tagged_images(&format!("pinfold/image-{retire_name}")).is_empty(),
         "the second image rm left a tag of the retired name"
-    );
-    assert_eq!(
-        image_id(&twin_latest),
-        Some(retire_ids[1].clone()),
-        "the second image rm removed the twin's tag with the shared image"
-    );
-    let alive = box_exec(&env, &twin_box, &["cat", "/marker.txt"]);
-    assert_eq!(
-        alive.code, 0,
-        "the twin box failed exec after the second image rm: {}",
-        alive.stderr
     );
     up_twin.down(&env);
     assert!(

@@ -164,8 +164,7 @@ impl Runtime for Apple {
     }
 }
 
-/// Bound on waiting for Apple to record a ready box `.running`: `ready`
-/// arrives before the state does, and the root exec is refused in the gap.
+/// Bound on the wait below.
 const RUNNING_WAIT: Duration = Duration::from_secs(5);
 
 /// How long between the wait's list calls.

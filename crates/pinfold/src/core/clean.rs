@@ -65,18 +65,16 @@ fn maintain_due() -> io::Result<()> {
     // instead of running before every command.
     fs::create_dir_all(&state)?;
     fs::write(&stamp, [])?;
-    // A failed step is reported and the rest continue; retention waits for
-    // pruning, because its in-use check is the box list minus the dead boxes
-    // pruning removes, and a dead box a failed prune left behind still pins
-    // its image.
+    // Every step is attempted; a failure is reported and the rest continue.
+    // One box list serves the boxes step; retention lists the boxes again
+    // after pruning, so a box started meanwhile or a dead box a failed
+    // prune left behind still pins its image.
     let runtime = runtime();
-    match boxes(runtime) {
-        Ok(boxes) => match prune_boxes(runtime, &boxes) {
-            Ok(()) => report("images", keep_two_images_per_source(runtime, &boxes)),
-            Err(error) => report("boxes", Err(error)),
-        },
-        Err(error) => report("boxes", Err(error)),
-    }
+    report(
+        "boxes",
+        boxes(runtime).and_then(|boxes| prune_boxes(runtime, &boxes)),
+    );
+    report("images", keep_two_images_per_source(runtime));
     report("sockets", leftover_socket_dirs().and_then(remove_paths));
     report(
         "artifacts",
@@ -138,17 +136,12 @@ impl DeadBox {
 }
 
 /// One runtime box list, split into the work for Maintenance: the pinfold
-/// boxes whose owner is gone, the projects whose box is live, and the
-/// images the boxes that stay run.
+/// boxes whose owner is gone, and the projects whose box is live.
 pub struct Boxes {
     /// The pinfold boxes whose owning `box up` process is gone.
     pub dead: Vec<DeadBox>,
     /// The `dev.pinfold.project` ids of pinfold boxes whose owner is alive.
     pub live_projects: BTreeSet<String>,
-    /// The image ids the boxes that stay run, with the boxes that pin each.
-    /// Pruning removes the dead boxes, so retention's in-use check reads
-    /// this from the maintenance pass's one box list.
-    pub in_use: BTreeMap<String, Vec<String>>,
 }
 
 /// Read the runtime's box list once. A pinfold box with neither a state dir
@@ -156,14 +149,12 @@ pub struct Boxes {
 pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
     let mut dead = Vec::new();
     let mut live_projects = BTreeSet::new();
-    let mut in_use: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for box_ in runtime.list()? {
         if !box_
             .labels
             .keys()
             .any(|key| key.starts_with("dev.pinfold."))
         {
-            in_use.entry(box_.image_id).or_default().push(box_.id);
             continue;
         }
         let (owner, alive) = owner(&box_)?;
@@ -172,7 +163,6 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
             if let Some(project) = box_.labels.get(PROJECT_LABEL) {
                 live_projects.insert(project.clone());
             }
-            in_use.entry(box_.image_id).or_default().push(box_.id);
             continue;
         }
         dead.push(DeadBox {
@@ -184,7 +174,6 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
     Ok(Boxes {
         dead,
         live_projects,
-        in_use,
     })
 }
 
@@ -295,10 +284,12 @@ pub fn path_bytes(path: &Path) -> u64 {
 /// Apply [`keep_two_images`] to every source any image names: each
 /// non-empty family label, and every caller name a `pinfold/image-<NAME>`
 /// tag names. One image listing and one box listing serve every source, so
-/// a pass costs two runtime listings however many sources it has. A failing
-/// source is reported and the rest continue.
-pub fn keep_two_images_per_source(runtime: &dyn Runtime, boxes: &Boxes) -> io::Result<()> {
+/// a pass costs two runtime listings however many sources it has. Call it
+/// after dead boxes are pruned: its box listing is retention's one in-use
+/// rule. A failing source is reported and the rest continue.
+pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
     let images = runtime.list_images()?;
+    let in_use = in_use_images(runtime)?;
     let mut references = reference_counts(&images);
     let mut sources: BTreeSet<(Option<&'static str>, String)> = BTreeSet::new();
     for image in &images {
@@ -312,23 +303,19 @@ pub fn keep_two_images_per_source(runtime: &dyn Runtime, boxes: &Boxes) -> io::R
         }
     }
     for (label, source) in sources {
-        if let Err(error) = keep_two_images_from(
-            runtime,
-            &images,
-            &boxes.in_use,
-            &mut references,
-            label,
-            &source,
-        ) {
+        if let Err(error) =
+            keep_two_images_from(runtime, &images, &in_use, &mut references, label, &source)
+        {
             eprintln!("pinfold: maintenance: images: {source}: {error}");
         }
     }
     Ok(())
 }
 
-/// The ids of the images listed boxes run, from one box list, with the boxes
-/// that pin each. The in-use check [`keep_two_images`] and [`remove_images`]
-/// share, so both see one listing and one rule.
+/// The ids of the images every listed box runs, with the boxes that pin
+/// each: the one in-use rule [`keep_two_images_per_source`],
+/// [`keep_two_images`] and [`remove_images`] share. Dead or alive, every
+/// listed box counts.
 fn in_use_images(runtime: &dyn Runtime) -> io::Result<BTreeMap<String, Vec<String>>> {
     let mut in_use: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for box_ in runtime.list()? {
@@ -348,7 +335,7 @@ fn caller_source(reference: &str) -> Option<&str> {
 /// The entries in `images` for a source, one per reference. `label` is
 /// `Some` for a profile or a project, which carry `label = source`; it is
 /// `None` for a caller name, which lives only in its
-/// `pinfold/image-<NAME>` tags. The listing [`keep_two_images`] and
+/// `pinfold/image-<NAME>` tags. The filter [`keep_two_images`] and
 /// [`remove_images`] share.
 fn source_images<'a>(
     images: &'a [ImageInfo],

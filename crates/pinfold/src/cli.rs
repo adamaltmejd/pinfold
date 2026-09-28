@@ -435,8 +435,8 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
 /// anything is removed, so `remove` removes exactly what was printed.
 /// `doctor` measures with it too, and removes nothing.
 struct CleanPlan {
-    /// The pass's one box list: dead boxes to remove, live projects, and
-    /// the images the staying boxes pin for retention's in-use check.
+    /// The pass's box list from `measure`: dead boxes to remove, and live
+    /// projects to protect.
     boxes: clean::Boxes,
     /// Dead boxes' state dirs, leftover socket dirs, unpinned artifact
     /// versions and old egress logs.
@@ -513,9 +513,7 @@ impl CleanPlan {
     /// source's newest two. Image sizes are unmeasured: the runtime's image
     /// list carries none.
     fn remove(self, runtime: &dyn Runtime) -> io::Result<()> {
-        for dead in &self.boxes.dead {
-            dead.remove(runtime)?;
-        }
+        clean::prune_boxes(runtime, &self.boxes)?;
         runtime.purge_build_cache()?;
         clean::remove_paths(
             self.automatic
@@ -524,7 +522,7 @@ impl CleanPlan {
                 .chain(self.stale)
                 .collect(),
         )?;
-        clean::keep_two_images_per_source(runtime, &self.boxes)
+        clean::keep_two_images_per_source(runtime)
     }
 }
 
