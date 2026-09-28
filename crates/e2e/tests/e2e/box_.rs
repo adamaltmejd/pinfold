@@ -1176,10 +1176,13 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // image did; `clean` takes the image the newest two builds share and
     // the shared-image assertion fails. Sabotage: skip a tag whose image a
     // newer tag names; the oldest-tag assertion fails. Sabotage: drop the
-    // in-use check from `remove_images`; the live box's image is offered to
-    // the runtime: podman refuses the removal and `image rm` exits non-zero,
-    // Apple deletes the image under the box and the live-box image
-    // assertion fails. Sabotage: apply the newest-two rule or the caller's
+    // in-use check from `remove_images`; the live box's last tag is offered
+    // to the runtime: podman refuses the removal and `image rm` exits
+    // non-zero, Apple deletes the image under the box and the live-box
+    // image assertion fails. Sabotage: restore the per-id skip in
+    // `remove_images`; the twin box's shared image is reported in use, the
+    // retired name's tag on it survives, and the shared-image assertion
+    // fails. Sabotage: apply the newest-two rule or the caller's
     // one-hour grace in `image rm`; a fresh build survives and the
     // removed-tags assertion fails. Sabotage: match the name as a prefix in
     // `remove_images`; the image of the name extending the retired one goes
@@ -1529,13 +1532,14 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "clean --unused removed the state of a project with a live box"
     );
 
-    // `image rm NAME` retires one caller image name: every tag of the name
-    // on an image no listed box uses, whatever its age. Three builds of
-    // `retire` are fresh, so the caller grace would keep them all; a live
-    // box pins the oldest, so only the other two untag. A second name
-    // extending the first is untouched, and a third built from the second
-    // build's identical inputs shares that build's image and keeps its own
-    // tag after `image rm`.
+    // `image rm NAME` retires one caller image name: every tag of the name,
+    // whatever its age, and no other name's, except an image's last tag
+    // while a listed box uses it. Three builds of `retire` are fresh, so
+    // the caller grace would keep them all. A retire box pins the oldest
+    // build, whose only tags are `retire`'s, so its last tag stays; a twin
+    // box pins the second build's image, which the twin's tags also hold,
+    // so `retire`'s tag on it goes. A second name extending the first is
+    // untouched.
     let base = default_image(&env);
     let rm_context = env.root.join("image-rm-context");
     fs::create_dir_all(&rm_context).unwrap();
@@ -1633,22 +1637,56 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "the retire box did not start from the oldest build"
     );
 
+    // A twin box runs the shared image, so `retire`'s tag on it must be
+    // freed while the twin's tags hold the image up.
+    let twin_box = box_name("cleanup-twin");
+    let twin_spec = serde_json::json!({ "name": twin_box, "image": twin_latest });
+    let mut up_twin = box_up(&env, &twin_spec, &twin_box);
+    assert_eq!(
+        up_twin.ready["image"]["id"].as_str(),
+        Some(retire_ids[1].as_str()),
+        "the twin box did not start from the shared image: {}",
+        up_twin.ready
+    );
+
     let (code, removed) = image_rm(&env, &retire_name);
     assert_eq!(code, 0, "image rm {retire_name} exited {code}: {removed}");
     assert_eq!(removed["event"], "removed", "image rm: {removed}");
+    // The twin's tags hold the shared image up, so the retire tag on it
+    // goes. Sabotage: restore the per-id skip in `remove_images`; the
+    // shared image is reported in use and this first assertion fails.
     assert!(
-        retire_refs[1..]
-            .iter()
-            .all(|reference| image_id(reference).is_none()),
-        "image rm left a tag of a removed image: {retire_refs:?}"
+        image_id(&retire_refs[1]).is_none(),
+        "image rm left the retired name's tag on the twin box's image: {retire_refs:?}"
+    );
+    assert!(
+        image_id(&retire_refs[2]).is_none(),
+        "image rm left the retired name's tag on the removed image: {retire_refs:?}"
     );
     assert!(
         image_id(&format!("pinfold/image-{retire_name}:latest")).is_none(),
         "image rm left the retire name's latest tag"
     );
+    // The retire box pins an image only `retire` tags, so its last tag
+    // stays and is reported.
+    assert_eq!(
+        removed["in_use"],
+        serde_json::json!([retire_ids[0]]),
+        "image rm did not report the last tag it kept: {removed}"
+    );
+    let untagged: Vec<&str> = removed["ids"]
+        .as_array()
+        .expect("ids is an array")
+        .iter()
+        .map(|id| id.as_str().expect("an id is a string"))
+        .collect();
+    assert!(
+        untagged.contains(&retire_ids[1].as_str()) && untagged.contains(&retire_ids[2].as_str()),
+        "image rm did not report both untagged images: {removed}"
+    );
     assert!(
         image_id(&retire_refs[0]).is_some(),
-        "image rm removed the live box's image"
+        "image rm removed the live box's last tag"
     );
     assert!(
         image_id(&similar_latest).is_some(),
@@ -1659,8 +1697,23 @@ fn cleanup_removes_only_pinfolds_garbage() {
         Some(retire_ids[1].clone()),
         "image rm removed the twin's tag with the shared image"
     );
+    // Only references went, not the image: the twin box still answers from
+    // the shared image.
+    let alive = box_exec(&env, &twin_box, &["cat", "/marker.txt"]);
+    assert_eq!(
+        alive.code, 0,
+        "the twin box failed exec after image rm: {}",
+        alive.stderr
+    );
+    assert_eq!(
+        alive.stdout.trim(),
+        "retire-2",
+        "the twin box answered from another image: {}",
+        alive.stdout
+    );
 
-    // With the box down, the last image goes, and the name is empty.
+    // With the retire box down, its last tag goes; the twin box stays up
+    // and still answers from the shared image the twin's tags hold.
     up_retire.down(&env);
     assert!(
         up_retire.wait().success(),
@@ -1670,7 +1723,27 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert_eq!(code, 0, "the second image rm exited {code}: {removed}");
     assert!(
         image_id(&retire_refs[0]).is_none(),
-        "the second image rm left the box's image"
+        "the second image rm left the box's last tag"
+    );
+    assert!(
+        tagged_images(&format!("pinfold/image-{retire_name}")).is_empty(),
+        "the second image rm left a tag of the retired name"
+    );
+    assert_eq!(
+        image_id(&twin_latest),
+        Some(retire_ids[1].clone()),
+        "the second image rm removed the twin's tag with the shared image"
+    );
+    let alive = box_exec(&env, &twin_box, &["cat", "/marker.txt"]);
+    assert_eq!(
+        alive.code, 0,
+        "the twin box failed exec after the second image rm: {}",
+        alive.stderr
+    );
+    up_twin.down(&env);
+    assert!(
+        up_twin.wait().success(),
+        "the twin box's up did not exit cleanly"
     );
 }
 

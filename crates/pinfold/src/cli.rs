@@ -893,9 +893,10 @@ fn image_build(args: &[String]) -> i32 {
 }
 
 /// `pinfold image rm NAME`: retire a caller image name: remove every tag
-/// of NAME on an image no listed box uses, and print the ids it untagged
-/// and the ids a box still uses. A bad name or argument is refused as
-/// `spec`, like a build's.
+/// of NAME, whatever its age, and no other name's, except an image's last
+/// tag while a listed box uses it. Print the ids it untagged and the ids
+/// whose last tag it kept. A bad name or argument is refused as `spec`,
+/// like a build's.
 fn image_rm(args: &[String]) -> io::Result<i32> {
     let refused = |name, detail: String| refused("image", name, RefusalReason::Spec, &detail);
     let name = args.first().map(String::as_str);
