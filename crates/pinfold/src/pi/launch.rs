@@ -12,7 +12,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use crate::cli;
 use crate::config::Config;
 use crate::core::artifacts;
-use crate::core::r#box::{Box, RefusalReason, Signals, UpError};
+use crate::core::r#box::{Box, Signals};
 use crate::core::clean;
 use crate::core::plan::{Egress, Env, Mount, Plan};
 use crate::core::runtime::{ImageStatus, image_status, runtime};
@@ -178,7 +178,7 @@ fn build_plan(
     // protected editor config shadow it.
     mounts.extend(git.readonly.iter().cloned());
 
-    let plan = Plan {
+    Ok(Plan {
         name: format!("pi-{id}-{}", std::process::id()),
         image: Some(image.to_string()),
         profile: Some(config.profile.name.clone()),
@@ -193,8 +193,7 @@ fn build_plan(
         }),
         cpus: Some(config.cpus),
         memory: Some(config.memory.clone()),
-    };
-    Ok(plan)
+    })
 }
 
 /// `path` as a string, for a spec or report value; `what` names it in the
@@ -223,14 +222,7 @@ fn run_box(plan: &Plan, cwd: &Path, args: &[String]) -> io::Result<i32> {
         let mut signals = Signals::new()?;
         let mut hangup = signal(SignalKind::hangup())?;
         // The handlers above are the run's; `up` installs none of its own.
-        // A spec refusal reads as the pi layer's own input error.
-        let mut box_ = match Box::up(plan, &init, None).await {
-            Ok(box_) => box_,
-            Err(UpError::Refused(refusal)) if refusal.reason == RefusalReason::Spec => {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, refusal.detail));
-            }
-            Err(error) => return Err(error.into()),
-        };
+        let mut box_ = Box::up(plan, &init, None).await?;
         let exec = tokio::task::spawn_blocking(move || {
             box_runtime.exec(&name, &init, tty, Some(&workdir), &argv)
         });

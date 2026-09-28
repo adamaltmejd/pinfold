@@ -47,15 +47,6 @@ impl Git {
                     paths.insert(hooks);
                 }
             }
-            PathKind::File => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "refusing to run in a git worktree: {} is a file, not a directory",
-                        dot_git.display()
-                    ),
-                ));
-            }
             PathKind::Other => return Err(not_real_dir(&dot_git)),
         }
         for name in ALWAYS_PROTECT {
@@ -86,7 +77,7 @@ impl Git {
                     })?;
                     created.push(path.clone());
                 }
-                PathKind::File | PathKind::Other => return Err(not_real_dir(&path)),
+                PathKind::Other => return Err(not_real_dir(&path)),
             }
             readonly.push(Mount {
                 host: path.clone(),
@@ -178,8 +169,6 @@ enum PathKind {
     Absent,
     /// A real directory with no symlink in any component.
     Directory,
-    /// A regular file, the worktree `.git` case.
-    File,
     /// A symlink, or anything else that is not a real directory.
     Other,
 }
@@ -189,7 +178,6 @@ enum PathKind {
 /// differs from `path` has a symlink in some component.
 fn path_kind(path: &Path) -> io::Result<PathKind> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => Ok(PathKind::File),
         Ok(metadata) if metadata.is_dir() => {
             let real = canonical(path)?;
             Ok(if real.as_path() == path {

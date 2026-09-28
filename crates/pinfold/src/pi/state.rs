@@ -10,9 +10,6 @@ use serde::{Deserialize, Serialize};
 use crate::core::sha256_hex;
 use crate::dirs;
 
-/// Hex characters of the root hash in a project id.
-const HASH_LENGTH: usize = 12;
-
 /// What `state.json` records for Maintenance: the checkout to check and the
 /// last run to age.
 #[derive(Serialize, Deserialize)]
@@ -69,7 +66,7 @@ pub fn project_id(root: &Path) -> String {
         })
         .unwrap_or_else(|| "root".to_string());
     let hash = sha256_hex(root.as_os_str().as_encoded_bytes());
-    format!("{name}-{}", &hash[..HASH_LENGTH])
+    format!("{name}-{}", &hash[..12])
 }
 
 /// One project state dir, as Maintenance sees it.
@@ -97,26 +94,21 @@ impl StateDir {
 /// is a first start that failed before it recorded anything; it names no
 /// checkout, so Maintenance leaves it alone.
 pub fn state_dirs() -> io::Result<Vec<StateDir>> {
-    let mut dirs = Vec::new();
-    for entry in dirs::entries(&dirs::state_dir()?.join("projects"))? {
-        let dir = entry.path();
-        let Some(id) = entry.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
-        let Ok(json) = fs::read(dir.join("state.json")) else {
-            continue;
-        };
-        let Ok(state) = serde_json::from_slice::<StateFile>(&json) else {
-            continue;
-        };
-        dirs.push(StateDir {
-            id,
-            dir,
-            root: state.root,
-            last_run: state.last_run,
-        });
-    }
-    Ok(dirs)
+    Ok(dirs::entries(&dirs::state_dir()?.join("projects"))?
+        .into_iter()
+        .filter_map(|entry| {
+            let dir = entry.path();
+            let id = entry.file_name().to_str()?.to_string();
+            let json = fs::read(dir.join("state.json")).ok()?;
+            let state = serde_json::from_slice::<StateFile>(&json).ok()?;
+            Some(StateDir {
+                id,
+                dir,
+                root: state.root,
+                last_run: state.last_run,
+            })
+        })
+        .collect())
 }
 
 fn now() -> u64 {
