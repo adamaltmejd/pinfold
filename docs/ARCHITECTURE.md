@@ -284,7 +284,8 @@ The box spec `up` reads from stdin:
 - `env` is exact; nothing is inherited. An env name must match
   `[A-Za-z_][A-Za-z0-9_]*`; any other name is refused as `spec`, naming it.
   `{ "from": "NAME" }` is read from the caller's environment and passed as
-  `--env NAME`, so values never reach argv.
+  `--env NAME`, so values never reach argv. The runtime executable is found
+  on the host's `PATH`, never the spec's.
 - A label key starting with `dev.pinfold.` is refused as `spec`, naming
   it: the namespace is pinfold's.
 - `profile` applies the profile's `home/` and `share/` (see Profiles), and
@@ -739,7 +740,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 3 | The proxy refuses the tricks | Each with a control: IP literal, name resolving to loopback, SNI ≠ CONNECT host, CONNECT to a route, ambiguous framing. |
 | 4 | A route reaches exactly one host service | `http://fixture.internal/` works; the request's route line names the DELETE method, the queryless path and the fixture's non-200 status, with the query sentinel absent. |
 | 5 | Nothing can gain privileges | `CapBnd` 0 in exec'd processes; PID 1 runs as the host uid; no setuid or setgid files; rootfs not writable; on Linux `unshare -U` fails. |
-| 6 | The environment is exactly the spec | The host's unprefixed proxy variables are absent; `PINFOLD_ENV_X` arrives as `X`; the secret never shows in host `ps`; a `PINFOLD_ENV_` name that is not a POSIX name is refused. |
+| 6 | The environment is exactly the spec | The host's unprefixed proxy variables are absent; `PINFOLD_ENV_X` arrives as `X`; the secret never shows in host `ps`; a `PINFOLD_ENV_` name that is not a POSIX name is refused; a spec `PATH` that omits the runtime's directory still comes up, and the box sees exactly that `PATH`. |
 | 7 | No egress means no way out | Without `egress`, nothing gets out, not even through a route. |
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, the box has no egress. With its `pid` file naming a live process, `list` reports the owner gone, `box prune` removes it, and the name can be used again. |
 | 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; `down` removes, and closing `up`'s stdin tears the box down with reason `stdin-closed`. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box or an empty name exits 0, prints nothing and leaves live boxes alone. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. |
