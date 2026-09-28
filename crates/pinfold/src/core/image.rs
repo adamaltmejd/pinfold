@@ -30,9 +30,9 @@ pub enum Context<'a> {
 /// One build of one source.
 pub struct Build<'a> {
     /// The family label naming the source on the image, which retention
-    /// groups by; a caller's source lives only in its tags, so its family
-    /// label is [`clean::IMAGE_LABEL`] and stays empty.
-    pub label: &'static str,
+    /// groups by; a caller's source lives only in its tags, so its label is
+    /// `None`.
+    pub label: Option<&'static str>,
     /// The source: a profile name, a project id or a caller image name.
     pub source: &'a str,
     pub context: Context<'a>,
@@ -63,12 +63,12 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
     let id = build_id();
     let mut labels = build.labels;
     // The runtime copies the base image's labels onto the new image, so
-    // every family label goes on every image: its own with its source
-    // (empty for a caller, whose name lives only in its tags), the other
-    // two empty. Retention then never counts this image as another
-    // family's, whatever it builds on.
+    // every family label goes on every image: its own with its source, the
+    // other empty. A caller has no label: both go on empty and its name
+    // lives only in its tags. Retention then never counts this image as
+    // another family's, whatever it builds on.
     for family in clean::FAMILY_LABELS {
-        let value = if family == build.label && family != clean::IMAGE_LABEL {
+        let value = if build.label == Some(family) {
             build.source
         } else {
             ""
@@ -80,11 +80,11 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
     labels.entry(clean::BASE_LABEL.to_string()).or_default();
     // `pinfold/profile-<name>`, `pinfold/project-<id>` or
     // `pinfold/image-<name>`.
-    let repository = format!(
-        "pinfold/{}-{}",
-        build.label.trim_start_matches("dev.pinfold."),
-        build.source
-    );
+    let stem = match build.label {
+        Some(label) => label.trim_start_matches("dev.pinfold."),
+        None => clean::IMAGE_STEM,
+    };
+    let repository = format!("pinfold/{stem}-{}", build.source);
     let latest = format!("{repository}:latest");
     let reference = format!("{repository}:{id}");
     let tags = [latest.clone(), reference.clone()];
@@ -182,7 +182,7 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
     build(
         runtime,
         Build {
-            label: clean::IMAGE_LABEL,
+            label: None,
             source: &request.name,
             context: Context::Dir {
                 dir: &request.context,

@@ -813,7 +813,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
     let built = image::build(
         runtime,
         Build {
-            label,
+            label: Some(label),
             source,
             context: Context::Alone(containerfile),
             labels: base
@@ -911,7 +911,7 @@ fn image_rm(args: &[String]) -> io::Result<i32> {
     if let Err(error) = profile::check_name("image", name) {
         return Ok(refused(Some(name), error.to_string()));
     }
-    let removed = clean::remove_images(runtime(), clean::IMAGE_LABEL, name)?;
+    let removed = clean::remove_images(runtime(), None, name)?;
     println!(
         "{}",
         serde_json::json!({

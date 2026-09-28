@@ -18,10 +18,13 @@ use crate::dirs;
 pub const PROFILE_LABEL: &str = "dev.pinfold.profile";
 /// The label naming a project source on an image, and the project on a box.
 pub const PROJECT_LABEL: &str = "dev.pinfold.project";
-/// The label naming a caller image's source: the name it built.
-pub const IMAGE_LABEL: &str = "dev.pinfold.image";
-/// The three labels naming an image's source, one per build family.
-pub const FAMILY_LABELS: [&str; 3] = [PROFILE_LABEL, PROJECT_LABEL, IMAGE_LABEL];
+/// The two labels naming a profile's or a project's source on an image. A
+/// caller's name lives only in its `pinfold/image-<NAME>` tags.
+pub const FAMILY_LABELS: [&str; 2] = [PROFILE_LABEL, PROJECT_LABEL];
+/// The `image` stem of a caller build's repository, `pinfold/image-<name>`,
+/// which `caller_source` matches. A caller's name lives only in its tags, so
+/// this names a repository, never a label.
+pub const IMAGE_STEM: &str = "image";
 /// The label podman puts on the intermediate images of a cached build, so
 /// `clean` prunes only pinfold's build cache.
 pub const LAYER_LABEL: &str = "dev.pinfold.layer";
@@ -277,15 +280,15 @@ pub fn path_bytes(path: &Path) -> u64 {
 /// non-empty family label, and every caller name a `pinfold/image-<NAME>`
 /// tag names. A failing source is reported and the rest continue.
 pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
-    let mut sources: BTreeSet<(&'static str, String)> = BTreeSet::new();
+    let mut sources: BTreeSet<(Option<&'static str>, String)> = BTreeSet::new();
     for image in runtime.list_images()? {
         for label in FAMILY_LABELS {
             if let Some(source) = image.labels.get(label).filter(|value| !value.is_empty()) {
-                sources.insert((label, source.clone()));
+                sources.insert((Some(label), source.clone()));
             }
         }
         if let Some(source) = caller_source(&image.reference) {
-            sources.insert((IMAGE_LABEL, source.to_string()));
+            sources.insert((None, source.to_string()));
         }
     }
     for (label, source) in sources {
@@ -315,20 +318,22 @@ fn caller_source(reference: &str) -> Option<&str> {
     repository.strip_prefix("pinfold/image-")
 }
 
-/// The runtime's image entries for a source, one per reference. A profile
-/// and a project carry `label = source`; a caller name lives only in its
+/// The runtime's image entries for a source, one per reference. `label` is
+/// `Some` for a profile or a project, which carry `label = source`; it is
+/// `None` for a caller name, which lives only in its
 /// `pinfold/image-<NAME>` tags. The listing [`keep_two_images`] and
 /// [`remove_images`] share.
-fn source_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result<Vec<ImageInfo>> {
+fn source_images(
+    runtime: &dyn Runtime,
+    label: Option<&str>,
+    source: &str,
+) -> io::Result<Vec<ImageInfo>> {
     Ok(runtime
         .list_images()?
         .into_iter()
-        .filter(|image| {
-            if label == IMAGE_LABEL {
-                caller_source(&image.reference) == Some(source)
-            } else {
-                image.labels.get(label).map(String::as_str) == Some(source)
-            }
+        .filter(|image| match label {
+            Some(label) => image.labels.get(label).map(String::as_str) == Some(source),
+            None => caller_source(&image.reference) == Some(source),
         })
         .collect())
 }
@@ -337,7 +342,7 @@ fn source_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result
 /// tags. An image a listed box reports is never offered to the runtime:
 /// Apple's delete would remove it under the box, so pinfold skips it
 /// itself and reports it like a failed removal.
-pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result<()> {
+pub fn keep_two_images(runtime: &dyn Runtime, label: Option<&str>, source: &str) -> io::Result<()> {
     // One list before anything goes: the ids of the images boxes pin.
     let in_use = in_use_images(runtime)?;
     // One entry per build tag, oldest first, naming its image.
@@ -349,7 +354,7 @@ pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::
     }
     let mut failures = Vec::new();
     for ((built, reference), id) in builds.into_iter().rev().skip(2) {
-        if label == IMAGE_LABEL && !built.elapsed().is_ok_and(|age| age > CALLER_IMAGE_GRACE) {
+        if label.is_none() && !built.elapsed().is_ok_and(|age| age > CALLER_IMAGE_GRACE) {
             continue;
         }
         if let Some(boxes) = in_use.get(&id) {
@@ -382,7 +387,11 @@ pub struct Removed {
 /// alone, so another name's tags on a shared image stay; a profile's or a
 /// project's whole image goes. Return the ids it untagged and the ids a box
 /// still uses. The listing and in-use check are [`keep_two_images`]'s.
-pub fn remove_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result<Removed> {
+pub fn remove_images(
+    runtime: &dyn Runtime,
+    label: Option<&str>,
+    source: &str,
+) -> io::Result<Removed> {
     let in_use = in_use_images(runtime)?;
     // Every reference the source lists, grouped by image id: two builds of
     // unchanged inputs share one image, and two names share one by tag.
