@@ -271,8 +271,27 @@ pub trait Runtime: Sync {
     }
 }
 
+/// The runtime CLI's absolute path: the first executable named `program`
+/// on pinfold's own `PATH`. The spec's `env` reaches the child only after
+/// this, so a spec `PATH` cannot choose the runtime (GitHub #70). A missing
+/// runtime keeps the not-found error that names it.
+fn runtime_path(program: &str) -> io::Result<PathBuf> {
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let candidate = dir.join(program);
+            if candidate.is_file()
+                && nix::unistd::access(&candidate, nix::unistd::AccessFlags::X_OK).is_ok()
+            {
+                return Ok(candidate);
+            }
+        }
+    }
+    Err(spawn_error(program, io::ErrorKind::NotFound.into()))
+}
+
 /// The attached `<program> run` command that owns a box: stdin and stdout
-/// piped, and `env` exported.
+/// piped, and `env` exported. `program` is resolved on pinfold's own `PATH`
+/// before `env`, the spec's, is applied.
 ///
 /// `extra` is what the runtime adds to the controls every box gets. `init`
 /// is a host path; it and its directory are mounted read-only at the same
@@ -289,7 +308,8 @@ fn up<'a>(
     guest_socket: Option<&str>,
     extra: Vec<OsString>,
     env: impl Iterator<Item = (&'a String, &'a Env)>,
-) -> Command {
+) -> io::Result<Command> {
+    let program = runtime_path(program)?;
     // PID 1 and all work run as the host user's uid:gid.
     let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
     let mut command = Command::new(program);
@@ -355,7 +375,7 @@ fn up<'a>(
         )
         .arg("init")
         .args(guest_socket);
-    command
+    Ok(command)
 }
 
 /// Build `request` with `program`; `cache_flags` is how that runtime spells

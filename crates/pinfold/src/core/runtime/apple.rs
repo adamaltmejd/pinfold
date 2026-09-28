@@ -43,7 +43,7 @@ impl Runtime for Apple {
             guest_socket,
             extra,
             plan.env.iter(),
-        );
+        )?;
         if let Some(socket) = proxy_socket {
             command.env("SSH_AUTH_SOCK", socket);
         }

@@ -2896,7 +2896,7 @@ fn host_id(flag: &str) -> String {
 }
 
 /// A `box up` process and its ready box.
-struct Up {
+pub(crate) struct Up {
     name: String,
     /// The parsed `ready` line.
     ready: serde_json::Value,
@@ -2942,7 +2942,7 @@ impl Drop for Up {
     }
 }
 
-fn box_up(env: &TestEnv, spec: &serde_json::Value, name: &str) -> Up {
+pub(crate) fn box_up(env: &TestEnv, spec: &serde_json::Value, name: &str) -> Up {
     box_up_with_env(env, spec, name, &[])
 }
 
@@ -3045,7 +3045,7 @@ fn box_up_refused(
 }
 
 /// The test's box name, unique to this run.
-fn box_name(test: &str) -> String {
+pub(crate) fn box_name(test: &str) -> String {
     format!("pinfold-e2e-{}-{test}", std::process::id())
 }
 

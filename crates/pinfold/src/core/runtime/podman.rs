@@ -90,7 +90,7 @@ impl Runtime for Podman {
         }
         let guest_socket = proxy_socket.map(|_| GUEST_PROXY_SOCKET);
         let env = plan.env.iter().filter(|(name, _)| name.as_str() != "HOME");
-        super::up("podman", plan, init, guest_socket, extra, env)
+        super::up("podman", plan, init, guest_socket, extra, env)?
             .spawn()
             .map_err(|error| spawn_error("podman", error))
     }
