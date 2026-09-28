@@ -10,17 +10,14 @@ use std::path::{Path, PathBuf};
 
 use crate::core::sha256_hex;
 
-/// `$XDG_CONFIG_HOME/pinfold`, else `~/.config/pinfold`.
 pub fn config_dir() -> io::Result<PathBuf> {
     xdg("XDG_CONFIG_HOME", ".config")
 }
 
-/// `$XDG_STATE_HOME/pinfold`, else `~/.local/state/pinfold`.
 pub fn state_dir() -> io::Result<PathBuf> {
     xdg("XDG_STATE_HOME", ".local/state")
 }
 
-/// `$XDG_CACHE_HOME/pinfold`, else `~/.cache/pinfold`.
 pub fn cache_dir() -> io::Result<PathBuf> {
     xdg("XDG_CACHE_HOME", ".cache")
 }

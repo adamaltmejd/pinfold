@@ -21,7 +21,7 @@ use crate::pi::state;
 
 /// The recorded hashes of a project's config inputs. `None` is a recorded
 /// absence.
-#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 struct Trust {
     /// sha256 of the project's `.pinfold.toml`.
     toml: Option<String>,
@@ -35,9 +35,7 @@ pub fn allow(root: &Path) -> io::Result<()> {
     let config = Config::load(root)?;
     let trust = current(&config);
     let path = record_path(root)?;
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
+    fs::create_dir_all(path.parent().expect("under the state dir"))?;
     let json = serde_json::to_vec(&trust).map_err(io::Error::other)?;
     fs::write(path, json)
 }

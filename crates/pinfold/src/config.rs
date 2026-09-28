@@ -1,10 +1,5 @@
 //! The pi layer's configuration: the project's `.pinfold.toml`, the selected
 //! profile's `pinfold.toml`, and the host environment, merged.
-//!
-//! Layers, highest first: environment, `.pinfold.toml`, the profile's
-//! `pinfold.toml`, built-in defaults. Each key takes the highest layer that
-//! sets it; a list replaces the ones below it, and a present-but-empty list
-//! sets an empty value.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -48,9 +43,7 @@ pub struct Config {
     pub allow: Vec<String>,
     pub routes: BTreeMap<String, Route>,
     pub protect: Vec<String>,
-    /// The box's vCPUs.
     pub cpus: f64,
-    /// The box's memory limit, e.g. `8G`.
     pub memory: String,
     /// The `<NAME>`s of the host's `PINFOLD_ENV_<NAME>` variables. Their
     /// values stay on the host; a box spec passes each by name only.
@@ -172,12 +165,9 @@ impl Layer {
             cpus: env::var("PINFOLD_CPUS")
                 .ok()
                 .map(|value| {
-                    value.parse::<f64>().map_err(|error| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!("PINFOLD_CPUS={value:?}: {error}"),
-                        )
-                    })
+                    value
+                        .parse::<f64>()
+                        .map_err(|error| invalid("PINFOLD_CPUS", &format!("{value:?}: {error}")))
                 })
                 .transpose()?,
             memory: env::var("PINFOLD_MEMORY").ok(),
@@ -229,8 +219,9 @@ fn parse_routes(value: &str) -> io::Result<BTreeMap<String, Route>> {
 fn env_names() -> BTreeSet<String> {
     env::vars_os()
         .filter_map(|(name, _)| {
-            let name = name.to_str()?.strip_prefix("PINFOLD_ENV_")?;
-            (!name.is_empty()).then(|| name.to_string())
+            name.to_str()?
+                .strip_prefix("PINFOLD_ENV_")
+                .map(str::to_string)
         })
         .collect()
 }
