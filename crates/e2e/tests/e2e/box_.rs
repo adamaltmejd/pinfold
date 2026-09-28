@@ -1184,7 +1184,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // removed-tags assertion fails. Sabotage: match the name as a prefix in
     // `remove_images`; the image of the name extending the retired one goes
     // and its survival assertion fails. Sabotage: make `--dry-run` run the
-    // real clean; b3 goes and the dry-run assertion fails. Sabotage: keep
+    // real clean; the other project's state goes and the dry-run assertion
+    // fails. Sabotage: keep
     // podman's repeated `Names` in `list_images`; the second removal of the
     // newest image's tag is `image not known` and the one-line assertion
     // fails.
@@ -1457,10 +1458,15 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "the other project's marker is missing before clean"
     );
 
-    // `--dry-run` only lists: b3, which the real clean below removes,
-    // survives it.
+    // `--dry-run` only lists: the other project's state, which the real
+    // clean below removes, survives it. It lives under this test's own
+    // state dir, so no other test's daily pass can take it first, as it can
+    // an image in the shared store.
     run_ok(env.command(pinfold()).args(["clean", "--dry-run"]));
-    assert!(image_id(&b3).is_some(), "--dry-run removed b3");
+    assert!(
+        other_marker.is_file(),
+        "--dry-run removed the other project's state"
+    );
 
     // The real clean removes the dead box and only the dead box.
     run_ok(env.command(pinfold()).args(["clean"]));
