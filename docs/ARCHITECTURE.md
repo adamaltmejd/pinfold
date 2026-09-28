@@ -103,7 +103,9 @@ need `loginctl enable-linger`.
    under macOS's 104-byte limit.
 3. Run the box with `--network none` and the socket carried in (Transport).
    PID 1 is `pinfold init`, as the host uid.
-4. Apple only: one transient root exec makes the socket connectable.
+4. Apple only: one transient root exec makes the socket connectable. It
+   waits until the runtime lists the box running: Apple records that only
+   after the box's first process has started, and refuses an exec before.
 5. `pinfold init` relays `127.0.0.1:3128` to the socket, reaps children, and
    reports ready.
 6. `exec` work as the host uid:gid, with `HTTPS_PROXY` and `http_proxy` set
