@@ -448,9 +448,9 @@ profile image.
   build (no layer cache).
 - A build's identity is its unique tag, never an image label. A caller
   build whose layers and labels are unchanged returns the existing image.
-  Every build sets all three family labels and `dev.pinfold.base`, the
-  other families empty, so an image inherits no family and no base from
-  the image it builds on.
+  Every build sets both family labels, `dev.pinfold.profile` and
+  `dev.pinfold.project`, and `dev.pinfold.base`, the other family empty,
+  so an image inherits no family and no base from the image it builds on.
 - A profile build is tagged uniquely `pinfold/profile-<name>:<build>` and
   moves the stable `pinfold/profile-<name>:latest` to it. The stable ref is
   what a project Containerfile `FROM`s and what `doctor` compares against.
@@ -466,7 +466,7 @@ profile image.
   under two names build one image. It carries
   `dev.pinfold.base` (the first `FROM`'s digest when it resolves to one,
   else empty; a base pinfold built is read from local storage, never
-  pulled), all three family labels empty, and
+  pulled), both family labels empty, and
   the caller's `--label`s, none of which may start with `dev.pinfold.`. It uses
   the runtime's layer cache unless the caller passes `--no-cache`; podman
   labels the cache's intermediate images `dev.pinfold.layer`.
