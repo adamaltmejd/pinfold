@@ -31,12 +31,15 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    if shim {
-        crate::core::clean::maintain();
-        return ExitCode::from(cli::report("pi", launch::run(&rest)) as u8);
-    }
-    let verb = rest.first().map(String::as_str).unwrap_or_default();
-    let args = rest.get(1..).unwrap_or_default();
+    // The shim is the `pi` verb, so pi's own `--help` and `--version` reach pi.
+    let (verb, args) = if shim {
+        ("pi", &rest[..])
+    } else {
+        (
+            rest.first().map(String::as_str).unwrap_or_default(),
+            rest.get(1..).unwrap_or_default(),
+        )
+    };
     // The options answer before any verb is chosen, `init` included.
     match verb {
         "--version" | "-V" => {

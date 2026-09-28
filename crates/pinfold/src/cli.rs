@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::config::Config;
 use crate::core::artifacts;
-use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, Signals, UpError};
+use crate::core::r#box::{Box, RefusalReason, Shutdown, Signals, UpError};
 use crate::core::clean;
 use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
 use crate::core::plan::Plan;
@@ -219,7 +219,12 @@ fn up(args: &[String]) -> io::Result<i32> {
                 Plan::from_reader(io::stdin())
             }) => match plan.map_err(io::Error::other)? {
                 Ok(plan) => plan,
-                Err(refusal) => return Ok(refused(refusal)),
+                Err(refusal) => return Ok(refused(
+                    "box",
+                    refusal.box_name.as_deref(),
+                    refusal.reason,
+                    &refusal.detail,
+                )),
             }
         };
         // Every error from here on has removed what the start made; it ends
@@ -251,7 +256,14 @@ async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
     let init = artifacts::init()?;
     let mut box_ = match Box::up(plan, &init, Some(&mut signals)).await {
         Ok(box_) => box_,
-        Err(UpError::Refused(refusal)) => return Ok(refused(refusal)),
+        Err(UpError::Refused(refusal)) => {
+            return Ok(refused(
+                "box",
+                refusal.box_name.as_deref(),
+                refusal.reason,
+                &refusal.detail,
+            ));
+        }
         Err(UpError::Signal) => return Ok(down(Some(&plan.name), Shutdown::Signal)),
         Err(UpError::Other(error)) => return Err(error),
     };
@@ -298,15 +310,16 @@ fn down(name: Option<&str>, shutdown: Shutdown) -> i32 {
     code
 }
 
-/// Print one `refused` line on stdout and return exit code 1.
-fn refused(refusal: Refusal) -> i32 {
+/// Print one `refused` line on stdout, naming the refused `kind` ("box" or
+/// "image"), and return exit code 1.
+fn refused(kind: &str, name: Option<&str>, reason: RefusalReason, detail: &str) -> i32 {
     println!(
         "{}",
         serde_json::json!({
             "event": "refused",
-            "box": refusal.box_name,
-            "reason": refusal.reason.as_str(),
-            "detail": refusal.detail,
+            kind: name,
+            "reason": reason.as_str(),
+            "detail": detail,
         })
     );
     1
@@ -579,7 +592,7 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         Ok(version) => println!("  version: {version}"),
         Err(error) => println!("  version: unavailable: {error}"),
     }
-    if runtime.name() == "podman" {
+    if !cfg!(target_os = "macos") {
         // preflight is what refuses a host; doctor only reports its verdict.
         match runtime.preflight() {
             Ok(_) => println!("  preflight: ok"),
@@ -754,10 +767,9 @@ fn parse_labels(args: &[String]) -> io::Result<Vec<(String, Option<String>)>> {
 
 pub(crate) fn exit_code(status: ExitStatus) -> i32 {
     use std::os::unix::process::ExitStatusExt;
-    match status.code() {
-        Some(code) => code,
-        None => 128 + status.signal().unwrap_or(0),
-    }
+    status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
 }
 
 /// `pinfold build`: `--profile NAME`'s image; else the project's own image
@@ -874,15 +886,9 @@ fn image_build(args: &[String]) -> i32 {
                 1,
             )
         }
-        Err(ImageError::Refused(reason, detail)) => (
-            serde_json::json!({
-                "event": "refused",
-                "image": name,
-                "reason": reason.as_str(),
-                "detail": detail,
-            }),
-            1,
-        ),
+        Err(ImageError::Refused(reason, detail)) => {
+            return refused("image", name, reason, &detail);
+        }
     };
     println!("{line}");
     code
@@ -893,18 +899,7 @@ fn image_build(args: &[String]) -> i32 {
 /// and the ids a box still uses. A bad name or argument is refused as
 /// `spec`, like a build's.
 fn image_rm(args: &[String]) -> io::Result<i32> {
-    let refused = |name: Option<&str>, detail: String| {
-        println!(
-            "{}",
-            serde_json::json!({
-                "event": "refused",
-                "image": name,
-                "reason": RefusalReason::Spec.as_str(),
-                "detail": detail,
-            })
-        );
-        1
-    };
+    let refused = |name, detail: String| refused("image", name, RefusalReason::Spec, &detail);
     let name = args.first().map(String::as_str);
     let Some(name) = name.filter(|arg| !arg.starts_with("--")) else {
         return Ok(refused(name, "image rm needs an image name".to_string()));
@@ -995,14 +990,10 @@ fn profile_new(args: &[String]) -> io::Result<()> {
     fs::create_dir_all(&profiles)?;
     let target = profiles.join(&name);
     fs::create_dir(&target).map_err(|error| {
-        if error.kind() == io::ErrorKind::AlreadyExists {
-            io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("profile {name:?} already exists at {}", target.display()),
-            )
-        } else {
-            error
-        }
+        io::Error::new(
+            error.kind(),
+            format!("profile {name:?} at {}: {error}", target.display()),
+        )
     })?;
     let result = source
         .and_then(|source| write_profile(&source, &target))
