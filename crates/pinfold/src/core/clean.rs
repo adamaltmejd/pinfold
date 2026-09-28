@@ -66,8 +66,16 @@ fn maintain_due() -> io::Result<()> {
     fs::create_dir_all(&state)?;
     fs::write(&stamp, [])?;
     // Every step is attempted; a failure is reported and the rest continue.
-    report("boxes", prune_boxes(runtime()).map(drop));
-    report("images", keep_two_images_per_source(runtime()));
+    let runtime = runtime();
+    // One box list serves the boxes step and retention's in-use check;
+    // one image list serves every source's retention decision.
+    match boxes(runtime) {
+        Ok(boxes) => {
+            report("boxes", prune_boxes(runtime, &boxes));
+            report("images", keep_two_images_per_source(runtime, &boxes));
+        }
+        Err(error) => report("boxes", Err(error)),
+    }
     report("sockets", leftover_socket_dirs().and_then(remove_paths));
     report(
         "artifacts",
@@ -129,12 +137,17 @@ impl DeadBox {
 }
 
 /// One runtime box list, split into the work for Maintenance: the pinfold
-/// boxes whose owner is gone, and the projects whose box is live.
+/// boxes whose owner is gone, the projects whose box is live, and the
+/// images the boxes that stay run.
 pub struct Boxes {
     /// The pinfold boxes whose owning `box up` process is gone.
     pub dead: Vec<DeadBox>,
     /// The `dev.pinfold.project` ids of pinfold boxes whose owner is alive.
     pub live_projects: BTreeSet<String>,
+    /// The image ids the boxes that stay run, with the boxes that pin each.
+    /// Pruning removes the dead boxes, so retention's in-use check reads
+    /// this from the maintenance pass's one box list.
+    pub in_use: BTreeMap<String, Vec<String>>,
 }
 
 /// Read the runtime's box list once. A pinfold box with neither a state dir
@@ -142,12 +155,14 @@ pub struct Boxes {
 pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
     let mut dead = Vec::new();
     let mut live_projects = BTreeSet::new();
+    let mut in_use: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for box_ in runtime.list()? {
         if !box_
             .labels
             .keys()
             .any(|key| key.starts_with("dev.pinfold."))
         {
+            in_use.entry(box_.image_id).or_default().push(box_.id);
             continue;
         }
         let (owner, alive) = owner(&box_)?;
@@ -156,6 +171,7 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
             if let Some(project) = box_.labels.get(PROJECT_LABEL) {
                 live_projects.insert(project.clone());
             }
+            in_use.entry(box_.image_id).or_default().push(box_.id);
             continue;
         }
         dead.push(DeadBox {
@@ -167,6 +183,7 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
     Ok(Boxes {
         dead,
         live_projects,
+        in_use,
     })
 }
 
@@ -196,15 +213,13 @@ pub fn owner(box_: &BoxInfo) -> io::Result<(Option<i32>, bool)> {
     Ok((owner, alive))
 }
 
-/// Remove boxes pinfold labeled whose owning `box up` process is gone, and
-/// the state dirs that name them. Return the removed boxes, so the caller
-/// can report each removal.
-pub fn prune_boxes(runtime: &dyn Runtime) -> io::Result<Vec<DeadBox>> {
-    let dead = boxes(runtime)?.dead;
-    for box_ in &dead {
+/// Remove the dead boxes [`boxes`] found, and the state dirs that name
+/// them.
+pub fn prune_boxes(runtime: &dyn Runtime, boxes: &Boxes) -> io::Result<()> {
+    for box_ in &boxes.dead {
         box_.remove(runtime)?;
     }
-    Ok(dead)
+    Ok(())
 }
 
 /// State dirs whose owner is gone and that hold a leftover proxy socket. A
@@ -278,10 +293,14 @@ pub fn path_bytes(path: &Path) -> u64 {
 
 /// Apply [`keep_two_images`] to every source any image names: each
 /// non-empty family label, and every caller name a `pinfold/image-<NAME>`
-/// tag names. A failing source is reported and the rest continue.
-pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
+/// tag names. One image listing and one box listing serve every source, so
+/// a pass costs two runtime listings however many sources it has. A failing
+/// source is reported and the rest continue.
+pub fn keep_two_images_per_source(runtime: &dyn Runtime, boxes: &Boxes) -> io::Result<()> {
+    let images = runtime.list_images()?;
+    let mut references = reference_counts(&images);
     let mut sources: BTreeSet<(Option<&'static str>, String)> = BTreeSet::new();
-    for image in runtime.list_images()? {
+    for image in &images {
         for label in FAMILY_LABELS {
             if let Some(source) = image.labels.get(label).filter(|value| !value.is_empty()) {
                 sources.insert((Some(label), source.clone()));
@@ -292,7 +311,14 @@ pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
         }
     }
     for (label, source) in sources {
-        if let Err(error) = keep_two_images(runtime, label, &source) {
+        if let Err(error) = keep_two_images_from(
+            runtime,
+            &images,
+            &boxes.in_use,
+            &mut references,
+            label,
+            &source,
+        ) {
             eprintln!("pinfold: maintenance: images: {source}: {error}");
         }
     }
@@ -359,9 +385,24 @@ pub fn keep_two_images(runtime: &dyn Runtime, label: Option<&str>, source: &str)
     let images = runtime.list_images()?;
     let in_use = in_use_images(runtime)?;
     let mut references = reference_counts(&images);
+    keep_two_images_from(runtime, &images, &in_use, &mut references, label, source)
+}
+
+/// Apply [`keep_two_images`]'s rule to one source from a pass's listings:
+/// `images` and `in_use` are read once for every source, and `references`
+/// counts each image's tags as removals happen, so a later source sees what
+/// the earlier ones left.
+fn keep_two_images_from(
+    runtime: &dyn Runtime,
+    images: &[ImageInfo],
+    in_use: &BTreeMap<String, Vec<String>>,
+    references: &mut BTreeMap<String, usize>,
+    label: Option<&str>,
+    source: &str,
+) -> io::Result<()> {
     // One entry per build tag, oldest first, naming its image.
     let mut builds: BTreeMap<(SystemTime, String), String> = BTreeMap::new();
-    for image in source_images(&images, label, source) {
+    for image in source_images(images, label, source) {
         if let Some(built) = build_time(&image.reference) {
             builds.insert((built, image.reference.clone()), image.id.clone());
         }

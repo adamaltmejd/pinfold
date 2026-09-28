@@ -397,7 +397,10 @@ fn prune(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(usage("box", "prune takes no arguments"));
     }
-    for dead in clean::prune_boxes(runtime())? {
+    let runtime = runtime();
+    let boxes = clean::boxes(runtime)?;
+    clean::prune_boxes(runtime, &boxes)?;
+    for dead in &boxes.dead {
         println!(
             "{}",
             serde_json::json!({
@@ -432,7 +435,9 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
 /// anything is removed, so `remove` removes exactly what was printed.
 /// `doctor` measures with it too, and removes nothing.
 struct CleanPlan {
-    dead: Vec<clean::DeadBox>,
+    /// The pass's one box list: dead boxes to remove, live projects, and
+    /// the images the staying boxes pin for retention's in-use check.
+    boxes: clean::Boxes,
     /// Dead boxes' state dirs, leftover socket dirs, unpinned artifact
     /// versions and old egress logs.
     automatic: BTreeSet<PathBuf>,
@@ -480,7 +485,7 @@ impl CleanPlan {
         }
 
         Ok(CleanPlan {
-            dead: boxes.dead,
+            boxes,
             automatic_bytes: automatic.iter().map(|path| clean::path_bytes(path)).sum(),
             project_caches: caches.iter().map(|path| clean::path_bytes(path)).sum(),
             project_state: stale.iter().map(|path| clean::path_bytes(path)).sum(),
@@ -508,7 +513,7 @@ impl CleanPlan {
     /// source's newest two. Image sizes are unmeasured: the runtime's image
     /// list carries none.
     fn remove(self, runtime: &dyn Runtime) -> io::Result<()> {
-        for dead in &self.dead {
+        for dead in &self.boxes.dead {
             dead.remove(runtime)?;
         }
         runtime.purge_build_cache()?;
@@ -519,7 +524,7 @@ impl CleanPlan {
                 .chain(self.stale)
                 .collect(),
         )?;
-        clean::keep_two_images_per_source(runtime)
+        clean::keep_two_images_per_source(runtime, &self.boxes)
     }
 }
 
