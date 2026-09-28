@@ -1359,7 +1359,14 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // two build tags, remove every tag of the tag's image, as retention by
     // image did; `clean` takes the image the newest two builds share and
     // the shared-image assertion fails. Sabotage: skip a tag whose image a
-    // newer tag names; the oldest-tag assertion fails.
+    // newer tag names; the oldest-tag assertion fails. Sabotage: drop the
+    // in-use check from `remove_images`; the live box's image is offered to
+    // the runtime (podman refuses the removal, Apple deletes the image
+    // under the box) and the `in_use` assertion fails. Sabotage: apply the
+    // newest-two rule or the caller's one-hour grace in `image rm`; a fresh
+    // build survives and the removed-ids assertion fails. Sabotage: drop the
+    // name filter from `remove_images`; the similar, profile and project
+    // images go and their survival assertions fail.
     let env = TestEnv::new("cleanup");
     // `clean` deletes the runtime's builder, so hold off the other tests'
     // builds through this test's `clean`: a build racing the deletion fails.
@@ -1727,6 +1734,221 @@ fn cleanup_removes_only_pinfolds_garbage() {
         live_state.is_dir(),
         "clean --unused removed the state of a project with a live box"
     );
+
+    // `image rm NAME` retires one caller image name: every image of the
+    // name no listed box uses, whatever its age and all its tags. Three
+    // builds of `retire` are fresh, so the caller grace would keep them
+    // all; a live box pins the oldest, so `ids` holds the other two and
+    // `in_use` the box's image. The second name and the profile images are
+    // untouched, and the box still answers exec.
+    let base = default_image(&env);
+    let rm_context = env.root.join("image-rm-context");
+    fs::create_dir_all(&rm_context).unwrap();
+    let rm_containerfile = rm_context.join("Containerfile");
+    fs::write(
+        &rm_containerfile,
+        format!("FROM {base}\nCOPY marker.txt /marker.txt\n"),
+    )
+    .unwrap();
+    let retire_name = format!("{profile}-retire");
+    let _retire_images = ImageCleanup {
+        repository: format!("pinfold/image-{retire_name}"),
+    };
+    let mut retire_refs: Vec<String> = Vec::new();
+    for marker in ["retire-1", "retire-2", "retire-3"] {
+        fs::write(rm_context.join("marker.txt"), format!("{marker}\n")).unwrap();
+        let (code, built) = image_build(&env, &retire_name, &rm_containerfile, &rm_context);
+        assert_eq!(built["event"], "built", "the {marker} build: {built}");
+        assert_eq!(code, 0, "the {marker} build exited {code}");
+        retire_refs.push(
+            built["ref"]
+                .as_str()
+                .unwrap_or_else(|| panic!("built carries no ref: {built}"))
+                .to_string(),
+        );
+    }
+    let retire_ids: Vec<String> = retire_refs
+        .iter()
+        .map(|reference| image_id(reference).unwrap_or_else(|| panic!("no image for {reference}")))
+        .collect();
+    let mut distinct_ids = retire_ids.clone();
+    distinct_ids.sort_unstable();
+    distinct_ids.dedup();
+    assert_eq!(
+        distinct_ids.len(),
+        3,
+        "the changed retire builds do not name three images: {retire_refs:?}"
+    );
+    assert_eq!(
+        labeled_images("dev.pinfold.image", &retire_name),
+        distinct_ids,
+        "the runtime does not list the three retire images before image rm"
+    );
+    // A second name with one build: `image rm` of `retire` must not touch it.
+    let similar_name = format!("{profile}-similar");
+    let _similar_images = ImageCleanup {
+        repository: format!("pinfold/image-{similar_name}"),
+    };
+    fs::write(rm_context.join("marker.txt"), "similar\n").unwrap();
+    let (code, similar) = image_build(&env, &similar_name, &rm_containerfile, &rm_context);
+    assert_eq!(similar["event"], "built", "the similar build: {similar}");
+    assert_eq!(code, 0, "the similar build exited {code}");
+    let similar_latest = similar["latest"]
+        .as_str()
+        .unwrap_or_else(|| panic!("built carries no latest: {similar}"))
+        .to_string();
+
+    // A bad name is refused as `spec`, and removes nothing.
+    let (code, refused) = image_rm(&env, "Bad/Name");
+    assert_eq!(code, 1, "a bad image name exited {code}: {refused}");
+    assert_eq!(refused["event"], "refused", "a bad image name: {refused}");
+    assert_eq!(refused["reason"], "spec", "a bad image name: {refused}");
+    assert_eq!(refused["image"], "Bad/Name", "a bad image name: {refused}");
+    assert_eq!(
+        labeled_images("dev.pinfold.image", &retire_name),
+        distinct_ids,
+        "a refused image rm removed a retire image"
+    );
+
+    // Box the oldest build, so the newest two, `latest` among them, are the
+    // free ones.
+    let retire_box = box_name("cleanup-retire");
+    let retire_spec = serde_json::json!({ "name": retire_box, "image": retire_refs[0] });
+    let mut up_retire = box_up(&env, &retire_spec, &retire_box);
+    let box_image = up_retire.ready["image"]["id"]
+        .as_str()
+        .unwrap_or_else(|| {
+            panic!(
+                "the retire ready line names no image id: {}",
+                up_retire.ready
+            )
+        })
+        .to_string();
+    assert_eq!(
+        box_image, retire_ids[0],
+        "the retire box did not start from the oldest build"
+    );
+
+    let listed = |line: &serde_json::Value, key: &str| -> Vec<String> {
+        line[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("{key} is not an array: {line}"))
+            .iter()
+            .map(|id| {
+                id.as_str()
+                    .unwrap_or_else(|| panic!("{key} holds a non-string: {line}"))
+                    .to_string()
+            })
+            .collect()
+    };
+    let (code, removed) = image_rm(&env, &retire_name);
+    assert_eq!(code, 0, "image rm {retire_name} exited {code}: {removed}");
+    assert_eq!(removed["event"], "removed", "image rm: {removed}");
+    assert_eq!(
+        removed["image"],
+        retire_name.as_str(),
+        "image rm: {removed}"
+    );
+    let mut removed_ids = listed(&removed, "ids");
+    removed_ids.sort_unstable();
+    let mut expected = vec![retire_ids[1].clone(), retire_ids[2].clone()];
+    expected.sort_unstable();
+    assert_eq!(
+        removed_ids, expected,
+        "image rm removed other images of the name: {removed}"
+    );
+    assert_eq!(
+        removed["in_use"],
+        serde_json::json!([box_image]),
+        "image rm did not report the live box's image as in use: {removed}"
+    );
+    assert!(
+        retire_refs[1..]
+            .iter()
+            .all(|reference| image_id(reference).is_none()),
+        "image rm left a tag of a removed image: {retire_refs:?}"
+    );
+    assert!(
+        image_id(&format!("pinfold/image-{retire_name}:latest")).is_none(),
+        "image rm left the retire name's latest tag"
+    );
+    assert!(
+        image_id(&retire_refs[0]).is_some(),
+        "image rm removed the live box's image"
+    );
+    let read = box_exec(&env, &retire_box, &["cat", "/marker.txt"]);
+    assert_eq!(
+        read.code, 0,
+        "the retire box stopped answering exec: {}",
+        read.stderr
+    );
+    assert_eq!(
+        read.stdout, "retire-1\n",
+        "the retire box's image changed under it"
+    );
+    assert!(
+        image_id(&similar_latest).is_some(),
+        "image rm touched the second name's image"
+    );
+    assert!(
+        image_id(base).is_some(),
+        "image rm removed the profile image it built on"
+    );
+    assert!(
+        image_id(&profile_ref).is_some(),
+        "image rm removed this profile's image"
+    );
+    assert!(
+        image_id(&unlabeled).is_some(),
+        "image rm removed an unlabeled image"
+    );
+    assert!(
+        image_id(&live_ref).is_some(),
+        "image rm removed a project image"
+    );
+
+    // With the box down, the last image goes, and the name is empty.
+    up_retire.down(&env);
+    assert!(
+        up_retire.wait().success(),
+        "the retire box's up did not exit cleanly"
+    );
+    let (code, removed) = image_rm(&env, &retire_name);
+    assert_eq!(code, 0, "the second image rm exited {code}: {removed}");
+    assert_eq!(
+        listed(&removed, "ids"),
+        vec![retire_ids[0].clone()],
+        "the second image rm did not remove the last image: {removed}"
+    );
+    assert_eq!(
+        removed["in_use"],
+        serde_json::json!([]),
+        "the second image rm still reports an image in use: {removed}"
+    );
+    assert!(
+        image_id(&retire_refs[0]).is_none(),
+        "the second image rm left the box's image"
+    );
+    let (code, empty) = image_rm(&env, &retire_name);
+    assert_eq!(code, 0, "an empty image rm exited {code}: {empty}");
+    assert_eq!(empty["event"], "removed", "an empty name: {empty}");
+    assert_eq!(
+        empty["ids"],
+        serde_json::json!([]),
+        "an empty name: {empty}"
+    );
+    assert_eq!(
+        empty["in_use"],
+        serde_json::json!([]),
+        "an empty name: {empty}"
+    );
+
+    // Control: the second name's image still comes up and reads its marker.
+    let read = file_from_image(&env, &similar_latest, "cleanup-similar", "/marker.txt");
+    assert_eq!(
+        read, "similar\n",
+        "the second name's image did not come up after image rm"
+    );
 }
 
 #[test]
@@ -1951,6 +2173,26 @@ fn image_build(
         lines.len(),
         1,
         "image build printed {} stdout lines: {stdout}\nstderr: {}",
+        lines.len(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (exit_code(output.status), lines.remove(0))
+}
+
+/// Run `pinfold image rm NAME` and return its exit code and its one stdout
+/// line, parsed.
+fn image_rm(env: &TestEnv, name: &str) -> (i32, serde_json::Value) {
+    let output = env
+        .command(pinfold())
+        .args(["image", "rm", name])
+        .output()
+        .expect("run pinfold image rm");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = json_lines(&stdout);
+    assert_eq!(
+        lines.len(),
+        1,
+        "image rm printed {} stdout lines: {stdout}\nstderr: {}",
         lines.len(),
         String::from_utf8_lossy(&output.stderr)
     );

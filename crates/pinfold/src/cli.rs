@@ -32,6 +32,7 @@ pinfold pi [pi args…]            pi in a box for this project; `pi` is a symli
 pinfold attach [--box NAME] [cmd…]   bash (or cmd) in this project's running pi box
 pinfold build [--profile NAME]   build this project's image, or a profile's; prints the ref
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache]   a caller's image from its own context; one JSON line
+pinfold image rm NAME            retire a caller image name; one JSON line
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
 pinfold profile new NAME [--from PROFILE] [--from-project [PATH]]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim disk (see Maintenance)
@@ -827,10 +828,11 @@ pub fn build(args: &[String]) -> io::Result<i32> {
     }
 }
 
-/// `pinfold image`: a caller's image build.
+/// `pinfold image`: a caller's image build or removal.
 pub fn image(args: &[String]) -> io::Result<i32> {
     match args.first().map(String::as_str) {
         Some("build") => Ok(image_build(&args[1..])),
+        Some("rm") => image_rm(&args[1..]),
         Some(verb) => Err(usage("image", &format!("unknown image verb {verb:?}"))),
         None => Err(usage("image", "an image verb is required")),
     }
@@ -884,6 +886,49 @@ fn image_build(args: &[String]) -> i32 {
     };
     println!("{line}");
     code
+}
+
+/// `pinfold image rm NAME`: retire a caller image name: remove every image
+/// of NAME that no listed box uses, all its tags, and print the ids removed
+/// and the ids a box still uses. A bad name or argument is refused as
+/// `spec`, like a build's.
+fn image_rm(args: &[String]) -> io::Result<i32> {
+    let refused = |name: Option<&str>, detail: String| {
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "refused",
+                "image": name,
+                "reason": RefusalReason::Spec.as_str(),
+                "detail": detail,
+            })
+        );
+        1
+    };
+    let name = args.first().map(String::as_str);
+    let Some(name) = name.filter(|arg| !arg.starts_with("--")) else {
+        return Ok(refused(name, "image rm needs an image name".to_string()));
+    };
+    if args.len() > 1 {
+        return Ok(refused(
+            Some(name),
+            format!("unknown image rm argument {:?}", args[1]),
+        ));
+    }
+    if let Err(error) = profile::check_name("image", name) {
+        return Ok(refused(Some(name), error.to_string()));
+    }
+    let removed = clean::remove_images(runtime(), clean::IMAGE_LABEL, name)?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "event": "removed",
+            "image": name,
+            "ids": removed.ids,
+            "in_use": removed.in_use,
+        })
+    );
+    Ok(0)
 }
 
 /// `image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]...

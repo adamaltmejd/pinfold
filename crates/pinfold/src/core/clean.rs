@@ -11,7 +11,7 @@ use nix::sys::signal::kill;
 use nix::unistd::Pid;
 
 use crate::core::artifacts;
-use crate::core::runtime::{BoxInfo, Runtime, runtime};
+use crate::core::runtime::{BoxInfo, ImageInfo, Runtime, runtime};
 use crate::dirs;
 
 /// The label naming a profile source on an image.
@@ -302,6 +302,27 @@ pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
     Ok(())
 }
 
+/// The ids of the images listed boxes run, from one box list, with the boxes
+/// that pin each. The in-use check [`keep_two_images`] and [`remove_images`]
+/// share, so both see one listing and one rule.
+fn in_use_images(runtime: &dyn Runtime) -> io::Result<BTreeMap<String, Vec<String>>> {
+    let mut in_use: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for box_ in runtime.list()? {
+        in_use.entry(box_.image_id).or_default().push(box_.id);
+    }
+    Ok(in_use)
+}
+
+/// The runtime's image entries carrying `label = source`, one per
+/// reference. The listing [`keep_two_images`] and [`remove_images`] share.
+fn source_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result<Vec<ImageInfo>> {
+    Ok(runtime
+        .list_images()?
+        .into_iter()
+        .filter(|image| image.labels.get(label).map(String::as_str) == Some(source))
+        .collect())
+}
+
 /// Keep the newest two builds of the images carrying `label = source`,
 /// counted by their build tags, and remove older build tags. `latest` is
 /// never counted. Removing a tag untags; the runtime removes an image with
@@ -314,16 +335,10 @@ pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
 /// reports it like a failed removal.
 pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result<()> {
     // One list before anything goes: the ids of the images boxes pin.
-    let mut in_use: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for box_ in runtime.list()? {
-        in_use.entry(box_.image_id).or_default().push(box_.id);
-    }
+    let in_use = in_use_images(runtime)?;
     // One entry per build tag, oldest first, naming its image.
     let mut builds: BTreeMap<(SystemTime, String), String> = BTreeMap::new();
-    for image in runtime.list_images()? {
-        if image.labels.get(label).map(String::as_str) != Some(source) {
-            continue;
-        }
+    for image in source_images(runtime, label, source)? {
         if let Some(built) = build_time(&image.reference) {
             builds.insert((built, image.reference), image.id);
         }
@@ -347,6 +362,44 @@ pub fn keep_two_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::
         return Ok(());
     }
     Err(io::Error::other(failures.join("; ")))
+}
+
+/// What [`remove_images`] removed, and what a listed box still uses.
+/// `pinfold image rm` prints both lists.
+pub struct Removed {
+    /// The ids of the images it removed, one each.
+    pub ids: Vec<String>,
+    /// The source's images a listed box uses, so their tags stayed.
+    pub in_use: Vec<String>,
+}
+
+/// Retire one source's images: remove every image carrying `label = source`
+/// that no listed box uses, all its tags and the layers no image references,
+/// whatever its age. Return the ids removed and the ids a box still uses.
+/// The listing and in-use check are [`keep_two_images`]'s.
+pub fn remove_images(runtime: &dyn Runtime, label: &str, source: &str) -> io::Result<Removed> {
+    let in_use = in_use_images(runtime)?;
+    // Every reference of every image carrying the label, grouped by image
+    // id: two builds of unchanged inputs share one image.
+    let mut images: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for image in source_images(runtime, label, source)? {
+        images.entry(image.id).or_default().push(image.reference);
+    }
+    let mut removed = Removed {
+        ids: Vec::new(),
+        in_use: Vec::new(),
+    };
+    for (id, references) in images {
+        if in_use.contains_key(&id) {
+            removed.in_use.push(id);
+            continue;
+        }
+        for reference in references {
+            runtime.remove_image(&reference)?;
+        }
+        removed.ids.push(id);
+    }
+    Ok(removed)
 }
 
 /// A build tag's time: its `<build>` starts with the build's nanoseconds
