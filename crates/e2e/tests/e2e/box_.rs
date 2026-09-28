@@ -2732,8 +2732,23 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
         // does. The next use must reinstall rather than mount a directory
         // whose binary is gone. Only pi: the repair downloads on the host
         // again, and one harness proves the path without spending the
-        // suite's time three times.
+        // suite's time three times. This scenario runs against a cache of
+        // its own: the pi tests run in this binary beside this one and
+        // mount the shared cache, which the deletion would break.
         if harness == "pi" {
+            let private = TestEnv::with_private_cache("harness-damaged");
+
+            // Install pi into the private cache and read its path there.
+            let mut up = box_up(&private, &spec, &name);
+            up.down(&private);
+            assert!(up.wait().success(), "box up did not exit cleanly");
+            let output = run_ok(private.command(pinfold()).arg("artifacts"));
+            let report: Vec<serde_json::Value> =
+                serde_json::from_slice(&output.stdout).expect("pinfold artifacts output is JSON");
+            let pin = report
+                .iter()
+                .find(|pin| pin["name"] == harness)
+                .expect("pinfold artifacts names pi");
             let install = pin["path"].as_str().expect("pin path is a string");
             let host_binary = Path::new(install).join(harness);
             fs::remove_file(&host_binary)
@@ -2741,7 +2756,7 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
 
             // `artifacts` reads the cache without downloading, so the
             // damaged install is no longer cached.
-            let output = run_ok(env.command(pinfold()).arg("artifacts"));
+            let output = run_ok(private.command(pinfold()).arg("artifacts"));
             let report: Vec<serde_json::Value> =
                 serde_json::from_slice(&output.stdout).expect("pinfold artifacts output is JSON");
             let damaged = report
@@ -2754,9 +2769,9 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
             );
 
             // The second box repairs the install and runs the pinned pi.
-            let mut up = box_up(&env, &spec, &name);
+            let mut up = box_up(&private, &spec, &name);
             let guest_binary = format!("/opt/pinfold/{harness}/{harness}");
-            let ran = box_exec(&env, &name, &[&guest_binary, "--version"]);
+            let ran = box_exec(&private, &name, &[&guest_binary, "--version"]);
             assert_ok(
                 &ran,
                 &format!("{guest_binary} --version after the cache lost it"),
@@ -2766,7 +2781,7 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
                 "the re-installed {harness} is not the pinned {version}: {}",
                 ran.stdout
             );
-            up.down(&env);
+            up.down(&private);
             assert!(up.wait().success(), "box up did not exit cleanly");
         }
     }
