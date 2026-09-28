@@ -318,38 +318,52 @@ fn caller_source(reference: &str) -> Option<&str> {
     repository.strip_prefix("pinfold/image-")
 }
 
-/// The runtime's image entries for a source, one per reference. `label` is
+/// The entries in `images` for a source, one per reference. `label` is
 /// `Some` for a profile or a project, which carry `label = source`; it is
 /// `None` for a caller name, which lives only in its
 /// `pinfold/image-<NAME>` tags. The listing [`keep_two_images`] and
 /// [`remove_images`] share.
-fn source_images(
-    runtime: &dyn Runtime,
+fn source_images<'a>(
+    images: &'a [ImageInfo],
     label: Option<&str>,
     source: &str,
-) -> io::Result<Vec<ImageInfo>> {
-    Ok(runtime
-        .list_images()?
-        .into_iter()
+) -> Vec<&'a ImageInfo> {
+    images
+        .iter()
         .filter(|image| match label {
             Some(label) => image.labels.get(label).map(String::as_str) == Some(source),
             None => caller_source(&image.reference) == Some(source),
         })
-        .collect())
+        .collect()
+}
+
+/// The number of references the store lists for each image id, so the
+/// in-use rule can tell an image's last tag. "Last tag" counts every
+/// reference in the store, of any name or source.
+fn reference_counts(images: &[ImageInfo]) -> BTreeMap<String, usize> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for image in images {
+        *counts.entry(image.id.clone()).or_default() += 1;
+    }
+    counts
 }
 
 /// Keep the newest two builds in [`source_images`], removing older build
-/// tags. An image a listed box reports is never offered to the runtime:
-/// Apple's delete would remove it under the box, so pinfold skips it
-/// itself and reports it like a failed removal.
+/// tags. A tag of an image a listed box uses is removed while another
+/// reference still names the image; the image's last tag stays, and is
+/// reported like a failed removal.
 pub fn keep_two_images(runtime: &dyn Runtime, label: Option<&str>, source: &str) -> io::Result<()> {
-    // One list before anything goes: the ids of the images boxes pin.
+    // One listing before anything goes: the ids of the images boxes pin,
+    // and every reference in the store, so an in-use image's last tag is
+    // known.
+    let images = runtime.list_images()?;
     let in_use = in_use_images(runtime)?;
+    let mut references = reference_counts(&images);
     // One entry per build tag, oldest first, naming its image.
     let mut builds: BTreeMap<(SystemTime, String), String> = BTreeMap::new();
-    for image in source_images(runtime, label, source)? {
+    for image in source_images(&images, label, source) {
         if let Some(built) = build_time(&image.reference) {
-            builds.insert((built, image.reference), image.id);
+            builds.insert((built, image.reference.clone()), image.id.clone());
         }
     }
     let mut failures = Vec::new();
@@ -357,14 +371,21 @@ pub fn keep_two_images(runtime: &dyn Runtime, label: Option<&str>, source: &str)
         if label.is_none() && !built.elapsed().is_ok_and(|age| age > CALLER_IMAGE_GRACE) {
             continue;
         }
-        if let Some(boxes) = in_use.get(&id) {
-            failures.push(format!("{reference}: in use by box {}", boxes.join(", ")));
+        // A box keeps an image's last tag alive; any other tag of that
+        // image only untags it, so it goes.
+        if in_use.contains_key(&id) && references.get(&id).copied().unwrap_or(0) <= 1 {
+            failures.push(format!(
+                "{reference}: in use by box {}",
+                in_use[&id].join(", ")
+            ));
             continue;
         }
         if let Err(error) = runtime.remove_image(&reference) {
             // Every removal carries its reference in the runtime's error;
             // join them into the one line the caller prints.
             failures.push(error.to_string());
+        } else {
+            *references.entry(id).or_default() -= 1;
         }
     }
     if failures.is_empty() {
@@ -378,38 +399,52 @@ pub fn keep_two_images(runtime: &dyn Runtime, label: Option<&str>, source: &str)
 pub struct Removed {
     /// The ids it untagged, one each.
     pub ids: Vec<String>,
-    /// The source's images a listed box uses, so their tags stayed.
+    /// The ids whose last tag stayed because a listed box uses the image.
     pub in_use: Vec<String>,
 }
 
-/// Retire one source: remove every [`source_images`] reference that no
-/// listed box uses, whatever its age. For a caller name that is its tags
-/// alone, so another name's tags on a shared image stay; a profile's or a
-/// project's whole image goes. Return the ids it untagged and the ids a box
-/// still uses. The listing and in-use check are [`keep_two_images`]'s.
+/// Retire one source: remove every [`source_images`] reference, whatever
+/// its age, except an image's last tag while a listed box uses that image.
+/// For a caller name that is its tags alone, so another name's tags on a
+/// shared image stay; a profile's or a project's whole image goes. Return
+/// the ids it untagged and the ids whose last tag it kept because a box
+/// uses them. The listing and in-use check are [`keep_two_images`]'s.
 pub fn remove_images(
     runtime: &dyn Runtime,
     label: Option<&str>,
     source: &str,
 ) -> io::Result<Removed> {
+    let listing = runtime.list_images()?;
     let in_use = in_use_images(runtime)?;
-    // Every reference the source lists, grouped by image id: two builds of
+    // Every reference the store lists, so an image's last tag counts
+    // another name's and another source's, not only this source's.
+    let references = reference_counts(&listing);
+    // This source's references, grouped by image id: two builds of
     // unchanged inputs share one image, and two names share one by tag.
     let mut images: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for image in source_images(runtime, label, source)? {
-        images.entry(image.id).or_default().push(image.reference);
+    for image in source_images(&listing, label, source) {
+        images
+            .entry(image.id.clone())
+            .or_default()
+            .push(image.reference.clone());
     }
     let mut removed = Removed {
         ids: Vec::new(),
         in_use: Vec::new(),
     };
-    for (id, references) in images {
-        if in_use.contains_key(&id) {
+    for (id, tags) in images {
+        // The image's last tag is this source's when it tags every
+        // reference of the id; with a box using the image, that one stays.
+        let last = references.get(&id).copied().unwrap_or(0) == tags.len();
+        if last && in_use.contains_key(&id) {
+            for tag in &tags[..tags.len() - 1] {
+                runtime.remove_image(tag)?;
+            }
             removed.in_use.push(id);
             continue;
         }
-        for reference in references {
-            runtime.remove_image(&reference)?;
+        for reference in &tags {
+            runtime.remove_image(reference)?;
         }
         removed.ids.push(id);
     }
