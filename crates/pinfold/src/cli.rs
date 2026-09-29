@@ -43,10 +43,14 @@ pinfold --version                print the version
 pinfold --help                   print this usage";
 
 /// The box verbs, which the table above does not spell out.
-const BOX_USAGE: &str = "pinfold box up|exec BOX [--tty] [--workdir DIR] -- argv|stat BOX|down BOX|list --label k=v [--label k]|prune";
+const BOX_USAGE: &str = "\
+pinfold box up
+pinfold box exec BOX [--tty] [--workdir DIR] -- argv
+pinfold box stat BOX
+pinfold box down BOX
+pinfold box list --label k=v [--label k]
+pinfold box prune";
 
-/// A verb's process exit code: its own, or 1 after printing
-/// `pinfold VERB: ERROR` on stderr.
 pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
     result.unwrap_or_else(|error| {
         eprintln!("pinfold {verb}: {error}");
@@ -71,7 +75,8 @@ fn syntax(verb: &str) -> String {
     let prefix = format!("pinfold {verb} ");
     USAGE
         .lines()
-        .find(|line| line.starts_with(&prefix))
+        .chain(BOX_USAGE.lines())
+        .find(|line| line.starts_with(&prefix) || *line == prefix.trim_end())
         .and_then(|line| line.split("   ").next())
         .unwrap_or_default()
         .to_string()
@@ -94,12 +99,20 @@ pub fn help(verb: &str, args: &[String]) -> bool {
             .any(|arg| arg == "--help" || arg == "-h"),
     };
     if asks {
-        println!("{}", syntax(verb));
+        let subcommand = args.first().map(|sub| format!("{verb} {sub}"));
+        let specific = subcommand.as_deref().map(syntax).unwrap_or_default();
+        println!(
+            "{}",
+            if specific.is_empty() {
+                syntax(verb)
+            } else {
+                specific
+            }
+        );
     }
     asks
 }
 
-/// `pinfold allow`: trust this project's `.pinfold.toml` and Containerfile.
 pub fn allow(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(usage("allow", "allow takes no arguments"));
@@ -177,7 +190,6 @@ fn parse_attach(args: &[String]) -> io::Result<(Option<&str>, &[String])> {
     }
 }
 
-/// `pinfold box`: the process interface.
 pub fn run(args: &[String]) -> io::Result<i32> {
     match args.first().map(String::as_str) {
         Some("up") => up(&args[1..]),
@@ -194,8 +206,6 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     }
 }
 
-/// Read one spec from stdin, start the box, report it ready, and hold it
-/// until stdin closes, SIGTERM arrives, or the box exits.
 fn up(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(usage("box", "up takes no arguments"));
@@ -248,8 +258,6 @@ fn up(args: &[String]) -> io::Result<i32> {
     result
 }
 
-/// Start the validated box, report it ready, hold it, and print the `down`
-/// line. A refusal prints its own line.
 async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
     let init = artifacts::init()?;
     let mut box_ = match Box::up(plan, &init, Some(&mut signals)).await {
@@ -308,8 +316,6 @@ fn down(name: Option<&str>, shutdown: Shutdown) -> i32 {
     code
 }
 
-/// Print one `refused` line on stdout, naming the refused `kind` ("box" or
-/// "image"), and return exit code 1.
 fn refused(kind: &str, name: Option<&str>, reason: RefusalReason, detail: &str) -> i32 {
     println!(
         "{}",
@@ -323,8 +329,6 @@ fn refused(kind: &str, name: Option<&str>, reason: RefusalReason, detail: &str) 
     1
 }
 
-/// Run a command in a running box with this process's stdio and return its
-/// exit code.
 fn exec(args: &[String]) -> io::Result<i32> {
     let (name, tty, workdir, argv) = parse_exec(args)?;
     let runtime = runtime();
@@ -339,9 +343,6 @@ fn exec(args: &[String]) -> io::Result<i32> {
     Ok(exit_code(status))
 }
 
-/// Print one JSON object of a box's runtime facts: OOM kills, memory and
-/// pids use and limits. `stat` is what tells a caller an OOM kill from a
-/// failure.
 fn stat(args: &[String]) -> io::Result<i32> {
     let name = single_name(args, "stat")?;
     let runtime = runtime();
@@ -363,7 +364,6 @@ fn present(runtime: &dyn Runtime, verb: &str, name: &str) -> io::Result<bool> {
     Ok(false)
 }
 
-/// Print one JSON line per box matching every `--label` filter.
 fn list(args: &[String]) -> io::Result<i32> {
     let filters = parse_labels(args)?;
     for box_ in runtime().list()? {
@@ -391,8 +391,6 @@ fn list(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// Remove boxes pinfold labeled whose owning `box up` process is gone, and
-/// print one line per removal.
 fn prune(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(usage("box", "prune takes no arguments"));
@@ -413,8 +411,6 @@ fn prune(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// `pinfold clean`: list every category pinfold holds, then reclaim it
-/// unless `--dry-run`.
 pub fn clean(args: &[String]) -> io::Result<i32> {
     let (dry_run, unused) = parse_clean(args)?;
     let runtime = runtime();
@@ -526,8 +522,6 @@ impl CleanPlan {
     }
 }
 
-/// `clean`'s options: `--dry-run`, and `--unused AGE` for state not run for
-/// that long.
 fn parse_clean(args: &[String]) -> io::Result<(bool, Option<Duration>)> {
     let mut dry_run = false;
     let mut unused = None;
@@ -683,7 +677,6 @@ pub fn artifacts(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// The pinned harnesses as one JSON array, an object per harness.
 fn pins_json() -> io::Result<serde_json::Value> {
     serde_json::to_value(artifacts::pins()?).map_err(io::Error::other)
 }
@@ -732,7 +725,6 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
     }))
 }
 
-/// `exec`'s box name, `--tty`, `--workdir` and the command after `--`.
 fn parse_exec(args: &[String]) -> io::Result<(String, bool, Option<PathBuf>, Vec<String>)> {
     let mut args = args.iter();
     let name = args
@@ -771,8 +763,6 @@ fn single_name(args: &[String], verb: &str) -> io::Result<String> {
     }
 }
 
-/// `list`'s `--label` filters: each key, and the value to match when one was
-/// given. Every filter must match.
 fn parse_labels(args: &[String]) -> io::Result<Vec<(String, Option<String>)>> {
     let mut filters = Vec::new();
     let mut args = args.iter();
@@ -869,7 +859,6 @@ pub fn build(args: &[String]) -> io::Result<i32> {
     }
 }
 
-/// `pinfold image`: a caller's image build or removal.
 pub fn image(args: &[String]) -> io::Result<i32> {
     match args.first().map(String::as_str) {
         Some("build") => Ok(image_build(&args[1..])),
@@ -879,10 +868,8 @@ pub fn image(args: &[String]) -> io::Result<i32> {
     }
 }
 
-/// The most lines of a failed build's output the `failed` line carries.
 const FAILED_LOG_LINES: usize = 40;
 
-/// Build a caller's image and print one `built`, `failed` or `refused` line.
 fn image_build(args: &[String]) -> i32 {
     let name = args
         .first()
@@ -999,7 +986,6 @@ fn parse_image_build(name: Option<&str>, args: &[String]) -> Result<ImageRequest
     })
 }
 
-/// `pinfold profile`: copy a profile to edit as files.
 pub fn profile(args: &[String]) -> io::Result<i32> {
     match args.first().map(String::as_str) {
         Some("new") => profile_new(&args[1..]).map(|()| 0),
