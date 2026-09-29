@@ -49,9 +49,7 @@ pub struct Box {
 /// What stopped the box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shutdown {
-    /// The owner's stdin reached EOF.
     StdinEof,
-    /// SIGTERM or SIGINT arrived.
     Signal,
     /// The attached `container run` process exited on its own.
     BoxExited(ExitStatus),
@@ -73,17 +71,11 @@ impl Shutdown {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RefusalReason {
-    /// The spec did not parse or validate.
     Spec,
-    /// The profile is missing or cannot be applied.
     Profile,
-    /// The runtime refused the host, or its binary is missing.
     Runtime,
-    /// The image is not present locally.
     ImageMissing,
-    /// The box name is already in use.
     NameInUse,
-    /// A login route's token is missing.
     Login,
 }
 
