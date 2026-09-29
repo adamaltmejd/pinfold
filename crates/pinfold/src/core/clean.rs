@@ -126,15 +126,6 @@ pub struct DeadBox {
     pub owner: Option<i32>,
 }
 
-impl DeadBox {
-    /// Take the box down and remove its state dir.
-    pub fn remove(&self, runtime: &dyn Runtime) -> io::Result<()> {
-        runtime.down(&self.id)?;
-        let _ = fs::remove_dir_all(&self.state_dir);
-        Ok(())
-    }
-}
-
 /// One runtime box list, split into the work for Maintenance: the pinfold
 /// boxes whose owner is gone, and the projects whose box is live.
 pub struct Boxes {
@@ -207,7 +198,8 @@ pub fn owner(box_: &BoxInfo) -> io::Result<(Option<i32>, bool)> {
 /// them.
 pub fn prune_boxes(runtime: &dyn Runtime, boxes: &Boxes) -> io::Result<()> {
     for box_ in &boxes.dead {
-        box_.remove(runtime)?;
+        runtime.down(&box_.id)?;
+        let _ = fs::remove_dir_all(&box_.state_dir);
     }
     Ok(())
 }
