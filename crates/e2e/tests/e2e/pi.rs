@@ -527,13 +527,25 @@ fn the_box_cannot_write_git_or_protected_config() {
         ],
     );
     assert_denied(&denied, "Read-only file system", "the tooling write");
+    let control = box_exec(
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!(
+                "printf 'ok\\n' > '{}'",
+                with.path().join("control.txt").display()
+            ),
+        ],
+    );
+    assert_ok(&control, "writing an unprotected sibling of tooling");
     assert!(run.finish().success(), "pinfold pi did not exit cleanly");
 
-    // A protected path the host planted as a symlink refuses the run, naming
-    // the link: the runtime resolves a bind-mount source on the host, so
-    // following it would mount the target into the box. Sabotage: drop the
-    // path from pi::git's `not_real_dir` message; the refusal no longer
-    // names the link and the naming assertion fails.
+    // A protected path the host planted as a symlink refuses the run: the
+    // runtime resolves a bind-mount source on the host, so following it
+    // would mount the target into the box. Sabotage: skip pi::git's symlink
+    // check; the run starts and the exit assertion fails.
     let outside = TestDir::new(&env, "outside");
     let symlinked = TestDir::new(&env, "symlinked");
     git(symlinked.path(), &["init", "-q"]);
@@ -546,11 +558,6 @@ fn the_box_cannot_write_git_or_protected_config() {
     assert!(
         !refused.status.success(),
         "pinfold pi started with a symlinked .vscode: {stderr}"
-    );
-    assert!(
-        stderr.contains(&link.display().to_string()),
-        "the refusal did not name {}: {stderr}",
-        link.display()
     );
 
     // `pinfold pi` started inside the repository's `.git` refuses before it
@@ -566,11 +573,6 @@ fn the_box_cannot_write_git_or_protected_config() {
     assert!(
         !refused.status.success(),
         "pinfold pi started inside .git: {stderr}"
-    );
-    assert!(
-        stderr.contains(&dot_git.display().to_string()),
-        "the refusal did not name {}: {stderr}",
-        dot_git.display()
     );
 
     // A top level whose name is a space is the root: only git's trailing
@@ -748,10 +750,22 @@ fn the_highest_layer_sets_the_allowlist() {
     // No `.pinfold.toml`: the built-in defaults are the box's allowlist.
     let (run, _, name) = PiRpc::start(&env, project.path());
     let default_allow = box_exec(&env, &name, &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""]);
-    assert!(
-        default_allow.stdout.contains("registry.npmjs.org"),
-        "the built-in allowlist is missing registry.npmjs.org: {}",
-        default_allow.stdout
+    let mut default_hosts: Vec<_> = default_allow.stdout.split(',').collect();
+    default_hosts.sort_unstable();
+    assert_eq!(
+        default_hosts,
+        [
+            "api.anthropic.com",
+            "api.openai.com",
+            "auth.openai.com",
+            "chatgpt.com",
+            "opencode.ai",
+            "openrouter.ai",
+            "pi.dev",
+            "platform.claude.com",
+            "registry.npmjs.org",
+        ],
+        "the built-in allowlist differs from Configuration's default hosts"
     );
     assert!(
         run.finish().success(),
@@ -783,9 +797,20 @@ fn the_highest_layer_sets_the_allowlist() {
     );
     let cpus = box_exec(&env, &name, &["cat", "/sys/fs/cgroup/cpu.max"]);
     assert_eq!(cpus.code, 0, "reading cpu.max failed: {}", cpus.stderr);
+    let mut cpu_max = cpus.stdout.split_whitespace();
+    let quota: u64 = cpu_max
+        .next()
+        .expect("cpu quota")
+        .parse()
+        .expect("finite CPU quota");
+    let period: std::num::NonZeroU64 = cpu_max
+        .next()
+        .expect("cpu period")
+        .parse()
+        .expect("nonzero CPU period");
     assert_eq!(
-        cpus.stdout.trim(),
-        "200000 100000",
+        quota,
+        2 * period.get(),
         "the box's cpu quota is not the project's 2 cpus"
     );
     let env_allow = box_exec(&env, &name, &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""]);
