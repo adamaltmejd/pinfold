@@ -10,7 +10,6 @@ nothing else of the host. Its only way out is its own allowlisting proxy.
   configuration with `pinfold config`.
 
 - Spec: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- History: [docs/archive/](docs/archive/)
 - Working rules: [AGENTS.md](AGENTS.md)
 
 ## Requirements
@@ -31,7 +30,7 @@ from the release page, or on a private repository with
 install. macOS (Apple silicon):
 
 ```sh
-version=0.0.6
+version=0.0.9
 shasum -a 256 -c --ignore-missing SHA256SUMS
 mkdir -p ~/.local/bin
 install -m 0755 "pinfold-$version-aarch64-apple-darwin" ~/.local/bin/pinfold
@@ -44,7 +43,7 @@ refuses it until `xattr -d com.apple.quarantine` clears it.
 Linux, a static musl binary:
 
 ```sh
-version=0.0.6
+version=0.0.9
 sha256sum -c --ignore-missing SHA256SUMS
 mkdir -p ~/.local/bin
 install -m 0755 "pinfold-$version-$(uname -m)-unknown-linux-musl" ~/.local/bin/pinfold
@@ -105,8 +104,8 @@ spec).
 The layers, keys, their environment variables and defaults are under
 Configuration in [ARCHITECTURE.md](docs/ARCHITECTURE.md#configuration).
 
-Credentials enter the box only as `PINFOLD_ENV_<NAME>`; the same table
-says how.
+For `pinfold pi`, forward host variables with `PINFOLD_ENV_<NAME>`.
+Programmatic callers use the [box spec](docs/ARCHITECTURE.md#box-spec).
 
 ## What pinfold does not protect, and what Apple `container` cannot do
 

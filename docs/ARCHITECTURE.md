@@ -155,10 +155,8 @@ builds nothing; `image` is null when no name was given:
 {"event":"refused","image":NAME,"reason":"spec"|"runtime","detail":TEXT}
 ```
 
-`image rm` (see Maintenance) exits 0 with the ids it untagged and the ids
-whose last tag it kept because a box uses them, either list possibly
-empty; an untagged id another name still tags stays; a bad name is refused as
-`spec` like a build's:
+`image rm` (see Maintenance) exits 0 with removed and in-use ids;
+a bad name is refused as `spec` like a build's:
 
 ```json
 {"event":"removed","image":NAME,"ids":[ID,…],"in_use":[ID,…]}
@@ -431,9 +429,8 @@ network listener, no token: the socket identifies the box.
     caller's own config still overrides it.
   - `up` refuses a login it cannot use (no token, or not a usable JWT) as
     `login`, naming the harness.
-  - `getAuthStatus` is deprecated at this pin. When a pin drops it, the
-    likely replacement is `account/read` plus reading Codex's file store,
-    which would stop supporting a Keychain store: a spec change.
+  - `getAuthStatus` is deprecated at this pin. Revisit the adapter when
+    a pin drops it.
 - **Limits:** a connection cap and a header timeout. A tunnel is idle, and
   closed, only when neither direction has carried bytes for 5 minutes.
 - **Log:** one JSON line per decision in the box's egress log at
