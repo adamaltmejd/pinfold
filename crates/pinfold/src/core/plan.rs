@@ -393,6 +393,15 @@ impl Plan {
             }
         }
         if let Some(egress) = &self.egress {
+            for entry in &egress.allow {
+                if let Some(suffix) = entry.strip_prefix('.')
+                    && on_or_above_public_suffix(suffix)
+                {
+                    return Err(invalid(format!(
+                        "egress allow entry {entry:?} is on or above a public suffix"
+                    )));
+                }
+            }
             let mut seen_login = false;
             for (name, route) in &egress.routes {
                 match route {
@@ -536,6 +545,32 @@ fn valid_route_address(address: &str) -> bool {
     };
     // A path, query, fragment or userinfo is not a host either.
     port != 0 && !host.contains(['/', '?', '#', '@'])
+}
+
+/// The Public Suffix List, pinned. The proxy admits a `.name` entry's
+/// subdomains, so `.name` on or above a public suffix admits names an
+/// attacker can register.
+const PUBLIC_SUFFIX_LIST: &str = include_str!("../../public_suffix_list.dat");
+
+/// Whether `suffix` is a public suffix or has one below it: the list holds
+/// a rule that is the suffix or ends with `."suffix"`. Comment and blank
+/// lines are skipped, a rule's `*.` or `!` marker is stripped, and the
+/// comparison ignores case.
+fn on_or_above_public_suffix(suffix: &str) -> bool {
+    let name = suffix.to_lowercase();
+    let below = format!(".{name}");
+    PUBLIC_SUFFIX_LIST.lines().any(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("//") {
+            return false;
+        }
+        let rule = line
+            .strip_prefix("*.")
+            .or_else(|| line.strip_prefix('!'))
+            .unwrap_or(line)
+            .to_lowercase();
+        rule == name || rule.ends_with(&below)
+    })
 }
 
 /// A memory limit is a whole number of mebibytes or gibibytes, at least

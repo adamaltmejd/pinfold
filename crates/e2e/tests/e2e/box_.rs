@@ -315,6 +315,10 @@ fn up_refuses_before_it_creates() {
     // `255M` spec likewise reaches the runtime and its assertion fails.
     // Sabotage: drop the route check from `Plan::validate`; the URL route
     // spec comes up `ready`, so its `refused` assertion fails.
+    // Sabotage: drop the "has one below it" clause from the public-suffix
+    // check, keeping only rule equality; `.amazonaws.com` is not itself on
+    // the list, so its spec comes up `ready` and its `refused` assertion
+    // fails.
     let env = TestEnv::new("refuses");
     let name = box_name("refuses");
     let label = "dev.example.test=refuses";
@@ -457,6 +461,34 @@ fn up_refuses_before_it_creates() {
     );
     assert_left_nothing(&env, &name, label, "refused");
 
+    // A suffix entry on or above a public suffix is refused as data, naming
+    // the entry, and leaves no state dir and no box: the proxy would admit
+    // every name below it, including one an attacker registers.
+    // `.amazonaws.com` is the hard case, below the list rather than on it.
+    // The positive control is the race's winner below, whose allow list
+    // carries `.github.com`. Sabotage: drop the "has one below it" clause
+    // from the check; this spec then comes up `ready`, so its `refused`
+    // assertion fails.
+    let public_suffix = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+        "labels": { "dev.example.test": "refuses" },
+        "egress": { "allow": [".amazonaws.com"] },
+    });
+    let (code, refused) = box_up_refused(&env, &public_suffix, &[]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["event"], "refused");
+    assert_eq!(refused["reason"], "spec");
+    assert_eq!(refused["box"], name);
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(".amazonaws.com"),
+        "the refusal did not name the entry: {refused}"
+    );
+    assert_left_nothing(&env, &name, label, "refused");
+
     // A login route naming a harness other than the spec's is refused as
     // data, naming the route, and leaves no state dir and no box: the route
     // would otherwise carry another harness's login. The positive control,
@@ -587,6 +619,7 @@ fn up_refuses_before_it_creates() {
         "image": default_image(&env),
         "labels": { "dev.example.test": "refuses" },
         "mounts": [{ "host": absent_host, "guest": "/workspace", "readonly": true }],
+        "egress": { "allow": [".github.com"] },
     });
     for host in [&absent_host, &linked_host] {
         live["mounts"][0]["host"] = serde_json::json!(host);
@@ -608,7 +641,8 @@ fn up_refuses_before_it_creates() {
 
     // Two `up`s on one free name at once: the claim lets exactly one hold
     // it, and the loser touches nothing of the winner's. Both are spawned
-    // before either's first line is read.
+    // before either's first line is read. The winner also proves that
+    // `.github.com` remains an allowed suffix entry.
     let mut starts = [
         box_up_start(&env, &live, &[]),
         box_up_start(&env, &live, &[]),
