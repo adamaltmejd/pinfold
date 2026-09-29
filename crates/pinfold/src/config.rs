@@ -106,7 +106,13 @@ impl Config {
             protect: merged.protect.unwrap_or_default(),
             cpus: merged.cpus.unwrap_or(DEFAULT_CPUS),
             memory: merged.memory.unwrap_or_else(|| DEFAULT_MEMORY.to_string()),
-            env: env_names(),
+            env: env::vars_os()
+                .filter_map(|(name, _)| {
+                    name.to_str()?
+                        .strip_prefix("PINFOLD_ENV_")
+                        .map(str::to_string)
+                })
+                .collect(),
         })
     }
 }
@@ -213,17 +219,6 @@ fn parse_routes(value: &str) -> io::Result<BTreeMap<String, Route>> {
         routes.insert(name.to_string(), Route::Address(target.to_string()));
     }
     Ok(routes)
-}
-
-/// The `<NAME>`s of the host's `PINFOLD_ENV_<NAME>` variables, sorted.
-fn env_names() -> BTreeSet<String> {
-    env::vars_os()
-        .filter_map(|(name, _)| {
-            name.to_str()?
-                .strip_prefix("PINFOLD_ENV_")
-                .map(str::to_string)
-        })
-        .collect()
 }
 
 fn invalid(source: &str, message: &str) -> io::Error {
