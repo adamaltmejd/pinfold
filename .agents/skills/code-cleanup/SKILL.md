@@ -1,17 +1,16 @@
 ---
 name: code-cleanup
-description: Audit pinfold's whole tree for yagni, duplication, wrong-altitude fixes and unmeasured cost, then land the deletions — directly, one commit per module, or as a Yard ticket when a change is a rework. Hands every control-touching or feature-removing finding to Adam as a spec question. Load this when asked for a cleanup, yagni, simplification or consolidation review of pinfold, and before every release, where it is followed by the spec pass and the tag.
+description: Audit pinfold's whole tree for yagni, duplication, wrong-altitude fixes and unmeasured cost, then land the deletions — directly, one commit per module, or as a written ticket when a change is a rework. Hands every control-touching or feature-removing finding to Adam as a spec question. Load this when asked for a cleanup, yagni, simplification or consolidation review of pinfold, and before every release, where it is followed by the spec pass and the tag.
 ---
 
 # /code-cleanup
 
 AGENTS.md says the tree stays lean; this file is the recipe. Run it before
 a release and whenever the tree feels fat. Preconditions: main is green,
-`yard status` shows no open lane (the Mac suite and a merge-queue gate
-share one image store), and the operator has the sitting.
+no other runtime suite is using the image store, and the operator has the
+sitting.
 
-The pass reads the whole tree, not a diff. A diff-only review finds little
-here and was rejected as a review seat on 2026-09-24. Do not re-propose one.
+The pass reads the whole tree, not only a diff.
 
 ## 0. Measure
 
@@ -25,13 +24,10 @@ git diff --shortstat "$last"..HEAD
 git diff --shortstat "$last"..HEAD -- crates
 wc -l $(git ls-files '*.rs') | sort -rn | head -5
 wc -l docs/ARCHITECTURE.md
-yard ticket list --status done --json
 ```
 
-Tickets landed is the count of done tickets above the last report's
-high-water mark. Proposal-born tickets are the ones `yard proposal accept`
-created since the last report. The suite's wall time is in the last
-`e2e-macos` gate log.
+Count written tickets opened by this pass in its report. Record the suite's
+wall time from the host run.
 
 ## 1. Mechanical checks
 
@@ -156,8 +152,7 @@ Then sort each into one of three piles.
 
 ## 4. Land
 
-Edit directly by default. The audit's context is in this session, and a
-lane would spend a container and review rounds rediscovering it. One
+Edit directly by default. The audit's context is in this session. One
 commit per module, the message naming what was removed. Before each push:
 
 ```sh
@@ -168,16 +163,15 @@ cargo test -p e2e --locked
 
 The Mac suite runs here; CI runs the Linux suite on the push.
 
-A Yard ticket instead, filed `--parked` through `yard-file` with
-`--workflow heavy`, when the change is a rework: it redesigns a module's
-internals rather than deleting from them, or it is more than one sitting.
-The review seat and the merge queue are what the ticket buys.
+Write a ticket instead when the change redesigns a module's internals
+rather than deleting from them, or needs more than one sitting. Name the
+module, the behavior at issue, and what the rework should remove.
 
 ## 5. Report, and at a release
 
 Repeat step 0. Write `docs/archive/YYYY-MM-DD-code-cleanup.md`: the numbers
 table with before and after columns, the possible net from step 2 beside
-the landed net, each commit or ticket and what it removed, Adam's list
+the landed net, each commit or written ticket and what it removed, Adam's list
 with his answers, and the rejected list with its conditions.
 
 Before a release, the same file then carries the spec pass from AGENTS.md.

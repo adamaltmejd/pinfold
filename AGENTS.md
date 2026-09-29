@@ -7,7 +7,7 @@ rules for changing the repository.
 ## Rules
 
 - Implement the spec. A design change updates ARCHITECTURE.md in the same
-  commit. Follow-up work is a Yard ticket, not a TODO in code.
+  commit. Follow-up work is a written ticket, not a TODO in code.
 - Living docs (README.md, ARCHITECTURE.md, this file) state the current
   contract only, tersely. Evidence, measurements and rationale go to a new
   dated file, `docs/archive/YYYY-MM-DD-topic.md`. Archive files are never
@@ -30,18 +30,17 @@ rules for changing the repository.
   assertion and names what it removes: a concept, a path, a special
   case, a duplicate. Fewer lines is the usual evidence, not the gate; a
   consolidation that adds an abstraction and removes nothing is
-  rejected. A proposal born in a lane is rejected unless it names the
-  guarantee or bug it serves.
+  rejected. A proposal must name the guarantee or bug it serves.
 - Before each release, the `code-cleanup` skill with `test-audit`'s
   sweep: a whole-tree read for yagni, duplication, wrong-altitude fixes,
   unmeasured cost and assertion blocks under the bar, landed one commit
-  per module, or as a heavy ticket when a module is reworked; then the
+  per module, or recorded as a written ticket when a module needs rework; then the
   operator's spec pass over ARCHITECTURE.md and
   README.md (cut restatement and rationale, reconcile the guarantees
   table with the tests, close resolved open questions). The pass
   reports the release's delete/add ratio, the largest source file,
-  ARCHITECTURE.md's line count and how many of its tickets came from
-  lane proposals, in a dated `docs/archive` file.
+  ARCHITECTURE.md's line count and how many findings became written
+  tickets, in a dated `docs/archive` file.
 - Every GitHub release's notes carry a "Caller changes" heading: each
   change to the box spec, a JSON line, an exit code or a CLI flag since
   the last release, or "None". A removal is a hard break named there.

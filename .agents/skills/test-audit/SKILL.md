@@ -21,9 +21,8 @@ candidate back.
    whether this is the row's hardest case.
 4. Which outside source gives each expected value.
 
-Nobody runs the sabotage by hand; that is the operator step the queue
-replaced on 2026-09-25. Until a sabotage gate applies it, the review
-seat's reading of the sabotage is the proof.
+Do not run the sabotage by hand. Review the comment's named change to
+the binary as the test's failure proof.
 
 ## The sweep
 

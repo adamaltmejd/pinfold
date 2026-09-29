@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Yard's e2e gate dispatches this at a queue/<sha> branch.
+  # scripts/e2e-linux.sh dispatches exact-ref checks at a temporary branch.
   workflow_dispatch:
 
 permissions:
@@ -60,19 +60,16 @@ jobs:
           rustup target add "$(uname -m)-unknown-linux-musl"
           echo "CC_$(uname -m)_unknown_linux_musl=musl-gcc" >>"$GITHUB_ENV"
 
-      # Dependencies' build output, per runner. Only main saves, so a Yard
-      # queue/<sha> branch restores main's cache without adding its own.
+      # Dependencies' build output, per runner. Only main saves; temporary
+      # checks/<sha> branches restore its cache.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # Yard's container gates already ran fmt and clippy on a dispatched ref.
       - name: Format
-        if: github.event_name != 'workflow_dispatch'
         run: cargo fmt --check
 
       - name: Lint
-        if: github.event_name != 'workflow_dispatch'
         run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: End-to-end tests

@@ -1,14 +1,13 @@
 #!/bin/sh
-# The Linux end-to-end suite on GitHub's runners, for the ref being gated.
-# Pushes HEAD to a queue/<sha> branch over HTTPS with gh's login, dispatches
-# CI at it, waits for the verdict and deletes the branch. Nothing of the
-# candidate runs here; a host gate has gh's login, not an SSH agent.
+# Run Linux CI on GitHub for HEAD. Push it to a temporary checks/<sha>
+# branch over HTTPS, dispatch CI, wait for the verdict, then delete the
+# branch. The host uses gh's login, not an SSH agent.
 set -eu
 
 repo=adamaltmejd/pinfold
 url="https://github.com/$repo.git"
 sha=$(git rev-parse HEAD)
-branch="queue/$sha"
+branch="checks/$sha"
 
 # The empty helper drops any keychain helper the real HOME configures, and
 # -c keeps gh's token out of argv and the user's git config.

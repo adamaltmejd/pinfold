@@ -772,10 +772,10 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 26 | A login route keeps the login on the host | With `to` at a host fixture, claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. An empty `CODEX_HOME` is refused as `login`. On macOS only (the operator's Mac, with a real login), codex completes one tool round trip through a route with no `to`. |
 | 27 | Doctor reports without changing state | With a working runtime and with no runtime on PATH, doctor leaves a fresh state directory empty and an old artifact intact. On Linux, the failed-runtime report names a missing runtime directory as `runtime-dir`. |
 
-Both run in the merge queue on the exact ref being merged: Linux (podman)
-on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm` runners, dispatched by
-the queue; macOS (Apple `container`) on the operator's Mac. Linux also
-runs on every push to main.
+Linux (podman) runs in CI on every push to main and every pull request,
+and on a dispatched ref, on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm`
+runners. Before a push, the operator runs macOS (Apple `container`) on the
+host. `scripts/e2e-gate.sh` runs both suites for the current ref.
 
 ## Code
 
