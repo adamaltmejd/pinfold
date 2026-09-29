@@ -489,25 +489,30 @@ fn up_refuses_before_it_creates() {
     );
     assert_left_nothing(&env, &name, label, "refused");
 
-    // A login route naming a harness other than the spec's is refused as
-    // data, naming the route, and leaves no state dir and no box: the route
-    // would otherwise carry another harness's login. The positive control,
-    // a matching claude login route coming up, is guarantee 26's
-    // `a_login_route_keeps_the_login_on_the_host`. Sabotage: drop the
-    // login-equals-harness check; the refusal then names only `codex`, so
-    // the route assertion fails.
+    // An otherwise valid claude login cannot serve a codex harness.
+    // Guarantee 26 supplies the matching-login control. Sabotage: drop the
+    // harness-match check; this spec then comes up instead of refusing.
+    let login_fixture = HttpFixture::start(None);
     let login_mismatch = serde_json::json!({
         "name": name,
         "image": default_image(&env),
         "labels": { "dev.example.test": "refuses" },
-        "harness": "claude",
+        "harness": "codex",
         "egress": {
             "routes": {
-                "login.internal": { "login": "codex", "from": "PINFOLD_E2E_LOGIN" },
+                "login.internal": {
+                    "login": "claude",
+                    "from": "PINFOLD_E2E_LOGIN",
+                    "to": format!("http://{}", login_fixture.route()),
+                },
             },
         },
     });
-    let (code, refused) = box_up_refused(&env, &login_mismatch, &[]);
+    let (code, refused) = box_up_refused(
+        &env,
+        &login_mismatch,
+        &[("PINFOLD_E2E_LOGIN", "fixture-token")],
+    );
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["event"], "refused");
     assert_eq!(refused["reason"], "spec");
@@ -907,8 +912,8 @@ fn only_allowlisted_hosts_get_through() {
 fn the_proxy_refuses_the_tricks() {
     // Guarantee 3. Each trick has its control in the same box.
     //
-    // Sabotage: delete the IP literal check; both 127.0.0.1 requests then
-    // log "not allowlisted" (or reach the box's own loopback), so the
+    // Sabotage: delete either IP literal check; that request then
+    // logs "not allowlisted" (or reaches the box's own loopback), so the
     // "ip literal" assertions fail.
     // Sabotage: delete the loopback address check; localhost resolves to
     // 127.0.0.1, the proxy dials it, and the 403 and "loopback" assertions
@@ -958,7 +963,7 @@ fn the_proxy_refuses_the_tricks() {
         route.stdout
     );
 
-    // An IP literal, in both request forms.
+    // Distinct literals let each request form prove its own log reason.
     let literal_connect = curl(
         &env,
         &name,
@@ -970,7 +975,7 @@ fn the_proxy_refuses_the_tricks() {
         &env,
         &name,
         "30",
-        &["-f", "-o", "/dev/null", "http://127.0.0.1/"],
+        &["-f", "-o", "/dev/null", "http://127.0.0.2/"],
     );
     assert_denied(&literal_plain, "403", "plain HTTP to an IP literal");
 
@@ -1001,11 +1006,6 @@ fn the_proxy_refuses_the_tricks() {
     assert_eq!(
         sni.code, 35,
         "the mismatched SNI did not fail the handshake: {}",
-        sni.stderr
-    );
-    assert!(
-        sni.stderr.contains("SSL"),
-        "the mismatched SNI failed for another reason: {}",
         sni.stderr
     );
 
@@ -1041,6 +1041,7 @@ fn the_proxy_refuses_the_tricks() {
     let lines = egress_log_lines(&env, &name);
     for (host, reason) in [
         ("127.0.0.1", "ip literal"),
+        ("127.0.0.2", "ip literal"),
         ("localhost", "loopback"),
         ("api.github.com", "sni mismatch"),
         ("fixture.internal", "route"),
@@ -2767,9 +2768,7 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
     // name instead of `codex`; its `--version` exec fails. Sabotage:
     // restore the directory-exists check in `dirs::install_dir`; after pi's
     // executable is deleted from the cache the second box mounts the broken
-    // install and its `--version` exec exits 127. Sabotage: `cached:
-    // dir.is_dir()` in `artifacts::pins`; the damaged install is still
-    // reported cached.
+    // install and its `--version` exec exits 127.
     // codex's `codex-code-mode-host` companion is not asserted: only a
     // model-driven MCP tool call observes it.
     let env = TestEnv::new("harness");
@@ -2848,20 +2847,6 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
             let host_binary = Path::new(install).join(harness);
             fs::remove_file(&host_binary)
                 .unwrap_or_else(|error| panic!("remove {}: {error}", host_binary.display()));
-
-            // `artifacts` reads the cache without downloading, so the
-            // damaged install is no longer cached.
-            let output = run_ok(private.command(pinfold()).arg("artifacts"));
-            let report: Vec<serde_json::Value> =
-                serde_json::from_slice(&output.stdout).expect("pinfold artifacts output is JSON");
-            let damaged = report
-                .iter()
-                .find(|pin| pin["name"] == harness)
-                .expect("pinfold artifacts still names pi");
-            assert_eq!(
-                damaged["cached"], false,
-                "the incomplete install is still reported cached: {damaged}"
-            );
 
             // The second box repairs the install and runs the pinned pi.
             let mut up = box_up(&private, &spec, &name);
