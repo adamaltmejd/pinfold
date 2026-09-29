@@ -500,10 +500,8 @@ fn forward(
     head.extend_from_slice(b"Connection: close\r\n\r\n");
     let mut exchange = || -> io::Result<(Vec<u8>, Option<u16>)> {
         server.write_all(&head)?;
-        if request.content_length > 0 {
-            let mut body = Read::take(&mut *client, request.content_length);
-            io::copy(&mut body, &mut server)?;
-        }
+        let mut body = Read::take(&mut *client, request.content_length);
+        io::copy(&mut body, &mut server)?;
         server.flush()?;
         read_status_line(&mut server)
     };
