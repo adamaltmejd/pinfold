@@ -1,8 +1,8 @@
 //! End-to-end tests for the top-level CLI, the paths every caller hits
 //! before a verb is chosen.
 //!
-//! They need no runtime, so they run on both hosts; the rest of the suite
-//! needs the Apple `container` CLI or podman.
+//! The options need no runtime. Doctor is exercised with the host runtime
+//! available and absent from PATH.
 
 use std::fs;
 
@@ -64,4 +64,48 @@ fn version_needs_no_runtime() {
         String::from_utf8_lossy(&help.stderr)
     );
     assert_eq!(state_entries(), 0, "pinfold box list --help wrote state");
+}
+
+#[test]
+fn doctor_reports_without_changing_state() {
+    // Guarantee 27. Sabotage: run maintenance before doctor; the fresh
+    // state directory gains a maintenance stamp and the old artifact goes.
+    // Sabotage: omit host_requirements after a failed preflight; the Linux
+    // refusal no longer names the missing runtime directory.
+    let env = TestEnv::with_private_cache("doctor");
+    let old = env.root.join("cache/pinfold/artifacts/pi/0.0.0/marker");
+    fs::create_dir_all(old.parent().unwrap()).unwrap();
+    fs::write(&old, b"keep").unwrap();
+    let empty = env.root.join("empty-path");
+    fs::create_dir(&empty).unwrap();
+    let missing = env.root.join("missing-runtime");
+
+    // Healthy runtime first, then one unavailable on PATH. Both reports
+    // must leave the same host fixtures untouched.
+    for unavailable in [false, true] {
+        let mut command = env.command(pinfold());
+        command.arg("doctor").current_dir(&env.root);
+        if unavailable {
+            command.env("PATH", &empty).env("XDG_RUNTIME_DIR", &missing);
+        }
+        let output = command.output().expect("run pinfold doctor");
+        assert!(output.status.success(), "doctor failed: {output:?}");
+        assert_eq!(
+            fs::read(&old).unwrap(),
+            b"keep",
+            "doctor removed an artifact"
+        );
+        assert_eq!(
+            fs::read_dir(&env.state).unwrap().count(),
+            0,
+            "doctor wrote state"
+        );
+        if unavailable && cfg!(target_os = "linux") {
+            let report = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                report.contains("runtime-dir") && report.contains(missing.to_str().unwrap()),
+                "doctor did not identify the missing runtime directory: {report}"
+            );
+        }
+    }
 }

@@ -589,22 +589,38 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
 
     let runtime = runtime();
     println!("runtime: {} ({})", runtime.name(), runtime.isolation());
-    match runtime.version() {
-        Ok(version) => println!("  version: {version}"),
-        Err(error) => println!("  version: unavailable: {error}"),
-    }
-    if !cfg!(target_os = "macos") {
-        // preflight is what refuses a host; doctor only reports its verdict.
-        match runtime.preflight() {
-            Ok(_) => println!("  preflight: ok"),
-            Err(error) => println!("  preflight: {error}"),
+    let mut runtime_ready = match runtime.version() {
+        Ok(version) => {
+            println!("  version: {version}");
+            true
         }
-        match podman::linger() {
-            Ok(true) => println!("  linger: enabled"),
-            Ok(false) => println!(
-                "  linger: disabled; long-lived boxes stop at logout; run `loginctl enable-linger`"
-            ),
-            Err(error) => println!("  linger: unavailable: {error}"),
+        Err(error) => {
+            println!("  version: unavailable: {error}");
+            false
+        }
+    };
+    if !cfg!(target_os = "macos") {
+        runtime_ready = match runtime.preflight() {
+            Ok(_) => {
+                println!("  preflight: ok");
+                true
+            }
+            Err(error) => {
+                println!("  preflight: {error}");
+                for requirement in podman::host_requirements() {
+                    println!("  {requirement}");
+                }
+                false
+            }
+        };
+        if runtime_ready {
+            match podman::linger() {
+                Ok(true) => println!("  linger: enabled"),
+                Ok(false) => println!(
+                    "  linger: disabled; long-lived boxes stop at logout; run `loginctl enable-linger`"
+                ),
+                Err(error) => println!("  linger: unavailable: {error}"),
+            }
         }
     }
 
@@ -619,9 +635,13 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
 
     let image = crate::pi::launch::resolve_image(&config, &project);
     println!("image: {image}");
-    match crate::pi::launch::ensure_image(&config, &image) {
-        Ok(()) => println!("  exists"),
-        Err(error) => println!("  {error}"),
+    if runtime_ready {
+        match crate::pi::launch::ensure_image(&config, &image) {
+            Ok(()) => println!("  exists"),
+            Err(error) => println!("  {error}"),
+        }
+    } else {
+        println!("  unavailable: runtime check failed");
     }
 
     match pins_json() {
@@ -629,9 +649,17 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         Err(error) => println!("artifacts: unavailable: {error}"),
     }
 
-    println!("config: {}", config_report(&root, &config)?);
+    if runtime_ready {
+        println!("config: {}", config_report(&root, &config)?);
+    } else {
+        println!("config: unavailable: runtime check failed");
+    }
 
     println!("disk:");
+    if !runtime_ready {
+        println!("  unavailable: runtime check failed");
+        return Ok(0);
+    }
     match CleanPlan::measure(runtime, None) {
         Ok(plan) => {
             plan.print(runtime);

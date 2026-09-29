@@ -602,7 +602,7 @@ Automatic, never prompting:
   in the last hour stays, so the ref its `built` line named still comes
   up; past the hour the newest two rule applies.
 - At most once a day, at the start of any working command (not
-  `--version`, `--help` or `init`): prune boxes whose owner
+  `--version`, `--help`, `doctor` or `init`): prune boxes whose owner
   is gone (nothing holds the lock on its `pid` file), leftover sockets,
   artifact `<name>/<version>` directories no pin names (`init/` aside),
   builds beyond each source's newest two (the after-build rule, applied
@@ -626,7 +626,12 @@ last tag while a box uses it. An image goes with its last tag.
   logins.
 
 `--dry-run` only lists. `doctor` shows disk use per category and suggests
-`clean` above 20 GB.
+`clean` above 20 GB. `doctor` runs no maintenance and changes no pinfold
+state or artifacts. When runtime checks fail, it skips runtime-dependent
+image, config, linger and disk probes. On Linux, failed preflight also reports
+missing host requirements independently of Podman: `runtime-dir` names the
+selected `$XDG_RUNTIME_DIR` or `/run/user/<uid>`, `systemd` the system
+manager, and `cgroup-v2` the cgroup filesystem.
 
 ## pi layer
 
@@ -768,6 +773,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 24 | Every build reruns its steps | A second build of one source does not reuse the first's `RUN` layer; on podman it leaves no untagged image. |
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box list --help` exits 0, with no runtime and leaving the state dir untouched. |
 | 26 | A login route keeps the login on the host | With `to` at a host fixture, claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. An empty `CODEX_HOME` is refused as `login`. On macOS only (the operator's Mac, with a real login), codex completes one tool round trip through a route with no `to`. |
+| 27 | Doctor reports without changing state | With a working runtime and with no runtime on PATH, doctor leaves a fresh state directory empty and an old artifact intact. On Linux, the failed-runtime report names a missing runtime directory as `runtime-dir`. |
 
 Both run in the merge queue on the exact ref being merged: Linux (podman)
 on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm` runners, dispatched by

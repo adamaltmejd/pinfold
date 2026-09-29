@@ -275,6 +275,49 @@ fn cgroup_event(dir: &Path, file: &str, key: &str) -> Option<u64> {
         .find_map(|line| line.strip_prefix(key)?.strip_prefix(' ')?.parse().ok())
 }
 
+/// Host checks that do not depend on `podman info` succeeding. Doctor calls
+/// these after a failed preflight; none changes the host.
+pub fn host_requirements() -> Vec<String> {
+    let mut missing = Vec::new();
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", nix::unistd::getuid())));
+    let runtime_dir = fs::metadata(&dir).and_then(|metadata| {
+        if !metadata.is_dir() {
+            return Err(io::Error::other("not a directory"));
+        }
+        nix::unistd::access(
+            &dir,
+            nix::unistd::AccessFlags::R_OK
+                | nix::unistd::AccessFlags::W_OK
+                | nix::unistd::AccessFlags::X_OK,
+        )
+        .map_err(io::Error::from)
+    });
+    if let Err(error) = runtime_dir {
+        missing.push(format!(
+            "runtime-dir: {}: {error}; rootless podman needs an accessible user runtime directory (XDG_RUNTIME_DIR or /run/user/<uid>)",
+            dir.display()
+        ));
+    }
+    if !Path::new("/run/systemd/system").is_dir() {
+        missing.push(
+            "systemd: /run/systemd/system is absent; pinfold requires the systemd cgroup manager and a systemd user session".to_string(),
+        );
+    }
+    #[cfg(target_os = "linux")]
+    match nix::sys::statfs::statfs("/sys/fs/cgroup") {
+        Ok(stat) if stat.filesystem_type() == nix::sys::statfs::CGROUP2_SUPER_MAGIC => {}
+        Ok(_) => missing.push(
+            "cgroup-v2: /sys/fs/cgroup is not a cgroup2 filesystem; pinfold needs cgroup v2 for rootless resource limits".to_string(),
+        ),
+        Err(error) => missing.push(format!(
+            "cgroup-v2: cannot inspect /sys/fs/cgroup: {error}"
+        )),
+    }
+    missing
+}
+
 /// Whether `loginctl enable-linger` is on for this user, for `doctor`. A box
 /// outlives the login that started it only with linger.
 pub fn linger() -> io::Result<bool> {
