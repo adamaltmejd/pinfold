@@ -305,9 +305,8 @@ fn up_refuses_before_it_creates() {
     // Sabotage: keep the name check after the state dir is created; the
     // racing loser overwrites the winner's `pid` and its cleanup takes the
     // winner's box down, so the winner's `exec` fails.
-    // Sabotage: return a failure after the claim as prose on stderr, as
-    // before; the absent-mount `up` prints no line and the first-line read
-    // fails.
+    // Sabotage: leave metadata errors to the runtime; the missing mount
+    // ends `failed` after the claim instead of `refused` as `spec`.
     // Sabotage: drop the reserved-label check; the `dev.pinfold.owner` spec
     // comes up `ready`, so its `refused` assertion fails.
     // Sabotage: drop the memory check; the `1000` spec reaches the runtime
@@ -577,34 +576,39 @@ fn up_refuses_before_it_creates() {
     );
     assert_left_nothing(&env, &name, label, "refused");
 
-    // A mount whose absolute host path does not exist passes validation, so
-    // the runtime rejects the run after the claim. `up` removes what it made
-    // and ends with one `failed` line. The positive control is the race's
-    // winner below, which comes up `ready` from the same image.
-    let absent = serde_json::json!({
+    // Refuse both an absent directory and a dangling symlink to it. The
+    // race below uses the same spec after the target is created, proving
+    // that a symlink to a directory remains a valid mount.
+    let absent_host = env.root.join("absent");
+    let linked_host = env.root.join("linked");
+    std::os::unix::fs::symlink(&absent_host, &linked_host).unwrap();
+    let mut live = serde_json::json!({
         "name": name,
         "image": default_image(&env),
         "labels": { "dev.example.test": "refuses" },
-        "mounts": [{ "host": env.root.join("absent"), "guest": "/workspace", "readonly": false }],
+        "mounts": [{ "host": absent_host, "guest": "/workspace", "readonly": true }],
     });
-    let (code, failed) = box_up_refused(&env, &absent, &[]);
-    assert_eq!(code, 1, "a failed up exits 1: {failed}");
-    assert_eq!(failed["event"], "failed", "not a failed line: {failed}");
-    assert_eq!(failed["box"], name);
-    assert!(
-        !failed["detail"].as_str().unwrap_or_default().is_empty(),
-        "the failed line has no detail: {failed}"
-    );
-    assert_left_nothing(&env, &name, label, "failed");
+    for host in [&absent_host, &linked_host] {
+        live["mounts"][0]["host"] = serde_json::json!(host);
+        let (code, refused) = box_up_refused(&env, &live, &[]);
+        assert_eq!(code, 1, "a refused up exits 1: {refused}");
+        assert_eq!(refused["event"], "refused");
+        assert_eq!(refused["reason"], "spec");
+        assert_eq!(refused["box"], name);
+        assert!(
+            refused["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(host.to_str().unwrap()),
+            "the refusal did not name the host path: {refused}"
+        );
+        assert_left_nothing(&env, &name, label, "refused");
+    }
+    fs::create_dir(&absent_host).unwrap();
 
     // Two `up`s on one free name at once: the claim lets exactly one hold
     // it, and the loser touches nothing of the winner's. Both are spawned
     // before either's first line is read.
-    let live = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "labels": { "dev.example.test": "refuses" },
-    });
     let mut starts = [
         box_up_start(&env, &live, &[]),
         box_up_start(&env, &live, &[]),

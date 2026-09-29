@@ -369,9 +369,10 @@ impl Plan {
                     )));
                 }
             }
-            // A missing host is left to the runtime; `metadata` follows
-            // symlinks, so a symlink to a directory passes.
-            if std::fs::metadata(&mount.host).is_ok_and(|metadata| !metadata.is_dir()) {
+            let metadata = std::fs::metadata(&mount.host).map_err(|error| {
+                invalid(format!("mount host {}: {error}", mount.host.display()))
+            })?;
+            if !metadata.is_dir() {
                 return Err(invalid(format!(
                     "mount host {} is not a directory",
                     mount.host.display()
