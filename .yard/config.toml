@@ -1,0 +1,93 @@
+# Switchyard v3. Configuration changes take effect through yard sync.
+max_lanes = 2
+approve = "auto"
+
+[target]
+ref = "main"
+protected_paths = ["docs/ARCHITECTURE.md", "AGENTS.md", "CLAUDE.md", "Cargo.toml", "Cargo.lock", ".github/", ".agents/", ".claude/", ".codex/", ".pi/", "scripts/e2e-linux.sh", "scripts/e2e-gate.sh"]
+
+[isolation]
+egress = []
+
+[agents.deepseek]
+harness = "pi"
+provider = "openrouter"
+model = "deepseek/deepseek-v4.1-flash"
+effort = "max"
+
+[agents.opus]
+harness = "claude"
+login = true
+model = "claude-opus-5-5"
+effort = "high"
+
+[agents.reviewer]
+harness = "pi"
+provider = "openrouter"
+model = "meta/muse-spark-1.3-contributor"
+effort = "xhigh"
+
+[workflows.default]
+implementer = "deepseek"
+review = ["code"]
+access = "write"
+total_work_timeout_minutes = 360
+instructions = """
+Follow docs/ARCHITECTURE.md and AGENTS.md. Workers run in Linux boxes without
+Apple container or podman. Run cargo build, cargo fmt --check and cargo clippy
+--all-targets --locked -- -D warnings. Write the required end-to-end scenarios;
+the host landing gate runs the macOS and both Linux suites.
+Before adding a function, config key, CLI option, event field or path, search
+for an existing one and reuse it. State what was reused or why nothing fit in
+the commit message.
+"""
+
+[workflows.heavy]
+implementer = "opus"
+
+[workflows.plan]
+implementer = "opus"
+access = "read-only"
+review = "none"
+instructions = "Plan against docs/ARCHITECTURE.md and AGENTS.md. Name the guarantee or reproduced CLI bug each ticket serves. Size each child to one module or CLI verb and its guarantee scenarios. End-to-end suites run on the host."
+
+[gates.fmt]
+command = "CARGO_HOME=/usr/local/cargo cargo fmt --check"
+timeout_minutes = 5
+stage = "candidate"
+
+[gates.clippy]
+command = "CARGO_HOME=/usr/local/cargo cargo clippy --all-targets --locked --offline -- -D warnings"
+timeout_minutes = 20
+stage = "candidate"
+
+[gates.secrets]
+command = "git config --global safe.directory '*' && trufflehog git file:///workspace --no-verification --no-update --fail"
+timeout_minutes = 5
+stage = "candidate"
+
+# The host gate runs agent-written code with the operator's privileges.
+# Protected paths above preserve the existing review boundary for this gate.
+[gates.e2e]
+command = "sh scripts/e2e-gate.sh"
+timeout_minutes = 30
+runs_in = "host"
+stage = "landing"
+
+[review]
+max_rounds = 5
+blocking = "P1"
+timeout_minutes = 30
+
+[review.seats.code]
+agent = "reviewer"
+instructions = """
+Judge the change against docs/ARCHITECTURE.md and AGENTS.md. Blocking: a
+weakened or missing security control, a secret reaching argv or logs, a unit
+test or mock, and an end-to-end test without a positive control or passing on
+a timeout. Apply test-audit to changed assertions. The landing gate runs on
+the operator's Mac: flag build scripts or e2e code reading or writing outside
+its own test directories and pinfold's state. Network endpoints are the host
+fixtures, api.github.com and example.com, plus the macOS Codex login route to
+chatgpt.com and auth.openai.com allowed by the spec.
+"""
