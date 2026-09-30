@@ -1365,7 +1365,13 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // step is in it for the runtime's cache to return.
     fs::write(&containerfile, "FROM scratch\n").unwrap();
     let runtime_build = |tags: &[&str], labels: &[&str]| {
-        let status = Command::new(image_cli())
+        let mut command = Command::new(image_cli());
+        // Match pinfold's builder configuration; fixture builds must not
+        // replace the shared Apple builder under another test's build.
+        if cfg!(target_os = "macos") {
+            command.env_remove("NO_COLOR").env_remove("BUILDKIT_COLORS");
+        }
+        let status = command
             .args(["build", "--file"])
             .arg(&containerfile)
             .args(tags.iter().flat_map(|tag| ["--tag", tag]))
@@ -1519,72 +1525,12 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // builder is shared across state directories, so keep another caller's
     // RUN active while clean prunes unused cache.
     if cfg!(target_os = "macos") {
-        let network = run_ok(Command::new("container").args(["network", "ls", "--format", "json"]));
-        let networks: serde_json::Value = serde_json::from_slice(&network.stdout).unwrap();
-        let gateway = networks
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|network| network["id"] == "default")
-            .unwrap()["status"]["ipv4Gateway"]
-            .as_str()
-            .unwrap();
-        let listener = std::net::TcpListener::bind((gateway, 0)).unwrap();
-        let address = listener.local_addr().unwrap();
-        let (active_tx, active_rx) = std::sync::mpsc::channel();
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(60)))
-                .unwrap();
-            let mut request = BufReader::new(stream);
-            let mut line = String::new();
-            loop {
-                line.clear();
-                assert_ne!(request.read_line(&mut line).unwrap(), 0);
-                if line == "\r\n" {
-                    break;
-                }
-            }
-            active_tx.send(()).unwrap();
-            let _ = release_rx.recv();
-            request
-                .get_mut()
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                .unwrap();
-        });
         let other = build_env.as_ref().unwrap();
         let name = format!("{profile}-active");
         let _active_images = ImageCleanup {
             repository: format!("pinfold/image-{name}"),
         };
-        let context = other.root.join("context");
-        fs::create_dir_all(&context).unwrap();
-        let containerfile = context.join("Containerfile");
-        fs::write(
-            &containerfile,
-            format!(
-                "FROM {}\nRUN curl --fail --max-time 60 http://{address}/\n",
-                default_image(other)
-            ),
-        )
-        .unwrap();
-        let mut build = other
-            .command(pinfold())
-            .args(["image", "build", &name, "--containerfile"])
-            .arg(&containerfile)
-            .arg("--context")
-            .arg(&context)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        if let Err(error) = active_rx.recv_timeout(std::time::Duration::from_secs(60)) {
-            let _ = build.kill();
-            let output = build.wait_with_output().unwrap();
-            panic!("build did not reach the host fixture: {error}; {output:?}");
-        }
+        let build = HeldBuild::start(other, &name, default_image(other), &[]);
         let inspected = run_ok(Command::new("container").args(["inspect", "buildkit"]));
         let builder: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
         let exports = builder[0]["configuration"]["mounts"]
@@ -1629,13 +1575,11 @@ fn cleanup_removes_only_pinfolds_garbage() {
             "build cache undercounts allocated backing storage: {report}"
         );
         let cleaned = env.command(pinfold()).arg("clean").output().unwrap();
-        release_tx.send(()).unwrap();
-        server.join().unwrap();
+        let built = build.finish();
         assert!(
             cleaned.status.success(),
             "clean during another caller's build: {cleaned:?}"
         );
-        let built = build.wait_with_output().unwrap();
         assert!(
             built.status.success(),
             "build held active across clean: {built:?}"
@@ -1980,6 +1924,17 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // build label into every image again, as `dev.pinfold.build` was; the
     // repeated build makes a new image and the one-id assertion fails.
     let env = TestEnv::new("image-build");
+    let other = cfg!(target_os = "macos").then(|| {
+        let other = TestEnv::new("image-colors");
+        // These callers' daily passes must not prune another test's dead
+        // box. Release the fixture guard before either build starts.
+        let _race = DEAD_BOX_RACE
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        run_ok(env.command(pinfold()).arg("artifacts"));
+        run_ok(other.command(pinfold()).arg("artifacts"));
+        other
+    });
     let base = default_image(&env);
 
     let name = format!("pinfold-e2e-{}", std::process::id());
@@ -2070,6 +2025,136 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         second_id,
         "{latest} did not move back to the second build's image"
     );
+
+    // Two callers with opposite colour settings share Apple's builder.
+    // Hold one inside RUN before the other starts. Sabotage: inherit
+    // NO_COLOR or BUILDKIT_COLORS in Apple's build command again; the
+    // second caller replaces the builder and the held build fails.
+    if let Some(other) = other.as_ref() {
+        let held_name = format!("{name}-held");
+        let _held_images = ImageCleanup {
+            repository: format!("pinfold/image-{held_name}"),
+        };
+        let held = HeldBuild::start(
+            other,
+            &held_name,
+            base,
+            &[("NO_COLOR", "1"), ("BUILDKIT_COLORS", "run=1,2,3")],
+        );
+        let (code, built) = one_json_line(
+            env.command(pinfold())
+                .env_remove("NO_COLOR")
+                .env_remove("BUILDKIT_COLORS")
+                .args(["image", "build", &name, "--containerfile"])
+                .arg(&containerfile)
+                .arg("--context")
+                .arg(&context),
+        );
+        let held = held.finish();
+        assert_eq!(code, 0, "the concurrent build: {built}");
+        assert_eq!(built["event"], "built");
+        assert!(image_id(built["ref"].as_str().unwrap()).is_some());
+        assert!(held.status.success(), "the held caller's build: {held:?}");
+        let held: serde_json::Value = serde_json::from_slice(&held.stdout).unwrap();
+        assert_eq!(held["event"], "built");
+        assert!(image_id(held["ref"].as_str().unwrap()).is_some());
+    }
+}
+
+/// A real Apple build held inside RUN until its host HTTP fixture answers.
+struct HeldBuild {
+    child: Option<Child>,
+    release: Option<std::sync::mpsc::Sender<()>>,
+    server: Option<std::thread::JoinHandle<()>>,
+}
+
+impl HeldBuild {
+    fn start(env: &TestEnv, name: &str, base: &str, vars: &[(&str, &str)]) -> HeldBuild {
+        let network = run_ok(Command::new("container").args(["network", "ls", "--format", "json"]));
+        let networks: serde_json::Value = serde_json::from_slice(&network.stdout).unwrap();
+        let gateway = networks
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|network| network["id"] == "default")
+            .unwrap()["status"]["ipv4Gateway"]
+            .as_str()
+            .unwrap();
+        let listener = std::net::TcpListener::bind((gateway, 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let (active_tx, active_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(60)))
+                .unwrap();
+            let mut request = BufReader::new(stream);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                assert_ne!(request.read_line(&mut line).unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            active_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+            request
+                .get_mut()
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+        });
+        let context = env.root.join("held-build-context");
+        fs::create_dir_all(&context).unwrap();
+        let containerfile = context.join("Containerfile");
+        fs::write(
+            &containerfile,
+            format!("FROM {base}\nRUN curl --fail --max-time 60 http://{address}/\n"),
+        )
+        .unwrap();
+        let mut child = env
+            .command(pinfold())
+            .envs(vars.iter().copied())
+            .args(["image", "build", name, "--containerfile"])
+            .arg(&containerfile)
+            .arg("--context")
+            .arg(&context)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        if let Err(error) = active_rx.recv_timeout(std::time::Duration::from_secs(60)) {
+            let _ = child.kill();
+            let output = child.wait_with_output().unwrap();
+            panic!("build did not reach the host fixture: {error}; {output:?}");
+        }
+        HeldBuild {
+            child: Some(child),
+            release: Some(release_tx),
+            server: Some(server),
+        }
+    }
+
+    fn finish(mut self) -> std::process::Output {
+        self.release.take().unwrap().send(()).unwrap();
+        self.server.take().unwrap().join().unwrap();
+        self.child.take().unwrap().wait_with_output().unwrap()
+    }
+}
+
+impl Drop for HeldBuild {
+    fn drop(&mut self) {
+        // A failed assertion releases the fixture and removes its caller.
+        drop(self.release.take());
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(server) = self.server.take() {
+            let _ = server.join();
+        }
+    }
 }
 
 /// Run `pinfold image build NAME` with the caller label `dev.example.test`,

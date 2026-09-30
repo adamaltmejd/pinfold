@@ -395,6 +395,11 @@ fn build(
 ) -> io::Result<Result<(), String>> {
     let (mut reader, writer) = io::pipe()?;
     let mut command = std::process::Command::new(program);
+    if cfg!(target_os = "macos") {
+        // Apple includes color settings in the shared builder's identity
+        // (GitHub #77). Every pinfold caller must use the same settings.
+        command.env_remove("NO_COLOR").env_remove("BUILDKIT_COLORS");
+    }
     command
         .arg("build")
         .args(cache_flags)
