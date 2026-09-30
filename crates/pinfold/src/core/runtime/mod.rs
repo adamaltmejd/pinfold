@@ -242,14 +242,20 @@ pub trait Runtime: Sync {
     /// Remove one image by reference, and any layers no image references.
     fn remove_image(&self, reference: &str) -> io::Result<()>;
 
-    /// Remove the runtime's build cache. Apple: the builder container and
-    /// its layers. podman: the intermediate images pinfold's cached builds
+    /// Remove unused build cache without interrupting builds. Apple: the
+    /// builder's unused records. podman: the intermediate images pinfold's cached builds
     /// left that no image builds on.
     fn purge_build_cache(&self) -> io::Result<()>;
 
     /// What [`Runtime::purge_build_cache`] removes, named for `pinfold
-    /// clean` and `doctor`. Its size is not measured.
+    /// clean` and `doctor`.
     fn build_cache(&self) -> &'static str;
+
+    /// Allocated build-cache storage, including its backing filesystem.
+    /// None when the runtime cannot measure it separately.
+    fn build_cache_bytes(&self) -> io::Result<Option<u64>> {
+        Ok(None)
+    }
 
     /// Build an image from [`BuildRequest`]. The inner `Err` is the build's
     /// output, stdout and stderr in order, when the build ran and failed.

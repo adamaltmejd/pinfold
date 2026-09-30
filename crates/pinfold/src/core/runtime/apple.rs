@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -135,13 +136,55 @@ impl Runtime for Apple {
     }
 
     fn purge_build_cache(&self) -> io::Result<()> {
-        // The builder container holds the build cache. `--force` removes a
-        // running builder too; a missing builder is not an error.
-        output(&["container", "builder", "delete", "--force"]).map(drop)
+        let Some(builder) = containers()?
+            .into_iter()
+            .find(|entry| entry.id == "buildkit")
+        else {
+            return Ok(());
+        };
+        if builder.status.state != "running" {
+            // `builder start` may replace an existing instance when its
+            // defaults changed; start this instance without replacing it.
+            output(&["container", "start", "buildkit"])?;
+        }
+        // BuildKit holds active records while pruning. Deleting the shared
+        // builder instead interrupts builds in other processes (#75).
+        output(&[
+            "container",
+            "exec",
+            "buildkit",
+            "buildctl",
+            "prune",
+            "--all",
+        ])
+        .map(drop)
     }
 
     fn build_cache(&self) -> &'static str {
-        "the runtime's builder container"
+        "the shared builder's backing storage (unused cache is pruned)"
+    }
+
+    fn build_cache_bytes(&self) -> io::Result<Option<u64>> {
+        let Some(builder) = containers()?
+            .into_iter()
+            .find(|entry| entry.id == "buildkit")
+        else {
+            return Ok(Some(0));
+        };
+        // The exports mount records the runtime's actual app root, including
+        // a custom root. Count allocated blocks: rootfs.ext4 is sparse and
+        // BuildKit's logical cache size misses retained filesystem space (#74).
+        let exports = builder
+            .configuration
+            .mounts
+            .iter()
+            .find(|mount| mount.destination == "/var/lib/container-builder-shim/exports")
+            .map(|mount| Path::new(&mount.source))
+            .ok_or_else(|| io::Error::other("builder exports mount is missing"))?;
+        let root = exports
+            .parent()
+            .ok_or_else(|| io::Error::other("builder exports mount has no parent"))?;
+        allocated_bytes(&root.join("containers/buildkit")).map(Some)
     }
 
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
@@ -229,6 +272,24 @@ struct ListedConfiguration {
     #[serde(rename = "creationDate")]
     created: String,
     resources: ListedResources,
+    mounts: Vec<ListedMount>,
+}
+
+#[derive(Deserialize)]
+struct ListedMount {
+    source: String,
+    destination: String,
+}
+
+fn allocated_bytes(path: &Path) -> io::Result<u64> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    let mut bytes = metadata.blocks() * 512;
+    if metadata.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            bytes += allocated_bytes(&entry?.path())?;
+        }
+    }
+    Ok(bytes)
 }
 
 /// The image a box runs, as the runtime records it.

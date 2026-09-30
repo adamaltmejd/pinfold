@@ -629,7 +629,8 @@ last tag while a box uses it. An image goes with its last tag.
 
 `pinfold clean` lists sizes, then removes:
 - everything automatic, now
-- the runtime's build cache (Apple: the builder container; podman: the
+- the runtime's unused build cache (Apple: BuildKit records, keeping the
+  shared builder and active builds; podman: the
   `dev.pinfold.layer` intermediate images no image builds on)
 - caches in project homes (`~/.cache`), except a project's with a live box
 - state of projects whose checkout is gone
@@ -639,11 +640,16 @@ last tag while a box uses it. An image goes with its last tag.
 
 `--dry-run` only lists. `doctor` shows disk use per category and suggests
 `clean` above 20 GB. `doctor` runs no maintenance and changes no pinfold
-state or artifacts. When runtime checks fail, it skips runtime-dependent
-image, config, linger and disk probes. On Linux, failed preflight also reports
+state or artifacts. On Apple, disk use includes allocated builder backing
+storage, including a stopped builder, rather than its sparse file's length
+or BuildKit's logical cache size. Pruning unused records may reclaim less
+host disk space than this measurement. Podman's build cache is unmeasured.
+When runtime checks fail, it skips runtime-dependent image, config, linger
+and disk probes. On Linux, failed preflight also reports
 missing host requirements independently of Podman: `runtime-dir` names the
 selected `$XDG_RUNTIME_DIR` or `/run/user/<uid>`, `systemd` the system
-manager, and `cgroup-v2` the cgroup filesystem.
+manager, `cgroup-v2` the cgroup filesystem, and `tun` an inaccessible
+`/dev/net/tun`.
 
 ## pi layer
 
@@ -773,7 +779,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |
 | 13 | Project state persists and stays separate | Settings are seeded once and survive runs; a deleted seed returns; two projects don't see each other's state; `profile new --from-project` copies the project's settings but not its `auth.json`. |
 | 14 | Both pi config levels load behind a route | `pi -p` through the shim, against a fake model reached through a route: the model's request carries a skill from the profile and one from the project's `.pi/`. |
-| 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself; an image built on a profile's is its own family; a source a build left above two drops to two on a later `pinfold clean` with no build after. `--dry-run` leaves a project state the real clean removes. Two names built from identical inputs share one image id; `image rm` of one removes its tags while a box of the other name runs the image, and leaves the other name's tags, the image and the box; an image's last tag stays while a box uses it. An unlabeled image, a live box, its project's state and `~/.cache` survive `pinfold clean`, also with `--unused 0s`, which removes an idle project's state; a dead box is removed and protects no project's cache. |
+| 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself; an image built on a profile's is its own family; a source a build left above two drops to two on a later `pinfold clean` with no build after. `--dry-run` leaves a project state the real clean removes. Two names built from identical inputs share one image id; `image rm` of one removes its tags while a box of the other name runs the image, and leaves the other name's tags, the image and the box; an image's last tag stays while a box uses it. An unlabeled image, a live box, its project's state and `~/.cache` survive `pinfold clean`, also with `--unused 0s`, which removes an idle project's state; a dead box is removed and protects no project's cache. On Apple, a build in another state directory held active in RUN succeeds across clean; dry-run counts at least the builder backing filesystem's allocated host bytes. |
 | 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW carries the default list's hosts; with PINFOLD_ALLOW=api.github.com over a project's allow = ["registry.npmjs.org"], it is exactly that host, and registry.npmjs.org is refused as not allowlisted. The project's cpus and memory reach the box. |
 | 17 | up refuses before it creates | A missing image, a misspelled spec key, a bad env name, a `dev.pinfold.` label, a memory below 256M or without a unit, a malformed string route, a login route naming another harness, a suffix allow entry on or above a public suffix, a mount path with a comma, a file mount, a missing mount host (including a dangling symlink), a mount at a path pinfold mounts and a live name are refused as data, naming the cause; a misspelled key's refusal also names the box; each leaves no box and no state dir. The box whose name was reused still answers exec, and of two `up`s racing for one name exactly one wins. |
 | 18 | A caller reads the effective configuration as data | pinfold config reports a project's allow list, its trust state before and after pinfold allow, and the project home pinfold pi then mounts. |
@@ -785,7 +791,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 24 | Every build reruns its steps | A second build of one source does not reuse the first's `RUN` layer; on podman it leaves no untagged image. |
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box list --help` exits 0, with no runtime and leaving the state dir untouched. |
 | 26 | A login route keeps the login on the host | With `to` at a host fixture, claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. An empty `CODEX_HOME` is refused as `login`. On macOS only (the operator's Mac or dedicated nightly runner, with a real login), codex completes one tool round trip through a route with no `to`. |
-| 27 | Doctor reports without changing state | With a working runtime and with no runtime on PATH, doctor leaves a fresh state directory empty and an old artifact intact. On Linux, the failed-runtime report names a missing runtime directory as `runtime-dir`. |
+| 27 | Doctor reports without changing state | With a working runtime and with no runtime on PATH, doctor leaves a fresh state directory empty and an old artifact intact. On Linux, with no runtime on PATH and with real Podman failing on a missing runtime directory, the report names it as `runtime-dir`, and names `tun` in a private mount namespace with no `/dev/net/tun`. |
 
 Linux (podman) runs in CI on every push to main and every pull request,
 and on a dispatched ref, on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm`

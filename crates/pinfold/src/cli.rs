@@ -416,9 +416,12 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
     let runtime = runtime();
     let plan = CleanPlan::measure(runtime, unused)?;
     if dry_run {
-        println!("pinfold clean: dry run; {} B reclaimable", plan.total());
+        println!("pinfold clean: dry run; {} B measured", plan.total());
     } else {
-        println!("pinfold clean: reclaiming {} B", plan.total());
+        println!(
+            "pinfold clean: {} B measured; removing unused data",
+            plan.total()
+        );
     }
     plan.print(runtime);
     if !dry_run {
@@ -427,8 +430,7 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// Everything one `clean` pass measures and would remove, measured before
-/// anything is removed, so `remove` removes exactly what was printed.
+/// Disk categories and paths for one `clean` pass, measured before removal.
 /// `doctor` measures with it too, and removes nothing.
 struct CleanPlan {
     /// The pass's box list from `measure`: dead boxes to remove, and live
@@ -442,6 +444,7 @@ struct CleanPlan {
     automatic_bytes: u64,
     project_caches: u64,
     project_state: u64,
+    build_cache_bytes: Option<u64>,
 }
 
 impl CleanPlan {
@@ -482,6 +485,7 @@ impl CleanPlan {
 
         Ok(CleanPlan {
             boxes,
+            build_cache_bytes: runtime.build_cache_bytes()?,
             automatic_bytes: automatic.iter().map(|path| clean::path_bytes(path)).sum(),
             project_caches: caches.iter().map(|path| clean::path_bytes(path)).sum(),
             project_state: stale.iter().map(|path| clean::path_bytes(path)).sum(),
@@ -491,16 +495,22 @@ impl CleanPlan {
         })
     }
 
-    /// The bytes a real `clean` would reclaim, the unmeasured build cache
-    /// aside.
+    /// Measured disk use. Build-cache backing storage includes filesystem
+    /// overhead and active records, so pruning may reclaim less.
     fn total(&self) -> u64 {
-        self.automatic_bytes + self.project_caches + self.project_state
+        self.automatic_bytes
+            + self.project_caches
+            + self.project_state
+            + self.build_cache_bytes.unwrap_or(0)
     }
 
     /// List the categories, as `clean` and `doctor` both show them.
     fn print(&self, runtime: &dyn Runtime) {
         println!("  automatic maintenance: {} B", self.automatic_bytes);
-        println!("  build cache: {}", runtime.build_cache());
+        match self.build_cache_bytes {
+            Some(bytes) => println!("  build cache: {bytes} B; {}", runtime.build_cache()),
+            None => println!("  build cache: unmeasured; {}", runtime.build_cache()),
+        }
         println!("  project caches: {} B", self.project_caches);
         println!("  project state: {} B", self.project_state);
     }

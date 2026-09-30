@@ -18,8 +18,3 @@ mod pi;
 /// the other's dead box before the other expects it. Hold this from killing
 /// an owner until that test's removal has run.
 static DEAD_BOX_RACE: Mutex<()> = Mutex::new(());
-
-/// `cleanup_removes_only_pinfolds_garbage` deletes the runtime's builder in
-/// its `clean`, and a build racing that deletion fails. Every test that
-/// builds holds this from before its first build through its last.
-static BUILDER_RACE: Mutex<()> = Mutex::new(());
