@@ -720,7 +720,8 @@ manager, `cgroup-v2` the cgroup filesystem, and `tun` an inaccessible
   on open. Always `.vscode/`, `.claude/` and `.idea/`, plus the configured
   list. One that is absent is created empty on the host before the run, so
   the box cannot create it, and removed after the run if still empty. One
-  that is a symlink, or is reached through one, refuses the run.
+  that is a symlink, or is reached through one, refuses the run as
+  `protected-path-invalid`.
 - **herdr:** no socket in v1. The TTY passes through, so screen detection
   works, and the shim sets `HERDR_AGENT=pi`.
 - **Attach:** `pinfold attach [--box NAME] [cmd…]` execs bash (or cmd) in
@@ -806,7 +807,7 @@ prints that subcommand's syntax line and exits 0, touching neither. `pi`
 passes it to pi, and `attach` to its command once one is given.
 
 The project root is the git top level, else `$PWD`. Inside a git directory,
-the command refuses.
+the command refuses as `project-in-git`.
 
 ## Guarantees
 
@@ -824,7 +825,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, the box has no egress. With its `pid` file naming a live process, `list` reports the owner gone, `box prune` removes it, and the name can be used again. |
 | 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; `down` removes, and closing `up`'s stdin tears the box down with reason `stdin-closed`. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box or an empty name exits 0, prints nothing and leaves live boxes alone. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. |
-| 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails, also under a top level named by a space, and a symlinked protected path refuses the run; starting inside `.git` is refused. Control: a project file is writable. |
+| 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails, also under a top level named by a space, and a symlinked protected path refuses the run as `protected-path-invalid`; replacing it with a real directory runs. Starting inside `.git` is refused as `project-in-git`; starting from the project root runs. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |
 | 13 | Project state persists and stays separate | Settings are seeded once and survive runs; a deleted seed returns; two projects don't see each other's state; `profile new --from-project` copies the project's settings but not its `auth.json`. |
 | 14 | Both pi config levels load behind a route | `pi -p` through the shim, against a fake model reached through a route: the model's request carries a skill from the profile and one from the project's `.pi/`. |

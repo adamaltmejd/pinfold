@@ -538,7 +538,8 @@ fn the_box_cannot_write_git_or_protected_config() {
     // A protected path the host planted as a symlink refuses the run: the
     // runtime resolves a bind-mount source on the host, so following it
     // would mount the target into the box. Sabotage: skip pi::git's symlink
-    // check; the run starts and the exit assertion fails.
+    // check; the run starts and the exit assertion fails. Sabotage: remove
+    // `protected-path-invalid` from `not_real_dir`; the reason assertion fails.
     let outside = TestDir::new(&env, "outside");
     let symlinked = TestDir::new(&env, "symlinked");
     git(symlinked.path(), &["init", "-q"]);
@@ -552,12 +553,20 @@ fn the_box_cannot_write_git_or_protected_config() {
         !refused.status.success(),
         "pinfold pi started with a symlinked .vscode: {stderr}"
     );
+    assert!(
+        stderr.contains("protected-path-invalid"),
+        "wrong refusal: {stderr}"
+    );
+    fs::remove_file(&link).expect("remove .vscode symlink");
+    fs::create_dir(&link).expect("create real .vscode directory");
+    pi_version(&env, symlinked.path());
 
     // `pinfold pi` started inside the repository's `.git` refuses before it
     // creates a box or a project state: the fallback root would be `.git`
     // itself, mounted writable, so host git would run what the box writes
     // there. Sabotage: drop the `--is-inside-git-dir` check from
     // `project_root`; the run starts, exits 0, and the exit assertion fails.
+    // Sabotage: remove `project-in-git` from that refusal; the reason assertion fails.
     let dot_git = fs::canonicalize(root.join(".git")).expect("canonicalize .git");
     let refused = pinfold_in(&env, &dot_git, &["pi", "--version"])
         .output()
@@ -567,6 +576,8 @@ fn the_box_cannot_write_git_or_protected_config() {
         !refused.status.success(),
         "pinfold pi started inside .git: {stderr}"
     );
+    assert!(stderr.contains("project-in-git"), "wrong refusal: {stderr}");
+    pi_version(&env, root);
 
     // A top level whose name is a space is the root: only git's trailing
     // newline comes off, so trimming would resolve to the parent and leave

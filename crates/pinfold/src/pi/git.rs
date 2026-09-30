@@ -201,7 +201,7 @@ fn not_real_dir(path: &Path) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
         format!(
-            "refusing to run: {} is not a real directory under the project root",
+            "protected-path-invalid: {} is not a real directory under the project root",
             path.display()
         ),
     )

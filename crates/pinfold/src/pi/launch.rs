@@ -51,7 +51,10 @@ pub(crate) fn project_root(cwd: &Path) -> io::Result<PathBuf> {
     if git(&cwd, &["rev-parse", "--is-inside-git-dir"]).is_ok_and(|inside| inside == "true") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("refusing to run inside a git directory: {}", cwd.display()),
+            format!(
+                "project-in-git: refusing to run inside a git directory: {}",
+                cwd.display()
+            ),
         ));
     }
     let top = git(&cwd, &["rev-parse", "--show-toplevel"]).ok();
