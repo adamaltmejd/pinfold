@@ -30,7 +30,7 @@ from the release page, or on a private repository with
 install. macOS (Apple silicon):
 
 ```sh
-version=0.0.9
+version=0.1.0
 shasum -a 256 -c --ignore-missing SHA256SUMS
 mkdir -p ~/.local/bin
 install -m 0755 "pinfold-$version-aarch64-apple-darwin" ~/.local/bin/pinfold
@@ -43,7 +43,7 @@ refuses it until `xattr -d com.apple.quarantine` clears it.
 Linux, a static musl binary:
 
 ```sh
-version=0.0.9
+version=0.1.0
 sha256sum -c --ignore-missing SHA256SUMS
 mkdir -p ~/.local/bin
 install -m 0755 "pinfold-$version-$(uname -m)-unknown-linux-musl" ~/.local/bin/pinfold
