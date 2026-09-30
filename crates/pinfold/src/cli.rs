@@ -940,7 +940,7 @@ fn image_rm(args: &[String]) -> io::Result<i32> {
     if let Err(error) = profile::check_name("image", name) {
         return Ok(refused(Some(name), error.to_string()));
     }
-    let removed = clean::remove_images(runtime(), None, name)?;
+    let removed = clean::remove_images(runtime(), name)?;
     println!(
         "{}",
         serde_json::json!({

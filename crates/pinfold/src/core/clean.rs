@@ -424,17 +424,10 @@ pub struct Removed {
     pub in_use: Vec<String>,
 }
 
-/// Retire one source: remove every [`source_images`] reference, whatever
-/// its age, except an image's last tag while a listed box uses that image.
-/// For a caller name that is its tags alone, so another name's tags on a
-/// shared image stay; a profile's or a project's whole image goes. Return
-/// the ids it untagged and the ids whose last tag it kept because a box
-/// uses them. The listing and in-use check are [`keep_two_images`]'s.
-pub fn remove_images(
-    runtime: &dyn Runtime,
-    label: Option<&str>,
-    source: &str,
-) -> io::Result<Removed> {
+/// Retire a caller image name: remove its tags, except an image's last tag
+/// while a listed box uses it. Return the ids untagged and whose last tag
+/// stayed. Another name's tags on a shared image stay.
+pub fn remove_images(runtime: &dyn Runtime, source: &str) -> io::Result<Removed> {
     let listing = runtime.list_images()?;
     let in_use = in_use_images(runtime)?;
     // Every reference the store lists, so an image's last tag counts
@@ -443,7 +436,7 @@ pub fn remove_images(
     // This source's references, grouped by image id: two builds of
     // unchanged inputs share one image, and two names share one by tag.
     let mut images: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for image in source_images(&listing, label, source) {
+    for image in source_images(&listing, None, source) {
         images
             .entry(image.id.clone())
             .or_default()
