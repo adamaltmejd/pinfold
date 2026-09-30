@@ -315,6 +315,16 @@ pub fn host_requirements() -> Vec<String> {
             "cgroup-v2: cannot inspect /sys/fs/cgroup: {error}"
         )),
     }
+    #[cfg(target_os = "linux")]
+    if let Err(error) = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/net/tun")
+    {
+        missing.push(format!(
+            "tun: /dev/net/tun: {error}; rootless podman networking needs access to the tun device"
+        ));
+    }
     missing
 }
 

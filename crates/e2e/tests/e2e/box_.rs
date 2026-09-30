@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{BUILDER_RACE, DEAD_BOX_RACE};
+use crate::DEAD_BOX_RACE;
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
     box_stat, build_profile, curl, default_image, egress_log, egress_log_lines, exit_code, git,
@@ -1236,14 +1236,11 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // `remove_images` remove every reference of an image's id instead of
     // only the name's tags; the twin's tag goes with the shared image and
     // the twin assertion fails.
+    // Sabotage: force-delete Apple's shared builder during clean; the
+    // other process's build, held in RUN by the host fixture, fails.
+    // Sabotage: omit Apple's allocated build-cache storage from the
+    // report; its byte count falls below the backing filesystem's du.
     let env = TestEnv::new("cleanup");
-    // `clean` deletes the runtime's builder, so hold off the other tests'
-    // builds through this test's `clean`: a build racing the deletion fails.
-    // This also waits for the suite's shared default image, which must be
-    // built before the deletion.
-    let _builds = BUILDER_RACE
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
     default_image(&env);
     // A profile of this test's own, named for this run, so the operator's
     // default profile images, the other tests and a failed run's leftovers
@@ -1511,8 +1508,137 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "--dry-run removed the other project's state"
     );
 
-    // The real clean removes the dead box and only the dead box.
-    run_ok(env.command(pinfold()).args(["clean"]));
+    // The real clean removes the dead box and only the dead box. Apple's
+    // builder is shared across state directories, so keep another caller's
+    // RUN active while clean prunes unused cache.
+    if cfg!(target_os = "macos") {
+        let network = run_ok(Command::new("container").args(["network", "ls", "--format", "json"]));
+        let networks: serde_json::Value = serde_json::from_slice(&network.stdout).unwrap();
+        let gateway = networks
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|network| network["id"] == "default")
+            .unwrap()["status"]["ipv4Gateway"]
+            .as_str()
+            .unwrap();
+        let listener = std::net::TcpListener::bind((gateway, 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let (active_tx, active_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(60)))
+                .unwrap();
+            let mut request = BufReader::new(stream);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                assert_ne!(request.read_line(&mut line).unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            active_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+            request
+                .get_mut()
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+        });
+        let other = TestEnv::new("clean-build");
+        let name = format!("{profile}-active");
+        let _active_images = ImageCleanup {
+            repository: format!("pinfold/image-{name}"),
+        };
+        let context = other.root.join("context");
+        fs::create_dir_all(&context).unwrap();
+        let containerfile = context.join("Containerfile");
+        fs::write(
+            &containerfile,
+            format!(
+                "FROM {}\nRUN curl --fail --max-time 60 http://{address}/\n",
+                default_image(&other)
+            ),
+        )
+        .unwrap();
+        let mut build = other
+            .command(pinfold())
+            .args(["image", "build", &name, "--containerfile"])
+            .arg(&containerfile)
+            .arg("--context")
+            .arg(&context)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        if let Err(error) = active_rx.recv_timeout(std::time::Duration::from_secs(60)) {
+            let _ = build.kill();
+            let output = build.wait_with_output().unwrap();
+            panic!("build did not reach the host fixture: {error}; {output:?}");
+        }
+        let inspected = run_ok(Command::new("container").args(["inspect", "buildkit"]));
+        let builder: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
+        let exports = builder[0]["configuration"]["mounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|mount| mount["destination"] == "/var/lib/container-builder-shim/exports")
+            .unwrap()["source"]
+            .as_str()
+            .unwrap();
+        let backing = Path::new(exports)
+            .parent()
+            .unwrap()
+            .join("containers/buildkit/rootfs.ext4");
+        let allocated = run_ok(Command::new("du").arg("-k").arg(&backing));
+        let allocated: u64 = String::from_utf8(allocated.stdout)
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            allocated > 0,
+            "the active builder has no allocated backing storage"
+        );
+        let report = run_ok(env.command(pinfold()).args(["clean", "--dry-run"]));
+        let report = String::from_utf8(report.stdout).unwrap();
+        let measured: u64 = report
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("build cache: "))
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        // Other builds can allocate more between du and the report. This
+        // test is the only one pruning, and it has not pruned yet.
+        assert!(
+            measured >= allocated * 1024,
+            "build cache undercounts allocated backing storage: {report}"
+        );
+        let cleaned = env.command(pinfold()).arg("clean").output().unwrap();
+        release_tx.send(()).unwrap();
+        server.join().unwrap();
+        assert!(
+            cleaned.status.success(),
+            "clean during another caller's build: {cleaned:?}"
+        );
+        let built = build.wait_with_output().unwrap();
+        assert!(
+            built.status.success(),
+            "build held active across clean: {built:?}"
+        );
+        let built: serde_json::Value = serde_json::from_slice(&built.stdout).unwrap();
+        assert_eq!(built["event"], "built");
+        assert!(image_id(built["ref"].as_str().unwrap()).is_some());
+    } else {
+        run_ok(env.command(pinfold()).args(["clean"]));
+    }
     assert!(
         image_id(&unlabeled).is_some(),
         "clean removed an unlabeled image"
@@ -1780,12 +1906,6 @@ fn every_build_reruns_its_steps() {
     // from the first build's layer, the two values match, and podman's
     // untagged-image assertion fails.
     let env = TestEnv::new("rerun");
-    // The cleanup test's `clean` deletes the runtime's builder; a build
-    // racing that deletion fails. Hold the same lock it does, and wait for
-    // the suite's shared default image so the base is already pulled.
-    let _builds = BUILDER_RACE
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
     default_image(&env);
 
     let profile = format!("e2e-rerun-{}", std::process::id());
@@ -1853,12 +1973,6 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // build label into every image again, as `dev.pinfold.build` was; the
     // repeated build makes a new image and the one-id assertion fails.
     let env = TestEnv::new("image-build");
-    // The cleanup test's `clean` deletes the runtime's builder; a build
-    // racing that deletion fails. Hold the same lock it does, and wait for
-    // the suite's shared default image, which this image builds on.
-    let _builds = BUILDER_RACE
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
     let base = default_image(&env);
 
     let name = format!("pinfold-e2e-{}", std::process::id());
