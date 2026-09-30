@@ -518,8 +518,8 @@ Automatic updates are disabled unless `PINFOLD_AUTO_RELEASES` is `true` and
 a dedicated Mac runner has the `pinfold-nightly` label.
 Manual runner checks can install missing build tools and run the Mac suite
 without updating pins or releasing.
-The dedicated CI runtime removes unused images before and after each Mac
-suite, targeting 4 GiB of unused builder cache and 2 GiB of test
+The dedicated CI runtime removes leftover boxes and unused images before
+and after each Mac suite, targeting 4 GiB of unused builder cache and 2 GiB of test
 artifacts. Builds require at least 20 GiB free. These are cleanup targets,
 not filesystem quotas. The next suite builds its default image from the
 candidate's embedded profile.

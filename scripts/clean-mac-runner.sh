@@ -3,7 +3,8 @@
 set -eu
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-cache="$(getconf DARWIN_USER_TEMP_DIR)/pinfold-e2e-cache"
+temp=${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR)}
+cache="$temp/pinfold-e2e-cache"
 state=$(mktemp -d /private/tmp/pinfold-runner-clean.XXXXXX)
 trap 'rm -rf "$state"' EXIT
 
@@ -13,7 +14,13 @@ if [ -x "$root/target/debug/pinfold" ]; then
     XDG_CACHE_HOME="$cache" "$root/target/debug/pinfold" artifacts >/dev/null
 fi
 
-container prune
+# An interrupted job can leave running boxes. Only the shared builder survives.
+containers=$(container list --all --quiet)
+for container_id in $containers; do
+  if [ "$container_id" != buildkit ]; then
+    container delete --force "$container_id"
+  fi
+done
 # Removing the idle default profile also prevents testing yesterday's pins.
 container image prune --all >/dev/null
 builder=$(container builder status --quiet)
