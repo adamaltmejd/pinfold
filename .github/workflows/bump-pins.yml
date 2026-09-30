@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "23 2 * * *"
   workflow_dispatch:
+    inputs:
+      check_runner:
+        description: Check the dedicated Mac and run its suite without updating pins or releasing
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -14,7 +19,7 @@ concurrency:
 
 jobs:
   prepare:
-    if: vars.PINFOLD_AUTO_RELEASES == 'true'
+    if: vars.PINFOLD_AUTO_RELEASES == 'true' && !inputs.check_runner
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
@@ -90,14 +95,35 @@ jobs:
 
   macos:
     needs: prepare
-    if: needs.prepare.outputs.ref != ''
+    if: always() && (inputs.check_runner || needs.prepare.outputs.ref != '')
     runs-on: [self-hosted, macOS, ARM64, pinfold-nightly]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          ref: ${{ needs.prepare.outputs.ref }}
+          ref: ${{ needs.prepare.outputs.ref || github.sha }}
           persist-credentials: false
+      - name: Runner tool paths
+        run: |
+          printf '%s\n' "$HOME/.cargo/bin" /opt/homebrew/bin /usr/local/bin >>"$GITHUB_PATH"
+      - name: Runner readiness
+        run: |
+          sw_vers
+          uname -m
+          id -un
+          missing=0
+          for tool in brew cargo rustup zig cargo-zigbuild container; do
+            if ! command -v "$tool"; then
+              echo "Missing tool: $tool" >&2
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+          rustup show active-toolchain
+          zig version
+          cargo zigbuild --version
+          container --version
+          container system status
       - name: Full Mac end-to-end suite, including live login
         run: cargo test -p e2e --locked
 
