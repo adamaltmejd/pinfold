@@ -5,6 +5,7 @@
 //! available and absent from PATH.
 
 use std::fs;
+use std::path::Path;
 
 use e2e::{TestEnv, pinfold};
 
@@ -72,7 +73,7 @@ fn doctor_reports_without_changing_state() {
     // state directory gains a maintenance stamp and the old artifact goes.
     // Sabotage: omit host_requirements after a failed preflight; the Linux
     // refusal no longer names the missing runtime directory. Remove its
-    // tun check; a host with an inaccessible device loses its named reason.
+    // tun check; the isolated namespace with no device loses its named reason.
     let env = TestEnv::with_private_cache("doctor");
     let old = env.root.join("cache/pinfold/artifacts/pi/0.0.0/marker");
     fs::create_dir_all(old.parent().unwrap()).unwrap();
@@ -83,11 +84,29 @@ fn doctor_reports_without_changing_state() {
 
     // The real Podman also fails before reporting its host settings when
     // XDG_RUNTIME_DIR is absent. All reports leave the same fixtures alone.
-    for scenario in ["ready", "no-runtime", "missing-runtime-dir"] {
-        if scenario == "missing-runtime-dir" && !cfg!(target_os = "linux") {
+    for scenario in ["ready", "no-runtime", "missing-runtime-dir", "no-tun"] {
+        if matches!(scenario, "missing-runtime-dir" | "no-tun") && !cfg!(target_os = "linux") {
             continue;
         }
-        let mut command = env.command(pinfold());
+        let mut command = if scenario == "no-tun" {
+            // Mount only inside a private user/mount namespace. The real
+            // runtime stays on PATH; the host's devices remain untouched.
+            let mut command = env.command(Path::new("unshare"));
+            command
+                .args([
+                    "--user",
+                    "--map-root-user",
+                    "--mount",
+                    "sh",
+                    "-c",
+                    "if [ -d /dev/net ]; then mount -t tmpfs tmpfs /dev/net || exit; fi; exec \"$@\"",
+                    "--",
+                ])
+                .arg(pinfold());
+            command
+        } else {
+            env.command(pinfold())
+        };
         command.arg("doctor").current_dir(&env.root);
         if scenario != "ready" {
             command.env("XDG_RUNTIME_DIR", &missing);
@@ -113,12 +132,7 @@ fn doctor_reports_without_changing_state() {
                 report.contains("runtime-dir") && report.contains(missing.to_str().unwrap()),
                 "doctor did not identify the missing runtime directory: {report}"
             );
-            if fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open("/dev/net/tun")
-                .is_err()
-            {
+            if scenario == "no-tun" {
                 assert!(
                     report.contains("tun") && report.contains("/dev/net/tun"),
                     "doctor did not identify the unavailable tun device: {report}"

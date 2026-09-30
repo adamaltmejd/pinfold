@@ -41,12 +41,15 @@ Sources: [Apple builder mounts](https://github.com/apple/container/blob/main/Sou
 - Remove the suite's builder mutex and its five holders. They concealed
   the cross-process failure and are unnecessary with native pruning.
 - Row 27: extend the failed-runtime case to real Podman with a missing
-  runtime directory. The outside host also supplies the expected tun access
-  result. Omitting the independent host checks loses the named reasons.
+  runtime directory. A private Linux user and mount namespace overlays
+  `/dev/net` with tmpfs when present, so the missing tun device is a known
+  fixture rather than a conditional check on a healthy host. Real Podman
+  stays on PATH; other devices remain available inside the namespace.
+  Omitting the independent host checks loses the named reasons.
   Assertions use the spec tokens and device path, not diagnostic punctuation.
 
 No new test or guarantee row. Rows 15 and 27 describe the added scenarios.
-Test files: box_.rs 3,297 lines; cli.rs 129 lines. Binary files: apple.rs
+Test files: box_.rs 3,297 lines; cli.rs 143 lines. Binary files: apple.rs
 377 lines; podman.rs 505 lines; cli.rs 1,136 lines.
 
 ## Validation
