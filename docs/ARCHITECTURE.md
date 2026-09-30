@@ -514,8 +514,10 @@ pins receive a patch release after Linux x64 and arm64 tests, the full
 Mac suite including live login, and all three release builds pass for the
 same commit. Unreleased implementation changes since the latest release
 block it. A concurrent change to main aborts promotion.
-The workflow is disabled unless `PINFOLD_AUTO_RELEASES` is `true` and
+Automatic updates are disabled unless `PINFOLD_AUTO_RELEASES` is `true` and
 a dedicated Mac runner has the `pinfold-nightly` label.
+Manual runner checks can install missing build tools and run the Mac suite
+without updating pins or releasing.
 
 codex also pins a host helper, `codex-app-server`, per host `os-arch`
 (`darwin-arm64`, `linux-arm64`, `linux-x64`), installed the same way into

@@ -140,11 +140,13 @@ jobs:
           if [ "$missing" -ne 0 ]; then exit 1; fi
           rustup show active-toolchain
           zig version
-          cargo zigbuild --version
+          cargo-zigbuild --version
           container --version
           container system status
       - name: Full Mac end-to-end suite, including live login
-        run: cargo test -p e2e --locked
+        run: |
+          toolchain=$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)
+          rustup run "$toolchain" cargo test -p e2e --locked
 
   release:
     needs: [prepare, validate, macos]
