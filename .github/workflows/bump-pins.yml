@@ -153,6 +153,8 @@ jobs:
             exit 1
           fi
       - name: Full Mac end-to-end suite, including live login
+        env:
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: sh ${{ github.workspace }}/scripts/run-mac-e2e.sh
         run: |
           toolchain=$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)
           rustup run "$toolchain" cargo test -p e2e --locked

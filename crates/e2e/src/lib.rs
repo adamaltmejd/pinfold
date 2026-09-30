@@ -18,10 +18,9 @@ use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-/// The built `pinfold` binary. The test executable lives in
-/// `<target>/<profile>/deps`, so the binary is its sibling. On Linux the
-/// box's PID 1 is the CLI's own executable, so the static musl target is
-/// built and its binary used.
+/// The built `pinfold` binary, under Cargo's target directory even when the
+/// test executable is copied elsewhere. Linux boxes use the CLI's own
+/// executable as PID 1, so the static musl target is built and used.
 pub fn pinfold() -> &'static Path {
     static BINARY: OnceLock<PathBuf> = OnceLock::new();
     BINARY.get_or_init(|| {
@@ -34,12 +33,19 @@ pub fn pinfold() -> &'static Path {
         }
         let status = command.status().expect("run cargo build -p pinfold");
         assert!(status.success(), "cargo build -p pinfold failed");
-        let exe = std::env::current_exe().expect("test executable path");
-        let target = exe
-            .parent()
-            .and_then(Path::parent)
-            .and_then(Path::parent)
-            .expect("target dir");
+        let metadata = run_ok(Command::new(env!("CARGO")).args([
+            "metadata",
+            "--no-deps",
+            "--format-version",
+            "1",
+        ]));
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&metadata.stdout).expect("parse cargo metadata");
+        let target = PathBuf::from(
+            metadata["target_directory"]
+                .as_str()
+                .expect("Cargo target_directory"),
+        );
         let binary = match &triple {
             Some(triple) => target.join(triple).join("debug").join("pinfold"),
             None => target.join("debug").join("pinfold"),

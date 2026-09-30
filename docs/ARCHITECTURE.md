@@ -520,6 +520,8 @@ Automatic updates are disabled unless `PINFOLD_AUTO_RELEASES` is `true` and
 a dedicated Mac runner has the `pinfold-nightly` label.
 Manual runner checks can install missing build tools and run the Mac suite
 without updating pins or releasing.
+The Mac runner executes tests at `~/.local/lib/pinfold-ci/e2e`; its
+firewall must permit incoming fixture connections for that executable.
 The dedicated CI runtime removes leftover boxes and unused images before
 and after each Mac suite, targeting 4 GiB of unused builder cache and
 2 GiB of test artifacts. Builds require at least 20 GiB free. These are cleanup targets,
