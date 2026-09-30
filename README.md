@@ -123,9 +123,7 @@ Configuration in [ARCHITECTURE.md](docs/ARCHITECTURE.md#configuration).
 For `pinfold pi`, forward host variables with `PINFOLD_ENV_<NAME>`.
 Programmatic callers use the [box spec](docs/ARCHITECTURE.md#process-interface).
 
-## What pinfold does not protect, and what Apple `container` cannot do
+## Limits
 
-The threat model's ["Not protected"](docs/ARCHITECTURE.md#threat-model)
-list and the [Shared files](docs/ARCHITECTURE.md#shared-files) table are
-the contract;
-read both before trusting a box with a repository.
+Read the [threat model](docs/ARCHITECTURE.md#threat-model) and
+[shared files](docs/ARCHITECTURE.md#shared-files) before using pinfold with a repository.
