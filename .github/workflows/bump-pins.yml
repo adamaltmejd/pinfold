@@ -9,6 +9,10 @@ on:
         description: Check the dedicated Mac and run its suite without updating pins or releasing
         type: boolean
         default: false
+      install_tools:
+        description: Install missing build tools on the Mac during a runner check
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -105,7 +109,22 @@ jobs:
           persist-credentials: false
       - name: Runner tool paths
         run: |
-          printf '%s\n' "$HOME/.cargo/bin" /opt/homebrew/bin /usr/local/bin >>"$GITHUB_PATH"
+          printf '%s\n' "$HOME/.cargo/bin" /opt/homebrew/bin /usr/local/bin /opt/homebrew/opt/rustup/bin >>"$GITHUB_PATH"
+      - name: Install runner build tools
+        if: inputs.check_runner && inputs.install_tools
+        run: |
+          missing=()
+          for tool in rustup zig cargo-zigbuild; do
+            if ! command -v "$tool" >/dev/null; then missing+=("$tool"); fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then brew install "${missing[@]}"; fi
+          toolchain=$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)
+          "$(brew --prefix rustup)/bin/rustup" toolchain install "$toolchain" \
+            --profile minimal --component rustfmt --component clippy \
+            --target aarch64-unknown-linux-musl
+          if ! container system status; then
+            container system start --enable-kernel-install
+          fi
       - name: Runner readiness
         run: |
           sw_vers
