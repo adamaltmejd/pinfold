@@ -1,0 +1,129 @@
+name: Nightly pins
+
+on:
+  schedule:
+    - cron: "23 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-pins
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: vars.PINFOLD_AUTO_RELEASES == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    outputs:
+      ref: ${{ steps.candidate.outputs.ref }}
+      base: ${{ steps.candidate.outputs.base }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Update harness and image-tool pins
+        run: sh scripts/bump-pins.sh
+
+      - name: Prepare changed pins
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- profile/Containerfile crates/pinfold/harnesses.toml; then
+            echo "Pins are current."
+            exit 0
+          fi
+
+          # Automatic notes promise no caller changes. Unreleased implementation
+          # changes must first go through the operator's release pass.
+          tag=$(gh release view --json tagName --jq .tagName)
+          if ! git diff --quiet "$tag" HEAD -- crates profile Cargo.toml Cargo.lock rust-toolchain.toml; then
+            echo "Unreleased implementation changes since $tag; release them manually first." >&2
+            exit 1
+          fi
+
+          base=$(git rev-parse HEAD)
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import tomllib
+
+          path = Path("Cargo.toml")
+          old = tomllib.loads(path.read_text())["workspace"]["package"]["version"]
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", old):
+              raise SystemExit("nightly pins requires a stable workspace version")
+          major, minor, patch = map(int, old.split("."))
+          new = f"{major}.{minor}.{patch + 1}"
+          path.write_text(path.read_text().replace(f'version = "{old}"', f'version = "{new}"', 1))
+          lock = Path("Cargo.lock")
+          text = lock.read_text()
+          for manifest in Path("crates").glob("*/Cargo.toml"):
+              name = tomllib.loads(manifest.read_text())["package"]["name"]
+              pattern = rf'(\[\[package\]\]\nname = "{re.escape(name)}"\nversion = "){re.escape(old)}(")'
+              text, count = re.subn(pattern, lambda m: m[1] + new + m[2], text)
+              if count != 1:
+                  raise SystemExit(f"cannot update workspace lock entry for {name}")
+          lock.write_text(text)
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add profile/Containerfile crates/pinfold/harnesses.toml Cargo.toml Cargo.lock
+          git commit -m "chore: update harness and image-tool pins"
+          ref=$(git rev-parse HEAD)
+          git push origin "HEAD:refs/heads/checks/pins-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          echo "ref=$ref" >>"$GITHUB_OUTPUT"
+          echo "base=$base" >>"$GITHUB_OUTPUT"
+
+  validate:
+    needs: prepare
+    if: needs.prepare.outputs.ref != ''
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.prepare.outputs.ref }}
+
+  macos:
+    needs: prepare
+    if: needs.prepare.outputs.ref != ''
+    runs-on: [self-hosted, macOS, ARM64, pinfold-nightly]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
+      - name: Full Mac end-to-end suite, including live login
+        run: cargo test -p e2e --locked
+
+  release:
+    needs: [prepare, validate, macos]
+    if: needs.prepare.outputs.ref != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      ref: ${{ needs.prepare.outputs.ref }}
+      base: ${{ needs.prepare.outputs.base }}
+
+  cleanup:
+    needs: [prepare, validate, release]
+    if: always()
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Delete candidate branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="checks/pins-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" >/dev/null 2>&1; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$branch"
+          fi

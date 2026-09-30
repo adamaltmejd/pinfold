@@ -509,6 +509,14 @@ mismatch fails the start, naming the harness, version and asset. A harness
 no box asks for is never downloaded. A harness moves only with a pinfold
 release.
 
+Nightly CI updates pi, claude, codex, bun, rtk and ponytail pins. Changed
+pins receive a patch release after Linux x64 and arm64 tests, the full
+Mac suite including live login, and all three release builds pass for the
+same commit. Unreleased implementation changes since the latest release
+block it. A concurrent change to main aborts promotion.
+The workflow is disabled unless `PINFOLD_AUTO_RELEASES` is `true` and
+a dedicated Mac runner has the `pinfold-nightly` label.
+
 codex also pins a host helper, `codex-app-server`, per host `os-arch`
 (`darwin-arm64`, `linux-arm64`, `linux-x64`), installed the same way into
 `~/.cache/pinfold/artifacts/codex/<version>/host-<os-arch>/` on the first
@@ -769,13 +777,14 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref, the image's id and the labels; three builds of one name move latest, and the first build's ref still comes up; two builds of unchanged inputs make one image under two refs; a failed build prints its log and makes no image. |
 | 24 | Every build reruns its steps | A second build of one source does not reuse the first's `RUN` layer; on podman it leaves no untagged image. |
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box list --help` exits 0, with no runtime and leaving the state dir untouched. |
-| 26 | A login route keeps the login on the host | With `to` at a host fixture, claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. An empty `CODEX_HOME` is refused as `login`. On macOS only (the operator's Mac, with a real login), codex completes one tool round trip through a route with no `to`. |
+| 26 | A login route keeps the login on the host | With `to` at a host fixture, claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. An empty `CODEX_HOME` is refused as `login`. On macOS only (the operator's Mac or dedicated nightly runner, with a real login), codex completes one tool round trip through a route with no `to`. |
 | 27 | Doctor reports without changing state | With a working runtime and with no runtime on PATH, doctor leaves a fresh state directory empty and an old artifact intact. On Linux, the failed-runtime report names a missing runtime directory as `runtime-dir`. |
 
 Linux (podman) runs in CI on every push to main and every pull request,
 and on a dispatched ref, on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm`
 runners. Before a push, the operator runs macOS (Apple `container`) on the
-host. `scripts/e2e-gate.sh` runs both suites for the current ref.
+host, or nightly CI runs it on the dedicated Mac runner.
+`scripts/e2e-gate.sh` runs both suites for the current ref.
 
 ## Code
 

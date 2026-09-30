@@ -3,6 +3,15 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+      base:
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -16,12 +25,16 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
-      - name: Tag matches the workspace version
+      - name: Workspace version
         id: version
+        env:
+          CANDIDATE_REF: ${{ inputs.ref }}
         run: |
           version="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+          if [ -z "$CANDIDATE_REF" ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
             echo "tag $GITHUB_REF_NAME is not v$version" >&2
             exit 1
           fi
@@ -42,6 +55,8 @@ jobs:
             target: aarch64-unknown-linux-musl
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Rust musl target
         run: |
@@ -74,6 +89,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       # build.rs cross-builds the embedded Linux init with cargo zigbuild,
       # so the macOS build needs zig, cargo-zigbuild and the musl target.
@@ -110,11 +127,15 @@ jobs:
       # gh's --notes-from-tag reads the tag annotation from the local
       # checkout and refuses --repo, so the repo is inferred from origin.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 2
 
-      # checkout writes the tag ref as the bare commit (--no-tags --depth=1),
+      # checkout writes the tag ref as the bare commit (--no-tags),
       # so the local tag is lightweight and gh would fall back to the commit
       # message. Fetch the annotated tag object.
       - name: Fetch annotated tag
+        if: ${{ !inputs.ref }}
         run: git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -126,10 +147,32 @@ jobs:
         working-directory: dist
         run: sha256sum pinfold-* >SHA256SUMS
 
+      - name: Promote tested pin update
+        if: ${{ inputs.ref != '' }}
+        env:
+          BASE: ${{ inputs.base }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if [ "$(git rev-parse HEAD^)" != "$BASE" ]; then
+            echo "candidate parent differs from its tested base" >&2
+            exit 1
+          fi
+          git fetch origin refs/heads/main:refs/remotes/origin/main
+          if [ "$(git rev-parse origin/main)" != "$BASE" ]; then
+            echo "main changed while the candidate was being checked" >&2
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          printf 'Nightly harness and image-tool pin update.\n\n## Caller changes\n\nNone\n' > /tmp/pinfold-release-notes
+          git tag -a "v$VERSION" -F /tmp/pinfold-release-notes
+          git push --atomic origin HEAD:refs/heads/main "refs/tags/v$VERSION"
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "v$VERSION" \
             --notes-from-tag \
             dist/pinfold-* dist/SHA256SUMS
