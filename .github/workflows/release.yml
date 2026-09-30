@@ -165,7 +165,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           printf 'Nightly harness and image-tool pin update.\n\n## Caller changes\n\nNone\n' > /tmp/pinfold-release-notes
-          git tag -a "v$VERSION" -F /tmp/pinfold-release-notes
+          git tag -a "v$VERSION" --cleanup=verbatim -F /tmp/pinfold-release-notes
           git push --atomic origin HEAD:refs/heads/main "refs/tags/v$VERSION"
 
       - name: Publish
