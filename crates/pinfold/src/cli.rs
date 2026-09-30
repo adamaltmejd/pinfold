@@ -48,7 +48,7 @@ pinfold box up
 pinfold box exec BOX [--tty] [--workdir DIR] -- argv
 pinfold box stat BOX
 pinfold box down BOX
-pinfold box list --label k=v [--label k]
+pinfold box list --label KEY[=VALUE]…
 pinfold box prune";
 
 pub fn report(verb: &str, result: io::Result<i32>) -> i32 {

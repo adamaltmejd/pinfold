@@ -105,7 +105,7 @@ The layers, keys, their environment variables and defaults are under
 Configuration in [ARCHITECTURE.md](docs/ARCHITECTURE.md#configuration).
 
 For `pinfold pi`, forward host variables with `PINFOLD_ENV_<NAME>`.
-Programmatic callers use the [box spec](docs/ARCHITECTURE.md#box-spec).
+Programmatic callers use the [box spec](docs/ARCHITECTURE.md#process-interface).
 
 ## What pinfold does not protect, and what Apple `container` cannot do
 

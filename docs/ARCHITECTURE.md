@@ -519,8 +519,8 @@ a dedicated Mac runner has the `pinfold-nightly` label.
 Manual runner checks can install missing build tools and run the Mac suite
 without updating pins or releasing.
 The dedicated CI runtime removes leftover boxes and unused images before
-and after each Mac suite, targeting 4 GiB of unused builder cache and 2 GiB of test
-artifacts. Builds require at least 20 GiB free. These are cleanup targets,
+and after each Mac suite, targeting 4 GiB of unused builder cache and
+2 GiB of test artifacts. Builds require at least 20 GiB free. These are cleanup targets,
 not filesystem quotas. The next suite builds its default image from the
 candidate's embedded profile.
 
@@ -823,7 +823,6 @@ and the TLS client for injecting routes: `rustls` (ring) with
 SNI comes from a small ClientHello parser. The Public Suffix List is
 data, `crates/pinfold/public_suffix_list.dat`, embedded with `include_str!`.
 
-Portability (Windows later means the Linux build in WSL2):
 - Platform dirs are the literal XDG-style paths on both OSes:
   `~/.config/pinfold`, `~/.local/state/pinfold` and `~/.cache/pinfold`,
   with `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` honored.
@@ -832,7 +831,7 @@ Portability (Windows later means the Linux build in WSL2):
 ```
 crates/pinfold/src/
   core/    runtime/{mod,apple,podman}.rs plan.rs box.rs network.rs proxy.rs
-           tls.rs artifacts.rs profile.rs clean.rs image.rs
+           tls.rs artifacts.rs profile.rs clean.rs image.rs login.rs
   init.rs  socket mode, TCP relay, reaping, readiness
   pi/      launch.rs state.rs git.rs
   cli.rs main.rs config.rs trust.rs dirs.rs
