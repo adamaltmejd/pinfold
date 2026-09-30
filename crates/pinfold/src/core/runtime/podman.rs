@@ -54,7 +54,12 @@ impl Runtime for Podman {
         }
         let source = seccomp.expect("podman's preflight refuses a host with no seccomp profile");
         let seccomp = seccomp_profile(source)?;
-        let resolv_conf = empty_resolv_conf()?;
+        // --dns none cannot be combined with --network none on podman
+        // 5.4.2; without this bind podman writes a resolver of its own.
+        let cache = dirs::cache_dir()?;
+        fs::create_dir_all(&cache)?;
+        let resolv_conf = cache.join("resolv.conf");
+        fs::write(&resolv_conf, "")?;
         let mut extra: Vec<OsString> = vec![
             "--userns=keep-id".into(),
             "--security-opt".into(),
@@ -81,7 +86,11 @@ impl Runtime for Podman {
         // own HOME would move its rootless storage; HOME is a path, never a
         // secret.
         let mut home = OsString::from("HOME=");
-        home.push(home_value(plan));
+        home.push(match plan.env.get("HOME") {
+            Some(Env::Exact(value)) => OsString::from(value),
+            Some(Env::From { from }) => std::env::var_os(from).unwrap_or_else(|| "/tmp".into()),
+            None => "/tmp".into(),
+        });
         extra.push("--env".into());
         extra.push(home);
         if let Some(socket) = proxy_socket {
@@ -433,17 +442,6 @@ fn seccomp_profile(source: &Path) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// The empty `/etc/resolv.conf` every box sees, owned by pinfold under the
-/// cache dir. `--dns none` cannot be combined with `--network none` on
-/// podman 5.4.2; without this bind podman writes a resolver of its own.
-fn empty_resolv_conf() -> io::Result<PathBuf> {
-    let dir = dirs::cache_dir()?;
-    fs::create_dir_all(&dir)?;
-    let path = dir.join("resolv.conf");
-    fs::write(&path, "")?;
-    Ok(path)
-}
-
 /// One `podman ps --format json` entry, as much as pinfold needs.
 #[derive(Deserialize)]
 struct ListedContainer {
@@ -493,13 +491,4 @@ where
     T: Deserialize<'de> + Default,
 {
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-/// The HOME the box sees: the spec's, else `/tmp`, the one writable path.
-fn home_value(plan: &Plan) -> OsString {
-    match plan.env.get("HOME") {
-        Some(Env::Exact(value)) => value.as_str().into(),
-        Some(Env::From { from }) => std::env::var_os(from).unwrap_or_else(|| "/tmp".into()),
-        None => "/tmp".into(),
-    }
 }
