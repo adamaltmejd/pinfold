@@ -143,10 +143,22 @@ jobs:
           cargo-zigbuild --version
           container --version
           container system status
+      - name: Reclaim dedicated CI caches
+        run: sh scripts/clean-mac-runner.sh
+      - name: Require disk headroom
+        run: |
+          available_kb=$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 {print $4}')
+          if [ "$available_kb" -lt 20971520 ]; then
+            echo 'Mac runner needs at least 20 GiB free before builds.' >&2
+            exit 1
+          fi
       - name: Full Mac end-to-end suite, including live login
         run: |
           toolchain=$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)
           rustup run "$toolchain" cargo test -p e2e --locked
+      - name: Reclaim caches after success or failure
+        if: always()
+        run: sh scripts/clean-mac-runner.sh
 
   release:
     needs: [prepare, validate, macos]
