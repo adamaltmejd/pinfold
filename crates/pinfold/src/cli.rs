@@ -151,8 +151,6 @@ pub fn attach(args: &[String]) -> io::Result<i32> {
     Ok(exit_code(status))
 }
 
-/// The box to attach to: the named one, or the project's only one. Several
-/// without a name is the caller's to resolve.
 fn select_box(boxes: &[BoxInfo], requested: Option<&str>) -> io::Result<String> {
     let mut names: Vec<&str> = boxes
         .iter()
@@ -449,8 +447,6 @@ struct CleanPlan {
 }
 
 impl CleanPlan {
-    /// Measure the categories without changing anything. `unused` ages
-    /// project state as `clean --unused` does.
     fn measure(runtime: &dyn Runtime, unused: Option<Duration>) -> io::Result<CleanPlan> {
         let boxes = clean::boxes(runtime)?;
         let mut automatic: BTreeSet<PathBuf> = boxes
@@ -505,7 +501,6 @@ impl CleanPlan {
             + self.build_cache_bytes.unwrap_or(0)
     }
 
-    /// List the categories, as `clean` and `doctor` both show them.
     fn print(&self, runtime: &dyn Runtime) {
         println!("  automatic maintenance: {} B", self.automatic_bytes);
         match self.build_cache_bytes {
@@ -678,8 +673,6 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// `pinfold artifacts`: print the pinned harnesses as one JSON array, an
-/// object per harness. Reads only: nothing is downloaded.
 pub fn artifacts(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(usage("artifacts", "artifacts takes no arguments"));
@@ -709,8 +702,6 @@ pub fn config(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// The `pinfold config` object for the project rooted at `root`, with its
-/// `config` loaded. `doctor` prints the same object.
 fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> {
     let project = crate::pi::state::project_id(root);
     let home = crate::pi::state::project_home(root)?;
@@ -954,9 +945,6 @@ fn image_rm(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// `image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]...
-/// [--no-cache]`: the name, then the options after it. An `Err` is the
-/// refusal's detail.
 fn parse_image_build(name: Option<&str>, args: &[String]) -> Result<ImageRequest, String> {
     let name = name.ok_or("image build needs an image name")?.to_string();
     let mut containerfile = None;
@@ -1005,9 +993,6 @@ pub fn profile(args: &[String]) -> io::Result<i32> {
     }
 }
 
-/// Copy a profile's files to `~/.config/pinfold/profiles/NAME/`, refusing to
-/// overwrite an existing profile. `--from-project` merges a project's pi
-/// agent config into the new profile after the copy.
 fn profile_new(args: &[String]) -> io::Result<()> {
     let (name, from, from_project, builtin) = parse_profile_new(args)?;
     profile::check_name("profile", &name)?;
@@ -1047,9 +1032,6 @@ fn profile_new(args: &[String]) -> io::Result<()> {
     result
 }
 
-/// The pi agent dir of the project rooted at `path` (any directory inside
-/// the project works). A project that never started has no state: an error
-/// naming the missing path.
 fn project_agent_dir(path: &Path) -> io::Result<PathBuf> {
     let root = crate::pi::launch::project_root(path)?;
     let agent = crate::pi::state::project_home(&root)?.join(".pi/agent");
@@ -1082,8 +1064,6 @@ fn write_profile(source: &Profile, target: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Copy the directories and regular files under `from` into `to`, over
-/// what is there, skipping every entry name `skip` accepts at any depth.
 fn copy_tree(from: &Path, to: &Path, skip: fn(&OsStr) -> bool) -> io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
