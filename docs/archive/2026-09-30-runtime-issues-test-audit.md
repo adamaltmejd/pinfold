@@ -35,6 +35,8 @@ Sources: [Apple builder mounts](https://github.com/apple/container/blob/main/Sou
   builder deletion makes the build fail. Existing cleanup blocks never held
   a build active. Readiness comes from the host request, and success from
   the CLI result and the runtime's image listing. No sleeps or retries.
+  The build caller's daily pass runs before the dead-box fixture is made,
+  so that caller cannot remove it ahead of the explicit clean.
 - Row 15: dry-run must count at least the backing filesystem's allocated
   bytes, measured by host `du`. Omitting builder bytes fails this block.
   The lower bound allows other concurrent builds to allocate more space.
@@ -49,7 +51,7 @@ Sources: [Apple builder mounts](https://github.com/apple/container/blob/main/Sou
   Assertions use the spec tokens and device path, not diagnostic punctuation.
 
 No new test or guarantee row. Rows 15 and 27 describe the added scenarios.
-Test files: box_.rs 3,297 lines; cli.rs 143 lines. Binary files: apple.rs
+Test files: box_.rs 3,304 lines; cli.rs 143 lines. Binary files: apple.rs
 377 lines; podman.rs 505 lines; cli.rs 1,136 lines.
 
 ## Validation
@@ -59,6 +61,11 @@ Test files: box_.rs 3,297 lines; cli.rs 143 lines. Binary files: apple.rs
 - Focused Apple row 15: passed, including the held build across clean.
 - Full Apple suite: 27 passed in 107.55 seconds, with the builder mutex
   removed and builds running concurrently with clean.
+- After the daily-pass fixture ordering correction: focused row 15 passed
+  in 74.50 seconds; full Apple suite passed all 27 in 83.01 seconds.
+- [Linux CI on 3e15836](https://github.com/adamaltmejd/pinfold/actions/runs/36681570564):
+  27 passed on x64 in 104.63 seconds and 27 on arm64 in 81.37 seconds.
+  Both exercised the missing-tun namespace scenario.
 - `cargo fmt --check`, Clippy with warnings denied, and `git diff --check`:
   passed. The sandboxed Zig cache was unwritable; task-scoped caches under
   `/private/tmp` allowed the cross-build without changing build code.

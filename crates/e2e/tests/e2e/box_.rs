@@ -1241,6 +1241,13 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // Sabotage: omit Apple's allocated build-cache storage from the
     // report; its byte count falls below the backing filesystem's du.
     let env = TestEnv::new("cleanup");
+    let build_env = cfg!(target_os = "macos").then(|| {
+        let other = TestEnv::new("clean-build");
+        // Run this caller's daily pass before the dead-box fixture exists,
+        // so its later build cannot remove that fixture ahead of clean.
+        run_ok(other.command(pinfold()).arg("artifacts"));
+        other
+    });
     default_image(&env);
     // A profile of this test's own, named for this run, so the operator's
     // default profile images, the other tests and a failed run's leftovers
@@ -1547,7 +1554,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                 .unwrap();
         });
-        let other = TestEnv::new("clean-build");
+        let other = build_env.as_ref().unwrap();
         let name = format!("{profile}-active");
         let _active_images = ImageCleanup {
             repository: format!("pinfold/image-{name}"),
@@ -1559,7 +1566,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
             &containerfile,
             format!(
                 "FROM {}\nRUN curl --fail --max-time 60 http://{address}/\n",
-                default_image(&other)
+                default_image(other)
             ),
         )
         .unwrap();
