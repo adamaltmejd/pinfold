@@ -12,7 +12,9 @@ use std::sync::Mutex;
 
 mod box_;
 mod cli;
+mod image_warning;
 mod pi;
+mod update;
 
 /// The two owner-gone tests share one hazard: either one's removal can take
 /// the other's dead box before the other expects it. Hold this from killing

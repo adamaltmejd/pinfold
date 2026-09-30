@@ -32,10 +32,11 @@ pinfold build [--profile NAME]   build this project's image, or a profile's; pri
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache]   a caller's image from its own context; one JSON line
 pinfold image rm NAME            retire a caller image name; one JSON line
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
-pinfold profile new NAME [--from PROFILE] [--from-project [PATH]]   copy a profile to edit as files
+pinfold profile new NAME [--from PROFILE | --builtin] [--from-project [PATH]]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim disk (see Maintenance)
 pinfold doctor                   runtime, kernel, image, artifacts, trust, config, disk use
 pinfold artifacts                the pinned harnesses as JSON: name, version, path, cached, assets
+pinfold update [--check]         check for a release, or download and install it
 pinfold config [ROOT]            the effective configuration and project facts as JSON, for callers
 pinfold box …                    the process interface
 pinfold init                     PID 1 in the box (Linux builds)
@@ -1008,10 +1009,14 @@ pub fn profile(args: &[String]) -> io::Result<i32> {
 /// overwrite an existing profile. `--from-project` merges a project's pi
 /// agent config into the new profile after the copy.
 fn profile_new(args: &[String]) -> io::Result<()> {
-    let (name, from, from_project) = parse_profile_new(args)?;
+    let (name, from, from_project, builtin) = parse_profile_new(args)?;
     profile::check_name("profile", &name)?;
     let project_agent = from_project.as_deref().map(project_agent_dir).transpose()?;
-    let source = Profile::load(&from);
+    let source = if builtin {
+        Profile::builtin()
+    } else {
+        Profile::load(&from)
+    };
     let profiles = dirs::config_dir()?.join("profiles");
     fs::create_dir_all(&profiles)?;
     let target = profiles.join(&name);
@@ -1097,13 +1102,15 @@ fn copy_tree(from: &Path, to: &Path, skip: fn(&OsStr) -> bool) -> io::Result<()>
     Ok(())
 }
 
-fn parse_profile_new(args: &[String]) -> io::Result<(String, String, Option<PathBuf>)> {
+fn parse_profile_new(args: &[String]) -> io::Result<(String, String, Option<PathBuf>, bool)> {
     let mut name = None;
     let mut from = None;
     let mut from_project = None;
+    let mut builtin = false;
     let mut args = args.iter().peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--builtin" => builtin = true,
             "--from" => {
                 from = Some(
                     args.next()
@@ -1128,9 +1135,16 @@ fn parse_profile_new(args: &[String]) -> io::Result<(String, String, Option<Path
         }
     }
     let name = name.ok_or_else(|| usage("profile", "profile new needs a name"))?;
+    if builtin && from.is_some() {
+        return Err(usage(
+            "profile",
+            "--builtin and --from are mutually exclusive",
+        ));
+    }
     Ok((
         name,
         from.unwrap_or_else(|| "default".to_string()),
         from_project,
+        builtin,
     ))
 }

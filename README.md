@@ -36,6 +36,13 @@ mkdir -p ~/.local/bin
 install -m 0755 "pinfold-$version-aarch64-apple-darwin" ~/.local/bin/pinfold
 ```
 
+Once installed, run `pinfold update` to download, verify and install the
+latest stable release, or `pinfold update --check` to check without
+installing. Close running pinfold boxes and let other pinfold commands
+finish before updating. The install directory must be writable.
+Interactive `pi` and `pinfold attach` show an update notice at most once
+a day. Set `PINFOLD_NO_UPDATE_CHECK=1` to disable automatic checks.
+
 The macOS binary is not notarized. `gh` and `curl` downloads run as they
 are; a browser download carries the quarantine attribute and Gatekeeper
 refuses it until `xattr -d com.apple.quarantine` clears it.
@@ -90,6 +97,9 @@ In a project:
 2. Build the image: `pinfold build`. Without a project Containerfile it
    builds the selected profile's image; with one it builds the project's.
    Building needs network.
+   Later runs show an `image-outdated` rebuild hint when the Containerfile
+   changes, including bundled image-tool pin updates. Rebuilding preserves
+   project settings, sessions and logins.
 3. Start pi: `pi`. The first run downloads the pinned pi release and
    creates the project home under `~/.local/state/pinfold/projects/`.
 4. Run `/login` in pi once per project: state is per project. API keys
@@ -98,6 +108,12 @@ In a project:
 To reuse one project's pi configuration in another, `pinfold profile new
 NAME --from-project [PATH]` copies it into a profile (see Profiles in the
 spec).
+
+After bundled defaults change, the next interactive launch shows a
+`default-profile-changed` notice. Saved project settings and user profiles
+stay as they are. Use `pinfold profile new fresh-defaults --builtin` to
+inspect the new defaults and choose which changes to adopt. Selecting a
+new profile still seeds only missing settings.
 
 ## Configuration
 

@@ -5,6 +5,7 @@ mod dirs;
 mod init;
 mod pi;
 mod trust;
+mod update;
 
 use std::io;
 use std::path::Path;
@@ -66,6 +67,7 @@ fn main() -> ExitCode {
         "config" => cli::config,
         "profile" => cli::profile,
         "pi" => launch::run,
+        "update" => update::run,
         _ => {
             eprintln!("{}", cli::USAGE);
             return ExitCode::from(1);
@@ -76,6 +78,19 @@ fn main() -> ExitCode {
     if cli::help(verb, args) {
         return ExitCode::SUCCESS;
     }
+    // Updating and checking releases need neither a runtime nor maintenance.
+    if verb == "update" {
+        return ExitCode::from(cli::report(verb, run(args)) as u8);
+    }
+    let _executable = if verb == "init" {
+        None
+    } else {
+        match update::working() {
+            Ok(lock) => Some(lock),
+            Err(error) => return ExitCode::from(cli::report(verb, Err(error)) as u8),
+        }
+    };
+    update::notice(verb, args);
     // The daily pass runs before any working command, the `pi` shim
     // included; `init` is PID 1 in a box with no runtime to prune, and the
     // options, help and doctor touch nothing. `box up` runs the pass itself,

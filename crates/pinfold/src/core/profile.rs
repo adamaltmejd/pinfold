@@ -71,19 +71,7 @@ impl Profile {
             return load_dir(name, &root);
         }
         if name == "default" {
-            return Ok(Profile {
-                name: name.to_string(),
-                containerfile: DEFAULT_CONTAINERFILE.to_vec(),
-                config: DEFAULT_CONFIG.to_vec(),
-                home: DEFAULT_HOME
-                    .iter()
-                    .map(|(path, contents)| Seed {
-                        path: PathBuf::from(path),
-                        contents: contents.to_vec(),
-                    })
-                    .collect(),
-                share: Some(embedded_share()?),
-            });
+            return Self::builtin();
         }
         Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -91,10 +79,38 @@ impl Profile {
         ))
     }
 
+    /// The bundled default, even when a user's default profile overrides it.
+    pub fn builtin() -> io::Result<Profile> {
+        Ok(Profile {
+            name: "default".to_string(),
+            containerfile: DEFAULT_CONTAINERFILE.to_vec(),
+            config: DEFAULT_CONFIG.to_vec(),
+            home: DEFAULT_HOME
+                .iter()
+                .map(|(path, contents)| Seed {
+                    path: PathBuf::from(path),
+                    contents: contents.to_vec(),
+                })
+                .collect(),
+            share: Some(embedded_share()?),
+        })
+    }
+
     /// The stable ref of this profile's image.
     pub fn image_ref(&self) -> String {
         format!("pinfold/profile-{}:latest", self.name)
     }
+}
+
+/// Tuple fields distinguish image, config, home and share; JSON preserves
+/// each path/content boundary. User profile overrides do not enter this hash.
+pub fn builtin_hash() -> io::Result<String> {
+    Ok(super::sha256_hex(serde_json::to_vec(&(
+        DEFAULT_CONTAINERFILE,
+        DEFAULT_CONFIG,
+        DEFAULT_HOME,
+        DEFAULT_SHARE,
+    ))?))
 }
 
 /// Read a profile from a user's directory.

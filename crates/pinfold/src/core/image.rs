@@ -14,6 +14,9 @@ use crate::core::profile;
 use crate::core::runtime::{BuildRequest, ImageInfo, Runtime, local_image_id, output, runtime};
 use crate::dirs;
 
+/// The Containerfile bytes a managed image was built from.
+pub const CONTAINERFILE_LABEL: &str = "dev.pinfold.containerfile-sha256";
+
 /// Where a build's files come from.
 pub enum Context<'a> {
     /// A fresh, empty context holding only these Containerfile bytes, so
@@ -78,6 +81,15 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
     // Likewise the base: the caller set the resolved digest, or this makes
     // it empty, never an inherited copy.
     labels.entry(clean::BASE_LABEL.to_string()).or_default();
+    // Caller contexts have other inputs, so they have no source fingerprint.
+    // Clear an inherited fingerprint rather than claiming it is their own.
+    labels.insert(
+        CONTAINERFILE_LABEL.to_string(),
+        match &build.context {
+            Context::Alone(bytes) => super::sha256_hex(bytes),
+            Context::Dir { .. } => String::new(),
+        },
+    );
     // `pinfold/profile-<name>`, `pinfold/project-<id>` or
     // `pinfold/image-<name>`.
     let stem = match build.label {

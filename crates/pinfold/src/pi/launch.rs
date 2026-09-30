@@ -11,11 +11,11 @@ use tokio::signal::unix::{SignalKind, signal};
 
 use crate::cli;
 use crate::config::Config;
-use crate::core::artifacts;
 use crate::core::r#box::{Box, Signals};
 use crate::core::clean;
 use crate::core::plan::{Egress, Env, Mount, Plan};
-use crate::core::runtime::{local_image_id, runtime};
+use crate::core::runtime::{ImageInfo, runtime};
+use crate::core::{artifacts, image, sha256_hex};
 use crate::pi::git::{Git, git};
 use crate::pi::state::{self, canonical, project_id};
 use crate::trust;
@@ -81,17 +81,19 @@ pub(crate) fn resolve_image(config: &Config, project: &str) -> String {
 }
 
 /// Refuse when the image has not been built, naming its build command, and
-/// report when a project image's recorded profile image is no longer the
-/// current one. `doctor` reports it too.
+/// Warn when its Containerfile or its profile base changed. `doctor`
+/// reports the same warnings.
 pub(crate) fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
-    let (base, build) = match config.containerfile {
-        Some(_) => (
+    let (base, build, containerfile) = match &config.containerfile {
+        Some((_, bytes)) => (
             Some(config.profile.image_ref()),
             "pinfold build".to_string(),
+            bytes.as_slice(),
         ),
         None => (
             None,
             format!("pinfold build --profile {}", config.profile.name),
+            config.profile.containerfile.as_slice(),
         ),
     };
     let Ok(built) = runtime().resolve_image(image)? else {
@@ -100,21 +102,40 @@ pub(crate) fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
             format!("image {image} is missing; run `{build}`"),
         ));
     };
+    warn_containerfile(&built, containerfile, &build);
     if let Some(base) = base {
         let recorded = built
             .labels
             .get(clean::BASE_LABEL)
             .filter(|digest| !digest.is_empty());
-        let current = local_image_id(runtime(), &base)?;
-        if recorded != current.as_ref() {
+        let current = runtime().resolve_image(&base)?.ok();
+        if let Some(profile) = &current {
+            warn_containerfile(
+                profile,
+                &config.profile.containerfile,
+                &format!("pinfold build --profile {}", config.profile.name),
+            );
+        }
+        let current = current.as_ref().map(|image| image.id.as_str());
+        if recorded.map(String::as_str) != current {
             eprintln!(
-                "pinfold: project image {image} was built from profile image {}; the current profile image is {}; run `pinfold build`",
+                "pinfold: image-outdated: project image {image} was built from profile image {}; the current profile image is {}; run `pinfold build`",
                 recorded.map_or("(none)", String::as_str),
-                current.as_deref().unwrap_or("(none)")
+                current.unwrap_or("(none)")
             );
         }
     }
     Ok(())
+}
+
+fn warn_containerfile(image: &ImageInfo, bytes: &[u8], build: &str) {
+    let expected = sha256_hex(bytes);
+    if image.labels.get(image::CONTAINERFILE_LABEL) != Some(&expected) {
+        eprintln!(
+            "pinfold: image-outdated: image {} has changed or unrecorded Containerfile inputs; run `{build}`",
+            image.reference
+        );
+    }
 }
 
 /// The complete box spec for one project.

@@ -483,6 +483,13 @@ profile image.
   `dev.pinfold.base`. `pinfold pi` prints one line when that is no longer
   the current profile image.
 - A build never touches project homes.
+- Profile and project images record their Containerfile's SHA-256 as
+  `dev.pinfold.containerfile-sha256`. Before a pi launch, and in doctor,
+  changed or unrecorded Containerfile inputs produce an `image-outdated`
+  hint with the rebuild command. A project checks its selected profile's
+  inputs too, even before that profile is rebuilt. A changed profile image
+  digest also names `image-outdated`. Hints never refuse the launch.
+  Harness pins and home settings are not image inputs.
 - On Apple, concurrent pinfold builds do not interrupt each other when
   callers set different `NO_COLOR` or `BUILDKIT_COLORS`.
 
@@ -554,7 +561,9 @@ with or without a TTY.
   the user has their own. User profiles are the user's files and need no
   trust.
 - `pinfold profile new` (CLI) writes a copy of `default` (or another
-  profile) to be edited as files; `--from-project [PATH]` (PATH is the
+  profile) to be edited as files. `--builtin` copies the bundled default,
+  bypassing user profiles; it cannot be combined with `--from`.
+  `--from-project [PATH]` (PATH is the
   current project root by default) merges the project's `home/.pi/agent/`
   into the copy, minus `auth.json`, `sessions/`, `npm/` and caches.
 - Selected by `profile` in config or `"profile"` in a box spec.
@@ -602,6 +611,41 @@ Apple `container` limitations, documented for users:
 | Small-file I/O 4–10× slower | Accepted. `/tmp` is tmpfs. |
 | setuid and setgid bits cannot be set | Harmless. |
 
+## Updates
+
+`pinfold update --check` reports whether a newer stable GitHub release is
+available. `pinfold update` downloads its host binary and `SHA256SUMS`,
+verifies the binary, then atomically replaces the resolved executable.
+The `pi` symlink stays intact. Failed verification or installation leaves
+the installed binary intact. Releases are from `adamaltmejd/pinfold` over
+HTTPS. Neither command needs a runtime or runs maintenance. No downgrade,
+automatic installation or privilege escalation. An executable under
+Cargo's `target/.../debug` or `target/.../release` is not replaced.
+
+Working host commands hold a shared lock on their executable for their
+lifetime. Installation requires an exclusive lock and refuses as
+`update-busy` while another working command is active, including across
+XDG state roots. It also refuses as `running-boxes` while the current state
+root holds a live box owner from an older release. A process whose
+executable was replaced before it acquired the lock must be rerun.
+Checksum failures name `checksum-mismatch`; development builds name
+`development-build`.
+
+Before interactive `pi` and `attach`, with stdin, stdout and stderr all
+terminals, pinfold checks at most once per 24 hours and prints an update
+notice on stderr. The request has a one-second total timeout. Failed
+checks are silent and count toward the interval. Help, version arguments,
+development builds and noninteractive commands do not check.
+Each such launch also compares the bundled default profile with its last
+observed fingerprint. Changes print `default-profile-changed` once,
+independently of the network interval. No history means a silent baseline;
+self-update records a missing baseline before replacement. Saved project
+settings and user profiles are preserved. `profile new NAME --builtin`
+copies fresh defaults for the user to inspect and adopt explicitly.
+`PINFOLD_NO_UPDATE_CHECK=1` disables automatic checks and notices. The
+timestamp and fingerprint live under `~/.cache/pinfold/update-check`,
+honoring `XDG_CACHE_HOME`.
+
 ## Maintenance
 
 pinfold only removes what it created: its images and boxes carry `dev.pinfold.*` labels,
@@ -618,7 +662,7 @@ Automatic, never prompting:
   in the last hour stays, so the ref its `built` line named still comes
   up; past the hour the newest two rule applies.
 - At most once a day, at the start of any working command (not
-  `--version`, `--help`, `doctor` or `init`): prune boxes whose owner
+  `--version`, `--help`, `doctor`, `update` or `init`): prune boxes whose owner
   is gone (nothing holds the lock on its `pid` file), leftover sockets,
   artifact `<name>/<version>` directories no pin names (`init/` aside),
   builds beyond each source's newest two (the after-build rule, applied
@@ -741,10 +785,11 @@ pinfold build [--profile NAME]   build this project's image, or a profile's; pri
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache]   a caller's image from its own context; one JSON line
 pinfold image rm NAME            retire a caller image name; one JSON line
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
-pinfold profile new NAME [--from PROFILE] [--from-project [PATH]]   copy a profile to edit as files
+pinfold profile new NAME [--from PROFILE | --builtin] [--from-project [PATH]]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim disk (see Maintenance)
 pinfold doctor                   runtime, kernel, image, artifacts, trust, config, disk use
 pinfold artifacts                the pinned harnesses as JSON: name, version, path, cached, assets
+pinfold update [--check]         check for a release, or download and install it
 pinfold config [ROOT]            the effective configuration and project facts as JSON, for callers
 pinfold box …                    the process interface
 pinfold init                     PID 1 in the box (Linux builds)
@@ -796,6 +841,10 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box list --help` exits 0, with no runtime and leaving the state dir untouched. |
 | 26 | A login route keeps the login on the host | With `to` at a host fixture, claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. An empty `CODEX_HOME` is refused as `login`. On macOS only (the operator's Mac or dedicated nightly runner, with a real login), codex completes one tool round trip through a route with no `to`. |
 | 27 | Doctor reports without changing state | With a working runtime and with no runtime on PATH, doctor leaves a fresh state directory empty and an old artifact intact. On Linux, with no runtime on PATH and with real Podman failing on a missing runtime directory, the report names it as `runtime-dir`, and names `tun` in a private mount namespace with no `/dev/net/tun`. |
+| 28 | Updates verify before atomic replacement | A release served by a host HTTPS fixture is checked without changing the executable, refused as `checksum-mismatch` with its original executable intact and usable, refused with a live box, then installed after the box exits; replacement changes the inode, preserves the pi symlink and installs the fixture's executable bytes. |
+| 29 | Interactive update checks are bounded | A host HTTPS fixture observes one check across repeated terminal launches; noninteractive launches and the opt-out make none. A stalled request is silent, ends within the timeout and is not retried by the next launch. |
+| 30 | Changed image inputs prompt a rebuild | Profile and trusted project Containerfile changes produce `image-outdated` without refusing a pi launch. A project also detects changed profile inputs before the profile is rebuilt, then detects its changed base digest afterward. Rebuilding the affected profile and project clears the hints. |
+| 31 | Changed bundled defaults are reported once | A genuinely rebuilt executable with changed bundled settings produces `default-profile-changed` once on interactive launch, within the existing network interval. The first launch establishes history silently. `profile new --builtin` exposes the changed defaults even with a user override, preserving that override. |
 
 Linux (podman) runs in CI on every push to main and every pull request,
 and on a dispatched ref, on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm`
@@ -838,10 +887,10 @@ crates/pinfold/src/
            tls.rs artifacts.rs profile.rs clean.rs image.rs login.rs
   init.rs  socket mode, TCP relay, reaping, readiness
   pi/      launch.rs state.rs git.rs
-  cli.rs main.rs config.rs trust.rs dirs.rs
+  cli.rs main.rs config.rs trust.rs dirs.rs update.rs
 crates/pinfold/harnesses.toml  the harness pins
 crates/pinfold/public_suffix_list.dat  the pinned Public Suffix List
-crates/e2e/  the end-to-end suite: src/lib.rs (harness, fixtures, helpers), tests/e2e/{main,box_,pi,cli}.rs
+crates/e2e/  the end-to-end suite: src/lib.rs (harness, fixtures, helpers), tests/e2e/{main,box_,pi,cli,update,image_warning}.rs and release_proxy.py
 profile/   the built-in default profile
 ```
 
