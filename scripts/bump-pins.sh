@@ -1,7 +1,7 @@
 #!/bin/sh
 # Update every pin to its latest upstream release: the ADD --checksum pins
 # in profile/Containerfile and the harness rows in
-# crates/pinfold/harnesses.toml. Run from anywhere; needs curl, awk/sed,
+# crates/pinfold/harnesses.toml. Run from anywhere; needs curl, python3, awk/sed,
 # and sha256sum (Linux) or shasum (macOS).
 set -eu
 
@@ -20,24 +20,32 @@ pin() {
         < "$tmp/asset" | cut -d' ' -f1
 }
 
-# The parsers below read pretty-printed JSON. Without this Accept header
-# GitHub minifies a large release (codex's, 2026-09-28).
 gh_json='Accept: application/vnd.github+json'
 
-# The value of the first "key": "value" in the pretty-printed JSON $1.
+# Top-level string $2 in JSON $1.
 json_string() {
-    sed -n "s/^ *\"$2\": \"\([^\"]*\)\".*/\1/p" "$1" | head -n 1
+    python3 - "$1" "$2" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as source:
+    print(json.load(source).get(sys.argv[2], ""))
+PY
 }
 
 # Asset $2's $3 ("browser_download_url" or "digest") in the GitHub release
 # JSON $1; empty when the release has no such asset.
 github_asset() {
-    awk -F'"' -v want="$2" -v field="$3" '
-        /"assets": \[/ { assets = 1; next }
-        /^  \],/ { assets = 0 }
-        assets && /^ *"name": / { name = $4 }
-        assets && name == want && $2 == field { print $4; exit }
-    ' "$1"
+    python3 - "$1" "$2" "$3" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as source:
+    for asset in json.load(source)["assets"]:
+        if asset["name"] == sys.argv[2]:
+            print(asset.get(sys.argv[3]) or "")
+            break
+PY
 }
 
 # --- profile pins --------------------------------------------------------
