@@ -22,6 +22,16 @@ pin() {
 
 gh_json='Accept: application/vnd.github+json'
 
+# Keep the workflow token out of curl's argv and downloaded files.
+github_release() {
+    {
+        if [ -n "${GH_TOKEN:-}" ]; then
+            printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN"
+        fi
+    } | curl -fsSL -H "$gh_json" --config - -o "$2" \
+        "https://api.github.com/repos/$1/releases/latest"
+}
+
 # Top-level string $2 in JSON $1.
 json_string() {
     python3 - "$1" "$2" <<'PY'
@@ -50,9 +60,9 @@ PY
 
 # --- profile pins --------------------------------------------------------
 
-curl -fsSL -H "$gh_json" -o "$tmp/bun.json" https://api.github.com/repos/oven-sh/bun/releases/latest
+github_release oven-sh/bun "$tmp/bun.json"
 bun=$(json_string "$tmp/bun.json" tag_name)
-curl -fsSL -H "$gh_json" -o "$tmp/rtk.json" https://api.github.com/repos/rtk-ai/rtk/releases/latest
+github_release rtk-ai/rtk "$tmp/rtk.json"
 rtk=$(json_string "$tmp/rtk.json" tag_name)
 curl -fsSL -o "$tmp/ponytail.json" https://registry.npmjs.org/@dietrichgebert/ponytail
 ponytail=$(grep -o '"dist-tags":{[^}]*}' "$tmp/ponytail.json" \
@@ -93,9 +103,9 @@ awk -F'"' '
     /^url = / && name != "" { print "url\t" name "\t" $2 }
 ' "$harnessfile" > "$tmp/current"
 
-curl -fsSL -H "$gh_json" -o "$tmp/pi.json" https://api.github.com/repos/earendil-works/pi/releases/latest
+github_release earendil-works/pi "$tmp/pi.json"
 pi_tag=$(json_string "$tmp/pi.json" tag_name)
-curl -fsSL -H "$gh_json" -o "$tmp/codex.json" https://api.github.com/repos/openai/codex/releases/latest
+github_release openai/codex "$tmp/codex.json"
 codex_tag=$(json_string "$tmp/codex.json" tag_name)
 claude_version=$(curl -fsSL https://downloads.claude.ai/claude-code-releases/latest \
     | sed 's/[[:space:]]//g')

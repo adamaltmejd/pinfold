@@ -38,6 +38,8 @@ jobs:
           fetch-depth: 0
 
       - name: Update harness and image-tool pins
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: sh scripts/bump-pins.sh
 
       - name: Prepare changed pins
