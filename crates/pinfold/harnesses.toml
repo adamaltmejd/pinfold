@@ -9,92 +9,92 @@
 
 [[harness]]
 name = "pi"
-version = "0.99.2"
+version = "1.0.0"
 env = { PI_TELEMETRY = "0", PI_SKIP_VERSION_CHECK = "1" }
 
 [[harness.asset]]
 os-arch = "linux-arm64"
-url = "https://github.com/earendil-works/pi/releases/download/v0.99.2/pi-linux-arm64.tar.gz"
-sha256 = "61fc3cd9a854cabb8554e353ff324701c952d2fdd0b1a96aa16ac44cf5357360"
+url = "https://github.com/earendil-works/pi/releases/download/v1.0.0/pi-linux-arm64.tar.gz"
+sha256 = "b60b3fda830a43c1dc3f5edb5fc7b681f22a0a930b48cdac13b97570c6045819"
 install = "tar.gz"
 as = "pi"
 
 [[harness.asset]]
 os-arch = "linux-x64"
-url = "https://github.com/earendil-works/pi/releases/download/v0.99.2/pi-linux-x64.tar.gz"
-sha256 = "f998cc1232733eab240526d74acdce429d650b9e01f5804636d7aa96eb629846"
+url = "https://github.com/earendil-works/pi/releases/download/v1.0.0/pi-linux-x64.tar.gz"
+sha256 = "8fd5543a52a889d60ad57ccbf6c969e73c75c5240aae18ac40b506947a63dc38"
 install = "tar.gz"
 as = "pi"
 
 [[harness]]
 name = "claude"
-version = "2.1.286"
+version = "2.1.287"
 env = { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
 
 [[harness.asset]]
 os-arch = "linux-arm64"
-url = "https://downloads.claude.ai/claude-code-releases/2.1.286/linux-arm64/claude"
-sha256 = "0292fa22ac2fd43e16be9d0e511ddd8347280d6e0ebaca744ef5b27e05d8d0f8"
+url = "https://downloads.claude.ai/claude-code-releases/2.1.287/linux-arm64/claude"
+sha256 = "e4daf793d1e74fb0d9874dd09e98690bbfd7be515f78a87fd05b9e2b4bb33b03"
 install = "executable"
 as = "claude/claude"
 
 [[harness.asset]]
 os-arch = "linux-x64"
-url = "https://downloads.claude.ai/claude-code-releases/2.1.286/linux-x64/claude"
-sha256 = "fe503f65c6289d59c23e5b21ae44f03583f997dd33a2cbfc75ab4f96fb8fc73f"
+url = "https://downloads.claude.ai/claude-code-releases/2.1.287/linux-x64/claude"
+sha256 = "3920489a5109cff5786a1a392c25277408ff22bc796d5edb9c16a60e5a1718f0"
 install = "executable"
 as = "claude/claude"
 
 [[harness]]
 name = "codex"
-version = "0.159.3"
+version = "0.160.0"
 env = {}
 
 [[harness.asset]]
 os-arch = "linux-arm64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.159.3/codex-aarch64-unknown-linux-musl.tar.gz"
-sha256 = "cd5f307b3fcd6080773e684b86c3114a67d4f1c61dc447be09876b552eb4bea7"
+url = "https://github.com/openai/codex/releases/download/rust-v0.160.0/codex-aarch64-unknown-linux-musl.tar.gz"
+sha256 = "883620139925f677e5a12c95ba87a1d7f421388ebb797b1c10aba42a04ede9d7"
 install = "tar.gz"
 as = "codex/codex"
 
 [[harness.asset]]
 os-arch = "linux-arm64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.159.3/codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz"
-sha256 = "7cbb47c472c2dc115abfeebf52ff11bf66eb364bf8f5d14659742615919b8e6f"
+url = "https://github.com/openai/codex/releases/download/rust-v0.160.0/codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz"
+sha256 = "94066fdf13ffecd2f58776ec5cb8fc3040283a642e3d6ff25c5d82048c41038e"
 install = "tar.gz"
 as = "codex/codex-code-mode-host"
 
 [[harness.asset]]
 os-arch = "linux-x64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.159.3/codex-x86_64-unknown-linux-musl.tar.gz"
-sha256 = "b48ca1b2d6b1bf42b944e02c3d937c898e24651916684cdc35fdedf31b291bcb"
+url = "https://github.com/openai/codex/releases/download/rust-v0.160.0/codex-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "306865417d4ee7a927785852910a527f41e1e159add390ac5ae3accb67d44a13"
 install = "tar.gz"
 as = "codex/codex"
 
 [[harness.asset]]
 os-arch = "linux-x64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.159.3/codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz"
-sha256 = "0f58dd9848c717382e5223e39c1fc8f43a8f4a8cbe20d7af0c0dee0ef3abd438"
+url = "https://github.com/openai/codex/releases/download/rust-v0.160.0/codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "ac6cd6288f0e39f46a33eba1cfd37711651f14f33dbc73d6a1b82eb45e038cac"
 install = "tar.gz"
 as = "codex/codex-code-mode-host"
 
 [[harness.asset]]
 os-arch = "host-darwin-arm64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.159.3/codex-app-server-aarch64-apple-darwin.tar.gz"
-sha256 = "40edf61c2c6b3429541e010409f6934c29327b4d3b03df5265cbf21b35ddbc83"
+url = "https://github.com/openai/codex/releases/download/rust-v0.160.0/codex-app-server-aarch64-apple-darwin.tar.gz"
+sha256 = "1e6e5bd7e248a366ef17475602d9fbc37b8ad38498f7cdc184023cd5c718e8c5"
 install = "tar.gz"
 as = "codex-app-server"
 
 [[harness.asset]]
 os-arch = "host-linux-arm64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.159.3/codex-app-server-aarch64-unknown-linux-musl.tar.gz"
-sha256 = "3c94ff57ced652c30cc850dedfd7924645c96e0ffa16e2771e8b286412af9a7a"
+url = "https://github.com/openai/codex/releases/download/rust-v0.160.0/codex-app-server-aarch64-unknown-linux-musl.tar.gz"
+sha256 = "782581656b7c27ad23d2e5cf268bac5ad8a4112b149a2ad77ce97644ad4cddda"
 install = "tar.gz"
 as = "codex-app-server"
 
 [[harness.asset]]
 os-arch = "host-linux-x64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.159.3/codex-app-server-x86_64-unknown-linux-musl.tar.gz"
-sha256 = "1d782ebee6bc65a211bf4ed87702c037d5481e145fe76cb1b07e41cf612338b8"
+url = "https://github.com/openai/codex/releases/download/rust-v0.160.0/codex-app-server-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "d0a05909836d4a73634641b89c7a62fd99c0978cdfe7ae9b8b631e9ee6d9da46"
 install = "tar.gz"
 as = "codex-app-server"
