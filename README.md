@@ -30,10 +30,9 @@ from the release page, or on a private repository with
 install. macOS (Apple silicon):
 
 ```sh
-version=0.1.0
 shasum -a 256 -c --ignore-missing SHA256SUMS
 mkdir -p ~/.local/bin
-install -m 0755 "pinfold-$version-aarch64-apple-darwin" ~/.local/bin/pinfold
+install -m 0755 pinfold-*-aarch64-apple-darwin ~/.local/bin/pinfold
 ```
 
 Once installed, run `pinfold update` to download, verify and install the
@@ -50,10 +49,9 @@ refuses it until `xattr -d com.apple.quarantine` clears it.
 Linux, a static musl binary:
 
 ```sh
-version=0.1.0
 sha256sum -c --ignore-missing SHA256SUMS
 mkdir -p ~/.local/bin
-install -m 0755 "pinfold-$version-$(uname -m)-unknown-linux-musl" ~/.local/bin/pinfold
+install -m 0755 pinfold-*-"$(uname -m)"-unknown-linux-musl ~/.local/bin/pinfold
 ```
 
 Or build from a checkout of this repository; the Rust toolchain is pinned
@@ -68,7 +66,7 @@ mkdir -p ~/.local/bin
 install -m 0755 target/release/pinfold ~/.local/bin/pinfold
 ```
 
-Linux builds the static musl binary, which doubles as the box's init:
+Linux builds the static musl binary:
 
 ```sh
 rustup target add "$(uname -m)-unknown-linux-musl"
@@ -98,8 +96,7 @@ In a project:
    builds the selected profile's image; with one it builds the project's.
    Building needs network.
    Later runs show an `image-outdated` rebuild hint when the Containerfile
-   changes, including bundled image-tool pin updates. Rebuilding preserves
-   project settings, sessions and logins.
+   changes. Rebuilding keeps project settings, sessions and logins.
 3. Start pi: `pi`. The first run downloads the pinned pi release and
    creates the project home under `~/.local/state/pinfold/projects/`.
 4. Run `/login` in pi once per project: state is per project. API keys
@@ -109,16 +106,12 @@ To reuse one project's pi configuration in another, `pinfold profile new
 NAME --from-project [PATH]` copies it into a profile (see Profiles in the
 spec).
 
-After bundled defaults change, the next interactive launch shows a
-`default-profile-changed` notice. Saved project settings and user profiles
-stay as they are. Use `pinfold profile new fresh-defaults --builtin` to
-inspect the new defaults and choose which changes to adopt. Selecting a
-new profile still seeds only missing settings.
+After bundled defaults change, an interactive launch shows
+`default-profile-changed` once. Saved settings and user profiles stay as they
+are; `pinfold profile new NAME --builtin` copies the new defaults to inspect.
 
 The bundled default reads local documents: AnyDoc converts them to
-Markdown and Poppler inspects PDFs. Nightly pin updates take the latest pi,
-claude and codex, and move bun, rtk, ponytail or AnyDoc only to releases at
-least seven days old.
+Markdown and Poppler inspects PDFs.
 
 ## Configuration
 

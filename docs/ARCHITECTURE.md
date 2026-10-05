@@ -5,12 +5,6 @@ micro-VM on macOS, a rootless podman container on Linux. The box sees its
 mounts and nothing else of the host. Its only way out is its own allowlisting
 proxy.
 
-- **Interactive:** `pi` on the host is a shim for `pinfold pi`.
-- **Programmatic:** a caller such as a CI system or an agent orchestrator
-  drives boxes through `pinfold box`, JSON on stdio.
-
-This is the current spec. Evidence and rationale are in `docs/archive/`.
-
 ## Terms
 
 **Box**: one disposable container or micro-VM, described by a box spec and
@@ -94,22 +88,20 @@ need `loginctl enable-linger`.
 
 1. Claim the name: create the state dir `boxes/<key>` exclusively and write
    the owner's pid, and hold an exclusive lock on that `pid` file for `up`'s
-   whole life. `<key>` is the first 16 hex digits of the sha256 of the name,
-   so the socket path's length does not depend on the name. The owner is
+   whole life. `<key>` is the first 16 hex digits of the sha256 of the name. The owner is
    alive while the lock is held. A live owner already there is `name-in-use`;
    a dead owner's dir is reclaimed. Nothing (seeds, proxy, box) is created
    before the claim.
 2. Start the box's proxy on a new unix socket in the state dir. Keep the path
    under macOS's 104-byte limit.
 3. Run the box with `--network none` and the socket carried in (Transport).
-   PID 1 is `pinfold init`, as the host uid.
+   PID 1 is `pinfold init`.
 4. Apple only: one transient root exec makes the socket connectable. It
-   waits until the runtime lists the box running: Apple records that only
-   after the box's first process has started, and refuses an exec before.
+   waits until the runtime lists the box running.
 5. `pinfold init` relays `127.0.0.1:3128` to the socket, reaps children, and
    reports ready.
-6. `exec` work as the host uid:gid, with `HTTPS_PROXY` and `http_proxy` set
-   to `http://127.0.0.1:3128`.
+6. `exec` work runs with `HTTPS_PROXY` and `http_proxy` set to
+   `http://127.0.0.1:3128`.
 7. Remove the box and delete the socket.
 
 One `pinfold box up` process owns one box. It does steps 1–5, holds the
@@ -292,28 +284,23 @@ The box spec `up` reads from stdin:
 - `harness` is `pi`, `claude` or `codex` (see Pinned artifacts); any other
   value is refused as `spec`, naming it and the accepted names. It mounts
   that harness's directory read-only at `/opt/pinfold/<name>`, its
-  executable `/opt/pinfold/<name>/<name>`, and sets its env defaults (pi:
-  `PI_TELEMETRY=0`, `PI_SKIP_VERSION_CHECK=1`; claude:
-  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`; codex: none) and
-  `PINFOLD_ALLOW` (the spec's `egress.allow`, empty without egress). The
+  executable `/opt/pinfold/<name>/<name>`, and sets its pinned env
+  defaults and `PINFOLD_ALLOW` (the spec's `egress.allow`, empty without egress). The
   spec's own `env` wins; a spec mount at `/opt/pinfold/<name>` is refused.
   claude is the glibc build, so it needs a glibc image (the default profile
-  is Debian). codex's `codex-code-mode-host` sits beside it: codex spawns it
-  from there for every MCP tool call. codex's own sandbox does not start in
-  a box; a caller runs codex with `sandbox_mode = "danger-full-access"`. It needs no profile.
-- Mount hosts must resolve to existing directories. A host path whose
-  metadata cannot be read or that is not a directory is refused as `spec`,
-  naming it. Symlinks to directories are accepted. Both runtimes apply a mount nested in
-  another inside it whatever the spec's order, so a read-only `REPO/.git`
-  inside a writable `REPO` protects the repository on both runtimes; two
-  mounts at one guest path are refused.
+  is Debian). codex's `codex-code-mode-host` sits beside it. codex's own sandbox does
+  not start in a box; a caller runs codex with
+  `sandbox_mode = "danger-full-access"`.
+- Mount hosts must resolve to existing directories (symlinks to directories
+  are accepted); a host path that cannot be read or is not a directory is
+  refused as `spec`, naming it. A mount nested in another applies inside it
+  whatever the spec's order; two mounts at one guest path are refused.
 - A mount path holding `,` or an ASCII control character is refused as
   `spec`, naming the path.
 - `memory` is a whole number followed by `M` or `G`, at least `256M`;
   anything else is refused as `spec`, naming it.
 - A string route value must be `host:port`, the port a number in
-  1–65535; anything else is refused as `spec`, naming the route. Only the
-  object form `{ "to": … }` takes an `http://` or `https://` origin.
+  1–65535; anything else is refused as `spec`, naming the route.
 - A suffix entry `.X` in `egress.allow` is refused as `spec`, naming it,
   when X is a public suffix or has one below it (`.com`, `.github.io`,
   `.amazonaws.com`): anyone can get a name there. A `*.` or `!` rule
@@ -348,8 +335,7 @@ Runtime command lines are built as data.
   removal.
 - Exit codes pass through; `128+n` for a signal death.
 - Every process started in a box through `exec` runs with `oom_score_adj`
-  1000, so the kernel's OOM killer takes the box's own processes before its
-  init.
+  1000.
 - After a SIGKILL of pinfold, `box prune` cleans up; the terminal needs
   `stty sane`.
 
@@ -360,8 +346,7 @@ Runtime command lines are built as data.
   for that one `container run`. It appears at
   `/var/host-services/ssh-auth.sock`, root-owned and not connectable by the
   box user; the root exec in step 4 chmods it.
-- The socket carries only proxy connections. Init and the CLI come from one
-  build (see Pinned artifacts), so this protocol has no versioning.
+- The socket carries only proxy connections.
 
 ## Egress proxy
 
@@ -429,8 +414,6 @@ network listener, no token: the socket identifies the box.
     caller's own config still overrides it.
   - `up` refuses a login it cannot use (no token, or not a usable JWT) as
     `login`, naming the harness.
-  - `getAuthStatus` is deprecated at this pin. Revisit the adapter when
-    a pin drops it.
 - **Limits:** a connection cap and a header timeout. A tunnel is idle, and
   closed, only when neither direction has carried bytes for 5 minutes.
 - **Log:** one JSON line per decision in the box's egress log at
@@ -449,14 +432,13 @@ profile image.
 - Images are built only by `pinfold build` and `pinfold image build`.
   `pinfold pi` refuses when the image is missing and names the command.
 - A profile or project build gets an empty context: the Containerfile
-  alone. For a project build, trust then covers every input. Files come in
+  alone. Files come in
   by `ADD --checksum` or from the profile image. Every step reruns at every
   build (no layer cache).
 - A build's identity is its unique tag, never an image label. A caller
   build whose layers and labels are unchanged returns the existing image.
   Every build sets both family labels, `dev.pinfold.profile` and
-  `dev.pinfold.project`, and `dev.pinfold.base`, the other family empty,
-  so an image inherits no family and no base from the image it builds on.
+  `dev.pinfold.project`, and `dev.pinfold.base`, the other family empty.
 - A profile build is tagged uniquely `pinfold/profile-<name>:<build>` and
   moves the stable `pinfold/profile-<name>:latest` to it. The stable ref is
   what a project Containerfile `FROM`s and what `doctor` compares against.
@@ -468,20 +450,18 @@ profile image.
   the context. NAME is validated like a profile name. The build is tagged
   uniquely `pinfold/image-<NAME>:<build>` and moves the stable
   `pinfold/image-<NAME>:latest` to it; a box spec's `image` names either.
-  NAME lives only in these tags, never in the image, so identical inputs
-  under two names build one image. It carries
+  Identical inputs under two names build one image. It carries
   `dev.pinfold.base` (the first `FROM`'s digest when it resolves to one,
   else empty; a base pinfold built is read from local storage, never
-  pulled), both family labels empty, and
-  the caller's `--label`s, none of which may start with `dev.pinfold.`. It uses
+  pulled), both family labels empty, and the caller's `--label`s, none of
+  which may start with `dev.pinfold.`. It uses
   the runtime's layer cache unless the caller passes `--no-cache`; podman
   labels the cache's intermediate images `dev.pinfold.layer`.
 - A project build is tagged uniquely `pinfold/project-<id>:<build>` and
   moves the stable `pinfold/project-<id>:latest` to it, where `<id>` is the
   project's state id. A project image carries `dev.pinfold.project=<id>`,
   and records the digest of the profile image it was built from as
-  `dev.pinfold.base`. `pinfold pi` prints one line when that is no longer
-  the current profile image.
+  `dev.pinfold.base`.
 - A build never touches project homes.
 - Profile and project images record their Containerfile's SHA-256 as
   `dev.pinfold.containerfile-sha256`. Before a pi launch, and in doctor,
@@ -507,9 +487,8 @@ The default profile's image:
 
 `crates/pinfold/harnesses.toml`, embedded at build time, pins each harness
 (pi, claude, codex): a version, env defaults, and per box `os-arch`
-(`linux-arm64`, `linux-x64`) its release assets, each a literal URL, its
-sha256, and how it installs (a `tar.gz` whose one top-level entry is
-installed, or a bare executable) and at which path. On a box's first use of
+(`linux-arm64`, `linux-x64`) its release assets (URL, sha256, install form and
+path). On a box's first use of
 a harness, its assets are downloaded, checked and installed into
 `~/.cache/pinfold/artifacts/<name>/<version>/<os-arch>/`; its `<name>/`
 directory there is mounted read-only at `/opt/pinfold/<name>`. An install
@@ -528,7 +507,6 @@ full days ago and is not deprecated. AnyDoc's version must name its native
 packages at that version. A missing or invalid publication time makes a
 version ineligible. Every download must match its publisher's digest; a
 source or integrity failure aborts before either pin file is written.
-Debian packages and gh update at build time from their signed repositories.
 
 Changed pins receive a patch release after Linux x64 and arm64 tests, the full
 Mac suite including live login, and all three release builds pass for the
@@ -538,13 +516,8 @@ Automatic updates are disabled unless `PINFOLD_AUTO_RELEASES` is `true` and
 a dedicated Mac runner has the `pinfold-nightly` label.
 Manual runner checks can install missing build tools and run the Mac suite
 without updating pins or releasing.
-The Mac runner executes tests at `~/.local/lib/pinfold-ci/e2e`; its
-firewall must permit incoming fixture connections for that executable.
-The dedicated CI runtime removes leftover boxes and unused images before
-and after each Mac suite, targeting 4 GiB of unused builder cache and
-2 GiB of test artifacts. Builds require at least 20 GiB free. These are cleanup targets,
-not filesystem quotas. The next suite builds its default image from the
-candidate's embedded profile.
+The next suite builds its default image from the candidate's embedded
+profile.
 
 codex also pins a host helper, `codex-app-server`, per host `os-arch`
 (`darwin-arm64`, `linux-arm64`, `linux-x64`), installed the same way into
@@ -577,7 +550,6 @@ with or without a TTY.
   `--from-project [PATH]` (PATH is the
   current project root by default) merges the project's `home/.pi/agent/`
   into the copy, minus `auth.json`, `sessions/`, `npm/` and caches.
-- Selected by `profile` in config or `"profile"` in a box spec.
 - `home/` needs `$HOME` on a read-write mount.
 - pinfold does not manage pi settings: `pi install` in a box changes that
   project home only.
@@ -616,7 +588,6 @@ Apple `container` limitations, documented for users:
 | Limitation | Handling |
 |---|---|
 | ~1 s metadata and name cache: ENOENT or stale `stat` after a host atomic save | Not handled; a reader retries. |
-| A mount's top directory may be root-owned inside the box | `safe.directory`, as above. |
 | No inotify for host changes | The box polls (`CHOKIDAR_USEPOLLING`, `WATCHPACK_POLLING`); pinfold sets neither. |
 | `flock`/`fcntl` locks not shared; O_EXCL lockfiles are safe | Don't open one SQLite database from both sides. |
 | A case-only rename is a no-op | Rename in two steps. |
@@ -652,8 +623,7 @@ Each such launch also compares the bundled default profile with its last
 observed fingerprint. Changes print `default-profile-changed` once,
 independently of the network interval. No history means a silent baseline;
 self-update records a missing baseline before replacement. Saved project
-settings and user profiles are preserved. `profile new NAME --builtin`
-copies fresh defaults for the user to inspect and adopt explicitly.
+settings and user profiles are preserved.
 `PINFOLD_NO_UPDATE_CHECK=1` disables automatic checks and notices. The
 timestamp and fingerprint live under `~/.cache/pinfold/update-check`,
 honoring `XDG_CACHE_HOME`.
@@ -680,12 +650,9 @@ Automatic, never prompting:
   builds beyond each source's newest two (the after-build rule, applied
   even when no build follows), and egress logs older than 14 days.
 
-A caller image name's builds are its `pinfold/image-<NAME>` tags; the
-rules above never touch another name's tags.
-
-`pinfold image rm NAME` retires a caller image name: it removes every
-tag of NAME, whatever its age, and no other name's, except an image's
-last tag while a box uses it. An image goes with its last tag.
+`pinfold image rm NAME` retires a caller image name: it removes every tag
+of NAME, whatever its age, and no other name's. The last-tag rule above
+applies to an image a box uses.
 
 `pinfold clean` lists sizes, then removes:
 - everything automatic, now
@@ -701,9 +668,8 @@ last tag while a box uses it. An image goes with its last tag.
 `--dry-run` only lists. `doctor` shows disk use per category and suggests
 `clean` above 20 GB. `doctor` runs no maintenance and changes no pinfold
 state or artifacts. On Apple, disk use includes allocated builder backing
-storage, including a stopped builder, rather than its sparse file's length
-or BuildKit's logical cache size. Pruning unused records may reclaim less
-host disk space than this measurement. Podman's build cache is unmeasured.
+storage, including a stopped builder; pruning may reclaim less. Podman's
+build cache is unmeasured.
 When runtime checks fail, it skips runtime-dependent image, config, linger
 and disk probes. On Linux, failed preflight also reports
 missing host requirements independently of Podman: `runtime-dir` names the
@@ -751,8 +717,7 @@ commits are made on the host. A caller-owned box protects its repository
 the same way by mounting `.git` read-only; its commits are the caller's own
 host-side operation, hooks and signing off.
 
-Worktrees are refused: their `.git` is a file whose `gitdir:` line host git
-follows, and Apple `container` cannot mount a file read-only.
+Worktrees are refused.
 
 ## Configuration
 
@@ -778,16 +743,16 @@ The list keys take comma-separated values in the environment:
 - `PINFOLD_ROUTES`: `name=host:port` pairs; an injecting route needs a file.
 - `PINFOLD_PROTECT`: project-relative directory paths.
 
+An unknown key in `.pinfold.toml` or a profile's `pinfold.toml` is refused,
+naming the file and the key. `containerfile` in a profile's `pinfold.toml` is
+refused: it is a project key.
+
 `pinfold config` prints the effective configuration, spec-shaped.
 
 **Trust.** `.pinfold.toml` and the Containerfile its `containerfile` names
 are used only if their hashes match those `pinfold allow` recorded in
 `~/.local/state/pinfold/trust` for this project. A change stops the run
 until allowed again.
-
-**Credentials** need no pinfold code: `op run -- pi …` for 1Password;
-`PINFOLD_ENV_GH_TOKEN` for gh and git; direnv for per-repo tokens;
-`PINFOLD_ENV_GIT_*` for identity.
 
 ## CLI
 
@@ -813,8 +778,8 @@ pinfold init                     PID 1 in the box (Linux builds)
 and `assets`, a list of `{url, sha256}` for this host's `os-arch`. Nothing
 is downloaded. `doctor` reports the same list.
 
-`pinfold --version` and `pinfold --help` answer without touching the runtime
-or the state dir; `--help` or `-h` after a subcommand, before any `--`,
+`pinfold --version` (`-V`) and `pinfold --help` (`-h`) answer without
+touching the runtime or the state dir; `--help` or `-h` after a subcommand, before any `--`,
 prints that subcommand's syntax line and exits 0, touching neither. `pi`
 passes it to pi, and `attach` to its command once one is given.
 
@@ -829,19 +794,19 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 |---|---|---|
 | 1 | No network but loopback | Inside: only `lo`; `1.1.1.1` unreachable. Control: the fixture answers through a route. |
 | 2 | Only allowlisted hosts get through | `api.github.com` answers. `example.com` gets a proxy 403, logged "not allowlisted"; `ready` names that log's path. |
-| 3 | The proxy refuses the tricks | Each with a control: IP literal, name resolving to loopback, SNI ≠ CONNECT host, CONNECT to a route, ambiguous framing. |
+| 3 | The proxy refuses the tricks | Each with a control: IP literal, name resolving to loopback, SNI ≠ CONNECT host, CONNECT to a route, ambiguous framing (two Content-Lengths, or one that is not 1*DIGIT, such as `+5`). |
 | 4 | A route reaches exactly one host service | `http://fixture.internal/` works; the request's route line names the DELETE method, the queryless path and the fixture's non-200 status, with the query sentinel absent. |
 | 5 | Nothing can gain privileges | `CapBnd` 0 in exec'd processes; PID 1 runs as the host uid; no setuid or setgid files; rootfs not writable; on Linux `unshare -U` fails. |
-| 6 | The environment is exactly the spec | The host's unprefixed proxy variables are absent; `PINFOLD_ENV_X` arrives as `X`; the secret never shows in host `ps`; a `PINFOLD_ENV_` name that is not a POSIX name is refused; a spec `PATH` that omits the runtime's directory still comes up, and the box sees exactly that `PATH`. |
+| 6 | The environment is exactly the spec | The host's unprefixed proxy variables are absent; `PINFOLD_ENV_X` arrives as `X`; the secret never shows in host `ps`; a spec `PATH` that omits the runtime's directory still comes up, and the box sees exactly that `PATH`. |
 | 7 | No egress means no way out | Without `egress`, nothing gets out, not even through a route. |
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, the box has no egress. With its `pid` file naming a live process, `list` reports the owner gone, `box prune` removes it, and the name can be used again. |
-| 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; `down` removes, and closing `up`'s stdin tears the box down with reason `stdin-closed`. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box or an empty name exits 0, prints nothing and leaves live boxes alone. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. |
+| 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; `down` removes, and closing `up`'s stdin tears the box down with reason `stdin-closed`. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box, an empty name or a flag-like name (`--filter=…`) exits 0, prints nothing and leaves live boxes alone. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. |
-| 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails, also under a top level named by a space, and a symlinked protected path refuses the run as `protected-path-invalid`; replacing it with a real directory runs. Starting inside `.git` is refused as `project-in-git`; starting from the project root runs. Control: a project file is writable. |
+| 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, or writing into `.vscode/` in a project without one fails, also under a top level named by a space, and a symlinked protected path refuses the run as `protected-path-invalid`; replacing it with a real directory runs. Starting inside `.git` is refused as `project-in-git`; starting from the project root runs. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |
 | 13 | Project state persists and stays separate | Settings are seeded once and survive runs; a deleted seed returns; two projects don't see each other's state; `profile new --from-project` copies the project's settings but not its `auth.json`. |
 | 14 | Both pi config levels load behind a route | `pi -p` through the shim, against a fake model reached through a route: the model's request carries the bundled `read-documents` skill, a skill from the profile and one from the project's `.pi/`. |
-| 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself; an image built on a profile's is its own family; a source a build left above two drops to two on a later `pinfold clean` with no build after. `--dry-run` leaves a project state the real clean removes. Two names built from identical inputs share one image id; `image rm` of one removes its tags while a box of the other name runs the image, and leaves the other name's tags, the image and the box; an image's last tag stays while a box uses it. An unlabeled image, a live box, its project's state and `~/.cache` survive `pinfold clean`, also with `--unused 0s`, which removes an idle project's state; a dead box is removed and protects no project's cache. On Apple, a build in another state directory held active in RUN succeeds across clean; dry-run counts at least the builder backing filesystem's allocated host bytes. |
+| 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself; an image built on a profile's is its own family; a source a build left above two drops to two on a later `pinfold clean` with no build after. `--dry-run` leaves a project state the real clean removes. Two names built from identical inputs share one image id; `image rm` of one removes its tags while a box of the other name runs the image, and leaves the other name's tags, the image and the box; an image's last tag stays while a box uses it. An unlabeled image, a container started with the runtime's CLI from a pinfold-built image, a live box, its project's state and `~/.cache` survive `pinfold clean`, also with `--unused 0s`, which removes an idle project's state; a dead box is removed and protects no project's cache. On Apple, a build in another state directory held active in RUN succeeds across clean; dry-run counts at least the builder backing filesystem's allocated host bytes. |
 | 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW carries the default list's hosts; with PINFOLD_ALLOW=api.github.com over a project's allow = ["registry.npmjs.org"], it is exactly that host, and registry.npmjs.org is refused as not allowlisted. The project's cpus and memory reach the box. |
 | 17 | up refuses before it creates | A missing image, a misspelled spec key, a bad env name, a `dev.pinfold.` label, a memory below 256M or without a unit, a malformed string route, a login route naming another harness, a suffix allow entry on or above a public suffix, a mount path with a comma, a file mount, a missing mount host (including a dangling symlink), a mount at a path pinfold mounts and a live name are refused as data, naming the cause; a misspelled key's refusal also names the box; each leaves no box and no state dir. The box whose name was reused still answers exec, and of two `up`s racing for one name exactly one wins. |
 | 18 | A caller reads the effective configuration as data | pinfold config reports a project's allow list, its trust state before and after pinfold allow, and the project home pinfold pi then mounts. |
@@ -852,13 +817,13 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref, the image's id and the labels; three builds of one name move latest, and the first build's ref still comes up; two builds of unchanged inputs make one image under two refs; a failed build prints its log and makes no image. On Apple, builds from two state directories with different `NO_COLOR` and `BUILDKIT_COLORS` both succeed while one is held active in RUN. |
 | 24 | Every build reruns its steps | A second build of one source does not reuse the first's `RUN` layer; on podman it leaves no untagged image. |
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box list --help` exits 0, with no runtime and leaving the state dir untouched. |
-| 26 | A login route keeps the login on the host | With `to` at a host fixture, claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. An empty `CODEX_HOME` is refused as `login`. On macOS only (the operator's Mac or dedicated nightly runner, with a real login), codex completes one tool round trip through a route with no `to`. |
+| 26 | A login route keeps the login on the host | With `to` at a host fixture, claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. An empty `CODEX_HOME` is refused as `login`. On macOS only, with a real login, codex completes one tool round trip through a route with no `to`. |
 | 27 | Doctor reports without changing state | With a working runtime and with no runtime on PATH, doctor leaves a fresh state directory empty and an old artifact intact. On Linux, with no runtime on PATH and with real Podman failing on a missing runtime directory, the report names it as `runtime-dir`, and names `tun` in a private mount namespace with no `/dev/net/tun`. |
 | 28 | Updates verify before atomic replacement | A release served by a host HTTPS fixture is checked without changing the executable, refused as `checksum-mismatch` with its original executable intact and usable, refused with a live box, then installed after the box exits; replacement changes the inode, preserves the pi symlink and installs the fixture's executable bytes. |
 | 29 | Interactive update checks are bounded | A host HTTPS fixture observes one check across repeated terminal launches; noninteractive launches and the opt-out make none. A stalled request is silent, ends within the timeout and is not retried by the next launch. |
 | 30 | Changed image inputs prompt a rebuild | Profile and trusted project Containerfile changes produce `image-outdated` without refusing a pi launch. A project also detects changed profile inputs before the profile is rebuilt, then detects its changed base digest afterward. Rebuilding the affected profile and project clears the hints. |
 | 31 | Changed bundled defaults are reported once | A genuinely rebuilt executable with changed bundled settings produces `default-profile-changed` once on interactive launch, within the existing network interval. The first launch establishes history silently. `profile new --builtin` exposes the changed defaults even with a user override, preserving that override. |
-| 32 | The default profile reads documents locally | In a freshly built default image with no egress, AnyDoc converts a host RTF, and a host PDF whose page objects are reordered, to Markdown with both pages in page-tree order. `pdftotext` extracts only the selected second page, and `pdftoppm` renders it to a PNG with that page's dimensions. |
+| 32 | The default profile reads documents locally | In a freshly built default image with no egress, AnyDoc converts a host PDF whose page objects are reordered to Markdown with both pages in page-tree order, and `pdftoppm` renders its second page to a PNG with that page's dimensions. |
 
 Linux (podman) runs in CI on every push to main and every pull request,
 and on a dispatched ref, on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm`
@@ -881,9 +846,6 @@ lives in `cli.rs`.
 | `aarch64-unknown-linux-musl` | Linux arm64 CLI; init on Macs and arm64 hosts |
 | `x86_64-unknown-linux-musl` | Linux x64 CLI; init on x64 hosts |
 
-Linux targets build on a Mac with `cargo zigbuild`. The default profile is
-embedded with `include_bytes!`.
-
 Dependencies: `tokio`, `httparse`, `serde`, `serde_json`, `sha2`, `toml`, `nix`,
 and the TLS client for injecting routes: `rustls` (ring) with
 `rustls-native-certs` for the host's roots.
@@ -893,20 +855,6 @@ data, `crates/pinfold/public_suffix_list.dat`, embedded with `include_str!`.
 - Platform dirs are the literal XDG-style paths on both OSes:
   `~/.config/pinfold`, `~/.local/state/pinfold` and `~/.cache/pinfold`,
   with `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` honored.
-- Runtimes are adapters behind a trait, chosen by target OS.
-
-```
-crates/pinfold/src/
-  core/    runtime/{mod,apple,podman}.rs plan.rs box.rs network.rs proxy.rs
-           tls.rs artifacts.rs profile.rs clean.rs image.rs login.rs
-  init.rs  socket mode, TCP relay, reaping, readiness
-  pi/      launch.rs state.rs git.rs
-  cli.rs main.rs config.rs trust.rs dirs.rs update.rs
-crates/pinfold/harnesses.toml  the harness pins
-crates/pinfold/public_suffix_list.dat  the pinned Public Suffix List
-crates/e2e/  the end-to-end suite: src/lib.rs (harness, fixtures, helpers), tests/e2e/{main,box_,pi,cli,update,image_warning}.rs and release_proxy.py
-profile/   the built-in default profile
-```
 
 ## Open questions
 

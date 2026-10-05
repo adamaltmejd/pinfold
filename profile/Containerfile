@@ -41,11 +41,10 @@ ADD --checksum=sha256:ed71661425a9959009d39ba495dbc565cc27a27f4eb0c93336b89f217e
 ADD --checksum=sha256:ca822ea3ad29a9b9ca6b7f6d2a6b3d5311153af25a6c35a7f5bdf0791fe7f2c9 https://registry.npmjs.org/@firecrawl/anydoc-linux-x64-gnu/-/anydoc-linux-x64-gnu-0.2.4.tgz /tmp/anydoc-x64.tgz
 # <<< pins
 
-# Bun, rtk and AnyDoc on PATH; rtk's pi extension and the ponytail pi package
-# outside $HOME, which is a mount at run time, for the profile's seed settings
-# to name as packages. rtk init writes its extension 0600, so make the packages
-# readable and traversable for the box user. AnyDoc's CLI runs on Bun beside
-# its native package for this architecture, so the image needs no Node.
+# Bun, rtk and AnyDoc on PATH. rtk's pi extension and the ponytail pi package
+# sit outside $HOME (a run-time mount) for the seed settings to name; rtk init
+# writes its extension 0600, so the packages are made readable. AnyDoc runs on
+# Bun beside its native package, so the image needs no Node.
 RUN set -eux; \
     case "${TARGETARCH}" in \
         arm64) arch=aarch64; native=anydoc-linux-arm64-gnu ;; \
