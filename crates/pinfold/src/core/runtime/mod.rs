@@ -430,12 +430,6 @@ fn build(
     }
 }
 
-/// The content digest of the image `reference` resolves to. `None` when the
-/// runtime cannot resolve it. Never pulls: the reference is local.
-pub fn local_image_id(runtime: &dyn Runtime, reference: &str) -> io::Result<Option<String>> {
-    Ok(runtime.resolve_image(reference)?.ok().map(|image| image.id))
-}
-
 /// A `type=bind` mount value, as both runtimes spell it.
 pub(crate) fn bind(host: &Path, guest: &Path, readonly: bool) -> OsString {
     let mut value = OsString::from("type=bind,source=");

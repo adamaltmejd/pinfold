@@ -21,10 +21,6 @@ pub const PROJECT_LABEL: &str = "dev.pinfold.project";
 /// The two labels naming a profile's or a project's source on an image. A
 /// caller's name lives only in its `pinfold/image-<NAME>` tags.
 pub const FAMILY_LABELS: [&str; 2] = [PROFILE_LABEL, PROJECT_LABEL];
-/// The `image` stem of a caller build's repository, `pinfold/image-<name>`,
-/// which `caller_source` matches. A caller's name lives only in its tags, so
-/// this names a repository, never a label.
-pub const IMAGE_STEM: &str = "image";
 /// The label podman puts on the intermediate images of a cached build, so
 /// `clean` prunes only pinfold's build cache.
 pub const LAYER_LABEL: &str = "dev.pinfold.layer";
@@ -135,17 +131,14 @@ pub struct Boxes {
     pub live_projects: BTreeSet<String>,
 }
 
-/// Read the runtime's box list once. A pinfold box with neither a state dir
-/// here nor an owner label counts as gone: nothing holds it.
+/// Read the runtime's box list once. A box without the owner label is not
+/// pinfold's: podman copies image labels onto a user's own container. A
+/// pinfold box whose owner label no live process matches counts as gone.
 pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
     let mut dead = Vec::new();
     let mut live_projects = BTreeSet::new();
     for box_ in runtime.list()? {
-        if !box_
-            .labels
-            .keys()
-            .any(|key| key.starts_with("dev.pinfold."))
-        {
+        if !box_.labels.contains_key(OWNER_LABEL) {
             continue;
         }
         let (owner, alive) = owner(&box_)?;
@@ -304,16 +297,15 @@ pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
     Ok(())
 }
 
-/// The ids of the images every listed box runs, with the boxes that pin
-/// each: the one in-use rule [`keep_two_images_per_source`],
+/// The ids of the images every listed box runs: the one in-use rule [`keep_two_images_per_source`],
 /// [`keep_two_images`] and [`remove_images`] share. Dead or alive, every
 /// listed box counts.
-fn in_use_images(runtime: &dyn Runtime) -> io::Result<BTreeMap<String, Vec<String>>> {
-    let mut in_use: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for box_ in runtime.list()? {
-        in_use.entry(box_.image_id).or_default().push(box_.id);
-    }
-    Ok(in_use)
+fn in_use_images(runtime: &dyn Runtime) -> io::Result<BTreeSet<String>> {
+    Ok(runtime
+        .list()?
+        .into_iter()
+        .map(|box_| box_.image_id)
+        .collect())
 }
 
 /// The caller image name a reference tags, `[localhost/]pinfold/image-<NAME>:<tag>`,
@@ -375,7 +367,7 @@ pub fn keep_two_images(runtime: &dyn Runtime, label: Option<&str>, source: &str)
 fn keep_two_images_from(
     runtime: &dyn Runtime,
     images: &[ImageInfo],
-    in_use: &BTreeMap<String, Vec<String>>,
+    in_use: &BTreeSet<String>,
     references: &mut BTreeMap<String, usize>,
     label: Option<&str>,
     source: &str,
@@ -394,11 +386,8 @@ fn keep_two_images_from(
         }
         // A box keeps an image's last tag alive; any other tag of that
         // image only untags it, so it goes.
-        if in_use.contains_key(&id) && references.get(&id).copied().unwrap_or(0) <= 1 {
-            failures.push(format!(
-                "{reference}: in use by box {}",
-                in_use[&id].join(", ")
-            ));
+        if in_use.contains(&id) && references.get(&id).copied().unwrap_or(0) <= 1 {
+            failures.push(format!("{reference}: in use"));
             continue;
         }
         if let Err(error) = runtime.remove_image(&reference) {
@@ -417,6 +406,7 @@ fn keep_two_images_from(
 
 /// What [`remove_images`] removed, and what a listed box still uses.
 /// `pinfold image rm` prints both lists.
+#[derive(Default)]
 pub struct Removed {
     /// The ids it untagged, one each.
     pub ids: Vec<String>,
@@ -442,15 +432,12 @@ pub fn remove_images(runtime: &dyn Runtime, source: &str) -> io::Result<Removed>
             .or_default()
             .push(image.reference.clone());
     }
-    let mut removed = Removed {
-        ids: Vec::new(),
-        in_use: Vec::new(),
-    };
+    let mut removed = Removed::default();
     for (id, tags) in images {
         // The image's last tag is this source's when it tags every
         // reference of the id; with a box using the image, that one stays.
         let last = references.get(&id).copied().unwrap_or(0) == tags.len();
-        if last && in_use.contains_key(&id) {
+        if last && in_use.contains(&id) {
             for tag in &tags[..tags.len() - 1] {
                 runtime.remove_image(tag)?;
             }

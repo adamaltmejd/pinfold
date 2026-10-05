@@ -136,10 +136,7 @@ impl Runtime for Apple {
     }
 
     fn purge_build_cache(&self) -> io::Result<()> {
-        let Some(builder) = containers()?
-            .into_iter()
-            .find(|entry| entry.id == "buildkit")
-        else {
+        let Some(builder) = builder()? else {
             return Ok(());
         };
         if builder.status.state != "running" {
@@ -165,10 +162,7 @@ impl Runtime for Apple {
     }
 
     fn build_cache_bytes(&self) -> io::Result<Option<u64>> {
-        let Some(builder) = containers()?
-            .into_iter()
-            .find(|entry| entry.id == "buildkit")
-        else {
+        let Some(builder) = builder()? else {
             return Ok(Some(0));
         };
         // The exports mount records the runtime's actual app root, including
@@ -207,17 +201,11 @@ impl Runtime for Apple {
     }
 }
 
-/// Bound on the wait below.
-const RUNNING_WAIT: Duration = Duration::from_secs(5);
-
-/// How long between the wait's list calls.
-const RUNNING_POLL: Duration = Duration::from_millis(100);
-
 /// Wait, bounded, until `list` reports box `name` running. Apple records
 /// `.running` only after the box's first process starts, so `ready` can
 /// arrive first; the root exec that follows is refused in that gap.
 pub fn wait_until_running(name: &str) -> io::Result<()> {
-    let deadline = Instant::now() + RUNNING_WAIT;
+    let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let state = Apple
             .list()?
@@ -232,7 +220,7 @@ pub fn wait_until_running(name: &str) -> io::Result<()> {
                     _ => format!("the runtime does not list box {name:?} after ready"),
                 }));
             }
-            _ => std::thread::sleep(RUNNING_POLL),
+            _ => std::thread::sleep(Duration::from_millis(100)),
         }
     }
 }
@@ -324,6 +312,13 @@ struct ListedStatus {
 fn containers() -> io::Result<Vec<ListedContainer>> {
     let json = output(&["container", "list", "--all", "--format", "json"])?;
     parse_json("container list", &json)
+}
+
+/// The shared BuildKit builder, if the runtime has one.
+fn builder() -> io::Result<Option<ListedContainer>> {
+    Ok(containers()?
+        .into_iter()
+        .find(|entry| entry.id == "buildkit"))
 }
 
 /// One `container image list --format json` entry, as much as pinfold needs.
