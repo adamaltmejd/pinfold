@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Repin crates/pinfold/harnesses.toml and profile/Containerfile's ADD pins.
-
-Harnesses move to upstream's latest stable release; image tools to the newest
-stable release at least seven full days old (ARCHITECTURE.md, Pinned
-artifacts). Every download is checked against its publisher's digest, and the
-files are written only after every source succeeded. Run from anywhere.
-"""
+"""Repin harnesses.toml and the Containerfile's ADD pins (ARCHITECTURE.md, Pinned artifacts)."""
 
 import base64
 import datetime
@@ -13,7 +7,6 @@ import hashlib
 import json
 import os
 import re
-import sys
 import tomllib
 import urllib.request
 from pathlib import Path
@@ -112,7 +105,7 @@ def github(urls, cutoff):
     api = f"https://api.github.com/repos/{repo}/releases"
     latest = json.loads(fetch(f"{api}/latest", github=True))
     ceiling = number(latest)
-    if ceiling is None or latest.get("draft", True) or latest.get("prerelease", True):
+    if ceiling is None:
         raise ValueError(f"{repo}: latest release is not stable")
     if ceiling <= current:
         return None
@@ -222,13 +215,13 @@ def claude(urls, cutoff):
     if target <= current:
         return None
     platforms = json.loads(fetch(f"{CLAUDE}{latest}/manifest.json"))["platforms"]
+    if not all(part[2] in platforms for part in parts):
+        return current, target, None
     rows = []
     for part in parts:
-        url, checksum = (
-            f"{CLAUDE}{latest}/{part[2]}/claude",
-            platforms[part[2]]["checksum"],
-        )
-        rows.append((url, verified(url, "sha256", bytes.fromhex(checksum))))
+        url = f"{CLAUDE}{latest}/{part[2]}/claude"
+        expected = bytes.fromhex(platforms[part[2]]["checksum"])
+        rows.append((url, verified(url, "sha256", expected)))
     return current, target, rows
 
 
@@ -296,8 +289,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as error:
-        print(f"bump-pins: {error}", file=sys.stderr)
-        sys.exit(1)
+    main()
