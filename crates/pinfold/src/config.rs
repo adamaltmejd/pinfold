@@ -30,7 +30,6 @@ const DEFAULT_ALLOW: [&str; 9] = [
 
 /// The merged configuration for one project run.
 pub struct Config {
-    /// The selected profile, loaded.
     pub profile: Profile,
     /// The project's Containerfile: its path from `.pinfold.toml`, relative
     /// to the project root, and its bytes, read once at load time. `None`

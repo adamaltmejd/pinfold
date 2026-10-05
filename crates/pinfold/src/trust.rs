@@ -75,7 +75,6 @@ fn current(config: &Config) -> Trust {
     }
 }
 
-/// The trust record for `root`: `<project-id>.json` under the state dir.
 fn record_path(root: &Path) -> io::Result<PathBuf> {
     Ok(dirs::state_dir()?
         .join("trust")
