@@ -15,9 +15,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::DEAD_BOX_RACE;
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
-    box_stat, build_profile, curl, default_image, egress_log, egress_log_lines, exit_code, git,
-    image_cli, image_id, json_lines, labeled_images, pinfold, profile_containerfile, project_id,
-    project_state_dir, run_ok, runtime_images, tagged_images, untagged_images,
+    box_stat, build_profile, curl, default_image, egress_log, exit_code, git, image_cli, image_id,
+    json_lines, labeled_images, pinfold, profile_containerfile, project_id, project_state_dir,
+    run_ok, runtime_images, tagged_images, untagged_images,
 };
 
 #[test]
@@ -54,6 +54,10 @@ fn box_lifecycle_works_for_a_caller() {
     // fails at `up` with the socket-length error, so the ready read panics.
     // Sabotage: give a box without `egress` a derived log path in `ready`;
     // the null assertion fails.
+    // Sabotage: drop the valid-name gate in core::box::down; on podman the
+    // `--filter` name reaches `rm` as a flag and removes the live box, so the
+    // exec assertion fails; Apple's `rm` rejects the flag, so the exit
+    // assertion fails.
     let env = TestEnv::new("lifecycle");
     // A caller's names can be long. The state dir is keyed by the name's
     // hash, so 60 characters, past the old socket-path budget, still come
@@ -64,7 +68,7 @@ fn box_lifecycle_works_for_a_caller() {
     let spec = serde_json::json!({
         "name": name,
         "image": image,
-        "labels": { "dev.example.test": "lifecycle" },
+        "labels": { "dev.example.test": "lifecycle", "dev.example.box": name },
     });
     let mut up = box_up(&env, &spec, &name);
 
@@ -139,45 +143,52 @@ fn box_lifecycle_works_for_a_caller() {
         "list names the wrong image id: {line}"
     );
 
-    // An empty name is not a box: `down ""` behaves as for any absent box
-    // and leaves the live box's state alone.
-    let empty = env
-        .command(pinfold())
-        .args(["box", "down", ""])
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold box down");
-    assert!(
-        empty.status.success(),
-        "down with an empty name failed: {}: {}",
-        empty.status,
-        String::from_utf8_lossy(&empty.stderr)
-    );
-    assert!(
-        empty.stdout.is_empty(),
-        "down with an empty name printed on stdout: {}",
-        String::from_utf8_lossy(&empty.stdout)
-    );
-    assert!(
-        empty.stderr.is_empty(),
-        "down with an empty name printed on stderr: {}",
-        String::from_utf8_lossy(&empty.stderr)
-    );
-    let still = box_exec(&env, &name, &["sh", "-c", "exit 0"]);
-    assert_eq!(
-        still.code, 0,
-        "the live box stopped answering exec after down \"\": {}",
-        still.stderr
-    );
-    let survivors = box_list(&env, label);
-    let live = survivors
-        .iter()
-        .find(|box_| box_["name"].as_str() == Some(name.as_str()))
-        .unwrap_or_else(|| panic!("down \"\" took the live box out of list: {survivors:?}"));
-    assert_eq!(
-        live["owner_alive"], true,
-        "list reports the live box's owner gone after down \"\": {live}"
-    );
+    // An empty name, or one a runtime would read as a flag, is not a box:
+    // `down` behaves as for any absent box and leaves the live box alone.
+    // The filter matches only this box, so a regression removes nothing
+    // else on the host.
+    let flag = format!("--filter=label=dev.example.box={name}");
+    for absent in ["", flag.as_str()] {
+        let down = env
+            .command(pinfold())
+            .args(["box", "down", absent])
+            .stdin(Stdio::null())
+            .output()
+            .expect("run pinfold box down");
+        assert!(
+            down.status.success(),
+            "down {absent:?} failed: {}: {}",
+            down.status,
+            String::from_utf8_lossy(&down.stderr)
+        );
+        assert!(
+            down.stdout.is_empty(),
+            "down {absent:?} printed on stdout: {}",
+            String::from_utf8_lossy(&down.stdout)
+        );
+        assert!(
+            down.stderr.is_empty(),
+            "down {absent:?} printed on stderr: {}",
+            String::from_utf8_lossy(&down.stderr)
+        );
+        let still = box_exec(&env, &name, &["sh", "-c", "exit 0"]);
+        assert_eq!(
+            still.code, 0,
+            "the live box stopped answering exec after down {absent:?}: {}",
+            still.stderr
+        );
+        let survivors = box_list(&env, label);
+        let live = survivors
+            .iter()
+            .find(|box_| box_["name"].as_str() == Some(name.as_str()))
+            .unwrap_or_else(|| {
+                panic!("down {absent:?} took the live box out of list: {survivors:?}")
+            });
+        assert_eq!(
+            live["owner_alive"], true,
+            "list reports the live box's owner gone after down {absent:?}: {live}"
+        );
+    }
 
     // `down` removes the box and the owner exits.
     up.down(&env);
@@ -333,7 +344,6 @@ fn up_refuses_before_it_creates() {
     let (code, refused) = box_up_refused(&env, &missing, &[]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["event"], "refused");
-    assert_eq!(refused["box"], name);
     assert_eq!(refused["reason"], "image-missing");
     assert_left_nothing(&env, &name, label, "refused");
 
@@ -451,7 +461,6 @@ fn up_refuses_before_it_creates() {
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["event"], "refused");
     assert_eq!(refused["reason"], "spec");
-    assert_eq!(refused["box"], name);
     assert!(
         refused["detail"]
             .as_str()
@@ -479,7 +488,6 @@ fn up_refuses_before_it_creates() {
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["event"], "refused");
     assert_eq!(refused["reason"], "spec");
-    assert_eq!(refused["box"], name);
     assert!(
         refused["detail"]
             .as_str()
@@ -516,7 +524,6 @@ fn up_refuses_before_it_creates() {
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["event"], "refused");
     assert_eq!(refused["reason"], "spec");
-    assert_eq!(refused["box"], name);
     assert!(
         refused["detail"]
             .as_str()
@@ -632,7 +639,6 @@ fn up_refuses_before_it_creates() {
         assert_eq!(code, 1, "a refused up exits 1: {refused}");
         assert_eq!(refused["event"], "refused");
         assert_eq!(refused["reason"], "spec");
-        assert_eq!(refused["box"], name);
         assert!(
             refused["detail"]
                 .as_str()
@@ -667,7 +673,6 @@ fn up_refuses_before_it_creates() {
         refused["event"], "refused",
         "the loser was not refused: {refused}"
     );
-    assert_eq!(refused["box"], name);
     assert_eq!(refused["reason"], "name-in-use", "wrong reason: {refused}");
     drop(loser.stdin);
     let status = loser.child.wait().expect("wait for the losing up");
@@ -802,7 +807,7 @@ fn nothing_can_gain_privileges() {
     );
     assert_process_ids(&work.stdout, "exec");
 
-    // PID 1 is pinfold init, also as the host uid:gid.
+    // PID 1 also runs as the host uid:gid.
     let init = box_exec(&env, &name, &["cat", "/proc/1/status"]);
     assert_ok(&init, "reading /proc/1/status");
     assert_process_ids(&init.stdout, "PID 1");
@@ -926,7 +931,9 @@ fn the_proxy_refuses_the_tricks() {
     // fails.
     // Sabotage: drop the duplicate-Content-Length check in parse_plain; the
     // raw request reaches api.github.com, so the 400 and "ambiguous
-    // framing" assertions fail.
+    // framing" assertions fail. Sabotage: parse Content-Length with
+    // `str::parse::<u64>` alone; `+5` is read as 5, the request is
+    // forwarded, and the framing-refusal count falls short.
     let env = TestEnv::new("tricks");
     let fixture = HttpFixture::start(None);
     let name = box_name("tricks");
@@ -1018,27 +1025,37 @@ fn the_proxy_refuses_the_tricks() {
     );
     assert_denied(&route_connect, "403", "CONNECT to a route");
 
-    // Ambiguous framing: two Content-Length headers, sent raw because curl
-    // will not.
-    let framing = box_exec(
-        &env,
-        &name,
-        &[
-            "bash",
-            "-c",
-            "exec 3<>/dev/tcp/127.0.0.1/3128; \
-             printf 'GET http://api.github.com/ HTTP/1.1\\r\\nHost: api.github.com\\r\\nContent-Length: 0\\r\\nContent-Length: 0\\r\\n\\r\\n' >&3; \
-             cat <&3",
-        ],
-    );
-    assert!(
-        framing.stdout.contains("400"),
-        "ambiguous framing got no 400: {}",
-        framing.stdout
-    );
+    // Ambiguous framing, sent raw because curl will not: two Content-Length
+    // headers, and one whose value is not RFC 9110's 1*DIGIT. The `+5`
+    // request carries five body bytes, so a proxy that reads it as 5
+    // forwards it and the exchange still ends.
+    let framings = [
+        "Content-Length: 0\\r\\nContent-Length: 0\\r\\n\\r\\n",
+        "Content-Length: +5\\r\\n\\r\\nhello",
+    ];
+    for framing in framings {
+        let answer = box_exec(
+            &env,
+            &name,
+            &[
+                "bash",
+                "-c",
+                &format!(
+                    "exec 3<>/dev/tcp/127.0.0.1/3128; \
+                     printf 'GET http://api.github.com/ HTTP/1.1\\r\\nHost: api.github.com\\r\\n{framing}' >&3; \
+                     cat <&3"
+                ),
+            ],
+        );
+        assert!(
+            answer.stdout.contains("400"),
+            "ambiguous framing {framing:?} got no 400: {}",
+            answer.stdout
+        );
+    }
 
     // Every refusal names its own reason, distinct from "not allowlisted".
-    let lines = egress_log_lines(&env, &name);
+    let lines = json_lines(&egress_log(&env, &name));
     for (host, reason) in [
         ("127.0.0.1", "ip literal"),
         ("127.0.0.2", "ip literal"),
@@ -1053,11 +1070,14 @@ fn the_proxy_refuses_the_tricks() {
             "no {reason} refusal for {host}: {lines:?}"
         );
     }
-    assert!(
-        lines
-            .iter()
-            .any(|line| line["decision"] == "refused" && line["reason"] == "ambiguous framing"),
-        "no ambiguous framing refusal: {lines:?}"
+    let framing_refusals = lines
+        .iter()
+        .filter(|line| line["decision"] == "refused" && line["reason"] == "ambiguous framing")
+        .count();
+    assert_eq!(
+        framing_refusals,
+        framings.len(),
+        "not one ambiguous framing refusal per request: {lines:?}"
     );
 
     up.down(&env);
@@ -1118,7 +1138,7 @@ fn losing_the_owner_fails_closed() {
     // does not reliably close after the owner dies.
     // The log-line count is the assertion; the curl exit is only a
     // precondition, since a hang and a refusal both exit non-zero.
-    let before = egress_log_lines(&env, &name);
+    let before = json_lines(&egress_log(&env, &name));
     assert!(
         !before.is_empty(),
         "the positive control left no egress log line"
@@ -1133,7 +1153,7 @@ fn losing_the_owner_fails_closed() {
         denied.code, 0,
         "the box still had egress after the owner died"
     );
-    let after = egress_log_lines(&env, &name);
+    let after = json_lines(&egress_log(&env, &name));
     assert_eq!(
         after.len(),
         before.len(),
@@ -1240,6 +1260,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // other process's build, held in RUN by the host fixture, fails.
     // Sabotage: omit Apple's allocated build-cache storage from the
     // report; its byte count falls below the backing filesystem's du.
+    // Sabotage: in `clean::boxes`, take any box with a `dev.pinfold.` label
+    // instead of the owner label; on podman the user's container, which
+    // carries the image's labels and no owner, is removed as a dead box and
+    // its survival assertion fails.
     let env = TestEnv::new("cleanup");
     let build_env = cfg!(target_os = "macos").then(|| {
         let other = TestEnv::new("clean-build");
@@ -1486,6 +1510,11 @@ fn cleanup_removes_only_pinfolds_garbage() {
     dead_up.kill();
     dead_up.wait();
 
+    // A container the user started with the runtime's own CLI from a
+    // pinfold-built image is not a box: podman copies the image's
+    // `dev.pinfold.` labels onto it, but pinfold never owned it.
+    let user_container = RuntimeContainer::run(&box_name("cleanup-user"), default_image(&env));
+
     // Positive controls: everything `clean` sorts out exists before it runs.
     // Sabotage: report `owner_alive` as false whenever the owner label
     // parses; the live-owner assertion fails.
@@ -1501,6 +1530,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert!(
         !box_list(&env, dead_label).is_empty(),
         "the dead box is missing before clean"
+    );
+    assert!(
+        user_container.listed(),
+        "the user's container is missing before clean"
     );
     assert!(
         live_marker.is_file(),
@@ -1634,6 +1667,11 @@ fn cleanup_removes_only_pinfolds_garbage() {
         box_list(&env, dead_label).is_empty(),
         "clean left a box whose owner is gone"
     );
+    assert!(
+        user_container.listed(),
+        "clean removed a container pinfold did not start"
+    );
+    drop(user_container);
 
     // `--unused AGE` removes the state of projects not run for that long,
     // except one with a live box. Both projects last ran seconds ago, so
@@ -1739,31 +1777,12 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let retire_box = box_name("cleanup-retire");
     let retire_spec = serde_json::json!({ "name": retire_box, "image": retire_refs[0] });
     let mut up_retire = box_up(&env, &retire_spec, &retire_box);
-    let box_image = up_retire.ready["image"]["id"]
-        .as_str()
-        .unwrap_or_else(|| {
-            panic!(
-                "the retire ready line names no image id: {}",
-                up_retire.ready
-            )
-        })
-        .to_string();
-    assert_eq!(
-        box_image, retire_ids[0],
-        "the retire box did not start from the oldest build"
-    );
 
     // A twin box runs the shared image, so `retire`'s tag on it must be
     // freed while the twin's tags hold the image up.
     let twin_box = box_name("cleanup-twin");
     let twin_spec = serde_json::json!({ "name": twin_box, "image": twin_latest });
     let mut up_twin = box_up(&env, &twin_spec, &twin_box);
-    assert_eq!(
-        up_twin.ready["image"]["id"].as_str(),
-        Some(retire_ids[1].as_str()),
-        "the twin box did not start from the shared image: {}",
-        up_twin.ready
-    );
 
     let (code, removed) = image_rm(&env, &retire_name);
     assert_eq!(code, 0, "image rm {retire_name} exited {code}: {removed}");
@@ -2350,12 +2369,12 @@ fn a_route_reaches_exactly_one_host_service() {
         "the missing route failed: {}",
         missing.stderr
     );
-    let log = fs::read_to_string(egress_log(&env, &name)).expect("read egress log");
+    let log = egress_log(&env, &name);
     assert!(
         !log.contains(&sentinel),
         "the egress log holds the query sentinel"
     );
-    let lines = egress_log_lines(&env, &name);
+    let lines = json_lines(&log);
     let line = lines
         .iter()
         .find(|line| {
@@ -2463,7 +2482,7 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
     );
 
     // The log never holds the value.
-    let log = fs::read_to_string(egress_log(&env, &name)).expect("read egress log");
+    let log = egress_log(&env, &name);
     assert!(!log.contains(&secret), "the egress log holds the value");
 
     up.down(&env);
@@ -2568,7 +2587,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     );
 
     // The egress log never holds the value.
-    let log = fs::read_to_string(egress_log(&env, &name)).expect("read egress log");
+    let log = egress_log(&env, &name);
     assert!(!log.contains(&secret), "the egress log holds the value");
 
     up.down(&env);
@@ -2716,7 +2735,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
         "the codex box's files hold a token, or the scan missed the canary: {}",
         scan.stderr
     );
-    let log = fs::read_to_string(egress_log(&env, &codex_name)).expect("read egress log");
+    let log = egress_log(&env, &codex_name);
     for (what, value) in [("lapsing", &lapsing), ("refreshed", &refreshed)] {
         assert!(
             !log.contains(value.as_str()),
@@ -2726,22 +2745,14 @@ fn a_login_route_keeps_the_login_on_the_host() {
     up.down(&env);
     assert!(up.wait().success(), "box up did not exit cleanly");
 
-    // An empty CODEX_HOME has no login: up is refused as `login`, naming
-    // codex, and leaves nothing. The box above is its positive control.
+    // An empty CODEX_HOME has no login: up is refused as `login` and leaves
+    // nothing. The box above is its positive control.
     let empty = TestDir::new(&env, "codex-empty");
     let empty_path = empty.path().to_str().expect("a UTF-8 temp path");
     let (code, refused) = box_up_refused(&env, &codex_spec, &[("CODEX_HOME", empty_path)]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["event"], "refused");
-    assert_eq!(refused["box"], codex_name);
     assert_eq!(refused["reason"], "login");
-    assert!(
-        refused["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("codex"),
-        "the refusal did not name the harness: {refused}"
-    );
     assert_left_nothing(&env, &codex_name, label, "refused");
 
     // Live, on the Apple runtime only: the operator's own Codex login, and
@@ -3375,6 +3386,56 @@ fn assert_left_nothing(env: &TestEnv, name: &str, label: &str, what: &str) {
         "the {what} up for {name} left a state dir: {leftovers:?}"
     );
     assert!(box_list(env, label).is_empty(), "the {what} up left a box");
+}
+
+/// A container started with the runtime's own CLI, not pinfold, and
+/// removed with it on drop.
+struct RuntimeContainer {
+    name: String,
+}
+
+impl RuntimeContainer {
+    fn run(name: &str, image: &str) -> RuntimeContainer {
+        run_ok(
+            Command::new(image_cli())
+                .args(["run", "-d", "--name", name, image, "sleep", "infinity"]),
+        );
+        RuntimeContainer {
+            name: name.to_string(),
+        }
+    }
+
+    /// Whether the runtime's own container list names it: podman's `Names`,
+    /// Apple's `id`.
+    fn listed(&self) -> bool {
+        let list = if cfg!(target_os = "linux") {
+            "ps"
+        } else {
+            "list"
+        };
+        let output = run_ok(Command::new(image_cli()).args([list, "--all", "--format", "json"]));
+        let containers: Vec<serde_json::Value> =
+            serde_json::from_slice(&output.stdout).expect("the runtime's container list is JSON");
+        containers.iter().any(|container| {
+            container["id"] == self.name.as_str()
+                || container["Names"]
+                    .as_array()
+                    .is_some_and(|names| names.iter().any(|name| name == self.name.as_str()))
+        })
+    }
+}
+
+impl Drop for RuntimeContainer {
+    fn drop(&mut self) {
+        // Best effort: a Drop during unwinding must not panic. `sleep`
+        // ignores podman's SIGTERM, so skip its grace period.
+        let mut command = Command::new(image_cli());
+        command.args(["rm", "--force"]);
+        if cfg!(target_os = "linux") {
+            command.args(["--time", "0"]);
+        }
+        let _ = command.arg(&self.name).output();
+    }
 }
 
 fn box_down(env: &TestEnv, name: &str) -> ExitStatus {

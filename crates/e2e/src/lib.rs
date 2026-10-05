@@ -1,19 +1,11 @@
-//! End-to-end tests that drive the `pinfold` binary from outside.
-//!
-//! The tests live in `tests/e2e/` and run on a macOS host with the Apple
-//! `container` CLI, or a Linux host with rootless podman. `cargo test -p e2e`
-//! builds the binary and runs them, so that one command is the whole host
-//! gate.
-//!
-//! This crate also holds the host fixtures the tests reach through routes,
-//! the built binary the test files drive, and the helpers they share.
+//! Harness, host fixtures and helpers for the end-to-end suite in `tests/e2e/`.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Output};
+use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -24,32 +16,34 @@ use std::thread;
 pub fn pinfold() -> &'static Path {
     static BINARY: OnceLock<PathBuf> = OnceLock::new();
     BINARY.get_or_init(|| {
-        let triple = cfg!(target_os = "linux")
-            .then(|| format!("{}-unknown-linux-musl", std::env::consts::ARCH));
         let mut command = Command::new(env!("CARGO"));
-        command.args(["build", "-p", "pinfold", "--locked"]);
-        if let Some(triple) = &triple {
-            command.args(["--target", triple]);
+        command.args([
+            "build",
+            "-p",
+            "pinfold",
+            "--locked",
+            "--message-format",
+            "json-render-diagnostics",
+        ]);
+        if cfg!(target_os = "linux") {
+            let triple = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
+            command.args(["--target", &triple]);
         }
-        let status = command.status().expect("run cargo build -p pinfold");
-        assert!(status.success(), "cargo build -p pinfold failed");
-        let metadata = run_ok(Command::new(env!("CARGO")).args([
-            "metadata",
-            "--no-deps",
-            "--format-version",
-            "1",
-        ]));
-        let metadata: serde_json::Value =
-            serde_json::from_slice(&metadata.stdout).expect("parse cargo metadata");
-        let target = PathBuf::from(
-            metadata["target_directory"]
-                .as_str()
-                .expect("Cargo target_directory"),
-        );
-        let binary = match &triple {
-            Some(triple) => target.join(triple).join("debug").join("pinfold"),
-            None => target.join("debug").join("pinfold"),
-        };
+        let output = command
+            .stderr(Stdio::inherit())
+            .output()
+            .expect("run cargo build -p pinfold");
+        assert!(output.status.success(), "cargo build -p pinfold failed");
+        // Cargo reports the bin's path, under the target triple's dir too.
+        let binary = json_lines(&String::from_utf8_lossy(&output.stdout))
+            .into_iter()
+            .find(|message| {
+                message["reason"] == "compiler-artifact"
+                    && message["target"]["name"] == "pinfold"
+                    && message["target"]["kind"] == serde_json::json!(["bin"])
+            })
+            .and_then(|message| message["executable"].as_str().map(PathBuf::from))
+            .expect("cargo build reported the pinfold executable");
         assert!(binary.is_file(), "{} is missing", binary.display());
         binary
     })
@@ -64,11 +58,7 @@ pub struct TestEnv {
     pub root: PathBuf,
     /// `XDG_STATE_HOME`; pinfold's state dir is `<state>/pinfold`.
     pub state: PathBuf,
-    /// `XDG_CACHE_HOME`: the suite's shared cache, or the test's own when
-    /// `with_private_cache` built it.
     cache: PathBuf,
-    /// `XDG_CONFIG_HOME`, where profiles live. Empty, so `default` is the
-    /// embedded one.
     pub config: PathBuf,
 }
 
@@ -203,31 +193,28 @@ pub fn image_id(reference: &str) -> Option<String> {
 /// The ids of every image carrying `label = value`, from the runtime
 /// itself: its image list is the ground truth for what remains.
 pub fn labeled_images(label: &str, value: &str) -> Vec<String> {
-    let mut ids: Vec<String> = runtime_images()
-        .unwrap_or_else(|error| panic!("{error}"))
-        .into_iter()
-        .filter(|image| image.labels.get(label).map(String::as_str) == Some(value))
-        .map(|image| image.id)
-        .collect();
-    ids.sort_unstable();
-    ids.dedup();
-    ids
+    image_ids(|image| image.labels.get(label).map(String::as_str) == Some(value))
 }
 
 /// The ids of every image tagged in `repository` (`<repository>:<tag>`),
 /// from the runtime itself. A caller image name's builds are its tags.
 pub fn tagged_images(repository: &str) -> Vec<String> {
+    image_ids(|image| {
+        image.names.iter().any(|name| {
+            name.strip_prefix("localhost/")
+                .unwrap_or(name)
+                .strip_prefix(repository)
+                .is_some_and(|rest| rest.starts_with(':'))
+        })
+    })
+}
+
+/// The sorted, distinct ids of the runtime's images that `keep` accepts.
+fn image_ids(keep: impl Fn(&RuntimeImage) -> bool) -> Vec<String> {
     let mut ids: Vec<String> = runtime_images()
         .unwrap_or_else(|error| panic!("{error}"))
         .into_iter()
-        .filter(|image| {
-            image.names.iter().any(|name| {
-                name.strip_prefix("localhost/")
-                    .unwrap_or(name)
-                    .strip_prefix(repository)
-                    .is_some_and(|rest| rest.starts_with(':'))
-            })
-        })
+        .filter(|image| keep(image))
         .map(|image| image.id)
         .collect();
     ids.sort_unstable();
@@ -300,6 +287,18 @@ pub fn profile_containerfile(env: &TestEnv, profile: &str, contents: &str) -> Pa
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, contents).unwrap();
     path
+}
+
+/// `pinfold ARGS...` run in `project`.
+pub fn pinfold_in(env: &TestEnv, project: &Path, args: &[&str]) -> Command {
+    let mut command = env.command(pinfold());
+    command.args(args).current_dir(project);
+    command
+}
+
+/// Run `pinfold allow` in `project` and assert it succeeds.
+pub fn allow(env: &TestEnv, project: &Path) {
+    run_ok(&mut pinfold_in(env, project, &["allow"]));
 }
 
 /// Run host `git -C path ARGS...`, assert it succeeded, and return its
@@ -407,17 +406,15 @@ pub fn box_stat(env: &TestEnv, name: &str) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).expect("stat output is one JSON object")
 }
 
-/// The box's egress log, at the fixed path under pinfold's state dir.
-pub fn egress_log(env: &TestEnv, name: &str) -> PathBuf {
-    env.state
+/// The text of the box's egress log, at the fixed path under pinfold's
+/// state dir.
+pub fn egress_log(env: &TestEnv, name: &str) -> String {
+    let path = env
+        .state
         .join("pinfold")
         .join("egress")
-        .join(format!("{name}.jsonl"))
-}
-
-/// The parsed decision lines of a box's egress log.
-pub fn egress_log_lines(env: &TestEnv, name: &str) -> Vec<serde_json::Value> {
-    json_lines(&fs::read_to_string(egress_log(env, name)).expect("read egress log"))
+        .join(format!("{name}.jsonl"));
+    fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
 }
 
 pub fn exit_code(status: ExitStatus) -> i32 {
