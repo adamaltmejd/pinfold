@@ -47,7 +47,7 @@ fn main() -> ExitCode {
             println!("pinfold {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }
-        "--help" | "-h" | "help" => {
+        "--help" | "-h" => {
             println!("{}", cli::USAGE);
             return ExitCode::SUCCESS;
         }

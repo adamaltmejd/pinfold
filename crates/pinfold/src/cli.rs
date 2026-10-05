@@ -21,8 +21,8 @@ use crate::dirs;
 use crate::pi::launch::utf8;
 use crate::trust;
 
-/// One line per verb from the CLI table in docs/ARCHITECTURE.md, plus the
-/// options that answer before a verb is chosen: the syntax, three or more
+/// One line per verb from the CLI table in docs/ARCHITECTURE.md but `init`,
+/// which only the box runs, plus the options that answer before a verb is chosen: the syntax, three or more
 /// spaces, the description. Printed on stdout by `--help`, on stderr for a
 /// malformed invocation, and one line at a time by [`syntax`].
 pub const USAGE: &str = "\
@@ -39,7 +39,6 @@ pinfold artifacts                the pinned harnesses as JSON: name, version, pa
 pinfold update [--check]         check for a release, or download and install it
 pinfold config [ROOT]            the effective configuration and project facts as JSON, for callers
 pinfold box …                    the process interface
-pinfold init                     PID 1 in the box (Linux builds)
 pinfold --version                print the version
 pinfold --help                   print this usage";
 
@@ -70,8 +69,10 @@ pub(crate) fn usage(verb: &str, message: &str) -> io::Error {
 /// `verb`'s syntax: [`BOX_USAGE`] for box, else its [`USAGE`] lines up to the
 /// three-space gap. The one place [`usage`] and [`help`] read a syntax line.
 fn syntax(verb: &str) -> String {
-    if verb == "box" {
-        return BOX_USAGE.to_string();
+    match verb {
+        "box" => return BOX_USAGE.to_string(),
+        "init" => return "pinfold init".to_string(),
+        _ => {}
     }
     let prefix = format!("pinfold {verb} ");
     USAGE
@@ -343,10 +344,15 @@ fn stat(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// Whether the runtime lists box `name`. An absent box is pinfold's own
-/// failure, which `exec` and `stat` tell apart from the command's by exit 3.
+/// Whether the runtime lists pinfold box `name`. An absent box is pinfold's
+/// own failure, which `exec` and `stat` tell apart from the command's by
+/// exit 3.
 fn present(runtime: &dyn Runtime, verb: &str, name: &str) -> io::Result<bool> {
-    if runtime.list()?.iter().any(|box_| box_.id == name) {
+    if runtime
+        .list()?
+        .iter()
+        .any(|box_| box_.id == name && clean::pinfold_box(box_))
+    {
         return Ok(true);
     }
     eprintln!("pinfold box {verb}: no box named {name:?}");
