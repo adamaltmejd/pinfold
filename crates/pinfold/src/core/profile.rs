@@ -31,8 +31,12 @@ const DEFAULT_SHARE: &[(&str, &[u8])] = &[
         include_bytes!("../../../../profile/share/pi/extensions/operating-context.ts"),
     ),
     (
-        "pi/skills/.gitkeep",
-        include_bytes!("../../../../profile/share/pi/skills/.gitkeep"),
+        "pi/skills/read-pdf/SKILL.md",
+        include_bytes!("../../../../profile/share/pi/skills/read-pdf/SKILL.md"),
+    ),
+    (
+        "pi/skills/convert-documents/SKILL.md",
+        include_bytes!("../../../../profile/share/pi/skills/convert-documents/SKILL.md"),
     ),
 ];
 

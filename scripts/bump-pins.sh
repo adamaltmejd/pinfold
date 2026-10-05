@@ -1,6 +1,6 @@
 #!/bin/sh
-# Update every pin to its latest upstream release: the ADD --checksum pins
-# in profile/Containerfile and the harness rows in
+# Update harness pins immediately and image tools after seven days: the
+# ADD --checksum pins in profile/Containerfile and the harness rows in
 # crates/pinfold/harnesses.toml. Run from anywhere; needs curl, python3, awk/sed,
 # and sha256sum (Linux) or shasum (macOS).
 set -eu
@@ -60,37 +60,7 @@ PY
 
 # --- profile pins --------------------------------------------------------
 
-github_release oven-sh/bun "$tmp/bun.json"
-bun=$(json_string "$tmp/bun.json" tag_name)
-github_release rtk-ai/rtk "$tmp/rtk.json"
-rtk=$(json_string "$tmp/rtk.json" tag_name)
-curl -fsSL -o "$tmp/ponytail.json" https://registry.npmjs.org/@dietrichgebert/ponytail
-ponytail=$(grep -o '"dist-tags":{[^}]*}' "$tmp/ponytail.json" \
-    | sed -n 's/.*"latest":"\([^"]*\)".*/\1/p')
-if [ -z "$bun" ] || [ -z "$rtk" ] || [ -z "$ponytail" ]; then
-    echo "bump-pins: could not read the latest bun, rtk or ponytail release" >&2
-    exit 1
-fi
-
-bun_aarch64="https://github.com/oven-sh/bun/releases/download/$bun/bun-linux-aarch64.zip"
-bun_x64="https://github.com/oven-sh/bun/releases/download/$bun/bun-linux-x64.zip"
-rtk_aarch64="https://github.com/rtk-ai/rtk/releases/download/$rtk/rtk-aarch64-unknown-linux-gnu.tar.gz"
-rtk_x64="https://github.com/rtk-ai/rtk/releases/download/$rtk/rtk-x86_64-unknown-linux-musl.tar.gz"
-ponytail_tgz="https://registry.npmjs.org/@dietrichgebert/ponytail/-/ponytail-$ponytail.tgz"
-
-bun_aarch64_sha=$(pin "$bun_aarch64")
-bun_x64_sha=$(pin "$bun_x64")
-rtk_aarch64_sha=$(pin "$rtk_aarch64")
-rtk_x64_sha=$(pin "$rtk_x64")
-ponytail_sha=$(pin "$ponytail_tgz")
-
-{
-    printf 'ADD --checksum=sha256:%s %s /tmp/bun-aarch64.zip\n' "$bun_aarch64_sha" "$bun_aarch64"
-    printf 'ADD --checksum=sha256:%s %s /tmp/bun-x64.zip\n' "$bun_x64_sha" "$bun_x64"
-    printf 'ADD --checksum=sha256:%s %s /tmp/rtk-aarch64.tar.gz\n' "$rtk_aarch64_sha" "$rtk_aarch64"
-    printf 'ADD --checksum=sha256:%s %s /tmp/rtk-x64.tar.gz\n' "$rtk_x64_sha" "$rtk_x64"
-    printf 'ADD --checksum=sha256:%s %s /tmp/ponytail.tgz\n' "$ponytail_sha" "$ponytail_tgz"
-} > "$tmp/pins"
+python3 "$dir/image-tool-pins.py" "$containerfile" > "$tmp/pins"
 
 # --- harness pins --------------------------------------------------------
 
@@ -124,16 +94,14 @@ rust-v[0-9]*) codex_version=${codex_tag#rust-v} ;;
     exit 1
     ;;
 esac
-case $codex_version in
-*-*)
-    echo "bump-pins: codex's latest release $codex_tag is not stable" >&2
-    exit 1
-    ;;
-esac
-if [ -z "$claude_version" ]; then
-    echo "bump-pins: could not read claude's latest version" >&2
-    exit 1
-fi
+python3 - "$pi_version" "$claude_version" "$codex_version" <<'PY'
+import re
+import sys
+
+for name, version in zip(("pi", "claude", "codex"), sys.argv[1:], strict=True):
+    if not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version):
+        raise SystemExit(f"bump-pins: {name}'s latest version {version!r} is not stable")
+PY
 curl -fsSL -o "$tmp/claude-manifest.json" \
     "https://downloads.claude.ai/claude-code-releases/$claude_version/manifest.json"
 
@@ -231,4 +199,4 @@ mv "$containerfile.new" "$containerfile"
 mv "$harnessfile.new" "$harnessfile"
 
 cat "$tmp/report"
-echo "updated $containerfile: bun $bun, rtk $rtk, ponytail $ponytail"
+echo "updated $containerfile: image tools use releases at least seven days old"
