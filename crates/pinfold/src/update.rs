@@ -5,12 +5,11 @@ use std::io::{self, IsTerminal, Read, Seek, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use nix::fcntl::{Flock, FlockArg};
 use serde::{Deserialize, Serialize};
 
-use crate::{core, dirs};
+use crate::{cli, core, dirs};
 
 const REPOSITORY: &str = "https://api.github.com/repos/adamaltmejd/pinfold";
 const DOWNLOADS: &str = "https://github.com/adamaltmejd/pinfold/releases/download";
@@ -20,14 +19,11 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Deserialize)]
 struct Release {
     tag_name: String,
-    draft: bool,
-    prerelease: bool,
 }
 
 #[derive(Default, Deserialize, Serialize)]
 struct Check {
     checked_at: u64,
-    #[serde(default)]
     profile: String,
 }
 
@@ -72,14 +68,10 @@ fn latest(timeout: &str) -> io::Result<String> {
         )));
     }
     let release: Release = serde_json::from_slice(&output.stdout)?;
-    if release.draft || release.prerelease {
-        return Err(io::Error::other("latest release is not stable"));
-    }
     let value = release
         .tag_name
         .strip_prefix('v')
         .ok_or_else(|| io::Error::other("release tag must start with v"))?;
-    version(value)?;
     Ok(value.to_string())
 }
 
@@ -130,10 +122,7 @@ fn notice_due(record_only: bool) -> io::Result<()> {
     }
     let profile = core::profile::builtin_hash()?;
     let profile_changed = !previous.profile.is_empty() && previous.profile != profile;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(io::Error::other)?
-        .as_secs();
+    let now = core::now();
     let due = !record_only && now.saturating_sub(previous.checked_at) >= DAY;
     if previous.profile == profile && !due {
         return Ok(());
@@ -240,12 +229,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     let check_only = match args {
         [] => false,
         [flag] if flag == "--check" => true,
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "usage: pinfold update [--check]",
-            ));
-        }
+        _ => return Err(cli::usage("update", "update takes only --check")),
     };
     let release = latest("15")?;
     if version(&release)? <= version(VERSION)? {
