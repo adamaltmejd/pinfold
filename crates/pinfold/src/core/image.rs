@@ -11,7 +11,7 @@ use crate::core::r#box::RefusalReason;
 use crate::core::clean;
 use crate::core::plan;
 use crate::core::profile;
-use crate::core::runtime::{BuildRequest, ImageInfo, Runtime, local_image_id, output, runtime};
+use crate::core::runtime::{BuildRequest, Runtime, output, runtime};
 use crate::dirs;
 
 /// The Containerfile bytes a managed image was built from.
@@ -94,7 +94,7 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
     // `pinfold/image-<name>`.
     let stem = match build.label {
         Some(label) => label.trim_start_matches("dev.pinfold."),
-        None => clean::IMAGE_STEM,
+        None => "image",
     };
     let repository = format!("pinfold/{stem}-{}", build.source);
     let latest = format!("{repository}:latest");
@@ -130,7 +130,11 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
         eprintln!("pinfold: maintenance: {error}");
     }
     // A runtime that cannot answer does not fail a build that succeeded.
-    let id = local_image_id(runtime, &reference).unwrap_or(None);
+    let id = runtime
+        .resolve_image(&reference)
+        .ok()
+        .and_then(Result::ok)
+        .map(|image| image.id);
     Ok(Ok(Built {
         reference,
         latest,
@@ -245,9 +249,8 @@ pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Op
             // pinfold build records [`clean::BASE_LABEL`], empty when its
             // own base did not resolve, so its presence marks the image; a
             // caller image's family labels are all empty.
-            let pinfold_built = |image: &ImageInfo| image.labels.contains_key(clean::BASE_LABEL);
             if let Ok(image) = runtime.resolve_image(base)?
-                && pinfold_built(&image)
+                && image.labels.contains_key(clean::BASE_LABEL)
             {
                 return Ok(image.digest);
             }
