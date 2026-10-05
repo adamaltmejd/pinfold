@@ -50,3 +50,16 @@ box preserved:
 
 Linux x64 and ARM64 verification belongs to PR CI. Release builds and the
 whole-tree release cleanup pass were not run; this is a PR, not a release.
+
+## Review rework
+
+- Guarantee 32 deleted the `pdfinfo` page-count block. Removing
+  poppler-utils, its only sabotage, already fails `pdftotext` and
+  `pdftoppm`, so the block had a twin. Row 32 no longer names it.
+- Guarantee 32's AnyDoc PDF assertion now requires the page-tree order
+  in the Markdown, not only both page texts, so the reordered fixture
+  tests AnyDoc as well as Poppler. Sabotage for this assertion is an
+  AnyDoc that emits object order; no binary change produces it.
+- The box spec names only the profile; its image follows from it.
+- Guarantee 14 asserts the one bundled `read-documents` skill. Sabotage:
+  omit it from `DEFAULT_SHARE`.

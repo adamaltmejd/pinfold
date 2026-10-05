@@ -26,9 +26,11 @@ fn the_default_profile_reads_documents_locally() {
     // Guarantee 32. Sabotage: remove poppler-utils from the bundled
     // Containerfile; the real box's PDF commands then fail. Sabotage: omit
     // AnyDoc's native package from that image; document conversion fails.
-    // The host fixture lists page objects out of object-number order;
-    // selecting page two must follow the page tree, including when the
-    // input path has spaces. The box has no egress for either converter.
+    // The host fixture lists page objects out of object-number order; the
+    // Markdown's page order and the selected page must follow the page tree,
+    // also when the input path has spaces. The box has no egress. A fresh
+    // image, not the reused default, so an older image's tools cannot hide
+    // a removal.
     let env = TestEnv::new("pdf");
     let home = TestDir::new(&env, "home");
     let documents = TestDir::new(&env, "documents");
@@ -55,7 +57,6 @@ fn the_default_profile_reads_documents_locally() {
     let spec = serde_json::json!({
         "name": name,
         "profile": profile,
-        "image": "pinfold/profile-e2e-documents:latest",
         "env": { "HOME": "/home/pdf" },
         "mounts": [
             { "host": home.path(), "guest": "/home/pdf" },
@@ -77,9 +78,11 @@ fn the_default_profile_reads_documents_locally() {
     assert_ok(&converted, "converting the PDF to Markdown without egress");
     let markdown =
         fs::read_to_string(documents.path().join("pdf.md")).expect("read the converted PDF");
+    let first = markdown.find("first page fixture");
+    let second = markdown.find("second page fixture");
     assert!(
-        markdown.contains("first page fixture") && markdown.contains("second page fixture"),
-        "the PDF conversion lost a fixture page: {markdown}"
+        first.is_some() && first < second,
+        "the PDF conversion lost a page or the page tree's order: {markdown}"
     );
     let converted = box_exec(
         &env,
@@ -97,17 +100,6 @@ fn the_default_profile_reads_documents_locally() {
     assert!(
         markdown.contains("local RTF fixture"),
         "the RTF conversion lost the fixture text: {markdown}"
-    );
-
-    let info = box_exec(&env, &name, &["pdfinfo", "/documents/two pages.pdf"]);
-    assert_ok(&info, "inspecting the PDF without egress");
-    assert!(
-        info.stdout.lines().any(|line| {
-            line.split_once(':')
-                .is_some_and(|(key, value)| key == "Pages" && value.trim() == "2")
-        }),
-        "the fixture's two pages were not reported: {}",
-        info.stdout
     );
 
     let text = box_exec(
@@ -765,8 +757,8 @@ fn both_pi_config_levels_load_behind_a_route() {
     // the profile marker is absent from the request. Sabotage: stop the
     // project from being trusted (remove defaultProjectTrust from the seeded
     // settings); the project marker is absent.
-    // Sabotage: omit read-pdf or convert-documents from the binary's embedded
-    // DEFAULT_SHARE; the omitted bundled skill's name never reaches the model.
+    // Sabotage: omit read-documents from the binary's embedded DEFAULT_SHARE;
+    // the bundled skill's name never reaches the model.
     let env = TestEnv::new("pi-levels");
     let project = TestDir::new(&env, "project");
     git(project.path(), &["init", "-q"]);
@@ -862,12 +854,8 @@ fn both_pi_config_levels_load_behind_a_route() {
         "the project skill never reached the model; the project config level did not load"
     );
     assert!(
-        request.contains("<name>read-pdf</name>"),
-        "the bundled PDF skill never reached the model"
-    );
-    assert!(
-        request.contains("<name>convert-documents</name>"),
-        "the bundled document conversion skill never reached the model"
+        request.contains("<name>read-documents</name>"),
+        "the bundled document skill never reached the model"
     );
 }
 

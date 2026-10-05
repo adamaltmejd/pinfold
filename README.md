@@ -115,11 +115,10 @@ stay as they are. Use `pinfold profile new fresh-defaults --builtin` to
 inspect the new defaults and choose which changes to adopt. Selecting a
 new profile still seeds only missing settings.
 
-The bundled default includes AnyDoc for local document-to-Markdown
-conversion and Poppler for PDF inspection. Nightly repinning takes the
-latest stable pi, claude and codex releases immediately. Bun, rtk, ponytail
-and AnyDoc upgrades wait seven days after publication. Updates ship after
-the release checks; user profile tools remain user-managed.
+The bundled default reads local documents: AnyDoc converts them to
+Markdown and Poppler inspects PDFs. Nightly pin updates take the latest pi,
+claude and codex, and move bun, rtk, ponytail or AnyDoc only to releases at
+least seven days old.
 
 ## Configuration
 

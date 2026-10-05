@@ -84,3 +84,40 @@ ruff check scripts/image-tool-pins.py
 ruff format --check scripts/image-tool-pins.py
 sh -n scripts/bump-pins.sh
 ```
+
+## Review rework
+
+A high-effort review of PR #79 reworked the candidate before merge:
+
+- `scripts/bump-pins.py` replaces `bump-pins.sh` and `image-tool-pins.py`.
+  One resolver per source (GitHub, npm, claude's manifest) serves both
+  tiers, and the files are rewritten by exact text replacement instead of
+  awk: 434 lines of shell and Python become 303 of Python.
+- Harnesses follow the image tools' rule: a pin only moves up and is never
+  rehashed at its version. The shell re-downloaded every harness asset
+  each night, and would have silently repinned a same-version asset
+  replacement or followed a yanked latest downward.
+- An AnyDoc version whose optionalDependencies name other native versions
+  is ineligible rather than aborting every nightly. A tool with no
+  eligible newer version prints `<tool> <current>: <latest> is not yet
+  eligible`, which is also how a renamed asset shows. Upgrades print
+  `<tool> <old> -> <new>`.
+- `read-pdf` and `convert-documents` became one `read-documents` skill.
+- AnyDoc installs in the bun/rtk RUN step; its archives are named by
+  `aarch64`/`x64` like theirs.
+
+Verification on macOS ARM64:
+
+- Fake-upstream scenarios: all current (no downloads), harness updates,
+  codex latest missing an asset (waits, no paging), the seven-day edge,
+  paging to an older bun, a replaced asset, a prerelease, an AnyDoc
+  version mismatch, a deprecated version, a young native package, a bad
+  timestamp, an integrity failure leaving both files untouched, no
+  downgrade, and a prerelease latest refused.
+- Live: unchanged pins produced no output and no change. With every pin
+  rolled back to a fake older version, the script restored the harnesses,
+  bun and AnyDoc byte for byte. rtk and ponytail stopped at 0.50.0 and
+  4.10.0, since 0.51.0 and 4.12.0 are under seven days old.
+- Guarantees 32 and 14 passed against a fresh build of the reworked
+  Containerfile (56 s). `cargo fmt --check`, Clippy with warnings denied
+  and Ruff passed. The full Mac suite and Linux suites were not rerun.

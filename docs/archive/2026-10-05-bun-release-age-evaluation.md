@@ -1,9 +1,10 @@
 # Bun release-age evaluation
 
 Evaluated Bun 1.4.2's `minimumReleaseAge` as a replacement for the npm
-selection in `scripts/image-tool-pins.py`. Kept the current implementation.
-The built-in feature does not satisfy the bundled-tool policy on its own,
-and the additional validation would leave two overlapping resolvers.
+selection in the nightly updater (now `scripts/bump-pins.py`). Kept the
+current implementation. The built-in feature does not satisfy the
+bundled-tool policy on its own, and the additional validation would leave
+two overlapping resolvers.
 
 ## Evidence
 
