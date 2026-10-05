@@ -9,13 +9,13 @@ left to the operator.
 
 | | Before (PR head `80cfddc`) | After (`HEAD`) |
 | --- | --- | --- |
-| Commits since v0.1.6 | 2 | 11 |
+| Commits since v0.1.6 | 2 | 13 |
 | Diff since v0.1.6 | +846 / −261 | +1321 / −935 |
 | `crates` since v0.1.6 | +132 / −3 | +566 / −565 |
 | Largest source file | `cli.rs`, 1130 | `cli.rs`, 1122 |
 | Largest test file | `box_.rs`, 3386 | `box_.rs`, 3447 |
 | ARCHITECTURE.md lines | 918 | 866 |
-| Written tickets opened | 0 | 6 |
+| Written tickets opened | 0 | 7 |
 | Mac suite wall time | 222 s (PR's run) | 190 s |
 
 The release's delete/add ratio since v0.1.6 is 0.71; the PR's feature and
@@ -94,23 +94,34 @@ The rewrites that need more than one sitting are tickets Y-4 and Y-5.
 - Y-5: strengthen `box_.rs`'s blocks for rows 2, 3 and 24.
 - Y-6: one curl downloader for harness artifacts and self-update.
 - Y-7: spec lines no test exercises (trace-table gaps).
+- Y-8: guarantee 15's test races other tests' daily maintenance pass.
 
 ## Adam's list
 
-Asked at the end of the pass; answers pending.
+Asked at the end of the pass; all four answered as recommended and landed
+before the tag.
 
-1. `box exec`, `stat` and `down` with a valid name act on any host
-   container, not only pinfold's. Restrict them to boxes carrying
-   `dev.pinfold.owner`? Recommended: yes, as a row 9 scenario.
-2. The top-level `help` verb is an undocumented alias of `--help`. Delete
-   it, a CLI change for Caller changes, or document it? Recommended:
-   delete.
-3. "Runtime command lines are built as data." under Always applied states
-   no checkable effect. Keep or cut? Recommended: keep. The `box down` fix
-   shows argv-as-data is not enough by itself, so names are validated too.
-4. `pinfold init` is in the help table and the spec's CLI block, although
-   only the box runs it. Recommended: keep it in the spec, drop it from
-   help.
+1. `box exec`, `stat` and `down` with a valid name acted on any host
+   container, not only pinfold's. Answer: restrict them to boxes carrying
+   `dev.pinfold.owner`, in 0.1.7. A foreign container is now absent to all
+   three; row 9 carries the scenario.
+2. The top-level `help` verb was an undocumented alias of `--help`.
+   Answer: delete it (a hard break, named under Caller changes).
+3. "Runtime command lines are built as data." under Always applied.
+   Answer: keep. The `box down` fix shows argv as data is not enough by
+   itself, so names are validated too.
+4. `pinfold init` was in the help table and the spec's CLI block, though
+   only the box runs it. Answer: spec only. `pinfold --help` no longer
+   lists it; `pinfold init --help` still prints its syntax.
+
+## CI
+
+Linux x64 passed on the first push. Linux arm64 failed in guarantee 15's
+test at a check this pass did not change: another test's daily maintenance
+pass, run in its own fresh state dir, trimmed the scenario's 1970-dated
+build tags in the shared podman store first. Run 36675855532 failed the
+same way on the dead box. Filed as Y-8 (P1, parked); the failed job was
+re-run to confirm the race.
 
 ## Rejected
 
@@ -161,7 +172,7 @@ Asked at the end of the pass; answers pending.
 
 On macOS ARM64: `cargo fmt --check`, Clippy with warnings denied and Ruff
 passed. Each commit builds on its own (`cargo check --all-targets`). The
-full Mac suite passed (32 tests, 190 s) on the cleanup commits, and again
+full Mac suite passed (32 tests, 190 s) on the cleanup commits, again (193 s) after the answers to Adam's list, and again
 on the release commit with codex 0.160.1 (194 s). `bump-pins.py` ran live: codex
 moved; ponytail 4.13.0 is inside its wait. Linux suites and release
 builds run in CI on the push.
