@@ -497,10 +497,11 @@ The default profile's image:
 - `debian:trixie-slim` by tag, `apt-get upgrade` at every build. The
   resolved base digest is recorded as a label.
 - Debian: ca-certificates, git, curl, ripgrep, fd-find (as `fd`), jq, less,
-  and unzip for bun's release archive.
+  poppler-utils for local PDF text extraction and page rendering, and unzip
+  for bun's release archive.
 - gh from GitHub's signed apt repository.
-- `ADD --checksum=sha256:…`: bun, rtk, and the ponytail pi package. A bump
-  script updates the pins.
+- `ADD --checksum=sha256:…`: bun, rtk, ponytail and AnyDoc, including its
+  matching Linux native packages. AnyDoc runs locally through Bun.
 - setuid and setgid bits stripped.
 
 ## Pinned artifacts
@@ -518,8 +519,23 @@ mismatch fails the start, naming the harness, version and asset. A harness
 no box asks for is never downloaded. A harness moves only with a pinfold
 release.
 
-Nightly CI updates pi, claude, codex, bun, rtk and ponytail pins. Changed
-pins receive a patch release after Linux x64 and arm64 tests, the full
+Nightly CI repins two tiers:
+- Main tools: pi, claude and codex use the latest stable release without
+  a publication delay.
+- Supporting tools: bun, rtk, ponytail and AnyDoc use the newest stable
+  version at or below upstream's latest stable version that has been
+  published for at least seven full days. GitHub releases and every
+  required asset must have completed the wait; replacing an asset restarts
+  it. For npm, every required package version must have completed it.
+  Existing pins are never downgraded or rehashed at the same version.
+
+Missing or invalid publication times make a candidate ineligible. A source
+or integrity failure aborts repinning before either pin file is changed.
+The waiting period governs upgrades, including from existing younger pins.
+Debian packages and gh retain their signed-repository build-time updates.
+User profile tools remain user-managed.
+
+Changed pins receive a patch release after Linux x64 and arm64 tests, the full
 Mac suite including live login, and all three release builds pass for the
 same commit. Unreleased implementation changes since the latest release
 block it. A concurrent change to main aborts promotion.
@@ -583,7 +599,9 @@ is the boundary. Its `share/pi` is a pi package: the operating-context
 extension, which writes the box's facts into the system prompt (the
 allowlist from `PINFOLD_ALLOW`, that a 403 is final, and that commits are
 made on the host), and a `skills/` directory for the profile's skills, live
-and read-only in every box.
+and read-only in every box. Its `read-pdf` and `convert-documents` skills
+use AnyDoc for local Markdown conversion and Poppler for PDF text,
+metadata and selected-page rendering. They do not use hosted OCR.
 
 The default profile's `pinfold.toml` sets no config, so it gets the
 built-in defaults. `PI_OFFLINE` is unset, so pi's package installs go
@@ -828,7 +846,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, writing `.vscode/`, or creating `.vscode/` in a project without one fails, also under a top level named by a space, and a symlinked protected path refuses the run as `protected-path-invalid`; replacing it with a real directory runs. Starting inside `.git` is refused as `project-in-git`; starting from the project root runs. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |
 | 13 | Project state persists and stays separate | Settings are seeded once and survive runs; a deleted seed returns; two projects don't see each other's state; `profile new --from-project` copies the project's settings but not its `auth.json`. |
-| 14 | Both pi config levels load behind a route | `pi -p` through the shim, against a fake model reached through a route: the model's request carries a skill from the profile and one from the project's `.pi/`. |
+| 14 | Both pi config levels load behind a route | `pi -p` through the shim, against a fake model reached through a route: the model's request carries the bundled `read-pdf` and `convert-documents` skills, a skill from the profile and one from the project's `.pi/`. |
 | 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself; an image built on a profile's is its own family; a source a build left above two drops to two on a later `pinfold clean` with no build after. `--dry-run` leaves a project state the real clean removes. Two names built from identical inputs share one image id; `image rm` of one removes its tags while a box of the other name runs the image, and leaves the other name's tags, the image and the box; an image's last tag stays while a box uses it. An unlabeled image, a live box, its project's state and `~/.cache` survive `pinfold clean`, also with `--unused 0s`, which removes an idle project's state; a dead box is removed and protects no project's cache. On Apple, a build in another state directory held active in RUN succeeds across clean; dry-run counts at least the builder backing filesystem's allocated host bytes. |
 | 16 | The highest layer sets the allowlist | Without project config the box's PINFOLD_ALLOW carries the default list's hosts; with PINFOLD_ALLOW=api.github.com over a project's allow = ["registry.npmjs.org"], it is exactly that host, and registry.npmjs.org is refused as not allowlisted. The project's cpus and memory reach the box. |
 | 17 | up refuses before it creates | A missing image, a misspelled spec key, a bad env name, a `dev.pinfold.` label, a memory below 256M or without a unit, a malformed string route, a login route naming another harness, a suffix allow entry on or above a public suffix, a mount path with a comma, a file mount, a missing mount host (including a dangling symlink), a mount at a path pinfold mounts and a live name are refused as data, naming the cause; a misspelled key's refusal also names the box; each leaves no box and no state dir. The box whose name was reused still answers exec, and of two `up`s racing for one name exactly one wins. |
@@ -846,6 +864,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 29 | Interactive update checks are bounded | A host HTTPS fixture observes one check across repeated terminal launches; noninteractive launches and the opt-out make none. A stalled request is silent, ends within the timeout and is not retried by the next launch. |
 | 30 | Changed image inputs prompt a rebuild | Profile and trusted project Containerfile changes produce `image-outdated` without refusing a pi launch. A project also detects changed profile inputs before the profile is rebuilt, then detects its changed base digest afterward. Rebuilding the affected profile and project clears the hints. |
 | 31 | Changed bundled defaults are reported once | A genuinely rebuilt executable with changed bundled settings produces `default-profile-changed` once on interactive launch, within the existing network interval. The first launch establishes history silently. `profile new --builtin` exposes the changed defaults even with a user override, preserving that override. |
+| 32 | The default profile reads documents locally | With no egress, AnyDoc converts a host RTF and both pages of a host PDF whose page objects are reordered to Markdown. `pdfinfo` reports two pages, `pdftotext` extracts only the selected second page, and `pdftoppm` renders it to a PNG with the fixture's dimensions. |
 
 Linux (podman) runs in CI on every push to main and every pull request,
 and on a dispatched ref, on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm`
