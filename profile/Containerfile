@@ -35,7 +35,7 @@ ADD --checksum=sha256:54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1a
 ADD --checksum=sha256:36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913 https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-x64.zip /tmp/bun-x64.zip
 ADD --checksum=sha256:8d6d1aad9e69b42481eda7039507d1f7ee93698f87713cecd873d287c1931632 https://github.com/rtk-ai/rtk/releases/download/v0.51.0/rtk-aarch64-unknown-linux-gnu.tar.gz /tmp/rtk-aarch64.tar.gz
 ADD --checksum=sha256:5028d3b19a8f0990d30fec9fbb07e32782bc5698e618fb1861aad8a9ccba4eb5 https://github.com/rtk-ai/rtk/releases/download/v0.51.0/rtk-x86_64-unknown-linux-musl.tar.gz /tmp/rtk-x64.tar.gz
-ADD --checksum=sha256:05c419e0a6391a26004e58f831a1fc9123a204b29a0b32404ffd56579b406f98 https://registry.npmjs.org/@dietrichgebert/ponytail/-/ponytail-4.10.3.tgz /tmp/ponytail.tgz
+ADD --checksum=sha256:b5a24dcf8ec158326f3d3da92d7c0ea522dfbdf6c3de62a6a2ab98d5e683895f https://registry.npmjs.org/@dietrichgebert/ponytail/-/ponytail-4.12.0.tgz /tmp/ponytail.tgz
 # <<< pins
 
 # Bun and rtk on PATH; rtk's pi extension and the ponytail pi package outside
