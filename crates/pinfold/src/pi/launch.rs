@@ -87,15 +87,16 @@ pub(crate) fn resolve_image(config: &Config, project: &str) -> String {
 /// Warn when its Containerfile or its profile base changed. `doctor`
 /// reports the same warnings.
 pub(crate) fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
+    let profile_build = format!("pinfold build --profile {}", config.profile.name);
     let (base, build, containerfile) = match &config.containerfile {
         Some((_, bytes)) => (
             Some(config.profile.image_ref()),
-            "pinfold build".to_string(),
+            "pinfold build",
             bytes.as_slice(),
         ),
         None => (
             None,
-            format!("pinfold build --profile {}", config.profile.name),
+            profile_build.as_str(),
             config.profile.containerfile.as_slice(),
         ),
     };
@@ -105,7 +106,7 @@ pub(crate) fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
             format!("image {image} is missing; run `{build}`"),
         ));
     };
-    warn_containerfile(&built, containerfile, &build);
+    warn_containerfile(&built, containerfile, build);
     if let Some(base) = base {
         let recorded = built
             .labels
@@ -113,11 +114,7 @@ pub(crate) fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
             .filter(|digest| !digest.is_empty());
         let current = runtime().resolve_image(&base)?.ok();
         if let Some(profile) = &current {
-            warn_containerfile(
-                profile,
-                &config.profile.containerfile,
-                &format!("pinfold build --profile {}", config.profile.name),
-            );
+            warn_containerfile(profile, &config.profile.containerfile, &profile_build);
         }
         let current = current.as_ref().map(|image| image.id.as_str());
         if recorded.map(String::as_str) != current {
@@ -150,47 +147,40 @@ fn build_plan(
     image: &str,
     git: &Git,
 ) -> io::Result<Plan> {
-    let mut labels = BTreeMap::new();
-    labels.insert(clean::PROJECT_LABEL.to_string(), id.to_string());
+    let labels = BTreeMap::from([(clean::PROJECT_LABEL.to_string(), id.to_string())]);
+    let mut env = BTreeMap::from([
+        (
+            "HOME".to_string(),
+            Env::Exact(utf8(home, "project home")?.to_string()),
+        ),
+        ("HERDR_AGENT".to_string(), Env::Exact("pi".to_string())),
+    ]);
+    env.extend(config.env.iter().map(|name| {
+        let from = format!("PINFOLD_ENV_{name}");
+        (name.clone(), Env::From { from })
+    }));
 
-    let mut env = BTreeMap::new();
-    env.insert(
-        "HOME".to_string(),
-        Env::Exact(utf8(home, "project home")?.to_string()),
-    );
-    env.insert("HERDR_AGENT".to_string(), Env::Exact("pi".to_string()));
-    for name in &config.env {
-        env.insert(
-            name.clone(),
-            Env::From {
-                from: format!("PINFOLD_ENV_{name}"),
-            },
-        );
-    }
-
-    // Apple `container` shows the top directory of a mount as root-owned
-    // inside the box, so git's ownership check refuses a mounted repository
-    // with "detected dubious ownership". Listing the project root as
-    // `safe.directory` through git's environment config skips the check. A
-    // host `PINFOLD_ENV_GIT_CONFIG_COUNT` pass-through keeps its entries, so
-    // the pi entry goes at its next index.
+    // safe.directory for the project root (Shared files), after any
+    // passed-through GIT_CONFIG_* entries.
     let count = match env.get("GIT_CONFIG_COUNT") {
         Some(Env::From { from }) => env::var(from).ok().and_then(|value| value.parse().ok()),
         _ => None,
     }
     .unwrap_or(0);
-    env.insert(
-        "GIT_CONFIG_COUNT".to_string(),
-        Env::Exact((count + 1).to_string()),
-    );
-    env.insert(
-        format!("GIT_CONFIG_KEY_{count}"),
-        Env::Exact("safe.directory".to_string()),
-    );
-    env.insert(
-        format!("GIT_CONFIG_VALUE_{count}"),
-        Env::Exact(utf8(root, "project root")?.to_string()),
-    );
+    env.extend([
+        (
+            "GIT_CONFIG_COUNT".to_string(),
+            Env::Exact((count + 1).to_string()),
+        ),
+        (
+            format!("GIT_CONFIG_KEY_{count}"),
+            Env::Exact("safe.directory".to_string()),
+        ),
+        (
+            format!("GIT_CONFIG_VALUE_{count}"),
+            Env::Exact(utf8(root, "project root")?.to_string()),
+        ),
+    ]);
 
     let mut mounts = vec![
         Mount {

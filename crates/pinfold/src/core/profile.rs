@@ -47,16 +47,12 @@ pub struct Seed {
 /// One profile, as much of it as pinfold uses.
 pub struct Profile {
     pub name: String,
-    /// The profile's Containerfile.
     pub containerfile: Vec<u8>,
     /// The profile's `pinfold.toml`. Core never reads it; `profile new`
     /// copies it.
     pub config: Vec<u8>,
-    /// Seeds for `$HOME`.
     pub home: Vec<Seed>,
     /// The `share/` directory mounted read-only at `/opt/pinfold/profile`.
-    /// The embedded default's files are extracted to the cache so a
-    /// directory exists to mount.
     pub share: Option<PathBuf>,
 }
 
@@ -147,16 +143,9 @@ fn load_dir(name: &str, root: &Path) -> io::Result<Profile> {
 /// The embedded default's `share/`, written under the cache. The content
 /// hash in the path keeps a new binary from mounting an old extraction.
 fn embedded_share() -> io::Result<PathBuf> {
-    let mut bytes = Vec::new();
-    for (path, contents) in DEFAULT_SHARE {
-        bytes.extend_from_slice(path.as_bytes());
-        // A separator, so a path and contents cannot run together.
-        bytes.push(0);
-        bytes.extend_from_slice(contents);
-    }
     let dir = dirs::cache_dir()?
         .join("profiles")
-        .join(super::sha256_hex(bytes))
+        .join(super::sha256_hex(serde_json::to_vec(DEFAULT_SHARE)?))
         .join("share");
     dirs::install_dir(&dir, |staging| {
         for (path, contents) in DEFAULT_SHARE {
