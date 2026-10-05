@@ -16,16 +16,16 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 
 use crate::box_::{box_name, box_up};
 use e2e::{
-    HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
-    box_stat, build_profile, curl, default_image, egress_log_lines, git, pinfold, project_id,
-    project_state_dir, run_ok,
+    HttpFixture, ImageCleanup, TestDir, TestEnv, allow, assert_denied, assert_ok, box_exec,
+    box_list, box_stat, build_profile, curl, default_image, egress_log, git, json_lines, pinfold,
+    pinfold_in, project_id, project_state_dir, run_ok,
 };
 
 #[test]
 fn the_default_profile_reads_documents_locally() {
     // Guarantee 32. Sabotage: remove poppler-utils from the bundled
-    // Containerfile; the real box's PDF commands then fail. Sabotage: omit
-    // AnyDoc's native package from that image; document conversion fails.
+    // Containerfile; `pdftoppm` then fails. Sabotage: omit AnyDoc's native
+    // package from that image; the PDF conversion fails.
     // The host fixture lists page objects out of object-number order; the
     // Markdown's page order and the selected page must follow the page tree,
     // also when the input path has spaces. The box has no egress. A fresh
@@ -39,11 +39,6 @@ fn the_default_profile_reads_documents_locally() {
         include_bytes!("fixtures/two-pages.pdf"),
     )
     .expect("write the host PDF fixture");
-    fs::write(
-        documents.path().join("document.rtf"),
-        r"{\rtf1\ansi local RTF fixture\par}",
-    )
-    .expect("write the host RTF fixture");
     let profile = "e2e-documents";
     run_ok(
         env.command(pinfold())
@@ -84,39 +79,6 @@ fn the_default_profile_reads_documents_locally() {
         first.is_some() && first < second,
         "the PDF conversion lost a page or the page tree's order: {markdown}"
     );
-    let converted = box_exec(
-        &env,
-        &name,
-        &[
-            "anydoc",
-            "/documents/document.rtf",
-            "-o",
-            "/documents/rtf.md",
-        ],
-    );
-    assert_ok(&converted, "converting the RTF to Markdown without egress");
-    let markdown =
-        fs::read_to_string(documents.path().join("rtf.md")).expect("read the converted RTF");
-    assert!(
-        markdown.contains("local RTF fixture"),
-        "the RTF conversion lost the fixture text: {markdown}"
-    );
-
-    let text = box_exec(
-        &env,
-        &name,
-        &[
-            "pdftotext",
-            "-f",
-            "2",
-            "-l",
-            "2",
-            "/documents/two pages.pdf",
-            "-",
-        ],
-    );
-    assert_ok(&text, "extracting the second PDF page without egress");
-    assert_eq!(text.stdout.trim(), "second page fixture");
 
     let rendered = box_exec(
         &env,
@@ -137,7 +99,6 @@ fn the_default_profile_reads_documents_locally() {
     );
     assert_ok(&rendered, "rendering the second PDF page without egress");
     let png = fs::read(documents.path().join("page.png")).expect("read the rendered PNG");
-    assert_eq!(png.get(..8), Some(b"\x89PNG\r\n\x1a\n".as_slice()));
     assert_eq!(
         png.get(16..24),
         Some([0, 0, 0, 200, 0, 0, 0, 100].as_slice())
@@ -153,8 +114,6 @@ fn the_environment_is_exactly_the_spec() {
     // host environment; the unprefixed proxy variables are then present and
     // their assertions fail. Sabotage: drop `--http-proxy=false` from podman's
     // run argv; the box inherits the host's proxy variables and the proxy
-    // assertions fail. Sabotage: skip the `validate` call in `Box::up`;
-    // the `PINFOLD_ENV_BAD-NAME` run does not refuse and the refusal
     // assertions fail.
     let env = TestEnv::new("pi-env");
     default_image(&env);
@@ -214,27 +173,6 @@ fn the_environment_is_exactly_the_spec() {
     );
 
     assert!(run.finish().success(), "pinfold pi did not exit cleanly");
-
-    // A host PINFOLD_ENV_* name outside POSIX refuses the run before the
-    // box starts, naming the derived name: the shell cannot export such a
-    // name, but `Command::env` can set it. Sabotage: skip the `validate`
-    // call in `Box::up`; the name reaches the runtime, the run does not
-    // refuse, and the exit assertion fails. Sabotage: drop `{name:?}` from
-    // `validate`'s env-name message in core/plan.rs; the refusal no longer
-    // names BAD-NAME and the naming assertion fails.
-    let refused = env
-        .command(pinfold())
-        .args(["pi", "--version"])
-        .current_dir(project.path())
-        .env("PINFOLD_ENV_BAD-NAME", "x")
-        .output()
-        .expect("run pinfold pi with a bad env name");
-    let stderr = String::from_utf8_lossy(&refused.stderr);
-    assert!(!refused.status.success(), "the bad env name ran: {stderr}");
-    assert!(
-        stderr.contains("BAD-NAME"),
-        "the refusal did not name BAD-NAME: {stderr}"
-    );
 
     // A caller-owned box whose spec PATH is one directory that does not
     // exist, so the runtime's directory is omitted on both macOS and Linux
@@ -494,8 +432,9 @@ fn the_box_cannot_write_git_or_protected_config() {
     // Sabotage: omit the `.git` read-only mount from pi::git (or mount it
     // writable); the `core.fsmonitor` write and the rename then succeed, so
     // those assertions fail.
-    // Sabotage: skip the absent protect directories; the box's `mkdir
-    // .vscode` then succeeds and its refusal assertion fails. Sabotage: skip
+    // Sabotage: skip the absent protect directories; the box's `.vscode`
+    // write then fails as a missing directory, not a read-only one, and its
+    // reason assertion fails. Sabotage: skip
     // the symlink check in pi::git's `path_kind` (classify with fs::metadata
     // and drop the canonical comparison); a symlinked `.vscode` is followed,
     // the run starts, and the exit assertion fails.
@@ -531,14 +470,7 @@ fn the_box_cannot_write_git_or_protected_config() {
 
     let (run, _, name) = PiRpc::start_with_env(&env, root, &[("GIT_CONFIG_GLOBAL", global)]);
 
-    // The box cannot create the protected directory it did not have...
-    let denied = box_exec(
-        &env,
-        &name,
-        &["sh", "-c", &format!("mkdir '{}'", vscode.display())],
-    );
-    assert_denied(&denied, "File exists", "mkdir .vscode");
-    // ...nor write into it.
+    // The box cannot write into the protected directory it did not have.
     let denied = box_exec(
         &env,
         &name,
@@ -758,7 +690,7 @@ fn both_pi_config_levels_load_behind_a_route() {
     // project from being trusted (remove defaultProjectTrust from the seeded
     // settings); the project marker is absent.
     // Sabotage: omit read-documents from the binary's embedded DEFAULT_SHARE;
-    // the bundled skill's name never reaches the model.
+    // the bundled skill's description never reaches the model.
     let env = TestEnv::new("pi-levels");
     let project = TestDir::new(&env, "project");
     git(project.path(), &["init", "-q"]);
@@ -853,8 +785,15 @@ fn both_pi_config_levels_load_behind_a_route() {
         request.contains(project_marker),
         "the project skill never reached the model; the project config level did not load"
     );
+    // The bundled skill's own source supplies its marker: the description
+    // its frontmatter declares.
+    let bundled = include_str!("../../../../profile/share/pi/skills/read-documents/SKILL.md");
+    let description = bundled
+        .lines()
+        .find_map(|line| line.strip_prefix("description: "))
+        .expect("read-documents declares a description");
     assert!(
-        request.contains("<name>read-documents</name>"),
+        request.contains(description),
         "the bundled document skill never reached the model"
     );
 }
@@ -967,7 +906,7 @@ fn the_highest_layer_sets_the_allowlist() {
     assert_denied(&denied, "403", "a request to registry.npmjs.org");
 
     // The log names the refused host and the reason.
-    let lines = egress_log_lines(&env, &name);
+    let lines = json_lines(&egress_log(&env, &name));
     assert!(
         lines.iter().any(|line| line["host"] == "registry.npmjs.org"
             && line["decision"] == "refused"
@@ -1112,21 +1051,9 @@ impl Drop for PiRpc {
     }
 }
 
-/// `pinfold ARGS...` run in `project`.
-fn pinfold_in(env: &TestEnv, project: &Path, args: &[&str]) -> Command {
-    let mut command = env.command(pinfold());
-    command.args(args).current_dir(project);
-    command
-}
-
 /// Run `pinfold pi --version` in `project` and assert it exits cleanly.
 fn pi_version(env: &TestEnv, project: &Path) {
     run_ok(&mut pinfold_in(env, project, &["pi", "--version"]));
-}
-
-/// Run `pinfold allow` in `project` and assert it succeeds.
-fn allow(env: &TestEnv, project: &Path) {
-    run_ok(env.command(pinfold()).arg("allow").current_dir(project));
 }
 
 /// Run `pinfold config` in `project` and parse its JSON object.

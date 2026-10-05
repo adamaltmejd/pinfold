@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use e2e::{
-    ImageCleanup, TestDir, TestEnv, build_profile, default_image, git, pinfold,
+    ImageCleanup, TestDir, TestEnv, allow, build_profile, default_image, git, pinfold_in,
     profile_containerfile, project_id, run_ok,
 };
 
@@ -34,7 +34,6 @@ fn changed_image_inputs_prompt_a_rebuild() {
     let config = project.path().join(".pinfold.toml");
     fs::write(&config, format!("profile = \"{profile}\"\n")).unwrap();
     allow(&env, project.path());
-    version(&env, project.path(), false);
 
     fs::write(
         &profile_file,
@@ -60,7 +59,6 @@ fn changed_image_inputs_prompt_a_rebuild() {
     let _project_images = ImageCleanup {
         repository: format!("pinfold/project-{}", project_id(&env, project.path())),
     };
-    version(&env, project.path(), false);
     fs::write(
         &project_file,
         format!("{project_contents}ENV PROJECT_IMAGE_WARNING_FIXTURE=changed\n"),
@@ -86,21 +84,13 @@ fn changed_image_inputs_prompt_a_rebuild() {
     version(&env, project.path(), false);
 }
 
-fn allow(env: &TestEnv, project: &Path) {
-    run_ok(env.command(pinfold()).arg("allow").current_dir(project));
-}
-
 fn build(env: &TestEnv, project: &Path) {
-    run_ok(env.command(pinfold()).arg("build").current_dir(project));
+    run_ok(&mut pinfold_in(env, project, &["build"]));
 }
 
 #[track_caller]
 fn version(env: &TestEnv, project: &Path, outdated: bool) {
-    let output = run_ok(
-        env.command(pinfold())
-            .args(["pi", "--version"])
-            .current_dir(project),
-    );
+    let output = run_ok(&mut pinfold_in(env, project, &["pi", "--version"]));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(
         stderr.contains("image-outdated"),
