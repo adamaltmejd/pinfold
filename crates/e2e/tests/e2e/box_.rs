@@ -54,6 +54,9 @@ fn box_lifecycle_works_for_a_caller() {
     // fails at `up` with the socket-length error, so the ready read panics.
     // Sabotage: give a box without `egress` a derived log path in `ready`;
     // the null assertion fails.
+    // Sabotage: drop the owner-label check from cli.rs `present` (or from
+    // core::box::down's list check); exec or stat on the foreign container
+    // runs, or down removes it.
     // Sabotage: drop the valid-name gate in core::box::down; on podman the
     // `--filter` name reaches `rm` as a flag and removes the live box, so the
     // exec assertion fails; Apple's `rm` rejects the flag, so the exit
@@ -189,6 +192,44 @@ fn box_lifecycle_works_for_a_caller() {
             "list reports the live box's owner gone after down {absent:?}: {live}"
         );
     }
+
+    // A container pinfold did not create is no box, even under a name `up`
+    // accepts: `exec` and `stat` exit 3 and `down` leaves it running.
+    let foreign = RuntimeContainer::run(&box_name("foreign"), image);
+    for args in [
+        &["box", "exec", foreign.name.as_str(), "--", "true"][..],
+        &["box", "stat", foreign.name.as_str()],
+    ] {
+        let refused = env
+            .command(pinfold())
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run pinfold box");
+        assert_eq!(
+            refused.status.code(),
+            Some(3),
+            "{args:?} treated a foreign container as a box: {}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
+    let down = env
+        .command(pinfold())
+        .args(["box", "down", foreign.name.as_str()])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold box down");
+    assert!(
+        down.status.success() && down.stdout.is_empty() && down.stderr.is_empty(),
+        "down on a foreign container did not behave as for an absent box: {}: {}",
+        down.status,
+        String::from_utf8_lossy(&down.stderr)
+    );
+    assert!(
+        foreign.listed(),
+        "down removed a container pinfold did not create"
+    );
+    drop(foreign);
 
     // `down` removes the box and the owner exits.
     up.down(&env);

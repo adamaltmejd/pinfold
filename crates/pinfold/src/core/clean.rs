@@ -131,14 +131,20 @@ pub struct Boxes {
     pub live_projects: BTreeSet<String>,
 }
 
-/// Read the runtime's box list once. A box without the owner label is not
-/// pinfold's: podman copies image labels onto a user's own container. A
-/// pinfold box whose owner label no live process matches counts as gone.
+/// Whether `box_` is pinfold's: it carries the owner label. Another
+/// container may carry other `dev.pinfold.` labels, since podman copies an
+/// image's labels onto a container a user starts from it.
+pub fn pinfold_box(box_: &BoxInfo) -> bool {
+    box_.labels.contains_key(OWNER_LABEL)
+}
+
+/// Read the runtime's box list once. A pinfold box whose owner label no
+/// live process matches counts as gone.
 pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
     let mut dead = Vec::new();
     let mut live_projects = BTreeSet::new();
     for box_ in runtime.list()? {
-        if !box_.labels.contains_key(OWNER_LABEL) {
+        if !pinfold_box(&box_) {
             continue;
         }
         let (owner, alive) = owner(&box_)?;

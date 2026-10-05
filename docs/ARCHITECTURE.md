@@ -228,7 +228,8 @@ of `refused`, `failed` or `down`.
 `list` prints one JSON line per box whose labels match every `--label`.
 `--label KEY=VALUE` matches that value; `--label KEY` matches any value of
 `KEY`; every box carries `dev.pinfold.owner`, so `--label dev.pinfold.owner`
-lists them all. Each line carries the box's labels and the image it runs, as the
+lists them all. A container without it is no box: `exec` and `stat` exit 3
+on it and `down` leaves it. Each line carries the box's labels and the image it runs, as the
 runtime records it, then its `dev.pinfold.owner` pid (or null), whether it still holds the lock on the box's `pid` file (for a box
 from another state dir, whether that pid is alive), and the runtime's RFC
 3339 `created` time and `state` (`running` or `stopped`):
@@ -800,7 +801,7 @@ Each has one end-to-end test. Testing policy is in `AGENTS.md`.
 | 6 | The environment is exactly the spec | The host's unprefixed proxy variables are absent; `PINFOLD_ENV_X` arrives as `X`; the secret never shows in host `ps`; a spec `PATH` that omits the runtime's directory still comes up, and the box sees exactly that `PATH`. |
 | 7 | No egress means no way out | Without `egress`, nothing gets out, not even through a route. |
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, the box has no egress. With its `pid` file naming a live process, `list` reports the owner gone, `box prune` removes it, and the name can be used again. |
-| 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; `down` removes, and closing `up`'s stdin tears the box down with reason `stdin-closed`. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box, an empty name or a flag-like name (`--filter=…`) exits 0, prints nothing and leaves live boxes alone. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. |
+| 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; `down` removes, and closing `up`'s stdin tears the box down with reason `stdin-closed`. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box, an empty name or a flag-like name (`--filter=…`) exits 0, prints nothing and leaves live boxes alone; a container pinfold did not create is absent to `exec`, `stat` and `down`. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. |
 | 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, or writing into `.vscode/` in a project without one fails, also under a top level named by a space, and a symlinked protected path refuses the run as `protected-path-invalid`; replacing it with a real directory runs. Starting inside `.git` is refused as `project-in-git`; starting from the project root runs. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |

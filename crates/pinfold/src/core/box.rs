@@ -321,10 +321,16 @@ pub fn down(name: &str) -> io::Result<()> {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
-    // A name `up` would refuse holds no box, and the runtime would read one
-    // like `--all` as a flag, so it is never asked.
-    if valid_name(name) {
-        runtime().down(name)?;
+    // Only a pinfold box is removed. A name `up` would refuse holds none, and
+    // the runtime would read one like `--all` as a flag, so it is never asked.
+    let runtime = runtime();
+    if valid_name(name)
+        && runtime
+            .list()?
+            .iter()
+            .any(|box_| box_.id == name && clean::pinfold_box(box_))
+    {
+        runtime.down(name)?;
     }
     let _ = fs::remove_dir_all(&state);
     Ok(())
