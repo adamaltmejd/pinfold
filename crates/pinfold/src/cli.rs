@@ -11,12 +11,12 @@ use std::time::Duration;
 
 use crate::config::Config;
 use crate::core::artifacts;
-use crate::core::r#box::{Box, RefusalReason, Shutdown, Signals, UpError};
+use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, Signals, UpError};
 use crate::core::clean;
 use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
 use crate::core::plan::Plan;
 use crate::core::profile::{self, Profile};
-use crate::core::runtime::{BoxInfo, Runtime, local_image_id, podman, runtime};
+use crate::core::runtime::{BoxInfo, Runtime, podman, runtime};
 use crate::dirs;
 use crate::pi::launch::utf8;
 use crate::trust;
@@ -60,14 +60,14 @@ pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
 }
 
 /// A malformed invocation: `message`, then the verb's syntax from [`syntax`].
-fn usage(verb: &str, message: &str) -> io::Error {
+pub(crate) fn usage(verb: &str, message: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
         format!("{message}\nusage: {}", syntax(verb)),
     )
 }
 
-/// `verb`'s syntax: [`BOX_USAGE`] for box, else its [`USAGE`] line up to the
+/// `verb`'s syntax: [`BOX_USAGE`] for box, else its [`USAGE`] lines up to the
 /// three-space gap. The one place [`usage`] and [`help`] read a syntax line.
 fn syntax(verb: &str) -> String {
     if verb == "box" {
@@ -77,10 +77,10 @@ fn syntax(verb: &str) -> String {
     USAGE
         .lines()
         .chain(BOX_USAGE.lines())
-        .find(|line| line.starts_with(&prefix) || *line == prefix.trim_end())
-        .and_then(|line| line.split("   ").next())
-        .unwrap_or_default()
-        .to_string()
+        .filter(|line| line.starts_with(&prefix) || *line == prefix.trim_end())
+        .filter_map(|line| line.split("   ").next())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Whether `args` hold a `--help`/`-h` before any `--`; if so, print
@@ -100,16 +100,11 @@ pub fn help(verb: &str, args: &[String]) -> bool {
             .any(|arg| arg == "--help" || arg == "-h"),
     };
     if asks {
-        let subcommand = args.first().map(|sub| format!("{verb} {sub}"));
-        let specific = subcommand.as_deref().map(syntax).unwrap_or_default();
-        println!(
-            "{}",
-            if specific.is_empty() {
-                syntax(verb)
-            } else {
-                specific
-            }
-        );
+        let specific = args
+            .first()
+            .map(|sub| syntax(&format!("{verb} {sub}")))
+            .filter(|line| !line.is_empty());
+        println!("{}", specific.unwrap_or_else(|| syntax(verb)));
     }
     asks
 }
@@ -226,12 +221,7 @@ fn up(args: &[String]) -> io::Result<i32> {
                 Plan::from_reader(io::stdin())
             }) => match plan.map_err(io::Error::other)? {
                 Ok(plan) => plan,
-                Err(refusal) => return Ok(refused(
-                    "box",
-                    refusal.box_name.as_deref(),
-                    refusal.reason,
-                    &refusal.detail,
-                )),
+                Err(refusal) => return Ok(refused_box(&refusal)),
             }
         };
         // Every error from here on has removed what the start made; it ends
@@ -261,14 +251,7 @@ async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
     let init = artifacts::init()?;
     let mut box_ = match Box::up(plan, &init, Some(&mut signals)).await {
         Ok(box_) => box_,
-        Err(UpError::Refused(refusal)) => {
-            return Ok(refused(
-                "box",
-                refusal.box_name.as_deref(),
-                refusal.reason,
-                &refusal.detail,
-            ));
-        }
+        Err(UpError::Refused(refusal)) => return Ok(refused_box(&refusal)),
         Err(UpError::Signal) => return Ok(down(Some(&plan.name), Shutdown::Signal)),
         Err(UpError::Other(error)) => return Err(error),
     };
@@ -290,8 +273,6 @@ async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
     );
     io::stdout().flush()?;
     let shutdown = box_.hold(&mut signals).await?;
-    // Teardown is done, so the down line names a box the caller can
-    // start again. It ends the stream.
     Ok(down(Some(&plan.name), shutdown))
 }
 
@@ -326,6 +307,15 @@ fn refused(kind: &str, name: Option<&str>, reason: RefusalReason, detail: &str) 
         })
     );
     1
+}
+
+fn refused_box(refusal: &Refusal) -> i32 {
+    refused(
+        "box",
+        refusal.box_name.as_deref(),
+        refusal.reason,
+        &refusal.detail,
+    )
 }
 
 fn exec(args: &[String]) -> io::Result<i32> {
@@ -414,14 +404,13 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
     let (dry_run, unused) = parse_clean(args)?;
     let runtime = runtime();
     let plan = CleanPlan::measure(runtime, unused)?;
-    if dry_run {
-        println!("pinfold clean: dry run; {} B measured", plan.total());
+    let total = plan.total();
+    let action = if dry_run {
+        format!("dry run; {total} B measured")
     } else {
-        println!(
-            "pinfold clean: {} B measured; removing unused data",
-            plan.total()
-        );
-    }
+        format!("{total} B measured; removing unused data")
+    };
+    println!("pinfold clean: {action}");
     plan.print(runtime);
     if !dry_run {
         plan.remove(runtime)?;
@@ -824,7 +813,10 @@ pub fn build(args: &[String]) -> io::Result<i32> {
             clean::PROJECT_LABEL,
             id,
             bytes,
-            local_image_id(runtime, &profile.image_ref())?,
+            runtime
+                .resolve_image(&profile.image_ref())?
+                .ok()
+                .map(|image| image.id),
         ),
         None => (
             clean::PROFILE_LABEL,

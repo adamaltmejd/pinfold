@@ -41,8 +41,8 @@ fn main() -> ExitCode {
             rest.get(1..).unwrap_or_default(),
         )
     };
-    // The options answer before any verb is chosen, `init` included.
-    match verb {
+    let run: fn(&[String]) -> io::Result<i32> = match verb {
+        // The options answer before any verb runs, `init` included.
         "--version" | "-V" => {
             println!("pinfold {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
@@ -51,9 +51,6 @@ fn main() -> ExitCode {
             println!("{}", cli::USAGE);
             return ExitCode::SUCCESS;
         }
-        _ => {}
-    }
-    let run: fn(&[String]) -> io::Result<i32> = match verb {
         // PID 1 never returns, so it never reaches `report`.
         "init" => |args| init::run(args),
         "box" => cli::run,
