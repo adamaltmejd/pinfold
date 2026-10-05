@@ -7,8 +7,6 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use nix::fcntl::{Flock, FlockArg};
-
 use crate::core::{artifacts, now};
 use crate::dirs;
 
@@ -93,7 +91,7 @@ pub fn token_from_helper() -> Result<Token, String> {
 
 /// Take the host-wide lock file under pinfold's state dir, waiting for a
 /// holder to finish.
-fn lock() -> io::Result<Flock<File>> {
+fn lock() -> io::Result<File> {
     let dir = dirs::state_dir()?;
     fs::create_dir_all(&dir)?;
     let file = File::options()
@@ -101,13 +99,16 @@ fn lock() -> io::Result<Flock<File>> {
         .create(true)
         .truncate(false)
         .open(dir.join("codex-login.lock"))?;
-    Flock::lock(file, FlockArg::LockExclusive).map_err(|(_, errno)| io::Error::from(errno))
+    file.lock()?;
+    Ok(file)
 }
 
 /// Run the helper with `up`'s environment and the built-in `openai` provider
 /// forced (with a custom provider it returns no token), send `initialize`,
 /// `initialized` and `getAuthStatus { includeToken: true }` on stdin, and
-/// return its result. The helper is stopped after.
+/// return its result. The helper is stopped after. Revisit trigger:
+/// `getAuthStatus` is deprecated at the pinned codex; rework when a pin
+/// drops it.
 fn ask(helper: &std::path::Path) -> io::Result<serde_json::Value> {
     let mut child = Command::new(helper)
         .args(["-c", "model_provider=\"openai\""])
