@@ -188,12 +188,7 @@ impl Login {
     /// serves the login, `from` is present for claude and absent for codex,
     /// and `to` parses like an injecting route's.
     fn check(&self, route: &str) -> Result<(), String> {
-        let origin = self.origin()?;
-        if parse_target(origin).is_none() {
-            return Err(invalid(format!(
-                "login route {route:?} target {origin:?} must be an http:// or https:// origin"
-            )));
-        }
+        self.target()?;
         if self.is_codex() {
             if self.from.is_some() {
                 return Err(invalid(format!(
@@ -592,7 +587,7 @@ fn valid_memory(memory: &str) -> bool {
             .is_some_and(|mebibytes| mebibytes >= 256)
 }
 
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     name.bytes()
         .next()
         .is_some_and(|byte| byte.is_ascii_alphanumeric())

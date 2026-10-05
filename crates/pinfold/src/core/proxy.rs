@@ -7,9 +7,8 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -78,9 +77,6 @@ struct Rules {
     allow: Vec<String>,
     /// Lowercased route names mapped to where they lead.
     routes: BTreeMap<String, Upstream>,
-    /// The TLS client for `https` routes, with the host's roots. Present when
-    /// one exists.
-    tls: Option<Arc<ClientConfig>>,
 }
 
 /// A route's upstream. No `Debug`: an injected header holds a credential.
@@ -134,12 +130,6 @@ impl Rules {
             };
             routes.insert(name.to_ascii_lowercase(), upstream);
         }
-        let https = routes.values().any(|upstream| match upstream {
-            Upstream::Address(target)
-            | Upstream::Inject { target, .. }
-            | Upstream::Codex { target, .. } => target.https,
-        });
-        let tls = if https { Some(tls_config()?) } else { None };
         Ok(Rules {
             allow: egress
                 .allow
@@ -147,7 +137,6 @@ impl Rules {
                 .map(|entry| entry.to_ascii_lowercase())
                 .collect(),
             routes,
-            tls,
         })
     }
 
@@ -162,18 +151,21 @@ impl Rules {
     }
 }
 
-/// A TLS client that verifies against the host's roots. Roots that fail to
-/// load are skipped; with none, every `https` route fails verification.
-fn tls_config() -> io::Result<Arc<ClientConfig>> {
-    let mut roots = RootCertStore::empty();
-    roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
-    let config =
-        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .map_err(io::Error::other)?
+/// The TLS client for `https` routes, built on the first one. It verifies
+/// against the host's roots; roots that fail to load are skipped, and with
+/// none every `https` route fails verification. ring is rustls's only
+/// provider feature, so `builder` picks it.
+fn tls_config() -> Arc<ClientConfig> {
+    static CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+    let config = CONFIG.get_or_init(|| {
+        let mut roots = RootCertStore::empty();
+        roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+        let config = ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth();
-    Ok(Arc::new(config))
+        Arc::new(config)
+    });
+    Arc::clone(config)
 }
 
 fn serve(listener: UnixListener, rules: Arc<Rules>, log: PathBuf) {
@@ -216,15 +208,20 @@ fn handle(mut client: UnixStream, rules: &Rules, log: &Path) {
     // fourth token on the request line and more than MAX_HEADERS headers.
     let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
     let mut request = httparse::Request::new(&mut headers);
-    let (Ok(httparse::Status::Complete(_)), Some(method), Some(target)) =
-        (request.parse(&head), request.method, request.path)
-    else {
+    let (Ok(httparse::Status::Complete(_)), Some(method), Some(version), Some(target)) = (
+        request.parse(&head),
+        request.method,
+        request.version,
+        request.path,
+    ) else {
         return refuse(&mut client, log, "", 400, "malformed request");
     };
     if method == "CONNECT" {
-        connect(&mut client, rules, log, target);
-    } else {
-        plain(&mut client, rules, log, &request);
+        return connect(&mut client, rules, log, target);
+    }
+    match parse_plain(method, version, target, request.headers) {
+        Ok(request) => plain(&mut client, rules, log, &request),
+        Err(reason) => refuse(&mut client, log, "", 400, reason),
     }
 }
 
@@ -272,11 +269,7 @@ fn connect(client: &mut UnixStream, rules: &Rules, log: &Path, target: &str) {
 
 /// Handle one plain HTTP request: an allowlisted host or a route, port 80
 /// only, framed by Content-Length, one request per connection.
-fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, request: &httparse::Request) {
-    let request = match parse_plain(request) {
-        Ok(request) => request,
-        Err(reason) => return refuse(client, log, "", 400, reason),
-    };
+fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain) {
     if request.port != 80 {
         return refuse(client, log, &request.host, 403, "port not allowed");
     }
@@ -285,7 +278,7 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, request: &httparse:
     }
     let host = request.host.to_ascii_lowercase();
     if let Some(upstream) = rules.routes.get(&host) {
-        route(client, rules, log, &request, upstream);
+        route(client, log, request, upstream);
         return;
     }
     if !rules.allows(&host) {
@@ -298,7 +291,7 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, request: &httparse:
     let _ = forward(
         client,
         dial(address),
-        &request,
+        request,
         &request.authority,
         &[],
         &mut |_| {},
@@ -309,7 +302,7 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, request: &httparse:
 /// `https` target is resolved and checked like an allowlisted host, then
 /// dialed over TLS. A codex login whose token has lapsed is refused before
 /// anything is dialed.
-fn route(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain, upstream: &Upstream) {
+fn route(client: &mut UnixStream, log: &Path, request: &Plain, upstream: &Upstream) {
     let mut report = |status: Option<u16>| {
         let path = request
             .target
@@ -341,10 +334,7 @@ fn route(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain, up
     else {
         return;
     };
-    let server = rules
-        .tls
-        .as_ref()
-        .and_then(|config| dial_tls(address, &target.host, config));
+    let server = dial_tls(address, &target.host);
     let _ = forward(client, server, request, host, &headers, &mut report);
 }
 
@@ -372,13 +362,9 @@ fn resolve_checked(
 
 /// Connect to a checked address and complete the TLS handshake, with SNI
 /// and the certificate checked against `host`.
-fn dial_tls(
-    address: SocketAddr,
-    host: &str,
-    config: &Arc<ClientConfig>,
-) -> Option<StreamOwned<ClientConnection, TcpStream>> {
+fn dial_tls(address: SocketAddr, host: &str) -> Option<StreamOwned<ClientConnection, TcpStream>> {
     let name = ServerName::try_from(host.to_string()).ok()?;
-    let mut connection = ClientConnection::new(Arc::clone(config), name).ok()?;
+    let mut connection = ClientConnection::new(tls_config(), name).ok()?;
     let mut server = dial(address)?;
     while connection.is_handshaking() {
         connection.complete_io(&mut server).ok()?;
@@ -408,10 +394,12 @@ struct Plain {
 /// Parse and check a plain HTTP request head. The error is the 400's log
 /// reason: not absolute-form, `https`, userinfo, ambiguous framing or an
 /// invalid header.
-fn parse_plain(request: &httparse::Request) -> Result<Plain, &'static str> {
-    let method = request.method.ok_or("malformed request")?.to_string();
-    let version = request.version.ok_or("malformed request")?;
-    let raw_target = request.path.ok_or("malformed request")?;
+fn parse_plain(
+    method: &str,
+    version: u8,
+    raw_target: &str,
+    headers: &[httparse::Header],
+) -> Result<Plain, &'static str> {
     let (url, path) = network::absolute_url(raw_target).ok_or("malformed request")?;
     if url.https {
         return Err("malformed request");
@@ -426,7 +414,7 @@ fn parse_plain(request: &httparse::Request) -> Result<Plain, &'static str> {
     };
     let mut content_length = None;
     let mut forwarded = Vec::new();
-    for header in request.headers.iter() {
+    for header in headers {
         if header.name.eq_ignore_ascii_case("transfer-encoding") {
             return Err("ambiguous framing");
         }
@@ -439,12 +427,15 @@ fn parse_plain(request: &httparse::Request) -> Result<Plain, &'static str> {
         }
         let value = std::str::from_utf8(header.value).map_err(|_| "malformed request")?;
         if length {
-            content_length = Some(value.parse::<u64>().map_err(|_| "malformed request")?);
+            // RFC 9110's 1*DIGIT: `parse` alone would also take a leading `+`.
+            let digits = value.bytes().all(|byte| byte.is_ascii_digit());
+            let parsed = value.parse::<u64>().ok().filter(|_| digits);
+            content_length = Some(parsed.ok_or("ambiguous framing")?);
         }
         forwarded.push((header.name.to_string(), value.to_string()));
     }
     Ok(Plain {
-        method,
+        method: method.to_string(),
         version,
         target,
         authority: url.authority,
@@ -584,12 +575,11 @@ fn timed_out(error: &io::Error) -> bool {
 /// A head with only CRLF line endings. httparse accepts bare LF, so this
 /// framing check is done on the bytes; a folded header it rejects itself.
 fn head_well_formed(head: &[u8]) -> bool {
-    head.ends_with(b"\r\n\r\n")
-        && head.iter().enumerate().all(|(index, byte)| match byte {
-            b'\n' => index > 0 && head[index - 1] == b'\r',
-            b'\r' => head.get(index + 1) == Some(&b'\n'),
-            _ => true,
-        })
+    head.iter().enumerate().all(|(index, byte)| match byte {
+        b'\n' => index > 0 && head[index - 1] == b'\r',
+        b'\r' => head.get(index + 1) == Some(&b'\n'),
+        _ => true,
+    })
 }
 
 /// Connect to the first address and time its reads out after

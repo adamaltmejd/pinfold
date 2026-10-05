@@ -12,7 +12,7 @@ use std::process::ExitStatus;
 use std::time::Duration;
 
 use nix::errno::Errno;
-use nix::fcntl::{Flock, FlockArg, OFlag, openat};
+use nix::fcntl::{OFlag, openat};
 use nix::sys::stat::{Mode, mkdirat};
 use nix::unistd::{Pid, UnlinkatFlags, unlinkat};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
@@ -20,7 +20,7 @@ use tokio::process::Child;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::core::clean;
-use crate::core::plan::{Env, Mount, Plan};
+use crate::core::plan::{Env, Mount, Plan, valid_name};
 use crate::core::profile::{Profile, Seed};
 use crate::core::runtime::{apple, runtime};
 use crate::core::{artifacts, login, proxy};
@@ -40,9 +40,9 @@ pub struct Box {
     /// The egress log `up` gave the proxy; `None` without `egress`.
     pub egress_log: Option<PathBuf>,
     state_dir: PathBuf,
-    /// The lock on the state dir's `pid` file. Holding it is what makes the
+    /// The state dir's locked `pid` file. Holding its lock is what makes the
     /// owner alive to every checker.
-    _lock: Flock<File>,
+    _lock: File,
     child: Child,
 }
 
@@ -321,10 +321,9 @@ pub fn down(name: &str) -> io::Result<()> {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
-    // No box can hold the empty name, and podman refuses it ("name or ID
-    // cannot be empty"), so an empty name is an absent box and the runtime
-    // is never asked.
-    if !name.is_empty() {
+    // A name `up` would refuse holds no box, and the runtime would read one
+    // like `--all` as a flag, so it is never asked.
+    if valid_name(name) {
         runtime().down(name)?;
     }
     let _ = fs::remove_dir_all(&state);
@@ -395,7 +394,7 @@ async fn abort(
 /// Claim `plan`'s name: create its state dir exclusively, then lock and
 /// write the `pid` file. A dir whose owner is alive is `name-in-use`; a dead
 /// owner's dir is removed and the claim tried once more.
-fn claim(plan: &Plan) -> Result<(PathBuf, Flock<File>), UpError> {
+fn claim(plan: &Plan) -> Result<(PathBuf, File), UpError> {
     fs::create_dir_all(dirs::boxes_dir()?)?;
     let state_dir = dirs::box_state_dir(&plan.name)?;
     for retry in [true, false] {
@@ -428,18 +427,18 @@ fn claim(plan: &Plan) -> Result<(PathBuf, Flock<File>), UpError> {
 
 /// Create the claimed dir's `pid` file, lock it, and write this process's
 /// pid. The lock is held until the process exits or the box is torn down.
-fn lock_pid(state_dir: &Path) -> io::Result<Flock<File>> {
+fn lock_pid(state_dir: &Path) -> io::Result<File> {
     // std opens with O_CLOEXEC, so no runtime child inherits the lock and
     // holds it past this process.
-    let file = File::options()
+    let mut file = File::options()
         .write(true)
         .create_new(true)
         .open(state_dir.join("pid"))?;
-    // Blocking: a checker holds the lock only for a moment.
-    let mut lock =
-        Flock::lock(file, FlockArg::LockExclusive).map_err(|(_, errno)| io::Error::from(errno))?;
-    lock.write_all(std::process::id().to_string().as_bytes())?;
-    Ok(lock)
+    // Blocking: a checker holds the lock only for a moment. std's lock is
+    // flock(2), as is the checkers' nix one.
+    file.lock()?;
+    file.write_all(std::process::id().to_string().as_bytes())?;
+    Ok(file)
 }
 
 /// The start after the claim: harness, seeds, proxy, runtime, readiness.
@@ -549,43 +548,40 @@ fn resolve_harness(plan: &mut Plan, state_dir: &Path) -> io::Result<()> {
         guest: artifacts::guest(&harness.name),
         readonly: true,
     });
-    for (name, value) in &harness.env {
-        plan.env
-            .entry(name.clone())
-            .or_insert_with(|| Env::Exact(value.clone()));
-    }
-    // A login route's placeholders go in beside the harness defaults; the
-    // spec's own env still wins.
-    let (login_env, codex_config) = plan
+    let login = plan
         .login()
-        .map(|(route, login)| {
-            let config = login.is_codex().then(|| login::codex_config(route));
-            (login.env(route), config)
-        })
-        .unzip();
-    for (name, value) in login_env.into_iter().flatten() {
-        plan.env
-            .entry(name.to_string())
-            .or_insert(Env::Exact(value));
+        .map(|(route, login)| (route.to_owned(), login.clone()));
+    let allow = plan
+        .egress
+        .as_ref()
+        .map(|egress| egress.allow.join(","))
+        .unwrap_or_default();
+    // The first default for a name wins: the harness's, then a login route's
+    // placeholders, then the allowlist.
+    let defaults = harness
+        .env
+        .iter()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .chain(
+            login
+                .iter()
+                .flat_map(|(route, login)| login.env(route))
+                .map(|(name, value)| (name.to_owned(), value)),
+        )
+        .chain([("PINFOLD_ALLOW".to_owned(), allow)]);
+    for (name, value) in defaults {
+        plan.env.entry(name).or_insert(Env::Exact(value));
     }
-    if let Some(config) = codex_config.flatten() {
+    if let Some((route, _)) = login.filter(|(_, login)| login.is_codex()) {
         let dir = state_dir.join("codex");
         fs::create_dir_all(&dir)?;
-        fs::write(dir.join("config.toml"), config)?;
+        fs::write(dir.join("config.toml"), login::codex_config(&route))?;
         plan.mounts.push(Mount {
             host: dir,
             guest: PathBuf::from(login::CODEX_CONFIG_DIR),
             readonly: true,
         });
     }
-    let allow = plan
-        .egress
-        .as_ref()
-        .map(|egress| egress.allow.join(","))
-        .unwrap_or_default();
-    plan.env
-        .entry("PINFOLD_ALLOW".to_string())
-        .or_insert(Env::Exact(allow));
     Ok(())
 }
 
