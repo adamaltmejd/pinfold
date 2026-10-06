@@ -9,39 +9,39 @@
 
 [[harness]]
 name = "pi"
-version = "1.0.3"
+version = "1.0.4"
 env = { PI_TELEMETRY = "0", PI_SKIP_VERSION_CHECK = "1" }
 
 [[harness.asset]]
 os-arch = "linux-arm64"
-url = "https://github.com/earendil-works/pi/releases/download/v1.0.3/pi-linux-arm64.tar.gz"
-sha256 = "d3093a79ac9e22ef430e2a73e002a3ddeb451de07b722b3aa53aa6a94eaa9edc"
+url = "https://github.com/earendil-works/pi/releases/download/v1.0.4/pi-linux-arm64.tar.gz"
+sha256 = "6a6bc66a6ac2750bd7ccd7f2109090463f564d447feefb10a5965f6b6aed2211"
 install = "tar.gz"
 as = "pi"
 
 [[harness.asset]]
 os-arch = "linux-x64"
-url = "https://github.com/earendil-works/pi/releases/download/v1.0.3/pi-linux-x64.tar.gz"
-sha256 = "9b8c7ff523bd90881d1c1505168f0b9deb2c0357396b92b62f799550a48ff1ed"
+url = "https://github.com/earendil-works/pi/releases/download/v1.0.4/pi-linux-x64.tar.gz"
+sha256 = "284c45dd28cf975a13cff6af34741dd0a0cdca6634e8bdfc0083ae7d452e86d6"
 install = "tar.gz"
 as = "pi"
 
 [[harness]]
 name = "claude"
-version = "2.1.289"
+version = "2.1.291"
 env = { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
 
 [[harness.asset]]
 os-arch = "linux-arm64"
-url = "https://downloads.claude.ai/claude-code-releases/2.1.289/linux-arm64/claude"
-sha256 = "d100d5e41dcbee220c80d3a3099292e4b5a508b57cafd181856efedf29f84f28"
+url = "https://downloads.claude.ai/claude-code-releases/2.1.291/linux-arm64/claude"
+sha256 = "c18473a04cc4f077435d5d9081f09ebea46e699eb2825cea64741c4bccb87647"
 install = "executable"
 as = "claude/claude"
 
 [[harness.asset]]
 os-arch = "linux-x64"
-url = "https://downloads.claude.ai/claude-code-releases/2.1.289/linux-x64/claude"
-sha256 = "a186b99e4a9c88366cd49df2f7dad56c61fc306ef0140b19ee64b7c42a8d1348"
+url = "https://downloads.claude.ai/claude-code-releases/2.1.291/linux-x64/claude"
+sha256 = "078fad28d0297c9a25d306b635b2d8816c6839347520f29eb54ffea5d56142fb"
 install = "executable"
 as = "claude/claude"
 
