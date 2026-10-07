@@ -73,8 +73,8 @@ policy; no global Bun configuration is changed.
 
 The prototype contract and pin-maintenance rule are in
 [ARCHITECTURE.md](../../docs/ARCHITECTURE.md#experimental-durable-caller).
-The standalone regression is guarantee 35. It currently validates macOS;
-Linux prototype behavior is unverified. The command needs exclusive ownership of the runtime and
+The standalone regression is guarantee 35, validated on macOS and Linux x64
+and arm64. The command needs exclusive ownership of the runtime and
 an existing image with `sh`, `tail`, `grep` and `tr`:
 
 ```sh

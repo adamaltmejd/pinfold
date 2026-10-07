@@ -798,8 +798,8 @@ uses TypeScript 6.0.2 and `@types/node` 26.0.0; execution requires Node 26+.
 The repository operator owns these pins and `examples/pi-durable/bun.lock`.
 They are updated together in a reviewed change, independently of nightly
 harness pins. Any prototype or dependency change requires the typecheck
-and guarantee 35's standalone gate. Its supported validation host is
-macOS; Linux prototype behavior remains unverified.
+and guarantee 35's standalone gate. The gate is validated on macOS and
+Linux x64 and arm64.
 
 ## Configuration
 
@@ -928,7 +928,7 @@ CI budget; the two slow gates run separately.
 | 32 | The documents profile reads documents locally | A freshly built documents image converts a PDF whose objects are reordered, preserving page-tree order, and renders page two at its fixture dimensions with no egress. |
 | 33 | Writable projects exclude host authority | `allow`, build and pi refuse state, config or cache roots inside the project, including nonexistent paths reached through a symlinked ancestor. External roots allow the same project to run. |
 | 34 | Blocked route responses release the upstream | A normal routed response succeeds. A guest that keeps its upload open but stops reading causes the host fixture connection to close after the production write deadline, while the guest holder remains alive. Slow gate only. |
-| 35 | Durable recovery preserves boxed execution | The host fixture refuses authority overlap before work, then observes a successful boxed command, a competing checkpoint writer refused without disrupting its owner, a mutation followed by SIGKILL before tool-result commit, a new box generation before recovery, no unsafe replay, and whole-box cancellation including a background child. Standalone macOS prototype gate. |
+| 35 | Durable recovery preserves boxed execution | The host fixture refuses authority overlap before work, then observes a successful boxed command, a competing checkpoint writer refused without disrupting its owner, a mutation followed by SIGKILL before tool-result commit, a new box generation before recovery, no unsafe replay, and whole-box cancellation including a background child. Standalone prototype gate on macOS and Linux x64 and arm64. |
 | 36 | CONNECT tunnels share activity | Real TLS tunnels carry upload-only and download-only traffic for longer than the production idle deadline. Neither closes while bytes flow; both then close after a full idle interval with `idle timeout` in the egress log while the guest holders remain alive. Standalone Linux slow gate. |
 
 Linux (podman) runs in CI on every push to main and every pull request,
