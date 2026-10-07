@@ -278,10 +278,7 @@ async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
     Ok(down(Some(&plan.name), shutdown))
 }
 
-/// Print the one `down` line that ends `up`'s stream, why the box ended
-/// after teardown, and return `up`'s exit code: 1 for `exited`, else 0.
-/// Only `exited` carries a detail, the init's exit status. `name` is null
-/// when a signal ended `up` before its spec parsed.
+/// `name` is null when a signal ends `up` before its spec parses.
 fn down(name: Option<&str>, shutdown: Shutdown) -> i32 {
     let mut line = serde_json::json!({
         "event": "down",
@@ -712,10 +709,7 @@ fn pins_json() -> io::Result<serde_json::Value> {
     serde_json::to_value(artifacts::pins()?).map_err(io::Error::other)
 }
 
-/// `pinfold config`: print one JSON object, the effective configuration and
-/// the project facts a caller needs to compose a box. `ROOT` defaults to the
-/// project root `pinfold pi` would use from the current directory. Reads
-/// only: nothing is created and nothing is recorded.
+/// Read-only: do not materialize profiles or record project state.
 pub fn config(args: &[String]) -> io::Result<i32> {
     let root = match args {
         [] => crate::pi::launch::project_root(&std::env::current_dir()?)?,
@@ -833,12 +827,8 @@ pub(crate) fn exit_code(status: ExitStatus) -> i32 {
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
 }
 
-/// `pinfold build`: `--profile NAME`'s image; else the project's own image
-/// when its config names a Containerfile, else the configured profile's.
-/// Either builds from an empty context holding only the Containerfile, so
-/// trust covers every input of a project build, and a profile directory's
-/// other files are not build inputs. Prints the stable ref, or the build's
-/// captured output on stderr when it failed.
+/// Containerfile-only contexts keep project builds covered by trust.
+/// Other files in a profile directory are not build inputs.
 pub fn build(args: &[String]) -> io::Result<i32> {
     let (profile, project) = match args {
         [flag, name] if flag == "--profile" => (Profile::load(name)?, None),
@@ -952,11 +942,6 @@ fn image_build(args: &[String]) -> i32 {
     code
 }
 
-/// `pinfold image rm NAME`: retire a caller image name: remove every tag
-/// of NAME, whatever its age, and no other name's, except an image's last
-/// tag while a listed box uses it. Print the ids it untagged and the ids
-/// whose last tag it kept. A bad name or argument is refused as `spec`,
-/// like a build's.
 fn image_rm(args: &[String]) -> io::Result<i32> {
     let refused = |name, detail: String| refused("image", name, RefusalReason::Spec, &detail);
     let name = args.first().map(String::as_str);
