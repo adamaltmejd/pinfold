@@ -1549,7 +1549,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     dead_up.kill();
-    dead_up.wait();
+    // Wait for exit without reaping. Other state roots see the zombie pid
+    // as alive and leave this fixture alone; this root sees its released
+    // owner lock, so clean can remove it.
+    dead_up.close_stdin();
 
     // A container the user started with the runtime's own CLI from a
     // pinfold-built image is not a box: podman copies the image's
@@ -1708,6 +1711,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         box_list(&env, dead_label).is_empty(),
         "clean left a box whose owner is gone"
     );
+    dead_up.wait();
     assert!(
         user_container.listed(),
         "clean removed a container pinfold did not start"
