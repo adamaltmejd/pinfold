@@ -255,11 +255,18 @@ impl Drop for ImageCleanup {
     }
 }
 
-/// The IDs of untagged images podman lists, including the intermediate
-/// layers a cached build leaves behind. Linux only.
-pub fn untagged_images() -> std::collections::BTreeSet<String> {
-    let output =
-        run_ok(Command::new("podman").args(["images", "-a", "-q", "--filter", "dangling=true"]));
+/// The IDs of untagged images with the caller's label, including the
+/// intermediate layers a cached build leaves behind. Linux only.
+pub fn untagged_images(label: &str) -> std::collections::BTreeSet<String> {
+    let output = run_ok(Command::new("podman").args([
+        "images",
+        "-a",
+        "-q",
+        "--filter",
+        "dangling=true",
+        "--filter",
+        &format!("label={label}"),
+    ]));
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(str::to_owned)

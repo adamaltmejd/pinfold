@@ -24,6 +24,7 @@ use e2e::{
 
 #[test]
 fn the_documents_profile_reads_documents_locally() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 32. Sabotage: remove poppler-utils from the bundled
     // documents image; `pdftoppm` then fails. Sabotage: omit AnyDoc's native
     // package from that image; the PDF conversion fails.
@@ -112,6 +113,7 @@ fn the_documents_profile_reads_documents_locally() {
 
 #[test]
 fn the_environment_is_exactly_the_spec() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: pass the PINFOLD_ENV_* value on the command line (for
     // example `container exec --env SECRET=shhh`) instead of through the
     // child's environment; `shhh` then appears in host `ps` while the box
@@ -260,6 +262,7 @@ fn the_environment_is_exactly_the_spec() {
 
 #[test]
 fn project_state_persists_and_stays_separate() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: derive the project id from the directory name alone (drop
     // the root hash in state.rs::project_id); the two checkouts named
     // `checkout` then share a home, the second's settings.json is the first's
@@ -436,6 +439,7 @@ fn project_state_persists_and_stays_separate() {
 
 #[test]
 fn a_changed_project_file_stops_the_run() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: drop the trust::check call from pi::launch; the created and
     // the changed `.pinfold.toml` then run and both refusal assertions fail.
     // Sabotage: hash an absent `.pinfold.toml` as the empty file instead of
@@ -585,6 +589,7 @@ fn a_changed_project_file_stops_the_run() {
 
 #[test]
 fn the_box_cannot_write_git_or_protected_config() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: omit the `.git` read-only mount from pi::git (or mount it
     // writable); the `core.fsmonitor` write and the rename then succeed, so
     // those assertions fail.
@@ -881,6 +886,7 @@ fn the_box_cannot_write_git_or_protected_config() {
 
 #[test]
 fn both_pi_config_levels_load_behind_a_route() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: drop the route (leave PINFOLD_ROUTES empty, or point it at
     // another name); the proxy refuses fake.model with a 403 and the
     // "pi -p failed" assertion fails before any request reaches the model.
@@ -1041,6 +1047,7 @@ fn both_pi_config_levels_load_behind_a_route() {
 
 #[test]
 fn the_highest_layer_sets_the_allowlist() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: union DEFAULT_ALLOW under the merged allow in
     // `Config::load`; the default hosts stay in the box's PINFOLD_ALLOW and
     // npm is let through, so the exact-list assertion fails. Sabotage: merge
@@ -1244,6 +1251,7 @@ fn the_highest_layer_sets_the_allowlist() {
 
 #[test]
 fn writable_projects_exclude_host_authority() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 33. Sabotage: remove trust::validate_host_paths, or compare
     // unresolved XDG paths; allow then records trust inside the project and
     // pi/build accept it. The missing suffix behind a symlink is the case
@@ -1282,6 +1290,7 @@ fn writable_projects_exclude_host_authority() {
 
 #[test]
 fn a_caller_reads_the_effective_configuration_as_data() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: report DEFAULT_ALLOW instead of the merged allow in
     // `run_config`; `egress.allow` then names the built-in hosts and the
     // exact-list assertion fails.

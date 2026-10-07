@@ -14,6 +14,7 @@ use super::box_::{box_name, box_up};
 
 #[test]
 fn host_updates_are_verified_and_atomic() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 28. Sabotage: skip SHA256SUMS verification; the damaged
     // release succeeds. Rename before verification; the old inode changes
     // on refusal. Write into the executable instead of renaming; the final
@@ -145,6 +146,7 @@ fn host_updates_are_verified_and_atomic() {
 
 #[test]
 fn interactive_update_checks_are_bounded() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 29. Sabotage: remove terminal or opt-out checks; suppressed
     // launches reach the fixture. Ignore the daily stamp; the second launch
     // queries again. Increase notice_due's latest timeout from one to three
@@ -230,6 +232,7 @@ fn interactive_update_checks_are_bounded() {
 
 #[test]
 fn changed_bundled_profiles_are_reported_once() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 31. Sabotage: omit the embedded-profile comparison, or gate
     // it behind the daily network interval; the changed binary stays silent.
     // Do not save the new fingerprint; the next launch warns again. Warn on

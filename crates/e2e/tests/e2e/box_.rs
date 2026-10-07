@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::DEAD_BOX_RACE;
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
     box_stat, build_profile, curl, default_image, egress_log, exit_code, git, image_cli, image_id,
@@ -24,6 +23,7 @@ use e2e::{
 
 #[test]
 fn box_lifecycle_works_for_a_caller() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 9: the lifecycle works for a caller.
     // Sabotage: make `box down` a no-op; the post-down list assertion fails.
     // Sabotage: restore the empty-name sentinel in `box_state_dir`; the
@@ -311,9 +311,6 @@ sys.exit(result.returncode)
     // replacement can start before the previous owner finishes cleanup.
     // The runtime, host state and second XDG root are outside observers.
     {
-        let _race = DEAD_BOX_RACE
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
         let other = TestEnv::new("lifecycle-other");
         let stopped_name = box_name("lifecycle-stopped");
         let mut stopped_spec = spec.clone();
@@ -479,6 +476,7 @@ sys.exit(result.returncode)
 
 #[test]
 fn up_refuses_before_it_creates() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 17: up refuses before it creates.
     // Sabotage: drop `deny_unknown_fields` from `Mount`; the misspelled
     // mount spec then comes up `ready` and the refusal assertion fails.
@@ -925,6 +923,7 @@ fn up_refuses_before_it_creates() {
 
 #[test]
 fn box_shares_files_with_the_host() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: bind every spec mount read-only in the adapter (pass `true`
     // for `mount.readonly` in runtime/mod.rs); creating files in /workspace
     // then fails and the create assertion fails. Sabotage: drop
@@ -1019,6 +1018,7 @@ fn box_shares_files_with_the_host() {
 
 #[test]
 fn nothing_can_gain_privileges() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: drop `find / -xdev -perm /6000 -type f -exec chmod a-s {} +`
     // from the bundled image fragments; the setuid/setgid scan then lists
     // files and fails. Sabotage: drop `--read-only` from the adapter's `run` argv;
@@ -1104,6 +1104,7 @@ fn nothing_can_gain_privileges() {
 
 #[test]
 fn only_allowlisted_hosts_get_through() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: make the proxy's allowlist check accept every host; example.com
     // then answers and the 403 and "not allowlisted" log assertions fail. The
     // api.github.com request is the positive control that the same path lets
@@ -1152,6 +1153,7 @@ fn only_allowlisted_hosts_get_through() {
 
 #[test]
 fn the_proxy_refuses_the_tricks() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 3. Each trick has its control in the same box.
     //
     // Sabotage: delete either IP literal check; that request then
@@ -1342,6 +1344,7 @@ fn the_proxy_refuses_the_tricks() {
 
 #[test]
 fn losing_the_owner_fails_closed() {
+    let _runtime = crate::exclusive_runtime();
     // Sabotage: make `box prune` skip boxes whose owner is gone; the box
     // survives prune and the post-prune list assertion fails. Sabotage:
     // report `owner_alive` as true whenever the label parses; the dead-owner
@@ -1376,13 +1379,7 @@ fn losing_the_owner_fails_closed() {
     );
     assert_ok(&allowed, "positive control");
 
-    // Hold the race against the cleanup test's `clean`, which removes any
-    // dead pinfold box, through this test's `box prune`.
-    let _race = DEAD_BOX_RACE
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
-    // Run the second root's maintenance while the owner lives, then keep
-    // the killed owner unreaped. Sabotage: use kill(pid, 0) across roots;
+    // Keep the killed owner unreaped. Sabotage: use kill(pid, 0) across roots;
     // the zombie appears live and the second-root liveness assertion fails.
     let other = TestEnv::new("owner-gone-other");
     let live = box_list(&other, label);
@@ -1463,6 +1460,7 @@ fn losing_the_owner_fails_closed() {
 
 #[test]
 fn cleanup_removes_only_pinfolds_garbage() {
+    let _runtime = crate::exclusive_runtime();
     // Guarantee 15: cleanup removes only pinfold's garbage.
     //
     // Sabotage: make `keep_two_images` return before it removes anything;
@@ -1527,9 +1525,9 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let env = TestEnv::new("cleanup");
     let build_env = cfg!(target_os = "macos").then(|| {
         let other = TestEnv::new("clean-build");
-        // Run this caller's daily pass before the dead-box fixture exists,
-        // so its later build cannot remove that fixture ahead of clean.
-        run_ok(other.command(pinfold()).arg("artifacts"));
+        // This test's second caller must finish its daily pass before the
+        // dead fixture exists. Artifact inspection does not run maintenance.
+        box_list(&other, "dev.example.test=e2e-cleanup-dead");
         other
     });
     default_image(&env);
@@ -1762,15 +1760,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "labels": { "dev.example.test": "e2e-cleanup-dead" },
     });
     let mut dead_up = box_up(&env, &dead_spec, &dead);
-    // Hold the race against the owner-gone test's `box prune` through this
-    // test's `clean`.
-    let _race = DEAD_BOX_RACE
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
     dead_up.kill();
-    // Wait for exit without reaping. Other state roots see the zombie pid
-    // as alive and leave this fixture alone; this root sees its released
-    // owner lock, so clean can remove it.
     dead_up.close_stdin();
 
     // A container the user started with the runtime's own CLI from a
@@ -1809,9 +1799,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     );
 
     // `--dry-run` only lists: the other project's state, which the real
-    // clean below removes, survives it. It lives under this test's own
-    // state dir, so no other test's daily pass can take it first, as it can
-    // an image in the shared store.
+    // clean below removes, survives it.
     run_ok(env.command(pinfold()).args(["clean", "--dry-run"]));
     assert!(
         other_marker.is_file(),
@@ -2133,6 +2121,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
 
 #[test]
 fn every_build_reruns_its_steps() {
+    let _runtime = crate::shared_runtime();
     // Every build reruns every step, so a rebuild picks up base updates
     // instead of replaying a cached `RUN` layer.
     //
@@ -2144,6 +2133,7 @@ fn every_build_reruns_its_steps() {
     default_image(&env);
 
     let profile = format!("e2e-rerun-{}", std::process::id());
+    let layer_label = format!("dev.example.rerun={profile}");
     let _images = ImageCleanup {
         repository: format!("pinfold/profile-{profile}"),
     };
@@ -2152,14 +2142,17 @@ fn every_build_reruns_its_steps() {
     profile_containerfile(
         &env,
         &profile,
-        "FROM debian:trixie-slim\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\n",
+        &format!(
+            "FROM debian:trixie-slim\nLABEL dev.example.rerun={profile}\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\n"
+        ),
     );
 
-    // podman's layer cache would show as untagged intermediate images. The
-    // baseline is after the shared default build. Compare IDs so concurrent
-    // removal of old layers cannot hide a newly leaked layer.
+    // Podman's cached intermediates inherit the Containerfile's first
+    // label. Scope to this source so another test's cached caller build
+    // cannot look like our leak. Compare IDs so removing old layers cannot
+    // hide a newly leaked layer.
     let before = if cfg!(target_os = "linux") {
-        Some(untagged_images())
+        Some(untagged_images(&layer_label))
     } else {
         None
     };
@@ -2182,7 +2175,7 @@ fn every_build_reruns_its_steps() {
     );
 
     if let Some(before) = before {
-        let after = untagged_images();
+        let after = untagged_images(&layer_label);
         assert!(
             after.is_subset(&before),
             "the builds left new untagged images: {:?}",
@@ -2193,6 +2186,7 @@ fn every_build_reruns_its_steps() {
 
 #[test]
 fn a_caller_builds_an_image_from_its_own_tree() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 23: a caller builds an image from its own tree.
     //
     // Sabotage: tag the build but skip the `--context` argument, so the
@@ -2208,17 +2202,7 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // build label into every image again, as `dev.pinfold.build` was; the
     // repeated build makes a new image and the one-id assertion fails.
     let env = TestEnv::new("image-build");
-    let other = cfg!(target_os = "macos").then(|| {
-        let other = TestEnv::new("image-colors");
-        // These callers' daily passes must not prune another test's dead
-        // box. Release the fixture guard before either build starts.
-        let _race = DEAD_BOX_RACE
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        run_ok(env.command(pinfold()).arg("artifacts"));
-        run_ok(other.command(pinfold()).arg("artifacts"));
-        other
-    });
+    let other = cfg!(target_os = "macos").then(|| TestEnv::new("image-colors"));
     let base = default_image(&env);
 
     let name = format!("pinfold-e2e-{}", std::process::id());
@@ -2568,6 +2552,7 @@ fn built_unique_ref(profile: &str) -> String {
 }
 #[test]
 fn box_has_no_network_but_loopback() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: drop `--network none` from the adapter's `run` argv;
     // the box gains an interface and reaches `1.1.1.1`, so the
     // interface and unreachable assertions fail. The route to the fixture is
@@ -2629,6 +2614,7 @@ fn box_has_no_network_but_loopback() {
 
 #[test]
 fn a_route_reaches_exactly_one_host_service() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: forward the client's Host header unchanged; the evil-Host
     // request then reaches the fixture as evil.example and its assertion
     // fails.
@@ -2745,6 +2731,7 @@ fn a_route_reaches_exactly_one_host_service() {
 #[test]
 #[ignore = "real five-minute response deadline; run the slow gate"]
 fn blocked_route_responses_release_the_upstream() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 34. Sabotage: remove write deadlines from the host proxy
     // and guest relay; their full buffers keep the fixture blocked until
     // its own 330-second safety deadline. This exercises a route response,
@@ -2864,6 +2851,7 @@ fn blocked_route_responses_release_the_upstream() {
 
 #[test]
 fn an_injecting_route_keeps_the_credential_on_the_host() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 21. Sabotage: pass the header value through the box's
     // environment as well (spec env `ROUTE_KEY: {from:
     // PINFOLD_E2E_ROUTE_KEY}`); the environment assertion fails. The value
@@ -2959,6 +2947,7 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
 
 #[test]
 fn a_login_route_keeps_the_login_on_the_host() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 26, claude half. Sabotage: in `resolve_harness`, drop the
     // `CLAUDE_CODE_OAUTH_TOKEN` placeholder and pass `$VAR` into the box
     // instead (`Env::From { from: login.from }`); the box environment
@@ -3291,8 +3280,19 @@ fn a_login_route_keeps_the_login_on_the_host() {
                 let pid = fields.next()?;
                 let parent = fields.next()?.parse::<u32>().ok()?;
                 let executable = fields.next()?;
-                (parent == owner && executable.ends_with("codex-app-server"))
-                    .then(|| pid.to_string())
+                if parent != owner {
+                    return None;
+                }
+                // Linux comm truncates to 15 bytes; the helper name has 16.
+                let is_helper = if cfg!(target_os = "linux") {
+                    fs::read_link(format!("/proc/{pid}/exe"))
+                        .ok()?
+                        .file_name()
+                        .is_some_and(|name| name == "codex-app-server")
+                } else {
+                    executable.ends_with("codex-app-server")
+                };
+                is_helper.then(|| pid.to_string())
             });
         let helper = match helper {
             Some(helper) => helper,
@@ -3437,6 +3437,7 @@ fn unsigned_jwt(claims: &serde_json::Value) -> String {
 
 #[test]
 fn no_egress_means_no_way_out() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: start the proxy and relay even without `egress` in the spec;
     // the explicit-proxy request then reaches the proxy instead of a refused
     // connection, and the refusal assertions fail. The same request with the
@@ -3495,6 +3496,7 @@ fn no_egress_means_no_way_out() {
 
 #[test]
 fn a_caller_can_tell_an_oom_kill_from_a_failure() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 20: a caller can tell an OOM kill from a failure.
     // Sabotage: read `memory.events` but report `high` instead of `oom_kill`;
     // with no memory.high set the count stays 0 and the post-exec assertion
@@ -3569,6 +3571,7 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
 
 #[test]
 fn a_caller_owned_box_launches_the_pinned_harness() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 19: a caller-owned box launches the pinned harness, for
     // each of pi, claude and codex.
     // Sabotage: drop the harness mount (or mount the wrong directory); the
@@ -3679,6 +3682,7 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
 
 #[test]
 fn a_caller_owned_box_cannot_write_git() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 22: a caller-owned box cannot write `.git`.
     // Sabotage: drop `readonly` from the adapter's bind mounts (pass `false`
     // for `mount.readonly` in runtime/mod.rs); `.git` is then writable and

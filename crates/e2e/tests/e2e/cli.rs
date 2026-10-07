@@ -14,6 +14,7 @@ use e2e::{TestEnv, pinfold};
 /// state dir untouched.
 #[test]
 fn version_needs_no_runtime() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: run `crate::core::clean::maintain()` first in main.rs,
     // before the options and the help check, as the code once did; with the
     // empty PATH the pass writes under the state dir, so both empty-state
@@ -69,6 +70,7 @@ fn version_needs_no_runtime() {
 
 #[test]
 fn doctor_reports_without_changing_state() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 27. Sabotage: run maintenance before doctor; the fresh
     // state directory gains a maintenance stamp and the old artifact goes.
     // Sabotage: omit host_requirements after a failed preflight; the Linux
@@ -76,13 +78,32 @@ fn doctor_reports_without_changing_state() {
     // tun check; the isolated namespace with no device loses its named reason.
     // Materialize an embedded profile during inspection; the fresh cache
     // gains files. Expected trees are the host's own pre-inspection snapshot.
+    // Podman's image lookup may create its own short-name alias lock outside
+    // these owned trees. Missing directories differ from empty directories.
     let env = TestEnv::with_private_cache("doctor");
     fs::write(env.root.join(".pinfold.toml"), "memory = \"1G\"\n").unwrap();
     let old = env.root.join("cache/pinfold/artifacts/pi/0.0.0/marker");
     fs::create_dir_all(old.parent().unwrap()).unwrap();
     fs::write(&old, b"keep").unwrap();
-    let cache = env.root.join("cache");
-    let before = host_tree(&cache);
+    let owned = [
+        env.state.join("pinfold"),
+        env.config.join("pinfold"),
+        env.root.join("cache/pinfold"),
+    ];
+    let owned_trees = || {
+        owned
+            .iter()
+            .map(|directory| {
+                let tree = match fs::symlink_metadata(directory) {
+                    Ok(_) => Some(host_tree(directory)),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => panic!("read {}: {error}", directory.display()),
+                };
+                (directory.clone(), tree)
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = owned_trees();
     let empty = env.root.join("empty-path");
     fs::create_dir(&empty).unwrap();
     let missing = env.root.join("missing-runtime");
@@ -141,14 +162,9 @@ fn doctor_reports_without_changing_state() {
             );
         }
         assert_eq!(
-            fs::read_dir(&env.state).unwrap().count(),
-            0,
-            "doctor wrote state"
-        );
-        assert_eq!(
-            host_tree(&cache),
+            owned_trees(),
             before,
-            "doctor changed the cache ({scenario})"
+            "doctor changed pinfold's state, config or cache ({scenario})"
         );
         if scenario != "ready" && cfg!(target_os = "linux") {
             let report = String::from_utf8_lossy(&output.stdout);
