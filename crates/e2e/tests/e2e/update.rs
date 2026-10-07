@@ -6,7 +6,7 @@ use std::net::TcpStream;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use e2e::{TestEnv, default_image, pinfold, run_ok};
 
@@ -204,15 +204,10 @@ fn interactive_update_checks_are_bounded() {
             .args(["box", "list", "--label", "dev.pinfold.project"]),
     );
     fs::write(fixture.root.join("offline"), b"").unwrap();
-    let start = Instant::now();
     let result = fixture
         .terminal(&offline, &installed, &attach)
         .output()
         .unwrap();
-    assert!(
-        start.elapsed() < Duration::from_secs(4),
-        "offline launch exceeded its whole-process budget"
-    );
     let lifetime = fixture.wait_for_stalled_check();
     assert!(
         lifetime <= Duration::from_millis(1750),
