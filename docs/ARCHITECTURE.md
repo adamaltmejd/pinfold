@@ -885,8 +885,12 @@ runtime ownership, after the Rust suite.
 Guarantee 34 is an ignored slow test because it exercises the real
 five-minute production write deadline. Run it separately with
 `cargo test -p e2e --locked --test e2e box_::blocked_route_responses_release_the_upstream -- --ignored --exact`.
-It proves route backpressure cleanup; it does not prove the CONNECT
-shared-activity clock.
+Guarantee 36 is the separate Linux slow gate, `scripts/slow-proxy.sh`.
+It uses private network and mount namespaces: `api.github.com` resolves to
+a fixture address assigned only there, with a fixture CA trusted only by
+the guest. It exercises the unchanged CONNECT policy and production
+five-minute idle deadline. The ordinary Rust suite retains its five-minute
+CI budget; the two slow gates run separately.
 
 | # | Guarantee | Shown by |
 |---|---|---|
@@ -925,6 +929,7 @@ shared-activity clock.
 | 33 | Writable projects exclude host authority | `allow`, build and pi refuse state, config or cache roots inside the project, including nonexistent paths reached through a symlinked ancestor. External roots allow the same project to run. |
 | 34 | Blocked route responses release the upstream | A normal routed response succeeds. A guest that keeps its upload open but stops reading causes the host fixture connection to close after the production write deadline, while the guest holder remains alive. Slow gate only. |
 | 35 | Durable recovery preserves boxed execution | The host fixture refuses authority overlap before work, then observes a successful boxed command, a competing checkpoint writer refused without disrupting its owner, a mutation followed by SIGKILL before tool-result commit, a new box generation before recovery, no unsafe replay, and whole-box cancellation including a background child. Standalone macOS prototype gate. |
+| 36 | CONNECT tunnels share activity | Real TLS tunnels carry upload-only and download-only traffic for longer than the production idle deadline. Neither closes while bytes flow; both then close after a full idle interval with `idle timeout` in the egress log while the guest holders remain alive. Standalone Linux slow gate. |
 
 Linux (podman) runs in CI on every push to main and every pull request,
 and on a dispatched ref, on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm`
