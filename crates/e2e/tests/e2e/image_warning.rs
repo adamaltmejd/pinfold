@@ -10,6 +10,7 @@ use e2e::{
 
 #[test]
 fn changed_image_inputs_prompt_a_rebuild() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: remove the profile Containerfile comparison in ensure_image;
     // changing the fixture's profile then produces no image-outdated hint.
     // Remove the project Containerfile comparison and its trusted change

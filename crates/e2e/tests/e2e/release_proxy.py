@@ -7,11 +7,13 @@ import socketserver
 import ssl
 import sys
 import threading
+import time
 
 root = pathlib.Path(sys.argv[1])
 asset = sys.argv[2]
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain(root / "cert.pem", root / "key.pem")
+download_release = threading.Event()
 
 
 class Proxy(socketserver.BaseRequestHandler):
@@ -23,6 +25,10 @@ class Proxy(socketserver.BaseRequestHandler):
             if not byte:
                 return
             request.extend(byte)
+            if request == b"RELEASE\n":
+                download_release.set()
+                self.request.sendall(b"released\n")
+                return
         self.request.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
         with context.wrap_socket(self.request, server_side=True) as stream:
             headers = stream.makefile("rb")
@@ -33,7 +39,20 @@ class Proxy(socketserver.BaseRequestHandler):
                 with (root / "checks").open("ab") as log:
                     log.write(b"check\n")
                 if (root / "offline").exists():
-                    threading.Event().wait()
+                    start = time.monotonic()
+                    stream.settimeout(4)
+                    try:
+                        closed = not stream.recv(1)
+                    except (ConnectionResetError, ssl.SSLEOFError):
+                        closed = True
+                    except TimeoutError:
+                        closed = False
+                    print(json.dumps({
+                        "event": "stalled-check-closed",
+                        "closed": closed,
+                        "seconds": time.monotonic() - start,
+                    }), flush=True)
+                    return
                 body = json.dumps(
                     {
                         "tag_name": "v999.0.0",
@@ -42,6 +61,9 @@ class Proxy(socketserver.BaseRequestHandler):
                     }
                 ).encode()
             elif path == "/adamaltmejd/pinfold/releases/download/v999.0.0/" + asset:
+                if (root / "hold-download").exists():
+                    print("download", flush=True)
+                    download_release.wait()
                 body = (root / "release").read_bytes()
             elif path == "/adamaltmejd/pinfold/releases/download/v999.0.0/SHA256SUMS":
                 digest = hashlib.sha256((root / "release").read_bytes()).hexdigest()

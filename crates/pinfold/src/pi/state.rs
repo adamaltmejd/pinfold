@@ -54,7 +54,7 @@ pub(crate) fn canonical(path: &Path) -> io::Result<PathBuf> {
 
 /// The id for an already canonical `root`. Trust records use the same id.
 pub fn project_id(root: &Path) -> String {
-    let name = root
+    let mut name = root
         .file_name()
         .and_then(|name| name.to_str())
         .map(|name| {
@@ -64,6 +64,8 @@ pub fn project_id(root: &Path) -> String {
             )
         })
         .unwrap_or_else(|| "root".to_string());
+    // Leave room for pi-, the path hash and the pid in Apple's 63-byte ID.
+    name.truncate(32);
     let hash = sha256_hex(root.as_os_str().as_encoded_bytes());
     format!("{name}-{}", &hash[..12])
 }

@@ -1,14 +1,18 @@
 //! A codex login route's token: asked of the pinned host helper, checked,
 //! and held in the proxy's memory only.
 
-use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Write};
+use std::fs::{File, TryLockError};
+use std::io::{self, Read, Write};
+use std::os::fd::AsFd;
 use std::process::{Command, Stdio};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, PoisonError};
+
+use nix::poll::PollFlags;
 use std::time::{Duration, Instant};
 
-use crate::core::{artifacts, now};
-use crate::dirs;
+use crate::core::pipe::{nonblocking, remaining, wait_ready};
+use crate::core::{artifacts, now, ownership};
 
 /// Within this much of `exp`, the proxy asks the helper again. Codex's own
 /// `AuthManager` refreshes inside the same window, so the helper then
@@ -17,6 +21,10 @@ const REFRESH_WINDOW: u64 = 5 * 60;
 
 /// The least time between two asks for one box.
 const ASK_INTERVAL: Duration = Duration::from_secs(60);
+
+const HELPER_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_LINE: usize = 64 * 1024;
+const MAX_OUTPUT: usize = 256 * 1024;
 
 /// The guest directory that holds codex's system config layer.
 pub const CODEX_CONFIG_DIR: &str = "/etc/codex";
@@ -53,7 +61,7 @@ impl Codex {
         let (token, asked) = &mut *state;
         if token.exp <= now() + REFRESH_WINDOW && asked.elapsed() >= ASK_INTERVAL {
             *asked = Instant::now();
-            if let Ok(fresh) = token_from_helper() {
+            if let Ok(fresh) = token_from_helper(None) {
                 *token = fresh;
             }
         }
@@ -73,60 +81,78 @@ impl Codex {
 /// it first if the cache lacks it, and check the token. One host-wide lock
 /// serializes every ask, so two boxes never spend one refresh token at once.
 /// Errors never hold the token.
-pub fn token_from_helper() -> Result<Token, String> {
+pub fn token_from_helper(cancel: Option<&AtomicBool>) -> Result<Token, String> {
     let codex = artifacts::harness("codex").expect("codex is pinned");
     let helper = codex
-        .install_host()
+        .install_host(cancel)
         .map_err(|error| format!("install the codex host helper: {error}"))?
         .join("codex-app-server");
-    let _lock = lock().map_err(|error| format!("lock the codex login: {error}"))?;
-    let status = ask(&helper).map_err(|error| format!("the codex host helper: {error}"))?;
+    let deadline = Instant::now() + HELPER_TIMEOUT;
+    let _lock = lock(deadline, cancel).map_err(|error| format!("lock the codex login: {error}"))?;
+    let status = ask(&helper, deadline, cancel)
+        .map_err(|error| format!("the codex host helper: {error}"))?;
     match (status["authToken"].as_str(), status["authMethod"].as_str()) {
         (Some(token), _) => check(token.to_string()),
         (None, None) => Err("the host has no Codex login".to_string()),
         // A ChatGPT login whose refresh failed for good, or an API key.
-        (None, Some(method)) => Err(format!("the host's Codex login ({method}) gave no token")),
+        (None, Some(_)) => Err("the host's Codex login gave no token".to_string()),
     }
 }
 
-/// Take the host-wide lock file under pinfold's state dir, waiting for a
-/// holder to finish.
-fn lock() -> io::Result<File> {
-    let dir = dirs::state_dir()?;
-    fs::create_dir_all(&dir)?;
-    let file = File::options()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(dir.join("codex-login.lock"))?;
-    file.lock()?;
-    Ok(file)
+/// The ownership domain is stable across HOME and XDG overrides. Never
+/// unlink this lock: waiters must keep referring to the same inode.
+fn lock(deadline: Instant, cancel: Option<&AtomicBool>) -> io::Result<File> {
+    let file = ownership::open_lock("codex-login")?;
+    let mut reported = false;
+    loop {
+        remaining(deadline, cancel, "helper")?;
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) => {
+                if !reported {
+                    eprintln!("pinfold: login-busy: waiting for the host's Codex login");
+                    reported = true;
+                }
+                wait_ready(None, PollFlags::empty(), deadline, cancel, "helper")?;
+            }
+            Err(TryLockError::Error(_)) => {
+                return Err(io::Error::other("login lock failed"));
+            }
+        }
+    }
 }
 
-/// Run the helper with `up`'s environment and the built-in `openai` provider
-/// forced (with a custom provider it returns no token), send `initialize`,
-/// `initialized` and `getAuthStatus { includeToken: true }` on stdin, and
-/// return its result. The helper is stopped after. Revisit trigger:
-/// `getAuthStatus` is deprecated at the pinned codex; rework when a pin
-/// drops it.
-fn ask(helper: &std::path::Path) -> io::Result<serde_json::Value> {
-    let mut child = Command::new(helper)
-        .args(["-c", "model_provider=\"openai\""])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let answer = exchange(&mut child);
-    let _ = child.kill();
-    let _ = child.wait();
-    answer
+/// A helper always dies and is reaped before the login lock is released.
+struct Helper(std::process::Child);
+
+impl Drop for Helper {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
-/// The stdio half of [`ask`]. stdin stays open until the answer arrives, so
-/// the helper does not exit first.
-fn exchange(child: &mut std::process::Child) -> io::Result<serde_json::Value> {
-    let mut stdin = child.stdin.take().expect("piped stdin");
-    let stdout = child.stdout.take().expect("piped stdout");
+/// Run the pinned helper with `up`'s environment and the built-in provider.
+/// Revisit when the pin removes getAuthStatus, which is deprecated upstream.
+fn ask(
+    helper: &std::path::Path,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+) -> io::Result<serde_json::Value> {
+    remaining(deadline, cancel, "helper")?;
+    let mut child = Helper(
+        Command::new(helper)
+            .args(["-c", "model_provider=\"openai\""])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| io::Error::other("helper launch failed"))?,
+    );
+    let mut stdin = child.0.stdin.take().expect("piped stdin");
+    let mut stdout = child.0.stdout.take().expect("piped stdout");
+    nonblocking(&stdin, "helper")?;
+    nonblocking(&stdout, "helper")?;
     let requests = [
         serde_json::json!({
             "method": "initialize",
@@ -146,26 +172,78 @@ fn exchange(child: &mut std::process::Child) -> io::Result<serde_json::Value> {
             "params": { "includeToken": true },
         }),
     ];
+    let mut input = Vec::new();
     for request in requests {
-        writeln!(stdin, "{request}")?;
+        writeln!(input, "{request}")?;
     }
-    stdin.flush()?;
-    for line in BufReader::new(stdout).lines() {
-        let Ok(mut message) = serde_json::from_str::<serde_json::Value>(&line?) else {
-            continue;
+    let mut pending = input.as_slice();
+    while !pending.is_empty() {
+        remaining(deadline, cancel, "helper")?;
+        match stdin.write(pending) {
+            Ok(0) => return Err(io::Error::other("helper input closed")),
+            Ok(n) => pending = &pending[n..],
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                wait_ready(
+                    Some(stdin.as_fd()),
+                    PollFlags::POLLOUT,
+                    deadline,
+                    cancel,
+                    "helper",
+                )?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(io::Error::other("helper input failed")),
+        }
+    }
+    // stdin remains open until the answer arrives; some helper versions
+    // exit when the caller closes it before the auth lookup finishes.
+    let mut line = Vec::new();
+    let mut total = 0usize;
+    let mut buffer = [0u8; 8192];
+    loop {
+        remaining(deadline, cancel, "helper")?;
+        let n = match stdout.read(&mut buffer) {
+            Ok(0) => return Err(io::Error::other("helper exited without an answer")),
+            Ok(n) => n,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                wait_ready(
+                    Some(stdout.as_fd()),
+                    PollFlags::POLLIN,
+                    deadline,
+                    cancel,
+                    "helper",
+                )?;
+                continue;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(io::Error::other("helper output failed")),
         };
-        if message["id"] != 1 {
-            continue;
+        total += n;
+        if total > MAX_OUTPUT {
+            return Err(io::Error::other("helper output exceeds 256 KiB"));
         }
-        if let Some(error) = message.get("error") {
-            let text = error["message"].as_str().unwrap_or("no message");
-            return Err(io::Error::other(format!("getAuthStatus failed: {text}")));
+        for byte in &buffer[..n] {
+            if *byte != b'\n' {
+                if line.len() >= MAX_LINE {
+                    return Err(io::Error::other("helper line exceeds 64 KiB"));
+                }
+                line.push(*byte);
+                continue;
+            }
+            let message = serde_json::from_slice::<serde_json::Value>(&line);
+            line.clear();
+            let Ok(mut message) = message else {
+                continue;
+            };
+            if message["id"] != 1 {
+                continue;
+            }
+            if message.get("error").is_some() {
+                return Err(io::Error::other("getAuthStatus failed"));
+            }
+            return Ok(message["result"].take());
         }
-        return Ok(message["result"].take());
     }
-    Err(io::Error::other(
-        "it exited without answering getAuthStatus",
-    ))
 }
 
 /// Check that `value` is a JWT with a future `exp` and an account id. The

@@ -97,6 +97,14 @@ impl TestEnv {
 
     pub fn command(&self, binary: &Path) -> Command {
         let mut command = Command::new(binary);
+        for (name, _) in std::env::vars_os() {
+            if name
+                .to_str()
+                .is_some_and(|name| name.starts_with("PINFOLD_"))
+            {
+                command.env_remove(name);
+            }
+        }
         command.env("XDG_STATE_HOME", &self.state);
         command.env("XDG_CACHE_HOME", &self.cache);
         command.env("XDG_CONFIG_HOME", &self.config);
@@ -247,25 +255,30 @@ impl Drop for ImageCleanup {
     }
 }
 
-/// The number of untagged images podman lists, including the intermediate
-/// layers a cached build leaves behind. Linux only.
-pub fn untagged_images() -> usize {
-    let output =
-        run_ok(Command::new("podman").args(["images", "-a", "-q", "--filter", "dangling=true"]));
-    String::from_utf8_lossy(&output.stdout).lines().count()
+/// The IDs of untagged images with the caller's label, including the
+/// intermediate layers a cached build leaves behind. Linux only.
+pub fn untagged_images(label: &str) -> std::collections::BTreeSet<String> {
+    let output = run_ok(Command::new("podman").args([
+        "images",
+        "-a",
+        "-q",
+        "--filter",
+        "dangling=true",
+        "--filter",
+        &format!("label={label}"),
+    ]));
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect()
 }
 
-/// The stable ref of the built-in default profile's image, built when
-/// missing. Every box and `pinfold pi` run starts from it.
+/// Build the candidate's default profile once for this suite.
 pub fn default_image(env: &TestEnv) -> &'static str {
     static IMAGE: OnceLock<()> = OnceLock::new();
-    // The runtime store is shared by every test; a stale image is fine,
-    // the tests read its labels and run boxes from it.
     const STABLE: &str = "pinfold/profile-default:latest";
     IMAGE.get_or_init(|| {
-        if image_id(STABLE).is_none() {
-            build_profile(env, "default");
-        }
+        build_profile(env, "default");
     });
     STABLE
 }

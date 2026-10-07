@@ -9,12 +9,11 @@ use std::io::Write;
 use std::os::fd::OwnedFd;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitStatus;
-use std::time::Duration;
 
 use nix::errno::Errno;
 use nix::fcntl::{OFlag, openat};
 use nix::sys::stat::{Mode, mkdirat};
-use nix::unistd::{Pid, UnlinkatFlags, unlinkat};
+use nix::unistd::{UnlinkatFlags, unlinkat};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Child;
 use tokio::signal::unix::{Signal, SignalKind, signal};
@@ -22,8 +21,8 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use crate::core::clean;
 use crate::core::plan::{Env, Mount, Plan, valid_name};
 use crate::core::profile::{Profile, Seed};
-use crate::core::runtime::{apple, runtime};
-use crate::core::{artifacts, login, proxy};
+use crate::core::runtime::{BoxInfo, apple, runtime};
+use crate::core::{artifacts, login, ownership, proxy};
 use crate::dirs;
 
 /// A started box, owned by this process.
@@ -39,10 +38,9 @@ pub struct Box {
     pub image_ref: String,
     /// The egress log `up` gave the proxy; `None` without `egress`.
     pub egress_log: Option<PathBuf>,
-    state_dir: PathBuf,
-    /// The state dir's locked `pid` file. Holding its lock is what makes the
-    /// owner alive to every checker.
-    _lock: File,
+    ownership: ownership::Claim,
+    _project: Option<nix::fcntl::Flock<std::fs::File>>,
+    audit: Audit,
     child: Child,
 }
 
@@ -51,6 +49,7 @@ pub struct Box {
 pub enum Shutdown {
     StdinEof,
     Signal,
+    AuditLog,
     /// The attached `container run` process exited on its own.
     BoxExited(ExitStatus),
 }
@@ -61,6 +60,7 @@ impl Shutdown {
         match self {
             Shutdown::StdinEof => "stdin-closed",
             Shutdown::Signal => "signal",
+            Shutdown::AuditLog => "audit-log",
             Shutdown::BoxExited(_) => "exited",
         }
     }
@@ -94,6 +94,7 @@ pub struct Refusal {
 pub enum UpError {
     Refused(Refusal),
     Signal,
+    Control,
     Other(io::Error),
 }
 
@@ -111,7 +112,7 @@ impl From<UpError> for io::Error {
                 let reason = reason.as_str().unwrap_or_default();
                 io::Error::other(format!("{reason}: {}", refusal.detail))
             }
-            UpError::Signal => io::ErrorKind::Interrupted.into(),
+            UpError::Signal | UpError::Control => io::ErrorKind::Interrupted.into(),
             UpError::Other(error) => error,
         }
     }
@@ -123,15 +124,10 @@ impl Box {
     /// profile, the host's runtime and the image are checked first. Then
     /// `up` claims the name, and only the claim's owner creates anything.
     ///
-    /// With `signals`, the caller registered SIGTERM and SIGINT before
-    /// reading the spec: before ready they remove what the start made and
-    /// `up` returns [`UpError::Signal`]; after ready [`Box::hold`] watches
-    /// them. Without, the caller handles its own.
-    pub async fn up(
-        plan: &Plan,
-        init: &Path,
-        signals: Option<&mut Signals>,
-    ) -> Result<Box, UpError> {
+    /// The caller registered SIGTERM and SIGINT before reading the spec:
+    /// before ready they remove what the start made and `up` returns
+    /// [`UpError::Signal`]; after ready [`Box::hold`] watches them.
+    pub async fn up(plan: &Plan, init: &Path, signals: &mut Signals) -> Result<Box, UpError> {
         if init.parent().is_none_or(|parent| parent == Path::new("/")) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -148,16 +144,32 @@ impl Box {
         // A login route's token is read before the claim, so a missing
         // variable or an unusable Codex login refuses as `login` and leaves
         // nothing. codex's token goes to the proxy.
-        let codex = plan
-            .resolve_login()
-            .map_err(|error| refused(plan, RefusalReason::Login, error))?;
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let login_plan = plan.clone();
+        let mut resolving =
+            tokio::task::spawn_blocking(move || login_plan.resolve_login(Some(&worker_cancel)));
+        let codex = tokio::select! {
+            biased;
+            _ = signals.recv() => {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                let _ = resolving.await;
+                return Err(UpError::Signal);
+            }
+            result = &mut resolving => result,
+        }
+        .map_err(|error| io::Error::other(format!("login worker failed: {error}")))?
+        .map_err(|error| refused(plan, RefusalReason::Login, error))?;
 
         // The profile's image, share and home seeds are the box's to apply;
         // the runtime sees the resolved plan. Resolving writes nothing; the
         // seeds wait until the name is claimed.
         let mut plan = plan.clone();
-        let seeds = resolve_profile(&mut plan)
+        let mut profile = resolve_profile(&mut plan)
             .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
+        let seeds = profile.as_mut().and_then(|profile| {
+            (!profile.home.is_empty()).then(|| std::mem::take(&mut profile.home))
+        });
 
         // Pinfold adds the profile's `share/` above, and the harness mount
         // and a codex login's config dir in `start`. Check the spec's mounts
@@ -213,48 +225,90 @@ impl Box {
             std::process::id().to_string(),
         );
 
-        let (state_dir, lock) = claim(&plan)?;
+        let project = plan
+            .labels
+            .get(clean::PROJECT_LABEL)
+            .filter(|id| !id.is_empty())
+            .map(|id| ownership::project_lock(id))
+            .transpose()?;
+        let state_dir = dirs::box_state_dir(&plan.name)?;
+        let mut claim = tokio::select! {
+            biased;
+            _ = signals.recv() => return Err(UpError::Signal),
+            claim = ownership::Claim::take(&plan.name) => claim,
+        }?
+        .ok_or_else(|| {
+            refused(
+                &plan,
+                RefusalReason::NameInUse,
+                "name remained busy through the claim deadline".to_string(),
+            )
+        })?;
         match runtime.list() {
             Ok(boxes) if boxes.iter().all(|box_| box_.id != plan.name) => {}
-            listed => {
-                abort(&plan.name, &state_dir, None).await;
-                return Err(match listed {
-                    Ok(_) => refused(
-                        &plan,
-                        RefusalReason::NameInUse,
-                        format!("the runtime already has a box named {:?}", plan.name),
-                    ),
-                    Err(error) => error.into(),
-                });
+            Ok(_) => {
+                return Err(refused(
+                    &plan,
+                    RefusalReason::NameInUse,
+                    format!("the runtime already has a box named {:?}", plan.name),
+                ));
             }
+            Err(error) => return Err(error.into()),
         }
+        claim.prepare(&state_dir)?;
+        plan.labels.insert(
+            ownership::GENERATION_LABEL.to_string(),
+            claim.generation().to_string(),
+        );
 
         // Dropping a start part-way tears nothing down, so a signal ends it
         // here and `child` says what to remove.
-        let mut child = None;
-        let starting = start(
-            &mut plan,
-            init,
-            seccomp.as_deref(),
-            seeding.as_ref(),
-            &state_dir,
-            codex,
-            &mut child,
-        );
-        let started = match signals {
-            Some(signals) => tokio::select! {
-                biased;
-                _ = signals.recv() => Err(Stop::Signal),
-                started = starting => started,
-            },
-            None => starting.await,
+        claim.starting();
+        let mut progress = Starting::default();
+        let starting = async {
+            if let Some(share) = profile.as_ref().and_then(|profile| profile.share.as_ref()) {
+                share.materialize()?;
+            }
+            let (observed, egress_log) = start(
+                &mut plan,
+                init,
+                seccomp.as_deref(),
+                seeding.as_ref(),
+                &state_dir,
+                codex,
+                &mut progress,
+            )
+            .await?;
+            if observed.image_id != identity.id {
+                return Err(Stop::Failed(io::Error::other(
+                    "image-changed: box started a different image",
+                )));
+            }
+            Ok((observed.labels, egress_log))
+        };
+        let started = tokio::select! {
+            biased;
+            _ = signals.recv() => Err(Stop::Signal),
+            stop = claim.stop_requested() => match stop { Ok(()) => Err(Stop::Control), Err(error) => Err(Stop::Failed(error)) },
+            started = starting => started,
         };
         let (labels, egress_log) = match started {
             Ok(started) => started,
             Err(stop) => {
-                let status = abort(&plan.name, &state_dir, child).await;
+                progress
+                    .cancel
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                if let Some(preparing) = progress.preparing.take() {
+                    let _ = preparing.await;
+                }
+                let (removed, status) = abort(&plan.name, progress.child).await;
+                if let Err(error) = claim.finish(removed.is_ok()).await {
+                    eprintln!("pinfold: startup cleanup: {error}");
+                }
+                removed?;
                 return Err(match stop {
                     Stop::Signal => UpError::Signal,
+                    Stop::Control => UpError::Control,
                     Stop::Failed(error) => UpError::Other(error),
                     Stop::NotReady(failure) => UpError::Other(io::Error::other(match status {
                         Some(Ok(status)) => format!("{failure}: {status}"),
@@ -271,9 +325,10 @@ impl Box {
             image_id: identity.id,
             image_ref: image,
             egress_log,
-            state_dir,
-            _lock: lock,
-            child: child.expect("a started box has a runtime child"),
+            ownership: claim,
+            _project: project,
+            audit: progress.audit,
+            child: progress.child.expect("a started box has a runtime child"),
         })
     }
 
@@ -282,6 +337,8 @@ impl Box {
     pub async fn hold(&mut self, signals: &mut Signals) -> io::Result<Shutdown> {
         let reason = tokio::select! {
             reason = wait_for_shutdown(signals) => reason,
+            stop = self.ownership.stop_requested() => stop.map(|()| Shutdown::Signal),
+            _ = audit_failure(&mut self.audit) => Ok(Shutdown::AuditLog),
             status = self.child.wait() => status.map(Shutdown::BoxExited),
         };
         // Tear down whatever ended the wait, so a failed wait leaves no box.
@@ -291,49 +348,48 @@ impl Box {
         Ok(reason)
     }
 
+    pub async fn stop_requested(&mut self) -> io::Result<()> {
+        tokio::select! {
+            stop = self.ownership.stop_requested() => stop,
+            _ = audit_failure(&mut self.audit) => Err(io::Error::other("audit-log: egress logging failed")),
+        }
+    }
+
     /// Stop and remove the box, then delete its state directory.
     pub async fn down(&mut self) -> io::Result<()> {
         let result = runtime().down(&self.name);
         let _ = self.child.wait().await;
-        let _ = tokio::fs::remove_dir_all(&self.state_dir).await;
-        result
+        let cleanup = self.ownership.finish(result.is_ok()).await;
+        result.and(cleanup)
     }
 }
 
-/// Take box `name` down from outside its owner: signal the owning `box up`
-/// through the state dir and wait for it to remove the box. The pid is
-/// signalled only while its lock is held, so a reused pid is never hit. A
-/// dead owner means remove the leftover directly.
+/// Ask the observed generation to stop. Only an orphan is removed here.
 pub fn down(name: &str) -> io::Result<()> {
-    let state = dirs::box_state_dir(name)?;
-    if let Some(pid) = clean::owner_pid(&state)
-        && clean::owner_alive(&state)
-    {
-        nix::sys::signal::kill(Pid::from_raw(pid), nix::sys::signal::SIGTERM)
-            .map_err(io::Error::other)?;
-        for _ in 0..1000 {
-            if !state.exists() {
-                return Ok(());
-            }
-            if !clean::owner_alive(&state) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+    if !valid_name(name) {
+        return Ok(());
     }
-    // Only a pinfold box is removed. A name `up` would refuse holds none, and
-    // the runtime would read one like `--all` as a flag, so it is never asked.
-    let runtime = runtime();
-    if valid_name(name)
-        && runtime
-            .list()?
-            .iter()
-            .any(|box_| box_.id == name && clean::pinfold_box(box_))
-    {
-        runtime.down(name)?;
+    let observed = ownership::record(name)?;
+    if let Some(lock) = ownership::try_name_lock(name)? {
+        return clean::remove_orphan(
+            runtime(),
+            name,
+            observed.as_ref().map(|record| record.generation.as_str()),
+            &lock,
+        )
+        .map(|_| ());
     }
-    let _ = fs::remove_dir_all(&state);
-    Ok(())
+    let stopped = ownership::request_stop(name, observed.as_ref());
+    if let Some(lock) = ownership::try_name_lock(name)? {
+        clean::remove_orphan(
+            runtime(),
+            name,
+            observed.as_ref().map(|record| record.generation.as_str()),
+            &lock,
+        )?;
+        return Ok(());
+    }
+    stopped
 }
 
 /// SIGTERM and SIGINT, handled by `box up` from before its spec is read to
@@ -341,6 +397,8 @@ pub fn down(name: &str) -> io::Result<()> {
 pub struct Signals {
     terminate: Signal,
     interrupt: Signal,
+    hangup: Option<Signal>,
+    last: Option<nix::sys::signal::Signal>,
 }
 
 impl Signals {
@@ -348,20 +406,36 @@ impl Signals {
         Ok(Signals {
             terminate: signal(SignalKind::terminate())?,
             interrupt: signal(SignalKind::interrupt())?,
+            hangup: None,
+            last: None,
         })
     }
 
+    pub fn with_hangup() -> io::Result<Signals> {
+        let mut signals = Self::new()?;
+        signals.hangup = Some(signal(SignalKind::hangup())?);
+        Ok(signals)
+    }
+
+    pub fn last(&self) -> Option<nix::sys::signal::Signal> {
+        self.last
+    }
+
     pub async fn recv(&mut self) -> nix::sys::signal::Signal {
-        tokio::select! {
+        let received = tokio::select! {
             _ = self.terminate.recv() => nix::sys::signal::SIGTERM,
             _ = self.interrupt.recv() => nix::sys::signal::SIGINT,
-        }
+            _ = async { match self.hangup.as_mut() { Some(hangup) => { hangup.recv().await; }, None => std::future::pending().await } } => nix::sys::signal::SIGHUP,
+        };
+        self.last = Some(received);
+        received
     }
 }
 
 /// Why a start ended before ready.
 enum Stop {
     Signal,
+    Control,
     /// Readiness failed; the runtime child's exit status completes the text.
     NotReady(String),
     Failed(io::Error),
@@ -373,78 +447,32 @@ impl From<io::Error> for Stop {
     }
 }
 
-/// Remove what a failed start left: stop the runtime child, take the box
-/// down, then remove the claimed state dir. The box goes down first, so no
-/// checker sees a box whose state dir is gone.
+/// Stop a failed start's runtime child and remove its box. The caller
+/// removes the claimed state only after successful runtime removal.
 async fn abort(
     name: &str,
-    state_dir: &Path,
     child: Option<Child>,
-) -> Option<io::Result<ExitStatus>> {
-    let status = match child {
+) -> (io::Result<()>, Option<io::Result<ExitStatus>>) {
+    match child {
         Some(mut child) => {
             // The client goes first, so one still creating the box cannot
             // finish after the removal. The box exists by name even when
             // readiness failed.
             let _ = child.start_kill();
             let status = child.wait().await;
-            let _ = runtime().down(name);
-            Some(status)
+            (runtime().down(name), Some(status))
         }
-        None => None,
-    };
-    let _ = fs::remove_dir_all(state_dir);
-    status
-}
-
-/// Claim `plan`'s name: create its state dir exclusively, then lock and
-/// write the `pid` file. A dir whose owner is alive is `name-in-use`; a dead
-/// owner's dir is removed and the claim tried once more.
-fn claim(plan: &Plan) -> Result<(PathBuf, File), UpError> {
-    fs::create_dir_all(dirs::boxes_dir()?)?;
-    let state_dir = dirs::box_state_dir(&plan.name)?;
-    for retry in [true, false] {
-        match fs::create_dir(&state_dir) {
-            Ok(()) => break,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error.into()),
-        }
-        if !retry || clean::owner_alive(&state_dir) {
-            return Err(refused(
-                plan,
-                RefusalReason::NameInUse,
-                format!("state dir {} is held by a live owner", state_dir.display()),
-            ));
-        }
-        if let Err(error) = fs::remove_dir_all(&state_dir)
-            && error.kind() != io::ErrorKind::NotFound
-        {
-            return Err(error.into());
-        }
-    }
-    match lock_pid(&state_dir) {
-        Ok(lock) => Ok((state_dir, lock)),
-        Err(error) => {
-            let _ = fs::remove_dir_all(&state_dir);
-            Err(error.into())
-        }
+        None => (Ok(()), None),
     }
 }
 
-/// Create the claimed dir's `pid` file, lock it, and write this process's
-/// pid. The lock is held until the process exits or the box is torn down.
-fn lock_pid(state_dir: &Path) -> io::Result<File> {
-    // std opens with O_CLOEXEC, so no runtime child inherits the lock and
-    // holds it past this process.
-    let mut file = File::options()
-        .write(true)
-        .create_new(true)
-        .open(state_dir.join("pid"))?;
-    // Blocking: a checker holds the lock only for a moment. std's lock is
-    // flock(2), as is the checkers' nix one.
-    file.lock()?;
-    file.write_all(std::process::id().to_string().as_bytes())?;
-    Ok(file)
+/// Startup resources retained when its future is cancelled.
+#[derive(Default)]
+struct Starting {
+    child: Option<Child>,
+    audit: Audit,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    preparing: Option<tokio::task::JoinHandle<io::Result<Plan>>>,
 }
 
 /// The start after the claim: harness, seeds, proxy, runtime, readiness.
@@ -459,11 +487,24 @@ async fn start(
     seeding: Option<&Seeding>,
     state_dir: &Path,
     codex: Option<login::Token>,
-    child: &mut Option<Child>,
-) -> Result<(BTreeMap<String, String>, Option<PathBuf>), Stop> {
+    progress: &mut Starting,
+) -> Result<(BoxInfo, Option<PathBuf>), Stop> {
     // The harness artifact is fetched and folded in after the claim, so a
     // refused box downloads nothing. The spec's own env wins.
-    resolve_harness(plan, state_dir)?;
+    let mut prepared = plan.clone();
+    let preparation_dir = state_dir.to_path_buf();
+    let cancel = progress.cancel.clone();
+    let worker = progress
+        .preparing
+        .insert(tokio::task::spawn_blocking(move || {
+            resolve_harness(&mut prepared, &preparation_dir, &cancel)?;
+            Ok(prepared)
+        }));
+    let prepared = worker
+        .await
+        .map_err(|error| io::Error::other(format!("harness worker failed: {error}")))?;
+    progress.preparing.take();
+    *plan = prepared?;
 
     if let Some(seeding) = seeding {
         seed_home(seeding)?;
@@ -476,7 +517,7 @@ async fn start(
         Some(egress) => {
             let socket = state_dir.join("proxy.sock");
             let log = dirs::egress_dir()?.join(format!("{}.jsonl", plan.name));
-            proxy::start(&socket, egress, codex, log.clone())?;
+            progress.audit = Audit::Waiting(proxy::start(&socket, egress, codex, log.clone())?);
             egress_log = Some(log);
             Some(socket)
         }
@@ -487,14 +528,21 @@ async fn start(
     // before the runtime is asked to create anything.
     tokio::task::yield_now().await;
     let runtime = runtime();
-    let child = child.insert(runtime.up(plan, init, socket.as_deref(), seccomp)?);
+    let child = progress
+        .child
+        .insert(runtime.up(plan, init, socket.as_deref(), seccomp)?);
     let stdout = child
         .stdout
         .take()
         .ok_or_else(|| io::Error::other("runtime up did not pipe the box's stdout"))?;
     let mut lines = BufReader::new(stdout).lines();
     loop {
-        match lines.next_line().await {
+        let next = tokio::select! {
+            biased;
+            _ = audit_failure(&mut progress.audit) => return Err(Stop::Failed(io::Error::other("audit-log: egress logging failed"))),
+            next = lines.next_line() => next,
+        };
+        match next {
             Ok(Some(line)) if line == "ready" => break,
             Ok(Some(_)) => {}
             Ok(None) => return Err(Stop::NotReady("box exited before ready".to_string())),
@@ -512,18 +560,17 @@ async fn start(
     tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
     // `ready` reports the labels `list` will: podman adds every image label
     // to the box, so the plan's set is not the box's.
-    let labels = runtime
+    let actual = runtime
         .list()?
         .into_iter()
         .find(|box_| box_.id == plan.name)
-        .map(|box_| box_.labels)
         .ok_or_else(|| {
             io::Error::other(format!(
                 "the runtime does not list box {:?} after ready",
                 plan.name
             ))
         })?;
-    Ok((labels, egress_log))
+    Ok((actual, egress_log))
 }
 
 async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
@@ -545,12 +592,16 @@ async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
 /// is not cached, mount it read-only, and set its environment. The spec's
 /// own env wins over the harness defaults. A codex login's config is written
 /// into the box's state dir and mounted read-only at `/etc/codex`.
-fn resolve_harness(plan: &mut Plan, state_dir: &Path) -> io::Result<()> {
+fn resolve_harness(
+    plan: &mut Plan,
+    state_dir: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> io::Result<()> {
     let Some(harness) = plan.harness.as_deref().and_then(artifacts::harness) else {
         return Ok(());
     };
     plan.mounts.push(Mount {
-        host: harness.install()?,
+        host: harness.install(Some(cancel))?,
         guest: artifacts::guest(&harness.name),
         readonly: true,
     });
@@ -601,9 +652,9 @@ struct Seeding {
 }
 
 /// Load the spec's profile and fold its image and `share/` mount into the
-/// plan. The `$HOME` seeds wait until the name is claimed. Returns the
-/// seeds when the profile has `home/`.
-fn resolve_profile(plan: &mut Plan) -> io::Result<Option<Vec<Seed>>> {
+/// plan without extracting files. Shared files and `$HOME` seeds wait until
+/// the name is claimed.
+fn resolve_profile(plan: &mut Plan) -> io::Result<Option<Profile>> {
     let Some(name) = plan.profile.clone() else {
         return Ok(None);
     };
@@ -613,12 +664,12 @@ fn resolve_profile(plan: &mut Plan) -> io::Result<Option<Vec<Seed>>> {
     }
     if let Some(share) = &profile.share {
         plan.mounts.push(Mount {
-            host: share.clone(),
+            host: share.path()?,
             guest: PathBuf::from("/opt/pinfold/profile"),
             readonly: true,
         });
     }
-    Ok((!profile.home.is_empty()).then_some(profile.home))
+    Ok(Some(profile))
 }
 
 /// A refusal carrying `plan`'s box name.
@@ -781,4 +832,27 @@ fn open_seed_dir(dir: &OwnedFd, name: &OsStr, path: &Path) -> io::Result<OwnedFd
 fn seed_error(error: Errno, context: &str) -> io::Error {
     let kind = io::Error::from(error).kind();
     io::Error::new(kind, format!("{context}: {error}"))
+}
+
+#[derive(Default)]
+enum Audit {
+    #[default]
+    Off,
+    Waiting(tokio::sync::oneshot::Receiver<()>),
+    Failed,
+}
+
+async fn audit_failure(audit: &mut Audit) {
+    if let Audit::Waiting(receiver) = audit {
+        // A consumed notification stays failed for every subsequent wait.
+        *audit = if receiver.await.is_ok() {
+            Audit::Failed
+        } else {
+            Audit::Off
+        };
+    }
+    if matches!(audit, Audit::Failed) {
+        return;
+    }
+    std::future::pending::<()>().await;
 }

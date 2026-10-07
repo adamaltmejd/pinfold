@@ -1,0 +1,22 @@
+{
+  "name": "pinfold-pi-durable-prototype",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node prototype.ts",
+    "check": "tsc --noEmit",
+    "e2e": "node durable_recovery_preserves_boxed_execution.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-durable": "1.0.4",
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/chord": "1.0.4"
+  },
+  "devDependencies": {
+    "@types/node": "26.0.0",
+    "typescript": "6.0.2"
+  },
+  "overrides": {
+    "@earendil-works/pi-telemetry": "1.0.4"
+  }
+}

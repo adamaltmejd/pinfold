@@ -1,0 +1,3 @@
+[install]
+# The prototype evaluates the explicitly pinned 1.0.4 release family.
+minimumReleaseAgeExcludes = ["@earendil-works/pi-durable", "@earendil-works/pi-ai", "@earendil-works/chord", "@earendil-works/pi-telemetry"]

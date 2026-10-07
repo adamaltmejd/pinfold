@@ -80,25 +80,18 @@ impl Runtime for Podman {
             extra.push("--memory-swap".into());
             extra.push(memory.into());
         }
-        // HOME is explicit: keep-id's injected passwd entry gives `/`, which
-        // is read-only, so the box needs a real value. It goes on argv as a
-        // literal and is not exported, because changing the podman client's
-        // own HOME would move its rootless storage; HOME is a path, never a
-        // secret.
-        let mut home = OsString::from("HOME=");
-        home.push(match plan.env.get("HOME") {
-            Some(Env::Exact(value)) => OsString::from(value),
-            Some(Env::From { from }) => std::env::var_os(from).unwrap_or_else(|| "/tmp".into()),
-            None => "/tmp".into(),
-        });
-        extra.push("--env".into());
-        extra.push(home);
+        // keep-id's injected passwd entry gives `/`, which is read-only.
+        // Supply a guest default without changing the host client's HOME.
+        let default_home = ("HOME".to_string(), Env::Exact("/tmp".to_string()));
         if let Some(socket) = proxy_socket {
             extra.push("--mount".into());
             extra.push(bind(socket, Path::new(GUEST_PROXY_SOCKET), true));
         }
         let guest_socket = proxy_socket.map(|_| GUEST_PROXY_SOCKET);
-        let env = plan.env.iter().filter(|(name, _)| name.as_str() != "HOME");
+        let env = plan
+            .env
+            .iter()
+            .chain((!plan.env.contains_key("HOME")).then_some((&default_home.0, &default_home.1)));
         super::up("podman", plan, init, guest_socket, extra, env)?
             .spawn()
             .map_err(|error| spawn_error("podman", error))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repin harnesses.toml and the Containerfile's ADD pins (ARCHITECTURE.md, Pinned artifacts)."""
+"""Repin harnesses.toml and the profile recipe ADD pins (ARCHITECTURE.md, Pinned artifacts)."""
 
 import base64
 import datetime
@@ -12,15 +12,18 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CONTAINERFILE = ROOT / "profile" / "Containerfile"
+IMAGE = ROOT / "profile" / "image"
 HARNESSES = ROOT / "crates" / "pinfold" / "harnesses.toml"
 # Containerfile pins that move together, by ADD destination. AnyDoc's CLI comes
 # first: its optionalDependencies must name its native packages' version.
 IMAGE_TOOLS = {
-    "bun": ["/tmp/bun-aarch64.zip", "/tmp/bun-x64.zip"],
-    "rtk": ["/tmp/rtk-aarch64.tar.gz", "/tmp/rtk-x64.tar.gz"],
-    "ponytail": ["/tmp/ponytail.tgz"],
-    "anydoc": ["/tmp/anydoc.tgz", "/tmp/anydoc-aarch64.tgz", "/tmp/anydoc-x64.tgz"],
+    "bun": (IMAGE / "bun.Containerfile", ["/tmp/bun-aarch64.zip", "/tmp/bun-x64.zip"]),
+    "rtk": (IMAGE / "full.Containerfile", ["/tmp/rtk-aarch64.tar.gz", "/tmp/rtk-x64.tar.gz"]),
+    "ponytail": (IMAGE / "full.Containerfile", ["/tmp/ponytail.tgz"]),
+    "anydoc": (
+        IMAGE / "documents.Containerfile",
+        ["/tmp/anydoc.tgz", "/tmp/anydoc-aarch64.tgz", "/tmp/anydoc-x64.tgz"],
+    ),
 }
 WAIT = datetime.timedelta(days=7)
 VERSION = r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
@@ -239,21 +242,25 @@ def replace(text, old, new):
 
 
 def main():
-    texts = {path: path.read_text() for path in (CONTAINERFILE, HARNESSES)}
-    pins = {
-        destination: (url, sha)
-        for sha, url, destination in re.findall(
+    recipes = sorted({path for path, _ in IMAGE_TOOLS.values()})
+    texts = {path: path.read_text() for path in [*recipes, HARNESSES]}
+    pins = {}
+    for path in recipes:
+        rows = re.findall(
             r"^ADD --checksum=sha256:([0-9a-f]{64}) (\S+) (\S+)$",
-            texts[CONTAINERFILE],
+            texts[path],
             re.MULTILINE,
         )
-    }
-    if sorted(pins) != sorted(sum(IMAGE_TOOLS.values(), [])):
-        raise ValueError("the Containerfile's ADD pins do not match IMAGE_TOOLS")
+        expected = [
+            dest for source, dests in IMAGE_TOOLS.values() if source == path for dest in dests
+        ]
+        if sorted(dest for _, _, dest in rows) != sorted(expected):
+            raise ValueError(f"{path}: ADD pins do not match IMAGE_TOOLS")
+        pins.update({(path, dest): (url, sha) for sha, url, dest in rows})
     cutoff = datetime.datetime.now(datetime.timezone.utc) - WAIT
     tools = [
-        (name, CONTAINERFILE, [pins[d] for d in dests], cutoff)
-        for name, dests in IMAGE_TOOLS.items()
+        (name, path, [pins[path, dest] for dest in dests], cutoff)
+        for name, (path, dests) in IMAGE_TOOLS.items()
     ]
     for harness in tomllib.loads(texts[HARNESSES])["harness"]:
         rows = [(asset["url"], asset["sha256"]) for asset in harness["asset"]]

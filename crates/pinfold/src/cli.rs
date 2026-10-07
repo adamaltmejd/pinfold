@@ -2,7 +2,6 @@
 //! dependency list has no argument parser.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -32,12 +31,12 @@ pinfold build [--profile NAME]   build this project's image, or a profile's; pri
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache]   a caller's image from its own context; one JSON line
 pinfold image rm NAME            retire a caller image name; one JSON line
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
-pinfold profile new NAME [--from PROFILE | --builtin] [--from-project [PATH]]   copy a profile to edit as files
-pinfold clean [--dry-run] [--unused AGE]   reclaim disk (see Maintenance)
+pinfold profile new NAME [--from PROFILE] [--builtin] [--from-project [PATH]]   copy a profile to edit as files
+pinfold clean [--dry-run] [--unused AGE]   reclaim unused disk space
 pinfold doctor                   runtime, kernel, image, artifacts, trust, config, disk use
-pinfold artifacts                the pinned harnesses as JSON: name, version, path, cached, assets
+pinfold artifacts                pinned harnesses as JSON
 pinfold update [--check]         check for a release, or download and install it
-pinfold config [ROOT]            the effective configuration and project facts as JSON, for callers
+pinfold config [ROOT]            effective configuration and project facts as JSON
 pinfold box …                    the process interface
 pinfold --version                print the version
 pinfold --help                   print this usage";
@@ -250,10 +249,12 @@ fn up(args: &[String]) -> io::Result<i32> {
 
 async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
     let init = artifacts::init()?;
-    let mut box_ = match Box::up(plan, &init, Some(&mut signals)).await {
+    let mut box_ = match Box::up(plan, &init, &mut signals).await {
         Ok(box_) => box_,
         Err(UpError::Refused(refusal)) => return Ok(refused_box(&refusal)),
-        Err(UpError::Signal) => return Ok(down(Some(&plan.name), Shutdown::Signal)),
+        Err(UpError::Signal | UpError::Control) => {
+            return Ok(down(Some(&plan.name), Shutdown::Signal));
+        }
         Err(UpError::Other(error)) => return Err(error),
     };
     let egress_log = box_
@@ -277,10 +278,7 @@ async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
     Ok(down(Some(&plan.name), shutdown))
 }
 
-/// Print the one `down` line that ends `up`'s stream, why the box ended
-/// after teardown, and return `up`'s exit code: 1 for `exited`, else 0.
-/// Only `exited` carries a detail, the init's exit status. `name` is null
-/// when a signal ended `up` before its spec parsed.
+/// `name` is null when a signal ends `up` before its spec parses.
 fn down(name: Option<&str>, shutdown: Shutdown) -> i32 {
     let mut line = serde_json::json!({
         "event": "down",
@@ -289,6 +287,8 @@ fn down(name: Option<&str>, shutdown: Shutdown) -> i32 {
     });
     let code = if let Shutdown::BoxExited(status) = shutdown {
         line["detail"] = status.to_string().into();
+        1
+    } else if shutdown == Shutdown::AuditLog {
         1
     } else {
         0
@@ -362,6 +362,9 @@ fn present(runtime: &dyn Runtime, verb: &str, name: &str) -> io::Result<bool> {
 fn list(args: &[String]) -> io::Result<i32> {
     let filters = parse_labels(args)?;
     for box_ in runtime().list()? {
+        if !clean::pinfold_box(&box_) {
+            continue;
+        }
         let matches = filters.iter().all(|(key, value)| match value {
             Some(value) => box_.labels.get(key) == Some(value),
             None => box_.labels.contains_key(key),
@@ -392,8 +395,8 @@ fn prune(args: &[String]) -> io::Result<i32> {
     }
     let runtime = runtime();
     let boxes = clean::boxes(runtime)?;
-    clean::prune_boxes(runtime, &boxes)?;
-    for dead in &boxes.dead {
+    let removed = clean::prune_boxes(runtime, &boxes)?;
+    for dead in &removed {
         println!(
             "{}",
             serde_json::json!({
@@ -433,57 +436,54 @@ struct CleanPlan {
     /// Dead boxes' state dirs, leftover socket dirs, unpinned artifact
     /// versions and old egress logs.
     automatic: BTreeSet<PathBuf>,
-    caches: Vec<PathBuf>,
-    stale: Vec<PathBuf>,
+    project_paths: BTreeMap<String, PathBuf>,
     automatic_bytes: u64,
     project_caches: u64,
     project_state: u64,
     build_cache_bytes: Option<u64>,
+    unused: Option<Duration>,
 }
 
 impl CleanPlan {
     fn measure(runtime: &dyn Runtime, unused: Option<Duration>) -> io::Result<CleanPlan> {
         let boxes = clean::boxes(runtime)?;
-        let mut automatic: BTreeSet<PathBuf> = boxes
+        let box_paths: BTreeSet<PathBuf> = boxes
             .dead
             .iter()
             .map(|dead| dead.state_dir.clone())
+            .chain(clean::leftover_socket_dirs()?)
             .collect();
-        automatic.extend(clean::leftover_socket_dirs()?);
+        let mut automatic = BTreeSet::new();
         automatic.extend(artifacts::unpinned_versions()?);
         automatic.extend(clean::old_egress_logs()?);
 
-        let projects = crate::pi::state::state_dirs()?;
-        let mut caches = Vec::new();
-        let mut stale = Vec::new();
-        for project in &projects {
-            // A live box holds this project's home; leave it all alone.
-            if boxes.live_projects.contains(&project.id) {
-                continue;
-            }
-            // Stale: the checkout is gone, or with `unused`, the project
-            // has not run for that long.
-            let idle = crate::core::now().saturating_sub(project.last_run);
-            if !project.root.exists() || unused.is_some_and(|unused| idle > unused.as_secs()) {
-                // The whole state dir goes; its cache is part of its size.
-                stale.push(project.dir.clone());
-            } else {
-                let cache = project.dir.join("home/.cache");
-                if cache.exists() {
-                    caches.push(cache);
+        let mut project_paths = BTreeMap::new();
+        let mut project_caches = 0;
+        let mut project_state = 0;
+        for project in crate::pi::state::state_dirs()? {
+            if let Some(path) = Self::project_path(&project, &boxes.live_projects, unused) {
+                if path == project.dir {
+                    project_state += clean::path_bytes(&path);
+                } else {
+                    project_caches += clean::path_bytes(&path);
                 }
+                project_paths.insert(project.id, path);
             }
         }
 
         Ok(CleanPlan {
             boxes,
             build_cache_bytes: runtime.build_cache_bytes()?,
-            automatic_bytes: automatic.iter().map(|path| clean::path_bytes(path)).sum(),
-            project_caches: caches.iter().map(|path| clean::path_bytes(path)).sum(),
-            project_state: stale.iter().map(|path| clean::path_bytes(path)).sum(),
+            automatic_bytes: automatic
+                .iter()
+                .chain(&box_paths)
+                .map(|path| clean::path_bytes(path))
+                .sum(),
+            project_caches,
+            project_state,
             automatic,
-            caches,
-            stale,
+            project_paths,
+            unused,
         })
     }
 
@@ -511,15 +511,48 @@ impl CleanPlan {
     /// list carries none.
     fn remove(self, runtime: &dyn Runtime) -> io::Result<()> {
         clean::prune_boxes(runtime, &self.boxes)?;
+        clean::prune_leftover_states(runtime)?;
         runtime.purge_build_cache()?;
-        clean::remove_paths(
-            self.automatic
-                .into_iter()
-                .chain(self.caches)
-                .chain(self.stale)
-                .collect(),
-        )?;
+        clean::remove_paths(self.automatic.into_iter().collect())?;
+        let mut locks = BTreeMap::new();
+        for id in self.project_paths.keys() {
+            if let Some(lock) = crate::core::ownership::try_project_lock(id)? {
+                locks.insert(id.as_str(), lock);
+            }
+        }
+        if !locks.is_empty() {
+            // All candidates stay locked through this one fresh snapshot.
+            let live = clean::boxes(runtime)?.live_projects;
+            for project in crate::pi::state::state_dirs()? {
+                if !locks.contains_key(project.id.as_str()) {
+                    continue;
+                }
+                if let Some(path) = Self::project_path(&project, &live, self.unused)
+                    && self.project_paths.get(&project.id) == Some(&path)
+                {
+                    clean::remove_paths(vec![path])?;
+                }
+            }
+        }
+        drop(locks);
         clean::keep_two_images_per_source(runtime)
+    }
+
+    fn project_path(
+        project: &crate::pi::state::StateDir,
+        live: &BTreeSet<String>,
+        unused: Option<Duration>,
+    ) -> Option<PathBuf> {
+        if live.contains(&project.id) {
+            return None;
+        }
+        let idle = crate::core::now().saturating_sub(project.last_run);
+        if !project.root.exists() || unused.is_some_and(|unused| idle > unused.as_secs()) {
+            Some(project.dir.clone())
+        } else {
+            let cache = project.dir.join("home/.cache");
+            cache.exists().then_some(cache)
+        }
     }
 }
 
@@ -644,11 +677,7 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         Err(error) => println!("artifacts: unavailable: {error}"),
     }
 
-    if runtime_ready {
-        println!("config: {}", config_report(&root, &config)?);
-    } else {
-        println!("config: unavailable: runtime check failed");
-    }
+    println!("config: {}", config_report(&root, &config)?);
 
     println!("disk:");
     if !runtime_ready {
@@ -680,10 +709,7 @@ fn pins_json() -> io::Result<serde_json::Value> {
     serde_json::to_value(artifacts::pins()?).map_err(io::Error::other)
 }
 
-/// `pinfold config`: print one JSON object, the effective configuration and
-/// the project facts a caller needs to compose a box. `ROOT` defaults to the
-/// project root `pinfold pi` would use from the current directory. Reads
-/// only: nothing is created and nothing is recorded.
+/// Read-only: do not materialize profiles or record project state.
 pub fn config(args: &[String]) -> io::Result<i32> {
     let root = match args {
         [] => crate::pi::launch::project_root(&std::env::current_dir()?)?,
@@ -701,7 +727,19 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
     let project = crate::pi::state::project_id(root);
     let home = crate::pi::state::project_home(root)?;
     let image = crate::pi::launch::resolve_image(config, &project);
-    let image_built = runtime().resolve_image(&image)?.is_ok();
+    let (image_built, image_error) = match runtime().list_images() {
+        Ok(images) => (
+            Some(images.iter().any(|listed| {
+                listed
+                    .reference
+                    .strip_prefix("localhost/")
+                    .unwrap_or(&listed.reference)
+                    == image
+            })),
+            None,
+        ),
+        Err(error) => (None, Some(error.to_string())),
+    };
     let trust = match trust::check(root, config) {
         Ok(()) => serde_json::json!({ "ok": true, "detail": "ok" }),
         Err(error) => serde_json::json!({ "ok": false, "detail": error.to_string() }),
@@ -711,6 +749,7 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
         "profile": &config.profile.name,
         "image": image,
         "image_built": image_built,
+        "image_error": image_error,
         "containerfile": config.containerfile.as_ref().map_or("profile", |(path, _)| path.as_str()),
         "egress": { "allow": &config.allow, "routes": &config.routes },
         "protect": &config.protect,
@@ -788,12 +827,8 @@ pub(crate) fn exit_code(status: ExitStatus) -> i32 {
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
 }
 
-/// `pinfold build`: `--profile NAME`'s image; else the project's own image
-/// when its config names a Containerfile, else the configured profile's.
-/// Either builds from an empty context holding only the Containerfile, so
-/// trust covers every input of a project build, and a profile directory's
-/// other files are not build inputs. Prints the stable ref, or the build's
-/// captured output on stderr when it failed.
+/// Containerfile-only contexts keep project builds covered by trust.
+/// Other files in a profile directory are not build inputs.
 pub fn build(args: &[String]) -> io::Result<i32> {
     let (profile, project) = match args {
         [flag, name] if flag == "--profile" => (Profile::load(name)?, None),
@@ -868,8 +903,6 @@ pub fn image(args: &[String]) -> io::Result<i32> {
     }
 }
 
-const FAILED_LOG_LINES: usize = 40;
-
 fn image_build(args: &[String]) -> i32 {
     let name = args
         .first()
@@ -896,9 +929,8 @@ fn image_build(args: &[String]) -> i32 {
         ),
         Err(ImageError::Failed(output)) => {
             let lines: Vec<&str> = output.lines().collect();
-            let tail = &lines[lines.len().saturating_sub(FAILED_LOG_LINES)..];
             (
-                serde_json::json!({ "event": "failed", "image": name, "log": tail }),
+                serde_json::json!({ "event": "failed", "image": name, "log": lines }),
                 1,
             )
         }
@@ -910,11 +942,6 @@ fn image_build(args: &[String]) -> i32 {
     code
 }
 
-/// `pinfold image rm NAME`: retire a caller image name: remove every tag
-/// of NAME, whatever its age, and no other name's, except an image's last
-/// tag while a listed box uses it. Print the ids it untagged and the ids
-/// whose last tag it kept. A bad name or argument is refused as `spec`,
-/// like a build's.
 fn image_rm(args: &[String]) -> io::Result<i32> {
     let refused = |name, detail: String| refused("image", name, RefusalReason::Spec, &detail);
     let name = args.first().map(String::as_str);
@@ -996,7 +1023,7 @@ fn profile_new(args: &[String]) -> io::Result<()> {
     profile::check_name("profile", &name)?;
     let project_agent = from_project.as_deref().map(project_agent_dir).transpose()?;
     let source = if builtin {
-        Profile::builtin()
+        Profile::builtin(&from)
     } else {
         Profile::load(&from)
     };
@@ -1010,12 +1037,12 @@ fn profile_new(args: &[String]) -> io::Result<()> {
         )
     })?;
     let result = source
-        .and_then(|source| write_profile(&source, &target))
+        .and_then(|source| profile::write_profile(&source, &target))
         .and_then(|()| match &project_agent {
             // The project's `home/.pi/agent/` replaces the seeds of the same
             // path; pi's login, session history, npm install and caches stay
             // behind, and nothing else from the project home is copied.
-            Some(agent) => copy_tree(agent, &target.join("home/.pi/agent"), |name| {
+            Some(agent) => profile::copy_tree(agent, &target.join("home/.pi/agent"), |name| {
                 matches!(
                     name.to_str(),
                     Some("auth.json" | "sessions" | "npm" | "cache" | ".cache")
@@ -1044,40 +1071,6 @@ fn project_agent_dir(path: &Path) -> io::Result<PathBuf> {
         ));
     }
     Ok(agent)
-}
-
-fn write_profile(source: &Profile, target: &Path) -> io::Result<()> {
-    fs::write(target.join("Containerfile"), &source.containerfile)?;
-    fs::write(target.join("pinfold.toml"), &source.config)?;
-    for seed in &source.home {
-        let path = target.join("home").join(&seed.path);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&path, &seed.contents)?;
-    }
-    if let Some(share) = &source.share {
-        copy_tree(share, &target.join("share"), |_| false)?;
-    }
-    Ok(())
-}
-
-fn copy_tree(from: &Path, to: &Path, skip: fn(&OsStr) -> bool) -> io::Result<()> {
-    fs::create_dir_all(to)?;
-    for entry in fs::read_dir(from)? {
-        let entry = entry?;
-        if skip(&entry.file_name()) {
-            continue;
-        }
-        let target = to.join(entry.file_name());
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            copy_tree(&entry.path(), &target, skip)?;
-        } else if file_type.is_file() {
-            fs::copy(entry.path(), &target)?;
-        }
-    }
-    Ok(())
 }
 
 fn parse_profile_new(args: &[String]) -> io::Result<(String, String, Option<PathBuf>, bool)> {
@@ -1113,12 +1106,6 @@ fn parse_profile_new(args: &[String]) -> io::Result<(String, String, Option<Path
         }
     }
     let name = name.ok_or_else(|| usage("profile", "profile new needs a name"))?;
-    if builtin && from.is_some() {
-        return Err(usage(
-            "profile",
-            "--builtin and --from are mutually exclusive",
-        ));
-    }
     Ok((
         name,
         from.unwrap_or_else(|| "default".to_string()),

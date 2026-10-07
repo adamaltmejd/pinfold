@@ -5,6 +5,7 @@ use std::io::{self, IsTerminal, Read, Seek, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use nix::fcntl::{Flock, FlockArg};
 use serde::{Deserialize, Serialize};
@@ -38,36 +39,13 @@ fn version(value: &str) -> io::Result<[u64; 3]> {
         .ok_or_else(|| io::Error::other(format!("invalid stable release version: {value}")))
 }
 
-fn curl(url: &str, timeout: &str) -> Command {
-    let mut command = Command::new("curl");
-    command.args([
-        "--disable",
-        "--fail",
-        "--location",
-        "--silent",
-        "--show-error",
-        "--proto",
-        "=https",
-        "--proto-redir",
-        "=https",
-        "--connect-timeout",
-        timeout,
-    ]);
-    command.arg(url);
-    command
-}
-
-fn latest(timeout: &str) -> io::Result<String> {
-    let output = curl(&format!("{REPOSITORY}/releases/latest"), timeout)
-        .args(["--max-time", timeout, "--max-filesize", "1048576"])
-        .output()?;
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "release check failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    let release: Release = serde_json::from_slice(&output.stdout)?;
+fn latest(timeout: u64) -> io::Result<String> {
+    let bytes = core::download::bytes(
+        &format!("{REPOSITORY}/releases/latest"),
+        Duration::from_secs(timeout),
+        1024 * 1024,
+    )?;
+    let release: Release = serde_json::from_slice(&bytes)?;
     let value = release
         .tag_name
         .strip_prefix('v')
@@ -137,13 +115,13 @@ fn notice_due(record_only: bool) -> io::Result<()> {
     file.write_all(&serde_json::to_vec(&previous)?)?;
     if profile_changed && !record_only {
         eprintln!(
-            "pinfold: default-profile-changed: bundled defaults changed; saved project settings and user profiles were kept. To inspect fresh defaults, run `pinfold profile new fresh-defaults --builtin`."
+            "pinfold: bundled-profiles-changed: bundled profiles changed; saved project settings and user profiles were kept. To inspect a bundled profile, run `pinfold profile new fresh-profile --from NAME --builtin` (NAME: default, documents or full)."
         );
     }
     if !due {
         return Ok(());
     }
-    let release = latest("1")?;
+    let release = latest(1)?;
     if version(&release)? > version(VERSION)? {
         eprintln!("pinfold {release} is available (installed: {VERSION}). Run `pinfold update`.");
     }
@@ -203,35 +181,13 @@ fn target() -> io::Result<&'static str> {
     }
 }
 
-fn download(url: &str, path: &Path, limit: &str) -> io::Result<()> {
-    let output = curl(url, "15")
-        .args([
-            "--speed-limit",
-            "1",
-            "--speed-time",
-            "30",
-            "--max-filesize",
-            limit,
-            "--output",
-        ])
-        .arg(path)
-        .output()?;
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "download failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    Ok(())
-}
-
 pub fn run(args: &[String]) -> io::Result<i32> {
     let check_only = match args {
         [] => false,
         [flag] if flag == "--check" => true,
         _ => return Err(cli::usage("update", "update takes only --check")),
     };
-    let release = latest("15")?;
+    let release = latest(15)?;
     if version(&release)? <= version(VERSION)? {
         println!("pinfold {VERSION} is up to date.");
         return Ok(0);
@@ -274,8 +230,20 @@ fn install(release: &str, path: &Path, staging: &Path) -> io::Result<()> {
     let sums = staging.join("SHA256SUMS");
     let binary = staging.join("pinfold");
     eprintln!("Downloading pinfold {release}…");
-    download(&format!("{base}/SHA256SUMS"), &sums, "1048576")?;
-    download(&format!("{base}/{name}"), &binary, "268435456")?;
+    core::download::file(
+        &format!("{base}/SHA256SUMS"),
+        &sums,
+        Duration::from_secs(300),
+        1024 * 1024,
+        None,
+    )?;
+    core::download::file(
+        &format!("{base}/{name}"),
+        &binary,
+        Duration::from_secs(300),
+        256 * 1024 * 1024,
+        None,
+    )?;
     let sums = fs::read_to_string(sums)?;
     let mut checksums = sums.lines().filter_map(|line| {
         let (digest, filename) = line.split_once(char::is_whitespace)?;
@@ -284,7 +252,7 @@ fn install(release: &str, path: &Path, staging: &Path) -> io::Result<()> {
     let expected = checksums
         .next()
         .ok_or_else(|| io::Error::other("checksum-mismatch: asset absent from SHA256SUMS"))?;
-    if checksums.next().is_some() || expected != core::sha256_hex(fs::read(&binary)?) {
+    if checksums.next().is_some() || expected != core::download::sha256_file(&binary)? {
         return Err(io::Error::other(
             "checksum-mismatch: downloaded binary differs from SHA256SUMS",
         ));

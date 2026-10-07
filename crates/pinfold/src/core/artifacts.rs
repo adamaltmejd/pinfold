@@ -7,10 +7,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use crate::dirs;
+
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+const DOWNLOAD_LIMIT: u64 = 512 * 1024 * 1024;
 
 /// The pin file, parsed once. It is embedded, so a parse error is a bug in
 /// this build.
@@ -75,25 +80,25 @@ pub fn guest(name: &str) -> PathBuf {
 impl Harness {
     /// The host directory to mount at [`guest`] for a box on this host,
     /// downloading and installing the assets if the cache lacks them.
-    pub fn install(&self) -> io::Result<PathBuf> {
-        Ok(self.install_os_arch(OS_ARCH)?.join(&self.name))
+    pub fn install(&self, cancel: Option<&AtomicBool>) -> io::Result<PathBuf> {
+        Ok(self.install_os_arch(OS_ARCH, cancel)?.join(&self.name))
     }
 
     /// The directory of this harness's host helpers for this host, installed
     /// the same way. It never enters a box.
-    pub fn install_host(&self) -> io::Result<PathBuf> {
-        self.install_os_arch(HOST_OS_ARCH)
+    pub fn install_host(&self, cancel: Option<&AtomicBool>) -> io::Result<PathBuf> {
+        self.install_os_arch(HOST_OS_ARCH, cancel)
     }
 
     /// Download and install the assets for `os_arch` if the cache lacks
     /// them, and return their directory.
-    fn install_os_arch(&self, os_arch: &str) -> io::Result<PathBuf> {
+    fn install_os_arch(&self, os_arch: &str, cancel: Option<&AtomicBool>) -> io::Result<PathBuf> {
         let assets = self.assets(os_arch);
         let dir = self.dir(os_arch)?;
         dirs::install_dir(&dir, |staging| {
             assets
                 .iter()
-                .try_for_each(|asset| self.fetch(asset, staging))
+                .try_for_each(|asset| self.fetch(asset, staging, cancel))
         })?;
         Ok(dir)
     }
@@ -116,32 +121,11 @@ impl Harness {
 
     /// Download `asset` into `staging`, verify its sha256, and install it at
     /// its path there.
-    fn fetch(&self, asset: &Asset, staging: &Path) -> io::Result<()> {
+    fn fetch(&self, asset: &Asset, staging: &Path, cancel: Option<&AtomicBool>) -> io::Result<()> {
         let url = &asset.url;
         let download = staging.join(".download");
-        // Fail a stalled first contact, but no --max-time: a slow, moving
-        // download must still finish.
-        let status = Command::new("curl")
-            .args([
-                "--fail",
-                "--location",
-                "--silent",
-                "--show-error",
-                "--connect-timeout",
-                "15",
-                "--speed-limit",
-                "1",
-                "--speed-time",
-                "30",
-                "--output",
-            ])
-            .arg(&download)
-            .arg(url)
-            .status()?;
-        if !status.success() {
-            return Err(io::Error::other(format!("curl {url}: {status}")));
-        }
-        let actual = super::sha256_hex(fs::read(&download)?);
+        super::download::file(url, &download, DOWNLOAD_TIMEOUT, DOWNLOAD_LIMIT, cancel)?;
+        let actual = super::download::sha256_file(&download)?;
         if actual != asset.sha256 {
             return Err(io::Error::other(format!(
                 "{} {} {url}: checksum mismatch: expected {}, got {actual}",

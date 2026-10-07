@@ -1,4 +1,4 @@
-//! End-to-end tests for guarantees 6, 11, 12, 13, 14, 16, 18 and 32 in
+//! End-to-end tests for guarantees 6, 11, 12, 13, 14, 16, 18, 32 and 33 in
 //! docs/ARCHITECTURE.md.
 //!
 //! They run on a macOS host with the Apple `container` CLI, or a Linux host
@@ -10,11 +10,12 @@
 //! the host, reached through a route.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
+use std::os::unix::ffi::OsStringExt;
 use std::path::Path;
-use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::process::{ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 
-use crate::box_::{box_name, box_up};
+use crate::box_::{ChildOwner, box_name, box_up, read_bounded};
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, allow, assert_denied, assert_ok, box_exec,
     box_list, box_stat, build_profile, curl, default_image, egress_log, git, json_lines, pinfold,
@@ -22,9 +23,10 @@ use e2e::{
 };
 
 #[test]
-fn the_default_profile_reads_documents_locally() {
+fn the_documents_profile_reads_documents_locally() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 32. Sabotage: remove poppler-utils from the bundled
-    // Containerfile; `pdftoppm` then fails. Sabotage: omit AnyDoc's native
+    // documents image; `pdftoppm` then fails. Sabotage: omit AnyDoc's native
     // package from that image; the PDF conversion fails.
     // The host fixture lists page objects out of object-number order; the
     // Markdown's page order and the selected page must follow the page tree,
@@ -40,10 +42,14 @@ fn the_default_profile_reads_documents_locally() {
     )
     .expect("write the host PDF fixture");
     let profile = "e2e-documents";
-    run_ok(
-        env.command(pinfold())
-            .args(["profile", "new", profile, "--builtin"]),
-    );
+    run_ok(env.command(pinfold()).args([
+        "profile",
+        "new",
+        profile,
+        "--from",
+        "documents",
+        "--builtin",
+    ]));
     build_profile(&env, profile);
     let _image = ImageCleanup {
         repository: format!("pinfold/profile-{profile}"),
@@ -107,6 +113,7 @@ fn the_default_profile_reads_documents_locally() {
 
 #[test]
 fn the_environment_is_exactly_the_spec() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: pass the PINFOLD_ENV_* value on the command line (for
     // example `container exec --env SECRET=shhh`) instead of through the
     // child's environment; `shhh` then appears in host `ps` while the box
@@ -183,10 +190,35 @@ fn the_environment_is_exactly_the_spec() {
     // fails before `ready`, and `box_up` panics on its first line.
     let path = env.root.join("no-such-path");
     let name = box_name("env-path");
+    // Sabotage: export guest values under their original names to the
+    // runtime client again. Guest HOME and XDG_RUNTIME_DIR then change the
+    // client's state/storage, CONTAINER_HOST selects an absent Podman
+    // service, and LD_PRELOAD reaches the host loader. Encoding is also
+    // needed for a multiline value and a guest name that uses the transport
+    // prefix. Expectations are the caller's literal spec values, observed
+    // through the real guest's env output. Sabotage: stop removing transport
+    // variables in init exec; the extra-prefixed-entry assertion fails.
+    let guest = [
+        ("HOME", "/pinfold-guest-home-missing"),
+        ("XDG_RUNTIME_DIR", "/pinfold-guest-runtime-missing"),
+        (
+            "CONTAINER_HOST",
+            "unix:///pinfold-guest-service-missing.sock",
+        ),
+        ("LD_PRELOAD", "/pinfold-guest-preload-missing.so"),
+        ("MULTILINE", "first line\nsecond line"),
+        ("PINFOLD_BOX_ENV_HOME", "literal guest prefix variable"),
+        ("NODE_USE_ENV_PROXY", "0"),
+    ];
+    let mut variables = serde_json::Map::new();
+    variables.insert("PATH".into(), serde_json::json!(path));
+    for (key, value) in guest {
+        variables.insert(key.into(), serde_json::json!(value));
+    }
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(&env),
-        "env": { "PATH": path },
+        "env": variables,
     });
     let up = box_up(&env, &spec, &name);
     let boxed = box_exec(&env, &name, &["/bin/sh", "-c", "printf %s \"$PATH\""]);
@@ -196,11 +228,41 @@ fn the_environment_is_exactly_the_spec() {
         path.to_str().expect("the PATH is UTF-8"),
         "the box's PATH is not the spec's"
     );
+    let environment = env
+        .command(pinfold())
+        .args(["box", "exec", &name, "--", "/usr/bin/env", "-0"])
+        .output()
+        .expect("read the real guest environment");
+    assert!(
+        environment.status.success(),
+        "guest env failed: {environment:?}"
+    );
+    let entries: Vec<&[u8]> = environment.stdout.split(|byte| *byte == 0).collect();
+    for (key, value) in guest {
+        let value = if key == "NODE_USE_ENV_PROXY" {
+            "1"
+        } else {
+            value
+        };
+        let expected = format!("{key}={value}");
+        assert!(entries.contains(&expected.as_bytes()), "guest lost {key}");
+    }
+    let prefixed: Vec<_> = entries
+        .iter()
+        .copied()
+        .filter(|entry| entry.starts_with(b"PINFOLD_BOX_ENV_"))
+        .collect();
+    assert_eq!(
+        prefixed,
+        [b"PINFOLD_BOX_ENV_HOME=literal guest prefix variable".as_slice()],
+        "internal transport variables reached the guest command"
+    );
     drop(up);
 }
 
 #[test]
 fn project_state_persists_and_stays_separate() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: derive the project id from the directory name alone (drop
     // the root hash in state.rs::project_id); the two checkouts named
     // `checkout` then share a home, the second's settings.json is the first's
@@ -209,7 +271,8 @@ fn project_state_persists_and_stays_separate() {
     // overwritten and the survives-a-run assertion fails. Sabotage: copy
     // every agent entry in `profile new --from-project` (drop
     // `agent_entry_excluded`); `auth.json` lands in the profile and its
-    // assertion fails.
+    // assertion fails. Mount the other project's home in the box while
+    // keeping separate host settings; the guest markers reveal the mix-up.
     let env = TestEnv::new("pi-state");
     default_image(&env);
     let a = TestDir::new(&env, "a/checkout");
@@ -224,7 +287,17 @@ fn project_state_persists_and_stays_separate() {
     // An edit survives the next run: a seed is copied only when missing.
     let marker = "{\"marker\":\"project-a\"}\n";
     fs::write(&settings_a, marker).expect("edit settings.json");
-    pi_version(&env, a.path());
+    let (run_a, _, box_a) = PiRpc::start(&env, a.path());
+    let written_a = box_exec(
+        &env,
+        &box_a,
+        &["sh", "-c", r#"printf project-a > "$HOME/project-a-marker""#],
+    );
+    assert_ok(&written_a, "writing the first project's guest home");
+    assert!(
+        run_a.finish().success(),
+        "the first project did not exit cleanly"
+    );
     assert_eq!(
         fs::read_to_string(&settings_a).expect("read edited settings.json"),
         marker,
@@ -235,19 +308,22 @@ fn project_state_persists_and_stays_separate() {
     // does not see the first project's marker. Take the first home before
     // the second run: the sabotage overwrites the shared state.json's root.
     let home_a = project_state_dir(&env, a.path()).join("home");
-    pi_version(&env, b.path());
-    let home_b = project_state_dir(&env, b.path()).join("home");
-    let seeded_b =
-        fs::read_to_string(home_b.join(".pi/agent/settings.json")).expect("read second seed");
-    assert!(
-        seeded_b.contains("defaultProjectTrust"),
-        "second seed content: {seeded_b}"
+    let (run_b, _, box_b) = PiRpc::start(&env, b.path());
+    let separate_b = box_exec(
+        &env,
+        &box_b,
+        &[
+            "sh",
+            "-c",
+            r#"test ! -e "$HOME/project-a-marker" && printf project-b > "$HOME/project-b-marker" && cat "$HOME/project-b-marker""#,
+        ],
     );
+    assert_ok(&separate_b, "the second project's separate guest home");
+    assert_eq!(separate_b.stdout, "project-b");
     assert!(
-        !seeded_b.contains("project-a"),
-        "the second project sees the first's marker"
+        run_b.finish().success(),
+        "the second project did not exit cleanly"
     );
-
     // `profile new --from-project` copies the project's agent config, the
     // edited settings included, and leaves the login behind.
     let agent_a = home_a.join(".pi/agent");
@@ -270,16 +346,88 @@ fn project_state_persists_and_stays_separate() {
 
     // A deleted seed comes back on the next run.
     fs::remove_file(&settings_a).expect("delete settings.json");
-    pi_version(&env, a.path());
+    let (run_a, _, box_a) = PiRpc::start(&env, a.path());
+    let separate_a = box_exec(
+        &env,
+        &box_a,
+        &[
+            "sh",
+            "-c",
+            r#"test ! -e "$HOME/project-b-marker" && cat "$HOME/project-a-marker""#,
+        ],
+    );
+    assert_ok(
+        &separate_a,
+        "the first project's persisted separate guest home",
+    );
+    assert_eq!(separate_a.stdout, "project-a");
+
+    // Sabotage: ignore attach's requested box and choose the first project
+    // box; selecting the later name reads or edits the wrong /tmp marker.
+    // Each marker is a host-chosen value in a separate box filesystem.
+    let (second_a, _, second_box_a) = PiRpc::start(&env, a.path());
+    let (selected, other) = if box_a > second_box_a {
+        (&box_a, &second_box_a)
+    } else {
+        (&second_box_a, &box_a)
+    };
+    for (name, marker) in [(selected, "selected"), (other, "other")] {
+        assert_ok(
+            &box_exec(
+                &env,
+                name,
+                &[
+                    "sh",
+                    "-c",
+                    "printf %s \"$1\" > /tmp/attach-marker",
+                    "sh",
+                    marker,
+                ],
+            ),
+            "writing the attach fixture marker",
+        );
+    }
+    let attached = run_ok(&mut pinfold_in(
+        &env,
+        a.path(),
+        &[
+            "attach",
+            "--box",
+            selected,
+            "--",
+            "sh",
+            "-c",
+            "cat /tmp/attach-marker && printf attached > /tmp/attach-marker",
+        ],
+    ));
+    assert_eq!(String::from_utf8(attached.stdout).unwrap(), "selected");
+    for (name, expected) in [(selected, "attached"), (other, "other")] {
+        let marker = box_exec(&env, name, &["cat", "/tmp/attach-marker"]);
+        assert_ok(&marker, "reading the marker after attach");
+        assert_eq!(marker.stdout, expected, "attach changed the wrong box");
+    }
+    assert!(second_a.finish().success(), "the second pi run failed");
+    assert!(
+        run_a.finish().success(),
+        "the returning project did not exit cleanly"
+    );
     let reseeded = fs::read_to_string(&settings_a).expect("read reseeded settings.json");
     assert!(
         reseeded.contains("defaultProjectTrust"),
         "reseed content: {reseeded}"
     );
+
+    // Sabotage: stop bounding the cosmetic project-id prefix; the trust
+    // filename exceeds the host's 255-byte component limit before pi runs.
+    let long = TestDir::new(&env, &"x".repeat(245));
+    git(long.path(), &["init", "-q"]);
+    allow(&env, long.path());
+    pi_version(&env, long.path());
 }
 
 #[test]
 fn a_changed_project_file_stops_the_run() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: drop the trust::check call from pi::launch; the created and
     // the changed `.pinfold.toml` then run and both refusal assertions fail.
     // Sabotage: hash an absent `.pinfold.toml` as the empty file instead of
@@ -429,6 +577,7 @@ fn a_changed_project_file_stops_the_run() {
 
 #[test]
 fn the_box_cannot_write_git_or_protected_config() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: omit the `.git` read-only mount from pi::git (or mount it
     // writable); the `core.fsmonitor` write and the rename then succeed, so
     // those assertions fail.
@@ -598,6 +747,12 @@ fn the_box_cannot_write_git_or_protected_config() {
     let outside = TestDir::new(&env, "outside");
     let symlinked = TestDir::new(&env, "symlinked");
     git(symlinked.path(), &["init", "-q"]);
+    fs::write(
+        symlinked.path().join(".pinfold.toml"),
+        "protect = [\".cleanup\", \".cleanup/nested\"]\n",
+    )
+    .expect("configure nested protected directories");
+    allow(&env, symlinked.path());
     let link = symlinked.path().join(".vscode");
     std::os::unix::fs::symlink(outside.path(), &link).expect("create .vscode symlink");
     let refused = pinfold_in(&env, symlinked.path(), &["pi", "--version"])
@@ -612,9 +767,50 @@ fn the_box_cannot_write_git_or_protected_config() {
         stderr.contains("protected-path-invalid"),
         "wrong refusal: {stderr}"
     );
+    // Sabotage: keep cleanup only on the successful launch path. The earlier
+    // .claude and .idea mounts leave empty directories after .vscode fails.
+    for earlier in [".claude", ".cleanup", ".idea"] {
+        assert!(
+            !symlinked.path().join(earlier).exists(),
+            "failed preparation left {earlier} behind"
+        );
+    }
     fs::remove_file(&link).expect("remove .vscode symlink");
     fs::create_dir(&link).expect("create real .vscode directory");
     pi_version(&env, symlinked.path());
+
+    // Sabotage: release the Git cleanup guard before build_plan, or keep
+    // manual cleanup after it. A non-UTF-8 state path passes trust and
+    // preparation but its project home cannot enter the JSON spec. The
+    // named path-not-utf8 refusal identifies that later guard; an earlier
+    // failure cannot pass just because no protected directory exists.
+    // APFS rejects these filenames, so this scenario is Linux-only.
+    #[cfg(target_os = "linux")]
+    {
+        let invalid_state = env.root.join(std::ffi::OsString::from_vec(vec![0xff]));
+        fs::create_dir(&invalid_state).expect("create non-UTF-8 state directory");
+        run_ok(
+            pinfold_in(&env, symlinked.path(), &["allow"]).env("XDG_STATE_HOME", &invalid_state),
+        );
+        let refused = pinfold_in(&env, symlinked.path(), &["pi", "--version"])
+            .env("XDG_STATE_HOME", &invalid_state)
+            .output()
+            .expect("refuse the non-UTF-8 project home");
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(!refused.status.success(), "accepted non-UTF-8 project home");
+        assert!(stderr.contains("path-not-utf8"), "wrong refusal: {stderr}");
+        for created in [".claude", ".cleanup", ".idea"] {
+            assert!(
+                !symlinked.path().join(created).exists(),
+                "failed plan left {created} behind"
+            );
+        }
+        assert!(
+            link.is_dir(),
+            "cleanup removed the existing .vscode directory"
+        );
+        pi_version(&env, symlinked.path());
+    }
 
     // `pinfold pi` started inside the repository's `.git` refuses before it
     // creates a box or a project state: the fallback root would be `.git`
@@ -682,6 +878,7 @@ fn the_box_cannot_write_git_or_protected_config() {
 
 #[test]
 fn both_pi_config_levels_load_behind_a_route() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: drop the route (leave PINFOLD_ROUTES empty, or point it at
     // another name); the proxy refuses fake.model with a 403 and the
     // "pi -p failed" assertion fails before any request reaches the model.
@@ -689,8 +886,14 @@ fn both_pi_config_levels_load_behind_a_route() {
     // the profile marker is absent from the request. Sabotage: stop the
     // project from being trusted (remove defaultProjectTrust from the seeded
     // settings); the project marker is absent.
-    // Sabotage: omit read-documents from the binary's embedded DEFAULT_SHARE;
-    // the bundled skill's description never reaches the model.
+    // Sabotage: omit the full profile's document skill or live package;
+    // the skill never reaches the model. Save full's resource paths in the
+    // project's settings, or keep using full's package after selecting
+    // default; the returning default request still advertises documents.
+    // Reseed existing settings on a profile switch; the host marker changes.
+    // Omit the operating-context extension; its host-chosen allowlist never
+    // reaches the model. Cache that allowlist across starts; the returning
+    // default request reports the earlier marker.
     let env = TestEnv::new("pi-levels");
     let project = TestDir::new(&env, "project");
     git(project.path(), &["init", "-q"]);
@@ -728,6 +931,11 @@ fn both_pi_config_levels_load_behind_a_route() {
     )
     .expect("write the profile's models.json");
     build_profile(&env, profile);
+    let _image = ImageCleanup {
+        repository: format!("pinfold/profile-{profile}"),
+    };
+    default_image(&env);
+    build_profile(&env, "full");
 
     // The project carries the project level: a skill under .pi/.
     let project_marker = "pinfold-e2e-project-skill-marker";
@@ -753,37 +961,41 @@ fn both_pi_config_levels_load_behind_a_route() {
     // request to the fake model in the profile's models.json.
     let shim = env.root.join("pi");
     std::os::unix::fs::symlink(pinfold(), &shim).expect("symlink pi to pinfold");
-    let output = env
-        .command(&shim)
-        .args([
-            "-p",
-            "--provider",
-            "openai",
-            "--model",
-            "fake-model",
-            "reply with ok",
-        ])
-        .current_dir(project.path())
-        .env("PINFOLD_PROFILE", profile)
-        .env("PINFOLD_ROUTES", format!("fake.model={}", model.route()))
-        .env("PINFOLD_ENV_OPENAI_API_KEY", "sk-fake")
-        .output()
-        .expect("run pi -p");
-    assert!(
-        output.status.success(),
-        "pi -p failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let prompt = |selected: &str, allow: &str| {
+        let output = env
+            .command(&shim)
+            .args([
+                "-p",
+                "--provider",
+                "openai",
+                "--model",
+                "fake-model",
+                "reply with ok",
+            ])
+            .current_dir(project.path())
+            .env("PINFOLD_PROFILE", selected)
+            .env("PINFOLD_ALLOW", allow)
+            .env("PINFOLD_ROUTES", format!("fake.model={}", model.route()))
+            .env("PINFOLD_ENV_OPENAI_API_KEY", "sk-fake")
+            .output()
+            .expect("run pi -p");
+        assert!(
+            output.status.success(),
+            "pi -p with {selected} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        model
+            .requests()
+            .last()
+            .expect("the fake model got no request")
+            .1
+            .clone()
+    };
+    let request = prompt(profile, "custom-profile-allow.invalid");
 
-    let requests = model.requests();
-    let (_, request) = requests.first().expect("the fake model got no request");
     assert!(
         request.contains(profile_marker),
         "the profile skill never reached the model; the profile config level did not load"
-    );
-    assert!(
-        request.contains(project_marker),
-        "the project skill never reached the model; the project config level did not load"
     );
     // The bundled skill's own source supplies its marker: the description
     // its frontmatter declares.
@@ -792,14 +1004,58 @@ fn both_pi_config_levels_load_behind_a_route() {
         .lines()
         .find_map(|line| line.strip_prefix("description: "))
         .expect("read-documents declares a description");
-    assert!(
-        request.contains(description),
-        "the bundled document skill never reached the model"
-    );
+    // The first profile seeded models.json and settings.json. All later
+    // selections reuse this home; only the live mounted pi package changes.
+    let settings_path =
+        project_state_dir(&env, project.path()).join("home/.pi/agent/settings.json");
+    let mut settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
+    settings["e2eSavedSettingsMarker"] = serde_json::json!("keep-across-profile-switches");
+    fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    let saved = fs::read(&settings_path).unwrap();
+    let selections = [
+        ("default", "default-first-allow.invalid"),
+        ("full", "full-allow.invalid"),
+        ("default", "default-return-allow.invalid"),
+    ];
+    for (selected, allow) in selections {
+        let request = prompt(selected, allow);
+        assert_eq!(
+            request.contains(description),
+            selected == "full",
+            "{selected} advertised the wrong live document skills: {request}"
+        );
+        let body: serde_json::Value = serde_json::from_str(&request).unwrap();
+        let system = body["messages"]
+            .as_array()
+            .expect("the model request has messages")
+            .iter()
+            .find(|message| message["role"] == "system")
+            .and_then(|message| message["content"].as_str())
+            .expect("the model request has a system prompt");
+        assert!(
+            system.contains(allow)
+                && selections
+                    .iter()
+                    .filter(|(_, other)| *other != allow)
+                    .all(|(_, other)| !system.contains(other)),
+            "{selected} did not state the selected allowlist: {system}"
+        );
+        assert!(
+            request.contains(project_marker),
+            "{selected} lost the project skill"
+        );
+        assert_eq!(
+            fs::read(&settings_path).unwrap(),
+            saved,
+            "selecting {selected} overwrote saved pi settings"
+        );
+    }
 }
 
 #[test]
 fn the_highest_layer_sets_the_allowlist() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: union DEFAULT_ALLOW under the merged allow in
     // `Config::load`; the default hosts stay in the box's PINFOLD_ALLOW and
     // npm is let through, so the exact-list assertion fails. Sabotage: merge
@@ -814,44 +1070,31 @@ fn the_highest_layer_sets_the_allowlist() {
     let project = TestDir::new(&env, "project");
     git(project.path(), &["init", "-q"]);
 
-    // No `.pinfold.toml`: the built-in defaults are the box's allowlist.
-    let (run, _, name) = PiRpc::start(&env, project.path());
-    let default_allow = box_exec(&env, &name, &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""]);
-    let mut default_hosts: Vec<_> = default_allow.stdout.split(',').collect();
-    default_hosts.sort_unstable();
-    assert_eq!(
-        default_hosts,
-        [
-            "api.anthropic.com",
-            "api.openai.com",
-            "auth.openai.com",
-            "chatgpt.com",
-            "opencode.ai",
-            "openrouter.ai",
-            "pi.dev",
-            "platform.claude.com",
-            "registry.npmjs.org",
-        ],
-        "the built-in allowlist differs from Configuration's default hosts"
-    );
-    assert!(
-        run.finish().success(),
-        "the default run did not exit cleanly"
-    );
-
     // The environment's list replaces the project's, which replaces the
     // built-in one: the box's allowlist is exactly the host PINFOLD_ALLOW
-    // names, though the project allows another. The project file still sets
-    // the box's resources.
+    // names, though the project allows another. Resource, protection and
+    // route overrides use that same highest layer.
     let config = project.path().join(".pinfold.toml");
+    let project_fixture = HttpFixture::start(Some(("text/plain", "project-route")));
     fs::write(
         &config,
-        "allow = [\"registry.npmjs.org\"]\ncpus = 2\nmemory = \"1G\"\n",
+        format!("allow = [\"registry.npmjs.org\"]\ncpus = 2\nmemory = \"1G\"\nprotect = [\"project-only\"]\n[routes]\n'override.internal' = '{}'\n", project_fixture.route()),
     )
     .expect("write .pinfold.toml");
     allow(&env, project.path());
-    let (run, _, name) =
-        PiRpc::start_with_env(&env, project.path(), &[("PINFOLD_ALLOW", "api.github.com")]);
+    let fixture = HttpFixture::start(Some(("text/plain", "env-route")));
+    let route = format!("override.internal={}", fixture.route());
+    let (run, _, name) = PiRpc::start_with_env(
+        &env,
+        project.path(),
+        &[
+            ("PINFOLD_ALLOW", "api.github.com"),
+            ("PINFOLD_CPUS", "1"),
+            ("PINFOLD_MEMORY", "512M"),
+            ("PINFOLD_PROTECT", "host-config"),
+            ("PINFOLD_ROUTES", &route),
+        ],
+    );
 
     // `cpus` and `memory` reach the box: stat reports the memory limit, and
     // the box's cgroup shows the CPU quota, on both runtimes (the Apple
@@ -859,8 +1102,8 @@ fn the_highest_layer_sets_the_allowlist() {
     let stat = box_stat(&env, &name);
     assert_eq!(
         stat["memory"]["limit"].as_u64(),
-        Some(1024 * 1024 * 1024),
-        "the box's memory limit is not the project's 1G: {stat}"
+        Some(512 * 1024 * 1024),
+        "the box's memory limit is not the environment's 512M: {stat}"
     );
     let cpus = box_exec(&env, &name, &["cat", "/sys/fs/cgroup/cpu.max"]);
     assert_eq!(cpus.code, 0, "reading cpu.max failed: {}", cpus.stderr);
@@ -877,14 +1120,60 @@ fn the_highest_layer_sets_the_allowlist() {
         .expect("nonzero CPU period");
     assert_eq!(
         quota,
-        2 * period.get(),
-        "the box's cpu quota is not the project's 2 cpus"
+        period.get(),
+        "the box's cpu quota is not the environment's 1 cpu"
     );
     let env_allow = box_exec(&env, &name, &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""]);
     assert_eq!(
         env_allow.stdout, "api.github.com",
         "PINFOLD_ALLOW did not replace the project's allowlist"
     );
+
+    // Sabotage: omit resource/protect/routes from Layer::from_env. Host
+    // fixture input and the kernel's own observations supply expectations.
+    let protected = project.path().join("host-config");
+    let project_only = project.path().join("project-only");
+    fs::create_dir(&project_only).expect("prepare lower-layer protection control");
+    let superseded = box_exec(
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!("echo writable > '{}/file'", project_only.display()),
+        ],
+    );
+    assert_ok(
+        &superseded,
+        "environment protection replaces the project list",
+    );
+    let write = box_exec(
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!("echo denied > '{}/file'", protected.display()),
+        ],
+    );
+    assert_denied(
+        &write,
+        "Read-only file system",
+        "environment-protected directory",
+    );
+    let writable = box_exec(
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            &format!("echo allowed > '{}/project-file'", project.path().display()),
+        ],
+    );
+    assert_ok(&writable, "unprotected project file");
+    let routed = curl(&env, &name, "10", &["http://override.internal/"]);
+    assert_ok(&routed, "environment route");
+    assert_eq!(routed.stdout, "env-route");
 
     // The one listed host works.
     let allowed = curl(
@@ -915,10 +1204,76 @@ fn the_highest_layer_sets_the_allowlist() {
     );
 
     assert!(run.finish().success(), "pinfold pi did not exit cleanly");
+
+    // Sabotage: turn env::var errors into absence with .ok(); malformed
+    // overrides then silently use a lower layer. Their bytes stay private.
+    for key in [
+        "PINFOLD_PROFILE",
+        "PINFOLD_ALLOW",
+        "PINFOLD_ROUTES",
+        "PINFOLD_PROTECT",
+        "PINFOLD_CPUS",
+        "PINFOLD_MEMORY",
+    ] {
+        let mut bytes = b"private-override-marker".to_vec();
+        bytes.push(0xff);
+        let invalid = pinfold_in(&env, project.path(), &["config"])
+            .env(key, std::ffi::OsString::from_vec(bytes))
+            .output()
+            .expect("inspect a non-UTF-8 override");
+        let stderr = String::from_utf8_lossy(&invalid.stderr);
+        assert!(!invalid.status.success(), "ignored {key}");
+        assert!(stderr.contains(key), "missing override key: {stderr}");
+        assert!(
+            !stderr.contains("private-override-marker"),
+            "override value leaked: {stderr}"
+        );
+    }
+    run_ok(&mut pinfold_in(&env, project.path(), &["config"]));
+}
+
+#[test]
+fn writable_projects_exclude_host_authority() {
+    let _runtime = crate::shared_runtime();
+    // Guarantee 33. Sabotage: remove trust::validate_host_paths, or compare
+    // unresolved XDG paths; allow then records trust inside the project and
+    // pi/build accept it. The missing suffix behind a symlink is the case
+    // canonicalize(path) alone cannot check. Host fixture paths supply the
+    // expected boundary; the allowed sibling runs with the same profile.
+    let env = TestEnv::new("host-authority");
+    default_image(&env);
+    let project = TestDir::new(&env, "project");
+    git(project.path(), &["init", "-q"]);
+    let alias = env.root.join("project-alias");
+    std::os::unix::fs::symlink(project.path(), &alias).expect("symlink project ancestor");
+    for key in ["XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"] {
+        for ancestor in [project.path(), alias.as_path()] {
+            let unsafe_root = ancestor.join(format!("missing-{key}/nested"));
+            for args in [&["allow"][..], &["build"][..], &["pi", "--version"][..]] {
+                let output = pinfold_in(&env, project.path(), args)
+                    .env(key, &unsafe_root)
+                    .output()
+                    .expect("refuse project authority");
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(!output.status.success(), "accepted {key}: {stderr}");
+                assert!(
+                    stderr.contains("host-path-in-project"),
+                    "wrong refusal: {stderr}"
+                );
+            }
+            assert!(
+                !unsafe_root.join("pinfold/trust").exists(),
+                "allow wrote project trust"
+            );
+        }
+    }
+    allow(&env, project.path());
+    pi_version(&env, project.path());
 }
 
 #[test]
 fn a_caller_reads_the_effective_configuration_as_data() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: report DEFAULT_ALLOW instead of the merged allow in
     // `run_config`; `egress.allow` then names the built-in hosts and the
     // exact-list assertion fails.
@@ -967,11 +1322,106 @@ fn a_caller_reads_the_effective_configuration_as_data() {
         "the box's HOME is not project.home"
     );
     assert!(run.finish().success(), "pinfold pi did not exit cleanly");
+
+    // Sabotage: propagate a missing runtime from config_report, treat it as
+    // an absent image, or populate embedded profiles while loading metadata.
+    // The host's empty PATH makes image existence unknown; the project file
+    // still supplies its effective allowlist, and fresh host dirs stay empty.
+    let offline = TestEnv::with_private_cache("pi-config-offline");
+    let project = TestDir::new(&offline, "project");
+    fs::write(
+        project.path().join(".pinfold.toml"),
+        "allow = [\"api.github.com\"]\n",
+    )
+    .unwrap();
+    let empty = TestDir::new(&offline, "empty-path");
+    let output =
+        run_ok(pinfold_in(&offline, project.path(), &["config"]).env("PATH", empty.path()));
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("read offline config");
+    assert_eq!(
+        report["egress"]["allow"],
+        serde_json::json!(["api.github.com"])
+    );
+    assert!(
+        report["image_built"].is_null(),
+        "unobserved image reported as missing: {report}"
+    );
+    assert!(
+        report["image_error"]
+            .as_str()
+            .is_some_and(|error| !error.is_empty()),
+        "missing image observation error: {report}"
+    );
+    for directory in [&offline.state, &offline.config, &offline.root.join("cache")] {
+        assert_eq!(
+            fs::read_dir(directory).unwrap().count(),
+            0,
+            "config wrote to {}",
+            directory.display()
+        );
+    }
+
+    // Sabotage: remove Layer's deny_unknown_fields, or accept containerfile
+    // in a profile layer. The real CLI must refuse the file and key instead
+    // of reporting a partially applied policy. Correcting that same file
+    // succeeds without a runtime and reports the fixture's allowlist.
+    let profile = "e2e-config-refusal";
+    let profile_dir = offline.config.join("pinfold/profiles").join(profile);
+    fs::create_dir_all(&profile_dir).unwrap();
+    fs::write(profile_dir.join("Containerfile"), "FROM scratch\n").unwrap();
+    let profile_config = profile_dir.join("pinfold.toml");
+    let project_config = project.path().join(".pinfold.toml");
+    let valid_project = format!("profile = \"{profile}\"\n");
+    let valid_profile = "allow = [\"api.github.com\"]\n";
+    for (path, key, invalid, source) in [
+        (
+            &project_config,
+            "alloww",
+            format!("{valid_project}alloww = [\"example.com\"]\n"),
+            ".pinfold.toml",
+        ),
+        (
+            &profile_config,
+            "alloww",
+            format!("{valid_profile}alloww = [\"example.com\"]\n"),
+            profile,
+        ),
+        (
+            &profile_config,
+            "containerfile",
+            format!("{valid_profile}containerfile = \"project-only\"\n"),
+            profile,
+        ),
+    ] {
+        fs::write(&project_config, &valid_project).unwrap();
+        fs::write(&profile_config, valid_profile).unwrap();
+        fs::write(path, invalid).unwrap();
+        let refused = pinfold_in(&offline, project.path(), &["config"])
+            .env("PATH", empty.path())
+            .output()
+            .expect("read invalid configuration");
+        let reason = String::from_utf8_lossy(&refused.stderr);
+        assert!(!refused.status.success(), "accepted {source}'s {key}");
+        assert!(
+            reason.contains(source) && reason.contains("pinfold.toml") && reason.contains(key),
+            "refusal did not name its file and key: {reason}"
+        );
+        fs::write(&project_config, &valid_project).unwrap();
+        fs::write(&profile_config, valid_profile).unwrap();
+        let corrected =
+            run_ok(pinfold_in(&offline, project.path(), &["config"]).env("PATH", empty.path()));
+        let report: serde_json::Value = serde_json::from_slice(&corrected.stdout).unwrap();
+        assert_eq!(
+            report["egress"]["allow"],
+            serde_json::json!(["api.github.com"])
+        );
+    }
 }
 
 /// A `pinfold pi --mode rpc` process with a live box.
 struct PiRpc {
-    child: Child,
+    child: ChildOwner,
     stdin: Option<ChildStdin>,
     _reader: BufReader<ChildStdout>,
 }
@@ -990,7 +1440,7 @@ impl PiRpc {
         project: &Path,
         vars: &[(&str, &str)],
     ) -> (PiRpc, String, String) {
-        let mut child = env
+        let child = env
             .command(pinfold())
             .args(["pi", "--mode", "rpc"])
             .current_dir(project)
@@ -1001,33 +1451,54 @@ impl PiRpc {
             .stderr(Stdio::inherit())
             .spawn()
             .expect("spawn pinfold pi");
-        let mut stdin = child.stdin.take().expect("pi stdin");
-        stdin
+        let mut child = ChildOwner::new(child, env, None);
+        let stdin = child.stdin.take().expect("pi stdin");
+        let stdout = child.stdout.take().expect("pi stdout");
+        let mut run = PiRpc {
+            child,
+            stdin: Some(stdin),
+            _reader: BufReader::new(stdout),
+        };
+        run.stdin
+            .as_mut()
+            .unwrap()
             .write_all(b"{\"type\":\"get_state\",\"id\":\"1\"}\n")
             .expect("write get_state");
-        stdin.flush().expect("flush get_state");
-        let stdout = child.stdout.take().expect("pi stdout");
-        let mut reader = BufReader::new(stdout);
-        let mut line = String::new();
+        run.stdin
+            .as_mut()
+            .unwrap()
+            .flush()
+            .expect("flush get_state");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
         loop {
-            line.clear();
-            let read = reader.read_line(&mut line).expect("read pi reply");
-            assert!(read > 0, "pi exited before answering get_state");
+            let line = read_bounded(
+                &mut run.child,
+                &mut run._reader,
+                deadline.saturating_duration_since(std::time::Instant::now()),
+                false,
+            )
+            .expect("read pi reply");
+            assert!(!line.is_empty(), "pi exited before answering get_state");
             if let Ok(reply) = serde_json::from_str::<serde_json::Value>(line.trim())
                 && reply["id"] == "1"
             {
                 break;
             }
         }
-        let run = PiRpc {
-            child,
-            stdin: Some(stdin),
-            _reader: reader,
-        };
         // The run has created the project state; the id names its directory.
         let id = project_id(env, project);
-        let listed = box_list(env, &format!("dev.pinfold.project={id}"));
-        assert_eq!(listed.len(), 1, "expected one pi box for {id}: {listed:?}");
+        let owner = run.child.id();
+        let listed: Vec<_> = box_list(env, &format!("dev.pinfold.project={id}"))
+            .into_iter()
+            .filter(|box_| box_["owner"].as_u64() == Some(u64::from(owner)))
+            .collect();
+        assert_eq!(
+            listed.len(),
+            1,
+            "expected one pi box for owner {owner}: {listed:?}"
+        );
+        run.child
+            .observe(&serde_json::json!({ "labels": listed[0]["labels"] }));
         let name = listed[0]["name"]
             .as_str()
             .expect("box name is a string")
@@ -1038,16 +1509,7 @@ impl PiRpc {
     /// Close pi's stdin, wait for it, and return its exit status.
     fn finish(mut self) -> ExitStatus {
         drop(self.stdin.take());
-        self.child.wait().expect("wait for pinfold pi")
-    }
-}
-
-impl Drop for PiRpc {
-    fn drop(&mut self) {
-        // A panicking test must not leave a live `pinfold pi` behind; the
-        // next pinfold command prunes the box once its owner is gone.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.child.wait_bounded()
     }
 }
 

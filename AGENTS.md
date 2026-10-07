@@ -86,7 +86,11 @@ rules for changing the repository.
   (an HTTP service behind a route, a fake OpenAI-compatible model). The only
   public endpoints are `api.github.com` (allowed) and `example.com`
   (denied), and on macOS only, codex's live login (`chatgpt.com`,
-  `auth.openai.com`) through guarantee 26's route.
+  `auth.openai.com`) through guarantee 26's route. Guarantee 36 uses a
+  private Linux network and mount namespace with no external route. Only
+  there, `api.github.com` resolves to a locally assigned fixture address;
+  its TLS certificate is trusted only by the fixture guest. The production
+  proxy policy and timeout remain unchanged.
 - **Budget:** the suite runs in under 5 minutes in CI.
 
 ## Checks

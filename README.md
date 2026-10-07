@@ -81,10 +81,8 @@ Then make `pi` a symlink to the binary, in a directory on `PATH`:
 ln -s pinfold ~/.local/bin/pi
 ```
 
-`pi` must resolve to pinfold before any other `pi` on `PATH`. The shim
-shadows the host `pi` for every tool that spawns one, not only your shell:
-such a tool then runs pi in a box for the project it invokes `pi` from,
-with that project's pinfold state and logins.
+Put the `pi` symlink before other `pi` executables on `PATH`. Every tool
+that invokes it runs boxed pi with the invoked project's state and logins.
 
 ## First run
 
@@ -106,17 +104,31 @@ To reuse one project's pi configuration in another, `pinfold profile new
 NAME --from-project [PATH]` copies it into a profile (see Profiles in the
 spec).
 
-After bundled defaults change, an interactive launch shows
-`default-profile-changed` once. Saved settings and user profiles stay as they
-are; `pinfold profile new NAME --builtin` copies the new defaults to inspect.
+Interactive launches report `bundled-profiles-changed` once without changing
+saved settings or user profiles. To inspect or edit a built-in, run
+`pinfold profile new NAME --from full --builtin`.
 
-The bundled default reads local documents: AnyDoc converts them to
-Markdown and Poppler inspects PDFs.
+The default image has the basic coding tools. Optional profiles add tools
+without changing the egress allowlist:
+
+| Profile | Adds |
+|---|---|
+| `documents` | Bun, AnyDoc for local document conversion, Poppler for PDFs |
+| `full` | documents tools plus gh, rtk and ponytail |
+
+Build and select one explicitly:
+
+```sh
+pinfold build --profile documents
+PINFOLD_PROFILE=documents pi
+```
+
+Set `profile = "documents"` in the project's `.pinfold.toml` to keep the
+selection, then run `pinfold allow`.
 
 ## Configuration
 
-The layers, keys, their environment variables and defaults are under
-Configuration in [ARCHITECTURE.md](docs/ARCHITECTURE.md#configuration).
+See [Configuration](docs/ARCHITECTURE.md#configuration) for layers, keys and defaults.
 
 For `pinfold pi`, forward host variables with `PINFOLD_ENV_<NAME>`.
 Programmatic callers use the [box spec](docs/ARCHITECTURE.md#process-interface).
@@ -125,3 +137,6 @@ Programmatic callers use the [box spec](docs/ARCHITECTURE.md#process-interface).
 
 Read the [threat model](docs/ARCHITECTURE.md#threat-model) and
 [shared files](docs/ARCHITECTURE.md#shared-files) before using pinfold with a repository.
+
+The experimental [Pi Durable example](examples/pi-durable/README.md)
+provides a host adapter for boxed execution and recovery.

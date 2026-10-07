@@ -8,9 +8,11 @@ use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+
 use std::thread;
 use std::time::{Duration, Instant};
+use tokio::sync::oneshot;
 
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
@@ -49,7 +51,7 @@ pub fn start(
     egress: &Egress,
     codex: Option<login::Token>,
     log: PathBuf,
-) -> io::Result<()> {
+) -> io::Result<oneshot::Receiver<()>> {
     let rules = Arc::new(Rules::new(egress, codex)?);
     let listener = UnixListener::bind(socket).map_err(|error| {
         io::Error::new(
@@ -66,8 +68,13 @@ pub fn start(
         .create(true)
         .append(true)
         .open(&log)?;
+    let (failure, failed) = oneshot::channel();
+    let log = Arc::new(AuditLog {
+        path: log,
+        failure: Mutex::new(Some(failure)),
+    });
     thread::spawn(move || serve(listener, rules, log));
-    Ok(())
+    Ok(failed)
 }
 
 /// One box's egress rules: the allowlist and the routes.
@@ -168,12 +175,18 @@ fn tls_config() -> Arc<ClientConfig> {
     Arc::clone(config)
 }
 
-fn serve(listener: UnixListener, rules: Arc<Rules>, log: PathBuf) {
+fn serve(listener: UnixListener, rules: Arc<Rules>, log: Arc<AuditLog>) {
     let active = Arc::new(AtomicUsize::new(0));
     for client in listener.incoming() {
         let Ok(mut client) = client else {
             continue;
         };
+        if log.failed() {
+            return;
+        }
+        if client.set_write_timeout(Some(IDLE_TIMEOUT)).is_err() {
+            continue;
+        }
         if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
             active.fetch_sub(1, Ordering::SeqCst);
             refuse(&mut client, &log, "", 503, "connection cap");
@@ -189,14 +202,14 @@ fn serve(listener: UnixListener, rules: Arc<Rules>, log: PathBuf) {
     }
 }
 
-fn handle(mut client: UnixStream, rules: &Rules, log: &Path) {
-    if client.set_read_timeout(Some(HEADER_TIMEOUT)).is_err() {
+fn handle(mut client: UnixStream, rules: &Rules, log: &AuditLog) {
+    if log.failed() || client.set_read_timeout(Some(HEADER_TIMEOUT)).is_err() {
         return;
     }
     let head = match read_head(&mut client) {
         Ok(head) => head,
         Err(error) if timed_out(&error) => {
-            record(log, "", "refused", "header timeout", None);
+            let _ = record(log, "", "refused", "header timeout", None);
             return;
         }
         Err(_) => return,
@@ -227,7 +240,7 @@ fn handle(mut client: UnixStream, rules: &Rules, log: &Path) {
 
 /// Handle one CONNECT: an allowlisted host on port 443 only, with the
 /// ClientHello's SNI checked before the server is dialed.
-fn connect(client: &mut UnixStream, rules: &Rules, log: &Path, target: &str) {
+fn connect(client: &mut UnixStream, rules: &Rules, log: &AuditLog, target: &str) {
     let Some((host, port)) = target.rsplit_once(':').filter(|(host, _)| !host.is_empty()) else {
         return refuse(client, log, "", 400, "malformed request");
     };
@@ -254,11 +267,13 @@ fn connect(client: &mut UnixStream, rules: &Rules, log: &Path, target: &str) {
     let hello = match tls::read_client_hello(client, host) {
         Ok(hello) => hello,
         Err(reason) => {
-            record(log, host, "refused", reason, None);
+            let _ = record(log, host, "refused", reason, None);
             return;
         }
     };
-    record(log, host, "allowed", "allowlisted", None);
+    if record(log, host, "allowed", "allowlisted", None).is_err() {
+        return;
+    }
     if let Some(mut server) = dial(address) {
         if server.write_all(&hello).is_err() {
             return;
@@ -269,7 +284,7 @@ fn connect(client: &mut UnixStream, rules: &Rules, log: &Path, target: &str) {
 
 /// Handle one plain HTTP request: an allowlisted host or a route, port 80
 /// only, framed by Content-Length, one request per connection.
-fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain) {
+fn plain(client: &mut UnixStream, rules: &Rules, log: &AuditLog, request: &Plain) {
     if request.port != 80 {
         return refuse(client, log, &request.host, 403, "port not allowed");
     }
@@ -287,14 +302,16 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain) {
     let Some(address) = resolve_checked(client, log, &request.host, &host, 80) else {
         return;
     };
-    record(log, &request.host, "allowed", "allowlisted", None);
+    if record(log, &request.host, "allowed", "allowlisted", None).is_err() {
+        return;
+    }
     let _ = forward(
         client,
         dial(address),
         request,
         &request.authority,
         &[],
-        &mut |_| {},
+        &mut |_| Ok(()),
     );
 }
 
@@ -302,7 +319,7 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &Path, request: &Plain) {
 /// `https` target is resolved and checked like an allowlisted host, then
 /// dialed over TLS. A codex login whose token has lapsed is refused before
 /// anything is dialed.
-fn route(client: &mut UnixStream, log: &Path, request: &Plain, upstream: &Upstream) {
+fn route(client: &mut UnixStream, log: &AuditLog, request: &Plain, upstream: &Upstream) {
     let mut report = |status: Option<u16>| {
         let path = request
             .target
@@ -313,7 +330,7 @@ fn route(client: &mut UnixStream, log: &Path, request: &Plain, upstream: &Upstre
             "path": path,
             "status": status,
         });
-        record(log, &request.host, "allowed", "route", Some(fields));
+        record(log, &request.host, "allowed", "route", Some(fields))
     };
     let (target, host, headers) = match upstream {
         Upstream::Address(target) => (target, &request.authority, Cow::Borrowed(&[][..])),
@@ -342,7 +359,7 @@ fn route(client: &mut UnixStream, log: &Path, request: &Plain, upstream: &Upstre
 /// forbidden address is refused 403 with its reason, an unresolved name 502.
 fn resolve_checked(
     client: &mut UnixStream,
-    log: &Path,
+    log: &AuditLog,
     log_host: &str,
     host: &str,
     port: u16,
@@ -461,10 +478,10 @@ fn forward(
     request: &Plain,
     host: &str,
     inject: &[(String, String)],
-    report: &mut dyn FnMut(Option<u16>),
+    report: &mut dyn FnMut(Option<u16>) -> io::Result<()>,
 ) -> io::Result<()> {
     let Some(mut server) = server else {
-        report(None);
+        report(None)?;
         return respond(client, 502);
     };
     let _ = client.set_read_timeout(Some(IDLE_TIMEOUT));
@@ -499,11 +516,11 @@ fn forward(
     let (line, status) = match exchange() {
         Ok(sent) => sent,
         Err(error) => {
-            report(None);
+            report(None)?;
             return Err(error);
         }
     };
-    report(status);
+    report(status)?;
     client.write_all(&line)?;
     io::copy(&mut server, client)?;
     let _ = client.shutdown(Shutdown::Write);
@@ -589,82 +606,93 @@ fn dial(address: impl ToSocketAddrs) -> Option<TcpStream> {
     let address = address.to_socket_addrs().ok()?.next()?;
     let server = TcpStream::connect(address).ok()?;
     server.set_read_timeout(Some(IDLE_TIMEOUT)).ok()?;
+    server.set_write_timeout(Some(IDLE_TIMEOUT)).ok()?;
     Some(server)
 }
 
-/// Copy one direction of a tunnel until EOF, an error, or idleness, and
-/// return whether it went idle. Every read that moves bytes stamps the
-/// shared activity. A read timeout waits out the rest of `IDLE_TIMEOUT`
-/// through `rearm` while either direction has moved bytes; when none has,
-/// the direction is idle. It never shuts a socket down.
+/// How one tunnel direction ended. EOF preserves the opposite direction;
+/// a failed or idle direction interrupts both sockets before the join.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CopyEnd {
+    Eof,
+    Idle,
+    WriteTimeout,
+    Failed,
+}
+
+/// Reads share their activity clock, so a one-way active tunnel stays open.
 fn copy_direction(
     mut reader: impl Read,
     mut writer: impl Write,
     rearm: impl Fn(Duration),
     activity: &Mutex<Instant>,
-) -> bool {
+) -> CopyEnd {
     let mut buffer = [0u8; 8 * 1024];
     loop {
         match reader.read(&mut buffer) {
-            Ok(0) => return false,
+            Ok(0) => return CopyEnd::Eof,
             Ok(n) => {
-                if let Ok(mut last) = activity.lock() {
-                    *last = Instant::now();
+                if let Err(error) = writer.write_all(&buffer[..n]) {
+                    return if timed_out(&error) {
+                        CopyEnd::WriteTimeout
+                    } else {
+                        CopyEnd::Failed
+                    };
                 }
-                if writer.write_all(&buffer[..n]).is_err() {
-                    return false;
-                }
+                *activity.lock().unwrap_or_else(PoisonError::into_inner) = Instant::now();
             }
             Err(error) if timed_out(&error) => {
                 let elapsed = activity
                     .lock()
-                    .map_or(Duration::ZERO, |last| last.elapsed());
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .elapsed();
                 let Some(remaining) = IDLE_TIMEOUT.checked_sub(elapsed) else {
-                    return true;
+                    return CopyEnd::Idle;
                 };
                 rearm(remaining.max(Duration::from_millis(1)));
             }
-            Err(_) => return false,
+            Err(_) => return CopyEnd::Failed,
         }
     }
 }
 
-/// Copy both directions for the life of the tunnel. A direction that ends
-/// shuts its writer down by [`shutdown_after`]. The tunnel is logged closed
-/// idle when either direction went idle, which is only when neither has
-/// moved bytes for `IDLE_TIMEOUT`.
-fn tunnel(client: &UnixStream, server: TcpStream, log: &Path, host: &str) {
-    let _ = client.set_read_timeout(Some(IDLE_TIMEOUT));
+/// Both sockets are interrupted on failure, including the peer's writer.
+/// Ordinary EOF closes only the destination's upload half.
+fn tunnel(client: &UnixStream, server: TcpStream, log: &AuditLog, host: &str) {
+    if client.set_read_timeout(Some(IDLE_TIMEOUT)).is_err() {
+        return;
+    }
     let activity = Mutex::new(Instant::now());
-    let idle = thread::scope(|scope| {
+    let (upload, download) = thread::scope(|scope| {
         let up = scope.spawn(|| {
             let rearm = |timeout| {
                 let _ = client.set_read_timeout(Some(timeout));
             };
-            let idle = copy_direction(client, &server, rearm, &activity);
-            let _ = server.shutdown(shutdown_after(idle));
-            idle
+            let end = copy_direction(client, &server, rearm, &activity);
+            let _ = server.shutdown(if end == CopyEnd::Eof {
+                Shutdown::Write
+            } else {
+                let _ = client.shutdown(Shutdown::Both);
+                Shutdown::Both
+            });
+            end
         });
         let rearm = |timeout| {
             let _ = server.set_read_timeout(Some(timeout));
         };
-        let idle = copy_direction(&server, client, rearm, &activity);
-        let _ = client.shutdown(shutdown_after(idle));
-        up.join().unwrap_or(false) || idle
+        let end = copy_direction(&server, client, rearm, &activity);
+        let _ = client.shutdown(if end == CopyEnd::Eof {
+            Shutdown::Write
+        } else {
+            let _ = server.shutdown(Shutdown::Both);
+            Shutdown::Both
+        });
+        (up.join().unwrap_or(CopyEnd::Failed), end)
     });
-    if idle {
-        record(log, host, "closed", "idle timeout", None);
-    }
-}
-
-/// How a tunnel direction shuts its writer down once it ends: whole when it
-/// went idle, which ends the other direction's read too, else only the
-/// write half.
-fn shutdown_after(idle: bool) -> Shutdown {
-    if idle {
-        Shutdown::Both
-    } else {
-        Shutdown::Write
+    if [upload, download].contains(&CopyEnd::Idle) {
+        let _ = record(log, host, "closed", "idle timeout", None);
+    } else if [upload, download].contains(&CopyEnd::WriteTimeout) {
+        let _ = record(log, host, "closed", "write timeout", None);
     }
 }
 
@@ -685,15 +713,22 @@ fn respond(client: &mut UnixStream, code: u16) -> io::Result<()> {
 }
 
 /// Record one refusal and answer with its status.
-fn refuse(client: &mut UnixStream, log: &Path, host: &str, code: u16, reason: &str) {
-    record(log, host, "refused", reason, None);
-    let _ = respond(client, code);
+fn refuse(client: &mut UnixStream, log: &AuditLog, host: &str, code: u16, reason: &str) {
+    if record(log, host, "refused", reason, None).is_ok() {
+        let _ = respond(client, code);
+    }
 }
 
 /// Append one decision as a JSON line. A route decision also names the
 /// method, the request path and the upstream status. No header value is ever
 /// written.
-fn record(log: &Path, host: &str, decision: &str, reason: &str, route: Option<serde_json::Value>) {
+fn record(
+    log: &AuditLog,
+    host: &str,
+    decision: &str,
+    reason: &str,
+    route: Option<serde_json::Value>,
+) -> io::Result<()> {
     let mut entry = serde_json::json!({
         "time": rfc3339(now() as i64),
         "host": host,
@@ -705,7 +740,35 @@ fn record(log: &Path, host: &str, decision: &str, reason: &str, route: Option<se
     }
     let mut line = entry.to_string();
     line.push('\n');
-    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(log) {
-        let _ = file.write_all(line.as_bytes());
+    let mut failure = log.failure.lock().unwrap_or_else(PoisonError::into_inner);
+    if failure.is_none() {
+        return Err(io::Error::other("egress audit log failed"));
+    }
+    let written = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log.path)
+        .and_then(|mut file| file.write_all(line.as_bytes()));
+    if written.is_err() {
+        if let Some(failure) = failure.take() {
+            let _ = failure.send(());
+        }
+        return Err(io::Error::other("egress audit log failed"));
+    }
+    Ok(())
+}
+
+/// The append lock also latches the first failure and notifies the owner.
+struct AuditLog {
+    path: PathBuf,
+    failure: Mutex<Option<oneshot::Sender<()>>>,
+}
+
+impl AuditLog {
+    fn failed(&self) -> bool {
+        self.failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_none()
     }
 }

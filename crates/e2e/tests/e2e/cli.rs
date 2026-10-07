@@ -5,7 +5,7 @@
 //! available and absent from PATH.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use e2e::{TestEnv, pinfold};
 
@@ -14,6 +14,7 @@ use e2e::{TestEnv, pinfold};
 /// state dir untouched.
 #[test]
 fn version_needs_no_runtime() {
+    let _runtime = crate::shared_runtime();
     // Sabotage: run `crate::core::clean::maintain()` first in main.rs,
     // before the options and the help check, as the code once did; with the
     // empty PATH the pass writes under the state dir, so both empty-state
@@ -69,15 +70,40 @@ fn version_needs_no_runtime() {
 
 #[test]
 fn doctor_reports_without_changing_state() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 27. Sabotage: run maintenance before doctor; the fresh
     // state directory gains a maintenance stamp and the old artifact goes.
     // Sabotage: omit host_requirements after a failed preflight; the Linux
     // refusal no longer names the missing runtime directory. Remove its
     // tun check; the isolated namespace with no device loses its named reason.
+    // Materialize an embedded profile during inspection; the fresh cache
+    // gains files. Expected trees are the host's own pre-inspection snapshot.
+    // Podman's image lookup may create its own short-name alias lock outside
+    // these owned trees. Missing directories differ from empty directories.
     let env = TestEnv::with_private_cache("doctor");
+    fs::write(env.root.join(".pinfold.toml"), "memory = \"1G\"\n").unwrap();
     let old = env.root.join("cache/pinfold/artifacts/pi/0.0.0/marker");
     fs::create_dir_all(old.parent().unwrap()).unwrap();
     fs::write(&old, b"keep").unwrap();
+    let owned = [
+        env.state.join("pinfold"),
+        env.config.join("pinfold"),
+        env.root.join("cache/pinfold"),
+    ];
+    let owned_trees = || {
+        owned
+            .iter()
+            .map(|directory| {
+                let tree = match fs::symlink_metadata(directory) {
+                    Ok(_) => Some(host_tree(directory)),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => panic!("read {}: {error}", directory.display()),
+                };
+                (directory.clone(), tree)
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = owned_trees();
     let empty = env.root.join("empty-path");
     fs::create_dir(&empty).unwrap();
     let missing = env.root.join("missing-runtime");
@@ -116,15 +142,29 @@ fn doctor_reports_without_changing_state() {
         }
         let output = command.output().expect("run pinfold doctor");
         assert!(output.status.success(), "doctor failed: {output:?}");
+        // Sabotage: omit config_report after a failed runtime check. Host
+        // configuration must still be readable; the fixture supplies 1G.
+        let report = String::from_utf8_lossy(&output.stdout);
+        let config: serde_json::Value = report
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("config: ")
+                    .and_then(|json| serde_json::from_str(json).ok())
+            })
+            .expect("doctor reports host configuration");
+        assert_eq!(config["memory"], "1G");
+        if scenario == "no-runtime" {
+            assert!(config["image_built"].is_null());
+            assert!(
+                config["image_error"]
+                    .as_str()
+                    .is_some_and(|error| !error.is_empty())
+            );
+        }
         assert_eq!(
-            fs::read(&old).unwrap(),
-            b"keep",
-            "doctor removed an artifact"
-        );
-        assert_eq!(
-            fs::read_dir(&env.state).unwrap().count(),
-            0,
-            "doctor wrote state"
+            owned_trees(),
+            before,
+            "doctor changed pinfold's state, config or cache ({scenario})"
         );
         if scenario != "ready" && cfg!(target_os = "linux") {
             let report = String::from_utf8_lossy(&output.stdout);
@@ -140,4 +180,26 @@ fn doctor_reports_without_changing_state() {
             }
         }
     }
+}
+
+// Preserve directories as well as file bytes: a supposedly read-only
+// inspection must not create even an empty cache directory.
+pub(super) fn host_tree(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+    fn walk(root: &Path, dir: &Path, entries: &mut Vec<(PathBuf, Option<Vec<u8>>)>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let relative = path.strip_prefix(root).unwrap().to_owned();
+            if entry.file_type().unwrap().is_dir() {
+                entries.push((relative, None));
+                walk(root, &path, entries);
+            } else {
+                entries.push((relative, Some(fs::read(&path).unwrap())));
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    walk(root, root, &mut entries);
+    entries.sort();
+    entries
 }

@@ -1,0 +1,64 @@
+name: Slow proxy proof
+
+on:
+  # Validate a new gate before it exists on the default branch.
+  push:
+    branches: ['codex/slow-proxy/**']
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  connect:
+    name: CONNECT (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-26.04, ubuntu-26.04-arm]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Rootless podman and fixture tools
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dbus-user-session musl-tools openssl python3 iproute2
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@$(id -u).service"
+          XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          export XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
+          systemctl --user daemon-reload
+          systemctl --user enable --now dbus.socket
+          podman system migrate
+          {
+            echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+            echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
+          } >>"$GITHUB_ENV"
+
+      - name: Rust musl target
+        run: |
+          rustup target add "$(uname -m)-unknown-linux-musl"
+          echo "CC_$(uname -m)_unknown_linux_musl=musl-gcc" >>"$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+
+      - name: Build the real binary
+        run: cargo build -p pinfold --locked --target "$(uname -m)-unknown-linux-musl"
+
+      - name: CONNECT tunnels share activity
+        run: bash scripts/slow-proxy.sh "$PWD/target/$(uname -m)-unknown-linux-musl/debug/pinfold"

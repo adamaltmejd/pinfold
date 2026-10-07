@@ -1,11 +1,12 @@
 //! Host self-update through a real HTTPS release fixture.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::{MetadataExt, symlink};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
+use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use e2e::{TestEnv, default_image, pinfold, run_ok};
 
@@ -13,6 +14,7 @@ use super::box_::{box_name, box_up};
 
 #[test]
 fn host_updates_are_verified_and_atomic() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 28. Sabotage: skip SHA256SUMS verification; the damaged
     // release succeeds. Rename before verification; the old inode changes
     // on refusal. Write into the executable instead of renaming; the final
@@ -31,9 +33,16 @@ fn host_updates_are_verified_and_atomic() {
     symlink("pinfold", &alias).unwrap();
     let update_alias = env.root.join("pinfold-link");
     symlink("pinfold", &update_alias).unwrap();
-    let fixture = ReleaseProxy::new(&env);
+    let mut fixture = ReleaseProxy::new(&env);
     let original = fs::read(&installed).unwrap();
     let original_inode = fs::metadata(&installed).unwrap().ino();
+    let replacement = changed_profiles_binary(&env);
+    let replacement_bytes = fs::read(&replacement).unwrap();
+    assert_ne!(
+        replacement_bytes, original,
+        "release fixture must be a distinct real build"
+    );
+    fs::copy(replacement, fixture.root.join("release")).unwrap();
 
     let mut check = fixture.command(&env, &installed);
     run_ok(check.args(["update", "--check"]));
@@ -100,8 +109,36 @@ fn host_updates_are_verified_and_atomic() {
     assert_eq!(fs::metadata(&installed).unwrap().ino(), original_inode);
     drop(_owner);
 
-    run_ok(fixture.command(&env, &update_alias).arg("update"));
+    // Sabotage: hold the exclusive executable lock only before downloading.
+    // A real owner starts after the fixture observes the asset request;
+    // replacement must recheck that owner before its atomic rename.
+    fs::write(fixture.root.join("hold-download"), b"").unwrap();
+    let mut downloading = fixture.command(&env, &installed);
+    let update = downloading
+        .arg("update")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    fixture.wait_for_download();
+    let owner = UpdateOwner::start(&other, &installed, &spec);
+    fixture.release_download();
+    let refusal = update.wait_with_output().unwrap();
+    assert!(
+        !refusal.status.success(),
+        "owner starting during download was replaced"
+    );
+    assert!(
+        String::from_utf8_lossy(&refusal.stderr).contains("update-busy"),
+        "wrong race refusal: {refusal:?}"
+    );
     assert_eq!(fs::read(&installed).unwrap(), original);
+    assert_eq!(fs::metadata(&installed).unwrap().ino(), original_inode);
+    drop(owner);
+    fs::remove_file(fixture.root.join("hold-download")).unwrap();
+
+    run_ok(fixture.command(&env, &update_alias).arg("update"));
+    assert_eq!(fs::read(&installed).unwrap(), replacement_bytes);
     assert_ne!(fs::metadata(&installed).unwrap().ino(), original_inode);
     assert_eq!(fs::read_link(&alias).unwrap(), Path::new("pinfold"));
     run_ok(env.command(&installed).arg("--version"));
@@ -109,18 +146,21 @@ fn host_updates_are_verified_and_atomic() {
 
 #[test]
 fn interactive_update_checks_are_bounded() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 29. Sabotage: remove terminal or opt-out checks; suppressed
     // launches reach the fixture. Ignore the daily stamp; the second launch
-    // queries again. Drop --max-time; the stalled fixture never finishes.
+    // queries again. Increase notice_due's latest timeout from one to three
+    // seconds; the fixture's observed connection lifetime exceeds its limit.
     // Print automatic-check errors; the offline launch differs from the
     // same terminal launch with checking disabled, violating silence.
     // Fixture request records and its release tag are outside expectations.
     let env = TestEnv::with_private_cache("update-notice");
     let installed = env.root.join("pinfold");
     fs::copy(pinfold(), &installed).unwrap();
-    let fixture = ReleaseProxy::new(&env);
+    let mut fixture = ReleaseProxy::new(&env);
+    let checks_path = fixture.root.join("checks");
     let checks = || {
-        fs::read_to_string(fixture.root.join("checks"))
+        fs::read_to_string(&checks_path)
             .unwrap_or_default()
             .lines()
             .count()
@@ -164,14 +204,14 @@ fn interactive_update_checks_are_bounded() {
             .args(["box", "list", "--label", "dev.pinfold.project"]),
     );
     fs::write(fixture.root.join("offline"), b"").unwrap();
-    let start = Instant::now();
     let result = fixture
         .terminal(&offline, &installed, &attach)
         .output()
         .unwrap();
+    let lifetime = fixture.wait_for_stalled_check();
     assert!(
-        start.elapsed() < Duration::from_secs(4),
-        "offline launch exceeded its check budget"
+        lifetime <= Duration::from_millis(1750),
+        "stalled HTTPS check lasted {lifetime:?}"
     );
     assert_eq!(checks(), 2, "offline check did not reach the fixture");
     assert_eq!(
@@ -186,14 +226,16 @@ fn interactive_update_checks_are_bounded() {
 }
 
 #[test]
-fn changed_bundled_defaults_are_reported_once() {
+fn changed_bundled_profiles_are_reported_once() {
+    let _runtime = crate::shared_runtime();
     // Guarantee 31. Sabotage: omit the embedded-profile comparison, or gate
     // it behind the daily network interval; the changed binary stays silent.
     // Do not save the new fingerprint; the next launch warns again. Warn on
     // the first launch without history; the initial control fails. Resolve
-    // --builtin through user profile lookup; the copied settings miss the
-    // changed fixture default. Fixture source bytes and the spec's
-    // default-profile-changed token give the
+    // --builtin through user profile lookup; the copied package misses the
+    // changed full-profile package. Hash only the default profile; the full-
+    // only change is missed. Fixture source bytes and the spec's
+    // bundled-profiles-changed token give the
     // expectations. Both executables are built from production source.
     let env = TestEnv::with_private_cache("profile-notice");
     let installed = env.root.join("pinfold");
@@ -205,20 +247,20 @@ fn changed_bundled_defaults_are_reported_once() {
         .output()
         .unwrap();
     assert!(
-        !String::from_utf8_lossy(&first.stdout).contains("default-profile-changed"),
+        !String::from_utf8_lossy(&first.stdout).contains("bundled-profiles-changed"),
         "first launch claimed a change without history: {first:?}"
     );
 
-    let changed = changed_defaults_binary(&env);
+    let changed = changed_profiles_binary(&env);
     let second = fixture.terminal(&env, &changed, &attach).output().unwrap();
     assert!(
-        String::from_utf8_lossy(&second.stdout).contains("default-profile-changed"),
-        "changed defaults were not reported: {second:?}"
+        String::from_utf8_lossy(&second.stdout).contains("bundled-profiles-changed"),
+        "changed profiles were not reported: {second:?}"
     );
     let third = fixture.terminal(&env, &changed, &attach).output().unwrap();
     assert!(
-        !String::from_utf8_lossy(&third.stdout).contains("default-profile-changed"),
-        "unchanged defaults were reported again: {third:?}"
+        !String::from_utf8_lossy(&third.stdout).contains("bundled-profiles-changed"),
+        "unchanged profiles were reported again: {third:?}"
     );
     assert_eq!(
         fs::read_to_string(fixture.root.join("checks"))
@@ -230,30 +272,45 @@ fn changed_bundled_defaults_are_reported_once() {
     );
 
     // The notice's suggested copy must expose the updated built-in defaults
-    // even when a user profile shadows default, without replacing that copy.
-    let override_dir = env.config.join("pinfold/profiles/default");
+    // even when a user profile shadows full, without replacing that copy.
+    let override_dir = env.config.join("pinfold/profiles/full");
     let override_settings = override_dir.join("home/.pi/agent/settings.json");
     fs::create_dir_all(override_settings.parent().unwrap()).unwrap();
     fs::write(override_dir.join("Containerfile"), "FROM scratch\n").unwrap();
     let marker = b"{\"userOverride\":true}\n";
     fs::write(&override_settings, marker).unwrap();
-    run_ok(
-        env.command(&changed)
-            .args(["profile", "new", "updated-defaults", "--builtin"]),
-    );
+    run_ok(env.command(&changed).args([
+        "profile",
+        "new",
+        "updated-defaults",
+        "--from",
+        "full",
+        "--builtin",
+    ]));
     let copied: serde_json::Value = serde_json::from_slice(
         &fs::read(
             env.config
-                .join("pinfold/profiles/updated-defaults/home/.pi/agent/settings.json"),
+                .join("pinfold/profiles/updated-defaults/share/pi/package.json"),
         )
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(copied["fixtureDefaultChanged"], true);
+    assert_eq!(copied["fixtureFullChanged"], true);
     assert_eq!(fs::read(override_settings).unwrap(), marker);
 }
 
-fn changed_defaults_binary(env: &TestEnv) -> PathBuf {
+fn changed_profiles_binary(env: &TestEnv) -> PathBuf {
+    // Both update guarantees need the same different production executable.
+    // Retain bytes, not a path in another test's removable scratch tree.
+    static BINARY: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    let bytes = BINARY.get_or_init(|| build_changed_profiles_binary(env));
+    let installed = env.root.join("changed-pinfold");
+    fs::write(&installed, bytes).unwrap();
+    fs::set_permissions(&installed, fs::Permissions::from_mode(0o755)).unwrap();
+    installed
+}
+
+fn build_changed_profiles_binary(env: &TestEnv) -> Vec<u8> {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -269,11 +326,11 @@ fn changed_defaults_binary(env: &TestEnv) -> PathBuf {
         &source.join("crates/pinfold"),
     );
     copy_tree(&workspace.join("profile"), &source.join("profile"));
-    let settings = source.join("profile/home/.pi/agent/settings.json");
-    let mut defaults: serde_json::Value =
-        serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
-    defaults["fixtureDefaultChanged"] = serde_json::json!(true);
-    fs::write(settings, serde_json::to_vec(&defaults).unwrap()).unwrap();
+    let package_path = source.join("profile/full/package.json");
+    let mut package: serde_json::Value =
+        serde_json::from_slice(&fs::read(&package_path).unwrap()).unwrap();
+    package["fixtureFullChanged"] = serde_json::json!(true);
+    fs::write(package_path, serde_json::to_vec(&package).unwrap()).unwrap();
     // A private target prevents replacing the suite's executable while other
     // tests run. Linux uses the same production musl target as e2e::pinfold.
     let target = env.root.join("changed-target");
@@ -290,9 +347,7 @@ fn changed_defaults_binary(env: &TestEnv) -> PathBuf {
         target.join("debug/pinfold")
     };
     run_ok(&mut build);
-    let installed = env.root.join("changed-pinfold");
-    fs::copy(binary, &installed).unwrap();
-    installed
+    fs::read(binary).unwrap()
 }
 
 fn copy_tree(from: &Path, to: &Path) {
@@ -355,6 +410,7 @@ impl Drop for UpdateOwner {
 
 struct ReleaseProxy {
     child: Child,
+    events: BufReader<ChildStdout>,
     root: PathBuf,
     port: u16,
 }
@@ -394,11 +450,46 @@ impl ReleaseProxy {
             .spawn()
             .expect("start host HTTPS proxy");
         let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .expect("read fixture readiness");
+        let mut events = BufReader::new(child.stdout.take().unwrap());
+        events.read_line(&mut line).expect("read fixture readiness");
         let port = line.trim().parse().expect("fixture reports its port");
-        Self { child, root, port }
+        Self {
+            child,
+            events,
+            root,
+            port,
+        }
+    }
+
+    fn wait_for_download(&mut self) {
+        let mut line = String::new();
+        self.events.read_line(&mut line).unwrap();
+        assert_eq!(
+            line.trim(),
+            "download",
+            "release fixture did not observe an asset request"
+        );
+    }
+
+    fn release_download(&self) {
+        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
+        stream.write_all(b"RELEASE\n").unwrap();
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).unwrap();
+        assert_eq!(reply, "released\n");
+    }
+
+    fn wait_for_stalled_check(&mut self) -> Duration {
+        let mut line = String::new();
+        self.events.read_line(&mut line).unwrap();
+        let event: serde_json::Value =
+            serde_json::from_str(&line).expect("fixture check completion");
+        assert_eq!(event["event"], "stalled-check-closed");
+        assert_eq!(
+            event["closed"], true,
+            "curl did not close its stalled request: {event}"
+        );
+        Duration::from_secs_f64(event["seconds"].as_f64().expect("fixture lifetime"))
     }
 
     fn command(&self, env: &TestEnv, binary: &Path) -> Command {

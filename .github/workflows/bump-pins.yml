@@ -47,7 +47,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if git diff --quiet -- profile/Containerfile crates/pinfold/harnesses.toml; then
+          if git diff --quiet -- profile/image crates/pinfold/harnesses.toml; then
             echo "Pins are current."
             exit 0
           fi
@@ -85,7 +85,7 @@ jobs:
           PY
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add profile/Containerfile crates/pinfold/harnesses.toml Cargo.toml Cargo.lock
+          git add profile/image crates/pinfold/harnesses.toml Cargo.toml Cargo.lock
           git commit -m "chore: update harness and image-tool pins"
           ref=$(git rev-parse HEAD)
           git push origin "HEAD:refs/heads/checks/pins-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
