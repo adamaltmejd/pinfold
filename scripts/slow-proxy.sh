@@ -51,10 +51,19 @@ mkdir -p "$fixture_root/guest"
 cp "$script_dir/connect_tunnels_share_activity.py" "$fixture_root/guest/"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -subj '/CN=Pinfold CONNECT fixture CA' \
+  -addext 'basicConstraints=critical,CA:TRUE,pathlen:0' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign' \
   -keyout "$fixture_root/ca.key" -out "$fixture_root/guest/ca.pem" 2>/dev/null
 openssl req -newkey rsa:2048 -nodes -subj '/CN=api.github.com' \
   -keyout "$fixture_root/server.key" -out "$fixture_root/server.csr" 2>/dev/null
-printf 'subjectAltName=DNS:api.github.com\n' >"$fixture_root/server.ext"
+cat >"$fixture_root/server.ext" <<'EXT'
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=DNS:api.github.com
+subjectKeyIdentifier=hash
+authorityKeyIdentifier=keyid,issuer
+EXT
 openssl x509 -req -days 1 -in "$fixture_root/server.csr" \
   -CA "$fixture_root/guest/ca.pem" -CAkey "$fixture_root/ca.key" -CAcreateserial \
   -extfile "$fixture_root/server.ext" -out "$fixture_root/server.pem" 2>/dev/null
