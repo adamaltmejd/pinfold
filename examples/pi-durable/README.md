@@ -1,0 +1,87 @@
+# Experimental pi-durable adapter
+
+This example evaluates published `@earendil-works/pi-durable` 1.0.4 with Pinfold.
+It is a separate Node program, not a replacement for `pinfold pi` or a complete
+`ExecutionEnv`. Its only model tool is `boxed_bash`. Reads, writes and edits use
+that tool inside the box. The host owns box creation and command dispatch.
+
+Install with Bun and run with Node 26 or newer:
+
+```sh
+bun install --frozen-lockfile
+bun run check
+node prototype.ts start \
+  --pinfold /absolute/path/to/pinfold \
+  --image your-existing-image \
+  --project /absolute/path/to/project \
+  --state /absolute/path/outside/project/job-state \
+  --base-url https://your-openai-compatible-endpoint/v1 \
+  --model your-model \
+  --prompt 'Inspect the project and report a useful next step.'
+node prototype.ts resume --state /absolute/path/outside/project/job-state
+```
+
+Set `PINFOLD_DURABLE_API_KEY` in the host environment when the endpoint needs a
+key. The unauthenticated local fixture uses a dummy key. The endpoint must support
+streaming OpenAI chat completions and tools. The key is not included in the box
+spec or job manifest. Prompts, model answers and tool output are checkpointed;
+choose their contents accordingly.
+
+Prepare real `.git`, `.vscode`, `.claude` and `.idea` directories in the project
+before starting. The example mounts those paths read-only and the remaining
+project read-write. It refuses symlinked protected directories. It supplies no
+box egress, since the host makes model requests. Choose an image that has a shell
+and the project tools you need.
+
+The checkpoint directory, Pinfold and Node executables, controller and dependencies,
+Pinfold's effective state/config/cache and ownership directories, and host PATH
+entries must be disjoint from the writable project. Linux runtime authority is
+also checked. Paths and existing symlink ancestors are canonicalized before any
+box work, including absent directories under a symlink alias. A replaceable
+symlink inside the project is rejected even if its target is outside. This
+includes the script entrypoint used to launch the controller. Only the
+project and protected subdirectories are guest mounts, so neither checkpoint
+database nor writer database is exposed to the guest. Keep the state directory private on the host. Do not copy a live
+checkpoint to another path or run it on another host: the namespace is derived
+from its canonical path, and recovery refuses a moved namespace. The executable,
+project, image, endpoint, model and original prompt are immutable in `job.json`.
+
+A separate host SQLite database holds `BEGIN EXCLUSIVE` for the writer's entire
+lifetime. A second writer fails before touching the box. The OS releases that
+lock after a crash. Recovery first stops the previous job's named box and waits
+for removal, then creates a new box generation and resumes the harness. This
+requires Pinfold's name ownership and synchronous `box down` contract.
+
+`boxed_bash` is sequential and explicitly `replay: "unsafe"`. An interrupted
+command may already have changed the project. The harness reports interruption
+instead of automatically repeating that tool execution. This is not exactly-once
+execution: a later model turn or caller can still choose a new command. Inspect
+partial work before deliberately retrying it. Output is capped by the harness.
+
+SIGINT, SIGTERM and tool cancellation stop the **whole box**, including other
+processes in it. There is no per-command kill or promise that independent commands
+survive. A hard host-process kill leaves recovery to the next writer and Pinfold's
+owner teardown. There is no scheduler, multi-host coordination, automatic retry,
+read-only replay tool or general host filesystem tool.
+
+The dependency versions and lockfile use the published 1.0.4 API, including the
+real HTTP provider and Node SQLite checkpoint backend. `bunfig.toml` makes a local
+release-age exception only for the four pinned Earendil release-family packages:
+`pi-durable`, `pi-ai`, `chord` and transitive `pi-telemetry`. This matches the Pi
+release already pinned by Pinfold. Other publishers retain the installation age
+policy; no global Bun configuration is changed.
+
+The standalone regression command needs exclusive ownership of the runtime and
+an existing image with `sh`, `tail`, `grep` and `tr`:
+
+```sh
+node e2e.ts --pinfold /absolute/path/to/pinfold --image your-existing-image
+```
+
+It uses an actual host HTTP fixture and actual boxes. It refuses host authority
+and executable overlap, including symlink aliases, before checking a successful
+command with a real soft maintenance diagnostic on stderr, rejection of a competing writer without disrupting the live job, a
+mutation followed by SIGKILL before its tool result can commit, old-generation
+removal before resumed model output, no unsafe replay, and whole-box cancellation
+with a background child. It uses readiness markers and bounded deadlines rather
+than sleeps. Teardown selects only its own immutable job IDs.

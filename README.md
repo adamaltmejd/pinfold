@@ -107,11 +107,27 @@ NAME --from-project [PATH]` copies it into a profile (see Profiles in the
 spec).
 
 After bundled defaults change, an interactive launch shows
-`default-profile-changed` once. Saved settings and user profiles stay as they
-are; `pinfold profile new NAME --builtin` copies the new defaults to inspect.
+`bundled-profiles-changed` once. Saved settings and user profiles stay as
+they are. `pinfold profile new NAME --from full --builtin` copies a named
+built-in to inspect or edit.
 
-The bundled default reads local documents: AnyDoc converts them to
-Markdown and Poppler inspects PDFs.
+The default image has the basic coding tools. Optional profiles add tools
+without changing the egress allowlist:
+
+| Profile | Adds |
+|---|---|
+| `documents` | Bun, AnyDoc for local document conversion, Poppler for PDFs |
+| `full` | documents tools plus gh, rtk and ponytail |
+
+Build and select one explicitly:
+
+```sh
+pinfold build --profile documents
+PINFOLD_PROFILE=documents pi
+```
+
+Set `profile = "documents"` in the project's `.pinfold.toml` to keep the
+selection, then run `pinfold allow`.
 
 ## Configuration
 
@@ -125,3 +141,8 @@ Programmatic callers use the [box spec](docs/ARCHITECTURE.md#process-interface).
 
 Read the [threat model](docs/ARCHITECTURE.md#threat-model) and
 [shared files](docs/ARCHITECTURE.md#shared-files) before using pinfold with a repository.
+
+The [Pi Durable example](examples/pi-durable/README.md) is an experimental
+host adapter with pinned dependencies. It provides one boxed shell tool,
+host checkpoints, recovery without automatic replay of interrupted tools,
+and cancellation of the whole box. It is separate from interactive pi.

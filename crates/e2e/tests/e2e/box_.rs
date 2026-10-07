@@ -7,7 +7,9 @@
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::AsFd;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -56,7 +58,8 @@ fn box_lifecycle_works_for_a_caller() {
     // the null assertion fails.
     // Sabotage: drop the owner-label check from cli.rs `present` (or from
     // core::box::down's list check); exec or stat on the foreign container
-    // runs, or down removes it.
+    // runs, or down removes it. Drop list's owner-label filter and the
+    // runtime-created container appears beside the live pinfold box.
     // Sabotage: drop the valid-name gate in core::box::down; on podman the
     // `--filter` name reaches `rm` as a flag and removes the live box, so the
     // exec assertion fails; Apple's `rm` rejects the flag, so the exit
@@ -106,6 +109,57 @@ fn box_lifecycle_works_for_a_caller() {
     // Positive control: the same command path passes a zero exit through.
     let ok = box_exec(&env, &name, &["sh", "-c", "exit 0"]);
     assert_eq!(ok.code, 0);
+
+    // Sabotage: discard parse_exec's workdir; pwd reports the image's
+    // default directory instead of the caller's /tmp.
+    let directory = run_ok(env.command(pinfold()).args([
+        "box",
+        "exec",
+        &name,
+        "--workdir",
+        "/tmp",
+        "--",
+        "pwd",
+    ]));
+    assert_eq!(String::from_utf8(directory.stdout).unwrap(), "/tmp\n");
+
+    // Sabotage: discard the explicit tty flag; stdout is a host pipe, so
+    // automatic TTY detection stays false and the guest's test -t fails.
+    // The host's stdin PTY lets either runtime set terminal attributes.
+    let terminal = run_ok(
+        env.command(Path::new("python3"))
+            .args([
+                "-c",
+                r#"
+import os, pty, subprocess, sys
+master, slave = pty.openpty()
+try:
+    result = subprocess.run(sys.argv[1:], stdin=slave, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, timeout=20)
+finally:
+    os.close(slave)
+    os.close(master)
+sys.stdout.buffer.write(result.stdout)
+sys.stderr.buffer.write(result.stderr)
+sys.exit(result.returncode)
+"#,
+            ])
+            .arg(pinfold())
+            .args([
+                "box",
+                "exec",
+                &name,
+                "--tty",
+                "--",
+                "sh",
+                "-c",
+                "test -t 0 && test -t 1 && printf tty-ready",
+            ]),
+    );
+    assert_eq!(
+        String::from_utf8(terminal.stdout).unwrap().trim(),
+        "tty-ready"
+    );
 
     // A child orphaned by an exec session is reparented to init and reaped:
     // after it, no process in the box is a zombie. The image has no `ps`, so
@@ -195,7 +249,17 @@ fn box_lifecycle_works_for_a_caller() {
 
     // A container pinfold did not create is no box, even under a name `up`
     // accepts: `exec` and `stat` exit 3 and `down` leaves it running.
-    let foreign = RuntimeContainer::run(&box_name("foreign"), image);
+    let foreign = RuntimeContainer::run(&box_name("foreign"), image, Some(label));
+    let listed = run_ok(
+        env.command(pinfold())
+            .args(["box", "list", "--label", label]),
+    );
+    let listed = json_lines(&String::from_utf8_lossy(&listed.stdout));
+    assert!(listed.iter().any(|box_| box_["name"] == name));
+    assert!(
+        !listed.iter().any(|box_| box_["name"] == foreign.name),
+        "list included a runtime-created container: {listed:?}"
+    );
     for args in [
         &["box", "exec", foreign.name.as_str(), "--", "true"][..],
         &["box", "stat", foreign.name.as_str()],
@@ -241,6 +305,91 @@ fn box_lifecycle_works_for_a_caller() {
         "box survived down: {listed:?}"
     );
     assert!(up.wait().success(), "box up did not exit cleanly");
+
+    // A stopped owner still owns its name. Sabotage: restore down's
+    // timed fallback removal; down succeeds, its state disappears, and a
+    // replacement can start before the previous owner finishes cleanup.
+    // The runtime, host state and second XDG root are outside observers.
+    {
+        let _race = DEAD_BOX_RACE
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let other = TestEnv::new("lifecycle-other");
+        let stopped_name = box_name("lifecycle-stopped");
+        let mut stopped_spec = spec.clone();
+        stopped_spec["name"] = stopped_name.clone().into();
+        let mut stopped = box_up(&env, &stopped_spec, &stopped_name);
+        let stopped_state =
+            find_box_state_dir(&env, stopped.pid()).expect("find stopped owner's state");
+        struct Resume(u32);
+        impl Drop for Resume {
+            fn drop(&mut self) {
+                let _ = Command::new("kill")
+                    .args(["-CONT", &self.0.to_string()])
+                    .status();
+            }
+        }
+        let resume = Resume(stopped.pid());
+        run_ok(Command::new("kill").args(["-STOP", &stopped.pid().to_string()]));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let state = Command::new("ps")
+                .args(["-o", "state=", "-p", &stopped.pid().to_string()])
+                .output()
+                .expect("observe stopped owner");
+            if String::from_utf8_lossy(&state.stdout)
+                .trim_start()
+                .starts_with('T')
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "owner did not stop");
+            std::thread::yield_now();
+        }
+        let down_started = std::time::Instant::now();
+        let timed_out = other
+            .command(pinfold())
+            .args(["box", "down", &stopped_name])
+            .output()
+            .expect("down stopped owner from another state root");
+        assert!(
+            !timed_out.status.success(),
+            "down removed a still-owned generation"
+        );
+        assert!(
+            down_started.elapsed() < std::time::Duration::from_secs(15),
+            "down did not bound its owner wait"
+        );
+        assert!(
+            stopped_state.is_dir(),
+            "down removed the stopped owner's state"
+        );
+        let (code, refused) = box_up_refused(&other, &stopped_spec, &[]);
+        assert_ne!(code, 0, "replacement ran while old owner was stopped");
+        assert_eq!(
+            refused["reason"], "name-in-use",
+            "replacement was refused for another reason: {refused}"
+        );
+        drop(resume);
+        let lines = stopped.starting.rest();
+        assert_eq!(
+            lines.last().expect("stopped owner's down line")["reason"],
+            "signal"
+        );
+        assert!(stopped.wait().success(), "queued intentional down failed");
+        drop(stopped);
+        // Positive control: the same second-root spec works after teardown.
+        let mut replacement = box_up(&other, &stopped_spec, &stopped_name);
+        assert_ok(
+            &box_exec(&other, &stopped_name, &["true"]),
+            "replacement after intentional teardown",
+        );
+        replacement.down(&other);
+        assert!(
+            replacement.wait().success(),
+            "replacement did not exit cleanly"
+        );
+    }
 
     // `down` is idempotent: on the box already gone it exits 0 and prints
     // nothing on either stream.
@@ -371,7 +520,7 @@ fn up_refuses_before_it_creates() {
     // check, keeping only rule equality; `.amazonaws.com` is not itself on
     // the list, so its spec comes up `ready` and its `refused` assertion
     // fails.
-    let env = TestEnv::new("refuses");
+    let env = TestEnv::with_private_cache("refuses");
     let name = box_name("refuses");
     let label = "dev.example.test=refuses";
 
@@ -386,6 +535,48 @@ fn up_refuses_before_it_creates() {
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["event"], "refused");
     assert_eq!(refused["reason"], "image-missing");
+    assert_left_nothing(&env, &name, label, "refused");
+
+    // Sabotage: materialize a bundled share during profile resolution before
+    // the missing-image refusal. The host cache must stay exactly as it was
+    // after init was cached by the preceding refusal.
+    let cache = env.root.join("cache");
+    let before = super::cli::host_tree(&cache);
+    let mut missing_profile = missing.clone();
+    missing_profile["profile"] = serde_json::json!("documents");
+    missing_profile["env"] = serde_json::json!({ "HOME": "/home/refused" });
+    missing_profile["mounts"] = serde_json::json!([
+        { "host": env.root, "guest": "/home/refused" }
+    ]);
+    let (code, refused) = box_up_refused(&env, &missing_profile, &[]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["reason"], "image-missing");
+    assert_left_nothing(&env, &name, label, "refused");
+    assert_eq!(
+        super::cli::host_tree(&cache),
+        before,
+        "a refusal wrote profile cache"
+    );
+
+    // Sabotage: accept unknown fields inside an env `from` object. A valid
+    // reference succeeds in the race's winner below; this nested misspelling
+    // must be refused as spec before runtime lookup or cache extraction.
+    let nested = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+        "labels": { "dev.example.test": "refuses" },
+        "env": { "NESTED_VALUE": { "from": "PINFOLD_E2E_NESTED", "misspelled": true } },
+    });
+    let (code, refused) = box_up_refused(&env, &nested, &[("PINFOLD_E2E_NESTED", "fixture-value")]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["reason"], "spec");
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("misspelled"),
+        "the refusal did not name the nested key: {refused}"
+    );
     assert_left_nothing(&env, &name, label, "refused");
 
     // A spec whose mount misspells `readonly` as `read_only` is refused as
@@ -673,10 +864,12 @@ fn up_refuses_before_it_creates() {
         "labels": { "dev.example.test": "refuses" },
         "mounts": [{ "host": absent_host, "guest": "/workspace", "readonly": true }],
         "egress": { "allow": [".github.com"] },
+        "env": { "NESTED_VALUE": { "from": "PINFOLD_E2E_NESTED" } },
     });
     for host in [&absent_host, &linked_host] {
         live["mounts"][0]["host"] = serde_json::json!(host);
-        let (code, refused) = box_up_refused(&env, &live, &[]);
+        let (code, refused) =
+            box_up_refused(&env, &live, &[("PINFOLD_E2E_NESTED", "fixture-value")]);
         assert_eq!(code, 1, "a refused up exits 1: {refused}");
         assert_eq!(refused["event"], "refused");
         assert_eq!(refused["reason"], "spec");
@@ -696,8 +889,8 @@ fn up_refuses_before_it_creates() {
     // before either's first line is read. The winner also proves that
     // `.github.com` remains an allowed suffix entry.
     let mut starts = [
-        box_up_start(&env, &live, &[]),
-        box_up_start(&env, &live, &[]),
+        box_up_start(&env, &live, &[("PINFOLD_E2E_NESTED", "fixture-value")]),
+        box_up_start(&env, &live, &[("PINFOLD_E2E_NESTED", "fixture-value")]),
     ];
     let lines = starts.each_mut().map(Starting::first_line);
     let [first, second] = starts;
@@ -709,17 +902,20 @@ fn up_refuses_before_it_creates() {
     };
     assert_eq!(ready["event"], "ready", "neither up came ready: {ready}");
     assert_eq!(ready["box"], name);
-    let mut winner = winner.into_up(&env, &name, ready);
+    let mut winner = winner.into_up(&name, ready);
     assert_eq!(
         refused["event"], "refused",
         "the loser was not refused: {refused}"
     );
     assert_eq!(refused["reason"], "name-in-use", "wrong reason: {refused}");
     drop(loser.stdin);
-    let status = loser.child.wait().expect("wait for the losing up");
+    let status = loser.child.wait_bounded();
     assert_eq!(exit_code(status), 1, "the losing up did not exit 1");
     let ok = box_exec(&env, &name, &["true"]);
     assert_ok(&ok, "exec in the winner after the losing up");
+    let value = box_exec(&env, &name, &["sh", "-c", r#"printf %s "$NESTED_VALUE""#]);
+    assert_ok(&value, "reading the allowed nested env reference");
+    assert_eq!(value.stdout, "fixture-value");
     let _ = box_down(&env, &name);
     assert!(
         winner.wait().success(),
@@ -824,8 +1020,8 @@ fn box_shares_files_with_the_host() {
 #[test]
 fn nothing_can_gain_privileges() {
     // Sabotage: drop `find / -xdev -perm /6000 -type f -exec chmod a-s {} +`
-    // from profile/Containerfile; the setuid/setgid scan then lists files and
-    // fails. Sabotage: drop `--read-only` from the adapter's `run` argv;
+    // from the bundled image fragments; the setuid/setgid scan then lists
+    // files and fails. Sabotage: drop `--read-only` from the adapter's `run` argv;
     // the rootfs write then succeeds and its assertion fails.
     let env = TestEnv::new("privileges");
     let image = default_image(&env);
@@ -971,7 +1167,7 @@ fn the_proxy_refuses_the_tricks() {
     // fixture.internal logs "not allowlisted" and the "route" assertion
     // fails.
     // Sabotage: drop the duplicate-Content-Length check in parse_plain; the
-    // raw request reaches api.github.com, so the 400 and "ambiguous
+    // raw request reaches the fixture, so the 400 and "ambiguous
     // framing" assertions fail. Sabotage: parse Content-Length with
     // `str::parse::<u64>` alone; `+5` is read as 5, the request is
     // forwarded, and the framing-refusal count falls short.
@@ -1009,6 +1205,26 @@ fn the_proxy_refuses_the_tricks() {
         route.stdout.contains("fixture host=fixture.internal"),
         "route control answered: {}",
         route.stdout
+    );
+    // The framing parser also accepts a body whose length is all digits.
+    // The host fixture observes the bytes; a parser that rejects every
+    // Content-Length cannot pass the malformed-request assertions alone.
+    let body = box_exec(
+        &env,
+        &name,
+        &[
+            "bash",
+            "-c",
+            "exec 3<>/dev/tcp/127.0.0.1/3128; \
+             printf 'POST http://fixture.internal/ HTTP/1.1\\r\\nHost: fixture.internal\\r\\nContent-Length: 5\\r\\n\\r\\nhello' >&3; \
+             cat <&3",
+        ],
+    );
+    assert_ok(&body, "valid Content-Length body");
+    assert!(body.stdout.starts_with("HTTP/1.1 200"), "{}", body.stdout);
+    assert_eq!(
+        fixture.requests().last().expect("fixture saw POST").1,
+        "hello"
     );
 
     // Distinct literals let each request form prove its own log reason.
@@ -1083,7 +1299,7 @@ fn the_proxy_refuses_the_tricks() {
                 "-c",
                 &format!(
                     "exec 3<>/dev/tcp/127.0.0.1/3128; \
-                     printf 'GET http://api.github.com/ HTTP/1.1\\r\\nHost: api.github.com\\r\\n{framing}' >&3; \
+                     printf 'POST http://fixture.internal/ HTTP/1.1\\r\\nHost: fixture.internal\\r\\n{framing}' >&3; \
                      cat <&3"
                 ),
             ],
@@ -1165,12 +1381,16 @@ fn losing_the_owner_fails_closed() {
     let _race = DEAD_BOX_RACE
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
-    // The owner is reaped only after `box prune` has reported the box. Until
-    // then it is a zombie: `kill(pid, 0)` succeeds on it, so every other
-    // test's state root, which judges this box by its label pid, leaves it
-    // alone, while this root sees the lock released the moment the process
-    // died. Reaped earlier, another test's first command runs the daily pass
-    // and prunes the box before this test's `box prune` can report it.
+    // Run the second root's maintenance while the owner lives, then keep
+    // the killed owner unreaped. Sabotage: use kill(pid, 0) across roots;
+    // the zombie appears live and the second-root liveness assertion fails.
+    let other = TestEnv::new("owner-gone-other");
+    let live = box_list(&other, label);
+    assert!(
+        live.iter()
+            .any(|box_| box_["name"] == name && box_["owner_alive"] == true),
+        "second state root did not see the live owner: {live:?}"
+    );
     up.kill();
 
     // The positive control left its decision in the log. A live proxy
@@ -1206,17 +1426,12 @@ fn losing_the_owner_fails_closed() {
     // tells the owner is gone. State dirs are keyed by a hash of the name,
     // so the test finds one by the owner it records.
     let owner = up.pid();
-    fs::write(
-        find_box_state_dir(&env, owner)
-            .expect("find the dead owner's state dir")
-            .join("pid"),
-        "1",
-    )
-    .expect("overwrite the dead owner's pid");
+    let old_state = find_box_state_dir(&env, owner).expect("find the dead owner's state dir");
+    fs::write(old_state.join("pid"), "1").expect("overwrite the dead owner's pid");
 
     // Pinfold's own liveness test reports the owner gone before prune acts:
     // the box is still listed, with `owner_alive` false.
-    let listed = box_list(&env, label);
+    let listed = box_list(&other, label);
     let leftover = listed
         .iter()
         .find(|box_| box_["name"] == name)
@@ -1235,8 +1450,12 @@ fn losing_the_owner_fails_closed() {
         "prune left the box: {listed:?}"
     );
 
-    // The name is free again: a fresh `up` comes up `ready`, not refused
-    // `name-in-use`, and goes down cleanly.
+    // A crash before writing pid leaves only a state dir. Sabotage: treat
+    // a missing pid as permanently live; this fresh up refuses name-in-use.
+    // The host-created abandoned dir is the outside fixture.
+    // Reuse the actual directory observed before prune, without deriving
+    // pinfold's name hash in the test.
+    fs::create_dir_all(&old_state).expect("leave abandoned partial claim");
     let mut fresh = box_up(&env, &spec, &name);
     fresh.down(&env);
     assert!(fresh.wait().success(), "the fresh up did not exit cleanly");
@@ -1557,7 +1776,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // A container the user started with the runtime's own CLI from a
     // pinfold-built image is not a box: podman copies the image's
     // `dev.pinfold.` labels onto it, but pinfold never owned it.
-    let user_container = RuntimeContainer::run(&box_name("cleanup-user"), default_image(&env));
+    let user_container =
+        RuntimeContainer::run(&box_name("cleanup-user"), default_image(&env), None);
 
     // Positive controls: everything `clean` sorts out exists before it runs.
     // Sabotage: report `owner_alive` as false whenever the owner label
@@ -1936,8 +2156,8 @@ fn every_build_reruns_its_steps() {
     );
 
     // podman's layer cache would show as untagged intermediate images. The
-    // baseline is after the shared default build, so only these builds' own
-    // leftovers are measured.
+    // baseline is after the shared default build. Compare IDs so concurrent
+    // removal of old layers cannot hide a newly leaked layer.
     let before = if cfg!(target_os = "linux") {
         Some(untagged_images())
     } else {
@@ -1964,9 +2184,9 @@ fn every_build_reruns_its_steps() {
     if let Some(before) = before {
         let after = untagged_images();
         assert!(
-            after <= before,
-            "the builds left {} untagged image(s) behind; podman held {before} before",
-            after.saturating_sub(before)
+            after.is_subset(&before),
+            "the builds left new untagged images: {:?}",
+            after.difference(&before).collect::<Vec<_>>()
         );
     }
 }
@@ -2013,7 +2233,9 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     let containerfile = env.root.join("Containerfile");
     fs::write(
         &containerfile,
-        format!("FROM {base}\nCOPY marker.txt /marker.txt\n"),
+        format!(
+            "FROM {base}\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\nCOPY marker.txt /marker.txt\n"
+        ),
     )
     .unwrap();
 
@@ -2049,9 +2271,21 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     let read = file_from_image(&env, &refs[0], "image", "/marker.txt");
     assert_eq!(read, "first\n", "the first build's ref names another build");
 
-    // A failed build carries its log and makes no image.
+    // A failed build carries a bounded tail and makes no image. Sabotage:
+    // collect the full build output or cap only its line count; the giant
+    // unterminated line exceeds 64 KiB. Keeping only the beginning loses
+    // the final marker, whose value comes from the caller's context file.
     let failing = env.root.join("Containerfile.fail");
-    fs::write(&failing, format!("FROM {base}\nRUN false\n")).unwrap();
+    let final_marker = "pinfold-final-build-diagnostic";
+    fs::write(context.join("diagnostic-marker.txt"), final_marker).unwrap();
+    fs::write(
+        &failing,
+        format!(
+            "FROM {base}\nCOPY diagnostic-marker.txt /diagnostic-marker\n\
+             RUN head -c 200000 /dev/zero | tr '\\0' '\\377'; printf '\\n'; cat /diagnostic-marker; false\n"
+        ),
+    )
+    .unwrap();
     let (code, failed) = image_build(&env, &name, &failing, &context);
     assert_eq!(failed["event"], "failed", "a failing build: {failed}");
     assert_eq!(code, 1, "a failed build exited {code}");
@@ -2059,6 +2293,15 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         failed["log"].as_array().is_some_and(|log| !log.is_empty()),
         "the failed line carries no log: {failed}"
     );
+    let log = failed["log"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line.as_str().expect("build log string"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(log.len() <= 64 * 1024, "failed build log exceeds 64 KiB");
+    assert!(log.contains(final_marker), "failed build lost its tail");
     assert_eq!(
         names_ids(),
         kept,
@@ -2089,6 +2332,35 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         second_id,
         "{latest} did not move back to the second build's image"
     );
+
+    // Sabotage: ignore the caller's no_cache in Image::build; the runtime
+    // reuses the cached RUN layer and /stamp stays equal. The cached build
+    // is the positive control; the bytes come from the guest's urandom.
+    let first_stamp = file_from_image(&env, &refs[0], "caller-stamp-1", "/stamp");
+    let cached_stamp = file_from_image(&env, &again_ref, "caller-stamp-cached", "/stamp");
+    assert!(
+        !first_stamp.trim().is_empty(),
+        "the caller's RUN wrote no stamp"
+    );
+    assert_eq!(
+        first_stamp, cached_stamp,
+        "the caller build skipped its cache"
+    );
+    let (code, fresh) = one_json_line(
+        env.command(pinfold())
+            .args(["image", "build", &name, "--no-cache", "--containerfile"])
+            .arg(&containerfile)
+            .arg("--context")
+            .arg(&context),
+    );
+    assert_eq!(code, 0, "the caller's uncached build failed: {fresh}");
+    let fresh_stamp = file_from_image(
+        &env,
+        fresh["ref"].as_str().expect("the uncached build has a ref"),
+        "caller-stamp-fresh",
+        "/stamp",
+    );
+    assert_ne!(cached_stamp, fresh_stamp, "--no-cache reused the RUN layer");
 
     // Two callers with opposite colour settings share Apple's builder.
     // Hold one inside RUN before the other starts. Sabotage: inherit
@@ -2373,7 +2645,7 @@ fn a_route_reaches_exactly_one_host_service() {
             "routes": { "fixture.internal": fixture.route() },
         },
     });
-    let up = box_up(&env, &spec, &name);
+    let mut up = box_up(&env, &spec, &name);
 
     // The route reaches the fixture, and the Host header is rewritten from
     // the absolute-form target, not passed through from the client.
@@ -2435,7 +2707,159 @@ fn a_route_reaches_exactly_one_host_service() {
         HttpFixture::NOT_FOUND_STATUS,
         "the route line's status: {line}"
     );
+    // Sabotage: ignore an audit append error or omit its owner notification.
+    // Earlier requests prove this route works with a writable log. Replacing
+    // ready's regular log with a directory causes a real host write failure.
+    let log_path = PathBuf::from(up.ready["egress_log"].as_str().expect("ready log path"));
+    fs::remove_file(&log_path).expect("remove the audit log");
+    fs::create_dir(&log_path).expect("make audit append fail");
+    let failed = curl(&env, &name, "5", &["http://fixture.internal/"]);
+    assert_ne!(failed.code, 0, "request succeeded without its audit record");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = up
+            .starting
+            .child
+            .try_wait()
+            .expect("observe audit shutdown")
+        {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "audit failure did not stop the owner"
+        );
+        std::thread::yield_now();
+    };
+    let lines = up.starting.rest();
+    assert_eq!(
+        lines.last().expect("audit down line")["reason"],
+        "audit-log"
+    );
+    assert_eq!(status.code(), Some(1), "audit failure's exit status");
+    // This guard queries the runtime directly and also cleans up on failure.
+    let runtime_box = RuntimeContainer { name: name.clone() };
+    assert!(!runtime_box.listed(), "audit failure left a runtime box");
+}
+
+#[test]
+#[ignore = "real five-minute response deadline; run the slow gate"]
+fn blocked_route_responses_release_the_upstream() {
+    // Guarantee 34. Sabotage: remove write deadlines from the host proxy
+    // and guest relay; their full buffers keep the fixture blocked until
+    // its own 330-second safety deadline. This exercises a route response,
+    // not CONNECT's shared activity clock. The first small response is the
+    // positive control; the second client deliberately never reads fd 3.
+    let env = TestEnv::new("blocked-response");
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let route = listener.local_addr().unwrap().to_string();
+    let (started, start) = std::sync::mpsc::channel();
+    let (ended, end) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for large in [false, true] {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(std::time::Duration::from_secs(330)))
+                .unwrap();
+            let mut request = BufReader::new(&stream);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if request.read_line(&mut line).unwrap_or(0) == 0 {
+                    return;
+                }
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            drop(request);
+            if !large {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\ncontrol",
+                    )
+                    .unwrap();
+                continue;
+            }
+            let began = std::time::Instant::now();
+            started.send(began).unwrap();
+            let sent = (|| -> std::io::Result<()> {
+                stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 1073741824\r\nConnection: close\r\n\r\n",
+                )?;
+                let chunk = [b'x'; 64 * 1024];
+                for _ in 0..16384 {
+                    stream.write_all(&chunk)?;
+                }
+                Ok(())
+            })();
+            let _ = ended.send((began.elapsed(), sent.map_err(|error| error.kind())));
+        }
+    });
+    let name = box_name("blocked-response");
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+        "egress": { "routes": { "fixture.internal": route } },
+    });
+    let mut up = box_up(&env, &spec, &name);
+    let control = curl(&env, &name, "5", &["http://fixture.internal/"]);
+    assert_ok(&control, "small route response");
+    assert_eq!(control.stdout, "control");
+
+    let holder = env
+        .command(pinfold())
+        .args([
+            "box", "exec", &name, "--", "bash", "-c",
+            "exec 3<>/dev/tcp/127.0.0.1/3128; \
+             printf 'GET http://fixture.internal/ HTTP/1.1\\r\\nHost: fixture.internal\\r\\n\\r\\n' >&3; \
+             read -r release",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("start a client that does not read the response");
+    let mut holder = ChildOwner::new(holder, &env, Some(up.pid()));
+    holder.observe(&up.ready);
+    let ready = start.recv_timeout(std::time::Duration::from_secs(10));
+    let observed = ready
+        .as_ref()
+        .map(|_| end.recv_timeout(std::time::Duration::from_secs(330)));
+    let still_held = holder
+        .try_wait()
+        .expect("observe the held client")
+        .is_none();
+    // Release and reap before asserting, so a failed deadline leaves no
+    // guest exec or host runtime client behind.
+    if let Some(mut input) = holder.stdin.take() {
+        let _ = input.write_all(b"release\n");
+    }
+    let status = holder.wait_bounded();
     up.down(&env);
+    assert!(up.wait().success(), "slow test's owner did not exit");
+    assert!(ready.is_ok(), "fixture did not observe the held request");
+    let (elapsed, sent) = observed.unwrap().expect("blocked response did not close");
+    assert!(still_held, "the guest closed its own response socket early");
+    assert!(status.success(), "held client failed: {status}");
+    assert!(
+        matches!(
+            sent,
+            Err(std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset)
+        ),
+        "fixture ended without peer closure: {sent:?}"
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_secs(295),
+        "response closed early: {elapsed:?}"
+    );
+    assert!(
+        elapsed <= std::time::Duration::from_secs(330),
+        "response stayed blocked: {elapsed:?}"
+    );
 }
 
 #[test]
@@ -2789,6 +3213,133 @@ fn a_login_route_keeps_the_login_on_the_host() {
     }
     up.down(&env);
     assert!(up.wait().success(), "box up did not exit cleanly");
+
+    // Sabotage: remove the helper deadline or cancellation checks; a real
+    // helper waiting on this refresh service does not close its socket or
+    // finish up within the spec's bound. Omit kill/wait and the observed
+    // helper PID remains alive after up finishes. The successful real
+    // refresh above is the positive control. All timing and process
+    // observations come from the host, not helper output.
+    for cancelled in [false, true] {
+        fs::write(codex_home.path().join("auth.json"), auth.to_string()).unwrap();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let refresh_url = format!("http://{}/oauth/token", listener.local_addr().unwrap());
+        let (accepted, request) = std::sync::mpsc::channel();
+        let (closed, eof) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(40)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            let mut length = 0usize;
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    return;
+                }
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            accepted.send(()).unwrap();
+            // Never answer. EOF is the outside observer that the real
+            // helper stopped its unfinished HTTP operation.
+            let mut byte = [0u8; 1];
+            let ended = matches!(reader.read(&mut byte), Ok(0));
+            let _ = closed.send(ended);
+        });
+        let began = std::time::Instant::now();
+        let mut starting = box_up_start(
+            &env,
+            &codex_spec,
+            &[
+                ("CODEX_HOME", codex_home_path),
+                ("CODEX_REFRESH_TOKEN_URL_OVERRIDE", &refresh_url),
+            ],
+        );
+        let owner = starting.child.id();
+        let mut output = starting.stdout;
+        let (finished, events) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let result = output.read_to_string(&mut text).map(|_| text);
+            let _ = finished.send(result);
+        });
+        if request
+            .recv_timeout(std::time::Duration::from_secs(15))
+            .is_err()
+        {
+            let _ = starting.child.kill();
+            let _ = reap_killed(&mut starting.child);
+            panic!("the real helper never reached the stalled refresh fixture");
+        }
+        let processes = run_ok(Command::new("ps").args(["-axo", "pid=,ppid=,comm="]));
+        let helper = String::from_utf8(processes.stdout)
+            .unwrap()
+            .lines()
+            .find_map(|line| {
+                let mut fields = line.split_whitespace();
+                let pid = fields.next()?;
+                let parent = fields.next()?.parse::<u32>().ok()?;
+                let executable = fields.next()?;
+                (parent == owner && executable.ends_with("codex-app-server"))
+                    .then(|| pid.to_string())
+            });
+        let helper = match helper {
+            Some(helper) => helper,
+            None => {
+                let _ = starting.child.kill();
+                let _ = reap_killed(&mut starting.child);
+                panic!("up has no observable real Codex helper child");
+            }
+        };
+        if cancelled {
+            run_ok(Command::new("kill").args(["-TERM", &owner.to_string()]));
+        }
+        let bound = std::time::Duration::from_secs(if cancelled { 5 } else { 35 });
+        let result = events.recv_timeout(bound);
+        let text = match result {
+            Ok(Ok(text)) => text,
+            _ => {
+                let _ = starting.child.kill();
+                let _ = reap_killed(&mut starting.child);
+                panic!("stalled helper kept up alive past its completion bound");
+            }
+        };
+        let status = starting.child.wait_bounded();
+        drop(starting.stdin);
+        let lines = json_lines(&text);
+        if cancelled {
+            assert_eq!(lines.last().unwrap()["reason"], "signal");
+            assert!(status.success(), "cancelled login up failed: {status}");
+        } else {
+            assert_eq!(lines.first().unwrap()["event"], "refused");
+            assert_eq!(lines.first().unwrap()["reason"], "login");
+            assert!(!status.success(), "stalled login was accepted");
+            assert!(began.elapsed() < std::time::Duration::from_secs(35));
+        }
+        assert!(
+            eof.recv_timeout(std::time::Duration::from_secs(1)).unwrap(),
+            "the helper left its refresh connection open"
+        );
+        let remains = Command::new("kill")
+            .args(["-0", &helper])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(!remains.success(), "up left the Codex helper running");
+        assert_left_nothing(&env, &codex_name, label, "cancelled or timed-out login");
+    }
 
     // An empty CODEX_HOME has no login: up is refused as `login` and leaves
     // nothing. The box above is its positive control.
@@ -3255,8 +3806,6 @@ pub(crate) struct Up {
     /// The parsed `ready` line.
     ready: serde_json::Value,
     starting: Starting,
-    /// The `box down` that Drop runs, built while the test env is at hand.
-    down: Command,
 }
 
 impl Up {
@@ -3265,7 +3814,7 @@ impl Up {
     }
 
     fn wait(&mut self) -> ExitStatus {
-        self.starting.child.wait().expect("wait for box up")
+        self.starting.child.wait_bounded()
     }
 
     fn kill(&mut self) {
@@ -3287,15 +3836,6 @@ impl Up {
     }
 }
 
-impl Drop for Up {
-    fn drop(&mut self) {
-        // Best effort, so a panicking test does not leak a box.
-        let _ = self.down.status();
-        let _ = self.starting.child.kill();
-        let _ = self.starting.child.wait();
-    }
-}
-
 pub(crate) fn box_up(env: &TestEnv, spec: &serde_json::Value, name: &str) -> Up {
     box_up_with_env(env, spec, name, &[])
 }
@@ -3311,13 +3851,13 @@ fn box_up_with_env(
     let ready = starting.first_line();
     assert_eq!(ready["event"], "ready", "first line was {ready}");
     assert_eq!(ready["box"], name, "ready named another box: {ready}");
-    starting.into_up(env, name, ready)
+    starting.into_up(name, ready)
 }
 
 /// A spawned `box up` with its spec written and stdin still open, before
 /// any of its output is read.
 struct Starting {
-    child: Child,
+    child: ChildOwner,
     stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
 }
@@ -3325,35 +3865,37 @@ struct Starting {
 impl Starting {
     /// Read and parse `up`'s first line.
     fn first_line(&mut self) -> serde_json::Value {
-        let mut line = String::new();
-        self.stdout
-            .read_line(&mut line)
-            .expect("read box up's first line");
-        serde_json::from_str(line.trim())
-            .unwrap_or_else(|error| panic!("box up's first line {line:?} is not JSON: {error}"))
+        let line = read_bounded(
+            &mut self.child,
+            &mut self.stdout,
+            std::time::Duration::from_secs(90),
+            false,
+        )
+        .expect("read box up's first line");
+        let parsed: serde_json::Value = serde_json::from_str(line.trim())
+            .unwrap_or_else(|error| panic!("box up's first line {line:?} is not JSON: {error}"));
+        self.child.observe(&parsed);
+        parsed
     }
 
     /// Read the rest of `up`'s stdout to EOF.
     fn rest(&mut self) -> Vec<serde_json::Value> {
-        let mut text = String::new();
-        self.stdout
-            .read_to_string(&mut text)
-            .expect("read box up output");
+        let text = read_bounded(
+            &mut self.child,
+            &mut self.stdout,
+            std::time::Duration::from_secs(60),
+            true,
+        )
+        .expect("read box up output");
         json_lines(&text)
     }
 
     /// The [`Up`] of a start whose first line was `ready`.
-    fn into_up(self, env: &TestEnv, name: &str, ready: serde_json::Value) -> Up {
-        let mut down = env.command(pinfold());
-        down.args(["box", "down", name])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+    fn into_up(self, name: &str, ready: serde_json::Value) -> Up {
         Up {
             name: name.to_string(),
             ready,
             starting: self,
-            down,
         }
     }
 }
@@ -3361,7 +3903,7 @@ impl Starting {
 /// Spawn `box up` and write its spec, reading nothing, so a test can start
 /// several at once.
 fn box_up_start(env: &TestEnv, spec: &serde_json::Value, vars: &[(&str, &str)]) -> Starting {
-    let mut child = env
+    let child = env
         .command(pinfold())
         .envs(vars.iter().copied())
         .args(["box", "up"])
@@ -3370,6 +3912,7 @@ fn box_up_start(env: &TestEnv, spec: &serde_json::Value, vars: &[(&str, &str)]) 
         .stderr(Stdio::inherit())
         .spawn()
         .expect("spawn pinfold box up");
+    let mut child = ChildOwner::new(child, env, None);
     let mut stdin = child.stdin.take().expect("box up stdin");
     let spec = serde_json::to_string(spec).expect("serialize spec");
     stdin.write_all(spec.as_bytes()).expect("write spec");
@@ -3394,8 +3937,331 @@ fn box_up_refused(
     let mut starting = box_up_start(env, spec, vars);
     drop(starting.stdin.take());
     let line = starting.first_line();
-    let status = starting.child.wait().expect("wait for box up");
+    let status = starting.child.wait_bounded();
     (exit_code(status), line)
+}
+
+/// Installed immediately after spawn, before any readiness assertion.
+pub(crate) struct ChildOwner {
+    child: Child,
+    listed: Command,
+    down_environment: Command,
+    owner: u32,
+    generation: Option<String>,
+}
+
+impl ChildOwner {
+    pub(crate) fn new(child: Child, env: &TestEnv, owner: Option<u32>) -> Self {
+        let owner = owner.unwrap_or(child.id());
+        let mut listed = env.command(pinfold());
+        listed.args([
+            "box",
+            "list",
+            "--label",
+            &format!("dev.pinfold.owner={owner}"),
+        ]);
+        Self {
+            child,
+            listed,
+            down_environment: env.command(pinfold()),
+            owner,
+            generation: None,
+        }
+    }
+
+    pub(crate) fn observe(&mut self, ready: &serde_json::Value) {
+        self.generation = ready["labels"]["dev.pinfold.generation"]
+            .as_str()
+            .map(String::from);
+    }
+
+    fn stop(&mut self) {
+        // Once reaped, only the observed generation can authorize cleanup.
+        if self.child.try_wait().is_ok_and(|status| status.is_some()) && self.generation.is_none() {
+            return;
+        }
+        // Keep this Child unreaped until its owner label is checked. Killing
+        // first makes orphan down independent of a stuck owner's listener.
+        let _ = self.child.kill();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        if let Ok(output) = command_bounded(&mut self.listed, deadline) {
+            for box_ in String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            {
+                if box_["owner"].as_u64() != Some(u64::from(self.owner)) {
+                    continue;
+                }
+                if self.generation.as_ref().is_some_and(|generation| {
+                    box_["labels"]["dev.pinfold.generation"].as_str() != Some(generation.as_str())
+                }) {
+                    continue;
+                }
+                let Some(name) = box_["name"].as_str() else {
+                    continue;
+                };
+                let mut down = Command::new(self.down_environment.get_program());
+                for (key, value) in self.down_environment.get_envs() {
+                    match value {
+                        Some(value) => {
+                            down.env(key, value);
+                        }
+                        None => {
+                            down.env_remove(key);
+                        }
+                    }
+                }
+                down.args(["box", "down", name]);
+                let _ = command_bounded(&mut down, deadline);
+            }
+        }
+        if let Err(error) = reap_killed(&mut self.child) {
+            eprintln!("failed to reap test owner: {error}");
+        }
+    }
+
+    pub(crate) fn wait_bounded(&mut self) -> ExitStatus {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            if let Some(status) = self.child.try_wait().expect("observe owner completion") {
+                return status;
+            }
+            if std::time::Instant::now() >= deadline {
+                self.stop();
+                panic!("owner did not complete within 60 seconds");
+            }
+            std::thread::yield_now();
+        }
+    }
+}
+
+impl std::ops::Deref for ChildOwner {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.child
+    }
+}
+impl std::ops::DerefMut for ChildOwner {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
+}
+impl Drop for ChildOwner {
+    fn drop(&mut self) {
+        // Completed failures remain observable to assert_left_nothing. A
+        // refused child's name may belong to another live owner.
+        if !matches!(self.child.try_wait(), Ok(Some(_))) {
+            self.stop();
+        }
+    }
+}
+
+fn nonblocking(fd: impl AsFd) -> std::io::Result<()> {
+    use nix::fcntl::{FcntlArg, OFlag, fcntl};
+    let flags = OFlag::from_bits_truncate(fcntl(&fd, FcntlArg::F_GETFL)?);
+    fcntl(fd, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
+    Ok(())
+}
+
+fn reap_killed(child: &mut Child) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "killed child did not exit",
+            ));
+        }
+        std::thread::yield_now();
+    }
+}
+
+const HARNESS_OUTPUT_LIMIT: usize = 1024 * 1024;
+
+/// Poll the existing pipe; no reader thread can retain it past the deadline.
+/// A timeout has a separate bounded cleanup/reaping allowance.
+pub(crate) fn read_bounded(
+    child: &mut ChildOwner,
+    reader: &mut BufReader<ChildStdout>,
+    timeout: std::time::Duration,
+    to_eof: bool,
+) -> std::io::Result<String> {
+    use nix::poll::{PollFd, PollFlags, poll};
+    nonblocking(reader.get_ref())?;
+    let deadline = std::time::Instant::now() + timeout;
+    let mut bytes = Vec::new();
+    loop {
+        if std::time::Instant::now() >= deadline {
+            child.stop();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "owner output deadline",
+            ));
+        }
+        match reader.fill_buf() {
+            Ok([]) => {
+                return String::from_utf8(bytes)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error));
+            }
+            Ok(buffer) => {
+                let newline = (!to_eof)
+                    .then(|| buffer.iter().position(|byte| *byte == b'\n'))
+                    .flatten();
+                let count = newline.map_or(buffer.len(), |position| position + 1);
+                bytes.extend_from_slice(&buffer[..count]);
+                reader.consume(count);
+                if bytes.len() > HARNESS_OUTPUT_LIMIT {
+                    child.stop();
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "owner output exceeds 1 MiB",
+                    ));
+                }
+                if newline.is_some() {
+                    return String::from_utf8(bytes).map_err(|error| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+                    });
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    child.stop();
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "owner output deadline",
+                    ));
+                }
+                let millis = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+                let mut fds = [PollFd::new(reader.get_ref().as_fd(), PollFlags::POLLIN)];
+                match poll(&mut fds, nix::poll::PollTimeout::try_from(millis).unwrap()) {
+                    Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn command_bounded(
+    command: &mut Command,
+    deadline: std::time::Instant,
+) -> std::io::Result<std::process::Output> {
+    use nix::poll::{PollFd, PollFlags, poll};
+    if std::time::Instant::now() >= deadline {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "cleanup command deadline",
+        ));
+    }
+    let mut child = command
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let result = (|| {
+        let mut stdout = child.stdout.take().unwrap();
+        let mut stderr = child.stderr.take().unwrap();
+        nonblocking(&stdout)?;
+        nonblocking(&stderr)?;
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut out_done = false;
+        let mut err_done = false;
+        let mut status = None;
+        loop {
+            if !out_done {
+                out_done = drain(&mut stdout, &mut out, deadline)?;
+            }
+            if !err_done {
+                err_done = drain(&mut stderr, &mut err, deadline)?;
+            }
+            if out_done && err_done && status.is_none() {
+                // Do not free the process-group leader PID while a descendant
+                // can still hold either pipe. Timeout cleanup owns that group.
+                status = child.try_wait()?;
+            }
+            if out_done
+                && err_done
+                && let Some(status) = status
+            {
+                return Ok(std::process::Output {
+                    status,
+                    stdout: out,
+                    stderr: err,
+                });
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "cleanup command deadline",
+                ));
+            }
+            let mut fds = Vec::new();
+            if !out_done {
+                fds.push(PollFd::new(stdout.as_fd(), PollFlags::POLLIN));
+            }
+            if !err_done {
+                fds.push(PollFd::new(stderr.as_fd(), PollFlags::POLLIN));
+            }
+            if fds.is_empty() {
+                std::thread::yield_now();
+                continue;
+            }
+            let millis = remaining.as_millis().clamp(1, 1000) as u16;
+            match poll(&mut fds, millis) {
+                Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    })();
+    if result.is_err() {
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(child.id() as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        let _ = child.kill();
+        reap_killed(&mut child)?;
+    }
+    result
+}
+
+fn drain(
+    reader: &mut impl Read,
+    bytes: &mut Vec<u8>,
+    deadline: std::time::Instant,
+) -> std::io::Result<bool> {
+    let mut buffer = [0; 4096];
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "cleanup output deadline",
+            ));
+        }
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(true),
+            Ok(count) => {
+                bytes.extend_from_slice(&buffer[..count]);
+                if bytes.len() > HARNESS_OUTPUT_LIMIT {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "cleanup output exceeds 1 MiB",
+                    ));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 /// The test's box name, unique to this run.
@@ -3440,11 +4306,13 @@ struct RuntimeContainer {
 }
 
 impl RuntimeContainer {
-    fn run(name: &str, image: &str) -> RuntimeContainer {
-        run_ok(
-            Command::new(image_cli())
-                .args(["run", "-d", "--name", name, image, "sleep", "infinity"]),
-        );
+    fn run(name: &str, image: &str, label: Option<&str>) -> RuntimeContainer {
+        let mut command = Command::new(image_cli());
+        command.args(["run", "-d", "--name", name]);
+        if let Some(label) = label {
+            command.args(["--label", label]);
+        }
+        run_ok(command.args([image, "sleep", "infinity"]));
         RuntimeContainer {
             name: name.to_string(),
         }

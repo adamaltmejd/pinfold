@@ -94,7 +94,7 @@ fn main() -> ExitCode {
     // so its SIGTERM and SIGINT handlers come before the pass lists the
     // runtime.
     match (verb, args.first().map(String::as_str)) {
-        ("init" | "doctor", _) | ("box", Some("up")) => {}
+        ("init" | "doctor" | "config" | "artifacts", _) | ("box", Some("up")) => {}
         _ => crate::core::clean::maintain(),
     }
     ExitCode::from(cli::report(verb, run(args)) as u8)

@@ -3,9 +3,10 @@
 pub mod apple;
 pub mod podman;
 
-use std::collections::BTreeMap;
-use std::ffi::OsString;
+use std::collections::{BTreeMap, VecDeque};
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Read};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -15,6 +16,29 @@ use tokio::process::{Child, Command};
 
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
+
+const BUILD_LOG_BYTES: usize = 64 * 1024;
+
+/// Guest values travel under names the host runtime does not interpret.
+/// Hex preserves arbitrary environment bytes through runtime JSON encoding.
+pub const BOX_ENV_PREFIX: &str = "PINFOLD_BOX_ENV_";
+
+/// The runtime's native Linux image architecture.
+pub const TARGET_ARCH: &str = if cfg!(target_arch = "aarch64") {
+    "arm64"
+} else {
+    "amd64"
+};
+
+fn guest_env(command: &mut std::process::Command, name: &str, value: &OsStr) {
+    let transport = format!("{BOX_ENV_PREFIX}{name}");
+    let encoded: String = value
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    command.args(["--env", &transport]).env(transport, encoded);
+}
 
 /// The container runtime for this OS: Apple `container` on macOS, rootless
 /// podman on Linux, the only targets pinfold builds for.
@@ -203,8 +227,8 @@ pub trait Runtime: Sync {
             // reports its own `TERM`.
             command.arg("-t");
             for variable in ["TERM", "COLORTERM"] {
-                if let Ok(value) = std::env::var(variable) {
-                    command.arg("--env").arg(format!("{variable}={value}"));
+                if let Some(value) = std::env::var_os(variable) {
+                    guest_env(&mut command, variable, &value);
                 }
             }
         } else {
@@ -296,8 +320,8 @@ fn runtime_path(program: &str) -> io::Result<PathBuf> {
 }
 
 /// The attached `<program> run` command that owns a box: stdin and stdout
-/// piped, and `env` exported. `program` is resolved on pinfold's own `PATH`
-/// before `env`, the spec's, is applied.
+/// piped. `program` is resolved on pinfold's own `PATH`. Guest values are
+/// encoded under prefixed names, so they cannot configure the host client.
 ///
 /// `extra` is what the runtime adds to the controls every box gets. `init`
 /// is a host path; it and its directory are mounted read-only at the same
@@ -338,27 +362,20 @@ fn up<'a>(
         command.arg("--label").arg(format!("{key}={value}"));
     }
     for (name, value) in env {
-        // Names only: the runtime reads the value from our environment.
-        command.args(["--env", name]);
-        match value {
-            Env::Exact(value) => {
-                command.env(name, value);
-            }
-            Env::From { from } => {
-                if let Some(value) = std::env::var_os(from) {
-                    command.env(name, value);
-                }
-            }
+        let value = match value {
+            Env::Exact(value) => Some(OsString::from(value)),
+            Env::From { from } => std::env::var_os(from),
+        };
+        if let Some(value) = value {
+            guest_env(command.as_std_mut(), name, &value);
         }
     }
     // Always applied: Node's fetch reads the proxy variables only with this
-    // set.
-    command.args(["--env", "NODE_USE_ENV_PROXY"]);
-    command.env("NODE_USE_ENV_PROXY", "1");
+    // set. These override any spec entries with the same names.
+    guest_env(command.as_std_mut(), "NODE_USE_ENV_PROXY", OsStr::new("1"));
     if plan.egress.is_some() {
-        command.args(["--env", "HTTPS_PROXY", "--env", "http_proxy"]);
-        command.env("HTTPS_PROXY", PROXY_URL);
-        command.env("http_proxy", PROXY_URL);
+        guest_env(command.as_std_mut(), "HTTPS_PROXY", OsStr::new(PROXY_URL));
+        guest_env(command.as_std_mut(), "http_proxy", OsStr::new(PROXY_URL));
     }
     for mount in &plan.mounts {
         command
@@ -402,6 +419,7 @@ fn build(
     }
     command
         .arg("build")
+        .args(["--build-arg", &format!("TARGETARCH={TARGET_ARCH}")])
         .args(cache_flags)
         .arg("--file")
         .arg(request.containerfile);
@@ -421,12 +439,39 @@ fn build(
     // once every write end is closed.
     drop(command);
     let mut child = child.map_err(|error| spawn_error(program, error))?;
-    let mut output = Vec::new();
-    reader.read_to_end(&mut output)?;
+    let mut tail = VecDeque::new();
+    let mut newlines = 0;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let size = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(size) => size,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
+        for &byte in &buffer[..size] {
+            tail.push_back(byte);
+            newlines += usize::from(byte == b'\n');
+            while tail.len() > BUILD_LOG_BYTES
+                || newlines + usize::from(tail.back() != Some(&b'\n')) > 40
+            {
+                newlines -= usize::from(tail.pop_front() == Some(b'\n'));
+            }
+        }
+    }
     if child.wait()?.success() {
         Ok(Ok(()))
     } else {
-        Ok(Err(String::from_utf8_lossy(&output).into_owned()))
+        let bytes: Vec<u8> = tail.into_iter().collect();
+        let mut output = String::from_utf8_lossy(&bytes).into_owned();
+        // Replacement characters can expand malformed runtime output.
+        let start = output.ceil_char_boundary(output.len().saturating_sub(BUILD_LOG_BYTES));
+        output.drain(..start);
+        Ok(Err(output))
     }
 }
 

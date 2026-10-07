@@ -280,13 +280,45 @@ pub struct Mount {
 }
 
 /// One environment entry.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 pub enum Env {
     /// A literal value from the spec.
     Exact(String),
     /// `{ "from": "NAME" }`: the caller's value, passed by name only.
     From { from: String },
+}
+
+impl<'de> Deserialize<'de> for Env {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = Env;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a string or an object with only a from key")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Env, E> {
+                Ok(Env::Exact(value.to_string()))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Env, E> {
+                Ok(Env::Exact(value))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Env, A::Error> {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct From {
+                    from: String,
+                }
+                let From { from } =
+                    From::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(Env::From { from })
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 impl Plan {
@@ -459,12 +491,15 @@ impl Plan {
     /// that cannot be used refuses as `login` rather than `spec`: claude's
     /// from this process's environment, codex's from the host helper. The
     /// value never enters the plan; codex's token is returned for the proxy.
-    pub fn resolve_login(&self) -> Result<Option<login::Token>, String> {
+    pub fn resolve_login(
+        &self,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<Option<login::Token>, String> {
         let Some((route, login)) = self.login() else {
             return Ok(None);
         };
         let resolved = if login.is_codex() {
-            login::token_from_helper().map(Some)
+            login::token_from_helper(cancel).map(Some)
         } else {
             login.resolve().map(|_| None)
         };

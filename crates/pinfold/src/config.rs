@@ -158,24 +158,24 @@ impl Layer {
     /// variable, even empty, sets its key.
     fn from_env() -> io::Result<Layer> {
         Ok(Layer {
-            profile: env::var("PINFOLD_PROFILE").ok(),
+            profile: override_value("PINFOLD_PROFILE")?,
             containerfile: None,
-            allow: env::var("PINFOLD_ALLOW").ok().as_deref().map(split_list),
-            routes: env::var("PINFOLD_ROUTES")
-                .ok()
+            allow: override_value("PINFOLD_ALLOW")?.as_deref().map(split_list),
+            routes: override_value("PINFOLD_ROUTES")?
                 .as_deref()
                 .map(parse_routes)
                 .transpose()?,
-            protect: env::var("PINFOLD_PROTECT").ok().as_deref().map(split_list),
-            cpus: env::var("PINFOLD_CPUS")
-                .ok()
+            protect: override_value("PINFOLD_PROTECT")?
+                .as_deref()
+                .map(split_list),
+            cpus: override_value("PINFOLD_CPUS")?
                 .map(|value| {
                     value
                         .parse::<f64>()
-                        .map_err(|error| invalid("PINFOLD_CPUS", &format!("{value:?}: {error}")))
+                        .map_err(|error| invalid("PINFOLD_CPUS", &error.to_string()))
                 })
                 .transpose()?,
-            memory: env::var("PINFOLD_MEMORY").ok(),
+            memory: override_value("PINFOLD_MEMORY")?,
         })
     }
 
@@ -189,6 +189,14 @@ impl Layer {
         self.routes = higher.routes.or(self.routes);
         self.protect = higher.protect.or(self.protect);
         self
+    }
+}
+
+fn override_value(name: &str) -> io::Result<Option<String>> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(invalid(name, "value is not valid UTF-8")),
     }
 }
 

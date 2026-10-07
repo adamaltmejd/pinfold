@@ -11,7 +11,7 @@ use crate::core::r#box::RefusalReason;
 use crate::core::clean;
 use crate::core::plan;
 use crate::core::profile;
-use crate::core::runtime::{BuildRequest, Runtime, output, runtime};
+use crate::core::runtime::{BuildRequest, Runtime, TARGET_ARCH, output, runtime};
 use crate::dirs;
 
 /// The Containerfile bytes a managed image was built from.
@@ -233,6 +233,7 @@ pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Op
     let Ok(text) = std::str::from_utf8(containerfile) else {
         return Ok(None);
     };
+    let mut platform = None;
     let base = text
         .lines()
         .map(str::split_whitespace)
@@ -240,8 +241,20 @@ pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Op
             if !words.next()?.eq_ignore_ascii_case("FROM") {
                 return None;
             }
-            words.find(|word| !word.starts_with("--"))
+            for word in words {
+                if let Some(value) = word.strip_prefix("--platform=") {
+                    platform = Some(value);
+                } else if !word.starts_with("--") {
+                    return Some(word);
+                }
+            }
+            None
         });
+    // Build arguments are resolved by the builder. Guessing an unresolved
+    // platform here can refresh every architecture (GitHub #78).
+    if platform.is_some_and(|platform| platform.contains('$')) {
+        return Ok(None);
+    }
     match base {
         Some(base) if !base.contains('$') => {
             // A pinfold-built base can never be pulled, so read its digest
@@ -257,7 +270,15 @@ pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Op
             // A floating tag must be pulled for its digest to be current and
             // present to inspect. `scratch` and other non-registry references
             // cannot be pulled; they simply have no digest.
-            let _ = output(&[runtime.program(), "image", "pull", base]);
+            let native = format!("linux/{TARGET_ARCH}");
+            let platform =
+                platform.or_else(|| cfg!(target_os = "macos").then_some(native.as_str()));
+            let mut arguments = vec![runtime.program(), "image", "pull"];
+            if let Some(platform) = platform {
+                arguments.extend(["--platform", platform]);
+            }
+            arguments.push(base);
+            let _ = output(&arguments);
             Ok(runtime
                 .resolve_image(base)?
                 .ok()

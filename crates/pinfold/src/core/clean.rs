@@ -6,12 +6,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use nix::fcntl::{Flock, FlockArg};
-use nix::sys::signal::kill;
-use nix::unistd::Pid;
+use nix::fcntl::Flock;
 
-use crate::core::artifacts;
 use crate::core::runtime::{BoxInfo, ImageInfo, Runtime, runtime};
+use crate::core::{artifacts, ownership};
 use crate::dirs;
 
 /// The label naming a profile source on an image.
@@ -68,10 +66,10 @@ fn maintain_due() -> io::Result<()> {
     let runtime = runtime();
     report(
         "boxes",
-        boxes(runtime).and_then(|boxes| prune_boxes(runtime, &boxes)),
+        boxes(runtime).and_then(|boxes| prune_boxes(runtime, &boxes).map(|_| ())),
     );
     report("images", keep_two_images_per_source(runtime));
-    report("sockets", leftover_socket_dirs().and_then(remove_paths));
+    report("sockets", prune_leftover_states(runtime));
     report(
         "artifacts",
         artifacts::unpinned_versions().and_then(remove_paths),
@@ -86,33 +84,20 @@ fn report(what: &str, result: io::Result<()>) {
     }
 }
 
-/// Whether the `box up` that claimed `state_dir` is alive: it holds the lock
-/// on the dir's `pid` file. A missing or empty `pid` is a start between its
-/// claim and its lock, so it counts as alive. Pid reuse and EPERM cannot
-/// make a dead owner look alive.
+/// Whether published ownership still holds this state directory.
 pub fn owner_alive(state_dir: &Path) -> bool {
-    let Ok(file) = File::open(state_dir.join("pid")) else {
+    let Ok(records) = ownership::records() else {
         return true;
     };
-    // Read under the lock, so an owner cannot lock and write in between.
-    let Ok(_lock) = Flock::lock(file, FlockArg::LockExclusiveNonblock) else {
-        return true;
-    };
-    owner_pid(state_dir).is_none()
-}
-
-/// The pid the owning `box up` wrote to `state_dir`'s `pid` file. Only
-/// [`owner_alive`] says whether that process still holds the dir.
-pub fn owner_pid(state_dir: &Path) -> Option<i32> {
-    fs::read_to_string(state_dir.join("pid"))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
+    records
+        .iter()
+        .filter(|record| record.state_dir == state_dir)
+        .any(|record| ownership::name_alive(&record.name).unwrap_or(true))
 }
 
 /// A pinfold box whose owning `box up` process is gone: the runtime removes
 /// the box, and its state dir goes with it.
+#[derive(Clone)]
 pub struct DeadBox {
     /// The runtime's container id.
     pub id: String,
@@ -120,6 +105,7 @@ pub struct DeadBox {
     pub state_dir: PathBuf,
     /// The `dev.pinfold.owner` pid, when the label parsed.
     pub owner: Option<i32>,
+    pub generation: Option<String>,
 }
 
 /// One runtime box list, split into the work for Maintenance: the pinfold
@@ -148,7 +134,9 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
             continue;
         }
         let (owner, alive) = owner(&box_)?;
-        let state_dir = dirs::box_state_dir(&box_.id)?;
+        let state_dir = ownership::record(&box_.id)?
+            .map(|record| record.state_dir)
+            .unwrap_or(dirs::box_state_dir(&box_.id)?);
         if alive {
             if let Some(project) = box_.labels.get(PROJECT_LABEL) {
                 live_projects.insert(project.clone());
@@ -159,6 +147,7 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
             state_dir,
             id: box_.id,
             owner,
+            generation: box_.labels.get(ownership::GENERATION_LABEL).cloned(),
         });
     }
     Ok(Boxes {
@@ -167,60 +156,92 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
     })
 }
 
-/// A box's owner pid from its label, and whether that owner is alive. A box
-/// whose state dir exists under this state root is judged by its lock. One
-/// from another state root is judged by whether its label's pid exists:
-/// judging it by a lock this root cannot see would call every other root's
-/// live box dead.
+/// Labels identify the generation; the stable lock decides its liveness.
 pub fn owner(box_: &BoxInfo) -> io::Result<(Option<i32>, bool)> {
     let owner = box_
         .labels
         .get(OWNER_LABEL)
         .and_then(|pid| pid.parse::<i32>().ok());
-    let state_dir = dirs::box_state_dir(&box_.id)?;
-    let alive = if state_dir.is_dir() {
-        owner_alive(&state_dir)
-    } else {
-        // Given a pid of 0 or below, kill probes a group of processes.
-        owner.is_some_and(|pid| {
-            pid > 0
-                && matches!(
-                    kill(Pid::from_raw(pid), None),
-                    Ok(()) | Err(nix::errno::Errno::EPERM)
-                )
-        })
-    };
+    let matching = ownership::record(&box_.id)?.is_some_and(|record| {
+        box_.labels.get(ownership::GENERATION_LABEL) == Some(&record.generation)
+    });
+    let alive = matching && ownership::name_alive(&box_.id)?;
     Ok((owner, alive))
 }
 
-/// Remove the dead boxes [`boxes`] found, and the state dirs that name
-/// them.
-pub fn prune_boxes(runtime: &dyn Runtime, boxes: &Boxes) -> io::Result<()> {
-    for box_ in &boxes.dead {
-        runtime.down(&box_.id)?;
-        let _ = fs::remove_dir_all(&box_.state_dir);
+/// Remove the observed generation only while its name is unowned.
+pub fn remove_orphan(
+    runtime: &dyn Runtime,
+    name: &str,
+    generation: Option<&str>,
+    _lock: &Flock<File>,
+) -> io::Result<()> {
+    if let Some(current) = runtime.list()?.into_iter().find(|box_| box_.id == name) {
+        if !pinfold_box(&current)
+            || current
+                .labels
+                .get(ownership::GENERATION_LABEL)
+                .map(String::as_str)
+                != generation
+        {
+            return Ok(());
+        }
+        runtime.down(name)?;
+    }
+    if let Some(record) = ownership::record(name)? {
+        if Some(record.generation.as_str()) == generation {
+            ownership::remove_record(name, &record.generation)?;
+        }
+    } else {
+        let _ = fs::remove_dir_all(dirs::box_state_dir(name)?);
     }
     Ok(())
 }
 
-/// State dirs whose owner is gone and that hold a leftover proxy socket. A
-/// live `box up` locks its `pid` file before it binds the socket, so a
-/// socket whose `pid` no lock holds is leftover.
-pub fn leftover_socket_dirs() -> io::Result<Vec<PathBuf>> {
-    let mut leftover = Vec::new();
-    for entry in dirs::entries(&dirs::boxes_dir()?)? {
-        let dir = entry.path();
-        if owner_alive(&dir) {
+/// Inventory is advisory. A restarted generation is never removed by it.
+pub fn prune_boxes(runtime: &dyn Runtime, boxes: &Boxes) -> io::Result<Vec<DeadBox>> {
+    let mut removed = Vec::new();
+    for box_ in &boxes.dead {
+        let Some(lock) = ownership::try_name_lock(&box_.id)? else {
+            continue;
+        };
+        let current = runtime
+            .list()?
+            .into_iter()
+            .find(|current| current.id == box_.id);
+        if !current.as_ref().is_some_and(|current| {
+            pinfold_box(current)
+                && current.labels.get(ownership::GENERATION_LABEL) == box_.generation.as_ref()
+        }) {
             continue;
         }
-        // A dir without a socket is a start that failed before it could
-        // listen; it holds nothing worth reclaiming, and removing it could
-        // race a start.
-        if fs::symlink_metadata(dir.join("proxy.sock")).is_ok() {
-            leftover.push(dir);
+        remove_orphan(runtime, &box_.id, box_.generation.as_deref(), &lock)?;
+        removed.push(box_.clone());
+    }
+    Ok(removed)
+}
+
+/// Measured leftovers; removal must reacquire ownership and recheck.
+pub fn leftover_socket_dirs() -> io::Result<Vec<PathBuf>> {
+    let mut dirs = Vec::new();
+    for record in ownership::records()? {
+        if !ownership::name_alive(&record.name)? {
+            dirs.push(record.state_dir);
         }
     }
-    Ok(leftover)
+    Ok(dirs)
+}
+
+pub fn prune_leftover_states(runtime: &dyn Runtime) -> io::Result<()> {
+    for record in ownership::records()? {
+        let Some(_lock) = ownership::try_name_lock(&record.name)? else {
+            continue;
+        };
+        if runtime.list()?.iter().all(|box_| box_.id != record.name) {
+            ownership::remove_record(&record.name, &record.generation)?;
+        }
+    }
+    Ok(())
 }
 
 /// Egress logs older than [`EGRESS_LOG_AGE`].

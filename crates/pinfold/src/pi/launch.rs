@@ -5,17 +5,15 @@ use std::env;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 
-use nix::sys::signal::Signal;
 use tokio::runtime::Builder;
-use tokio::signal::unix::{SignalKind, signal};
 
 use crate::cli;
 use crate::config::Config;
-use crate::core::r#box::{Box, Signals};
+use crate::core::r#box::{Box, Signals, UpError};
 use crate::core::clean;
 use crate::core::plan::{Egress, Env, Mount, Plan};
 use crate::core::runtime::{ImageInfo, runtime};
-use crate::core::{artifacts, image, sha256_hex};
+use crate::core::{artifacts, image, ownership, sha256_hex};
 use crate::pi::git::{Git, git};
 use crate::pi::state::{self, canonical, project_id};
 use crate::trust;
@@ -30,6 +28,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     let config = Config::load(&root)?;
     trust::check(&root, &config)?;
     let id = project_id(&root);
+    let _project = ownership::project_lock(&id)?;
     let home = state::record_run(&root)?;
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
@@ -37,9 +36,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     // no created directory behind.
     let git = Git::prepare(&root, &config.protect)?;
     let plan = build_plan(&config, &id, &home, &root, &image, &git)?;
-    let code = run_box(&plan, &cwd, args);
-    git.cleanup();
-    code
+    run_box(&plan, &cwd, args)
 }
 
 /// The canonical project root for `cwd`: the git top level, else `cwd`.
@@ -238,10 +235,16 @@ fn run_box(plan: &Plan, cwd: &Path, args: &[String]) -> io::Result<i32> {
     let result = runtime.block_on(async {
         // Register the handlers before the box starts, so a closed terminal
         // during startup is caught and the box is removed once it is up.
-        let mut signals = Signals::new()?;
-        let mut hangup = signal(SignalKind::hangup())?;
+        let mut signals = Signals::with_hangup()?;
         // The handlers above are the run's; `up` installs none of its own.
-        let mut box_ = Box::up(plan, &init, None).await?;
+        let mut box_ = match Box::up(plan, &init, Some(&mut signals)).await {
+            Ok(box_) => box_,
+            Err(UpError::Control) => return Ok(0),
+            Err(UpError::Signal) => {
+                return Ok(128 + signals.last().unwrap_or(nix::sys::signal::Signal::SIGTERM) as i32);
+            }
+            Err(error) => return Err(error.into()),
+        };
         let exec = tokio::task::spawn_blocking(move || {
             box_runtime.exec(&name, &init, tty, Some(&workdir), &argv)
         });
@@ -249,8 +252,8 @@ fn run_box(plan: &Plan, cwd: &Path, args: &[String]) -> io::Result<i32> {
             status = exec => status
                 .map_err(|error| io::Error::other(format!("pi exec failed: {error}")))
                 .and_then(|status| status.map(cli::exit_code)),
+            stop = box_.stop_requested() => stop.map(|()| 0),
             signal = signals.recv() => Ok(128 + signal as i32),
-            _ = hangup.recv() => Ok(128 + Signal::SIGHUP as i32),
         };
         // Remove the box exactly once, whatever ended the run. A failed
         // removal must not hide the error that ended pi.

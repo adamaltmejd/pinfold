@@ -34,8 +34,7 @@ impl Git {
     /// Prepare the read-only mounts for the project rooted at `root`.
     ///
     /// An absent protected directory is created empty, so the box cannot
-    /// create it; [`cleanup`](Self::cleanup) removes it after the run when it
-    /// is still empty.
+    /// create it; dropping the guard removes it when it is still empty.
     pub fn prepare(root: &Path, protect: &[String]) -> io::Result<Git> {
         let dot_git = root.join(".git");
         let mut paths = BTreeSet::new();
@@ -57,8 +56,10 @@ impl Git {
             paths.insert(protected_path(root, Path::new(entry), &what)?);
         }
 
-        let mut readonly = Vec::new();
-        let mut created = Vec::new();
+        let mut git = Git {
+            readonly: Vec::new(),
+            created: Vec::new(),
+        };
         for path in paths {
             match path_kind(&path)? {
                 PathKind::Directory => {}
@@ -75,23 +76,23 @@ impl Git {
                             format!("create protected directory {}: {error}", path.display()),
                         )
                     })?;
-                    created.push(path.clone());
+                    git.created.push(path.clone());
                 }
                 PathKind::Other => return Err(not_real_dir(&path)),
             }
-            readonly.push(Mount {
+            git.readonly.push(Mount {
                 host: path.clone(),
                 guest: path,
                 readonly: true,
             });
         }
-        Ok(Git { readonly, created })
+        Ok(git)
     }
+}
 
-    /// Remove the protected directories this run created, if the host left
-    /// them empty.
-    pub fn cleanup(&self) {
-        for path in &self.created {
+impl Drop for Git {
+    fn drop(&mut self) {
+        for path in self.created.iter().rev() {
             let _ = fs::remove_dir(path);
         }
     }

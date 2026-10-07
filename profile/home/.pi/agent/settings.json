@@ -1,8 +1,4 @@
 {
-    "packages": [
-        "/opt/pinfold/profile/pi",
-        "/opt/pinfold/packages/rtk.ts",
-        "/opt/pinfold/packages/ponytail"
-    ],
+    "packages": ["/opt/pinfold/profile/pi"],
     "defaultProjectTrust": "always"
 }
