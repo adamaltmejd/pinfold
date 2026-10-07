@@ -2,13 +2,16 @@
 
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::os::fd::AsFd;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-use nix::fcntl::{FcntlArg, OFlag, fcntl};
+use nix::poll::PollFlags;
 use sha2::{Digest, Sha256};
+
+use crate::core::pipe::{nonblocking, remaining, wait_ready};
 
 pub fn bytes(url: &str, timeout: Duration, limit: u64) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
@@ -59,22 +62,11 @@ fn transfer(
         .spawn()?;
     let result = (|| {
         let mut source = child.stdout.take().expect("curl stdout is piped");
-        fcntl(&source, FcntlArg::F_SETFL(OFlag::O_NONBLOCK))?;
+        nonblocking(&source, "download")?;
         let mut total = 0_u64;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
-            if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "download cancelled",
-                ));
-            }
-            if Instant::now() >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "download deadline exceeded",
-                ));
-            }
+            remaining(deadline, cancel, "download")?;
             match source.read(&mut buffer) {
                 Ok(0) => {
                     if let Some(status) = child.try_wait()? {
@@ -84,6 +76,7 @@ fn transfer(
                             Err(io::Error::other(format!("download failed: {status}")))
                         };
                     }
+                    wait_ready(None, PollFlags::empty(), deadline, cancel, "download")?;
                 }
                 Ok(read) => {
                     total += read as u64;
@@ -93,11 +86,18 @@ fn transfer(
                     output.write_all(&buffer[..read])?;
                     continue;
                 }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    wait_ready(
+                        Some(source.as_fd()),
+                        PollFlags::POLLIN,
+                        deadline,
+                        cancel,
+                        "download",
+                    )?;
+                }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error),
             }
-            std::thread::sleep(Duration::from_millis(10));
         }
     })();
     if result.is_err() {

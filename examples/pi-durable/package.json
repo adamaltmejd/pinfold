@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node prototype.ts",
     "check": "tsc --noEmit",
-    "e2e": "node e2e.ts"
+    "e2e": "node durable_recovery_preserves_boxed_execution.ts"
   },
   "dependencies": {
     "@earendil-works/pi-durable": "1.0.4",

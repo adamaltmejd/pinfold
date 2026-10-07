@@ -40,7 +40,7 @@ pub struct Box {
     pub egress_log: Option<PathBuf>,
     ownership: ownership::Claim,
     _project: Option<nix::fcntl::Flock<std::fs::File>>,
-    audit: Option<tokio::sync::oneshot::Receiver<()>>,
+    audit: Audit,
     child: Child,
 }
 
@@ -124,15 +124,10 @@ impl Box {
     /// profile, the host's runtime and the image are checked first. Then
     /// `up` claims the name, and only the claim's owner creates anything.
     ///
-    /// With `signals`, the caller registered SIGTERM and SIGINT before
-    /// reading the spec: before ready they remove what the start made and
-    /// `up` returns [`UpError::Signal`]; after ready [`Box::hold`] watches
-    /// them. Without, the caller handles its own.
-    pub async fn up(
-        plan: &Plan,
-        init: &Path,
-        mut signals: Option<&mut Signals>,
-    ) -> Result<Box, UpError> {
+    /// The caller registered SIGTERM and SIGINT before reading the spec:
+    /// before ready they remove what the start made and `up` returns
+    /// [`UpError::Signal`]; after ready [`Box::hold`] watches them.
+    pub async fn up(plan: &Plan, init: &Path, signals: &mut Signals) -> Result<Box, UpError> {
         if init.parent().is_none_or(|parent| parent == Path::new("/")) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -154,18 +149,14 @@ impl Box {
         let login_plan = plan.clone();
         let mut resolving =
             tokio::task::spawn_blocking(move || login_plan.resolve_login(Some(&worker_cancel)));
-        let codex = if let Some(signals) = signals.as_deref_mut() {
-            tokio::select! {
-                biased;
-                _ = signals.recv() => {
-                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                    let _ = resolving.await;
-                    return Err(UpError::Signal);
-                }
-                result = &mut resolving => result,
+        let codex = tokio::select! {
+            biased;
+            _ = signals.recv() => {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                let _ = resolving.await;
+                return Err(UpError::Signal);
             }
-        } else {
-            resolving.await
+            result = &mut resolving => result,
         }
         .map_err(|error| io::Error::other(format!("login worker failed: {error}")))?
         .map_err(|error| refused(plan, RefusalReason::Login, error))?;
@@ -241,11 +232,16 @@ impl Box {
             .map(|id| ownership::project_lock(id))
             .transpose()?;
         let state_dir = dirs::box_state_dir(&plan.name)?;
-        let mut claim = ownership::Claim::take(&plan.name)?.ok_or_else(|| {
+        let mut claim = tokio::select! {
+            biased;
+            _ = signals.recv() => return Err(UpError::Signal),
+            claim = ownership::Claim::take(&plan.name) => claim,
+        }?
+        .ok_or_else(|| {
             refused(
                 &plan,
                 RefusalReason::NameInUse,
-                "name is held by a live owner".to_string(),
+                "name remained busy through the claim deadline".to_string(),
             )
         })?;
         match runtime.list() {
@@ -290,18 +286,11 @@ impl Box {
             }
             Ok((observed.labels, egress_log))
         };
-        let started = match signals {
-            Some(signals) => tokio::select! {
-                biased;
-                _ = signals.recv() => Err(Stop::Signal),
-                stop = claim.stop_requested() => match stop { Ok(()) => Err(Stop::Control), Err(error) => Err(Stop::Failed(error)) },
-                started = starting => started,
-            },
-            None => tokio::select! {
-                biased;
-                stop = claim.stop_requested() => match stop { Ok(()) => Err(Stop::Control), Err(error) => Err(Stop::Failed(error)) },
-                started = starting => started,
-            },
+        let started = tokio::select! {
+            biased;
+            _ = signals.recv() => Err(Stop::Signal),
+            stop = claim.stop_requested() => match stop { Ok(()) => Err(Stop::Control), Err(error) => Err(Stop::Failed(error)) },
+            started = starting => started,
         };
         let (labels, egress_log) = match started {
             Ok(started) => started,
@@ -312,13 +301,11 @@ impl Box {
                 if let Some(preparing) = progress.preparing.take() {
                     let _ = preparing.await;
                 }
-                let status = abort(&plan.name, progress.child).await;
-                claim
-                    .finish(status.as_ref().is_none_or(|status| status.is_ok()))
-                    .await?;
-                if let Some(Err(error)) = status {
-                    return Err(UpError::Other(error));
+                let (removed, status) = abort(&plan.name, progress.child).await;
+                if let Err(error) = claim.finish(removed.is_ok()).await {
+                    eprintln!("pinfold: startup cleanup: {error}");
                 }
+                removed?;
                 return Err(match stop {
                     Stop::Signal => UpError::Signal,
                     Stop::Control => UpError::Control,
@@ -389,7 +376,8 @@ pub fn down(name: &str) -> io::Result<()> {
             name,
             observed.as_ref().map(|record| record.generation.as_str()),
             &lock,
-        );
+        )
+        .map(|_| ());
     }
     let stopped = ownership::request_stop(name, observed.as_ref());
     if let Some(lock) = ownership::try_name_lock(name)? {
@@ -459,10 +447,12 @@ impl From<io::Error> for Stop {
     }
 }
 
-/// Remove what a failed start left: stop the runtime child, take the box
-/// down, then remove the claimed state dir. The box goes down first, so no
-/// checker sees a box whose state dir is gone.
-async fn abort(name: &str, child: Option<Child>) -> Option<io::Result<ExitStatus>> {
+/// Stop a failed start's runtime child and remove its box. The caller
+/// removes the claimed state only after successful runtime removal.
+async fn abort(
+    name: &str,
+    child: Option<Child>,
+) -> (io::Result<()>, Option<io::Result<ExitStatus>>) {
     match child {
         Some(mut child) => {
             // The client goes first, so one still creating the box cannot
@@ -470,12 +460,9 @@ async fn abort(name: &str, child: Option<Child>) -> Option<io::Result<ExitStatus
             // readiness failed.
             let _ = child.start_kill();
             let status = child.wait().await;
-            match runtime().down(name) {
-                Ok(()) => Some(status),
-                Err(error) => Some(Err(error)),
-            }
+            (runtime().down(name), Some(status))
         }
-        None => None,
+        None => (Ok(()), None),
     }
 }
 
@@ -483,7 +470,7 @@ async fn abort(name: &str, child: Option<Child>) -> Option<io::Result<ExitStatus
 #[derive(Default)]
 struct Starting {
     child: Option<Child>,
-    audit: Option<tokio::sync::oneshot::Receiver<()>>,
+    audit: Audit,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     preparing: Option<tokio::task::JoinHandle<io::Result<Plan>>>,
 }
@@ -530,7 +517,7 @@ async fn start(
         Some(egress) => {
             let socket = state_dir.join("proxy.sock");
             let log = dirs::egress_dir()?.join(format!("{}.jsonl", plan.name));
-            progress.audit = Some(proxy::start(&socket, egress, codex, log.clone())?);
+            progress.audit = Audit::Waiting(proxy::start(&socket, egress, codex, log.clone())?);
             egress_log = Some(log);
             Some(socket)
         }
@@ -847,12 +834,25 @@ fn seed_error(error: Errno, context: &str) -> io::Error {
     io::Error::new(kind, format!("{context}: {error}"))
 }
 
-async fn audit_failure(audit: &mut Option<tokio::sync::oneshot::Receiver<()>>) {
-    if let Some(receiver) = audit.as_mut() {
-        if receiver.await.is_ok() {
-            return;
-        }
-        *audit = None;
+#[derive(Default)]
+enum Audit {
+    #[default]
+    Off,
+    Waiting(tokio::sync::oneshot::Receiver<()>),
+    Failed,
+}
+
+async fn audit_failure(audit: &mut Audit) {
+    if let Audit::Waiting(receiver) = audit {
+        // A consumed notification stays failed for every subsequent wait.
+        *audit = if receiver.await.is_ok() {
+            Audit::Failed
+        } else {
+            Audit::Off
+        };
+    }
+    if matches!(audit, Audit::Failed) {
+        return;
     }
     std::future::pending::<()>().await;
 }

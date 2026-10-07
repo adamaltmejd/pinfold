@@ -71,11 +71,14 @@ release-age exception only for the four pinned Earendil release-family packages:
 release already pinned by Pinfold. Other publishers retain the installation age
 policy; no global Bun configuration is changed.
 
-The standalone regression command needs exclusive ownership of the runtime and
+The prototype contract and pin-maintenance rule are in
+[ARCHITECTURE.md](../../docs/ARCHITECTURE.md#experimental-durable-caller).
+The standalone regression is guarantee 35. It currently validates macOS;
+Linux prototype behavior is unverified. The command needs exclusive ownership of the runtime and
 an existing image with `sh`, `tail`, `grep` and `tr`:
 
 ```sh
-node e2e.ts --pinfold /absolute/path/to/pinfold --image your-existing-image
+node durable_recovery_preserves_boxed_execution.ts --pinfold /absolute/path/to/pinfold --image your-existing-image
 ```
 
 It uses an actual host HTTP fixture and actual boxes. It refuses host authority

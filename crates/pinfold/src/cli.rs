@@ -249,7 +249,7 @@ fn up(args: &[String]) -> io::Result<i32> {
 
 async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
     let init = artifacts::init()?;
-    let mut box_ = match Box::up(plan, &init, Some(&mut signals)).await {
+    let mut box_ = match Box::up(plan, &init, &mut signals).await {
         Ok(box_) => box_,
         Err(UpError::Refused(refusal)) => return Ok(refused_box(&refusal)),
         Err(UpError::Signal | UpError::Control) => {
@@ -439,8 +439,7 @@ struct CleanPlan {
     /// Dead boxes' state dirs, leftover socket dirs, unpinned artifact
     /// versions and old egress logs.
     automatic: BTreeSet<PathBuf>,
-    caches: Vec<PathBuf>,
-    stale: Vec<PathBuf>,
+    project_paths: BTreeMap<String, PathBuf>,
     automatic_bytes: u64,
     project_caches: u64,
     project_state: u64,
@@ -461,25 +460,17 @@ impl CleanPlan {
         automatic.extend(artifacts::unpinned_versions()?);
         automatic.extend(clean::old_egress_logs()?);
 
-        let projects = crate::pi::state::state_dirs()?;
-        let mut caches = Vec::new();
-        let mut stale = Vec::new();
-        for project in &projects {
-            // A live box holds this project's home; leave it all alone.
-            if boxes.live_projects.contains(&project.id) {
-                continue;
-            }
-            // Stale: the checkout is gone, or with `unused`, the project
-            // has not run for that long.
-            let idle = crate::core::now().saturating_sub(project.last_run);
-            if !project.root.exists() || unused.is_some_and(|unused| idle > unused.as_secs()) {
-                // The whole state dir goes; its cache is part of its size.
-                stale.push(project.dir.clone());
-            } else {
-                let cache = project.dir.join("home/.cache");
-                if cache.exists() {
-                    caches.push(cache);
+        let mut project_paths = BTreeMap::new();
+        let mut project_caches = 0;
+        let mut project_state = 0;
+        for project in crate::pi::state::state_dirs()? {
+            if let Some(path) = Self::project_path(&project, &boxes.live_projects, unused) {
+                if path == project.dir {
+                    project_state += clean::path_bytes(&path);
+                } else {
+                    project_caches += clean::path_bytes(&path);
                 }
+                project_paths.insert(project.id, path);
             }
         }
 
@@ -491,11 +482,10 @@ impl CleanPlan {
                 .chain(&box_paths)
                 .map(|path| clean::path_bytes(path))
                 .sum(),
-            project_caches: caches.iter().map(|path| clean::path_bytes(path)).sum(),
-            project_state: stale.iter().map(|path| clean::path_bytes(path)).sum(),
+            project_caches,
+            project_state,
             automatic,
-            caches,
-            stale,
+            project_paths,
             unused,
         })
     }
@@ -527,35 +517,45 @@ impl CleanPlan {
         clean::prune_leftover_states(runtime)?;
         runtime.purge_build_cache()?;
         clean::remove_paths(self.automatic.into_iter().collect())?;
-        for measured in crate::pi::state::state_dirs()? {
-            let cache = measured.dir.join("home/.cache");
-            if !self.stale.contains(&measured.dir) && !self.caches.contains(&cache) {
-                continue;
-            }
-            let Some(_lock) = crate::core::ownership::try_project_lock(&measured.id)? else {
-                continue;
-            };
-            let Some(current) = crate::pi::state::state_dirs()?
-                .into_iter()
-                .find(|current| current.id == measured.id)
-            else {
-                continue;
-            };
-            if clean::boxes(runtime)?.live_projects.contains(&current.id) {
-                continue;
-            }
-            let idle = crate::core::now().saturating_sub(current.last_run);
-            let stale =
-                !current.root.exists() || self.unused.is_some_and(|unused| idle > unused.as_secs());
-            if self.stale.contains(&current.dir) {
-                if stale {
-                    clean::remove_paths(vec![current.dir])?;
-                }
-            } else if self.caches.contains(&cache) {
-                clean::remove_paths(vec![cache])?;
+        let mut locks = BTreeMap::new();
+        for id in self.project_paths.keys() {
+            if let Some(lock) = crate::core::ownership::try_project_lock(id)? {
+                locks.insert(id.as_str(), lock);
             }
         }
+        if !locks.is_empty() {
+            // All candidates stay locked through this one fresh snapshot.
+            let live = clean::boxes(runtime)?.live_projects;
+            for project in crate::pi::state::state_dirs()? {
+                if !locks.contains_key(project.id.as_str()) {
+                    continue;
+                }
+                if let Some(path) = Self::project_path(&project, &live, self.unused)
+                    && self.project_paths.get(&project.id) == Some(&path)
+                {
+                    clean::remove_paths(vec![path])?;
+                }
+            }
+        }
+        drop(locks);
         clean::keep_two_images_per_source(runtime)
+    }
+
+    fn project_path(
+        project: &crate::pi::state::StateDir,
+        live: &BTreeSet<String>,
+        unused: Option<Duration>,
+    ) -> Option<PathBuf> {
+        if live.contains(&project.id) {
+            return None;
+        }
+        let idle = crate::core::now().saturating_sub(project.last_run);
+        if !project.root.exists() || unused.is_some_and(|unused| idle > unused.as_secs()) {
+            Some(project.dir.clone())
+        } else {
+            let cache = project.dir.join("home/.cache");
+            cache.exists().then_some(cache)
+        }
     }
 }
 

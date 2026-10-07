@@ -309,6 +309,8 @@ sys.exit(result.returncode)
     // A stopped owner still owns its name. Sabotage: restore down's
     // timed fallback removal; down succeeds, its state disappears, and a
     // replacement can start before the previous owner finishes cleanup.
+    // Sabotage: refuse the first claim lock conflict; the second-root up
+    // ends before the spec's ten-second contention wait.
     // The runtime, host state and second XDG root are outside observers.
     {
         let other = TestEnv::new("lifecycle-other");
@@ -361,7 +363,14 @@ sys.exit(result.returncode)
             stopped_state.is_dir(),
             "down removed the stopped owner's state"
         );
+        let replacement_started = std::time::Instant::now();
         let (code, refused) = box_up_refused(&other, &stopped_spec, &[]);
+        let contention_wait = replacement_started.elapsed();
+        assert!(
+            contention_wait >= std::time::Duration::from_secs(10)
+                && contention_wait < std::time::Duration::from_secs(15),
+            "claim did not wait its bounded contention budget: {contention_wait:?}"
+        );
         assert_ne!(code, 0, "replacement ran while old owner was stopped");
         assert_eq!(
             refused["reason"], "name-in-use",

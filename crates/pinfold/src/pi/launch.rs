@@ -237,7 +237,7 @@ fn run_box(plan: &Plan, cwd: &Path, args: &[String]) -> io::Result<i32> {
         // during startup is caught and the box is removed once it is up.
         let mut signals = Signals::with_hangup()?;
         // The handlers above are the run's; `up` installs none of its own.
-        let mut box_ = match Box::up(plan, &init, Some(&mut signals)).await {
+        let mut box_ = match Box::up(plan, &init, &mut signals).await {
             Ok(box_) => box_,
             Err(UpError::Control) => return Ok(0),
             Err(UpError::Signal) => {

@@ -208,7 +208,7 @@ async function main() {
   await mkdir(state, { recursive: true, mode: 0o700 });
   const guard = new DatabaseSync(resolve(state, "writer.sqlite"));
   try { guard.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE"); }
-  catch { guard.close(); throw new Error("another writer owns this checkpoint; no box was stopped"); }
+  catch { guard.close(); throw new Error("checkpoint-in-use: another writer owns this checkpoint; no box was stopped"); }
   const box = new Box(job);
   let harness: Harness | undefined;
   let root: Awaited<ReturnType<Harness["root"]>> | undefined;

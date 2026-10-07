@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
+use crate::core::pipe::remaining;
 use crate::core::sha256_hex;
 
 pub const GENERATION_LABEL: &str = "dev.pinfold.generation";
@@ -183,8 +184,20 @@ pub struct Claim {
 }
 
 impl Claim {
-    pub fn take(name: &str) -> io::Result<Option<Claim>> {
-        Ok(try_name_lock(name)?.map(|lock| Claim {
+    pub async fn take(name: &str) -> io::Result<Option<Claim>> {
+        // Liveness probes and orphan pruning hold the same lock briefly.
+        // A conflict proves only contention; never trust a pid to bypass it.
+        let deadline = tokio::time::Instant::now() + STOP_TIMEOUT;
+        let lock = loop {
+            if let Some(lock) = try_name_lock(name)? {
+                break lock;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        Ok(Some(Claim {
             name: name.to_string(),
             _lock: lock,
             record: None,
@@ -324,23 +337,42 @@ pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<()> {
         }
         match BlockingStream::connect(socket(name)?) {
             Ok(mut stream) => {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-                stream.set_read_timeout(Some(remaining))?;
-                stream.set_write_timeout(Some(remaining))?;
-                let exchange: io::Result<[u8; 5]> = (|| {
-                    stream.write_all(observed.generation.as_bytes())?;
-                    let mut answer = [0; 5];
-                    stream.read_exact(&mut answer)?;
-                    Ok(answer)
+                let exchange: io::Result<([u8; 7], usize)> = (|| {
+                    let mut pending = observed.generation.as_bytes();
+                    while !pending.is_empty() {
+                        let timeout = remaining(deadline, None, "box teardown")?;
+                        stream.set_write_timeout(Some(timeout))?;
+                        match stream.write(pending) {
+                            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                            Ok(written) => pending = &pending[written..],
+                            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    // Every reply is a complete line, at most "failed\n".
+                    let mut answer = [0; 7];
+                    let mut length = 0;
+                    while length < answer.len() {
+                        let timeout = remaining(deadline, None, "box teardown")?;
+                        stream.set_read_timeout(Some(timeout))?;
+                        match stream.read(&mut answer[length..]) {
+                            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                            Ok(read) => length += read,
+                            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                            Err(error) => return Err(error),
+                        }
+                        if answer[..length].contains(&b'\n') {
+                            break;
+                        }
+                    }
+                    Ok((answer, length))
                 })();
                 match exchange {
-                    Ok(answer) => {
-                        return match &answer {
+                    Ok((answer, length)) => {
+                        return match &answer[..length] {
                             b"done\n" | b"gone\n" => Ok(()),
-                            _ => Err(io::Error::other("box teardown failed")),
+                            b"failed\n" => Err(io::Error::other("box teardown failed")),
+                            _ => Err(io::Error::other("invalid box teardown reply")),
                         };
                     }
                     // Startup can finish while its select is reading this

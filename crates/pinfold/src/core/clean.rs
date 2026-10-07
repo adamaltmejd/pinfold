@@ -170,12 +170,14 @@ pub fn owner(box_: &BoxInfo) -> io::Result<(Option<i32>, bool)> {
 }
 
 /// Remove the observed generation only while its name is unowned.
+/// Return whether a matching runtime box was removed.
 pub fn remove_orphan(
     runtime: &dyn Runtime,
     name: &str,
     generation: Option<&str>,
     _lock: &Flock<File>,
-) -> io::Result<()> {
+) -> io::Result<bool> {
+    let mut removed = false;
     if let Some(current) = runtime.list()?.into_iter().find(|box_| box_.id == name) {
         if !pinfold_box(&current)
             || current
@@ -184,9 +186,10 @@ pub fn remove_orphan(
                 .map(String::as_str)
                 != generation
         {
-            return Ok(());
+            return Ok(false);
         }
         runtime.down(name)?;
+        removed = true;
     }
     if let Some(record) = ownership::record(name)? {
         if Some(record.generation.as_str()) == generation {
@@ -195,7 +198,7 @@ pub fn remove_orphan(
     } else {
         let _ = fs::remove_dir_all(dirs::box_state_dir(name)?);
     }
-    Ok(())
+    Ok(removed)
 }
 
 /// Inventory is advisory. A restarted generation is never removed by it.
@@ -205,18 +208,9 @@ pub fn prune_boxes(runtime: &dyn Runtime, boxes: &Boxes) -> io::Result<Vec<DeadB
         let Some(lock) = ownership::try_name_lock(&box_.id)? else {
             continue;
         };
-        let current = runtime
-            .list()?
-            .into_iter()
-            .find(|current| current.id == box_.id);
-        if !current.as_ref().is_some_and(|current| {
-            pinfold_box(current)
-                && current.labels.get(ownership::GENERATION_LABEL) == box_.generation.as_ref()
-        }) {
-            continue;
+        if remove_orphan(runtime, &box_.id, box_.generation.as_deref(), &lock)? {
+            removed.push(box_.clone());
         }
-        remove_orphan(runtime, &box_.id, box_.generation.as_deref(), &lock)?;
-        removed.push(box_.clone());
     }
     Ok(removed)
 }

@@ -89,7 +89,9 @@ need `loginctl enable-linger`.
 1. Claim the name with a per-user lifetime lock, independent of XDG and
    `HOME`. Hold it through runtime removal, child reaping and state cleanup.
    Record a fresh generation, owner pid and state directory; label the box
-   with that generation. A held name is `name-in-use`; abandoned partial
+   with that generation. Claim acquisition waits up to ten seconds through
+   contention, including maintenance probes, and is signal-cancellable.
+   A name still held at the deadline is `name-in-use`; abandoned partial
    claims are reclaimable. Nothing (seeds, proxy, box) is created before
    the claim.
 2. Start the box's proxy on a new unix socket in the state dir. Keep the path
@@ -762,6 +764,37 @@ host-side operation, hooks and signing off.
 
 Worktrees are refused.
 
+## Experimental durable caller
+
+`examples/pi-durable` is an opt-in Node program. It is separate from
+interactive pi and is not installed by Pinfold. Its only model tool is
+sequential `boxed_bash`, dispatched through `box exec` with replay unsafe.
+Reads, edits and shell commands execute in the box. The host owns model
+requests, immutable job configuration and SQLite checkpoints. Recovery
+holds an exclusive checkpoint-writer lock, removes the previous named box,
+then creates a fresh generation before resuming. A competing writer is
+refused as `checkpoint-in-use` without touching the live job. An interrupted
+shell tool is reported interrupted and is never automatically replayed. SIGINT or
+SIGTERM during a tool removes the whole box and exits 130 after successful
+teardown. Exactly-once execution, per-command cancellation,
+a scheduler and a complete `ExecutionEnv` are outside this prototype.
+
+The writable project must be disjoint from checkpoints, controller and
+dependencies, Node and Pinfold executables, PATH entries, Pinfold's host
+state and ownership paths, and runtime authority. Check both lexical and
+canonical paths, including nonexistent paths under symlinked ancestors.
+Refuse overlap as `host-boundary` before box or model work. Checkpoints
+remain private on the host; a moved checkpoint namespace is refused.
+
+Prototype-only dependencies are `@earendil-works/pi-durable`, `pi-ai` and
+`chord`, with transitive `pi-telemetry`, all pinned to 1.0.4. Development
+uses TypeScript 6.0.2 and `@types/node` 26.0.0; execution requires Node 26+.
+The repository operator owns these pins and `examples/pi-durable/bun.lock`.
+They are updated together in a reviewed change, independently of nightly
+harness pins. Any prototype or dependency change requires the typecheck
+and guarantee 35's standalone gate. Its supported validation host is
+macOS; Linux prototype behavior remains unverified.
+
 ## Configuration
 
 Layers: environment > `.pinfold.toml` > the profile's `pinfold.toml` >
@@ -837,6 +870,10 @@ the command refuses as `project-in-git`.
 ## Guarantees
 
 Each has one end-to-end test. Testing policy is in `AGENTS.md`.
+Guarantees 1–34 run through the Rust E2E crate. Guarantee 35 is the standalone
+`examples/pi-durable/durable_recovery_preserves_boxed_execution.ts` gate;
+its README gives installation and execution commands. Run it with exclusive
+runtime ownership, after the Rust suite.
 Guarantee 34 is an ignored slow test because it exercises the real
 five-minute production write deadline. Run it separately with
 `cargo test -p e2e --locked --test e2e box_::blocked_route_responses_release_the_upstream -- --ignored --exact`.
@@ -853,7 +890,7 @@ shared-activity clock.
 | 6 | The environment is exactly the spec | Unprefixed host proxy variables stay out; PINFOLD_ENV_SECRET arrives without entering host argv. Guest PATH, HOME, runtime-selection variables, multiline values and a transport-prefixed name arrive exactly while local list/exec/down still manage the box. Always-applied values win. |
 | 7 | No egress means no way out | Without `egress`, nothing gets out, not even through a route. |
 | 8 | Losing the owner fails closed | After SIGKILL, egress fails closed; another XDG root sees the owner dead even with a misleading live pid file, prunes the box and reuses its name. An abandoned partial claim is reclaimable. |
-| 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code, honors explicit workdir and tty, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; `down` removes, and closing `up`'s stdin tears the box down with reason `stdin-closed`. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box, an empty name or a flag-like name (`--filter=…`) exits 0, prints nothing and leaves live boxes alone; a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. A SIGSTOP owner keeps its claim after down times out; a second XDG root cannot replace it until acknowledged teardown. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. |
+| 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code, honors explicit workdir and tty, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; `down` removes, and closing `up`'s stdin tears the box down with reason `stdin-closed`. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box, an empty name or a flag-like name (`--filter=…`) exits 0, prints nothing and leaves live boxes alone; a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. A SIGSTOP owner keeps its claim after down times out; a second XDG root waits the ten-second claim deadline before name-in-use and cannot replace it until acknowledged teardown. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. |
 | 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, or writing into `.vscode/` in a project without one fails, also under a top level named by a space, and a symlinked protected path refuses the run as `protected-path-invalid`; replacing it with a real directory runs. Starting inside `.git` is refused as `project-in-git`; starting from the project root runs. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |
@@ -879,6 +916,7 @@ shared-activity clock.
 | 32 | The documents profile reads documents locally | A freshly built documents image converts a PDF whose objects are reordered, preserving page-tree order, and renders page two at its fixture dimensions with no egress. |
 | 33 | Writable projects exclude host authority | `allow`, build and pi refuse state, config or cache roots inside the project, including nonexistent paths reached through a symlinked ancestor. External roots allow the same project to run. |
 | 34 | Blocked route responses release the upstream | A normal routed response succeeds. A guest that keeps its upload open but stops reading causes the host fixture connection to close after the production write deadline, while the guest holder remains alive. Slow gate only. |
+| 35 | Durable recovery preserves boxed execution | The host fixture refuses authority overlap before work, then observes a successful boxed command, a competing checkpoint writer refused without disrupting its owner, a mutation followed by SIGKILL before tool-result commit, a new box generation before recovery, no unsafe replay, and whole-box cancellation including a background child. Standalone macOS prototype gate. |
 
 Linux (podman) runs in CI on every push to main and every pull request,
 and on a dispatched ref, on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm`
