@@ -82,3 +82,20 @@ jobs:
 
       - name: End-to-end tests
         run: cargo test -p e2e --locked
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.10.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Durable recovery preserves boxed execution
+        working-directory: examples/pi-durable
+        run: |
+          bun install --frozen-lockfile
+          bun run check
+          node durable_recovery_preserves_boxed_execution.ts \
+            --pinfold "$GITHUB_WORKSPACE/target/$(uname -m)-unknown-linux-musl/debug/pinfold" \
+            --image pinfold/profile-default:latest
