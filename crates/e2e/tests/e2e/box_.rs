@@ -572,18 +572,40 @@ sys.exit(result.returncode)
         fs::write(context.path().join("stamp"), "first\n").unwrap();
         let (code, built) = image_build(&env, &image_name, &containerfile, context.path());
         assert_eq!(code, 0, "first race image build: {built}");
-        let latest = format!("pinfold/image-{image_name}:latest");
-        let first = e2e::image_id(&latest).expect("runtime resolves first race image");
+        let first_ref = built["ref"].as_str().unwrap().to_string();
+        // Apple's tag command normalizes an unqualified target to docker.io.
+        let prefix = if cfg!(target_os = "macos") {
+            "docker.io/"
+        } else {
+            ""
+        };
+        let latest = format!("{prefix}pinfold/image-{image_name}:latest");
+        let _tagged_images = cfg!(target_os = "macos").then(|| ImageCleanup {
+            repository: format!("{prefix}pinfold/image-{image_name}"),
+        });
+        fs::write(context.path().join("stamp"), "second\n").unwrap();
+        let (code, built) = image_build(&env, &image_name, &containerfile, context.path());
+        assert_eq!(code, 0, "second race image build: {built}");
+        let second_ref = built["ref"].as_str().unwrap();
+        let tag = |source: &str| {
+            let mut command = Command::new(image_cli());
+            if cfg!(target_os = "macos") {
+                command.arg("image");
+            }
+            run_ok(command.args(["tag", source, &latest]));
+        };
+        // Build before the held CONNECT: curl's production connection
+        // deadline must cover only the native tag move, not a queued build.
+        tag(&first_ref);
+        let first = e2e::image_id(&latest).expect("runtime resolves first tagged image");
         spec["image"] = latest.clone().into();
         let mut proxy = HeldDownload::new();
         let mut starting = box_up_start(&env, &spec, &proxy.vars());
         proxy.event("held");
-        fs::write(context.path().join("stamp"), "second\n").unwrap();
-        let (code, built) = image_build(&env, &image_name, &containerfile, context.path());
-        assert_eq!(code, 0, "second race image build: {built}");
-        let second = e2e::image_id(&latest).expect("runtime resolves second race image");
-        assert_ne!(first, second, "fixture images must differ");
+        tag(second_ref);
         proxy.release();
+        let second = e2e::image_id(&latest).expect("runtime resolves second tagged image");
+        assert_ne!(first, second, "fixture images must differ");
         let failed = starting.first_line();
         assert_eq!(failed["event"], "failed", "retagged startup: {failed}");
         assert!(
@@ -2505,7 +2527,10 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(log.len() <= 64 * 1024, "failed build log exceeds 64 KiB");
-    assert!(log.contains(final_marker), "failed build lost its tail");
+    assert!(
+        log.contains(final_marker),
+        "failed build lost its tail: {failed}"
+    );
     assert_eq!(
         names_ids(),
         kept,
