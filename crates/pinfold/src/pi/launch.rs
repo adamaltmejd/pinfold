@@ -218,7 +218,10 @@ pub(crate) fn utf8<'a>(path: &'a Path, what: &str) -> io::Result<&'a str> {
     path.to_str().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("{what} {} is not valid UTF-8", path.display()),
+            format!(
+                "path-not-utf8: {what} {} is not valid UTF-8",
+                path.display()
+            ),
         )
     })
 }

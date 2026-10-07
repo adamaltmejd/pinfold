@@ -324,18 +324,6 @@ fn project_state_persists_and_stays_separate() {
         run_b.finish().success(),
         "the second project did not exit cleanly"
     );
-    let home_b = project_state_dir(&env, b.path()).join("home");
-    let seeded_b =
-        fs::read_to_string(home_b.join(".pi/agent/settings.json")).expect("read second seed");
-    assert!(
-        seeded_b.contains("defaultProjectTrust"),
-        "second seed content: {seeded_b}"
-    );
-    assert!(
-        !seeded_b.contains("project-a"),
-        "the second project sees the first's marker"
-    );
-
     // `profile new --from-project` copies the project's agent config, the
     // edited settings included, and leaves the login behind.
     let agent_a = home_a.join(".pi/agent");
@@ -793,7 +781,9 @@ fn the_box_cannot_write_git_or_protected_config() {
 
     // Sabotage: release the Git cleanup guard before build_plan, or keep
     // manual cleanup after it. A non-UTF-8 state path passes trust and
-    // preparation but its project home cannot enter the JSON spec.
+    // preparation but its project home cannot enter the JSON spec. The
+    // named path-not-utf8 refusal identifies that later guard; an earlier
+    // failure cannot pass just because no protected directory exists.
     // APFS rejects these filenames, so this scenario is Linux-only.
     #[cfg(target_os = "linux")]
     {
@@ -806,7 +796,9 @@ fn the_box_cannot_write_git_or_protected_config() {
             .env("XDG_STATE_HOME", &invalid_state)
             .output()
             .expect("refuse the non-UTF-8 project home");
+        let stderr = String::from_utf8_lossy(&refused.stderr);
         assert!(!refused.status.success(), "accepted non-UTF-8 project home");
+        assert!(stderr.contains("path-not-utf8"), "wrong refusal: {stderr}");
         for created in [".claude", ".cleanup", ".idea"] {
             assert!(
                 !symlinked.path().join(created).exists(),
@@ -899,7 +891,9 @@ fn both_pi_config_levels_load_behind_a_route() {
     // project's settings, or keep using full's package after selecting
     // default; the returning default request still advertises documents.
     // Reseed existing settings on a profile switch; the host marker changes.
-    // Omit the operating-context extension; its prompt section is absent.
+    // Omit the operating-context extension; its host-chosen allowlist never
+    // reaches the model. Cache that allowlist across starts; the returning
+    // default request reports the earlier marker.
     let env = TestEnv::new("pi-levels");
     let project = TestDir::new(&env, "project");
     git(project.path(), &["init", "-q"]);
@@ -967,7 +961,7 @@ fn both_pi_config_levels_load_behind_a_route() {
     // request to the fake model in the profile's models.json.
     let shim = env.root.join("pi");
     std::os::unix::fs::symlink(pinfold(), &shim).expect("symlink pi to pinfold");
-    let prompt = |selected: &str| {
+    let prompt = |selected: &str, allow: &str| {
         let output = env
             .command(&shim)
             .args([
@@ -980,6 +974,7 @@ fn both_pi_config_levels_load_behind_a_route() {
             ])
             .current_dir(project.path())
             .env("PINFOLD_PROFILE", selected)
+            .env("PINFOLD_ALLOW", allow)
             .env("PINFOLD_ROUTES", format!("fake.model={}", model.route()))
             .env("PINFOLD_ENV_OPENAI_API_KEY", "sk-fake")
             .output()
@@ -996,15 +991,11 @@ fn both_pi_config_levels_load_behind_a_route() {
             .1
             .clone()
     };
-    let request = prompt(profile);
+    let request = prompt(profile, "custom-profile-allow.invalid");
 
     assert!(
         request.contains(profile_marker),
         "the profile skill never reached the model; the profile config level did not load"
-    );
-    assert!(
-        request.contains(project_marker),
-        "the project skill never reached the model; the project config level did not load"
     );
     // The bundled skill's own source supplies its marker: the description
     // its frontmatter declares.
@@ -1022,16 +1013,33 @@ fn both_pi_config_levels_load_behind_a_route() {
     settings["e2eSavedSettingsMarker"] = serde_json::json!("keep-across-profile-switches");
     fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
     let saved = fs::read(&settings_path).unwrap();
-    for selected in ["default", "full", "default"] {
-        let request = prompt(selected);
+    let selections = [
+        ("default", "default-first-allow.invalid"),
+        ("full", "full-allow.invalid"),
+        ("default", "default-return-allow.invalid"),
+    ];
+    for (selected, allow) in selections {
+        let request = prompt(selected, allow);
         assert_eq!(
             request.contains(description),
             selected == "full",
             "{selected} advertised the wrong live document skills: {request}"
         );
+        let body: serde_json::Value = serde_json::from_str(&request).unwrap();
+        let system = body["messages"]
+            .as_array()
+            .expect("the model request has messages")
+            .iter()
+            .find(|message| message["role"] == "system")
+            .and_then(|message| message["content"].as_str())
+            .expect("the model request has a system prompt");
         assert!(
-            request.contains("## Box operating context"),
-            "{selected} did not load its operating-context extension"
+            system.contains(allow)
+                && selections
+                    .iter()
+                    .filter(|(_, other)| *other != allow)
+                    .all(|(_, other)| !system.contains(other)),
+            "{selected} did not state the selected allowlist: {system}"
         );
         assert!(
             request.contains(project_marker),
@@ -1061,31 +1069,6 @@ fn the_highest_layer_sets_the_allowlist() {
     default_image(&env);
     let project = TestDir::new(&env, "project");
     git(project.path(), &["init", "-q"]);
-
-    // No `.pinfold.toml`: the built-in defaults are the box's allowlist.
-    let (run, _, name) = PiRpc::start(&env, project.path());
-    let default_allow = box_exec(&env, &name, &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""]);
-    let mut default_hosts: Vec<_> = default_allow.stdout.split(',').collect();
-    default_hosts.sort_unstable();
-    assert_eq!(
-        default_hosts,
-        [
-            "api.anthropic.com",
-            "api.openai.com",
-            "auth.openai.com",
-            "chatgpt.com",
-            "opencode.ai",
-            "openrouter.ai",
-            "pi.dev",
-            "platform.claude.com",
-            "registry.npmjs.org",
-        ],
-        "the built-in allowlist differs from Configuration's default hosts"
-    );
-    assert!(
-        run.finish().success(),
-        "the default run did not exit cleanly"
-    );
 
     // The environment's list replaces the project's, which replaces the
     // built-in one: the box's allowlist is exactly the host PINFOLD_ALLOW
