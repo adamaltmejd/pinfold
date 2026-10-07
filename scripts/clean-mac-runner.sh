@@ -5,15 +5,6 @@ set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 temp=${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR)}
 cache="$temp/pinfold-e2e-cache"
-state=$(mktemp -d /private/tmp/pinfold-runner-clean.XXXXXX)
-trap 'rm -rf "$state"' EXIT
-
-# Reuse maintenance for obsolete harness versions, with no user state/config.
-if [ -x "$root/target/debug/pinfold" ]; then
-  XDG_STATE_HOME="$state/state" XDG_CONFIG_HOME="$state/config" \
-    XDG_CACHE_HOME="$cache" "$root/target/debug/pinfold" artifacts >/dev/null
-fi
-
 # An interrupted job can leave running boxes. Only the shared builder survives.
 containers=$(container list --all --quiet)
 for container_id in $containers; do
