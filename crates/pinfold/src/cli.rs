@@ -32,11 +32,11 @@ pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]â
 pinfold image rm NAME            retire a caller image name; one JSON line
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
 pinfold profile new NAME [--from PROFILE] [--builtin] [--from-project [PATH]]   copy a profile to edit as files
-pinfold clean [--dry-run] [--unused AGE]   reclaim disk (see Maintenance)
+pinfold clean [--dry-run] [--unused AGE]   reclaim unused disk space
 pinfold doctor                   runtime, kernel, image, artifacts, trust, config, disk use
-pinfold artifacts                the pinned harnesses as JSON: name, version, path, cached, assets
+pinfold artifacts                pinned harnesses as JSON
 pinfold update [--check]         check for a release, or download and install it
-pinfold config [ROOT]            the effective configuration and project facts as JSON, for callers
+pinfold config [ROOT]            effective configuration and project facts as JSON
 pinfold box â€¦                    the process interface
 pinfold --version                print the version
 pinfold --help                   print this usage";
