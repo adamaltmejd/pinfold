@@ -144,18 +144,8 @@ fn ask(
             .spawn()
             .map_err(|_| io::Error::other("helper launch failed"))?,
     );
-    exchange(&mut child.0, deadline, cancel)
-}
-
-/// Nonblocking pipes keep the absolute deadline and cancellation effective
-/// while writing requests, reading output or waiting on an unfinished line.
-fn exchange(
-    child: &mut std::process::Child,
-    deadline: Instant,
-    cancel: Option<&AtomicBool>,
-) -> io::Result<serde_json::Value> {
-    let mut stdin = child.stdin.take().expect("piped stdin");
-    let mut stdout = child.stdout.take().expect("piped stdout");
+    let mut stdin = child.0.stdin.take().expect("piped stdin");
+    let mut stdout = child.0.stdout.take().expect("piped stdout");
     nonblocking(&stdin, "helper")?;
     nonblocking(&stdout, "helper")?;
     let requests = [
