@@ -103,11 +103,16 @@ pub fn token_from_helper(cancel: Option<&AtomicBool>) -> Result<Token, String> {
 /// unlink this lock: waiters must keep referring to the same inode.
 fn lock(deadline: Instant, cancel: Option<&AtomicBool>) -> io::Result<File> {
     let file = ownership::open_lock("codex-login")?;
+    let mut reported = false;
     loop {
         remaining(deadline, cancel, "helper")?;
         match file.try_lock() {
             Ok(()) => return Ok(file),
             Err(TryLockError::WouldBlock) => {
+                if !reported {
+                    eprintln!("pinfold: login-busy: waiting for the host's Codex login");
+                    reported = true;
+                }
                 wait_ready(None, PollFlags::empty(), deadline, cancel, "helper")?;
             }
             Err(TryLockError::Error(_)) => {

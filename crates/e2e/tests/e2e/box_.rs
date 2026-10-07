@@ -481,6 +481,132 @@ sys.exit(result.returncode)
         up.close_stdin();
         assert!(up.wait().success(), "up did not exit 0 for stdin-closed");
     }
+    // Sabotage: propagate a bookkeeping error before the terminal signal
+    // event. A cold real artifact request holds startup after the claim;
+    // host permissions make cleanup fail, independently of pinfold's logic.
+    // Sabotage: drop the post-start actual-image comparison. Retagging while
+    // that request is held then reports ready for the wrong image instead
+    // of failing and removing it. A stable-tag launch is the control.
+    {
+        let env = TestEnv::with_private_cache("lifecycle-startup");
+        let name = box_name("startup");
+        let label = "dev.example.test=lifecycle-startup";
+        let mut spec = serde_json::json!({
+            "name": name,
+            "image": image,
+            "harness": "pi",
+            "labels": { "dev.example.test": "lifecycle-startup" },
+        });
+        let mut proxy = HeldDownload::new();
+        let mut child = env
+            .command(pinfold())
+            .envs(proxy.vars())
+            .args(["box", "up"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(spec.to_string().as_bytes())
+            .unwrap();
+        let mut errors = child.stderr.take().unwrap();
+        let mut child = ChildOwner::new(child, &env, None);
+        let mut output = BufReader::new(child.stdout.take().unwrap());
+        proxy.event("held");
+        let state = find_box_state_dir(&env, child.id()).expect("claimed startup state");
+        let parent = state.parent().unwrap().to_path_buf();
+        struct RestorePermissions(PathBuf, fs::Permissions);
+        impl Drop for RestorePermissions {
+            fn drop(&mut self) {
+                fs::set_permissions(&self.0, self.1.clone()).unwrap();
+            }
+        }
+        let restore =
+            RestorePermissions(parent.clone(), fs::metadata(&parent).unwrap().permissions());
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o500)).unwrap();
+        run_ok(Command::new("kill").args(["-TERM", &child.id().to_string()]));
+        proxy.event("closed");
+        let text = read_bounded(
+            &mut child,
+            &mut output,
+            std::time::Duration::from_secs(10),
+            true,
+        )
+        .expect("cancelled startup terminates stdout despite bookkeeping failure");
+        let terminal = json_lines(&text);
+        assert_eq!(terminal.len(), 1, "startup terminal events: {terminal:?}");
+        assert_eq!(terminal[0]["event"], "down");
+        assert_eq!(terminal[0]["reason"], "signal");
+        assert!(child.wait_bounded().success(), "runtime removal succeeded");
+        let mut diagnostic = String::new();
+        errors.read_to_string(&mut diagnostic).unwrap();
+        assert!(!diagnostic.is_empty(), "bookkeeping failure was silent");
+        assert!(
+            state.exists(),
+            "permission failure did not leave recoverable state"
+        );
+        assert!(
+            box_list(&env, label).is_empty(),
+            "cancelled start left a runtime box"
+        );
+        drop(restore);
+        drop(proxy);
+        let mut healed_spec = spec.clone();
+        healed_spec.as_object_mut().unwrap().remove("harness");
+        let mut healed = box_up(&env, &healed_spec, &name);
+        healed.close_stdin();
+        assert!(healed.wait().success(), "same-name startup did not recover");
+        assert_left_nothing(&env, &name, label, "recovered");
+
+        let image_name = box_name("startup-image");
+        let _images = ImageCleanup {
+            repository: format!("pinfold/image-{image_name}"),
+        };
+        let context = TestDir::new(&env, "startup-image");
+        let containerfile = context.path().join("Containerfile");
+        fs::write(&containerfile, format!("FROM {image}\nCOPY stamp /stamp\n")).unwrap();
+        fs::write(context.path().join("stamp"), "first\n").unwrap();
+        let (code, built) = image_build(&env, &image_name, &containerfile, context.path());
+        assert_eq!(code, 0, "first race image build: {built}");
+        let latest = format!("pinfold/image-{image_name}:latest");
+        let first = e2e::image_id(&latest).expect("runtime resolves first race image");
+        spec["image"] = latest.clone().into();
+        let mut proxy = HeldDownload::new();
+        let mut starting = box_up_start(&env, &spec, &proxy.vars());
+        proxy.event("held");
+        fs::write(context.path().join("stamp"), "second\n").unwrap();
+        let (code, built) = image_build(&env, &image_name, &containerfile, context.path());
+        assert_eq!(code, 0, "second race image build: {built}");
+        let second = e2e::image_id(&latest).expect("runtime resolves second race image");
+        assert_ne!(first, second, "fixture images must differ");
+        proxy.release();
+        let failed = starting.first_line();
+        assert_eq!(failed["event"], "failed", "retagged startup: {failed}");
+        assert!(
+            failed["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("image-changed")),
+            "startup failed for another reason: {failed}"
+        );
+        assert_eq!(starting.child.wait_bounded().code(), Some(1));
+        assert!(
+            starting.rest().is_empty(),
+            "failed startup emitted another event"
+        );
+        assert_left_nothing(&env, &name, label, "retagged");
+        drop(proxy);
+        let mut stable = box_up(&env, &spec, &name);
+        assert_eq!(stable.ready["image"]["id"], second);
+        let stamp = box_exec(&env, &name, &["cat", "/stamp"]);
+        assert_ok(&stamp, "stable tag's file");
+        assert_eq!(stamp.stdout, "second\n");
+        stable.close_stdin();
+        assert!(stable.wait().success(), "stable image did not tear down");
+    }
 }
 
 #[test]
@@ -1948,6 +2074,91 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "clean --unused removed the state of a project with a live box"
     );
 
+    // Sabotage: remove the shared project locks from pi startup and box up;
+    // clean deletes the existing home while the cold download holds startup
+    // after its claim but before a runtime box can protect the project.
+    // Moving the checkout makes its state stale without a clock wait.
+    {
+        let env = TestEnv::with_private_cache("clean-startup");
+        let project = TestDir::new(&env, "starting-project");
+        let missing = format!("{profile}-startup-missing");
+        profile_containerfile(&env, &missing, "FROM scratch\n");
+        let refused = env
+            .command(pinfold())
+            .args(["pi", "--version"])
+            .env("PINFOLD_PROFILE", &missing)
+            .current_dir(project.path())
+            .output()
+            .unwrap();
+        assert!(!refused.status.success(), "the missing image was accepted");
+        let state = project_state_dir(&env, project.path());
+        let id = project_id(&env, project.path());
+        let marker = state.join("home/.cache/marker");
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        fs::write(&marker, b"starting project\n").unwrap();
+
+        let mut proxy = HeldDownload::new();
+        let child = env
+            .command(pinfold())
+            .envs(proxy.vars())
+            .args(["pi", "--version"])
+            .current_dir(project.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let mut child = ChildOwner::new(child, &env, None);
+        let mut output = BufReader::new(child.stdout.take().unwrap());
+        proxy.event("held");
+        let label = format!("dev.pinfold.project={id}");
+        assert!(
+            box_list(&env, &label).is_empty(),
+            "startup already had a runtime box before the artifact arrived"
+        );
+        struct RestoreProject {
+            root: PathBuf,
+            moved: PathBuf,
+        }
+        impl Drop for RestoreProject {
+            fn drop(&mut self) {
+                if self.moved.exists() {
+                    fs::rename(&self.moved, &self.root).unwrap();
+                }
+            }
+        }
+        let restore = RestoreProject {
+            root: project.path().to_path_buf(),
+            moved: env.root.join("moved-project"),
+        };
+        fs::rename(&restore.root, &restore.moved).unwrap();
+        run_ok(env.command(pinfold()).args(["clean", "--unused", "0s"]));
+        assert_eq!(
+            fs::read(&marker).unwrap(),
+            b"starting project\n",
+            "clean removed the claimed startup's existing home"
+        );
+        fs::rename(&restore.moved, &restore.root).unwrap();
+        proxy.release();
+        read_bounded(
+            &mut child,
+            &mut output,
+            std::time::Duration::from_secs(90),
+            true,
+        )
+        .expect("pi finishes after the artifact download resumes");
+        assert!(
+            child.wait_bounded().success(),
+            "pi startup failed after clean"
+        );
+
+        // Positive control: the same stale state is removable after the
+        // real pi launch finishes and releases its project locks.
+        fs::rename(&restore.root, &restore.moved).unwrap();
+        run_ok(env.command(pinfold()).args(["clean", "--unused", "0s"]));
+        assert!(!state.exists(), "clean kept the idle project's stale state");
+    }
+
     // `image rm NAME` retires one caller image name: every tag of the name,
     // whatever its age, and no other name's, except an image's last tag
     // while a listed box uses it. Three builds of `retire` are fresh, so
@@ -2387,6 +2598,83 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         let held: serde_json::Value = serde_json::from_slice(&held.stdout).unwrap();
         assert_eq!(held["event"], "built");
         assert!(image_id(held["ref"].as_str().unwrap()).is_some());
+    }
+}
+
+/// Hold a real cold artifact CONNECT after startup has claimed its name.
+struct HeldDownload {
+    child: Child,
+    events: BufReader<ChildStdout>,
+    url: String,
+}
+
+impl HeldDownload {
+    fn new() -> Self {
+        let mut child = Command::new("python3")
+            .args(["-u", "-c", include_str!("connect_proxy.py")])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("start artifact CONNECT fixture");
+        let events = BufReader::new(child.stdout.take().unwrap());
+        let mut fixture = Self {
+            child,
+            events,
+            url: String::new(),
+        };
+        let port: u16 = fixture.line().trim().parse().expect("fixture port");
+        fixture.url = format!("http://127.0.0.1:{port}");
+        fixture
+    }
+
+    fn vars(&self) -> [(&str, &str); 4] {
+        [
+            ("HTTPS_PROXY", self.url.as_str()),
+            ("https_proxy", self.url.as_str()),
+            ("NO_PROXY", ""),
+            ("no_proxy", ""),
+        ]
+    }
+
+    fn line(&mut self) -> String {
+        if self.events.buffer().is_empty() {
+            let mut ready = [nix::poll::PollFd::new(
+                self.events.get_ref().as_fd(),
+                nix::poll::PollFlags::POLLIN,
+            )];
+            assert!(
+                nix::poll::poll(&mut ready, 30_000_u16).unwrap() > 0,
+                "artifact fixture missed its readiness deadline"
+            );
+        }
+        let mut line = String::new();
+        assert_ne!(
+            self.events.read_line(&mut line).unwrap(),
+            0,
+            "artifact fixture exited"
+        );
+        line
+    }
+
+    fn event(&mut self, expected: &str) {
+        assert_eq!(self.line().trim(), expected, "artifact fixture event");
+    }
+
+    fn release(&mut self) {
+        self.child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"release\n")
+            .unwrap();
+    }
+}
+
+impl Drop for HeldDownload {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -3088,9 +3376,51 @@ fn a_login_route_keeps_the_login_on_the_host() {
         },
     });
     fs::write(codex_home.path().join("auth.json"), auth.to_string()).unwrap();
-    // The fixture's answer lives for the whole run.
+    // Sabotage: remove the login lock or put it under XDG_STATE_HOME; the
+    // second caller cannot report login-busy while the first holds refresh.
+    // Answer only the first real helper request. A second refresh cannot
+    // complete, so both ready boxes also prove that no overlapping refresh
+    // was hidden by the barrier observation.
     let answer = serde_json::json!({ "access_token": refreshed }).to_string();
-    let refresh = HttpFixture::start(Some(("application/json", answer.leak())));
+    let refresh = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let refresh_url = format!("http://{}/oauth/token", refresh.local_addr().unwrap());
+    let listener = refresh.try_clone().unwrap();
+    let (received, request) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let responder = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(40)))
+            .unwrap();
+        let mut reader = BufReader::new(&stream);
+        let mut line = String::new();
+        let mut length = 0usize;
+        loop {
+            line.clear();
+            if reader.read_line(&mut line).unwrap() == 0 {
+                return;
+            }
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        received.send(()).unwrap();
+        if released
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .is_ok()
+        {
+            write!(stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                answer.len()).unwrap();
+        }
+    });
     let model = HttpFixture::start(None);
     let codex_name = box_name("login-codex");
     let box_home = TestDir::new(&env, "codex-box-home");
@@ -3111,16 +3441,72 @@ fn a_login_route_keeps_the_login_on_the_host() {
         },
     });
     let codex_home_path = codex_home.path().to_str().expect("a UTF-8 temp path");
-    let refresh_url = format!("http://{}/oauth/token", refresh.route());
-    let mut up = box_up_with_env(
-        &env,
-        &codex_spec,
-        &codex_name,
-        &[
-            ("CODEX_HOME", codex_home_path),
-            ("CODEX_REFRESH_TOKEN_URL_OVERRIDE", &refresh_url),
-        ],
+    let vars = [
+        ("CODEX_HOME", codex_home_path),
+        ("CODEX_REFRESH_TOKEN_URL_OVERRIDE", refresh_url.as_str()),
+    ];
+    let mut first = box_up_start(&env, &codex_spec, &vars);
+    request
+        .recv_timeout(std::time::Duration::from_secs(90))
+        .expect("the first helper reached the held refresh fixture");
+
+    // Separate state/config roots, but the cache is shared and the first
+    // helper reaching the fixture proves its host artifact is installed.
+    let contender = TestEnv::new("login-contender");
+    let contender_name = box_name("login-contender");
+    let contender_home = TestDir::new(&contender, "home");
+    let mut contender_spec = codex_spec.clone();
+    contender_spec["name"] = serde_json::json!(contender_name);
+    contender_spec["mounts"][0]["host"] = serde_json::json!(contender_home.path());
+    let child = contender
+        .command(pinfold())
+        .args(["box", "up"])
+        .envs(vars)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn the contending login owner");
+    let mut child = ChildOwner::new(child, &contender, None);
+    let stderr = child.stderr.take().unwrap();
+    let (reported, busy) = std::sync::mpsc::channel();
+    let diagnostics = std::thread::spawn(move || {
+        let mut count = 0;
+        for line in BufReader::new(stderr).lines() {
+            if line.unwrap().contains("login-busy") {
+                count += 1;
+                let _ = reported.send(());
+            }
+        }
+        count
+    });
+    let mut stdin = child.stdin.take().unwrap();
+    stdin
+        .write_all(&serde_json::to_vec(&contender_spec).unwrap())
+        .unwrap();
+    stdin.flush().unwrap();
+    let stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut second = Starting {
+        child,
+        stdin: Some(stdin),
+        stdout,
+    };
+    busy.recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the second XDG root observed the shared login lock");
+    refresh.set_nonblocking(true).unwrap();
+    assert_eq!(
+        refresh.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "a second helper refreshed while the first held the login lock"
     );
+    release.send(()).unwrap();
+    responder.join().unwrap();
+    let ready = first.first_line();
+    assert_eq!(ready["event"], "ready", "first login failed: {ready}");
+    let mut up = first.into_up(&codex_name, ready);
+    let ready = second.first_line();
+    assert_eq!(ready["event"], "ready", "contending login failed: {ready}");
+    let mut other_up = second.into_up(&contender_name, ready);
 
     // The model fixture receives the refreshed token and its account, not
     // the box's own Authorization.
@@ -3163,6 +3549,42 @@ fn a_login_route_keeps_the_login_on_the_host() {
         values("chatgpt-account-id"),
         [account.as_str()],
         "the model fixture's account header"
+    );
+
+    let login = curl(
+        &contender,
+        &contender_name,
+        "5",
+        &["http://codex.internal/backend-api/codex/responses"],
+    );
+    assert_ok(&login, "the contending caller's login route");
+    let requests = model.requests();
+    let headers = &requests.last().unwrap().0;
+    for (name, expected) in [
+        ("authorization", format!("Bearer {refreshed}")),
+        ("chatgpt-account-id", account.clone()),
+    ] {
+        assert_eq!(
+            headers
+                .iter()
+                .filter(|(header, _)| header.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>(),
+            [expected.as_str()],
+            "the contending caller used the wrong {name}"
+        );
+    }
+    other_up.down(&contender);
+    assert!(other_up.wait().success(), "the contending owner failed");
+    assert_eq!(
+        diagnostics.join().unwrap(),
+        1,
+        "login-busy was not once per ask"
+    );
+    assert_eq!(
+        refresh.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "the contending helper reused the refresh token"
     );
 
     // Neither token is in the box's environment, its files or the egress
