@@ -189,8 +189,6 @@ impl Runtime for Apple {
     }
 
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
-        // Without the cache every step reruns, so a rebuild picks up base
-        // updates instead of replaying a cached `RUN` layer.
         let cache_flags: &[&str] = if request.cache { &[] } else { &["--no-cache"] };
         super::build("container", cache_flags, request)
     }

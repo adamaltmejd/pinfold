@@ -395,7 +395,6 @@ fn seccomp_profile(source: &Path) -> io::Result<PathBuf> {
             return true;
         };
         names.retain(|name| !matches!(name.as_str(), Some("clone" | "clone3" | "unshare")));
-        // An allow rule whose names were all removed is dead; drop it.
         !names.is_empty()
     });
     for name in ["clone", "unshare"] {
