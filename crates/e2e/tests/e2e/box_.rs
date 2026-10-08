@@ -2578,10 +2578,6 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     let (code, failed) = image_build(&env, &name, &failing, &context);
     assert_eq!(failed["event"], "failed", "a failing build: {failed}");
     assert_eq!(code, 1, "a failed build exited {code}");
-    assert!(
-        failed["log"].as_array().is_some_and(|log| !log.is_empty()),
-        "the failed line carries no log: {failed}"
-    );
     let log = failed["log"]
         .as_array()
         .unwrap()

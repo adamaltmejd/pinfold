@@ -12,7 +12,6 @@ use crate::core::runtime::{BoxInfo, ImageInfo, Runtime, runtime};
 use crate::core::{artifacts, ownership};
 use crate::dirs;
 
-/// The label naming a profile source on an image.
 pub const PROFILE_LABEL: &str = "dev.pinfold.profile";
 /// The label naming a project source on an image, and the project on a box.
 pub const PROJECT_LABEL: &str = "dev.pinfold.project";
@@ -24,12 +23,9 @@ pub const FAMILY_LABELS: [&str; 2] = [PROFILE_LABEL, PROJECT_LABEL];
 pub const LAYER_LABEL: &str = "dev.pinfold.layer";
 /// The label recording the digest of the image an image was built from.
 pub const BASE_LABEL: &str = "dev.pinfold.base";
-/// The label naming the `box up` process that owns a box.
 pub const OWNER_LABEL: &str = "dev.pinfold.owner";
 
-/// Egress logs older than this are removed.
 const EGRESS_LOG_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
-/// The daily pass runs at most once in this interval.
 const PASS_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// A caller build tag made within this window is never removed: the ref its
 /// `built` line named must still come up when the caller uses it later.
@@ -111,7 +107,6 @@ pub struct DeadBox {
 /// One runtime box list, split into the work for Maintenance: the pinfold
 /// boxes whose owner is gone, and the projects whose box is live.
 pub struct Boxes {
-    /// The pinfold boxes whose owning `box up` process is gone.
     pub dead: Vec<DeadBox>,
     /// The `dev.pinfold.project` ids of pinfold boxes whose owner is alive.
     pub live_projects: BTreeSet<String>,
@@ -238,7 +233,6 @@ pub fn prune_leftover_states(runtime: &dyn Runtime) -> io::Result<()> {
     Ok(())
 }
 
-/// Egress logs older than [`EGRESS_LOG_AGE`].
 pub fn old_egress_logs() -> io::Result<Vec<PathBuf>> {
     let mut old = Vec::new();
     for entry in dirs::entries(&dirs::egress_dir()?)? {

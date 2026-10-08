@@ -166,7 +166,6 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> io::Result<String> {
 
 /// What is at a protected path.
 enum PathKind {
-    /// Nothing.
     Absent,
     /// A real directory with no symlink in any component.
     Directory,

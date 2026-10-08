@@ -5,9 +5,8 @@ macOS, a rootless podman container on Linux. The box sees its mounts and
 nothing else of the host. Its only way out is its own allowlisting proxy.
 
 - **Interactive:** `pi` on the host is a shim for `pinfold pi`.
-- **Programmatic:** a caller such as a CI system or an agent orchestrator
-  drives boxes through `pinfold box`, JSON on stdio, and reads a project's
-  configuration with `pinfold config`.
+- **Programmatic:** drive boxes through `pinfold box` (JSON on stdio),
+  and read project settings with `pinfold config`.
 
 - Spec: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Working rules: [AGENTS.md](AGENTS.md)
@@ -35,12 +34,11 @@ mkdir -p ~/.local/bin
 install -m 0755 pinfold-*-aarch64-apple-darwin ~/.local/bin/pinfold
 ```
 
-Once installed, run `pinfold update` to download, verify and install the
-latest stable release, or `pinfold update --check` to check without
-installing. Close running pinfold boxes and let other pinfold commands
-finish before updating. The install directory must be writable.
-Interactive `pi` and `pinfold attach` show an update notice at most once
-a day. Set `PINFOLD_NO_UPDATE_CHECK=1` to disable automatic checks.
+Run `pinfold update --check` to check for a stable release, or `pinfold
+update` to download, verify and install it. Close boxes and other pinfold
+commands first; the install directory must be writable. Interactive `pi`
+and `pinfold attach` show at most one daily update notice.
+`PINFOLD_NO_UPDATE_CHECK=1` disables automatic checks.
 
 The macOS binary is not notarized. `gh` and `curl` downloads run as they
 are; a browser download carries the quarantine attribute and Gatekeeper
@@ -108,8 +106,7 @@ Interactive launches report `bundled-profiles-changed` once without changing
 saved settings or user profiles. To inspect or edit a built-in, run
 `pinfold profile new NAME --from full --builtin`.
 
-The default image has the basic coding tools. Optional profiles add tools
-without changing the egress allowlist:
+The default has coding tools; optional profiles add more without changing egress:
 
 | Profile | Adds |
 |---|---|

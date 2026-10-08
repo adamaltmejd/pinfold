@@ -16,15 +16,12 @@ use crate::core::{artifacts, login, network, proxy};
 pub struct Plan {
     pub name: String,
     /// The image to run. When absent, the profile's image is used.
-    #[serde(default)]
     pub image: Option<String>,
     /// The profile to apply: its image when `image` is absent, its `home/`
     /// seeds and its `share/`.
-    #[serde(default)]
     pub profile: Option<String>,
     /// The pinned harness to install in the box, by its name in
     /// `harnesses.toml`.
-    #[serde(default)]
     pub harness: Option<String>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
@@ -34,11 +31,8 @@ pub struct Plan {
     #[serde(default)]
     pub env: BTreeMap<String, Env>,
     /// Present means the box gets a proxy; absent means no way out at all.
-    #[serde(default)]
     pub egress: Option<Egress>,
-    #[serde(default)]
     pub cpus: Option<f64>,
-    #[serde(default)]
     pub memory: Option<String>,
 }
 

@@ -340,7 +340,6 @@ fn up<'a>(
     env: impl Iterator<Item = (&'a String, &'a Env)>,
 ) -> io::Result<Command> {
     let program = runtime_path(program)?;
-    // PID 1 and all work run as the host user's uid:gid.
     let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
     let mut command = Command::new(program);
     command
@@ -382,7 +381,6 @@ fn up<'a>(
             .arg("--mount")
             .arg(bind(&mount.host, &mount.guest, mount.readonly));
     }
-    // The init binary comes from the host and runs as PID 1.
     let init_dir = init
         .parent()
         .expect("box::up refuses an init without a directory");

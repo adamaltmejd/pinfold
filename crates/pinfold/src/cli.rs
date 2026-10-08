@@ -1,6 +1,3 @@
-//! The verbs are parsed by hand: the set is small, and ARCHITECTURE.md's
-//! dependency list has no argument parser.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, IsTerminal, Write};
