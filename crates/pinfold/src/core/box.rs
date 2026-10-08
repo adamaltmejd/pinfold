@@ -357,7 +357,13 @@ impl Box {
 
     /// Stop and remove the box, then delete its state directory.
     pub async fn down(&mut self) -> io::Result<()> {
-        let result = runtime().down(&self.name);
+        // Runtime removal waits for attached output to close. Keep its
+        // drain running on the owner while the runtime command blocks.
+        let name = self.name.clone();
+        let result = tokio::task::spawn_blocking(move || runtime().down(&name))
+            .await
+            .map_err(io::Error::other)
+            .and_then(|result| result);
         let _ = self.child.wait().await;
         let cleanup = self.ownership.finish(result.is_ok()).await;
         result.and(cleanup)
@@ -549,12 +555,14 @@ async fn start(
             Err(error) => return Err(Stop::NotReady(format!("box output failed: {error}"))),
         }
     }
-    // The one root exec happens before ready reaches the caller, so no
-    // work can race it. On Apple the runtime records the box running only
-    // after its first process starts; the wait below covers that gap.
-    if cfg!(target_os = "macos") && socket.is_some() {
+    // Apple can forward init's ready before it records the box running.
+    // Wait even without egress, before the caller can issue its first exec.
+    if cfg!(target_os = "macos") {
         apple::wait_until_running(&plan.name)?;
-        apple::make_proxy_connectable(&plan.name)?;
+        // Finish the one root exec before ready reaches the caller.
+        if socket.is_some() {
+            apple::make_proxy_connectable(&plan.name)?;
+        }
     }
     // Keep the pipe drained so a talkative box cannot block on it.
     tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });

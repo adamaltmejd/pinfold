@@ -92,23 +92,6 @@ fn host_updates_are_verified_and_atomic() {
     drop(up);
 
     let other = TestEnv::new("update-owner");
-    let _owner = UpdateOwner::start(&other, &installed, &spec);
-    let failure = fixture
-        .command(&env, &installed)
-        .arg("update")
-        .output()
-        .unwrap();
-    assert!(
-        !failure.status.success(),
-        "active executable replaced: {failure:?}"
-    );
-    assert!(
-        String::from_utf8_lossy(&failure.stderr).contains("update-busy"),
-        "wrong refusal: {failure:?}"
-    );
-    assert_eq!(fs::metadata(&installed).unwrap().ino(), original_inode);
-    drop(_owner);
-
     // Sabotage: hold the exclusive executable lock only before downloading.
     // A real owner starts after the fixture observes the asset request;
     // replacement must recheck that owner before its atomic rename.

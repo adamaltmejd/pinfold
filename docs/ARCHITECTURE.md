@@ -98,10 +98,10 @@ need `loginctl enable-linger`.
    under macOS's 104-byte limit.
 3. Run the box with `--network none` and the socket carried in (Transport).
    PID 1 is `pinfold init`.
-4. Apple only: one transient root exec makes the socket connectable. It
-   waits until the runtime lists the box running.
-5. `pinfold init` relays `127.0.0.1:3128` to the socket, reaps children, and
+4. `pinfold init` relays `127.0.0.1:3128` to the socket, reaps children, and
    reports ready.
+5. Apple only: wait until the runtime lists the box running, including
+   without egress. With a socket, one transient root exec makes it connectable.
 6. `exec` work runs with `HTTPS_PROXY` and `http_proxy` set to
    `http://127.0.0.1:3128`.
 7. Remove the box and delete the socket.
@@ -172,7 +172,7 @@ monotonic for the box's life; the caller keeps its own baseline. On an
 absent box, `stat` exits 3 with `pinfold box stat: no box named ...`, like
 `exec`.
 
-`up` prints one `ready` line once the box is up:
+`up` prints one `ready` line once the box accepts `exec`:
 
 ```json
 {"event":"ready","box":NAME,"owner":PID,"labels":{…},"image":{"id":ID,"ref":REF},"egress_log":PATH|null}
@@ -902,7 +902,7 @@ CI budget; the two slow gates run separately.
 | 6 | The environment is exactly the spec | Unprefixed host proxy variables stay out; PINFOLD_ENV_SECRET arrives without entering host argv. Guest PATH, HOME, runtime-selection variables, multiline values and a transport-prefixed name arrive exactly while local list/exec/down still manage the box. Always-applied values win. |
 | 7 | No egress means no way out | Without `egress`, nothing gets out, not even through a route. |
 | 8 | Losing the owner fails closed | After SIGKILL, egress fails closed; another XDG root sees the owner dead even with a misleading live pid file, prunes the box and reuses its name. An abandoned partial claim is reclaimable. |
-| 9 | The lifecycle works for a caller | `up` reports ready; `exec` streams and returns the exit code, honors explicit workdir and tty, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; `down` removes, and closing `up`'s stdin tears the box down with reason `stdin-closed`. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box, an empty name or a flag-like name (`--filter=…`) exits 0, prints nothing and leaves live boxes alone; a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. A SIGSTOP owner keeps its claim after down times out; a second XDG root waits the ten-second claim deadline before name-in-use and cannot replace it until acknowledged teardown. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. A cold harness download holds startup while its image tag moves; startup fails as `image-changed`, and the stable replacement then starts. Pre-ready cancellation with a host bookkeeping permission failure still yields `down`/`signal`, with recoverable state and successful name reuse. |
+| 9 | The lifecycle works for a caller | Without egress, `exec` immediately after `ready` streams and returns the exit code, honors explicit workdir and tty, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; `down` removes even while attached output is active, and closing `up`'s stdin tears the box down with reason `stdin-closed`. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box, an empty name or a flag-like name (`--filter=…`) exits 0, prints nothing and leaves live boxes alone; a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. A SIGSTOP owner keeps its claim after down times out; a second XDG root waits the ten-second claim deadline before name-in-use and cannot replace it until acknowledged teardown. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. A cold harness download holds startup while its image tag moves; startup fails as `image-changed`, and the stable replacement then starts. Pre-ready cancellation with a host bookkeeping permission failure still yields `down`/`signal`, with recoverable state and successful name reuse. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. |
 | 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, or writing into `.vscode/` in a project without one fails, also under a top level named by a space, and a symlinked protected path refuses the run as `protected-path-invalid`; replacing it with a real directory runs. Starting inside `.git` is refused as `project-in-git`; starting from the project root runs. A non-UTF-8 project home fails plan assembly as `path-not-utf8` and leaves no newly created protected directories; an existing protected directory survives. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |

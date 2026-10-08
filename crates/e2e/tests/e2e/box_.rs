@@ -71,6 +71,7 @@ fn box_lifecycle_works_for_a_caller() {
     let name = format!("{:-<60}", box_name("lifecycle"));
     let label = "dev.example.test=lifecycle";
     let image = default_image(&env);
+    let image_id = image_id(image).expect("the runtime lists the default image");
     let spec = serde_json::json!({
         "name": name,
         "image": image,
@@ -78,8 +79,25 @@ fn box_lifecycle_works_for_a_caller() {
     });
     let mut up = box_up(&env, &spec, &name);
 
+    // Exec immediately after ready, without another runtime query first.
+    // Sabotage: wait for Apple to report running only with a proxy socket;
+    // if the first exec reaches Apple before it records running, this
+    // no-egress box's command fails. The runtime controls that race window.
+    // `exec` streams both streams and returns the process exit code.
+    let failed = box_exec(&env, &name, &["sh", "-c", "echo out; echo err >&2; exit 3"]);
+    assert_eq!(
+        failed.code, 3,
+        "first exec after ready: stdout={:?}, stderr={:?}",
+        failed.stdout, failed.stderr
+    );
+    assert_eq!(failed.stdout, "out\n");
+    assert_eq!(failed.stderr, "err\n");
+
+    // Positive control: the same command path passes a zero exit through.
+    let ok = box_exec(&env, &name, &["sh", "-c", "exit 0"]);
+    assert_eq!(ok.code, 0);
+
     // `ready` carries the owner and the image it runs.
-    let image_id = image_id(image).expect("the runtime lists the default image");
     assert_eq!(
         up.ready["owner"],
         up.pid(),
@@ -99,16 +117,6 @@ fn box_lifecycle_works_for_a_caller() {
         "ready gave a box without egress a log: {}",
         up.ready
     );
-
-    // `exec` streams both streams and returns the process exit code.
-    let failed = box_exec(&env, &name, &["sh", "-c", "echo out; echo err >&2; exit 3"]);
-    assert_eq!(failed.stdout, "out\n");
-    assert_eq!(failed.stderr, "err\n");
-    assert_eq!(failed.code, 3);
-
-    // Positive control: the same command path passes a zero exit through.
-    let ok = box_exec(&env, &name, &["sh", "-c", "exit 0"]);
-    assert_eq!(ok.code, 0);
 
     // Sabotage: discard parse_exec's workdir; pwd reports the image's
     // default directory instead of the caller's /tmp.
@@ -295,7 +303,27 @@ sys.exit(result.returncode)
     );
     drop(foreign);
 
-    // `down` removes the box and the owner exits.
+    // Keep the attached runtime output active through teardown. The FIFO
+    // confirms a write to init's stdout, rather than the exec stream.
+    // Sabotage: block the owner's async thread in runtime removal again;
+    // its output drain stops and teardown can exceed the caller deadline.
+    // Apple controls the race in which forced rm's two output waiters
+    // split completion events; restoring rm -f reintroduces that race.
+    let writing = box_exec(
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            "mkfifo /tmp/output-ready; \
+             (printf 'first\\n'; echo ready >/tmp/output-ready; exec yes output-pressure) \
+             >/proc/1/fd/1 2>/dev/null </dev/null & \
+             read -r ready </tmp/output-ready; test \"$ready\" = ready",
+        ],
+    );
+    assert_ok(&writing, "writing attached output before teardown");
+
+    // `down` removes the box and the owner exits with output still active.
     up.down(&env);
     let listed = box_list(&env, label);
     assert!(

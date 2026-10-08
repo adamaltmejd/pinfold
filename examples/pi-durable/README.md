@@ -46,11 +46,9 @@ checkpoint to another path or run it on another host: the namespace is derived
 from its canonical path, and recovery refuses a moved namespace. The executable,
 project, image, endpoint, model and original prompt are immutable in `job.json`.
 
-A separate host SQLite database holds `BEGIN EXCLUSIVE` for the writer's entire
-lifetime. A second writer fails before touching the box. The OS releases that
-lock after a crash. Recovery first stops the previous job's named box and waits
-for removal, then creates a new box generation and resumes the harness. This
-requires Pinfold's name ownership and synchronous `box down` contract.
+Only one controller may write a job. A second writer is refused before touching
+the box. After a crash, `resume` waits for the old box's removal before starting
+a new box and resuming the harness.
 
 `boxed_bash` is sequential and explicitly `replay: "unsafe"`. An interrupted
 command may already have changed the project. The harness reports interruption
@@ -67,8 +65,8 @@ read-only replay tool or general host filesystem tool.
 The dependency versions and lockfile use the published 1.0.4 API, including the
 real HTTP provider and Node SQLite checkpoint backend. `bunfig.toml` makes a local
 release-age exception only for the four pinned Earendil release-family packages:
-`pi-durable`, `pi-ai`, `chord` and transitive `pi-telemetry`. This matches the Pi
-release already pinned by Pinfold. Other publishers retain the installation age
+`pi-durable`, `pi-ai`, `chord` and transitive `pi-telemetry`. These pins are
+independent of Pinfold's Pi harness. Other publishers retain the installation age
 policy; no global Bun configuration is changed.
 
 The prototype contract and pin-maintenance rule are in
@@ -81,10 +79,4 @@ an existing image with `sh`, `tail`, `grep` and `tr`:
 node durable_recovery_preserves_boxed_execution.ts --pinfold /absolute/path/to/pinfold --image your-existing-image
 ```
 
-It uses an actual host HTTP fixture and actual boxes. It refuses host authority
-and executable overlap, including symlink aliases, before checking a successful
-command with a real soft maintenance diagnostic on stderr, rejection of a competing writer without disrupting the live job, a
-mutation followed by SIGKILL before its tool result can commit, old-generation
-removal before resumed model output, no unsafe replay, and whole-box cancellation
-with a background child. It uses readiness markers and bounded deadlines rather
-than sleeps. Teardown selects only its own immutable job IDs.
+It uses a host HTTP fixture and real boxes.

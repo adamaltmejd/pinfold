@@ -101,6 +101,9 @@ def host(binary, root, image):
     stopped = threading.Event()
     processes = {}
     audit = None
+    log = None
+    final = {}
+    closed = {}
     env = {
         key: value
         for key, value in os.environ.items()
@@ -270,8 +273,6 @@ def host(binary, root, image):
             processes[direction].stdin.write("start\n")
             processes[direction].stdin.flush()
         observer = {"fixture-upload": "upload", "download": "download"}
-        final = {}
-        closed = {}
         deadline = began + TRAFFIC_SECONDS + IDLE_SECONDS + SCHEDULING_TOLERANCE + 10
         while len(closed) < 4:
             source, item = next_event(deadline)
@@ -337,6 +338,22 @@ def host(binary, root, image):
                 raise RuntimeError(f"{direction} guest holder failed")
         passed = True
     finally:
+        if not passed:
+            try:
+                emit(
+                    "diagnostic",
+                    final_markers=final,
+                    closed=closed,
+                    processes={
+                        source: process.poll() for source, process in processes.items()
+                    },
+                )
+                if log is not None:
+                    for line in log.read_text().splitlines():
+                        emit("audit", entry=json.loads(line))
+            except Exception:
+                # Diagnostics must not replace the failure or skip teardown.
+                pass
         stopped.set()
         listener.close()
         if "owner" in processes:

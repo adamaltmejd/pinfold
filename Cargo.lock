@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "e2e"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "nix",
  "serde_json",
@@ -229,7 +229,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinfold"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "httparse",
  "nix",
