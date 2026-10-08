@@ -60,9 +60,14 @@ impl Runtime for Apple {
     }
 
     fn down(&self, name: &str) -> io::Result<()> {
+        // Apple's forced removal races two process-output waiters (#83).
+        // Kill through the existing monitor, then remove without forcing.
+        // A stopped or absent box can refuse kill; removal still decides
+        // success, and cannot force-stop a box whose kill actually failed.
+        let _ = output(&["container", "kill", "--signal", "KILL", name]);
         // stderr is captured: an absent box fails `rm` with the runtime's
         // not-found text, which is noise once the box is gone.
-        let Err(error) = output(&["container", "rm", "-f", name]) else {
+        let Err(error) = output(&["container", "rm", name]) else {
             return Ok(());
         };
         // Another process may have removed the box between the list and this

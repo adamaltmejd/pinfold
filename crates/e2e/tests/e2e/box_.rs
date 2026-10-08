@@ -303,7 +303,27 @@ sys.exit(result.returncode)
     );
     drop(foreign);
 
-    // `down` removes the box and the owner exits.
+    // Keep the attached runtime output active through teardown. The FIFO
+    // confirms a write to init's stdout, rather than the exec stream.
+    // Sabotage: block the owner's async thread in runtime removal again;
+    // its output drain stops and teardown can exceed the caller deadline.
+    // Apple controls the race in which forced rm's two output waiters
+    // split completion events; restoring rm -f reintroduces that race.
+    let writing = box_exec(
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            "mkfifo /tmp/output-ready; \
+             (printf 'first\\n'; echo ready >/tmp/output-ready; exec yes output-pressure) \
+             >/proc/1/fd/1 2>/dev/null </dev/null & \
+             read -r ready </tmp/output-ready; test \"$ready\" = ready",
+        ],
+    );
+    assert_ok(&writing, "writing attached output before teardown");
+
+    // `down` removes the box and the owner exits with output still active.
     up.down(&env);
     let listed = box_list(&env, label);
     assert!(

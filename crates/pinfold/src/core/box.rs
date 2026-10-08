@@ -357,7 +357,13 @@ impl Box {
 
     /// Stop and remove the box, then delete its state directory.
     pub async fn down(&mut self) -> io::Result<()> {
-        let result = runtime().down(&self.name);
+        // Runtime removal waits for attached output to close. Keep its
+        // drain running on the owner while the runtime command blocks.
+        let name = self.name.clone();
+        let result = tokio::task::spawn_blocking(move || runtime().down(&name))
+            .await
+            .map_err(io::Error::other)
+            .and_then(|result| result);
         let _ = self.child.wait().await;
         let cleanup = self.ownership.finish(result.is_ok()).await;
         result.and(cleanup)
