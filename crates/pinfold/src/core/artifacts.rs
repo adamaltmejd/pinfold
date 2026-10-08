@@ -67,7 +67,6 @@ enum Install {
     Executable,
 }
 
-/// The pinned harness named `name`.
 pub fn harness(name: &str) -> Option<&'static Harness> {
     HARNESSES.iter().find(|harness| harness.name == name)
 }
@@ -103,7 +102,6 @@ impl Harness {
         Ok(dir)
     }
 
-    /// This harness's assets for `os_arch`.
     fn assets(&self, os_arch: &str) -> Vec<&Asset> {
         self.asset
             .iter()
