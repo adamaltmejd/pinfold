@@ -23,6 +23,11 @@ TRAFFIC_SECONDS = 330
 MARKER_INTERVAL = 30
 MARKERS = TRAFFIC_SECONDS // MARKER_INTERVAL + 1
 SCHEDULING_TOLERANCE = 20
+# Long Linux socket waits are rounded into coarse timer buckets. Stagger
+# initially idle tunnels so a short rearmed wait cannot hide that delay.
+IDLE_PHASES = 4
+IDLE_PHASE_INTERVAL = 8
+TUNNELS = ("upload", "download", *(f"idle-{n}" for n in range(IDLE_PHASES)))
 
 
 def emit(event, **fields):
@@ -61,8 +66,12 @@ def observe_markers(stream, report):
 
 
 def guest(direction):
-    if direction not in ("upload", "download"):
+    if direction not in TUNNELS:
         raise RuntimeError("unknown fixture direction")
+    emit("waiting", direction=direction)
+    connect_at = float(sys.stdin.readline())
+    # This is the timed input to the idle scenario, not a readiness delay.
+    threading.Event().wait(max(0, connect_at - time.monotonic()))
     raw = socket.create_connection(("127.0.0.1", 3128), timeout=15)
     raw.sendall(f"CONNECT {HOST}:443 HTTP/1.1\r\nHost: {HOST}:443\r\n\r\n".encode())
     head = bytearray()
@@ -75,15 +84,18 @@ def guest(direction):
     context.maximum_version = ssl.TLSVersion.TLSv1_3
     with context.wrap_socket(raw, server_hostname=HOST) as stream:
         stream.settimeout(IDLE_SECONDS + SCHEDULING_TOLERANCE + 10)
-        stream.sendall(b"U" if direction == "upload" else b"D")
+        token = {"upload": b"U", "download": b"D"}.get(direction)
+        if token is None:
+            token = b"I" + bytes([int(direction.removeprefix("idle-"))])
+        stream.sendall(token)
         if receive(stream, 1) != b"R":
             raise RuntimeError("fixture did not acknowledge the TLS handshake")
-        emit("ready", direction=direction)
+        emit("ready", direction=direction, seconds=time.monotonic())
         if sys.stdin.readline() != "start\n":
             raise RuntimeError("controller did not start traffic")
         if direction == "upload":
             markers(stream, threading.Event())
-        else:
+        elif direction == "download":
             observe_markers(stream, emit)
         if stream.recv(1):
             raise RuntimeError("fixture sent unexpected data after its last marker")
@@ -167,7 +179,7 @@ def host(binary, root, image):
     context.load_cert_chain(root / "server.pem", root / "server.key")
     listener = socket.socket()
     listener.bind((ADDRESS, 443))
-    listener.listen(2)
+    listener.listen(len(TUNNELS))
     listener.settimeout(45)
 
     def fixture(raw):
@@ -177,7 +189,9 @@ def host(binary, root, image):
                 stream.settimeout(IDLE_SECONDS + SCHEDULING_TOLERANCE + 10)
                 token = receive(stream, 1)
                 direction = {b"U": "upload", b"D": "download"}.get(token)
-                if direction is None:
+                if token == b"I":
+                    direction = f"idle-{receive(stream, 1)[0]}"
+                if direction not in TUNNELS:
                     raise RuntimeError("client did not name a fixture direction")
                 stream.sendall(b"R")
                 report(f"fixture-{direction}", "ready")
@@ -190,7 +204,7 @@ def host(binary, root, image):
                             f"fixture-{direction}", event, **fields
                         ),
                     )
-                else:
+                elif direction == "download":
                     markers(stream, stopped)
                 if stream.recv(1):
                     raise RuntimeError(
@@ -202,7 +216,7 @@ def host(binary, root, image):
 
     def accept():
         try:
-            for _ in range(2):
+            for _ in TUNNELS:
                 raw, _ = listener.accept()
                 raw.settimeout(15)
                 worker = threading.Thread(target=fixture, args=(raw,), daemon=True)
@@ -211,7 +225,6 @@ def host(binary, root, image):
             report("fixture", "error", detail=str(error))
 
     acceptor = threading.Thread(target=accept, daemon=True)
-    acceptor.start()
     spec = {
         "name": name,
         "image": image,
@@ -245,7 +258,7 @@ def host(binary, root, image):
         audit = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
         if audit < 0 or libc.inotify_add_watch(audit, os.fsencode(log), 2) < 0:
             raise OSError(ctypes.get_errno(), "watch the egress log")
-        for direction in ("upload", "download"):
+        for direction in TUNNELS:
             launch(
                 direction,
                 [
@@ -260,21 +273,38 @@ def host(binary, root, image):
                     direction,
                 ],
             )
-        waiting = {"upload", "download", "fixture-upload", "fixture-download"}
+        waiting_guests = set(TUNNELS)
+        deadline = time.monotonic() + 45
+        while waiting_guests:
+            source, item = next_event(deadline)
+            if source not in waiting_guests or item["event"] != "waiting":
+                raise RuntimeError(f"unexpected pre-connect event: {source}: {item}")
+            waiting_guests.remove(source)
+        acceptor.start()
+        phases_begin = time.monotonic()
+        for direction in TUNNELS:
+            connect_at = phases_begin
+            if direction.startswith("idle-"):
+                connect_at += int(direction.removeprefix("idle-")) * IDLE_PHASE_INTERVAL
+            processes[direction].stdin.write(f"{connect_at}\n")
+            processes[direction].stdin.flush()
+        waiting = {*TUNNELS, *(f"fixture-{name}" for name in TUNNELS)}
         deadline = time.monotonic() + 45
         while waiting:
             source, item = next_event(deadline)
             if item["event"] != "ready" or source not in waiting:
                 raise RuntimeError(f"unexpected fixture readiness: {source}: {item}")
             waiting.remove(source)
+            if source.startswith("idle-"):
+                final[source] = item["seconds"]
         began = time.monotonic()
         start.set()
-        for direction in ("upload", "download"):
+        for direction in TUNNELS:
             processes[direction].stdin.write("start\n")
             processes[direction].stdin.flush()
         observer = {"fixture-upload": "upload", "download": "download"}
         deadline = began + TRAFFIC_SECONDS + IDLE_SECONDS + SCHEDULING_TOLERANCE + 10
-        while len(closed) < 4:
+        while len(closed) < 2 * len(TUNNELS):
             source, item = next_event(deadline)
             if item["event"] == "marker" and source in observer:
                 if item["sequence"] == MARKERS - 1:
@@ -306,7 +336,7 @@ def host(binary, root, image):
                 closed[source] = elapsed
             else:
                 raise RuntimeError(f"unexpected traffic event: {source}: {item}")
-        for direction in ("upload", "download"):
+        for direction in TUNNELS:
             if processes[direction].poll() is not None:
                 raise RuntimeError(
                     f"{direction} guest exited before outside closure observation"
@@ -321,17 +351,17 @@ def host(binary, root, image):
                 for entry in entries
                 if entry.get("host") == HOST and entry.get("decision") == "closed"
             ]
-            if len(reasons) >= 2:
+            if len(reasons) >= len(TUNNELS):
                 break
             left = audit_deadline - time.monotonic()
             if left <= 0 or not select.select([audit], [], [], left)[0]:
                 raise RuntimeError("CONNECT closure was not recorded in the egress log")
             os.read(audit, 65536)
-        if reasons != ["idle timeout", "idle timeout"]:
+        if reasons != ["idle timeout"] * len(TUNNELS):
             raise RuntimeError(
                 f"CONNECT closure reasons differ from the spec: {reasons}"
             )
-        for direction in ("upload", "download"):
+        for direction in TUNNELS:
             processes[direction].stdin.write("release\n")
             processes[direction].stdin.flush()
             if processes[direction].wait(timeout=15) != 0:
@@ -362,7 +392,7 @@ def host(binary, root, image):
             except BrokenPipeError:
                 pass
         # Box teardown cancels every guest before reaping its runtime client.
-        for source in ("owner", "upload", "download"):
+        for source in ("owner", *TUNNELS):
             if source not in processes:
                 continue
             process = processes[source]
@@ -388,7 +418,8 @@ def host(binary, root, image):
 
 if __name__ == "__main__":
     # Sabotage: make CONNECT reads expire independently, omit successful
-    # writes from the shared clock, or never expire that clock. The final
+    # writes from the shared clock, never expire that clock, or rely only
+    # on coarse socket read timeouts for idle expiry. The final
     # directional marker or the subsequent spec-timed idle closure fails.
     if sys.argv[1:2] == ["guest"]:
         guest(sys.argv[2])
@@ -396,5 +427,5 @@ if __name__ == "__main__":
         host(*sys.argv[2:])
     else:
         raise SystemExit(
-            "usage: connect_tunnels_share_activity.py host BINARY ROOT IMAGE | guest upload|download"
+            "usage: connect_tunnels_share_activity.py host BINARY ROOT IMAGE | guest DIRECTION"
         )

@@ -1703,6 +1703,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // other process's build, held in RUN by the host fixture, fails.
     // Sabotage: omit Apple's allocated build-cache storage from the
     // report; its byte count falls below the backing filesystem's du.
+    // Sabotage: omit Apple's online trim after pruning; the real RUN's
+    // deleted 64 MiB file remains allocated on the host across clean.
     // Sabotage: in `clean::boxes`, take any box with a `dev.pinfold.` label
     // instead of the owner label; on podman the user's container, which
     // carries the image's labels and no owner, is removed as a dead box and
@@ -2015,17 +2017,41 @@ fn cleanup_removes_only_pinfolds_garbage() {
             .parent()
             .unwrap()
             .join("containers/buildkit/rootfs.ext4");
-        let allocated = run_ok(Command::new("du").arg("-k").arg(&backing));
-        let allocated: u64 = String::from_utf8(allocated.stdout)
-            .unwrap()
-            .split_whitespace()
-            .next()
-            .unwrap()
-            .parse()
-            .unwrap();
+        let allocated_kib = || {
+            let output = run_ok(Command::new("du").arg("-k").arg(&backing));
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+        };
+        // Trim existing free blocks before the fixture writes, so old
+        // storage cannot supply the allocation this scenario must reclaim.
+        run_ok(Command::new("container").args(["clean", "buildkit"]));
+        let before_fixture = allocated_kib();
+        let cache_name = format!("{profile}-cache");
+        let _cache_images = ImageCleanup {
+            repository: format!("pinfold/image-{cache_name}"),
+        };
+        let context = other.root.join("cache-context");
+        fs::create_dir_all(&context).unwrap();
+        let containerfile = context.join("Containerfile");
+        fs::write(
+            &containerfile,
+            format!(
+                "FROM {}\nRUN dd if=/dev/urandom of=/{cache_name} bs=1M count=64 && sync && rm /{cache_name} && sync\n",
+                default_image(other)
+            ),
+        )
+        .unwrap();
+        let (code, cached) = image_build(other, &cache_name, &containerfile, &context);
+        assert_eq!(code, 0, "the cache fixture build failed: {cached}");
+        let allocated = allocated_kib();
         assert!(
-            allocated > 0,
-            "the active builder has no allocated backing storage"
+            allocated > before_fixture,
+            "the cache fixture allocated no host blocks: {before_fixture} -> {allocated} KiB"
         );
         let report = run_ok(env.command(pinfold()).args(["clean", "--dry-run"]));
         let report = String::from_utf8(report.stdout).unwrap();
@@ -2044,11 +2070,20 @@ fn cleanup_removes_only_pinfolds_garbage() {
             measured >= allocated * 1024,
             "build cache undercounts allocated backing storage: {report}"
         );
+        assert!(
+            allocated_kib() >= allocated,
+            "--dry-run reclaimed builder blocks"
+        );
         let cleaned = env.command(pinfold()).arg("clean").output().unwrap();
+        let after_clean = allocated_kib();
         let built = build.finish();
         assert!(
             cleaned.status.success(),
             "clean during another caller's build: {cleaned:?}"
+        );
+        assert!(
+            after_clean < allocated,
+            "clean did not reclaim freed builder blocks: {allocated} -> {after_clean} KiB"
         );
         assert!(
             built.status.success(),

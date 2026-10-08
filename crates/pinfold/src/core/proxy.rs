@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -14,6 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
@@ -621,54 +623,68 @@ enum CopyEnd {
 }
 
 /// Reads share their activity clock, so a one-way active tunnel stays open.
-fn copy_direction(
-    mut reader: impl Read,
-    mut writer: impl Write,
-    rearm: impl Fn(Duration),
-    activity: &Mutex<Instant>,
-) -> CopyEnd {
+fn copy_direction(reader: impl AsFd, mut writer: impl Write, activity: &Mutex<Instant>) -> CopyEnd {
     let mut buffer = [0u8; 8 * 1024];
+    let fd = reader.as_fd();
+    let mut ready = [PollFd::new(fd, PollFlags::POLLIN)];
     loop {
-        match reader.read(&mut buffer) {
-            Ok(0) => return CopyEnd::Eof,
-            Ok(n) => {
-                if let Err(error) = writer.write_all(&buffer[..n]) {
-                    return if timed_out(&error) {
-                        CopyEnd::WriteTimeout
-                    } else {
-                        CopyEnd::Failed
-                    };
-                }
-                *activity.lock().unwrap_or_else(PoisonError::into_inner) = Instant::now();
-            }
-            Err(error) if timed_out(&error) => {
-                let elapsed = activity
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .elapsed();
-                let Some(remaining) = IDLE_TIMEOUT.checked_sub(elapsed) else {
-                    return CopyEnd::Idle;
-                };
-                rearm(remaining.max(Duration::from_millis(1)));
-            }
+        let elapsed = activity
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .elapsed();
+        let Some(remaining) = IDLE_TIMEOUT.checked_sub(elapsed) else {
+            return CopyEnd::Idle;
+        };
+        // Long socket receive timeouts can be rounded up by Linux's timer
+        // wheel. Poll waits on the shared deadline without that rounding.
+        let timeout = PollTimeout::try_from(remaining.max(Duration::from_millis(1)))
+            .expect("five-minute timeout fits poll");
+        match poll(&mut ready, timeout) {
+            Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
             Err(_) => return CopyEnd::Failed,
+            Ok(_) => {}
         }
+        // MSG_DONTWAIT handles stale readiness without making writes nonblocking.
+        // Safety: fd stays borrowed from reader, and buffer is writable for its length.
+        let received = unsafe {
+            nix::libc::recv(
+                fd.as_raw_fd(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                nix::libc::MSG_DONTWAIT,
+            )
+        };
+        if received < 0 {
+            let error = io::Error::last_os_error();
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            ) {
+                continue;
+            }
+            return CopyEnd::Failed;
+        }
+        if received == 0 {
+            return CopyEnd::Eof;
+        }
+        if let Err(error) = writer.write_all(&buffer[..received as usize]) {
+            return if timed_out(&error) {
+                CopyEnd::WriteTimeout
+            } else {
+                CopyEnd::Failed
+            };
+        }
+        *activity.lock().unwrap_or_else(PoisonError::into_inner) = Instant::now();
     }
 }
 
 /// Both sockets are interrupted on failure, including the peer's writer.
 /// Ordinary EOF closes only the destination's upload half.
 fn tunnel(client: &UnixStream, server: TcpStream, log: &AuditLog, host: &str) {
-    if client.set_read_timeout(Some(IDLE_TIMEOUT)).is_err() {
-        return;
-    }
     let activity = Mutex::new(Instant::now());
     let (upload, download) = thread::scope(|scope| {
         let up = scope.spawn(|| {
-            let rearm = |timeout| {
-                let _ = client.set_read_timeout(Some(timeout));
-            };
-            let end = copy_direction(client, &server, rearm, &activity);
+            let end = copy_direction(client, &server, &activity);
             let _ = server.shutdown(if end == CopyEnd::Eof {
                 Shutdown::Write
             } else {
@@ -677,10 +693,7 @@ fn tunnel(client: &UnixStream, server: TcpStream, log: &AuditLog, host: &str) {
             });
             end
         });
-        let rearm = |timeout| {
-            let _ = server.set_read_timeout(Some(timeout));
-        };
-        let end = copy_direction(&server, client, rearm, &activity);
+        let end = copy_direction(&server, client, &activity);
         let _ = client.shutdown(if end == CopyEnd::Eof {
             Shutdown::Write
         } else {
