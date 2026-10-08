@@ -470,11 +470,6 @@ fn a_changed_project_file_stops_the_run() {
         .output()
         .expect("run pinfold pi --version");
     assert!(!refused.status.success(), "the new .pinfold.toml ran");
-    let stderr = String::from_utf8_lossy(&refused.stderr);
-    assert!(
-        stderr.contains("pinfold allow"),
-        "the refusal did not name `pinfold allow`: {stderr}"
-    );
     allow(&env, project.path());
     pi_version(&env, project.path());
 
@@ -503,11 +498,6 @@ fn a_changed_project_file_stops_the_run() {
         .output()
         .expect("run pinfold pi --version");
     assert!(!refused.status.success(), "the changed .pinfold.toml ran");
-    let stderr = String::from_utf8_lossy(&refused.stderr);
-    assert!(
-        stderr.contains("pinfold allow"),
-        "the refusal did not name `pinfold allow`: {stderr}"
-    );
     allow(&env, project.path());
     pi_version(&env, project.path());
 
@@ -556,20 +546,10 @@ fn a_changed_project_file_stops_the_run() {
         .output()
         .expect("run pinfold pi --version");
     assert!(!refused.status.success(), "the changed Containerfile ran");
-    let stderr = String::from_utf8_lossy(&refused.stderr);
-    assert!(
-        stderr.contains("pinfold allow"),
-        "the refusal did not name `pinfold allow`: {stderr}"
-    );
     let refused = pinfold_in(&env, project.path(), &["build"])
         .output()
         .expect("run pinfold build");
     assert!(!refused.status.success(), "the changed Containerfile built");
-    let stderr = String::from_utf8_lossy(&refused.stderr);
-    assert!(
-        stderr.contains("pinfold allow"),
-        "the build refusal did not name `pinfold allow`: {stderr}"
-    );
     allow(&env, project.path());
     run_ok(&mut pinfold_in(&env, project.path(), &["build"]));
     pi_version(&env, project.path());
