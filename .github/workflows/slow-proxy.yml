@@ -30,23 +30,8 @@ jobs:
 
       - name: Rootless podman and fixture tools
         run: |
-          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq dbus-user-session musl-tools openssl python3 iproute2
-          sudo loginctl enable-linger "$(id -un)"
-          sudo systemctl start "user@$(id -u).service"
-          XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
-          export XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
-          systemctl --user daemon-reload
-          systemctl --user enable --now dbus.socket
-          podman system migrate
-          {
-            echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
-            echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
-          } >>"$GITHUB_ENV"
+          sh scripts/setup-linux-runner.sh
+          sudo apt-get install -y -qq musl-tools openssl python3 iproute2
 
       - name: Rust musl target
         run: |
