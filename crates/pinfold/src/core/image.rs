@@ -63,7 +63,15 @@ pub struct Built {
 /// then run retention for the source's images. The inner `Err` is the
 /// build's output when the build ran and failed.
 pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, String>> {
-    let id = build_id();
+    // A new build's id, the `<build>` of its unique tag. It starts with the
+    // build's nanoseconds since the epoch in hex, which retention orders
+    // builds by. It is never a label, so a cached build of unchanged inputs
+    // returns the existing image.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let id = format!("{nanos:x}-{}", std::process::id());
     let mut labels = build.labels;
     // The runtime copies the base image's labels onto the new image, so
     // every family label goes on every image: its own with its source, the
@@ -90,8 +98,6 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
             Context::Dir { .. } => String::new(),
         },
     );
-    // `pinfold/profile-<name>`, `pinfold/project-<id>` or
-    // `pinfold/image-<name>`.
     let stem = match build.label {
         Some(label) => label.trim_start_matches("dev.pinfold."),
         None => "image",
@@ -210,18 +216,6 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
     )
     .map_err(failed)?
     .map_err(ImageError::Failed)
-}
-
-/// A new build's id, the `<build>` of its unique tag. It starts with the
-/// build's nanoseconds since the epoch in hex, which retention orders
-/// builds by. It is never a label, so a cached build of unchanged inputs
-/// returns the existing image.
-fn build_id() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    format!("{nanos:x}-{}", std::process::id())
 }
 
 /// The digest of the image a Containerfile's first `FROM` names, when the
