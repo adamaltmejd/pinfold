@@ -213,7 +213,8 @@ fn changed_bundled_profiles_are_reported_once() {
     let _runtime = crate::shared_runtime();
     // Guarantee 31. Sabotage: omit the embedded-profile comparison, or gate
     // it behind the daily network interval; the changed binary stays silent.
-    // Do not save the new fingerprint; the next launch warns again. Warn on
+    // Do not save the new fingerprint; the next launch warns again. Reset
+    // checked_at while saving it; the next launch queries again. Warn on
     // the first launch without history; the initial control fails. Resolve
     // --builtin through user profile lookup; the copied package misses the
     // changed full-profile package. Hash only the default profile; the full-
