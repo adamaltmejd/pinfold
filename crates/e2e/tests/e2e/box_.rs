@@ -71,6 +71,7 @@ fn box_lifecycle_works_for_a_caller() {
     let name = format!("{:-<60}", box_name("lifecycle"));
     let label = "dev.example.test=lifecycle";
     let image = default_image(&env);
+    let image_id = image_id(image).expect("the runtime lists the default image");
     let spec = serde_json::json!({
         "name": name,
         "image": image,
@@ -78,8 +79,25 @@ fn box_lifecycle_works_for_a_caller() {
     });
     let mut up = box_up(&env, &spec, &name);
 
+    // Exec immediately after ready, without another runtime query first.
+    // Sabotage: wait for Apple to report running only with a proxy socket;
+    // if the first exec reaches Apple before it records running, this
+    // no-egress box's command fails. The runtime controls that race window.
+    // `exec` streams both streams and returns the process exit code.
+    let failed = box_exec(&env, &name, &["sh", "-c", "echo out; echo err >&2; exit 3"]);
+    assert_eq!(
+        failed.code, 3,
+        "first exec after ready: stdout={:?}, stderr={:?}",
+        failed.stdout, failed.stderr
+    );
+    assert_eq!(failed.stdout, "out\n");
+    assert_eq!(failed.stderr, "err\n");
+
+    // Positive control: the same command path passes a zero exit through.
+    let ok = box_exec(&env, &name, &["sh", "-c", "exit 0"]);
+    assert_eq!(ok.code, 0);
+
     // `ready` carries the owner and the image it runs.
-    let image_id = image_id(image).expect("the runtime lists the default image");
     assert_eq!(
         up.ready["owner"],
         up.pid(),
@@ -99,16 +117,6 @@ fn box_lifecycle_works_for_a_caller() {
         "ready gave a box without egress a log: {}",
         up.ready
     );
-
-    // `exec` streams both streams and returns the process exit code.
-    let failed = box_exec(&env, &name, &["sh", "-c", "echo out; echo err >&2; exit 3"]);
-    assert_eq!(failed.stdout, "out\n");
-    assert_eq!(failed.stderr, "err\n");
-    assert_eq!(failed.code, 3);
-
-    // Positive control: the same command path passes a zero exit through.
-    let ok = box_exec(&env, &name, &["sh", "-c", "exit 0"]);
-    assert_eq!(ok.code, 0);
 
     // Sabotage: discard parse_exec's workdir; pwd reports the image's
     // default directory instead of the caller's /tmp.

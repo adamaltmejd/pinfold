@@ -203,7 +203,7 @@ impl Runtime for Apple {
 
 /// Wait, bounded, until `list` reports box `name` running. Apple records
 /// `.running` only after the box's first process starts, so `ready` can
-/// arrive first; the root exec that follows is refused in that gap.
+/// arrive first; an exec is refused in that gap.
 pub fn wait_until_running(name: &str) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
