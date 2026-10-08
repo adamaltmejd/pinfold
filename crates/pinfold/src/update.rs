@@ -172,15 +172,6 @@ fn executable_lock(mode: FlockArg) -> io::Result<(PathBuf, Flock<File>)> {
     Ok((path, lock))
 }
 
-fn target() -> io::Result<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
-        ("linux", "aarch64") => Ok("aarch64-unknown-linux-musl"),
-        ("linux", "x86_64") => Ok("x86_64-unknown-linux-musl"),
-        _ => Err(io::Error::other("no release binary for this host")),
-    }
-}
-
 pub fn run(args: &[String]) -> io::Result<i32> {
     let check_only = match args {
         [] => false,
@@ -225,7 +216,13 @@ pub fn run(args: &[String]) -> io::Result<i32> {
 }
 
 fn install(release: &str, path: &Path, staging: &Path) -> io::Result<()> {
-    let name = format!("pinfold-{release}-{}", target()?);
+    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("linux", "aarch64") => "aarch64-unknown-linux-musl",
+        ("linux", "x86_64") => "x86_64-unknown-linux-musl",
+        _ => return Err(io::Error::other("no release binary for this host")),
+    };
+    let name = format!("pinfold-{release}-{target}");
     let base = format!("{DOWNLOADS}/v{release}");
     let sums = staging.join("SHA256SUMS");
     let binary = staging.join("pinfold");
