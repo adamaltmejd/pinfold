@@ -18,7 +18,6 @@ use crate::pi::git::{Git, git};
 use crate::pi::state::{self, canonical, project_id};
 use crate::trust;
 
-/// The harness `pinfold pi` asks core for.
 const HARNESS: &str = "pi";
 
 /// Run a `pi`/`pinfold pi` invocation and return pi's exit code.
@@ -55,8 +54,7 @@ pub(crate) fn project_root(cwd: &Path) -> io::Result<PathBuf> {
         ));
     }
     let top = git(&cwd, &["rev-parse", "--show-toplevel"]).ok();
-    let top = top.as_deref().filter(|top| !top.is_empty());
-    let root = canonical(top.map_or(&cwd, Path::new))?;
+    let root = canonical(top.as_deref().map_or(&cwd, Path::new))?;
     if !cwd.starts_with(&root) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -135,7 +133,6 @@ fn warn_containerfile(image: &ImageInfo, bytes: &[u8], build: &str) {
     }
 }
 
-/// The complete box spec for one project.
 fn build_plan(
     config: &Config,
     id: &str,
