@@ -23,7 +23,6 @@ use nix::sys::signal::{SigHandler, SigSet, Signal};
 
 use crate::core::runtime::BOX_ENV_PREFIX;
 
-/// The loopback port clients use for the proxy.
 const RELAY_LISTEN: &str = "127.0.0.1:3128";
 
 /// Run as PID 1 until SIGTERM. `args` is the optional guest path of the
