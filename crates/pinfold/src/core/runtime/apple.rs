@@ -158,8 +158,10 @@ impl Runtime for Apple {
             "buildctl",
             "prune",
             "--all",
-        ])
-        .map(drop)
+        ])?;
+        // Pruning frees guest blocks; online trim returns them to the host
+        // without replacing the builder or stopping active builds (#86).
+        output(&["container", "clean", "buildkit"]).map(drop)
     }
 
     fn build_cache(&self) -> &'static str {
