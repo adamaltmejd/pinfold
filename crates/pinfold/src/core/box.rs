@@ -217,9 +217,6 @@ impl Box {
                 plan.labels.entry(key).or_insert(value);
             }
         }
-        // The owner label names this process to `list` and to Maintenance,
-        // which prunes a box whose owner is gone; for a state dir other than
-        // this one, it is also how the owner is judged alive.
         plan.labels.insert(
             clean::OWNER_LABEL.to_string(),
             std::process::id().to_string(),
