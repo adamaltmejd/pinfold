@@ -10,7 +10,7 @@ trap 'rm -rf "$out"' EXIT
 # Git and gh need the user's HOME; cargo needs its toolchain homes.
 HOME="$h" sh scripts/e2e-linux.sh >"$out/linux" 2>&1 &
 linux_pid=$!
-RUSTUP_HOME="$h/.rustup" CARGO_HOME="$h/.cargo" cargo test -p e2e --locked >"$out/macos" 2>&1
+RUSTUP_HOME="$h/.local/share/rustup" CARGO_HOME="$h/.cargo" cargo test -p e2e --locked >"$out/macos" 2>&1
 macos=$?
 wait "$linux_pid"
 linux=$?
