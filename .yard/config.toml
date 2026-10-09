@@ -34,8 +34,9 @@ access = "write"
 total_work_timeout_minutes = 360
 instructions = """
 Follow docs/ARCHITECTURE.md and AGENTS.md. Workers run in Linux boxes without
-Apple container or podman. Run cargo build, cargo fmt --check and cargo clippy
---all-targets --locked -- -D warnings. Write the required end-to-end scenarios;
+Apple container or podman. Set CARGO_HOME=/usr/local/cargo for build checks.
+Run cargo build --locked --offline, cargo fmt --check and cargo clippy
+--all-targets --locked --offline -- -D warnings. Write the required end-to-end scenarios;
 the host landing gate runs the macOS and both Linux suites.
 Before adding a function, config key, CLI option, event field or path, search
 for an existing one and reuse it. State what was reused or why nothing fit in
@@ -72,7 +73,7 @@ stage = "candidate"
 # The host gate runs agent-written code with the operator's privileges.
 # Protected paths above preserve the existing review boundary for this gate.
 [gates.e2e]
-command = "sh scripts/e2e-gate.sh"
+command = "PATH=/opt/homebrew/opt/rustup/bin:$PATH sh scripts/e2e-gate.sh"
 timeout_minutes = 30
 runs_in = "host"
 stage = "landing"
