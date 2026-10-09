@@ -10,6 +10,8 @@ trap 'rm -rf "$out"' EXIT
 # Git and gh need the user's HOME; cargo needs its toolchain homes.
 HOME="$h" sh scripts/e2e-linux.sh >"$out/linux" 2>&1 &
 linux_pid=$!
+# Fixture commits must not request the operator's signing key.
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
 RUSTUP_HOME="$h/.local/share/rustup" CARGO_HOME="$h/.cargo" cargo test -p e2e --locked >"$out/macos" 2>&1
 macos=$?
 wait "$linux_pid"
