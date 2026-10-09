@@ -15,22 +15,24 @@ use super::box_::{box_name, box_up};
 #[test]
 fn host_updates_are_verified_and_atomic() {
     let _runtime = crate::shared_runtime();
-    // Guarantee 28. Sabotage: skip SHA256SUMS verification; the damaged
-    // release succeeds. Rename before verification; the old inode changes
-    // on refusal. Write into the executable instead of renaming; the final
-    // inode stays unchanged. Remove the live owner guard; updating
-    // while a real box owner is alive succeeds. Replace argv[0] rather than
-    // current_exe(); the host command symlink is replaced and the installed
-    // binary's inode stays unchanged. Remove the
-    // exclusive executable lock; the owner under a different XDG root no
-    // longer prevents updating its executable.
-    // Expected release bytes and digest come from the host fixture, and
-    // inode identity comes from the host filesystem.
+    // Guarantee 28. Sabotage: skip SHA256SUMS verification or its digest
+    // comparison; the wrong digest under the requested asset name installs.
+    // Compare a digest without selecting the asset name; the correct digest
+    // under another name authorizes the release. Rename before
+    // verification; the old inode changes on refusal. Write into the
+    // executable instead of renaming; the final inode stays unchanged.
+    // Remove the live owner guard; updating while a real box owner is alive
+    // succeeds. Replace argv[0] rather than current_exe(); the invoked
+    // command symlink is replaced and the installed binary's inode stays
+    // unchanged. Remove the exclusive executable lock; the owner under a
+    // different XDG root no longer prevents updating its executable. Drop
+    // the check request; the fixture records none and reports no version.
+    // Expected release bytes and digest, the fixture version and the
+    // recorded check request come from the host fixture; inode identity
+    // comes from the host filesystem.
     let env = TestEnv::new("update");
     let installed = env.root.join("pinfold");
     fs::copy(pinfold(), &installed).unwrap();
-    let alias = env.root.join("pi");
-    symlink("pinfold", &alias).unwrap();
     let update_alias = env.root.join("pinfold-link");
     symlink("pinfold", &update_alias).unwrap();
     let mut fixture = ReleaseProxy::new(&env);
@@ -44,8 +46,23 @@ fn host_updates_are_verified_and_atomic() {
     );
     fs::copy(replacement, fixture.root.join("release")).unwrap();
 
-    let mut check = fixture.command(&env, &installed);
-    run_ok(check.args(["update", "--check"]));
+    let check = run_ok(
+        fixture
+            .command(&env, &installed)
+            .args(["update", "--check"]),
+    );
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("999.0.0"),
+        "check did not report the fixture version: {check:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("checks"))
+            .unwrap_or_default()
+            .lines()
+            .count(),
+        1,
+        "check-only did not reach the fixture"
+    );
     assert_eq!(fs::metadata(&installed).unwrap().ino(), original_inode);
     assert_eq!(fs::read(&installed).unwrap(), original);
 
@@ -58,7 +75,7 @@ fn host_updates_are_verified_and_atomic() {
         .unwrap();
     assert!(
         !failure.status.success(),
-        "bad checksum installed: {failure:?}"
+        "wrong-name checksum authorized the release: {failure:?}"
     );
     assert!(
         String::from_utf8_lossy(&failure.stderr).contains("checksum-mismatch"),
@@ -123,7 +140,7 @@ fn host_updates_are_verified_and_atomic() {
     run_ok(fixture.command(&env, &update_alias).arg("update"));
     assert_eq!(fs::read(&installed).unwrap(), replacement_bytes);
     assert_ne!(fs::metadata(&installed).unwrap().ino(), original_inode);
-    assert_eq!(fs::read_link(&alias).unwrap(), Path::new("pinfold"));
+    assert_eq!(fs::read_link(&update_alias).unwrap(), Path::new("pinfold"));
     run_ok(env.command(&installed).arg("--version"));
 }
 
