@@ -1294,6 +1294,9 @@ fn only_allowlisted_hosts_get_through() {
     // then answers and the 403 and "not allowlisted" log assertions fail. The
     // api.github.com request is the positive control that the same path lets
     // an allowlisted host through.
+    // Sabotage: match suffix entries as exact names; api.github.com fails.
+    // Sabotage: match a suffix without its leading dot; evilgithub.com
+    // passes policy, so its 403 and "not allowlisted" assertions fail.
     // Sabotage: drop `egress_log` from `ready`, or report a path other than
     // the log handed to the proxy; the refusal is not found there.
     let env = TestEnv::new("egress");
@@ -1301,7 +1304,7 @@ fn only_allowlisted_hosts_get_through() {
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(&env),
-        "egress": { "allow": ["api.github.com"] },
+        "egress": { "allow": [".github.com"] },
     });
     let up = box_up(&env, &spec, &name);
 
@@ -1311,27 +1314,32 @@ fn only_allowlisted_hosts_get_through() {
         "30",
         &["-o", "/dev/null", "https://api.github.com/"],
     );
-    assert_ok(&allowed, "allowlisted host");
+    assert_ok(&allowed, "host admitted by .github.com");
 
-    let denied = curl(
-        &env,
-        &name,
-        "30",
-        &["-o", "/dev/null", "https://example.com/"],
-    );
-    assert_denied(&denied, "403", "a request to example.com");
+    // evilgithub.com must stop at policy, before DNS or a public dial.
+    for host in ["example.com", "evilgithub.com"] {
+        let denied = curl(
+            &env,
+            &name,
+            "30",
+            &["-o", "/dev/null", &format!("https://{host}/")],
+        );
+        assert_denied(&denied, "403", &format!("a request to {host}"));
+    }
 
     // The log at the path `ready` names holds the refusal and its reason.
     let log = up.ready["egress_log"]
         .as_str()
         .unwrap_or_else(|| panic!("ready names no egress log: {}", up.ready));
     let lines = json_lines(&fs::read_to_string(log).expect("read the egress log ready names"));
-    assert!(
-        lines.iter().any(|line| line["host"] == "example.com"
-            && line["decision"] == "refused"
-            && line["reason"] == "not allowlisted"),
-        "no not-allowlisted refusal for example.com: {lines:?}"
-    );
+    for host in ["example.com", "evilgithub.com"] {
+        assert!(
+            lines.iter().any(|line| line["host"] == host
+                && line["decision"] == "refused"
+                && line["reason"] == "not allowlisted"),
+            "no not-allowlisted refusal for {host}: {lines:?}"
+        );
+    }
 
     up.down(&env);
 }
@@ -1344,6 +1352,8 @@ fn the_proxy_refuses_the_tricks() {
     // Sabotage: delete either IP literal check; that request then
     // logs "not allowlisted" (or reaches the box's own loopback), so the
     // "ip literal" assertions fail.
+    // Sabotage: stop stripping IPv6 brackets in network::literal; [::1]
+    // logs "not allowlisted" instead of "ip literal".
     // Sabotage: delete the loopback address check; localhost resolves to
     // 127.0.0.1, the proxy dials it, and the 403 and "loopback" assertions
     // fail.
@@ -1422,6 +1432,8 @@ fn the_proxy_refuses_the_tricks() {
         &["-o", "/dev/null", "https://127.0.0.1/"],
     );
     assert_denied(&literal_connect, "403", "CONNECT to an IP literal");
+    let literal_ipv6 = curl(&env, &name, "30", &["-o", "/dev/null", "https://[::1]/"]);
+    assert_denied(&literal_ipv6, "403", "CONNECT to a bracketed IPv6 literal");
     let literal_plain = curl(
         &env,
         &name,
@@ -1502,6 +1514,7 @@ fn the_proxy_refuses_the_tricks() {
     let lines = json_lines(&egress_log(&env, &name));
     for (host, reason) in [
         ("127.0.0.1", "ip literal"),
+        ("[::1]", "ip literal"),
         ("127.0.0.2", "ip literal"),
         ("localhost", "loopback"),
         ("api.github.com", "sni mismatch"),
