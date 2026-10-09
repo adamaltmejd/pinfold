@@ -67,9 +67,13 @@ class Proxy(socketserver.BaseRequestHandler):
                 body = (root / "release").read_bytes()
             elif path == "/adamaltmejd/pinfold/releases/download/v999.0.0/SHA256SUMS":
                 digest = hashlib.sha256((root / "release").read_bytes()).hexdigest()
+                lines = [f"{digest}  {asset}"]
                 if (root / "bad-checksum").exists():
-                    digest = "0" * 64
-                body = f"{digest}  {asset}\n".encode()
+                    # Wrong digest under the requested name catches a skipped
+                    # comparison; the correct digest under another name
+                    # catches a digest check that skips asset selection.
+                    lines = [f"{'0' * 64}  {asset}", f"{digest}  {asset}.other"]
+                body = ("\n".join(lines) + "\n").encode()
             else:
                 stream.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
                 return
