@@ -15,20 +15,20 @@ provider = "opencode-go"
 model = "deepseek-v4.1-flash"
 effort = "high"
 
-[agents.opus]
-harness = "claude"
-login = true
-model = "claude-opus-5-5"
-effort = "high"
-
-[agents.reviewer]
+[agents.sol]
 harness = "codex"
 login = true
 model = "gpt-6.1-sol"
 effort = "medium"
 
+[agents.reviewer]
+harness = "codex"
+login = true
+model = "gpt-6-astra"
+effort = "medium"
+
 [workflows.default]
-implementer = "deepseek"
+implementer = "sol"
 review = ["code"]
 access = "write"
 total_work_timeout_minutes = 360
@@ -43,10 +43,13 @@ the commit message.
 """
 
 [workflows.heavy]
-implementer = "opus"
+implementer = "sol"
+
+[workflows.small]
+implementer = "deepseek"
 
 [workflows.plan]
-implementer = "opus"
+implementer = "sol"
 access = "read-only"
 review = "none"
 instructions = "Plan against docs/ARCHITECTURE.md and AGENTS.md. Name the guarantee or reproduced CLI bug each ticket serves. Size each child to one module or CLI verb and its guarantee scenarios. End-to-end suites run on the host."
