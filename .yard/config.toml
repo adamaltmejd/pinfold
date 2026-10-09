@@ -1,6 +1,6 @@
 # Switchyard v3. Configuration changes take effect through yard sync.
 max_lanes = 2
-approve = "auto"
+approve = "manual"
 
 [target]
 ref = "main"
@@ -52,7 +52,7 @@ implementer = "deepseek"
 implementer = "sol"
 access = "read-only"
 review = "none"
-instructions = "Plan against docs/ARCHITECTURE.md and AGENTS.md. Name the guarantee or reproduced CLI bug each ticket serves. Size each child to one module or CLI verb and its guarantee scenarios. End-to-end suites run on the host."
+instructions = "Plan against docs/ARCHITECTURE.md and AGENTS.md. Name the guarantee or reproduced CLI bug each ticket serves. Size each child to one coherent mechanism and its guarantee scenarios. End-to-end suites run on the host."
 
 [gates.fmt]
 command = "CARGO_HOME=/usr/local/cargo cargo fmt --check"
