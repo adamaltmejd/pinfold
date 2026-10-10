@@ -1022,18 +1022,26 @@ fn up_refuses_before_it_creates() {
             { "host": spec_mount, "guest": "/opt/pinfold/profile", "readonly": true },
         ],
     });
-    let (code, refused) = box_up_refused(&env, &profile_mount, &[]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["event"], "refused");
-    assert_eq!(refused["reason"], "spec");
-    assert!(
-        refused["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("/opt/pinfold/profile"),
-        "the refusal did not name the path: {refused}"
-    );
-    assert_left_nothing(&env, &name, label, "refused");
+    // Sabotage: compare raw guest paths or deduplicate caller destinations
+    // in the late scanner. Normalized duplicates must refuse as spec before
+    // preparation, just like exact duplicates. The host fixture supplies
+    // both destinations; the race's winner below is the allowed control.
+    for destination in ["/opt/pinfold/profile", "/work", "/work/../work"] {
+        let mut duplicate = profile_mount.clone();
+        duplicate["mounts"][1]["guest"] = destination.into();
+        let (code, refused) = box_up_refused(&env, &duplicate, &[]);
+        assert_eq!(code, 1, "a refused up exits 1: {refused}");
+        assert_eq!(refused["event"], "refused");
+        assert_eq!(refused["reason"], "spec");
+        assert!(
+            refused["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(destination),
+            "the refusal did not name the path: {refused}"
+        );
+        assert_left_nothing(&env, &name, label, "refused");
+    }
 
     // Refuse both an absent directory and a dangling symlink to it. The
     // race below uses the same spec after the target is created, proving

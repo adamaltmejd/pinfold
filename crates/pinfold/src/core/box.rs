@@ -20,7 +20,7 @@ use tokio::process::Child;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::core::clean;
-use crate::core::plan::{Env, Mount, Plan, valid_name};
+use crate::core::plan::{Env, Mount, Plan, guest_path, valid_name};
 use crate::core::profile::{Profile, Seed};
 use crate::core::runtime::{BoxInfo, apple, runtime};
 use crate::core::{artifacts, login, ownership, proxy};
@@ -612,30 +612,18 @@ fn check_mount_aliases(
 ) -> Result<(), Stop> {
     let init_dir = init.parent().expect("up checked the init directory");
     let mut mounts = plan.mounts.clone();
+    for mount in &mut mounts {
+        mount.guest = guest_path(&mount.guest);
+    }
+    // Only the runtime-added init export masks an exact plan destination.
+    // Duplicate plan destinations were refused before preparation.
+    let init_guest = guest_path(init_dir);
+    mounts.retain(|mount| mount.guest != init_guest);
     mounts.push(Mount {
         host: init_dir.to_path_buf(),
-        guest: init_dir.to_path_buf(),
+        guest: init_guest,
         readonly: true,
     });
-    // Runtime destinations are lexical guest paths, not host referents.
-    for mount in &mut mounts {
-        let mut guest = PathBuf::new();
-        for component in mount.guest.components() {
-            match component {
-                Component::ParentDir => {
-                    guest.pop();
-                }
-                Component::CurDir => {}
-                component => guest.push(component.as_os_str()),
-            }
-        }
-        mount.guest = guest;
-    }
-    // The last export masks an exact destination, including implicit init.
-    let mut guests = std::collections::BTreeSet::new();
-    mounts.reverse();
-    mounts.retain(|mount| guests.insert(mount.guest.clone()));
-    mounts.reverse();
     let mut files: BTreeMap<(u64, u64), (bool, PathBuf)> = BTreeMap::new();
     for mount in &mounts {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -500,8 +500,7 @@ impl Plan {
         resolved.map_err(|error| format!("{} login route {route:?}: {error}", login.login))
     }
 
-    /// Refuse two mounts at one guest path: the runtime applies both, and
-    /// whichever comes last shadows the other. `extra` holds the guest paths
+    /// Refuse two mounts at one lexical guest path. `extra` holds the paths
     /// pinfold mounts after `validate` has run, so `Box::up` checks the
     /// final list too.
     pub fn validate_guests(&self, extra: &[&Path]) -> Result<(), String> {
@@ -512,7 +511,7 @@ impl Plan {
             .map(|m| m.guest.as_path())
             .chain(extra.iter().copied())
         {
-            if !guests.insert(guest) {
+            if !guests.insert(guest_path(guest)) {
                 return Err(invalid(format!(
                     "two mounts name the same guest path {}",
                     guest.display()
@@ -521,6 +520,21 @@ impl Plan {
         }
         Ok(())
     }
+}
+
+/// Resolve guest components lexically, without consulting the host filesystem.
+pub(crate) fn guest_path(path: &Path) -> PathBuf {
+    let mut guest = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                guest.pop();
+            }
+            Component::CurDir => {}
+            component => guest.push(component.as_os_str()),
+        }
+    }
+    guest
 }
 
 /// Refuse a caller label in pinfold's `dev.pinfold.` namespace:
