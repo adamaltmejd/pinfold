@@ -612,13 +612,30 @@ fn check_mount_aliases(
 ) -> Result<(), Stop> {
     let init_dir = init.parent().expect("up checked the init directory");
     let mut mounts = plan.mounts.clone();
-    // The runtime adds this export last, so it masks an exact caller export.
-    mounts.retain(|mount| mount.guest != init_dir);
     mounts.push(Mount {
         host: init_dir.to_path_buf(),
         guest: init_dir.to_path_buf(),
         readonly: true,
     });
+    // Runtime destinations are lexical guest paths, not host referents.
+    for mount in &mut mounts {
+        let mut guest = PathBuf::new();
+        for component in mount.guest.components() {
+            match component {
+                Component::ParentDir => {
+                    guest.pop();
+                }
+                Component::CurDir => {}
+                component => guest.push(component.as_os_str()),
+            }
+        }
+        mount.guest = guest;
+    }
+    // The last export masks an exact destination, including implicit init.
+    let mut guests = std::collections::BTreeSet::new();
+    mounts.reverse();
+    mounts.retain(|mount| guests.insert(mount.guest.clone()));
+    mounts.reverse();
     let mut files: BTreeMap<(u64, u64), (bool, PathBuf)> = BTreeMap::new();
     for mount in &mounts {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
@@ -627,6 +644,9 @@ fn check_mount_aliases(
         let root = fs::canonicalize(&mount.host)?;
         let mut directories = vec![(root, mount.guest.clone())];
         while let Some((host, guest)) = directories.pop() {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(io::Error::from(io::ErrorKind::Interrupted).into());
+            }
             for entry in fs::read_dir(host)? {
                 if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                     return Err(io::Error::from(io::ErrorKind::Interrupted).into());

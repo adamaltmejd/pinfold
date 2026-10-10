@@ -4328,6 +4328,10 @@ fn a_caller_owned_box_cannot_write_git() {
     // Sabotage: apply mounts in input order; the hook write then succeeds.
     spec["mounts"].as_array_mut().unwrap().swap(0, 1);
 
+    // Sabotage: compare unnormalized guest destinations. This accepted
+    // spelling then leaves the parent's .git occurrence falsely writable.
+    spec["mounts"][0]["guest"] = serde_json::json!(dot_git.join("../.git"));
+
     // Sabotage: blanket nlink rejection (including Git objects). An object
     // shared with a local clone outside every writable export is admitted.
     let outside = TestDir::new(&env, "outside-clone");
