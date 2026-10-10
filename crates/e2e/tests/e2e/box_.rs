@@ -4324,6 +4324,10 @@ fn a_caller_owned_box_cannot_write_git() {
     assert_eq!(fs::read(single.join("file")).unwrap(), b"protected\n");
     spec["mounts"].as_array_mut().unwrap().pop();
 
+    // Restore .git before its writable parent for runtime coverage.
+    // Sabotage: apply mounts in input order; the hook write then succeeds.
+    spec["mounts"].as_array_mut().unwrap().swap(0, 1);
+
     // Sabotage: blanket nlink rejection (including Git objects). An object
     // shared with a local clone outside every writable export is admitted.
     let outside = TestDir::new(&env, "outside-clone");
