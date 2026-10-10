@@ -68,7 +68,9 @@ impl Shutdown {
 }
 
 /// Why `up` refused, serialized as the reason string of the process
-/// interface's `refused` line. A refused `up` leaves nothing.
+/// interface's `refused` line. Early refusals precede preparation.
+/// `MountAlias` follows preparation but precedes runtime spawn and ready;
+/// claimed state is removed, while fetched artifacts and home seeds remain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RefusalReason {
@@ -91,7 +93,8 @@ pub struct Refusal {
 }
 
 /// Why [`Box::up`] failed: a refusal, SIGTERM or SIGINT before ready, or any
-/// other error. Each removes what the start made before it returns.
+/// other error. Failed-start cleanup removes the runtime child and claimed
+/// state. It does not roll back fetched artifacts or ordinary home seeds.
 #[derive(Debug)]
 pub enum UpError {
     Refused(Refusal),
@@ -125,6 +128,9 @@ impl Box {
     /// profile, the host's runtime and the image are checked first. Then
     /// `up` claims the name, and only the claim's owner creates anything.
     /// File aliases are checked after preparation, before runtime startup.
+    /// An alias refusal removes claimed state; prepared artifacts and home
+    /// seeds remain. Pi's guard removes its newly created empty protection
+    /// directories when the error returns to Pi.
     ///
     /// The caller registered SIGTERM and SIGINT before reading the spec:
     /// before ready they remove what the start made and `up` returns
@@ -496,8 +502,8 @@ async fn start(
     codex: Option<login::Token>,
     progress: &mut Starting,
 ) -> Result<(BoxInfo, Option<PathBuf>), Stop> {
-    // The harness artifact is fetched and folded in after the claim, so a
-    // refused box downloads nothing. The spec's own env wins.
+    // Fetch the harness after the claim. Early refusals download nothing;
+    // alias admission follows preparation. The spec's own env wins.
     let mut prepared = plan.clone();
     let preparation_dir = state_dir.to_path_buf();
     let cancel = progress.cancel.clone();

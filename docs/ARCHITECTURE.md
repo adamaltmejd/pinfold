@@ -211,9 +211,11 @@ When `up` refuses, it prints one JSON line instead of `ready` and exits 1:
 `login` or `mount-alias`;
 `box` is the `name` of stdin's first JSON value when that is an object with
 a string `name`, else null.
-Refusals leave no box or box state. `mount-alias` follows preparation;
-installed artifacts and home seeds remain. Earlier refusals create no seeds
-or extracted profile resources.
+Early refusals create no box, box state, seeds or extracted profile resources.
+`mount-alias` is a late admission refusal after preparation: no runtime is
+spawned and no ready event is emitted. Failed-start cleanup removes claimed
+state; Pi removes its newly created empty protection directories. Fetched
+artifacts and ordinary home seeds may already exist and are not rolled back.
 Stable coordination lock files may remain. `up` asks the runtime to resolve `image`, so any reference the
 runtime resolves locally is accepted; `image-missing` means the runtime could
 not.

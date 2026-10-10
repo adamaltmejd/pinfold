@@ -618,7 +618,8 @@ fn the_box_cannot_write_git_or_protected_config() {
         assert!(stderr.contains(source.to_str().unwrap()), "{stderr}");
         assert!(stderr.contains(alias.to_str().unwrap()), "{stderr}");
         assert!(refused.stdout.is_empty(), "refused Pi emitted RPC output");
-        assert_left_nothing(&env, "pi alias fixture", "dev.pinfold.owner", "refused");
+        let project_label = format!("dev.pinfold.project={}", project_id(&env, root));
+        assert_left_nothing(&env, "pi alias fixture", &project_label, "refused");
         assert_eq!(fs::read(source).unwrap(), expected);
         // Sabotage: release Git's cleanup guard before core startup. The
         // absent protected directories must still be absent after refusal.

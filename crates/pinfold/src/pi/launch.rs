@@ -31,8 +31,8 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     let home = state::record_run(&root)?;
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
-    // The read-only mounts are prepared after trust, so a refused run leaves
-    // no created directory behind.
+    // Prepare read-only mounts after trust. The Git guard removes newly
+    // created empty protection directories even on a late core refusal.
     let git = Git::prepare(&root, &config.protect)?;
     let plan = build_plan(&config, &id, &home, &root, &image, &git)?;
     run_box(&plan, &cwd, args)
