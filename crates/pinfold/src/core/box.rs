@@ -7,6 +7,7 @@ use std::fs::File;
 use std::io;
 use std::io::Write;
 use std::os::fd::OwnedFd;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitStatus;
 
@@ -77,6 +78,7 @@ pub enum RefusalReason {
     ImageMissing,
     NameInUse,
     Login,
+    MountAlias,
 }
 
 /// A refused `up`: why, and the detail the runtime or host gave. `box_name`
@@ -119,10 +121,10 @@ impl From<UpError> for io::Error {
 }
 
 impl Box {
-    /// Start a box, wait for init's `ready` line, and return it. Every
-    /// refusal but a taken name is decided before anything is created: the
+    /// Start a box, wait for init's `ready` line, and return it. The
     /// profile, the host's runtime and the image are checked first. Then
     /// `up` claims the name, and only the claim's owner creates anything.
+    /// File aliases are checked after preparation, before runtime startup.
     ///
     /// The caller registered SIGTERM and SIGINT before reading the spec:
     /// before ready they remove what the start made and `up` returns
@@ -307,6 +309,7 @@ impl Box {
                     Stop::Signal => UpError::Signal,
                     Stop::Control => UpError::Control,
                     Stop::Failed(error) => UpError::Other(error),
+                    Stop::Refused(refusal) => UpError::Refused(refusal),
                     Stop::NotReady(failure) => UpError::Other(io::Error::other(match status {
                         Some(Ok(status)) => format!("{failure}: {status}"),
                         Some(Err(error)) => format!("{failure}: {error}"),
@@ -442,6 +445,7 @@ enum Stop {
     /// Readiness failed; the runtime child's exit status completes the text.
     NotReady(String),
     Failed(io::Error),
+    Refused(Refusal),
 }
 
 impl From<io::Error> for Stop {
@@ -475,7 +479,7 @@ struct Starting {
     child: Option<Child>,
     audit: Audit,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    preparing: Option<tokio::task::JoinHandle<io::Result<Plan>>>,
+    preparing: Option<tokio::task::JoinHandle<Result<Plan, Stop>>>,
 }
 
 /// The start after the claim: harness, seeds, proxy, runtime, readiness.
@@ -512,6 +516,21 @@ async fn start(
     if let Some(seeding) = seeding {
         seed_home(seeding)?;
     }
+
+    let checked = plan.clone();
+    let scan_init = init.to_path_buf();
+    let cancel = progress.cancel.clone();
+    let worker = progress
+        .preparing
+        .insert(tokio::task::spawn_blocking(move || {
+            check_mount_aliases(&checked, &scan_init, &cancel)?;
+            Ok(checked)
+        }));
+    let checked = worker
+        .await
+        .map_err(|error| io::Error::other(format!("mount scan worker failed: {error}")))?;
+    progress.preparing.take();
+    checked?;
 
     // The proxy comes up before the box, so the socket is listening when
     // the runtime forwards it.
@@ -576,6 +595,71 @@ async fn start(
             ))
         })?;
     Ok((actual, egress_log))
+}
+
+/// Check observed regular-file identities in effective directory exports.
+/// This is admission only: the host can change the layout after the scan.
+fn check_mount_aliases(
+    plan: &Plan,
+    init: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<(), Stop> {
+    let init_dir = init.parent().expect("up checked the init directory");
+    let mut mounts = plan.mounts.clone();
+    // The runtime adds this export last, so it masks an exact caller export.
+    mounts.retain(|mount| mount.guest != init_dir);
+    mounts.push(Mount {
+        host: init_dir.to_path_buf(),
+        guest: init_dir.to_path_buf(),
+        readonly: true,
+    });
+    let mut files: BTreeMap<(u64, u64), (bool, PathBuf)> = BTreeMap::new();
+    for mount in &mounts {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(io::Error::from(io::ErrorKind::Interrupted).into());
+        }
+        let root = fs::canonicalize(&mount.host)?;
+        let mut directories = vec![(root, mount.guest.clone())];
+        while let Some((host, guest)) = directories.pop() {
+            for entry in fs::read_dir(host)? {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err(io::Error::from(io::ErrorKind::Interrupted).into());
+                }
+                let entry = entry?;
+                let guest = guest.join(entry.file_name());
+                // Nested exports mask this occurrence, regardless of order.
+                if mounts.iter().any(|other| {
+                    other.guest != mount.guest
+                        && other.guest.starts_with(&mount.guest)
+                        && guest.starts_with(&other.guest)
+                }) {
+                    continue;
+                }
+                let metadata = fs::symlink_metadata(entry.path())?;
+                if metadata.is_dir() {
+                    directories.push((entry.path(), guest));
+                } else if metadata.is_file() {
+                    let identity = (metadata.dev(), metadata.ino());
+                    if let Some((readonly, previous)) = files.get(&identity) {
+                        if *readonly != mount.readonly {
+                            return Err(Stop::Refused(Refusal {
+                                box_name: Some(plan.name.clone()),
+                                reason: RefusalReason::MountAlias,
+                                detail: format!(
+                                    "regular file exposed read-only and writable at {} and {}",
+                                    previous.display(),
+                                    guest.display(),
+                                ),
+                            }));
+                        }
+                    } else {
+                        files.insert(identity, (mount.readonly, guest));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {

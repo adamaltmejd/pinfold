@@ -207,11 +207,13 @@ When `up` refuses, it prints one JSON line instead of `ready` and exits 1:
 {"event":"refused","box":NAME,"reason":REASON,"detail":TEXT}
 ```
 
-`REASON` is `spec`, `profile`, `runtime`, `image-missing`, `name-in-use`
-or `login`;
+`REASON` is `spec`, `profile`, `runtime`, `image-missing`, `name-in-use`,
+`login` or `mount-alias`;
 `box` is the `name` of stdin's first JSON value when that is an object with
 a string `name`, else null.
-Refusals leave no box, box state, seeds or extracted profile resources.
+Refusals leave no box or box state. `mount-alias` follows preparation;
+installed artifacts and home seeds remain. Earlier refusals create no seeds
+or extracted profile resources.
 Stable coordination lock files may remain. `up` asks the runtime to resolve `image`, so any reference the
 runtime resolves locally is accepted; `image-missing` means the runtime could
 not.
@@ -313,6 +315,13 @@ The box spec `up` reads from stdin:
   are accepted); a host path that cannot be read or is not a directory is
   refused as `spec`, naming it. A mount nested in another applies inside it
   whatever the spec's order; two mounts at one guest path are refused.
+- After preparation and seeding, before runtime startup, scan effective
+  directory exports, including profile, harness, login and init directories.
+  Resolve mount-root symlinks; do not follow symlinks below them. Skip paths
+  masked by descendant guest mounts. An observed regular file with the same
+  device and inode exposed both read-only and writable is refused as
+  `mount-alias`, naming the guest paths. Traversal errors fail startup.
+  This is a check of the observed layout, not atomic or ongoing enforcement.
 - A mount path holding `,` or an ASCII control character is refused as
   `spec`, naming the path.
 - `memory` is a whole number followed by `M` or `G`, at least `256M`;
@@ -905,7 +914,7 @@ CI budget; the two slow gates run separately.
 | 8 | Losing the owner fails closed | After SIGKILL, egress fails closed; another XDG root sees the owner dead even with a misleading live pid file, prunes the box and reuses its name. An abandoned partial claim is reclaimable. |
 | 9 | The lifecycle works for a caller | Without egress, `exec` immediately after `ready` streams and returns the exit code, honors explicit workdir and tty, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; `down` removes even while attached output is active, and closing `up`'s stdin tears the box down with reason `stdin-closed`. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box, an empty name or a flag-like name (`--filter=…`) exits 0, prints nothing and leaves live boxes alone; a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. A SIGSTOP owner keeps its claim after down times out; a second XDG root waits the ten-second claim deadline before name-in-use and cannot replace it until acknowledged teardown. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. A cold harness download holds startup while its image tag moves; startup fails as `image-changed`, and the stable replacement then starts. Pre-ready cancellation with a host bookkeeping permission failure still yields `down`/`signal`, with recoverable state and successful name reuse. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. |
-| 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, or writing into `.vscode/` in a project without one fails, also under a top level named by a space, and a symlinked protected path refuses the run as `protected-path-invalid`; replacing it with a real directory runs. Starting inside `.git` is refused as `project-in-git`; starting from the project root runs. A non-UTF-8 project home fails plan assembly as `path-not-utf8` and leaves no newly created protected directories; an existing protected directory survives. Control: a project file is writable. |
+| 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, or writing into `.vscode/` in a project without one fails, also under a top level named by a space, and a symlinked protected path refuses the run as `protected-path-invalid`; replacing it with a real directory runs. Starting inside `.git` is refused as `project-in-git`; starting from the project root runs. A non-UTF-8 project home fails plan assembly as `path-not-utf8` and leaves no newly created protected directories; an existing protected directory survives. Pre-existing Git and protected configuration hardlinks in the writable project refuse startup as `mount-alias`, leave no box or box state, preserve host bytes and remove newly created protected directories. Removing the alias permits RPC and project writes. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |
 | 13 | Project state persists and stays separate | Settings survive reseeding and profile copies omit auth.json. Guest writes in two same-named projects remain separate on A/B/A runs. With two live boxes for one project, attach --box reads and changes only the selected box. A long valid project basename launches. |
 | 14 | Both pi config levels load behind a route | A routed fake model receives profile and project skills. The same home switches default/full/default: document skill and operating context follow the selected profile while saved settings remain byte-identical. |
@@ -916,7 +925,7 @@ CI budget; the two slow gates run separately.
 | 19 | A caller-owned box launches the pinned harness | A spec with each harness (pi, claude, codex) runs `/opt/pinfold/<name>/<name> --version` at the version `pinfold artifacts` pins, also after the host deleted that executable from the cache, and the box's PINFOLD_ALLOW is the spec's allow list. |
 | 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, every field is present, and `exec`'d processes carry `oom_score_adj` 1000, so init is never the victim. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
-| 22 | A caller-owned box cannot write .git | With REPO/.git read-only listed before REPO writable, and safe.directory set by the caller: a worktree write succeeds, git log and git status succeed, and a hook write fails. |
+| 22 | A caller-owned box cannot write .git | Pre-existing aliases in the project or an additional writable export refuse as `mount-alias` in either mount order, as does a writable duplicate directory export of a single-link protected file; refusals leave no box or box state and preserve host bytes. Removing conflicting names or exports admits the same fixture, including an object hardlink outside writable exports. With REPO/.git read-only and safe.directory set by the caller: a worktree write succeeds, git log and git status succeed, and a hook write fails. |
 | 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref, the image's id and the labels; three builds of one name move latest, and the first build's ref still comes up; two builds of unchanged inputs make one image under two refs; a failed build prints a bounded trailing log even after a 200,000-byte unterminated line, retains its final context marker and makes no image. Cached caller builds preserve a RUN-generated random stamp; --no-cache changes it. On Apple, builds from two state directories with different `NO_COLOR` and `BUILDKIT_COLORS` both succeed while one is held active in RUN. |
 | 24 | Every build reruns its steps | A second build changes a random RUN-generated stamp. On Podman the fixture-labeled set of dangling image IDs gains no member; concurrent builds and deletion of old images cannot conceal or fabricate a leak. |
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box list --help` exits 0, with no runtime and leaving the state dir untouched. |

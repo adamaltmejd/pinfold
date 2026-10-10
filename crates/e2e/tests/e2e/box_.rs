@@ -4210,6 +4210,7 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
 
 #[test]
 fn a_caller_owned_box_cannot_write_git() {
+    use std::os::unix::fs::MetadataExt;
     let _runtime = crate::shared_runtime();
     // Guarantee 22: a caller-owned box cannot write `.git`.
     // Sabotage: drop `readonly` from the adapter's bind mounts (pass `false`
@@ -4250,7 +4251,7 @@ fn a_caller_owned_box_cannot_write_git() {
     // writable: a runtime that applied mounts in spec order would let the
     // parent shadow `.git`, so this checks that both runtimes apply a
     // nested mount by path.
-    let spec = serde_json::json!({
+    let mut spec = serde_json::json!({
         "name": name,
         "image": image,
         "labels": { "dev.example.test": "caller-git" },
@@ -4259,6 +4260,81 @@ fn a_caller_owned_box_cannot_write_git() {
             { "host": repo.path(), "guest": repo.path(), "readonly": false },
         ],
     });
+    let config = dot_git.join("config");
+    let expected = fs::read(&config).expect("read host config");
+    let extra = TestDir::new(&env, "extra");
+    let root_alias = repo.path().join("config-alias");
+    let extra_alias = extra.path().join("config-alias");
+    fs::hard_link(&config, &root_alias).expect("link config in project");
+    let original = fs::metadata(&config).unwrap();
+    let linked = fs::metadata(&root_alias).unwrap();
+    assert_eq!(
+        (original.dev(), original.ino()),
+        (linked.dev(), linked.ino())
+    );
+    // Guarantee 22 admission. Sabotage: omit the check, or omit additional
+    // writable exports. Neither layout may reach ready. Expected bytes are
+    // the host config before launch; no guest write runs in refused cases.
+    for in_extra in [false, true] {
+        if in_extra {
+            fs::remove_file(&root_alias).unwrap();
+            fs::hard_link(&config, &extra_alias).unwrap();
+            spec["mounts"].as_array_mut().unwrap().reverse();
+            spec["mounts"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({
+                    "host": extra.path(), "guest": "/extra", "readonly": false,
+                }));
+        }
+        let (code, refused) = box_up_refused(&env, &spec, &[]);
+        assert_eq!(code, 1, "wrong refusal exit: {refused}");
+        assert_eq!(refused["event"], "refused", "reached ready: {refused}");
+        assert_eq!(refused["reason"], "mount-alias", "wrong reason: {refused}");
+        let detail = refused["detail"].as_str().unwrap();
+        assert!(detail.contains(config.to_str().unwrap()), "{refused}");
+        let writable = if in_extra {
+            "/extra/config-alias"
+        } else {
+            root_alias.to_str().unwrap()
+        };
+        assert!(detail.contains(writable), "{refused}");
+        assert_left_nothing(&env, &name, "dev.example.test=caller-git", "refused");
+        assert_eq!(fs::read(&config).unwrap(), expected);
+    }
+    fs::remove_file(&extra_alias).unwrap();
+
+    // Sabotage: use nlink as permission. A single-link file still conflicts
+    // when its source directory has a second, writable guest export.
+    let single = dot_git.join("single");
+    fs::create_dir(&single).unwrap();
+    fs::write(single.join("file"), b"protected\n").unwrap();
+    assert_eq!(fs::metadata(single.join("file")).unwrap().nlink(), 1);
+    spec["mounts"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "host": single, "guest": "/duplicate", "readonly": false,
+        }));
+    let (code, refused) = box_up_refused(&env, &spec, &[]);
+    assert_eq!(code, 1);
+    assert_eq!(refused["event"], "refused");
+    assert_eq!(refused["reason"], "mount-alias");
+    assert_left_nothing(&env, &name, "dev.example.test=caller-git", "refused");
+    assert_eq!(fs::read(single.join("file")).unwrap(), b"protected\n");
+    spec["mounts"].as_array_mut().unwrap().pop();
+
+    // Sabotage: blanket nlink rejection (including Git objects). An object
+    // shared with a local clone outside every writable export is admitted.
+    let outside = TestDir::new(&env, "outside-clone");
+    let commit = git(repo.path(), &["rev-parse", "HEAD"]);
+    let commit = commit.trim();
+    let object = dot_git
+        .join("objects")
+        .join(&commit[..2])
+        .join(&commit[2..]);
+    let object_bytes = fs::read(&object).unwrap();
+    fs::hard_link(&object, outside.path().join("object")).unwrap();
     let mut up = box_up(&env, &spec, &name);
 
     // The box reads history and status, and writes the worktree.
@@ -4285,6 +4361,8 @@ fn a_caller_owned_box_cannot_write_git() {
         &["sh", "-c", &format!("echo x > '{root}/new.txt'")],
     );
     assert_ok(&wrote, "writing the worktree");
+    assert_eq!(fs::read(repo.path().join("new.txt")).unwrap(), b"x\n");
+    assert_eq!(fs::read(&object).unwrap(), object_bytes);
 
     // A write into `.git` fails.
     let hook = dot_git.join("hooks/pre-commit");
@@ -4819,7 +4897,7 @@ fn find_box_state_dir(env: &TestEnv, owner: u32) -> Option<PathBuf> {
 /// box labeled `label`. State dirs are keyed by a hash of the name, so the
 /// test cannot name one; this test has no live box at any call, so `boxes/`
 /// must be empty.
-fn assert_left_nothing(env: &TestEnv, name: &str, label: &str, what: &str) {
+pub(crate) fn assert_left_nothing(env: &TestEnv, name: &str, label: &str, what: &str) {
     let boxes = env.state.join("pinfold").join("boxes");
     let leftovers: Vec<PathBuf> = fs::read_dir(&boxes)
         .map(|entries| entries.flatten().map(|entry| entry.path()).collect())

@@ -15,7 +15,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::path::Path;
 use std::process::{ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 
-use crate::box_::{ChildOwner, box_name, box_up, read_bounded};
+use crate::box_::{ChildOwner, assert_left_nothing, box_name, box_up, read_bounded};
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, allow, assert_denied, assert_ok, box_exec,
     box_list, box_stat, build_profile, curl, default_image, egress_log, git, json_lines, pinfold,
@@ -596,6 +596,39 @@ fn the_box_cannot_write_git_or_protected_config() {
     let global = global.to_str().expect("the global config path is UTF-8");
     let vscode = root.join(".vscode");
     assert!(!vscode.exists(), "the fixture already has .vscode");
+
+    // Guarantee 11 admission. Sabotage: omit the core alias check. Pi's
+    // real prepared plan must refuse both Git and protected configuration
+    // aliases before RPC or guest commands. Host bytes are the expectation.
+    let config = root.join(".git/config");
+    let protected = root.join(".idea/workspace.xml");
+    fs::create_dir(root.join(".idea")).unwrap();
+    fs::write(&protected, b"<project/>\n").unwrap();
+    for source in [&config, &protected] {
+        let expected = fs::read(source).unwrap();
+        let alias = root.join("config-alias");
+        fs::hard_link(source, &alias).unwrap();
+        let refused = pinfold_in(&env, root, &["pi", "--mode", "rpc"])
+            .env("GIT_CONFIG_GLOBAL", global)
+            .output()
+            .expect("run pi alias admission");
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert_eq!(refused.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("mount-alias"), "wrong refusal: {stderr}");
+        assert!(stderr.contains(source.to_str().unwrap()), "{stderr}");
+        assert!(stderr.contains(alias.to_str().unwrap()), "{stderr}");
+        assert!(refused.stdout.is_empty(), "refused Pi emitted RPC output");
+        assert_left_nothing(&env, "pi alias fixture", "dev.pinfold.owner", "refused");
+        assert_eq!(fs::read(source).unwrap(), expected);
+        // Sabotage: release Git's cleanup guard before core startup. The
+        // absent protected directories must still be absent after refusal.
+        for absent in [".vscode", ".claude"] {
+            assert!(!root.join(absent).exists(), "left {absent} after refusal");
+        }
+        assert!(husky.is_dir(), "removed existing protected directory");
+        assert!(protected.is_file(), "removed existing protected config");
+        fs::remove_file(&alias).unwrap();
+    }
 
     let (run, _, name) = PiRpc::start_with_env(&env, root, &[("GIT_CONFIG_GLOBAL", global)]);
 
