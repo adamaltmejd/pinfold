@@ -50,18 +50,7 @@ jobs:
       - name: Candidate Bun version
         id: tools
         run: |
-          python3 - <<'PYTHON'
-          import os
-          import re
-          from pathlib import Path
-
-          recipe = Path("profile/image/bun.Containerfile").read_text()
-          versions = set(re.findall(r"/bun-v(\d+\.\d+\.\d+)/", recipe))
-          if len(versions) != 1:
-              raise SystemExit("Bun image pins must name one version")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              print(f"bun={versions.pop()}", file=output)
-          PYTHON
+          python3 scripts/bun-version.py >>"$GITHUB_OUTPUT"
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -197,18 +186,7 @@ jobs:
       - name: Prototype Bun version
         id: tools
         run: |
-          python3 - <<'PYTHON'
-          import os
-          import re
-          from pathlib import Path
-
-          recipe = Path("profile/image/bun.Containerfile").read_text()
-          versions = set(re.findall(r"/bun-v(\d+\.\d+\.\d+)/", recipe))
-          if len(versions) != 1:
-              raise SystemExit("Bun image pins must name one version")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              print(f"bun={versions.pop()}", file=output)
-          PYTHON
+          python3 scripts/bun-version.py >>"$GITHUB_OUTPUT"
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
