@@ -119,8 +119,7 @@ pub fn pinfold_box(box_: &BoxInfo) -> bool {
     box_.labels.contains_key(OWNER_LABEL)
 }
 
-/// Read the runtime's box list once. A pinfold box whose owner label no
-/// live process matches counts as gone.
+/// Read the runtime's box list once.
 pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
     let mut dead = Vec::new();
     let mut live_projects = BTreeSet::new();
