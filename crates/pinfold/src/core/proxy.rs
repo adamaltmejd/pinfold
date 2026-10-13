@@ -30,7 +30,6 @@ pub const PROXY_URL: &str = "http://127.0.0.1:3128";
 /// client or upstream from growing the buffer without bound.
 const MAX_HEAD: usize = 8 * 1024;
 
-/// More headers than this get a 400.
 const MAX_HEADERS: usize = 64;
 
 /// How long the proxy waits for the next bytes of a request head or
@@ -41,7 +40,6 @@ const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 /// bytes in either direction, before the proxy closes it.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// The most connections one box may have open at once.
 const MAX_CONNECTIONS: usize = 64;
 
 /// Bind the box's socket, create its log, and serve. `codex` is a codex
@@ -79,7 +77,6 @@ pub fn start(
     Ok(failed)
 }
 
-/// One box's egress rules: the allowlist and the routes.
 struct Rules {
     /// Lowercased allowlist entries: a name, or `.name` for the name and
     /// its subdomains.
@@ -391,7 +388,6 @@ fn dial_tls(address: SocketAddr, host: &str) -> Option<StreamOwned<ClientConnect
     Some(StreamOwned::new(connection, server))
 }
 
-/// One parsed plain HTTP request head.
 struct Plain {
     method: String,
     /// The minor version: httparse yields 0 or 1.
@@ -400,7 +396,6 @@ struct Plain {
     target: String,
     /// The authority from the absolute-form target, for the Host header.
     authority: String,
-    /// The authority's host, without a port.
     host: String,
     /// The authority's port; 80 when it names none.
     port: u16,
@@ -542,7 +537,6 @@ fn read_status_line(server: &mut impl Read) -> io::Result<(Vec<u8>, Option<u16>)
     Ok((line, status))
 }
 
-/// Whether a header is hop-by-hop and must not be forwarded.
 pub fn hop_by_hop(name: &str) -> bool {
     const HOP_BY_HOP: [&str; 9] = [
         "connection",
@@ -583,7 +577,6 @@ fn read_until(reader: &mut impl Read, done: impl Fn(&[u8]) -> bool) -> io::Resul
     Ok(bytes)
 }
 
-/// Whether a read failed because its socket timeout expired.
 fn timed_out(error: &io::Error) -> bool {
     matches!(
         error.kind(),
@@ -725,7 +718,6 @@ fn respond(client: &mut UnixStream, code: u16) -> io::Result<()> {
     client.write_all(format!("HTTP/1.1 {code} {reason}\r\n{framing}\r\n").as_bytes())
 }
 
-/// Record one refusal and answer with its status.
 fn refuse(client: &mut UnixStream, log: &AuditLog, host: &str, code: u16, reason: &str) {
     if record(log, host, "refused", reason, None).is_ok() {
         let _ = respond(client, code);

@@ -58,7 +58,6 @@ fn handshake_length(handshake: &[u8]) -> usize {
     (usize::from(handshake[1]) << 16) | (usize::from(handshake[2]) << 8) | usize::from(handshake[3])
 }
 
-/// The SNI host name, when the ClientHello carries one.
 fn parse_sni(hello: &[u8]) -> Result<Option<String>, &'static str> {
     let mut cursor = Cursor(hello);
     cursor.take(34)?; // legacy_version, random
@@ -94,7 +93,6 @@ fn server_name(data: &[u8]) -> Result<Option<String>, &'static str> {
     Ok(None)
 }
 
-/// A bounds-checked reader over one slice.
 struct Cursor<'a>(&'a [u8]);
 
 impl<'a> Cursor<'a> {

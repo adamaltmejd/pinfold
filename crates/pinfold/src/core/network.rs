@@ -14,11 +14,8 @@ pub fn literal(host: &str) -> Option<IpAddr> {
     host.parse().ok()
 }
 
-/// Why a name could not be dialed.
 pub enum ResolveError {
-    /// The name did not resolve.
     Unresolved,
-    /// It resolved to an address the proxy must not dial.
     Forbidden(&'static str),
 }
 
