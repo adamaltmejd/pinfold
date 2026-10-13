@@ -16,7 +16,7 @@ RUN set -eux; \
     chmod a+r /opt/pinfold/packages/rtk.ts
 
 FROM base AS ponytail-install
-ADD --checksum=sha256:b5a24dcf8ec158326f3d3da92d7c0ea522dfbdf6c3de62a6a2ab98d5e683895f https://registry.npmjs.org/@dietrichgebert/ponytail/-/ponytail-4.12.0.tgz /tmp/ponytail.tgz
+ADD --checksum=sha256:e1b02e223740f72a907ee55725170242728962cd24635a5d13c90c5ed93b5e76 https://registry.npmjs.org/@dietrichgebert/ponytail/-/ponytail-4.13.0.tgz /tmp/ponytail.tgz
 RUN set -eux; \
     mkdir -p /opt/pinfold/packages/ponytail; \
     tar -xzf /tmp/ponytail.tgz --strip-components=1 -C /opt/pinfold/packages/ponytail; \

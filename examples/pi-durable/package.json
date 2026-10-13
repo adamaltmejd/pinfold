@@ -14,8 +14,8 @@
     "@earendil-works/chord": "1.0.4"
   },
   "devDependencies": {
-    "@types/node": "26.0.0",
-    "typescript": "6.0.2"
+    "@types/node": "26.6.4",
+    "typescript": "7.0.2"
   },
   "overrides": {
     "@earendil-works/pi-telemetry": "1.0.4"

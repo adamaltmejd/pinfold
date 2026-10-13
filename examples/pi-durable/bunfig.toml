@@ -2,5 +2,3 @@ env = false
 
 [install]
 auto = "disable"
-# The prototype's direct pins pass the updater's publication-age check.
-minimumReleaseAgeExcludes = ["@earendil-works/pi-durable", "@earendil-works/pi-ai", "@earendil-works/chord", "@earendil-works/pi-telemetry"]

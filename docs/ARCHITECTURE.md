@@ -118,7 +118,7 @@ pinfold box up < spec.json        # prints ready, holds the box, ends with down
 pinfold box exec BOX [--tty] [--workdir D] -- argv…   # stdio through, exit code back
 pinfold box stat BOX              # one JSON object of the box's memory, pids and OOM kills
 pinfold box down BOX              # asks its owner to tear down; an absent box exits 0
-pinfold box list --label k=v      # JSON lines; repeat --label to AND filters
+pinfold box list --label KEY[=VALUE]…      # JSON lines; repeat --label to AND filters
 pinfold box prune                 # remove boxes whose `up` is gone, print each removed
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache]   # one JSON line
 pinfold image rm NAME             # one JSON line

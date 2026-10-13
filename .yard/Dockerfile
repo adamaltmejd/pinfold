@@ -1,7 +1,7 @@
 # The toolchain rust-toolchain.toml pins, with its components. Boxes set
 # their own HOME and PATH, so the toolchain is copied out of rustup and linked
 # onto the default PATH; rust-toolchain.toml is not read inside a box.
-FROM docker.io/library/rust:1.98.1-slim-trixie AS rust
+FROM docker.io/library/rust:1.99.0-slim-trixie AS rust
 RUN rustup component add rustfmt clippy && cp -a "$(rustc --print sysroot)" /toolchain
 
 FROM pinfold/profile-default:latest
@@ -13,11 +13,11 @@ RUN ln -s /opt/rust/bin/* /usr/local/bin/ && cargo --version && cargo clippy --v
 
 # trufflehog for the secrets gate, pinned by version and checksum. Gates have
 # no network, so it runs with --no-verification: every match counts.
-ARG TRUFFLEHOG_VERSION=3.97.8
+ARG TRUFFLEHOG_VERSION=3.98.0
 RUN set -eu; \
     case "$(uname -m)" in \
-        aarch64) arch=arm64; sum=5145332e23582ccda55651b18162e5b88f21411e65385a0df8d82753654208b7 ;; \
-        x86_64) arch=amd64; sum=8f71019bcb8c6c44242b6e34f68c3755f8f9c8496d3063b7a8b5626fb9bff220 ;; \
+        aarch64) arch=arm64; sum=49d38516c6a5ec4633fc31502b79978a01bbafdf892381e511d4bd6e74865563 ;; \
+        x86_64) arch=amd64; sum=05920d08aa23c233d410eefe5c73ae9db86dc7e766b64d6a9368678912daeda7 ;; \
         *) echo "no trufflehog pin for $(uname -m)" >&2; exit 1 ;; \
     esac; \
     file="trufflehog_${TRUFFLEHOG_VERSION}_linux_${arch}.tar.gz"; \

@@ -68,12 +68,10 @@ owner teardown. There is no scheduler, multi-host coordination, automatic retry,
 read-only replay tool or general host filesystem tool.
 
 The dependency versions and lockfile pin the published API, including the
-real HTTP provider and the Node-compatible SQLite checkpoint backend under Bun. `bunfig.toml` makes a local
-release-age exception only for the four pinned Earendil release-family packages:
-`pi-durable`, `pi-ai`, `chord` and transitive `pi-telemetry`. These pins are
-independent of Pinfold's Pi harness and advance together in nightly updates.
-Other publishers retain the installation age
-policy; no global Bun configuration is changed.
+real HTTP provider and the Node-compatible SQLite checkpoint backend under Bun.
+These pins are independent of Pinfold's Pi harness. Nightly updates advance
+eligible direct and transitive packages after seven full days, including
+incompatible versions. No global Bun configuration is changed.
 
 The prototype contract and pin-maintenance rule are in
 [ARCHITECTURE.md](../../docs/ARCHITECTURE.md#experimental-durable-caller).
