@@ -345,15 +345,14 @@ fn stat(args: &[String]) -> io::Result<i32> {
 /// own failure, which `exec` and `stat` tell apart from the command's by
 /// exit 3.
 fn present(runtime: &dyn Runtime, verb: &str, name: &str) -> io::Result<bool> {
-    if runtime
+    let found = runtime
         .list()?
         .iter()
-        .any(|box_| box_.id == name && clean::pinfold_box(box_))
-    {
-        return Ok(true);
+        .any(|box_| box_.id == name && clean::pinfold_box(box_));
+    if !found {
+        eprintln!("pinfold box {verb}: no box named {name:?}");
     }
-    eprintln!("pinfold box {verb}: no box named {name:?}");
-    Ok(false)
+    Ok(found)
 }
 
 fn list(args: &[String]) -> io::Result<i32> {
@@ -924,13 +923,10 @@ fn image_build(args: &[String]) -> i32 {
             }),
             0,
         ),
-        Err(ImageError::Failed(output)) => {
-            let lines: Vec<&str> = output.lines().collect();
-            (
-                serde_json::json!({ "event": "failed", "image": name, "log": lines }),
-                1,
-            )
-        }
+        Err(ImageError::Failed(output)) => (
+            serde_json::json!({ "event": "failed", "image": name, "log": output.lines().collect::<Vec<_>>() }),
+            1,
+        ),
         Err(ImageError::Refused(reason, detail)) => {
             return refused("image", name, reason, &detail);
         }
@@ -1087,8 +1083,6 @@ fn parse_profile_new(args: &[String]) -> io::Result<(String, String, Option<Path
                 );
             }
             "--from-project" => {
-                // The path is optional; without one, or before another
-                // option, the project root of the current directory.
                 let path = args.next_if(|value| !value.starts_with("--"));
                 from_project = Some(PathBuf::from(path.map_or(".", String::as_str)));
             }

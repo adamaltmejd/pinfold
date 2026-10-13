@@ -14,7 +14,6 @@ use std::process::ExitCode;
 use crate::pi::launch;
 
 fn main() -> ExitCode {
-    // The one binary doubles as PID 1 in a box on Linux and as the `pi` shim.
     let mut args = std::env::args_os();
     let program = args.next();
     // A symlink named `pi` makes argv[0] the shim; every argument after it is
@@ -32,7 +31,6 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    // The shim is the `pi` verb, so pi's own `--help` and `--version` reach pi.
     let (verb, args) = if shim {
         ("pi", &rest[..])
     } else {
@@ -42,7 +40,6 @@ fn main() -> ExitCode {
         )
     };
     let run: fn(&[String]) -> io::Result<i32> = match verb {
-        // The options answer before any verb runs, `init` included.
         "--version" | "-V" => {
             println!("pinfold {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
@@ -70,12 +67,9 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    // A subcommand's help flag answers too, before `init` and the daily
-    // pass, so it touches no runtime and no state dir.
     if cli::help(verb, args) {
         return ExitCode::SUCCESS;
     }
-    // Updating and checking releases need neither a runtime nor maintenance.
     if verb == "update" {
         return ExitCode::from(cli::report(verb, run(args)) as u8);
     }
