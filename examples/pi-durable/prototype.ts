@@ -44,12 +44,12 @@ async function canonicalDestination(path: string): Promise<string> {
 
 async function hostBoundary(project: string, state: string, binary: string) {
   const roots: Array<[string, string]> = [
-    ["checkpoint", state], ["Pinfold executable", binary], ["Node executable", process.execPath],
+    ["checkpoint", state], ["Pinfold executable", binary], ["Bun executable", process.execPath],
     ["controller", import.meta.dirname], ["controller entrypoint", process.argv[1]!],
     ["dependencies", resolve(import.meta.dirname, "node_modules")],
     ["Pinfold ownership", resolve(await realpath("/tmp"), `pinfold-${process.getuid!()}`)],
   ];
-  if (isAbsolute(process.argv0)) roots.push(["Node launch alias", process.argv0]);
+  if (isAbsolute(process.argv0)) roots.push(["Bun launch alias", process.argv0]);
   const home = homedir();
   if (!isAbsolute(home)) throw new Error("host HOME must be absolute");
   for (const [variable, fallback] of [["XDG_STATE_HOME", ".local/state"], ["XDG_CONFIG_HOME", ".config"], ["XDG_CACHE_HOME", ".cache"]]) {
@@ -184,7 +184,10 @@ class Box {
 }
 
 async function main() {
-  const { values, positionals } = parseArgs({ allowPositionals: true, options: {
+  // Bun canonicalizes a direct script path, hiding a replaceable launch alias.
+  // Importing through --eval keeps the caller's path in argv[1].
+  if (!process.execArgv.some((arg) => arg === "--eval" || arg === "-e")) throw new Error("host-boundary: launch with bun run start or bun run resume");
+  const { values, positionals } = parseArgs({ args: process.argv.slice(2), allowPositionals: true, options: {
     state: { type: "string" }, pinfold: { type: "string" }, project: { type: "string" }, image: { type: "string" },
     "base-url": { type: "string" }, model: { type: "string" }, prompt: { type: "string" },
   } });

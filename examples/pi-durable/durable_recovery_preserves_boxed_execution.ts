@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { watch } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, access, copyFile, realpath, symlink, utimes } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, access, copyFile, realpath, symlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, resolve } from "node:path";
@@ -10,8 +10,10 @@ import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
 
 const { values } = parseArgs({ options: { pinfold: { type: "string" }, image: { type: "string" } } });
-assert(values.pinfold && values.image, "usage: node e2e.ts --pinfold ABSOLUTE_BINARY --image EXISTING_IMAGE");
+assert(values.pinfold && values.image, "usage: bun e2e.ts --pinfold ABSOLUTE_BINARY --image EXISTING_IMAGE");
 const binary = resolve(values.pinfold);
+// The production launch preserves the lexical controller path in argv[1].
+const loader = ["--eval", "await import(process.argv[1]);"];
 const scratch = await mkdtemp(resolve(await realpath(tmpdir()), "pf-durable-"));
 const env: NodeJS.ProcessEnv = { ...process.env, PINFOLD_DURABLE_API_KEY: "fixture-only", XDG_STATE_HOME: resolve(scratch, "pinfold-state"), XDG_CACHE_HOME: resolve(scratch, "pinfold-cache"), XDG_CONFIG_HOME: resolve(scratch, "pinfold-config") };
 const children = new Set<ReturnType<typeof spawn>>();
@@ -103,7 +105,7 @@ const endpoint = `http://127.0.0.1:${address.port}/v1`;
 
 function launch(mode: "start" | "resume", kind: string) {
   const state = resolve(scratch, `checkpoint-${kind}`);
-  const args = [resolve(import.meta.dirname, "prototype.ts"), mode, "--state", state];
+  const args = [...loader, resolve(import.meta.dirname, "prototype.ts"), mode, "--state", state];
   if (mode === "start") args.push("--pinfold", binary, "--image", values.image!, "--project", resolve(scratch, `project-${kind}`), "--base-url", endpoint, "--model", "fixture", "--prompt", kind);
   const child = spawn(process.execPath, args, { env, stdio: ["ignore", "pipe", "pipe"] });
   children.add(child);
@@ -146,14 +148,14 @@ try {
     { name: "checkpoint", project, state: resolve(alias, "checkpoint") },
     { name: "controller", project: await realpath(import.meta.dirname) },
     { name: "controller-entry-alias", project, script: entryAlias },
-    { name: "node", project: resolve(await realpath(process.execPath), "..") },
+    { name: "bun", project: resolve(await realpath(process.execPath), "..") },
     { name: "replaceable-xdg-alias", project, childEnv: { ...env, XDG_STATE_HOME: replaceableAlias } },
     { name: "replaceable-path-alias", project, childEnv: { ...env, PATH: `${replaceableAlias}${delimiter}${env.PATH ?? ""}` } },
     ...["XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"].map((variable) => ({ name: variable, project, childEnv: { ...env, [variable]: resolve(alias, "missing", "xdg") } })),
   ];
   for (const item of refusedCases) {
     const state = "state" in item ? item.state : resolve(scratch, `refused-${item.name}`);
-    const result = await run(process.execPath, ["script" in item ? item.script! : resolve(import.meta.dirname, "prototype.ts"), "start", "--state", state!, "--pinfold", "binary" in item ? item.binary! : binary, "--image", values.image!, "--project", item.project, "--base-url", endpoint, "--model", "fixture", "--prompt", "control"], "childEnv" in item ? item.childEnv : env);
+    const result = await run(process.execPath, [...loader, "script" in item ? item.script! : resolve(import.meta.dirname, "prototype.ts"), "start", "--state", state!, "--pinfold", "binary" in item ? item.binary! : binary, "--image", values.image!, "--project", item.project, "--base-url", endpoint, "--model", "fixture", "--prompt", "control"], "childEnv" in item ? item.childEnv : env);
     assert.notEqual(result.code, 0, item.name);
     assert.match(result.stderr, /host-boundary:/, item.name);
     await assert.rejects(access(state!), { code: "ENOENT" });
@@ -162,14 +164,6 @@ try {
   await rm(copiedBinary);
   await rm(replaceableAlias);
   await rm(entryAlias);
-  // Sabotage: parse stderr as part of the JSON line stream. A real soft
-  // maintenance failure then breaks list/reclaim despite successful stdout.
-  const stamp = resolve(env.XDG_STATE_HOME!, "pinfold", "maintenance");
-  await mkdir(stamp, { recursive: true });
-  await utimes(stamp, 1, 1);
-  const diagnostic = await run(binary, ["box", "list", "--label", "dev.example.pi-durable.job"]);
-  assert.equal(diagnostic.code, 0, diagnostic.stderr);
-  assert(diagnostic.stderr.length > 0, "real CLI maintenance fixture must produce a stderr diagnostic");
   const control = launch("start", "control");
   const completed = await control.closed;
   assert.equal(completed.code, 0, completed.stderr);

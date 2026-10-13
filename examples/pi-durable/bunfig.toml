@@ -1,3 +1,6 @@
+env = false
+
 [install]
-# The prototype evaluates the explicitly pinned 1.0.4 release family.
+auto = "disable"
+# The prototype's direct pins pass the updater's publication-age check.
 minimumReleaseAgeExcludes = ["@earendil-works/pi-durable", "@earendil-works/pi-ai", "@earendil-works/chord", "@earendil-works/pi-telemetry"]

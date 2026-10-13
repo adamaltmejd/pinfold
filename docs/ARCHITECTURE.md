@@ -550,20 +550,32 @@ mismatch fails the start, naming the harness, version and asset. A harness
 no box asks for is never downloaded. A harness moves only with a pinfold
 release.
 
-Nightly CI repins with `scripts/bump-pins.py`. A pin only moves up, to a
-stable version at or below upstream's latest stable release, and is never
+Nightly CI repins harnesses, image tools, Rust, Cargo dependencies, prototype
+packages and Yard tools with
+`scripts/bump-pins.py`. Cargo requirements advance to the latest stable,
+non-yanked versions, including incompatible updates; Cargo and Bun regenerate
+their lockfiles. Rust advances to the stable channel's version and the Yard
+Rust image follows it. CI reads Bun's version from the candidate's image
+recipe after checkout.
+GitHub Actions retain full commit pins and change only in reviewed manual
+updates. The Public Suffix List advances to a newer dated snapshot from
+`publicsuffix.org`. A version pin only moves up, to a stable version at or
+below upstream's latest stable release, and is never
 rehashed at its version. pi, claude and codex take the latest release once
 its required assets exist. bun, rtk, ponytail and AnyDoc take the newest
 version whose release and every required asset (a replaced asset restarts
 the count), or on npm every required package version, was published seven
 full days ago and is not deprecated. AnyDoc's version must name its native
-packages at that version. A missing or invalid publication time makes a
-version ineligible. Every download must match its publisher's digest; a
-source or integrity failure aborts before either pin file is written.
+packages at that version. Prototype packages and TruffleHog
+also wait seven full days. Prototype manifests and lockfiles advance in
+the same candidate. A missing or invalid publication time makes a
+version ineligible. Every artifact download must match its publisher's
+digest; a source or integrity failure aborts before any source pin file is written.
 
 Changed pins receive a patch release after Linux x64 and arm64 tests, the full
 Mac suite including live login, and all three release builds pass for the
-same commit. Unreleased implementation changes since the latest release
+same commit. The prototype typecheck and guarantee 35 run on all three
+platforms. Unreleased implementation changes since the latest release
 block it. A concurrent change to main aborts promotion.
 Automatic updates are disabled unless `PINFOLD_AUTO_RELEASES` is `true` and
 a dedicated Mac runner has the `pinfold-nightly` label.
@@ -787,7 +799,7 @@ Worktrees are refused.
 
 ## Experimental durable caller
 
-`examples/pi-durable` is an opt-in Node program. It is separate from
+`examples/pi-durable` is an opt-in Bun program. It is separate from
 interactive pi and is not installed by Pinfold. Its only model tool is
 sequential `boxed_bash`, dispatched through `box exec` with replay unsafe.
 Reads, edits and shell commands execute in the box. The host owns model
@@ -801,18 +813,23 @@ teardown. Exactly-once execution, per-command cancellation,
 a scheduler and a complete `ExecutionEnv` are outside this prototype.
 
 The writable project must be disjoint from checkpoints, controller and
-dependencies, Node and Pinfold executables, PATH entries, Pinfold's host
+dependencies, Bun and Pinfold executables, PATH entries, Pinfold's host
 state and ownership paths, and runtime authority. Check both lexical and
 canonical paths, including nonexistent paths under symlinked ancestors.
 Refuse overlap as `host-boundary` before box or model work. Checkpoints
 remain private on the host; a moved checkpoint namespace is refused.
 
 Prototype-only dependencies are `@earendil-works/pi-durable`, `pi-ai` and
-`chord`, with transitive `pi-telemetry`, all pinned to 1.0.4. Development
-uses TypeScript 6.0.2 and `@types/node` 26.0.0; execution requires Node 26+.
-The repository operator owns these pins and `examples/pi-durable/bun.lock`.
-They are updated together in a reviewed change, independently of nightly
-harness pins. Any prototype or dependency change requires the typecheck
+`chord`, with transitive `pi-telemetry`. Development uses TypeScript and
+`@types/node` for Bun's compatible APIs; execution requires Bun 1.4.3+.
+Launch from the controller directory, outside the writable project. Bun
+loads no `.env` files and auto-installs no dependencies under its supplied
+configuration. Package `start` and `resume` commands import the controller
+through Bun's eval loader to retain its lexical launch path. Direct script
+launches are refused as `host-boundary`. Exact versions live in
+`examples/pi-durable/package.json` and `bun.lock` and advance with nightly
+pins, including incompatible versions. Any prototype or dependency change
+requires the typecheck
 and guarantee 35's standalone gate. The gate is validated on macOS and
 Linux x64 and arm64.
 

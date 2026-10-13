@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repin harnesses.toml and the profile recipe ADD pins (ARCHITECTURE.md, Pinned artifacts)."""
+"""Repin repository dependencies and tools (ARCHITECTURE.md, Pinned artifacts)."""
 
 import base64
 import datetime
@@ -14,11 +14,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 IMAGE = ROOT / "profile" / "image"
 HARNESSES = ROOT / "crates" / "pinfold" / "harnesses.toml"
+YARD = ROOT / ".yard" / "Dockerfile"
 # Containerfile pins that move together, by ADD destination. AnyDoc's CLI comes
 # first: its optionalDependencies must name its native packages' version.
 IMAGE_TOOLS = {
     "bun": (IMAGE / "bun.Containerfile", ["/tmp/bun-aarch64.zip", "/tmp/bun-x64.zip"]),
-    "rtk": (IMAGE / "full.Containerfile", ["/tmp/rtk-aarch64.tar.gz", "/tmp/rtk-x64.tar.gz"]),
+    "rtk": (
+        IMAGE / "full.Containerfile",
+        ["/tmp/rtk-aarch64.tar.gz", "/tmp/rtk-x64.tar.gz"],
+    ),
     "ponytail": (IMAGE / "full.Containerfile", ["/tmp/ponytail.tgz"]),
     "anydoc": (
         IMAGE / "documents.Containerfile",
@@ -31,7 +35,9 @@ CLAUDE = "https://downloads.claude.ai/claude-code-releases/"
 
 
 def fetch(url, github=False):
-    headers = {}
+    headers = {
+        "User-Agent": "pinfold-pin-updater (https://github.com/adamaltmejd/pinfold)"
+    }
     if github:
         headers["Accept"] = "application/vnd.github+json"
         if os.environ.get("GH_TOKEN"):
@@ -82,7 +88,12 @@ def github(urls, cutoff):
     if not all(parts) or len({part.group(1, 2, 3) for part in parts}) != 1:
         raise ValueError(f"{urls[0]}: pins are not one GitHub release")
     repo, prefix, current = parts[0][1], parts[0][2], version(parts[0][3])
+    # TruffleHog includes its version in asset names.
     names = [part[4] for part in parts]
+
+    def asset_names(number):
+        target = ".".join(map(str, number))
+        return [name.replace(parts[0][3], target) for name in names]
 
     def number(release):
         tag = release.get("tag_name")
@@ -101,7 +112,7 @@ def github(urls, cutoff):
                 name in assets
                 and old_enough(assets[name].get("created_at"), cutoff)
                 and old_enough(assets[name].get("updated_at"), cutoff)
-                for name in names
+                for name in asset_names(number(release))
             )
         )
 
@@ -134,7 +145,7 @@ def github(urls, cutoff):
     target, release = max(eligible, key=lambda item: item[0])
     assets = {asset["name"]: asset for asset in release["assets"]}
     rows = []
-    for name in names:
+    for name in asset_names(target):
         url, digest = assets[name]["browser_download_url"], assets[name].get("digest")
         if not url.startswith("https://github.com/"):
             raise ValueError(f"{url}: asset is outside github.com")
@@ -241,9 +252,160 @@ def replace(text, old, new):
     return text.replace(old, new)
 
 
+def repin_build_tools(texts):
+    path = ROOT / "rust-toolchain.toml"
+    current = tomllib.loads(texts[path])["toolchain"]["channel"]
+    manifest = tomllib.loads(
+        fetch("https://static.rust-lang.org/dist/channel-rust-stable.toml").decode()
+    )
+    target = manifest["pkg"]["rust"]["version"].split()[0]
+    if version(current) is None or version(target) is None:
+        raise ValueError("Rust toolchains must be stable versions")
+    if version(target) > version(current):
+        image = json.loads(
+            fetch(
+                f"https://hub.docker.com/v2/repositories/library/rust/tags/{target}-slim-trixie"
+            )
+        )
+        platforms = {(row["os"], row["architecture"]) for row in image["images"]}
+        if not {("linux", "amd64"), ("linux", "arm64")} <= platforms:
+            raise ValueError(
+                f"Rust {target}: Yard image is missing a Linux architecture"
+            )
+        print(f"rust {current} -> {target}")
+        texts[path] = replace(
+            texts[path], f'channel = "{current}"', f'channel = "{target}"'
+        )
+        texts[YARD] = replace(
+            texts[YARD], f"rust:{current}-slim-trixie", f"rust:{target}-slim-trixie"
+        )
+
+    path = ROOT / "Cargo.toml"
+    for name, dependency in tomllib.loads(texts[path])["workspace"][
+        "dependencies"
+    ].items():
+        current = dependency if isinstance(dependency, str) else dependency["version"]
+        metadata = json.loads(fetch(f"https://crates.io/api/v1/crates/{name}"))
+        eligible = [
+            (number, row["num"].split("+", 1)[0])
+            for row in metadata["versions"]
+            if (number := version(row["num"].split("+", 1)[0])) is not None
+            and not row["yanked"]
+        ]
+        target = max(eligible)[1]
+        # Requirements are deliberately raised across incompatible versions.
+        if tuple(map(int, current.split("."))) >= version(target):
+            continue
+        pattern = (
+            rf'(^\s*{re.escape(name)} = (?:\{{ version = )?"){re.escape(current)}(")'
+        )
+        texts[path], count = re.subn(
+            pattern, lambda m: m[1] + target + m[2], texts[path], flags=re.MULTILINE
+        )
+        if count != 1:
+            raise ValueError(f"{name}: cannot update Cargo requirement")
+        print(f"{name} {current} -> {target}")
+
+
+def repin_packages(texts, cutoff):
+    path = ROOT / "examples" / "pi-durable" / "package.json"
+    manifest = json.loads(texts[path])
+    groups = [manifest[key] for key in ("dependencies", "devDependencies", "overrides")]
+    packages = {
+        name: json.loads(fetch(f"https://registry.npmjs.org/{name}"))
+        for group in groups
+        for name in group
+    }
+
+    def eligible(name):
+        package = packages[name]
+        ceiling = version(package["dist-tags"]["latest"])
+        if ceiling is None:
+            raise ValueError(f"{name}: latest version is not stable")
+        return {
+            number: candidate
+            for candidate, row in package["versions"].items()
+            if (number := version(candidate)) is not None
+            and number <= ceiling
+            and not row.get("deprecated")
+            and old_enough(package.get("time", {}).get(candidate), cutoff)
+        }
+
+    versions = {name: eligible(name) for name in packages}
+    for group in groups:
+        for name, current in group.items():
+            newer = [number for number in versions[name] if number > version(current)]
+            if newer:
+                target = versions[name][max(newer)]
+                print(f"{name} {current} -> {target}")
+                group[name] = target
+    texts[path] = json.dumps(manifest, indent=2) + "\n"
+
+
+def repin_yard(texts, cutoff):
+    current = re.search(r"TRUFFLEHOG_VERSION=(" + VERSION + r")", texts[YARD])[1]
+    rows = re.findall(r"arch=(arm64|amd64); sum=([0-9a-f]{64})", texts[YARD])
+    if len(rows) != 2:
+        raise ValueError("TruffleHog must pin both Linux architectures")
+    urls = [
+        f"https://github.com/trufflesecurity/trufflehog/releases/download/v{current}/trufflehog_{current}_linux_{arch}.tar.gz"
+        for arch, _ in rows
+    ]
+    update = github(urls, cutoff)
+    if update is None or update[2] is None:
+        return
+    _, target, assets = update
+    target = ".".join(map(str, target))
+    print(f"trufflehog {current} -> {target}")
+    texts[YARD] = replace(
+        texts[YARD], f"TRUFFLEHOG_VERSION={current}", f"TRUFFLEHOG_VERSION={target}"
+    )
+    for (_, old_sha), (_, sha) in zip(rows, assets, strict=True):
+        texts[YARD] = replace(texts[YARD], old_sha, sha)
+
+
+def repin_suffix_list(texts):
+    path = ROOT / "crates" / "pinfold" / "public_suffix_list.dat"
+    target = fetch("https://publicsuffix.org/list/public_suffix_list.dat").decode()
+    pattern = r"^// VERSION: (\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_UTC)$"
+    current = re.search(pattern, texts[path], re.MULTILINE)
+    new = re.search(pattern, target, re.MULTILINE)
+    if (
+        not current
+        or not new
+        or not re.search(r"^// COMMIT: [0-9a-f]{40}$", target, re.MULTILINE)
+    ):
+        raise ValueError("Public Suffix List lacks its version or commit")
+    if not all(
+        marker in target
+        for marker in (
+            "// ===BEGIN ICANN DOMAINS===",
+            "// ===END ICANN DOMAINS===",
+            "// ===BEGIN PRIVATE DOMAINS===",
+            "// ===END PRIVATE DOMAINS===",
+            "\ncom\n",
+        )
+    ):
+        raise ValueError("Public Suffix List is incomplete")
+    if new[1] > current[1]:
+        print(f"public suffix list {current[1]} -> {new[1]}")
+        texts[path] = target
+
+
 def main():
     recipes = sorted({path for path, _ in IMAGE_TOOLS.values()})
-    texts = {path: path.read_text() for path in [*recipes, HARNESSES]}
+    texts = {
+        path: path.read_text()
+        for path in [
+            *recipes,
+            HARNESSES,
+            YARD,
+            ROOT / "rust-toolchain.toml",
+            ROOT / "Cargo.toml",
+            ROOT / "examples" / "pi-durable" / "package.json",
+            ROOT / "crates" / "pinfold" / "public_suffix_list.dat",
+        ]
+    }
     pins = {}
     for path in recipes:
         rows = re.findall(
@@ -252,7 +414,10 @@ def main():
             re.MULTILINE,
         )
         expected = [
-            dest for source, dests in IMAGE_TOOLS.values() if source == path for dest in dests
+            dest
+            for source, dests in IMAGE_TOOLS.values()
+            if source == path
+            for dest in dests
         ]
         if sorted(dest for _, _, dest in rows) != sorted(expected):
             raise ValueError(f"{path}: ADD pins do not match IMAGE_TOOLS")
@@ -291,6 +456,10 @@ def main():
                 f'name = "{name}"\nversion = "{target}"',
             )
 
+    repin_build_tools(texts)
+    repin_packages(texts, cutoff)
+    repin_yard(texts, cutoff)
+    repin_suffix_list(texts)
     for path, text in texts.items():
         path.write_text(text)
 

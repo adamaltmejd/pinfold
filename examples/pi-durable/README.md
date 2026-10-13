@@ -1,16 +1,16 @@
 # Experimental pi-durable adapter
 
-This example evaluates published `@earendil-works/pi-durable` 1.0.4 with Pinfold.
-It is a separate Node program, not a replacement for `pinfold pi` or a complete
+This example evaluates published `@earendil-works/pi-durable` with Pinfold.
+It is a separate Bun program, not a replacement for `pinfold pi` or a complete
 `ExecutionEnv`. Its only model tool is `boxed_bash`. Reads, writes and edits use
 that tool inside the box. The host owns box creation and command dispatch.
 
-Install with Bun and run with Node 26 or newer:
+Run these commands from this example directory with Bun 1.4.3 or newer:
 
 ```sh
 bun install --frozen-lockfile
 bun run check
-node prototype.ts start \
+bun run start \
   --pinfold /absolute/path/to/pinfold \
   --image your-existing-image \
   --project /absolute/path/to/project \
@@ -18,7 +18,7 @@ node prototype.ts start \
   --base-url https://your-openai-compatible-endpoint/v1 \
   --model your-model \
   --prompt 'Inspect the project and report a useful next step.'
-node prototype.ts resume --state /absolute/path/outside/project/job-state
+bun run resume --state /absolute/path/outside/project/job-state
 ```
 
 Set `PINFOLD_DURABLE_API_KEY` in the host environment when the endpoint needs a
@@ -27,13 +27,18 @@ streaming OpenAI chat completions and tools. The key is not included in the box
 spec or job manifest. Prompts, model answers and tool output are checkpointed;
 choose their contents accordingly.
 
+Use the package's `start` and `resume` commands. Their loader preserves the
+original controller path for the host-boundary check. Direct Bun script
+launches resolve symlinks too early and are refused. The supplied Bun config
+disables `.env` loading and automatic dependency installation.
+
 Prepare real `.git`, `.vscode`, `.claude` and `.idea` directories in the project
 before starting. The example mounts those paths read-only and the remaining
 project read-write. It refuses symlinked protected directories. It supplies no
 box egress, since the host makes model requests. Choose an image that has a shell
 and the project tools you need.
 
-The checkpoint directory, Pinfold and Node executables, controller and dependencies,
+The checkpoint directory, Pinfold and Bun executables, controller and dependencies,
 Pinfold's effective state/config/cache and ownership directories, and host PATH
 entries must be disjoint from the writable project. Linux runtime authority is
 also checked. Paths and existing symlink ancestors are canonicalized before any
@@ -62,11 +67,12 @@ survive. A hard host-process kill leaves recovery to the next writer and Pinfold
 owner teardown. There is no scheduler, multi-host coordination, automatic retry,
 read-only replay tool or general host filesystem tool.
 
-The dependency versions and lockfile use the published 1.0.4 API, including the
-real HTTP provider and Node SQLite checkpoint backend. `bunfig.toml` makes a local
+The dependency versions and lockfile pin the published API, including the
+real HTTP provider and the Node-compatible SQLite checkpoint backend under Bun. `bunfig.toml` makes a local
 release-age exception only for the four pinned Earendil release-family packages:
 `pi-durable`, `pi-ai`, `chord` and transitive `pi-telemetry`. These pins are
-independent of Pinfold's Pi harness. Other publishers retain the installation age
+independent of Pinfold's Pi harness and advance together in nightly updates.
+Other publishers retain the installation age
 policy; no global Bun configuration is changed.
 
 The prototype contract and pin-maintenance rule are in
@@ -76,7 +82,7 @@ and arm64. The command needs exclusive ownership of the runtime and
 an existing image with `sh`, `tail`, `grep` and `tr`:
 
 ```sh
-node durable_recovery_preserves_boxed_execution.ts --pinfold /absolute/path/to/pinfold --image your-existing-image
+bun durable_recovery_preserves_boxed_execution.ts --pinfold /absolute/path/to/pinfold --image your-existing-image
 ```
 
 It uses a host HTTP fixture and real boxes.
