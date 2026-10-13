@@ -3551,8 +3551,10 @@ fn a_login_route_keeps_the_login_on_the_host() {
         ("CODEX_REFRESH_TOKEN_URL_OVERRIDE", refresh_url.as_str()),
     ];
     let mut first = box_up_start(&env, &codex_spec, &vars);
+    // A cold helper download may use the artifact's five-minute deadline,
+    // followed by the helper's thirty-second request deadline.
     request
-        .recv_timeout(std::time::Duration::from_secs(90))
+        .recv_timeout(std::time::Duration::from_secs(330))
         .expect("the first helper reached the held refresh fixture");
 
     // Separate state/config roots, but the cache is shared and the first
@@ -4491,10 +4493,13 @@ struct Starting {
 impl Starting {
     /// Read and parse `up`'s first line.
     fn first_line(&mut self) -> serde_json::Value {
+        // Codex has two cold artifacts, each with a five-minute transfer
+        // deadline. Allow another minute for extraction and runtime startup;
+        // successful readiness still comes from the owner line.
         let line = read_bounded(
             &mut self.child,
             &mut self.stdout,
-            std::time::Duration::from_secs(90),
+            std::time::Duration::from_secs(660),
             false,
         )
         .expect("read box up's first line");
