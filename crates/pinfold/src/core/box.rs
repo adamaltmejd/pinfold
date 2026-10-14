@@ -582,27 +582,33 @@ async fn start(
     }
     // Apple can forward init's ready before it records the box running.
     // Wait even without egress, before the caller can issue its first exec.
-    if cfg!(target_os = "macos") {
-        apple::wait_until_running(&plan.name)?;
+    let actual = if cfg!(target_os = "macos") {
+        let actual = apple::wait_until_running(&plan.name)?;
         // Finish the one root exec before ready reaches the caller.
         if socket.is_some() {
             apple::make_proxy_connectable(&plan.name)?;
         }
-    }
+        Some(actual)
+    } else {
+        None
+    };
     // Keep the pipe drained so a talkative box cannot block on it.
     tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
     // `ready` reports the labels `list` will: podman adds every image label
     // to the box, so the plan's set is not the box's.
-    let actual = runtime
-        .list(None)?
-        .into_iter()
-        .find(|box_| box_.id == plan.name)
-        .ok_or_else(|| {
-            io::Error::other(format!(
-                "the runtime does not list box {:?} after ready",
-                plan.name
-            ))
-        })?;
+    let actual = match actual {
+        Some(actual) => actual,
+        None => runtime
+            .list(None)?
+            .into_iter()
+            .find(|box_| box_.id == plan.name)
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "the runtime does not list box {:?} after ready",
+                    plan.name
+                ))
+            })?,
+    };
     Ok((actual, egress_log))
 }
 
