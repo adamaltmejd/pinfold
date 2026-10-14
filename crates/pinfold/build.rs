@@ -12,6 +12,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+use sha2::{Digest, Sha256};
+
 fn main() {
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     let embedded = out.join("pinfold-init");
@@ -21,6 +23,7 @@ fn main() {
         // gates check it; this placeholder is never mounted.
         fs::write(&embedded, []).expect("write placeholder init");
         println!("cargo:rustc-env=PINFOLD_INIT={}", embedded.display());
+        println!("cargo:rustc-env=PINFOLD_INIT_SHA256=");
         return;
     }
     for path in ["src", "Cargo.toml", "build.rs"] {
@@ -55,5 +58,11 @@ fn main() {
         .join("pinfold");
     fs::copy(&built, &embedded)
         .unwrap_or_else(|error| panic!("copy embedded init {}: {error}", built.display()));
+    let bytes = fs::read(&embedded).expect("read embedded init");
+    let hash: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     println!("cargo:rustc-env=PINFOLD_INIT={}", embedded.display());
+    println!("cargo:rustc-env=PINFOLD_INIT_SHA256={hash}");
 }
