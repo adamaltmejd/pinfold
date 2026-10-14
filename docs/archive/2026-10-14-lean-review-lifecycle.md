@@ -1,0 +1,36 @@
+# Independent lifecycle review — 2026-10-14
+
+No blockers found in `7feaf89` (readiness-output teardown), `b3b620e` (shared update-fixture child ownership), `4d39b2e` (durable teardown inventories), or the subsequently added documentation-only `0156384` (opt-in Rust target directory).
+
+Reviewed checkout: `/Users/adam/.codex/worktrees/pinfold-lean-implementation/pinfold`. Initial implementation HEAD: `a7495da045010d9dcabd8f944a0342dc9782d9b4`; base `a1be921`; initially clean worktree. A later documentation-only commit advanced HEAD to `01563845f9b915c2495301e45e986e58630f7e6d`; that README diff was also reviewed. Final status had an unrelated untracked `docs/investigations/2026-10-14-implementation/README.md`, untouched and outside this review. I did not author these candidates. No edits to this checkout, builds, tests, native runtime commands or sabotage runs were performed. This is source review, not runtime certification.
+
+## Readiness-output teardown
+
+- `crates/pinfold/src/cli.rs:263-284` captures egress-log conversion, serialization, write and flush failures after successful startup, then awaits `Box::down` before returning. `writeln!` replaces the panicking readiness `println!`. The `failed` event at `cli.rs:231-242` is also fallible, so the still-closed stdout yields an ordinary error. `main.rs:94` passes the reported code into `ExitCode`; this path returns 1 rather than panic 101 when stderr remains usable.
+- `core/box.rs:365-375` uses the existing authoritative teardown, retaining the async drain while runtime removal blocks, waiting for the runtime child, then finishing ownership/state cleanup. A removal error takes precedence over the original output failure; state is retained for recovery rather than reporting successful cleanup. Bookkeeping errors propagate. No new fire-and-forget cleanup or weakened ownership check.
+- `box_.rs:91-124` extends G9 rather than adding a test. The real stdout pipe reader is closed before sending the unchanged valid spec; stdin stays open until the child has completed. Expectations are the G9 exit code, native runtime absence and host state absence. `ChildOwner::wait_bounded` reaps the owner without hiding a completed failure. Its Drop does not remove an orphan after the failure under examination; the native `RuntimeContainer` fallback runs only after the assertions. The following normal run at line 125 uses the same name/spec and executes work immediately, providing the output-consumed control and name-reuse proof. The sabotage comment names both returning early and panicking without awaited cleanup. Existing stdin/signal blocks cannot catch a write failure before hold begins.
+- `box_.rs:5201-5209` repairs the absence helper: missing directory alone means empty; enumeration and entry errors now fail the assertion instead of becoming a false pass.
+
+Test-audit result for changed assertion blocks: no `taut`, `easy`, `unrelated`, `twin`, `detector`, `promise` or orphan `seam` failure. The broken-output test asserts no OS error prose, and no new test-only product seam was added. The native absence observation prevents Pinfold's own inventory from being the only proof of removal.
+
+## Update fixture ownership
+
+- `update.rs:124-147` still starts the copied installed executable under the distinct `other` TestEnv. Thus the shared executable lock is held by the actual update target while the HTTPS asset is held. Readiness is now bounded and ownership is installed immediately after spawn. The same ready assertion remains; the update refusal/bytes/inode assertions are unchanged.
+- `box_.rs:4864-4885` prepares list/down commands using that other environment's XDG roots. Cleanup uses the suite binary, which is acceptable: cross-root per-user ownership is part of the production CLI contract, and it does not release the installed executable lock before the update assertions.
+- `box_.rs:4888-4929` scopes cleanup to the actual owner PID and, once observed, the generation label. It keeps the child unreaped while checking PID authority; a reaped child without an observed generation cannot authorize removal. A timeout, missing output or assertion failure therefore uses the established bounded cleanup without a naked guessed-name down.
+- The tuple at `update.rs:145` keeps the stdout reader alive until the owner fixture is dropped. The installed binary's inode is not replaced until after `drop(owner)` at line 158. Removing `UpdateOwner` removes its duplicate unbounded ready/down/wait path, preserving G28's actual observer and expected values.
+
+The shared helper's cleanup is best effort on a failed test; it ignores down errors after a bounded list and must not be represented as proof that every failed fixture leaves no runtime resources. This limitation already belongs to the shared helper, not a new assertion or product guarantee in this candidate.
+
+## Durable inventories
+
+- `prototype.ts:107-113` retains the pre-down job-label ownership refusal. No replacement of this authorization check with post-hoc absence.
+- `prototype.ts:153-167` still cancels startup through the owned process, awaits successful `box down`, closes stdin and waits for the actual owner to close with the existing shutdown deadline. Failed down rejects before `box-stopped` or resumption.
+- `core/box.rs:380-408`, `ownership.rs:281-303,324-407`, and `clean.rs:168-197` supply the authority that made the two removed inventories redundant: generation-addressed requests acknowledge only runtime removal plus bookkeeping completion; orphan removal holds the lifetime lock and rechecks labels/generation. `ARCHITECTURE.md:242-245` explicitly says acknowledged completed teardown succeeds without another inventory. A later inventory cannot strengthen the lifetime of the observed generation and may introduce an unrelated runtime-listing failure after successful teardown.
+- The checkpoint writer lock and pre-start reclaim remain. No guarantee, test assertion, label check, generation gate or shutdown deadline was removed. G35's external runtime observations remain the required runtime gate; this source review does not substitute for it.
+
+## Opt-in Rust outputs
+
+`README.md:134-141` correctly uses existing generic `PINFOLD_ENV_<NAME>` forwarding to set Cargo's guest `CARGO_TARGET_DIR` to the already-mounted `/tmp` tmpfs. It does not change default output locations, resources or security controls. The memory and `/tmp` capacity caveat is necessary; copying deliverables before box exit accurately describes its disposable lifetime. No numerical speedup or capacity is promised, and no persistent cache or across-box reuse is implied. No blocker.
+
+Read coverage: AGENTS.md, test-audit skill, ARCHITECTURE.md; all four commit diffs and the affected README configuration paragraph; whole update.rs (531 lines), e2e/src/lib.rs (561), prototype.ts (273), main.rs; whole G9 lifecycle test (box_.rs:25-939); ChildOwner, bounded pipe/command/drain helpers and native absence fallback; complete CLI up/hold/down/report mechanism; core startup/hold/down/abort/drain mechanism through line 618, ownership claim/finish/request-stop and cleanup remove-orphan; both native runtime down implementations. Other box_.rs guarantees and unrelated CLI/runtime functions were not re-audited in this bounded pass.
