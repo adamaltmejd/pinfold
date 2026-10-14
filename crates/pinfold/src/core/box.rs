@@ -627,7 +627,9 @@ fn check_mount_aliases(
         guest: init_guest,
         readonly: true,
     });
-    let mut files: BTreeMap<(u64, u64), (bool, PathBuf)> = BTreeMap::new();
+    // Index read-only identities before checking writable exports.
+    mounts.sort_by_key(|mount| !mount.readonly);
+    let mut readonly_files: BTreeMap<(u64, u64), PathBuf> = BTreeMap::new();
     for mount in &mounts {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(io::Error::from(io::ErrorKind::Interrupted).into());
@@ -657,20 +659,18 @@ fn check_mount_aliases(
                     directories.push((entry.path(), guest));
                 } else if metadata.is_file() {
                     let identity = (metadata.dev(), metadata.ino());
-                    if let Some((readonly, previous)) = files.get(&identity) {
-                        if *readonly != mount.readonly {
-                            return Err(Stop::Refused(Refusal {
-                                box_name: Some(plan.name.clone()),
-                                reason: RefusalReason::MountAlias,
-                                detail: format!(
-                                    "regular file exposed read-only and writable at {} and {}",
-                                    previous.display(),
-                                    guest.display(),
-                                ),
-                            }));
-                        }
-                    } else {
-                        files.insert(identity, (mount.readonly, guest));
+                    if mount.readonly {
+                        readonly_files.entry(identity).or_insert(guest);
+                    } else if let Some(previous) = readonly_files.get(&identity) {
+                        return Err(Stop::Refused(Refusal {
+                            box_name: Some(plan.name.clone()),
+                            reason: RefusalReason::MountAlias,
+                            detail: format!(
+                                "regular file exposed read-only and writable at {} and {}",
+                                previous.display(),
+                                guest.display(),
+                            ),
+                        }));
                     }
                 }
             }
