@@ -364,10 +364,12 @@ pub trait Runtime: Sync {
     /// Start the attached `container run` process that owns the box. When
     /// `proxy_socket` is set, carry that host unix socket into the box.
     /// `seccomp` is the profile [`Runtime::preflight`] returned.
+    /// `state_dir` belongs to this claim until runtime removal.
     fn up(
         &self,
         plan: &Plan,
         init: &Path,
+        state_dir: &Path,
         proxy_socket: Option<&Path>,
         seccomp: Option<&Path>,
     ) -> io::Result<Child>;

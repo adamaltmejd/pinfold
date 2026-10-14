@@ -39,6 +39,7 @@ impl Runtime for Podman {
         &self,
         plan: &Plan,
         init: &Path,
+        state_dir: &Path,
         proxy_socket: Option<&Path>,
         seccomp: Option<&Path>,
     ) -> io::Result<Child> {
@@ -57,9 +58,7 @@ impl Runtime for Podman {
         let seccomp = seccomp_profile(source)?;
         // --dns none cannot be combined with --network none on podman
         // 5.4.2; without this bind podman writes a resolver of its own.
-        let cache = dirs::cache_dir()?;
-        fs::create_dir_all(&cache)?;
-        let resolv_conf = cache.join("resolv.conf");
+        let resolv_conf = state_dir.join("resolv.conf");
         fs::write(&resolv_conf, "")?;
         let mut extra: Vec<OsString> = vec![
             "--userns=keep-id".into(),

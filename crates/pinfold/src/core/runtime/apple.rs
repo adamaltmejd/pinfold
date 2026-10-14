@@ -28,6 +28,7 @@ impl Runtime for Apple {
         &self,
         plan: &Plan,
         init: &Path,
+        _state_dir: &Path,
         proxy_socket: Option<&Path>,
         _seccomp: Option<&Path>,
     ) -> io::Result<Child> {

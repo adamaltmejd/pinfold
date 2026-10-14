@@ -559,9 +559,10 @@ async fn start(
     // before the runtime is asked to create anything.
     tokio::task::yield_now().await;
     let runtime = runtime();
-    let child = progress
-        .child
-        .insert(runtime.up(plan, init, socket.as_deref(), seccomp)?);
+    let child =
+        progress
+            .child
+            .insert(runtime.up(plan, init, state_dir, socket.as_deref(), seccomp)?);
     let stdout = child
         .stdout
         .take()
