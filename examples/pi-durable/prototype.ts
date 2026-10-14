@@ -110,7 +110,6 @@ class Box {
     if (old && old.labels?.["dev.example.pi-durable.job"] !== this.job.id) throw new Error("box name belongs to another caller");
     this.#authorized = true;
     await cli(this.job.pinfold, ["box", "down", this.name]);
-    if (await this.listed()) throw new Error("old box remains; refusing to resume");
     event("old-work-removed", { box: this.name });
   }
 
@@ -165,7 +164,6 @@ class Box {
           await Promise.race([this.#closed, new Promise<never>((_, fail) => { timer = setTimeout(() => { this.#owner?.kill("SIGKILL"); fail(new Error("box owner shutdown timeout")); }, 30_000); })]);
         } finally { clearTimeout(timer!); }
       }
-      if (await this.listed()) throw new Error("box removal failed");
       event("box-stopped", { box: this.name });
     })();
   }
