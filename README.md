@@ -131,6 +131,15 @@ See [Configuration](docs/ARCHITECTURE.md#configuration) for layers, keys and def
 For `pinfold pi`, forward host variables with `PINFOLD_ENV_<NAME>`.
 Programmatic callers use the [box spec](docs/ARCHITECTURE.md#process-interface).
 
+For disposable Rust build outputs in guest memory:
+
+```sh
+PINFOLD_ENV_CARGO_TARGET_DIR=/tmp/pinfold-target pi
+```
+
+Keep outputs within the guest's available memory and `/tmp` capacity. Copy
+deliverables into the shared project before the box exits; `/tmp` is discarded.
+
 ## Limits
 
 Read the [threat model](docs/ARCHITECTURE.md#threat-model) and
