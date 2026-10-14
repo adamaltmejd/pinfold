@@ -84,11 +84,11 @@ fn main() -> ExitCode {
     update::notice(verb, args);
     // The daily pass runs before any working command, the `pi` shim
     // included; `init` is PID 1 in a box with no runtime to prune, and the
-    // options, help and doctor touch nothing. `box up` runs the pass itself,
+    // options, help, doctor and box list touch nothing. `box up` runs the pass itself,
     // so its SIGTERM and SIGINT handlers come before the pass lists the
     // runtime.
     match (verb, args.first().map(String::as_str)) {
-        ("init" | "doctor" | "config" | "artifacts", _) | ("box", Some("up")) => {}
+        ("init" | "doctor" | "config" | "artifacts", _) | ("box", Some("up" | "list")) => {}
         _ => crate::core::clean::maintain(),
     }
     ExitCode::from(cli::report(verb, run(args)) as u8)

@@ -320,20 +320,21 @@ impl Drop for Claim {
 
 /// Ask only the generation observed before connecting. A replacement's
 /// listener refuses the old token instead of stopping its own box.
-pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<()> {
+/// Return true only when the owner acknowledges completed teardown.
+pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<bool> {
     // An unpublished claim is absent to this request. Adopting a record
     // later could target a replacement after an old owner removed its record.
     let Some(observed) = observed else {
-        return Ok(());
+        return Ok(false);
     };
     let deadline = Instant::now() + STOP_TIMEOUT;
     loop {
         if let Some(lock) = try_name_lock(name)? {
             drop(lock);
-            return Ok(());
+            return Ok(false);
         }
         if record(name)?.is_none_or(|current| current.generation != observed.generation) {
-            return Ok(());
+            return Ok(false);
         }
         match BlockingStream::connect(socket(name)?) {
             Ok(mut stream) => {
@@ -370,7 +371,8 @@ pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<()> {
                 match exchange {
                     Ok((answer, length)) => {
                         return match &answer[..length] {
-                            b"done\n" | b"gone\n" => Ok(()),
+                            b"done\n" => Ok(true),
+                            b"gone\n" => Ok(false),
                             b"failed\n" => Err(io::Error::other("box teardown failed")),
                             _ => Err(io::Error::other("invalid box teardown reply")),
                         };
@@ -388,7 +390,7 @@ pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<()> {
                         if record(name)?
                             .is_none_or(|current| current.generation != observed.generation)
                         {
-                            return Ok(());
+                            return Ok(false);
                         }
                         return Err(error);
                     }

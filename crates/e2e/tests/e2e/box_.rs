@@ -23,6 +23,17 @@ use e2e::{
 
 #[test]
 fn box_lifecycle_works_for_a_caller() {
+    struct Resume(u32);
+    impl Drop for Resume {
+        fn drop(&mut self) {
+            let _ = Command::new("kill")
+                .args(["-CONT", &self.0.to_string()])
+                .status();
+        }
+    }
+    #[cfg(target_os = "linux")]
+    let _runtime = crate::exclusive_runtime();
+    #[cfg(not(target_os = "linux"))]
     let _runtime = crate::shared_runtime();
     // Guarantee 9: the lifecycle works for a caller.
     // Sabotage: make `box down` a no-op; the post-down list assertion fails.
@@ -208,6 +219,151 @@ sys.exit(result.returncode)
         "list names the wrong image id: {line}"
     );
 
+    #[cfg(target_os = "linux")]
+    let (store_lock, lock_identity, held) = {
+        // Sabotage: use unbounded runtime output for list again, or run
+        // maintenance before list; the caller misses the 25-second bound.
+        // Sabotage: return timeout without killing the runtime client;
+        // /proc/locks still reports its waiter after pinfold exits.
+        // Holding Podman's real image-store lock stalls its client before
+        // it can return inventory. No image metadata is changed.
+        let info = run_ok(
+            env.command(Path::new("podman"))
+                .args(["info", "--format", "json"]),
+        );
+        let info: serde_json::Value = serde_json::from_slice(&info.stdout).unwrap();
+        let store = &info["store"];
+        let lock_path = Path::new(store["graphRoot"].as_str().unwrap()).join(format!(
+            "{}-images/images.lock",
+            store["graphDriverName"].as_str().unwrap()
+        ));
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lock_path)
+            .expect("open Podman's existing image-store lock");
+        let metadata = lock.metadata().unwrap();
+        let lock_identity = format!(
+            "{:02x}:{:02x}:{}",
+            nix::sys::stat::major(metadata.dev()),
+            nix::sys::stat::minor(metadata.dev()),
+            metadata.ino()
+        );
+        let held = nix::libc::flock {
+            l_type: nix::libc::F_WRLCK as i16,
+            l_whence: nix::libc::SEEK_SET as i16,
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+        };
+        nix::fcntl::fcntl(&lock, nix::fcntl::FcntlArg::F_SETLK(&held))
+            .expect("hold Podman's image-store lock");
+
+        // Maintenance would be due for this fresh caller. Listing must
+        // skip it and receive the failure within the listing deadline.
+        let caller = TestEnv::new("lifecycle-list-stalled");
+        let output = command_bounded(
+            caller
+                .command(pinfold())
+                .args(["box", "list", "--label", label]),
+            std::time::Instant::now() + std::time::Duration::from_secs(25),
+        )
+        .expect("stalled list exceeded its 20-second production deadline");
+        assert_eq!(exit_code(output.status), 1);
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("runtime-timeout"),
+            "list failed for another reason: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_empty(), "a failed list printed inventory");
+        let locks = fs::read_to_string("/proc/locks").unwrap();
+        assert!(
+            !locks.lines().any(|line| {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                fields.contains(&"->") && fields.contains(&lock_identity.as_str())
+            }),
+            "a runtime client still waits on the image-store lock: {locks}"
+        );
+        // Sabotage: leave list's SIGINT/SIGTERM disposition at its default;
+        // pinfold exits before killing its isolated runtime client's group,
+        // and the kernel still reports that client's image-lock waiter.
+        for signal in [
+            nix::sys::signal::Signal::SIGINT,
+            nix::sys::signal::Signal::SIGTERM,
+        ] {
+            let child = caller
+                .command(pinfold())
+                .args(["box", "list", "--label", label])
+                .process_group(0)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("start interrupted listing");
+            let mut listing = ChildOwner::new(child, &caller, Some(up.pid()));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let locks = fs::read_to_string("/proc/locks").unwrap();
+                let waiting = locks.lines().any(|line| {
+                    let fields: Vec<_> = line.split_whitespace().collect();
+                    if !fields.contains(&"->") || !fields.contains(&lock_identity.as_str()) {
+                        return false;
+                    }
+                    let Some(pid) = fields.get(5) else {
+                        return false;
+                    };
+                    fs::read_to_string(format!("/proc/{pid}/status")).is_ok_and(|status| {
+                        status_field(&status, "PPid:") == listing.id().to_string()
+                    })
+                });
+                if waiting {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "listing did not wait on the image lock"
+                );
+                std::thread::yield_now();
+            }
+            nix::sys::signal::killpg(nix::unistd::Pid::from_raw(listing.id() as i32), signal)
+                .unwrap();
+            let status = listing.wait_bounded();
+            // A handled cancellation must complete cleanup before exiting.
+            assert_eq!(status.code(), Some(128 + signal as i32));
+            let mut stdout = Vec::new();
+            listing
+                .stdout
+                .take()
+                .unwrap()
+                .read_to_end(&mut stdout)
+                .unwrap();
+            assert!(stdout.is_empty(), "an interrupted list printed inventory");
+            let locks = fs::read_to_string("/proc/locks").unwrap();
+            assert!(
+                !locks.lines().any(|line| {
+                    let fields: Vec<_> = line.split_whitespace().collect();
+                    fields.contains(&"->") && fields.contains(&lock_identity.as_str())
+                }),
+                "an interrupted runtime client still waits on the image-store lock: {locks}"
+            );
+        }
+        let unlocked = nix::libc::flock {
+            l_type: nix::libc::F_UNLCK as i16,
+            ..held
+        };
+        nix::fcntl::fcntl(&lock, nix::fcntl::FcntlArg::F_SETLK(&unlocked)).unwrap();
+
+        let listed = box_list(&caller, label);
+        let live = listed
+            .iter()
+            .find(|box_| box_["name"].as_str() == Some(name.as_str()))
+            .unwrap_or_else(|| panic!("the timed-out list lost {name}: {listed:?}"));
+        assert_eq!(live["owner"], up.pid());
+        assert_eq!(live["owner_alive"], true);
+        assert_eq!(live["image"]["id"], image_id.as_str());
+        (lock, lock_identity, held)
+    };
+
     // An empty name, or one a runtime would read as a flag, is not a box:
     // `down` behaves as for any absent box and leaves the live box alone.
     // The filter matches only this box, so a regression removes nothing
@@ -324,7 +480,104 @@ sys.exit(result.returncode)
     assert_ok(&writing, "writing attached output before teardown");
 
     // `down` removes the box and the owner exits with output still active.
+    #[cfg(not(target_os = "linux"))]
     up.down(&env);
+    #[cfg(target_os = "linux")]
+    {
+        // Sabotage: inventory again after the owner's done acknowledgment;
+        // unrelated storage contention makes completed teardown exit 1.
+        // First block real removal so the requester can be stopped before
+        // its reply. Reaping the owner before relocking proves teardown is
+        // complete while the paused requester still has its queued reply.
+        nix::fcntl::fcntl(&store_lock, nix::fcntl::FcntlArg::F_SETLK(&held)).unwrap();
+        let requested_at = std::time::Instant::now();
+        let child = env
+            .command(pinfold())
+            .args(["box", "down", &name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("request teardown while removal is blocked");
+        let mut down = ChildOwner::new(child, &env, Some(up.pid()));
+        // Drop the lock before ChildOwner's panic cleanup can inventory.
+        let lock = store_lock;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let locks = fs::read_to_string("/proc/locks").unwrap();
+            let waiting = locks.lines().any(|line| {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                if !fields.contains(&"->") || !fields.contains(&lock_identity.as_str()) {
+                    return false;
+                }
+                let Some(pid) = fields.get(5) else {
+                    return false;
+                };
+                fs::read_to_string(format!("/proc/{pid}/status"))
+                    .is_ok_and(|status| status_field(&status, "PPid:") == up.pid().to_string())
+            });
+            if waiting {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "owner removal did not wait on the image lock"
+            );
+            std::thread::yield_now();
+        }
+        let resume = Resume(down.id());
+        run_ok(Command::new("kill").args(["-STOP", &down.id().to_string()]));
+        loop {
+            let status = fs::read_to_string(format!("/proc/{}/status", down.id())).unwrap();
+            if status_field(&status, "State:").starts_with('T') {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "teardown requester did not stop"
+            );
+            std::thread::yield_now();
+        }
+        let unlocked = nix::libc::flock {
+            l_type: nix::libc::F_UNLCK as i16,
+            ..held
+        };
+        nix::fcntl::fcntl(&lock, nix::fcntl::FcntlArg::F_SETLK(&unlocked)).unwrap();
+        let lines = up.starting.rest();
+        assert_eq!(
+            lines.last().expect("owner's terminal event")["event"],
+            "down"
+        );
+        assert!(up.wait().success(), "box up did not exit cleanly");
+        assert!(
+            requested_at.elapsed() < std::time::Duration::from_secs(10),
+            "owner did not complete within the requester's original deadline"
+        );
+        nix::fcntl::fcntl(&lock, nix::fcntl::FcntlArg::F_SETLK(&held)).unwrap();
+        drop(resume);
+        let status = down.wait_bounded();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        down.stdout
+            .take()
+            .unwrap()
+            .read_to_end(&mut stdout)
+            .unwrap();
+        down.stderr
+            .take()
+            .unwrap()
+            .read_to_end(&mut stderr)
+            .unwrap();
+        assert!(
+            status.success(),
+            "acknowledged down failed: {}",
+            String::from_utf8_lossy(&stderr)
+        );
+        assert!(
+            stdout.is_empty() && stderr.is_empty(),
+            "acknowledged down printed output"
+        );
+    }
     let listed = box_list(&env, label);
     assert!(
         !listed
@@ -332,6 +585,7 @@ sys.exit(result.returncode)
             .any(|box_| box_["name"].as_str() == Some(name.as_str())),
         "box survived down: {listed:?}"
     );
+    #[cfg(not(target_os = "linux"))]
     assert!(up.wait().success(), "box up did not exit cleanly");
 
     // A stopped owner still owns its name. Sabotage: restore down's
@@ -348,14 +602,6 @@ sys.exit(result.returncode)
         let mut stopped = box_up(&env, &stopped_spec, &stopped_name);
         let stopped_state =
             find_box_state_dir(&env, stopped.pid()).expect("find stopped owner's state");
-        struct Resume(u32);
-        impl Drop for Resume {
-            fn drop(&mut self) {
-                let _ = Command::new("kill")
-                    .args(["-CONT", &self.0.to_string()])
-                    .status();
-            }
-        }
         let resume = Resume(stopped.pid());
         run_ok(Command::new("kill").args(["-STOP", &stopped.pid().to_string()]));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

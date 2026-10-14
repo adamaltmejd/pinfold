@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -12,8 +13,8 @@ use tokio::process::Child;
 
 use crate::core::plan::Plan;
 use crate::core::runtime::{
-    BoxInfo, BoxStat, BuildRequest, ImageInfo, MemoryStat, PidsStat, Runtime, inspect, output,
-    parse_json, spawn_error,
+    BoxInfo, BoxStat, BuildRequest, ImageInfo, MemoryStat, PidsStat, Runtime, inspect, list_output,
+    output, parse_json, spawn_error,
 };
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
@@ -54,9 +55,13 @@ impl Runtime for Apple {
     }
 
     fn preflight(&self) -> io::Result<Option<PathBuf>> {
-        // A missing `container` binary is refused before `up` creates any
-        // state.
-        self.version().map(|_| None)
+        let reported = self.version()?;
+        let version = reported
+            .strip_prefix("container CLI version ")
+            .and_then(|value| value.split_whitespace().next())
+            .unwrap_or(&reported);
+        super::require_version("container", version, [1, 5, 0])?;
+        Ok(None)
     }
 
     fn down(&self, name: &str) -> io::Result<()> {
@@ -72,7 +77,7 @@ impl Runtime for Apple {
         };
         // Another process may have removed the box between the list and this
         // call; a box the runtime no longer lists counts as removed.
-        if self.list()?.iter().all(|box_| box_.id != name) {
+        if self.list(None)?.iter().all(|box_| box_.id != name) {
             return Ok(());
         }
         Err(error)
@@ -81,7 +86,7 @@ impl Runtime for Apple {
     /// The limits Apple reports, and null for what the VM cannot answer
     /// (kills, memory use, pids use).
     fn stat(&self, name: &str) -> io::Result<BoxStat> {
-        let resources = containers()?
+        let resources = containers(None)?
             .into_iter()
             .find(|container| container.id == name)
             .ok_or_else(|| {
@@ -100,8 +105,8 @@ impl Runtime for Apple {
         })
     }
 
-    fn list(&self) -> io::Result<Vec<BoxInfo>> {
-        Ok(containers()?
+    fn list(&self, cancel: Option<&AtomicBool>) -> io::Result<Vec<BoxInfo>> {
+        Ok(containers(cancel)?
             .into_iter()
             .map(|container| {
                 let configuration = container.configuration;
@@ -213,7 +218,7 @@ pub fn wait_until_running(name: &str) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let state = Apple
-            .list()?
+            .list(None)?
             .into_iter()
             .find(|box_| box_.id == name)
             .map(|box_| box_.running);
@@ -314,14 +319,14 @@ struct ListedStatus {
 }
 
 /// Every box `container list` reports, running or not.
-fn containers() -> io::Result<Vec<ListedContainer>> {
-    let json = output(&["container", "list", "--all", "--format", "json"])?;
+fn containers(cancel: Option<&AtomicBool>) -> io::Result<Vec<ListedContainer>> {
+    let json = list_output(&["container", "list", "--all", "--format", "json"], cancel)?;
     parse_json("container list", &json)
 }
 
 /// The shared BuildKit builder, if the runtime has one.
 fn builder() -> io::Result<Option<ListedContainer>> {
-    Ok(containers()?
+    Ok(containers(None)?
         .into_iter()
         .find(|entry| entry.id == "buildkit"))
 }

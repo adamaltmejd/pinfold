@@ -15,11 +15,12 @@ nothing else of the host. Its only way out is its own allowlisting proxy.
 
 | Host | Runtime |
 |---|---|
-| macOS 26+ | Apple `container` |
-| Linux | rootless podman |
+| macOS 26+ | Apple `container` 1.5.0+ (stable) |
+| Linux | rootless podman 6.1.4+ (stable) |
 
-On Linux, podman must be rootless with `cgroupManager=systemd`, and
-long-lived boxes need `loginctl enable-linger`.
+Startup refuses older or prerelease runtime versions. On Linux, podman must
+be rootless with `cgroupManager=systemd`, and long-lived boxes need
+`loginctl enable-linger`.
 
 ## Install
 

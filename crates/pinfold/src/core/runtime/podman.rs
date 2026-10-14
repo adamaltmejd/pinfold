@@ -7,6 +7,7 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 use serde::Deserialize;
 use tokio::process::Child;
@@ -16,7 +17,7 @@ use crate::core::plan::{Env, Plan};
 use crate::core::rfc3339;
 use crate::core::runtime::{
     BoxInfo, BoxStat, BuildRequest, ImageInfo, MemoryStat, PidsStat, Runtime, bind, inspect,
-    output, parse_json, spawn_error,
+    list_output, output, parse_json, spawn_error,
 };
 use crate::dirs;
 
@@ -101,6 +102,7 @@ impl Runtime for Podman {
         // A misconfigured host fails closed here, before any box starts.
         let json = output(&["podman", "info", "--format", "json"])?;
         let info: Info = parse_json("podman info", &json)?;
+        super::require_version("podman", &info.version.version, [6, 1, 4])?;
         if !info.host.security.rootless {
             return Err(io::Error::other(
                 "rootful podman is not supported; pinfold requires rootless podman",
@@ -159,8 +161,8 @@ impl Runtime for Podman {
         })
     }
 
-    fn list(&self) -> io::Result<Vec<BoxInfo>> {
-        let json = output(&["podman", "ps", "--all", "--format", "json"])?;
+    fn list(&self, cancel: Option<&AtomicBool>) -> io::Result<Vec<BoxInfo>> {
+        let json = list_output(&["podman", "ps", "--all", "--format", "json"], cancel)?;
         let containers: Vec<ListedContainer> = parse_json("podman ps", &json)?;
         Ok(containers
             .into_iter()
@@ -348,6 +350,13 @@ pub fn linger() -> io::Result<bool> {
 #[derive(Debug, Deserialize)]
 struct Info {
     host: InfoHost,
+    version: InfoVersion,
+}
+
+#[derive(Debug, Deserialize)]
+struct InfoVersion {
+    #[serde(rename = "Version")]
+    version: String,
 }
 
 #[derive(Debug, Deserialize)]

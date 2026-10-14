@@ -249,7 +249,7 @@ impl Box {
                 "name remained busy through the claim deadline".to_string(),
             )
         })?;
-        match runtime.list() {
+        match runtime.list(None) {
             Ok(boxes) if boxes.iter().all(|box_| box_.id != plan.name) => {}
             Ok(_) => {
                 return Err(refused(
@@ -392,6 +392,9 @@ pub fn down(name: &str) -> io::Result<()> {
         .map(|_| ());
     }
     let stopped = ownership::request_stop(name, observed.as_ref());
+    if matches!(stopped, Ok(true)) {
+        return Ok(());
+    }
     if let Some(lock) = ownership::try_name_lock(name)? {
         clean::remove_orphan(
             runtime(),
@@ -401,7 +404,7 @@ pub fn down(name: &str) -> io::Result<()> {
         )?;
         return Ok(());
     }
-    stopped
+    stopped.map(|_| ())
 }
 
 /// SIGTERM and SIGINT, handled by `box up` from before its spec is read to
@@ -591,7 +594,7 @@ async fn start(
     // `ready` reports the labels `list` will: podman adds every image label
     // to the box, so the plan's set is not the box's.
     let actual = runtime
-        .list()?
+        .list(None)?
         .into_iter()
         .find(|box_| box_.id == plan.name)
         .ok_or_else(|| {
