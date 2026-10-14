@@ -347,6 +347,10 @@ fn build_changed_profiles_binary(env: &TestEnv) -> Vec<u8> {
         &workspace.join("crates/pinfold"),
         &source.join("crates/pinfold"),
     );
+    copy_tree(
+        &workspace.join("crates/pinfold-init"),
+        &source.join("crates/pinfold-init"),
+    );
     copy_tree(&workspace.join("profile"), &source.join("profile"));
     let package_path = source.join("profile/full/package.json");
     let mut package: serde_json::Value =

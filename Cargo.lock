@@ -243,6 +243,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pinfold-init"
+version = "0.2.4"
+dependencies = [
+ "nix",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"

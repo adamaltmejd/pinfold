@@ -22,12 +22,9 @@ use tokio::process::{Child, Command};
 use crate::core::pipe::{nonblocking, remaining};
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
+use crate::init::BOX_ENV_PREFIX;
 
 const BUILD_LOG_BYTES: usize = 64 * 1024;
-
-/// Guest values travel under names the host runtime does not interpret.
-/// Hex preserves arbitrary environment bytes through runtime JSON encoding.
-pub const BOX_ENV_PREFIX: &str = "PINFOLD_BOX_ENV_";
 
 /// The runtime's native Linux image architecture.
 pub const TARGET_ARCH: &str = if cfg!(target_arch = "aarch64") {

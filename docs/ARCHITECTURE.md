@@ -601,8 +601,9 @@ codex also pins a host helper, `codex-app-server`, per host `os-arch`
 `up` with a codex login route. It never enters a box.
 
 The init is not an artifact: it always comes from the CLI's own build. The
-macOS CLI embeds the `aarch64-unknown-linux-musl` build and writes it to the
-cache once; a Linux CLI mounts its own executable.
+macOS CLI embeds the `aarch64-unknown-linux-musl` `pinfold-init` build and writes
+it to the cache once; a Linux CLI mounts its own executable. Both use the same
+init source.
 
 ## Profiles
 
@@ -992,7 +993,7 @@ lives in `cli.rs`.
 | Target | Role |
 |---|---|
 | `aarch64-apple-darwin` | macOS CLI |
-| `aarch64-unknown-linux-musl` | Linux arm64 CLI; init on Macs and arm64 hosts |
+| `aarch64-unknown-linux-musl` | Linux arm64 CLI; init on arm64 hosts; separate init on Macs |
 | `x86_64-unknown-linux-musl` | Linux x64 CLI; init on x64 hosts |
 
 Dependencies: `tokio`, `httparse`, `serde`, `serde_json`, `sha2`, `toml`, `nix`,
