@@ -88,6 +88,39 @@ fn box_lifecycle_works_for_a_caller() {
         "image": image,
         "labels": { "dev.example.test": "lifecycle", "dev.example.box": name },
     });
+    // Sabotage: return or panic after successful startup without awaiting
+    // teardown when readiness output fails. The real pipe reader is gone
+    // before the spec is sent; runtime inventory and host state must be empty.
+    // The normal run below reuses the same name and spec with consumed output.
+    {
+        let runtime_box = RuntimeContainer { name: name.clone() };
+        let errors = env.root.join("closed-output.stderr");
+        let child = env
+            .command(pinfold())
+            .args(["box", "up"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(fs::File::create(&errors).expect("create closed-output stderr"))
+            .spawn()
+            .expect("start box up with closed output");
+        let mut child = ChildOwner::new(child, &env, None);
+        drop(child.stdout.take().expect("box up stdout reader"));
+        let mut stdin = child.stdin.take().expect("box up spec input");
+        serde_json::to_writer(&mut stdin, &spec).expect("write closed-output spec");
+        stdin.flush().expect("flush closed-output spec");
+        let status = child.wait_bounded();
+        assert_eq!(
+            status.code(),
+            Some(1),
+            "readiness output failure did not exit 1: {}",
+            fs::read_to_string(&errors).expect("read closed-output stderr")
+        );
+        assert!(
+            !runtime_box.listed(),
+            "readiness output failure left a runtime box"
+        );
+        assert_left_nothing(&env, &name, label, "closed-output");
+    }
     let mut up = box_up(&env, &spec, &name);
 
     // Exec immediately after ready, without another runtime query first.
@@ -5166,9 +5199,13 @@ fn find_box_state_dir(env: &TestEnv, owner: u32) -> Option<PathBuf> {
 /// must be empty.
 pub(crate) fn assert_left_nothing(env: &TestEnv, name: &str, label: &str, what: &str) {
     let boxes = env.state.join("pinfold").join("boxes");
-    let leftovers: Vec<PathBuf> = fs::read_dir(&boxes)
-        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
-        .unwrap_or_default();
+    let leftovers: Vec<PathBuf> = match fs::read_dir(&boxes) {
+        Ok(entries) => entries
+            .map(|entry| entry.expect("read box state entry").path())
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => panic!("read {}: {error}", boxes.display()),
+    };
     assert!(
         leftovers.is_empty(),
         "the {what} up for {name} left a state dir: {leftovers:?}"
