@@ -106,14 +106,43 @@ impl Drop for Git {
 /// escapes, includes and case-insensitive keys a hand parser would get
 /// wrong, and a global config that points inside the project counts too. A
 /// relative value is relative to the project root, as git takes it for a
-/// non-bare repository; an absolute value outside the project cannot be
-/// reached by the box, so it adds nothing.
+/// non-bare repository. A resolved path outside the project needs no mount.
 fn hooks_path(root: &Path) -> io::Result<Option<PathBuf>> {
     let value = git(root, &["rev-parse", "--git-path", "hooks"])?;
     let spelled = Path::new(&value);
     let relative = match spelled.strip_prefix(root) {
         Ok(relative) => relative,
-        Err(_) if spelled.is_absolute() => return Ok(None),
+        Err(_) if spelled.is_absolute() => {
+            // A host alias can point back into the writable project, even
+            // when the hook directory does not exist yet.
+            let mut ancestor = spelled.to_path_buf();
+            loop {
+                match fs::canonicalize(&ancestor) {
+                    Ok(path) if path.starts_with(root) => return Err(not_real_dir(spelled)),
+                    Ok(_) => return Ok(None),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        if ancestor
+                            .components()
+                            .any(|component| matches!(component, Component::ParentDir))
+                        {
+                            return Err(not_real_dir(spelled));
+                        }
+                        match fs::symlink_metadata(&ancestor) {
+                            Ok(metadata) if metadata.is_symlink() => {
+                                let target = fs::read_link(&ancestor)?;
+                                ancestor = ancestor.parent().ok_or(error)?.join(target);
+                            }
+                            Err(missing) if missing.kind() == io::ErrorKind::NotFound => {
+                                ancestor = ancestor.parent().ok_or(error)?.to_path_buf();
+                            }
+                            Err(error) => return Err(error),
+                            Ok(_) => return Err(not_real_dir(spelled)),
+                        }
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
         Err(_) => spelled,
     };
     let path = protected_path(root, relative, &format!("core.hooksPath {value:?}"))?;
