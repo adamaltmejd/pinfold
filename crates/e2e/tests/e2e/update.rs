@@ -364,7 +364,8 @@ fn build_changed_profiles_binary(env: &TestEnv) -> Vec<u8> {
     build
         .args(["build", "-p", "pinfold", "--locked"])
         .current_dir(&source)
-        .env("CARGO_TARGET_DIR", &target);
+        .env("CARGO_TARGET_DIR", &target)
+        .env("CARGO_PROFILE_DEV_DEBUG", "0");
     let binary = if cfg!(target_os = "linux") {
         let triple = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
         build.args(["--target", &triple]);
