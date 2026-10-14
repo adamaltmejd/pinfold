@@ -525,6 +525,7 @@ profile image.
   callers set different `NO_COLOR` or `BUILDKIT_COLORS`.
 - Apple base refresh pulls only the host platform unless the first `FROM`
   names an explicit platform. An unresolved platform is not pulled.
+  The empty `scratch` base has no digest and is not pulled.
 
 Built-in images use `debian:trixie-slim`, upgrade Debian packages at each
 build, record the resolved base digest and strip setuid/setgid bits.

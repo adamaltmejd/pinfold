@@ -222,7 +222,7 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
 /// runtime can resolve it. A pinfold-built base has no registry, so its
 /// digest is read from local storage and nothing is pulled; any other base
 /// is pulled first, so a floating tag's digest is current. A `FROM` that
-/// names a variable has none.
+/// names a variable or the empty `scratch` base has none.
 pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Option<String>> {
     let Ok(text) = std::str::from_utf8(containerfile) else {
         return Ok(None);
@@ -250,6 +250,7 @@ pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Op
         return Ok(None);
     }
     match base {
+        Some("scratch") => Ok(None),
         Some(base) if !base.contains('$') => {
             // A pinfold-built base can never be pulled, so read its digest
             // locally before spending the retries on a doomed pull. Every
@@ -262,8 +263,7 @@ pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Op
                 return Ok(image.digest);
             }
             // A floating tag must be pulled for its digest to be current and
-            // present to inspect. `scratch` and other non-registry references
-            // cannot be pulled; they simply have no digest.
+            // present to inspect. An unresolvable base has no digest.
             let native = format!("linux/{TARGET_ARCH}");
             let platform =
                 platform.or_else(|| cfg!(target_os = "macos").then_some(native.as_str()));
