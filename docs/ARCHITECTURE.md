@@ -72,15 +72,18 @@ One runtime per OS, not configurable:
 
 | Host | Runtime | Kernel |
 |---|---|---|
-| macOS 26+ | Apple `container` | one VM per box |
-| Linux | rootless podman | the host's, shared |
+| macOS 26+ | Apple `container` 1.5.0+ (stable) | one VM per box |
+| Linux | rootless podman 6.1.4+ (stable) | the host's, shared |
 
 Anything else is refused: podman on macOS, rootful podman, docker. Nothing
 warns at run time; `doctor` reports the runtime.
 
-podman preflight requires `rootless=true` and `cgroupManager=systemd`; under
-cgroupfs, `--cpus` and `--memory` are silently not enforced. Long-lived boxes
-need `loginctl enable-linger`.
+Preflight refuses box startup on older, prerelease or unrecognized runtime
+versions. Inventory and cleanup remain available on older versions.
+
+podman preflight also requires `rootless=true` and `cgroupManager=systemd`;
+under cgroupfs, `--cpus` and `--memory` are silently not enforced. Long-lived
+boxes need `loginctl enable-linger`.
 
 ## Box
 
@@ -238,6 +241,8 @@ A tag resolving to a different image during startup fails with
 `down` uses a host-only control socket and addresses the observed
 generation. The owner acknowledges after teardown. A timed-out request
 fails without releasing ownership or removing a live owner's state.
+Completed teardown acknowledged by the owner succeeds without another
+runtime inventory.
 Orphan removal and `prune` acquire the lifetime lock and recheck the
 generation before removing anything; an old observation cannot remove a
 replacement. Control sockets never enter boxes. The checked per-user lock
@@ -245,6 +250,12 @@ directory is `/private/tmp/pinfold-<uid>` on macOS and
 `/tmp/pinfold-<uid>` on Linux. Persistent lock files are never unlinked.
 
 `list` prints one JSON line per pinfold box whose labels match every `--label`.
+It skips daily maintenance. Each runtime box inventory has a 20-second
+deadline. Expiry kills the listing client's process group and reaps the client;
+`box list` exits 1 with `runtime-timeout` on stderr and no inventory lines.
+SIGINT or SIGTERM while waiting for inventory kills and reaps the listing
+client before `box list` exits with 128 plus the signal number and no inventory lines.
+It leaves box ownership and state intact.
 `--label KEY=VALUE` matches that value; `--label KEY` matches any value of
 `KEY`; every box carries `dev.pinfold.owner`, so `--label dev.pinfold.owner`
 lists them all. A container without it is no box: `exec` and `stat` exit 3
@@ -712,7 +723,7 @@ Automatic, never prompting:
   in the last hour stays, so the ref its `built` line named still comes
   up; past the hour the newest two rule applies.
 - At most once a day, at the start of any working command (not
-  `--version`, `--help`, `doctor`, `config`, `artifacts`, `update` or `init`): prune boxes whose owner
+  `--version`, `--help`, `doctor`, `config`, `artifacts`, `update`, `box list` or `init`): prune boxes whose owner
   is gone (nothing owns its generation's lifetime lock), leftover sockets,
   artifact `<name>/<version>` directories no pin names (`init/` aside),
   builds beyond each source's newest two (the after-build rule, applied
@@ -934,7 +945,7 @@ CI budget; the two slow gates run separately.
 | 6 | The environment is exactly the spec | Unprefixed host proxy variables stay out; PINFOLD_ENV_SECRET arrives without entering host argv. Guest PATH, HOME, runtime-selection variables, multiline values and a transport-prefixed name arrive exactly while local list/exec/down still manage the box. Always-applied values win. |
 | 7 | No egress means no way out | Without `egress`, nothing gets out, not even through a route. |
 | 8 | Losing the owner fails closed | After SIGKILL, egress fails closed; another XDG root sees the owner dead even with a misleading live pid file, prunes the box and reuses its name. An abandoned partial claim is reclaimable. |
-| 9 | The lifecycle works for a caller | Without egress, `exec` immediately after `ready` streams and returns the exit code, honors explicit workdir and tty, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; `down` removes even while attached output is active, and closing `up`'s stdin tears the box down with reason `stdin-closed`. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box, an empty name or a flag-like name (`--filter=…`) exits 0, prints nothing and leaves live boxes alone; a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. A SIGSTOP owner keeps its claim after down times out; a second XDG root waits the ten-second claim deadline before name-in-use and cannot replace it until acknowledged teardown. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. A cold harness download holds startup while its image tag moves; startup fails as `image-changed`, and the stable replacement then starts. Pre-ready cancellation with a host bookkeeping permission failure still yields `down`/`signal`, with recoverable state and successful name reuse. |
+| 9 | The lifecycle works for a caller | Without egress, `exec` immediately after `ready` streams and returns the exit code, honors explicit workdir and tty, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; on Linux a real image-store lock stalls a fresh caller's listing, which returns exit 1 and `runtime-timeout` with no inventory within 20 seconds, leaves no runtime waiter, and preserves the live box and ownership for a successful listing after release; SIGINT and SIGTERM interrupt listings blocked on that lock with exit 128 plus the signal number, no inventory and no surviving runtime waiter; `down` removes even while attached output is active; on Linux an owner completes teardown while its requester is stopped, and that requester succeeds after resuming with the image-store lock held, without another inventory; closing `up`'s stdin tears the box down with reason `stdin-closed`. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box, an empty name or a flag-like name (`--filter=…`) exits 0, prints nothing and leaves live boxes alone; a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. A SIGSTOP owner keeps its claim after down times out; a second XDG root waits the ten-second claim deadline before name-in-use and cannot replace it until acknowledged teardown. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. A cold harness download holds startup while its image tag moves; startup fails as `image-changed`, and the stable replacement then starts. Pre-ready cancellation with a host bookkeeping permission failure still yields `down`/`signal`, with recoverable state and successful name reuse. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. |
 | 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, or writing into `.vscode/` in a project without one fails, also under a top level named by a space, and a symlinked protected path refuses the run as `protected-path-invalid`; replacing it with a real directory runs. Starting inside `.git` is refused as `project-in-git`; starting from the project root runs. A non-UTF-8 project home fails plan assembly as `path-not-utf8` and leaves no newly created protected directories; an existing protected directory survives. Pre-existing Git and protected configuration hardlinks in the writable project refuse startup as `mount-alias`, leave no box or box state, preserve host bytes and remove newly created protected directories. Removing the alias permits RPC and project writes. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |
