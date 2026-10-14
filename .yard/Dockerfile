@@ -13,11 +13,11 @@ RUN ln -s /opt/rust/bin/* /usr/local/bin/ && cargo --version && cargo clippy --v
 
 # trufflehog for the secrets gate, pinned by version and checksum. Gates have
 # no network, so it runs with --no-verification: every match counts.
-ARG TRUFFLEHOG_VERSION=3.98.0
+ARG TRUFFLEHOG_VERSION=3.99.0
 RUN set -eu; \
     case "$(uname -m)" in \
-        aarch64) arch=arm64; sum=49d38516c6a5ec4633fc31502b79978a01bbafdf892381e511d4bd6e74865563 ;; \
-        x86_64) arch=amd64; sum=05920d08aa23c233d410eefe5c73ae9db86dc7e766b64d6a9368678912daeda7 ;; \
+        aarch64) arch=arm64; sum=ad6fb802f0e6f097829c1eee659b97fc0533a08fa34633cde15bc8fc3258dfb7 ;; \
+        x86_64) arch=amd64; sum=e35ae3fd1e4b7a0c1699d0fda1814282bf906d03379bd4337b092b3a84c6740b ;; \
         *) echo "no trufflehog pin for $(uname -m)" >&2; exit 1 ;; \
     esac; \
     file="trufflehog_${TRUFFLEHOG_VERSION}_linux_${arch}.tar.gz"; \
