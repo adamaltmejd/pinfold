@@ -1,0 +1,42 @@
+name: Issue 92 temporary acceptance
+on:
+  push:
+    branches: [codex/issue-92-acceptance-1]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  round_1:
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [x64-normal, x64-coldmusl, arm-normal]
+    uses: ./.github/workflows/issue92-acceptance-cell.yml
+    with:
+      source_sha: ${{ github.sha }}
+      round: 1
+      case: ${{ matrix.case }}
+  round_2:
+    needs: [round_1]
+    if: always()
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [x64-normal, x64-coldmusl, arm-normal]
+    uses: ./.github/workflows/issue92-acceptance-cell.yml
+    with:
+      source_sha: ${{ github.sha }}
+      round: 2
+      case: ${{ matrix.case }}
+  round_3:
+    needs: [round_2]
+    if: always()
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [x64-normal, x64-coldmusl, arm-normal]
+    uses: ./.github/workflows/issue92-acceptance-cell.yml
+    with:
+      source_sha: ${{ github.sha }}
+      round: 3
+      case: ${{ matrix.case }}

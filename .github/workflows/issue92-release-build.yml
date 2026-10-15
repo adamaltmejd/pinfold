@@ -1,0 +1,77 @@
+name: Issue 92 temporary release builds
+on:
+  push:
+    branches: [codex/issue-92-acceptance-1]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    name: Linux (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-26.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-26.04-arm
+            target: aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Rust musl target
+        run: |
+          # ring's C sources need the musl C compiler (see ci.yml).
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools
+          rustup target add "${{ matrix.target }}"
+          target="${{ matrix.target }}"
+          echo "CC_${target//-/_}=musl-gcc" >>"$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build -p pinfold --release --locked --target "${{ matrix.target }}"
+
+      - name: Stage
+        run: |
+          mkdir dist
+          cp "target/${{ matrix.target }}/release/pinfold" "dist/pinfold-${{ matrix.target }}"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.target }}
+          path: dist/pinfold-*
+          if-no-files-found: error
+
+  macos:
+    name: macOS (aarch64-apple-darwin)
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      # build.rs cross-builds the embedded Linux init with cargo zigbuild,
+      # so the macOS build needs zig, cargo-zigbuild and the musl target.
+      - name: Zig and the init target
+        run: |
+          brew install zig cargo-zigbuild
+          rustup target add aarch64-unknown-linux-musl
+
+      - name: Build
+        run: cargo build -p pinfold --release --locked --target aarch64-apple-darwin
+
+      - name: Stage
+        run: |
+          mkdir dist
+          cp target/aarch64-apple-darwin/release/pinfold dist/pinfold-aarch64-apple-darwin
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: aarch64-apple-darwin
+          path: dist/pinfold-*
+          if-no-files-found: error
