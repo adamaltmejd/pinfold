@@ -14,6 +14,7 @@ use e2e::{TestEnv, pinfold};
 /// state dir untouched.
 #[test]
 fn version_needs_no_runtime() {
+    let _test_timing = e2e::timing::Span::new("test.version_needs_no_runtime");
     let _runtime = crate::shared_runtime();
     // Sabotage: run `crate::core::clean::maintain()` first in main.rs,
     // before the options and the help check, as the code once did; with the
@@ -70,6 +71,7 @@ fn version_needs_no_runtime() {
 
 #[test]
 fn doctor_reports_without_changing_state() {
+    let _test_timing = e2e::timing::Span::new("test.doctor_reports_without_changing_state");
     let _runtime = crate::shared_runtime();
     // Guarantee 27. Sabotage: run maintenance before doctor; the fresh
     // state directory gains a maintenance stamp and the old artifact goes.

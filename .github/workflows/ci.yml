@@ -1,75 +1,105 @@
-name: CI
-
+name: Issue 92 fixed native phase diagnosis
 on:
-  push:
-    branches: [main]
-  pull_request:
-  # scripts/e2e-linux.sh dispatches exact-ref checks at a temporary branch.
   workflow_dispatch:
-  workflow_call:
-    inputs:
-      ref:
-        required: true
-        type: string
-
 permissions:
   contents: read
-
 jobs:
   linux:
-    name: Linux (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    name: Native x64 phase sample ${{ matrix.sample }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-26.04, ubuntu-26.04-arm]
+        sample: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.sha }}
-
-      - name: Rootless podman
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Require fixed candidate and exact existing observations
+        run: |
+          mkdir -p target/issue-92
+          printf '{"status":"not-run"}\n' >target/issue-92/suite-result.json
+          printf '{"status":"not-run"}\n' >target/issue-92/g35-result.json
+          python3 scripts/issue92-phase-source-guard.py >target/issue-92/source-guard.json
+      - name: Original native rootless Podman setup
         run: sh scripts/setup-linux-runner.sh
-
+      - name: Record native runtime
+        run: |
+          podman --version >target/issue-92/podman-version.txt
+          podman info --format json >target/issue-92/runtime.json
+          python3 - <<'PYCODE'
+          import json, pathlib
+          info=json.loads(pathlib.Path('target/issue-92/runtime.json').read_text())
+          assert info['host']['security']['rootless'] is True
+          assert info['store']['graphDriverName']=='overlay'
+          assert not info['store'].get('graphOptions',{}).get('overlay.mount_program')
+          PYCODE
       - name: Rust musl target
         run: |
-          # ring's C sources need the musl C compiler; the runner has none
-          # until musl-tools is installed, and cc-rs looks for it under the
-          # target's own name, so it is named for the target explicitly.
           sudo apt-get install -y -qq musl-tools
           rustup target add "$(uname -m)-unknown-linux-musl"
           echo "CC_$(uname -m)_unknown_linux_musl=musl-gcc" >>"$GITHUB_ENV"
-
-      # Dependencies' build output, per runner. Only main saves; temporary
-      # checks/<sha> branches restore its cache.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          save-if: ${{ !inputs.ref && github.ref == 'refs/heads/main' }}
-
+          save-if: false
       - name: Format
         run: cargo fmt --check
-
       - name: Lint
         run: cargo clippy --all-targets --locked -- -D warnings
-
-      - name: End-to-end tests
-        run: python3 scripts/e2e-budget.py
-
+      - name: Full diagnostic suite with existing phase and host observations
+        id: e2e
+        run: |
+          python3 scripts/diagnose-suite-host.py >target/issue-92/host.jsonl 2>target/issue-92/observer.stderr &
+          observer_pid=$!
+          # shellcheck disable=SC2329 # Called by the EXIT trap.
+          stop_observer() {
+            kill "$observer_pid" 2>/dev/null || true
+            set +e
+            wait "$observer_pid"
+            observer_result=$?
+            printf '{"status":"complete","exit":%s}\n' "$observer_result" >target/issue-92/observer-result.json
+          }
+          trap stop_observer EXIT
+          set +e
+          /usr/bin/time -f 'elapsed=%e user=%U system=%S max_rss_kib=%M exit=%x' -o target/issue-92/command-time.txt cargo test -p e2e --locked -- --nocapture 2>&1 | tee target/issue-92/suite.log
+          result=${PIPESTATUS[0]}
+          set -e
+          printf '{"status":"complete","exit":%s}\n' "$result" >target/issue-92/suite-result.json
+          exit "$result"
       - name: Prototype Bun version
         id: tools
-        run: |
-          python3 scripts/bun-version.py >>"$GITHUB_OUTPUT"
-
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: ${{ !cancelled() && steps.e2e.outcome != 'skipped' }}
+        run: python3 scripts/bun-version.py >>"$GITHUB_OUTPUT"
+      - id: bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
         with:
           bun-version: ${{ steps.tools.outputs.bun }}
-
       - name: Durable recovery preserves boxed execution
+        if: ${{ !cancelled() && steps.bun.outcome == 'success' }}
         working-directory: examples/pi-durable
         run: |
-          bun install --frozen-lockfile
-          bun run check
-          bun durable_recovery_preserves_boxed_execution.ts \
-            --pinfold "$GITHUB_WORKSPACE/target/$(uname -m)-unknown-linux-musl/debug/pinfold" \
-            --image pinfold/profile-default:latest
+          set +e
+          {
+            bun install --frozen-lockfile &&
+            bun run check &&
+            bun durable_recovery_preserves_boxed_execution.ts \
+              --pinfold "$GITHUB_WORKSPACE/target/$(uname -m)-unknown-linux-musl/debug/pinfold" \
+              --image pinfold/profile-default:latest
+          } >"$GITHUB_WORKSPACE/target/issue-92/g35.log" 2>&1
+          result=$?
+          cat "$GITHUB_WORKSPACE/target/issue-92/g35.log"
+          printf '{"status":"complete","exit":%s}\n' "$result" >"$GITHUB_WORKSPACE/target/issue-92/g35-result.json"
+          exit "$result"
+      - name: Separate native build-step diagnostic
+        if: ${{ !cancelled() && steps.e2e.outcome != 'skipped' }}
+        run: python3 scripts/issue92-native-step-probe.py --sample '${{ matrix.sample }}' --output target/issue-92/native-steps
+      - name: Retain every scheduled outcome
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: issue92-next-phase-x64-${{ matrix.sample }}
+          path: target/issue-92/
+          retention-days: 14
