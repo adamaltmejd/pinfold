@@ -67,12 +67,6 @@ survive. A hard host-process kill leaves recovery to the next writer and Pinfold
 owner teardown. There is no scheduler, multi-host coordination, automatic retry,
 read-only replay tool or general host filesystem tool.
 
-The dependency versions and lockfile pin the published API, including the
-real HTTP provider and the Node-compatible SQLite checkpoint backend under Bun.
-These pins are independent of Pinfold's Pi harness. Nightly updates advance
-eligible direct and transitive packages after seven full days, including
-incompatible versions. No global Bun configuration is changed.
-
 The prototype contract and pin-maintenance rule are in
 [ARCHITECTURE.md](../../docs/ARCHITECTURE.md#experimental-durable-caller).
 The standalone regression is guarantee 35, validated on macOS and Linux x64
