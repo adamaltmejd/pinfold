@@ -1,0 +1,219 @@
+name: Issue 92 temporary acceptance cell
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      round:
+        required: true
+        type: number
+      case:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  linux:
+    name: Round ${{ inputs.round }} / ${{ inputs.case }}
+    runs-on: ${{ inputs.case == 'arm-normal' && 'ubuntu-26.04-arm' || 'ubuntu-26.04' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+      - name: Freeze source and record host
+        run: |
+          mkdir -p "$RUNNER_TEMP/issue92-acceptance"
+          printf '{"status":"not-run"}\n' >"$RUNNER_TEMP/issue92-acceptance/suite-result.json"
+          printf '{"status":"not-run"}\n' >"$RUNNER_TEMP/issue92-acceptance/g35-result.json"
+          printf '{"status":"not-run"}\n' >"$RUNNER_TEMP/issue92-acceptance/runtime-result.json"
+          printf '{"status":"not-run"}\n' >"$RUNNER_TEMP/issue92-acceptance/final-source.json"
+          test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
+          git diff --quiet HEAD --
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, platform, subprocess
+          root=(pathlib.Path(os.environ['RUNNER_TEMP'])/'issue92-acceptance')
+          command=lambda *args: subprocess.check_output(args,text=True).strip()
+          models=sorted({line.split(':',1)[1].strip() for line in pathlib.Path('/proc/cpuinfo').read_text().splitlines() if line.startswith(('model name','Hardware'))})
+          config=pathlib.Path('.cargo/config.toml')
+          cpu_max=pathlib.Path('/sys/fs/cgroup/cpu.max')
+          result={'commit':command('git','rev-parse','HEAD'),
+                  'tree':command('git','rev-parse','HEAD^{tree}'),
+                  'cargo_toml_sha256':hashlib.sha256(pathlib.Path('Cargo.toml').read_bytes()).hexdigest(),
+                  'cargo_lock_sha256':hashlib.sha256(pathlib.Path('Cargo.lock').read_bytes()).hexdigest(),
+                  'cargo_config_exists':config.exists(),
+                  'cargo_config_sha256':hashlib.sha256(config.read_bytes()).hexdigest() if config.exists() else None,
+                  'architecture':platform.machine(),'kernel':platform.release(),
+                  'model':models,'affinity_cpus':sorted(os.sched_getaffinity(0)),
+                  'cgroup_cpu_max':cpu_max.read_text().strip() if cpu_max.exists() else None,
+                  'rustc_version':command('rustc','--version'),
+                  'cargo_version':command('cargo','--version'),
+                  'worker_env_overrides_present':{key:bool(os.environ.get(key)) for key in ('RUST_TEST_THREADS','CARGO_BUILD_JOBS','CARGO_TARGET_DIR')},
+                  'case':'${{ inputs.case }}','round':${{ inputs.round }}}
+          (root/'source-host.json').write_text(json.dumps(result,indent=2)+'\n')
+          assert len(result['affinity_cpus'])==4
+          assert not any(result['worker_env_overrides_present'].values())
+          PY
+      - name: Rootless podman
+        run: sh scripts/setup-linux-runner.sh
+      - name: Record runtime version
+        run: podman --version >"$RUNNER_TEMP/issue92-acceptance/podman-version.txt"
+      - name: Record and verify actual ordinary runtime backing
+        run: |
+          python3 - <<'PY_RUNTIME'
+          import json, os, pathlib, platform, subprocess
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'issue92-acceptance'
+          info=json.loads(subprocess.check_output(['podman','info','--format','json'],timeout=90))
+          (root/'runtime.json').write_text(json.dumps(info,indent=2)+'\n')
+          store=info['store']
+          graph=pathlib.Path(store['graphRoot'])
+          mount=json.loads(subprocess.check_output(['findmnt','--json','--target',str(graph),'-o','TARGET,FSTYPE,SOURCE,OPTIONS'],timeout=10))
+          fs=os.statvfs(graph)
+          result={'status':'observed','architecture':platform.machine(),'mount':mount,
+                  'graphroot':str(graph),'runroot':store['runRoot'],'capacity_bytes':fs.f_blocks*fs.f_frsize}
+          (root/'runtime-result.json').write_text(json.dumps(result,indent=2)+'\n')
+          assert info['host']['security']['rootless'] is True
+          assert graph==pathlib.Path.home()/'.local/share/containers/storage'
+          assert store['runRoot']==f'/run/user/{os.getuid()}/containers'
+          assert store['graphDriverName']=='overlay' and not store['transientStore']
+          assert store['graphOptions'].get('overlay.mountopt')=='nodev'
+          assert not store['graphOptions'].get('overlay.mount_program')
+          assert store['graphStatus']['Native Overlay Diff']=='true'
+          mounts=mount['filesystems']
+          assert len(mounts)==1
+          if platform.machine()=='x86_64':
+              assert os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('RUNNER_ENVIRONMENT')=='github-hosted'
+              assert mounts[0]['target']==str(graph) and mounts[0]['fstype']=='tmpfs'
+              assert store['graphStatus']['Backing Filesystem']=='tmpfs'
+              assert result['capacity_bytes']==6*1024**3
+          else:
+              assert platform.machine()=='aarch64' and mounts[0]['fstype']!='tmpfs'
+              assert store['graphStatus']['Backing Filesystem']=='extfs'
+          result['status']='complete'
+          result['exit']=0
+          (root/'runtime-result.json').write_text(json.dumps(result,indent=2)+'\n')
+          PY_RUNTIME
+      - name: Rust musl target
+        run: |
+          sudo apt-get install -y -qq musl-tools
+          rustup target add "$(uname -m)-unknown-linux-musl"
+          echo "CC_$(uname -m)_unknown_linux_musl=musl-gcc" >>"$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        id: rust_cache
+        with:
+          save-if: false
+      - name: Record restored cache state
+        env:
+          RUST_CACHE_HIT: ${{ steps.rust_cache.outputs.cache-hit }}
+          RUST_CACHE_PRIMARY_KEY: ${{ steps.rust_cache.outputs.cache-primary-key }}
+          RUST_CACHE_MATCHED_KEY: ${{ steps.rust_cache.outputs.cache-matched-key }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, platform
+          target=pathlib.Path('target')
+          triple=platform.machine()+'-unknown-linux-musl'
+          musl=target/triple
+          result={'target_exists_after_restore':target.exists(),
+                  'musl_target_exists_after_restore':musl.exists(),
+                  'host_debug_exists_after_restore':(target/'debug').exists(),
+                  'cache_hit_semantics':'exact-match only; false or unavailable does not prove no restore',
+                  'rust_cache_hit_output':os.environ.get('RUST_CACHE_HIT') or None,
+                  'rust_cache_primary_key_output':os.environ.get('RUST_CACHE_PRIMARY_KEY') or None,
+                  'rust_cache_matched_key_output':os.environ.get('RUST_CACHE_MATCHED_KEY') or None}
+          (pathlib.Path(os.environ['RUNNER_TEMP'])/'issue92-acceptance'/'cache-after-restore.json').write_text(json.dumps(result,indent=2)+'\n')
+          PY
+      - name: Format
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Record cache then optionally remove only musl target
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, platform
+          triple=platform.machine()+'-unknown-linux-musl'
+          path=pathlib.Path('target')/triple
+          ((pathlib.Path(os.environ['RUNNER_TEMP'])/'issue92-acceptance')/'cache-before-suite.json').write_text(
+              json.dumps({'musl_target_dir':str(path),'exists_after_cache_and_lint':path.exists()},indent=2)+'\n')
+          PY
+          if [ '${{ inputs.case }}' = 'x64-coldmusl' ]; then
+            test "$(uname -m)" = x86_64
+            rm -rf -- target/x86_64-unknown-linux-musl
+          fi
+      - name: Complete full e2e suite, then judge budget
+        id: e2e
+        run: |
+          set +e
+          python3 scripts/e2e-budget.py 2>&1 | tee "$RUNNER_TEMP/issue92-acceptance/suite.log"
+          gate_status=${PIPESTATUS[0]}
+          set -e
+          GATE_STATUS="$gate_status" python3 - <<'PY'
+          import json, os, pathlib, re, sys
+          root=(pathlib.Path(os.environ['RUNNER_TEMP'])/'issue92-acceptance')
+          lines=(root/'suite.log').read_text(errors='replace').splitlines()
+          markers=[]
+          for line in lines:
+              try: item=json.loads(line)
+              except json.JSONDecodeError: continue
+              if isinstance(item,dict) and set(item)=={'e2e_elapsed_ns','e2e_exit'}:
+                  markers.append(item)
+          result={'status':'complete' if len(markers)==1 else 'missing-or-duplicate-marker',
+                  'gate_exit':int(os.environ['GATE_STATUS']),
+                  'command':['cargo','test','-p','e2e','--locked'],
+                  'libtest_result_lines':[line for line in lines if line.startswith('test result:')]}
+          if len(markers)==1:
+              result.update(markers[0])
+              result['under_300']=result['e2e_elapsed_ns']<300_000_000_000
+              result['normal_x64_at_most_270']=result['e2e_elapsed_ns']<=270_000_000_000 if '${{ inputs.case }}'=='x64-normal' else None
+          (root/'suite-result.json').write_text(json.dumps(result,indent=2)+'\n')
+          if len(markers)!=1 or result['gate_exit'] or result.get('e2e_exit') or not result.get('under_300') or result.get('normal_x64_at_most_270') is False:
+              sys.exit(1)
+          PY
+      - name: Prototype Bun version
+        id: tools
+        if: ${{ !cancelled() && steps.e2e.outcome != 'skipped' }}
+        run: python3 scripts/bun-version.py >>"$GITHUB_OUTPUT"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        id: bun
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        with:
+          bun-version: ${{ steps.tools.outputs.bun }}
+      - name: Durable recovery preserves boxed execution
+        if: ${{ !cancelled() && steps.bun.outcome == 'success' }}
+        working-directory: examples/pi-durable
+        run: |
+          set +e
+          {
+            bun install --frozen-lockfile &&
+            bun run check &&
+            bun durable_recovery_preserves_boxed_execution.ts \
+              --pinfold "$GITHUB_WORKSPACE/target/$(uname -m)-unknown-linux-musl/debug/pinfold" \
+              --image pinfold/profile-default:latest
+          } >"$RUNNER_TEMP/issue92-acceptance/g35.log" 2>&1
+          result=$?
+          cat "$RUNNER_TEMP/issue92-acceptance/g35.log"
+          printf '{"status":"complete","exit":%s}\n' "$result" >"$RUNNER_TEMP/issue92-acceptance/g35-result.json"
+          exit "$result"
+      - name: Record final fixed source and clean state
+        if: always()
+        run: |
+          python3 - <<'PY_FINAL'
+          import json, os, pathlib, subprocess, sys
+          head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          tracked_clean=subprocess.run(['git','diff','--quiet','HEAD','--']).returncode==0
+          untracked_clean=not subprocess.check_output(['git','ls-files','--others','--exclude-standard','-z'])
+          result={'status':'complete','head':head,'expected':'${{ inputs.source_sha }}',
+                  'tracked_clean':tracked_clean,'untracked_clean':untracked_clean}
+          result['exit']=0 if head==result['expected'] and tracked_clean and untracked_clean else 1
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'issue92-acceptance'
+          root.mkdir(parents=True,exist_ok=True)
+          (root/'final-source.json').write_text(json.dumps(result,indent=2)+'\n')
+          sys.exit(result['exit'])
+          PY_FINAL
+      - name: Upload every cell outcome
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: issue92-r${{ inputs.round }}-${{ inputs.case }}
+          path: ${{ runner.temp }}/issue92-acceptance/
+          retention-days: 14
