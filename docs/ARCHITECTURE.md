@@ -927,7 +927,8 @@ the command refuses as `project-in-git`.
 ## Guarantees
 
 Each has one end-to-end test. Testing policy is in `AGENTS.md`.
-Guarantees 1–34 run through the Rust E2E crate. Guarantee 35 is the standalone
+Guarantees 1–34 and Linux-only guarantee 37 run through the Rust E2E crate.
+Guarantee 35 is the standalone
 `examples/pi-durable/durable_recovery_preserves_boxed_execution.ts` gate;
 its README gives installation and execution commands. Run it with exclusive
 runtime ownership, after the Rust suite.
