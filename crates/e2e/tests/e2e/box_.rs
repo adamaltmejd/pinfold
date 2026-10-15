@@ -1575,6 +1575,223 @@ fn nothing_can_gain_privileges() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn linux_boxes_apply_their_own_seccomp_profile() {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let _runtime = crate::exclusive_runtime();
+    // Sabotage: write both derived policies to one shared pathname again.
+    // Both Podman consumers are held until the second policy replaces it;
+    // the first box then wrongly refuses getppid.
+    let env = TestEnv::with_private_cache("seccomp-selection");
+    let image = default_image(&env);
+    let info = run_ok(
+        env.command(Path::new("podman"))
+            .args(["info", "--format", "json"]),
+    );
+    let info: serde_json::Value = serde_json::from_slice(&info.stdout).unwrap();
+    let source = info["host"]["security"]["seccompProfilePath"]
+        .as_str()
+        .expect("Podman's host seccomp profile");
+    let normal: serde_json::Value = serde_json::from_slice(&fs::read(source).unwrap()).unwrap();
+    let mut strict = normal.clone();
+    let rules = strict["syscalls"].as_array_mut().unwrap();
+    for rule in rules.iter_mut() {
+        if rule["action"] == "SCMP_ACT_ALLOW" {
+            rule["names"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|name| name != "getppid");
+        }
+    }
+    rules.retain(|rule| !rule["names"].as_array().unwrap().is_empty());
+    rules.push(serde_json::json!({
+        "names": ["getppid"],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": nix::libc::EPERM,
+    }));
+
+    // Observe raw syscalls, including errno, rather than libc's cached IDs.
+    let fixture = env.root.join("fixture");
+    fs::create_dir_all(&fixture).unwrap();
+    let observer = env.root.join("seccomp-observer.c");
+    fs::write(
+        &observer,
+        r#"#define _GNU_SOURCE
+#include <errno.h>
+#include <stdio.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+int main(void) {
+    errno = 0;
+    long parent = syscall(SYS_getppid);
+    int parent_errno = errno;
+    errno = 0;
+    long self = syscall(SYS_getpid);
+    int self_errno = errno;
+    printf("{\"getppid\":%ld,\"getppid_errno\":%d,\"getpid\":%ld,\"getpid_errno\":%d}\n",
+           parent, parent_errno, self, self_errno);
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    run_ok(
+        Command::new("musl-gcc")
+            .args(["-O2", "-static", "-o"])
+            .arg(fixture.join("seccomp-observer"))
+            .arg(observer),
+    );
+
+    let names = [box_name("seccomp-normal"), box_name("seccomp-strict")];
+    let sources = [env.root.join("normal.fifo"), env.root.join("strict.fifo")];
+    let configs = [env.root.join("normal.conf"), env.root.join("strict.conf")];
+    for (source, config) in sources.iter().zip(&configs) {
+        nix::unistd::mkfifo(
+            source,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
+        fs::write(
+            config,
+            format!(
+                "[containers]\nseccomp_profile = {}\n",
+                serde_json::to_string(source.to_str().unwrap()).unwrap()
+            ),
+        )
+        .unwrap();
+    }
+    let mut starts = std::array::from_fn::<_, 2, _>(|index| {
+        let spec = serde_json::json!({
+            "name": names[index],
+            "image": image,
+            "mounts": [{"host": fixture, "guest": "/fixture", "readonly": true}],
+        });
+        box_up_start(
+            &env,
+            &spec,
+            &[("CONTAINERS_CONF", configs[index].to_str().unwrap())],
+        )
+    });
+
+    // FIFO writers rendezvous only once both owners have completed their
+    // preflight and preparation. Keep their profile reads open until then.
+    let writers = sources.each_ref().map(|source| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            match fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(nix::libc::O_NONBLOCK)
+                .open(source)
+            {
+                Ok(writer) => {
+                    nix::fcntl::fcntl(
+                        &writer,
+                        nix::fcntl::FcntlArg::F_SETFL(nix::fcntl::OFlag::empty()),
+                    )
+                    .unwrap();
+                    break writer;
+                }
+                Err(error) if error.raw_os_error() == Some(nix::libc::ENXIO) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "box up did not read its host seccomp profile"
+                    );
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("open host seccomp fixture: {error}"),
+            }
+        }
+    });
+
+    let store = &info["store"];
+    let lock_path = Path::new(store["graphRoot"].as_str().unwrap()).join(format!(
+        "{}-images/images.lock",
+        store["graphDriverName"].as_str().unwrap()
+    ));
+    // Declared after the owners and FIFO writers: panic releases the lock
+    // before owner cleanup needs Podman. No image metadata is changed.
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .expect("open Podman's image-store lock");
+    let metadata = lock.metadata().unwrap();
+    let lock_identity = format!(
+        "{:02x}:{:02x}:{}",
+        nix::sys::stat::major(metadata.dev()),
+        nix::sys::stat::minor(metadata.dev()),
+        metadata.ino()
+    );
+    let held = nix::libc::flock {
+        l_type: nix::libc::F_WRLCK as i16,
+        l_whence: nix::libc::SEEK_SET as i16,
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+    };
+    nix::fcntl::fcntl(&lock, nix::fcntl::FcntlArg::F_SETLK(&held)).unwrap();
+    for ((mut writer, policy), starting) in writers.into_iter().zip([normal, strict]).zip(&starts) {
+        writer
+            .write_all(&serde_json::to_vec(&policy).unwrap())
+            .unwrap();
+        drop(writer);
+        // Podman's image lookup precedes seccomp consumption. Its kernel
+        // lock waiter proves derivation finished while consumption is held.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let locks = fs::read_to_string("/proc/locks").unwrap();
+            let waiting = locks.lines().any(|line| {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                if !fields.contains(&"->") || !fields.contains(&lock_identity.as_str()) {
+                    return false;
+                }
+                let Some(pid) = fields.get(5) else {
+                    return false;
+                };
+                fs::read_to_string(format!("/proc/{pid}/status")).is_ok_and(|status| {
+                    status_field(&status, "PPid:") == starting.child.id().to_string()
+                })
+            });
+            if waiting {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "box up's Podman consumer did not wait on the image lock"
+            );
+            std::thread::yield_now();
+        }
+    }
+    drop(lock);
+    let ready = starts.each_mut().map(Starting::first_line);
+    let boxes = starts
+        .into_iter()
+        .zip(ready)
+        .zip(&names)
+        .map(|((starting, ready), name)| {
+            assert_eq!(ready["event"], "ready", "box up failed: {ready}");
+            starting.into_up(name, ready)
+        })
+        .collect::<Vec<_>>();
+    let observed = names.each_ref().map(|name| {
+        let output = box_exec(&env, name, &["/fixture/seccomp-observer"]);
+        assert_ok(&output, "the syscall observer");
+        serde_json::from_str::<serde_json::Value>(&output.stdout).unwrap()
+    });
+    assert!(observed[0]["getppid"].as_i64().unwrap() >= 0);
+    assert_eq!(observed[0]["getppid_errno"], 0);
+    assert_eq!(observed[1]["getppid"], -1);
+    assert_eq!(observed[1]["getppid_errno"], nix::libc::EPERM);
+    // Positive control in the stricter box: another raw syscall succeeds.
+    assert!(observed[1]["getpid"].as_i64().unwrap() > 0);
+    assert_eq!(observed[1]["getpid_errno"], 0);
+    for up in boxes {
+        up.down(&env);
+    }
+}
+
+#[test]
 fn only_allowlisted_hosts_get_through() {
     let _runtime = crate::shared_runtime();
     // Sabotage: make the proxy's allowlist check accept every host; example.com

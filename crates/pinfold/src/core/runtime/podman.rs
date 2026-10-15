@@ -19,7 +19,6 @@ use crate::core::runtime::{
     BoxInfo, BoxStat, BuildRequest, ImageInfo, MemoryStat, PidsStat, Runtime, bind, inspect,
     list_output, output, parse_json, spawn_error,
 };
-use crate::dirs;
 
 /// Where the bind-mounted proxy socket appears in the box.
 pub const GUEST_PROXY_SOCKET: &str = "/run/pinfold/proxy.sock";
@@ -55,7 +54,7 @@ impl Runtime for Podman {
             fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
         }
         let source = seccomp.expect("podman's preflight refuses a host with no seccomp profile");
-        let seccomp = seccomp_profile(source)?;
+        let seccomp = seccomp_profile(source, state_dir)?;
         // --dns none cannot be combined with --network none on podman
         // 5.4.2; without this bind podman writes a resolver of its own.
         let resolv_conf = state_dir.join("resolv.conf");
@@ -383,7 +382,7 @@ struct InfoSecurity {
 /// profile's default action (`ENOSYS` in podman's profile) and callers fall
 /// back to `clone`, where the flag is visible. `source` is the default
 /// profile's path, as `podman info` reports it.
-fn seccomp_profile(source: &Path) -> io::Result<PathBuf> {
+fn seccomp_profile(source: &Path, state_dir: &Path) -> io::Result<PathBuf> {
     let what = format!("podman's seccomp profile {}", source.display());
     let text = fs::read(source)
         .map_err(|error| io::Error::new(error.kind(), format!("read {what}: {error}")))?;
@@ -428,17 +427,12 @@ fn seccomp_profile(source: &Path) -> io::Result<PathBuf> {
             }],
         }));
     }
-    let dir = dirs::cache_dir()?.join("seccomp");
-    fs::create_dir_all(&dir)?;
-    let path = dir.join("podman.json");
-    // Write beside and rename, so a concurrent `box up` never hands podman a
-    // half-written profile.
-    let temp = dir.join(format!(".podman-{}.json", std::process::id()));
+    // The name claim keeps this path exclusive through runtime removal.
+    let path = state_dir.join("seccomp.json");
     fs::write(
-        &temp,
+        &path,
         serde_json::to_vec(&profile).map_err(io::Error::other)?,
     )?;
-    fs::rename(&temp, &path)?;
     Ok(path)
 }
 
