@@ -1,79 +1,35 @@
-name: Issue 92 bounded Pinfold user CPU profile
+name: Issue 92 perf report format check
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  profile:
-    name: Native x64 user CPU sample ${{ matrix.sample }}
+  format:
     runs-on: ubuntu-26.04
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        sample: [1, 2, 3]
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - name: Require original diagnostic production and test source
+      - name: Inspect distro perf report format on public zero bytes
         run: |
-          git diff --exit-code d046a90190a0ded35a9056053bb1e555514f4a09 HEAD -- \
-            crates profile Cargo.toml Cargo.lock rust-toolchain.toml \
-            scripts/setup-linux-runner.sh docs/ARCHITECTURE.md AGENTS.md
-      - name: Original native rootless Podman setup
-        run: sh scripts/setup-linux-runner.sh
-      - name: Matching distro profiler tools
-        run: |
-          mkdir -p target/issue-92-profile
-          set +e
-          sudo apt-get install -y linux-tools-common "linux-tools-$(uname -r)" \
-            >target/issue-92-profile/profile-tools.log 2>&1
-          result=$?
-          printf '%s\n' "$result" >target/issue-92-profile/profile-tools-install-exit.txt
-          if [ "$result" -ne 0 ]; then
-            echo "Matching distro profiler tools unavailable; the profiling step will report unrun."
-          fi
-          command -v perf >target/issue-92-profile/perf-location.txt || true
-          if command -v perf >/dev/null 2>&1; then
-            ls -l "$(command -v perf)" >>target/issue-92-profile/perf-location.txt
-            if [ "$(head -c 2 "$(command -v perf)")" = '#!' ]; then
-              head -60 "$(command -v perf)" >>target/issue-92-profile/perf-location.txt
-            fi
-          fi
-          dpkg-query -L linux-tools-common "linux-tools-$(uname -r)" \
-            >target/issue-92-profile/profile-tool-paths.txt 2>&1 || true
-          exit 0
-      - name: Rust musl target
-        run: |
-          sudo apt-get install -y -qq musl-tools
-          rustup target add "$(uname -m)-unknown-linux-musl"
-          echo "CC_$(uname -m)_unknown_linux_musl=musl-gcc" >>"$GITHUB_ENV"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: false
-      - name: Format
-        run: cargo fmt --check
-      - name: Lint
-        run: cargo clippy --all-targets --locked -- -D warnings
-      - name: Existing full suite with independent profiling status
-        run: sh scripts/profile-suite.sh target/issue-92-profile
-      - name: Retain sanitized observations only
+          set -euo pipefail
+          mkdir -p evidence
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq linux-tools-common "linux-tools-$(uname -r)"
+          command -v perf >evidence/location.txt
+          ls -l "$(command -v perf)" >>evidence/location.txt
+          perf --version >>evidence/location.txt
+          scratch=$(mktemp -d)
+          trap 'sudo rm -f "$scratch/perf.data" "$scratch/perf.data.old"; rmdir "$scratch"' EXIT
+          sudo perf record -q -e cpu-clock:u -F 97 -o "$scratch/perf.data" -- \
+            sh -c 'head -c 536870912 /dev/zero | sha256sum >/dev/null'
+          sudo perf report --stdio --no-children --sort pid,comm,dso,symbol \
+            --comms=sha256sum --field-separator=';' --percent-limit=0 \
+            -i "$scratch/perf.data" >evidence/sorted-report.txt
+          sudo perf report --stdio --no-children --fields overhead,pid,comm,dso,symbol \
+            --comms=sha256sum --field-separator=';' --percent-limit=0 \
+            -i "$scratch/perf.data" >evidence/explicit-report.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: issue-92-profile-x64-${{ matrix.sample }}
-          path: |
-            target/issue-92-profile/suite.log
-            target/issue-92-profile/command-time.txt
-            target/issue-92-profile/host.jsonl
-            target/issue-92-profile/observer.stderr
-            target/issue-92-profile/hardware.json
-            target/issue-92-profile/cpu-flags.txt
-            target/issue-92-profile/profile-status.json
-            target/issue-92-profile/profile-tools.log
-            target/issue-92-profile/profile-tools-install-exit.txt
-            target/issue-92-profile/perf-summary.json
-            target/issue-92-profile/perf-location.txt
-            target/issue-92-profile/profile-tool-paths.txt
+          name: issue-92-perf-format
+          path: evidence/
           retention-days: 14
