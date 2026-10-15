@@ -810,8 +810,6 @@ fn home_mount(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
         return Err(refuse("the box spec has no exact HOME env entry".into()));
     };
     let home = Path::new(home);
-    // The deepest mount holding `$HOME`. The duplicate check ran first, so
-    // no two mounts can name one guest path and the pick is unambiguous.
     let Some((mount, relative)) = plan
         .mounts
         .iter()
