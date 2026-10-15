@@ -14,7 +14,7 @@ fi
 sudo apt-get update -qq
 sudo apt-get install -y -qq dbus-user-session build-essential pkg-config \
   libapparmor-dev libbtrfs-dev libgpgme-dev libseccomp-dev libsqlite3-dev \
-  libsubid-dev libsystemd-dev
+  libsubid-dev libsystemd-dev fuse-overlayfs
 
 # The runner's packaged Podman is older than pinfold's minimum. Build the
 # unmodified release: upstream's Linux release binaries are remote clients.
@@ -32,6 +32,10 @@ sudo install -m 0755 "$podman_source/bin/podman" /usr/local/bin/podman
 # Older vendor storage configs override the new runtime's rootless paths.
 sudo install -m 0644 "$podman_source/vendor/go.podman.io/storage/storage.conf" \
   /usr/share/containers/storage.conf
+# Probe-only selection precedes every Podman command and uses the normal
+# per-user store only when it is absent or empty. No existing store is reset.
+CONTAINERS_STORAGE_CONF=$(python3 scripts/configure-fuse-probe.py)
+export CONTAINERS_STORAGE_CONF
 export PATH="/usr/local/bin:$PATH"
 echo /usr/local/bin >>"$GITHUB_PATH"
 test "$(podman --version)" = "podman version 6.1.4"

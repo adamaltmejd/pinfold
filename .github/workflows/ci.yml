@@ -17,14 +17,17 @@ permissions:
 
 jobs:
   linux:
-    name: Linux (${{ matrix.runner }}, observation ${{ matrix.sample }})
+    name: Linux (${{ matrix.runner }}, ${{ matrix.storage }}, sample ${{ matrix.sample }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-26.04]
-        sample: [1, 2, 3, 4]
+        runner: [ubuntu-26.04, ubuntu-26.04-arm]
+        storage: [native, fuse]
+        sample: [1, 2]
+    env:
+      ISSUE92_STORAGE: ${{ matrix.storage }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,7 +60,11 @@ jobs:
       - name: End-to-end tests with temporary observations
         run: |
           mkdir -p target/issue-92
-          podman info --format json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps({"store": d.get("store"), "version": d.get("version")}))' >target/issue-92/runtime.json
+          dpkg-query -W fuse-overlayfs >target/issue-92/fuse-packages.txt
+          dpkg-query -W '*fuse*' >>target/issue-92/fuse-packages.txt
+          /usr/bin/fuse-overlayfs --version >target/issue-92/fuse-version.txt 2>&1
+          podman info --format json >target/issue-92/runtime.json
+          python3 scripts/verify-storage-probe.py target/issue-92/runtime.json
           python3 scripts/diagnose-suite-host.py >target/issue-92/host.jsonl &
           observer_pid=$!
           trap 'kill "$observer_pid" 2>/dev/null || true; wait "$observer_pid" || true' EXIT
@@ -71,8 +78,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: issue-92-x64-${{ matrix.sample }}
-          path: target/issue-92/
+          name: issue-92-storage-${{ matrix.runner }}-${{ matrix.storage }}-${{ matrix.sample }}
+          path: |
+            target/issue-92/
+            ${{ runner.temp }}/issue92-*/
           retention-days: 14
 
       - name: Prototype Bun version
