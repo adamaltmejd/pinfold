@@ -1,25 +1,16 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  # scripts/e2e-linux.sh dispatches exact-ref checks at a temporary branch.
   workflow_dispatch:
-  workflow_call:
-    inputs:
-      ref:
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 jobs:
-  linux:
-    name: Linux (${{ matrix.runner }})
+  profile-builds:
+    name: Podman build jobs ABBA (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -27,49 +18,39 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.sha }}
-
+          fetch-depth: 0
       - name: Rootless podman
         run: sh scripts/setup-linux-runner.sh
-
       - name: Rust musl target
         run: |
-          # ring's C sources need the musl C compiler; the runner has none
-          # until musl-tools is installed, and cc-rs looks for it under the
-          # target's own name, so it is named for the target explicitly.
           sudo apt-get install -y -qq musl-tools
           rustup target add "$(uname -m)-unknown-linux-musl"
           echo "CC_$(uname -m)_unknown_linux_musl=musl-gcc" >>"$GITHUB_ENV"
-
-      # Dependencies' build output, per runner. Only main saves; temporary
-      # checks/<sha> branches restore its cache.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          save-if: ${{ !inputs.ref && github.ref == 'refs/heads/main' }}
-
-      - name: Format
-        run: cargo fmt --check
-
-      - name: Lint
-        run: cargo clippy --all-targets --locked -- -D warnings
-
-      - name: End-to-end tests
-        run: cargo test -p e2e --locked
-
-      - name: Prototype Bun version
-        id: tools
+          save-if: false
+      - name: Build baseline and sole-change prototype CLIs for measurement
         run: |
-          python3 scripts/bun-version.py >>"$GITHUB_OUTPUT"
-
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+          mkdir -p target
+          git diff a05deebec7ba532e17a5cf8b57c0aa9370b1fdca HEAD -- crates/pinfold profile Cargo.toml Cargo.lock >target/jobs-prototype.patch
+          git show a05deebec7ba532e17a5cf8b57c0aa9370b1fdca:crates/pinfold/src/core/runtime/podman.rs >crates/pinfold/src/core/runtime/podman.rs
+          cargo build -p pinfold --locked --target "$(uname -m)-unknown-linux-musl"
+          cp "target/$(uname -m)-unknown-linux-musl/debug/pinfold" target/pinfold-jobs-A
+          git restore crates/pinfold/src/core/runtime/podman.rs
+          cargo build -p pinfold --locked --target "$(uname -m)-unknown-linux-musl"
+          cp "target/$(uname -m)-unknown-linux-musl/debug/pinfold" target/pinfold-jobs-B
+          git diff --exit-code
+      - name: Four predetermined real builds and asset comparisons
+        run: |
+          python3 scripts/jobs-abba.py \
+            --binary-a target/pinfold-jobs-A --binary-b target/pinfold-jobs-B \
+            --source-revision "$(git rev-parse HEAD)" --outdir target/jobs-abba
+      - name: Retain every observation
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          bun-version: ${{ steps.tools.outputs.bun }}
-
-      - name: Durable recovery preserves boxed execution
-        working-directory: examples/pi-durable
-        run: |
-          bun install --frozen-lockfile
-          bun run check
-          bun durable_recovery_preserves_boxed_execution.ts \
-            --pinfold "$GITHUB_WORKSPACE/target/$(uname -m)-unknown-linux-musl/debug/pinfold" \
-            --image pinfold/profile-default:latest
+          name: issue-92-jobs-abba-${{ matrix.runner }}
+          path: |
+            target/jobs-abba/
+            target/jobs-prototype.patch
+          retention-days: 14

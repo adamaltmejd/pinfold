@@ -240,10 +240,10 @@ impl Runtime for Podman {
             // The cache is intermediate images carrying only buildah's own
             // labels; this one is how `purge_build_cache` tells pinfold's
             // apart.
-            &["--layer-label", &label]
+            &["--jobs=2", "--layer-label", &label]
         } else {
             // Every step reruns and no intermediate image is left behind.
-            &["--layers=false"]
+            &["--jobs=2", "--layers=false"]
         };
         super::build("podman", cache_flags, request)
     }
