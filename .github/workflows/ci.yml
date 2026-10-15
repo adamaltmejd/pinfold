@@ -8,8 +8,6 @@ jobs:
     name: Native x64 ABBA host ${{ matrix.host }}
     runs-on: ubuntu-26.04
     timeout-minutes: 40
-    env:
-      PINFOLD_SCHEDULING_EVIDENCE: ${{ runner.temp }}/pinfold-scheduling-evidence
     strategy:
       fail-fast: false
       matrix:
@@ -19,6 +17,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+      - name: Set evidence directory outside the restored cache
+        run: echo "PINFOLD_SCHEDULING_EVIDENCE=$RUNNER_TEMP/pinfold-scheduling-evidence" >>"$GITHUB_ENV"
       - name: Verify frozen diagnostic source
         run: python3 scripts/release-scheduling-abba.py --verify-only
       - name: Original native rootless Podman setup

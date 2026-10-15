@@ -13,7 +13,7 @@ import time
 BASE = '9f5b59b31b88d342d489c0b597040d8b66e30caf'
 DRIVER_PATHS = {'.github/workflows/ci.yml', 'scripts/release-scheduling-abba.py', 'scripts/release-scheduling-variants.json'}
 PAYLOAD_SHA256 = '5e85013f94e4cc28bc3c82aa685fba71cf0df862751e746ba8eacecac8b5efcd'
-WORKFLOW_SHA256 = 'dc893b497f050f0f3eba0af6fffbd741303ba20ff5eac85b2725b32fd4fd4be1'
+WORKFLOW_SHA256 = '8a4a01fa006619b9ad46de64871d03db63453535b9b4ea3778d881862ef82046'
 ROOT = Path(os.environ['PINFOLD_SCHEDULING_EVIDENCE'])
 ORDER = ('A', 'B', 'B', 'A')
 
