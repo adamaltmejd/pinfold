@@ -9,7 +9,6 @@ nothing else of the host. Its only way out is its own allowlisting proxy.
   and read project settings with `pinfold config`.
 
 - Spec: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- Working rules: [AGENTS.md](AGENTS.md)
 
 ## Requirements
 
