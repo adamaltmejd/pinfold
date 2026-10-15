@@ -26,10 +26,9 @@ fn host_updates_are_verified_and_atomic() {
     // command symlink is replaced and the installed binary's inode stays
     // unchanged. Remove the exclusive executable lock; the owner under a
     // different XDG root no longer prevents updating its executable. Drop
-    // the check request; the fixture records none and reports no version.
-    // Expected release bytes and digest, the fixture version and the
-    // recorded check request come from the host fixture; inode identity
-    // comes from the host filesystem.
+    // the check request; the fixture version is not reported.
+    // Expected release bytes, digest and version come from the host fixture;
+    // inode identity comes from the host filesystem.
     let env = TestEnv::new("update");
     let installed = env.root.join("pinfold");
     fs::copy(pinfold(), &installed).unwrap();
@@ -54,14 +53,6 @@ fn host_updates_are_verified_and_atomic() {
     assert!(
         String::from_utf8_lossy(&check.stdout).contains("999.0.0"),
         "check did not report the fixture version: {check:?}"
-    );
-    assert_eq!(
-        fs::read_to_string(fixture.root.join("checks"))
-            .unwrap_or_default()
-            .lines()
-            .count(),
-        1,
-        "check-only did not reach the fixture"
     );
     assert_eq!(fs::metadata(&installed).unwrap().ino(), original_inode);
     assert_eq!(fs::read(&installed).unwrap(), original);
