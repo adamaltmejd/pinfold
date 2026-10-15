@@ -14,6 +14,7 @@ use super::box_::{ChildOwner, box_name, box_up, read_bounded};
 
 #[test]
 fn host_updates_are_verified_and_atomic() {
+    let _test_timing = e2e::timing::Span::new("test.host_updates_are_verified_and_atomic");
     let _runtime = crate::shared_runtime();
     // Guarantee 28. Sabotage: skip SHA256SUMS verification or its digest
     // comparison; the wrong digest under the requested asset name installs.
@@ -158,6 +159,7 @@ fn host_updates_are_verified_and_atomic() {
 
 #[test]
 fn interactive_update_checks_are_bounded() {
+    let _test_timing = e2e::timing::Span::new("test.interactive_update_checks_are_bounded");
     let _runtime = crate::shared_runtime();
     // Guarantee 29. Sabotage: remove terminal or opt-out checks; suppressed
     // launches reach the fixture. Ignore the daily stamp; the second launch
@@ -239,6 +241,7 @@ fn interactive_update_checks_are_bounded() {
 
 #[test]
 fn changed_bundled_profiles_are_reported_once() {
+    let _test_timing = e2e::timing::Span::new("test.changed_bundled_profiles_are_reported_once");
     let _runtime = crate::shared_runtime();
     // Guarantee 31. Sabotage: omit the embedded-profile comparison, or gate
     // it behind the daily network interval; the changed binary stays silent.
@@ -324,6 +327,7 @@ fn changed_profiles_binary(env: &TestEnv) -> PathBuf {
 }
 
 fn build_changed_profiles_binary(env: &TestEnv) -> Vec<u8> {
+    let _fixture_phase = e2e::timing::Span::new("fixture.changed_binary");
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -364,7 +368,9 @@ fn build_changed_profiles_binary(env: &TestEnv) -> Vec<u8> {
     } else {
         target.join("debug/pinfold")
     };
+    let phase = e2e::timing::Span::new("fixture.changed_compile");
     run_ok(&mut build);
+    drop(phase);
     fs::read(binary).unwrap()
 }
 

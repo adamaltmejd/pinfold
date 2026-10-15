@@ -25,6 +25,7 @@ use e2e::{
 
 #[test]
 fn the_documents_profile_reads_documents_locally() {
+    let _test_timing = e2e::timing::Span::new("test.the_documents_profile_reads_documents_locally");
     let _runtime = crate::shared_runtime();
     // Guarantee 32. Sabotage: remove poppler-utils from the bundled
     // documents image; `pdftoppm` then fails. Sabotage: omit AnyDoc's native
@@ -67,6 +68,7 @@ fn the_documents_profile_reads_documents_locally() {
     });
     let _up = box_up(&env, &spec, &name);
 
+    let phase = e2e::timing::Span::new("documents.convert");
     let converted = box_exec(
         &env,
         &name,
@@ -77,6 +79,7 @@ fn the_documents_profile_reads_documents_locally() {
             "/documents/pdf.md",
         ],
     );
+    drop(phase);
     assert_ok(&converted, "converting the PDF to Markdown without egress");
     let markdown =
         fs::read_to_string(documents.path().join("pdf.md")).expect("read the converted PDF");
@@ -87,6 +90,7 @@ fn the_documents_profile_reads_documents_locally() {
         "the PDF conversion lost a page or the page tree's order: {markdown}"
     );
 
+    let phase = e2e::timing::Span::new("documents.render");
     let rendered = box_exec(
         &env,
         &name,
@@ -104,6 +108,7 @@ fn the_documents_profile_reads_documents_locally() {
             "/documents/page",
         ],
     );
+    drop(phase);
     assert_ok(&rendered, "rendering the second PDF page without egress");
     let png = fs::read(documents.path().join("page.png")).expect("read the rendered PNG");
     assert_eq!(
@@ -114,6 +119,7 @@ fn the_documents_profile_reads_documents_locally() {
 
 #[test]
 fn the_environment_is_exactly_the_spec() {
+    let _test_timing = e2e::timing::Span::new("test.the_environment_is_exactly_the_spec");
     let _runtime = crate::shared_runtime();
     // Sabotage: pass the PINFOLD_ENV_* value on the command line (for
     // example `container exec --env SECRET=shhh`) instead of through the
@@ -263,6 +269,7 @@ fn the_environment_is_exactly_the_spec() {
 
 #[test]
 fn project_state_persists_and_stays_separate() {
+    let _test_timing = e2e::timing::Span::new("test.project_state_persists_and_stays_separate");
     let _runtime = crate::shared_runtime();
     // Sabotage: derive the project id from the directory name alone (drop
     // the root hash in state.rs::project_id); the two checkouts named
@@ -428,6 +435,7 @@ fn project_state_persists_and_stays_separate() {
 
 #[test]
 fn a_changed_project_file_stops_the_run() {
+    let _test_timing = e2e::timing::Span::new("test.a_changed_project_file_stops_the_run");
     let _runtime = crate::shared_runtime();
     // Sabotage: drop the trust::check call from pi::launch; the created and
     // the changed `.pinfold.toml` then run and both refusal assertions fail.
@@ -558,6 +566,7 @@ fn a_changed_project_file_stops_the_run() {
 
 #[test]
 fn the_box_cannot_write_git_or_protected_config() {
+    let _test_timing = e2e::timing::Span::new("test.the_box_cannot_write_git_or_protected_config");
     let _runtime = crate::shared_runtime();
     // Sabotage: omit the `.git` read-only mount from pi::git (or mount it
     // writable); the `core.fsmonitor` write and the rename then succeed, so
@@ -971,6 +980,7 @@ fn the_box_cannot_write_git_or_protected_config() {
 
 #[test]
 fn both_pi_config_levels_load_behind_a_route() {
+    let _test_timing = e2e::timing::Span::new("test.both_pi_config_levels_load_behind_a_route");
     let _runtime = crate::shared_runtime();
     // Sabotage: drop the route (leave PINFOLD_ROUTES empty, or point it at
     // another name); the proxy refuses fake.model with a 403 and the
@@ -1063,6 +1073,7 @@ fn both_pi_config_levels_load_behind_a_route() {
     let shim = env.root.join("pi");
     std::os::unix::fs::symlink(pinfold(), &shim).expect("symlink pi to pinfold");
     let prompt = |selected: &str, allow: &str| {
+        let _phase = e2e::timing::Span::new("G14.prompt");
         let output = env
             .command(&shim)
             .args([
@@ -1162,6 +1173,7 @@ fn both_pi_config_levels_load_behind_a_route() {
 
 #[test]
 fn the_highest_layer_sets_the_allowlist() {
+    let _test_timing = e2e::timing::Span::new("test.the_highest_layer_sets_the_allowlist");
     let _runtime = crate::shared_runtime();
     // Sabotage: union DEFAULT_ALLOW under the merged allow in
     // `Config::load`; the default hosts stay in the box's PINFOLD_ALLOW and
@@ -1341,6 +1353,7 @@ fn the_highest_layer_sets_the_allowlist() {
 
 #[test]
 fn writable_projects_exclude_host_authority() {
+    let _test_timing = e2e::timing::Span::new("test.writable_projects_exclude_host_authority");
     let _runtime = crate::shared_runtime();
     // Guarantee 33. Sabotage: remove trust::validate_host_paths, or compare
     // unresolved XDG paths; allow then records trust inside the project and
@@ -1380,6 +1393,8 @@ fn writable_projects_exclude_host_authority() {
 
 #[test]
 fn a_caller_reads_the_effective_configuration_as_data() {
+    let _test_timing =
+        e2e::timing::Span::new("test.a_caller_reads_the_effective_configuration_as_data");
     let _runtime = crate::shared_runtime();
     // Sabotage: report DEFAULT_ALLOW instead of the merged allow in
     // `run_config`; `egress.allow` then names the built-in hosts and the

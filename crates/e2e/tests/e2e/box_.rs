@@ -23,6 +23,7 @@ use e2e::{
 
 #[test]
 fn box_lifecycle_works_for_a_caller() {
+    let _test_timing = e2e::timing::Span::new("test.box_lifecycle_works_for_a_caller");
     struct Resume(u32);
     impl Drop for Resume {
         fn drop(&mut self) {
@@ -629,6 +630,7 @@ sys.exit(result.returncode)
     {
         _shared_runtime = std::sync::RwLockWriteGuard::downgrade(_runtime);
     }
+    let _tail_phase = e2e::timing::Span::new("lifecycle.after_store_lock");
     // A stopped owner still owns its name. Sabotage: restore down's
     // timed fallback removal; down succeeds, its state disappears, and a
     // replacement can start before the previous owner finishes cleanup.
@@ -948,6 +950,7 @@ sys.exit(result.returncode)
 
 #[test]
 fn up_refuses_before_it_creates() {
+    let _test_timing = e2e::timing::Span::new("test.up_refuses_before_it_creates");
     let _runtime = crate::shared_runtime();
     // Guarantee 17: up refuses before it creates.
     // Sabotage: drop `deny_unknown_fields` from `Mount`; the misspelled
@@ -1403,6 +1406,7 @@ fn up_refuses_before_it_creates() {
 
 #[test]
 fn box_shares_files_with_the_host() {
+    let _test_timing = e2e::timing::Span::new("test.box_shares_files_with_the_host");
     let _runtime = crate::shared_runtime();
     // Sabotage: bind every spec mount read-only in the adapter (pass `true`
     // for `mount.readonly` in runtime/mod.rs); creating files in /workspace
@@ -1498,6 +1502,7 @@ fn box_shares_files_with_the_host() {
 
 #[test]
 fn nothing_can_gain_privileges() {
+    let _test_timing = e2e::timing::Span::new("test.nothing_can_gain_privileges");
     let _runtime = crate::shared_runtime();
     // Sabotage: drop `find / -xdev -perm /6000 -type f -exec chmod a-s {} +`
     // from the bundled image fragments; the setuid/setgid scan then lists
@@ -1585,6 +1590,7 @@ fn nothing_can_gain_privileges() {
 #[test]
 #[cfg(target_os = "linux")]
 fn linux_boxes_apply_their_own_seccomp_profile() {
+    let _test_timing = e2e::timing::Span::new("test.linux_boxes_apply_their_own_seccomp_profile");
     use std::os::unix::fs::OpenOptionsExt;
 
     let _runtime = crate::exclusive_runtime();
@@ -1813,6 +1819,7 @@ int main(void) {
 
 #[test]
 fn only_allowlisted_hosts_get_through() {
+    let _test_timing = e2e::timing::Span::new("test.only_allowlisted_hosts_get_through");
     let _runtime = crate::shared_runtime();
     // Sabotage: make the proxy's allowlist check accept every host; example.com
     // then answers and the 403 and "not allowlisted" log assertions fail. The
@@ -1870,6 +1877,7 @@ fn only_allowlisted_hosts_get_through() {
 
 #[test]
 fn the_proxy_refuses_the_tricks() {
+    let _test_timing = e2e::timing::Span::new("test.the_proxy_refuses_the_tricks");
     let _runtime = crate::shared_runtime();
     // Guarantee 3. Each trick has its control in the same box.
     //
@@ -2066,6 +2074,7 @@ fn the_proxy_refuses_the_tricks() {
 
 #[test]
 fn losing_the_owner_fails_closed() {
+    let _test_timing = e2e::timing::Span::new("test.losing_the_owner_fails_closed");
     let _runtime = crate::exclusive_runtime();
     // Sabotage: make `box prune` skip boxes whose owner is gone; the box
     // survives prune and the post-prune list assertion fails. Sabotage:
@@ -2182,6 +2191,7 @@ fn losing_the_owner_fails_closed() {
 
 #[test]
 fn cleanup_removes_only_pinfolds_garbage() {
+    let _test_timing = e2e::timing::Span::new("test.cleanup_removes_only_pinfolds_garbage");
     let _runtime = crate::exclusive_runtime();
     // Guarantee 15: cleanup removes only pinfold's garbage.
     //
@@ -2963,6 +2973,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
 
 #[test]
 fn every_build_reruns_its_steps() {
+    let _test_timing = e2e::timing::Span::new("test.every_build_reruns_its_steps");
     let _runtime = crate::shared_runtime();
     // Every build reruns every step, so a rebuild picks up base updates
     // instead of replaying a cached `RUN` layer.
@@ -3028,6 +3039,7 @@ fn every_build_reruns_its_steps() {
 
 #[test]
 fn a_caller_builds_an_image_from_its_own_tree() {
+    let _test_timing = e2e::timing::Span::new("test.a_caller_builds_an_image_from_its_own_tree");
     let _runtime = crate::shared_runtime();
     // Guarantee 23: a caller builds an image from its own tree.
     //
@@ -3470,6 +3482,7 @@ fn built_unique_ref(profile: &str) -> String {
 }
 #[test]
 fn box_has_no_network_but_loopback() {
+    let _test_timing = e2e::timing::Span::new("test.box_has_no_network_but_loopback");
     let _runtime = crate::shared_runtime();
     // Sabotage: drop `--network none` from the adapter's `run` argv;
     // the box gains an interface and reaches `1.1.1.1`, so the
@@ -3532,6 +3545,7 @@ fn box_has_no_network_but_loopback() {
 
 #[test]
 fn a_route_reaches_exactly_one_host_service() {
+    let _test_timing = e2e::timing::Span::new("test.a_route_reaches_exactly_one_host_service");
     let _runtime = crate::shared_runtime();
     // Sabotage: forward the client's Host header unchanged; the evil-Host
     // request then reaches the fixture as evil.example and its assertion
@@ -3649,6 +3663,7 @@ fn a_route_reaches_exactly_one_host_service() {
 #[test]
 #[ignore = "real five-minute response deadline; run the slow gate"]
 fn blocked_route_responses_release_the_upstream() {
+    let _test_timing = e2e::timing::Span::new("test.blocked_route_responses_release_the_upstream");
     let _runtime = crate::shared_runtime();
     // Guarantee 34. Sabotage: remove write deadlines from the host proxy
     // and guest relay; their full buffers keep the fixture blocked until
@@ -3769,6 +3784,8 @@ fn blocked_route_responses_release_the_upstream() {
 
 #[test]
 fn an_injecting_route_keeps_the_credential_on_the_host() {
+    let _test_timing =
+        e2e::timing::Span::new("test.an_injecting_route_keeps_the_credential_on_the_host");
     let _runtime = crate::shared_runtime();
     // Guarantee 21. Sabotage: pass the header value through the box's
     // environment as well (spec env `ROUTE_KEY: {from:
@@ -3865,6 +3882,7 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
 
 #[test]
 fn a_login_route_keeps_the_login_on_the_host() {
+    let _test_timing = e2e::timing::Span::new("test.a_login_route_keeps_the_login_on_the_host");
     let _runtime = crate::shared_runtime();
     // Guarantee 26, claude half. Sabotage: in `resolve_harness`, drop the
     // `CLAUDE_CODE_OAUTH_TOKEN` placeholder and pass `$VAR` into the box
@@ -4491,6 +4509,7 @@ fn unsigned_jwt(claims: &serde_json::Value) -> String {
 
 #[test]
 fn no_egress_means_no_way_out() {
+    let _test_timing = e2e::timing::Span::new("test.no_egress_means_no_way_out");
     let _runtime = crate::shared_runtime();
     // Sabotage: start the proxy and relay even without `egress` in the spec;
     // the explicit-proxy request then reaches the proxy instead of a refused
@@ -4550,6 +4569,7 @@ fn no_egress_means_no_way_out() {
 
 #[test]
 fn a_caller_can_tell_an_oom_kill_from_a_failure() {
+    let _test_timing = e2e::timing::Span::new("test.a_caller_can_tell_an_oom_kill_from_a_failure");
     let _runtime = crate::shared_runtime();
     // Guarantee 20: a caller can tell an OOM kill from a failure.
     // Sabotage: read `memory.events` but report `high` instead of `oom_kill`;
@@ -4625,6 +4645,8 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
 
 #[test]
 fn a_caller_owned_box_launches_the_pinned_harness() {
+    let _test_timing =
+        e2e::timing::Span::new("test.a_caller_owned_box_launches_the_pinned_harness");
     let _runtime = crate::shared_runtime();
     // Guarantee 19: a caller-owned box launches the pinned harness, for
     // each of pi, claude and codex.
@@ -4649,6 +4671,11 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
         serde_json::from_slice(&output.stdout).expect("pinfold artifacts output is JSON");
 
     for harness in ["pi", "claude", "codex"] {
+        let label = match harness {
+            "pi" => "harness.pi_startup",
+            "claude" => "harness.claude_startup",
+            _ => "harness.codex_startup",
+        };
         let pin = pins
             .iter()
             .find(|pin| pin["name"] == harness)
@@ -4666,7 +4693,9 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
             "env": { "HOME": "/home/harness" },
             "egress": { "allow": ["api.github.com"] },
         });
+        let startup_phase = e2e::timing::Span::new(label);
         let mut up = box_up(&env, &spec, &name);
+        drop(startup_phase);
 
         // The pinned harness is in the box and runs at the pinned version.
         let binary = format!("/opt/pinfold/{harness}/{harness}");
@@ -4700,9 +4729,11 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
             let private = TestEnv::with_private_cache("harness-damaged");
 
             // Install pi into the private cache and read its path there.
+            let populate = e2e::timing::Span::new("harness.pi_private_populate");
             let mut up = box_up(&private, &spec, &name);
             up.down(&private);
             assert!(up.wait().success(), "box up did not exit cleanly");
+            drop(populate);
             let output = run_ok(private.command(pinfold()).arg("artifacts"));
             let report: Vec<serde_json::Value> =
                 serde_json::from_slice(&output.stdout).expect("pinfold artifacts output is JSON");
@@ -4736,6 +4767,7 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
 
 #[test]
 fn a_caller_owned_box_cannot_write_git() {
+    let _test_timing = e2e::timing::Span::new("test.a_caller_owned_box_cannot_write_git");
     use std::os::unix::fs::MetadataExt;
     let _runtime = crate::shared_runtime();
     // Guarantee 22: a caller-owned box cannot write `.git`.

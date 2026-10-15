@@ -1,5 +1,7 @@
 //! Harness, host fixtures and helpers for the end-to-end suite in `tests/e2e/`.
 
+pub mod timing;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -16,6 +18,7 @@ use std::thread;
 pub fn pinfold() -> &'static Path {
     static BINARY: OnceLock<PathBuf> = OnceLock::new();
     BINARY.get_or_init(|| {
+        let _phase = timing::Span::new("binary.first_build");
         let mut command = Command::new(env!("CARGO"));
         command.args([
             "build",
@@ -278,6 +281,7 @@ pub fn default_image(env: &TestEnv) -> &'static str {
     static IMAGE: OnceLock<()> = OnceLock::new();
     const STABLE: &str = "pinfold/profile-default:latest";
     IMAGE.get_or_init(|| {
+        let _phase = timing::Span::new("image.default_first_build");
         build_profile(env, "default");
     });
     STABLE
@@ -285,7 +289,22 @@ pub fn default_image(env: &TestEnv) -> &'static str {
 
 /// Run `pinfold build --profile NAME` and assert it succeeded.
 pub fn build_profile(env: &TestEnv, name: &str) {
-    run_ok(env.command(pinfold()).args(["build", "--profile", name]));
+    let label = match name {
+        "full" => "image.full_build",
+        "e2e-documents" => "image.documents_build",
+        "e2e-fake" => "image.custom_build",
+        _ => "image.other_profile_build",
+    };
+    let _phase = timing::Span::new(label);
+    let output = run_ok(env.command(pinfold()).args(["build", "--profile", name]));
+    eprintln!(
+        "PROFILE_CALL_OUTPUT {label} stdout={}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    eprintln!(
+        "PROFILE_CALL_OUTPUT {label} stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// Write a user profile's Containerfile under the test's config dir and
@@ -326,6 +345,12 @@ pub fn git(path: &Path, args: &[&str]) -> String {
 /// and return its output.
 #[track_caller]
 pub fn run_ok(command: &mut Command) -> Output {
+    let label = match command.get_program().to_str() {
+        Some("podman") => "command.podman",
+        Some("container") => "command.container",
+        _ => "command.other",
+    };
+    let _phase = timing::Span::new(label);
     let output = command
         .output()
         .unwrap_or_else(|error| panic!("run {command:?}: {error}"));
