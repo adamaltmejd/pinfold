@@ -20,10 +20,18 @@ mod update;
 // before fixtures so cleanup finishes before the runtime is released.
 static RUNTIME: RwLock<()> = RwLock::new(());
 
+#[track_caller]
 fn shared_runtime() -> RwLockReadGuard<'static, ()> {
-    RUNTIME.read().unwrap_or_else(|poison| poison.into_inner())
+    let waiting = e2e::timing::Span::new("runtime.shared.WAIT");
+    let guard = RUNTIME.read().unwrap_or_else(|poison| poison.into_inner());
+    waiting.finish("ACQUIRED");
+    guard
 }
 
+#[track_caller]
 fn exclusive_runtime() -> RwLockWriteGuard<'static, ()> {
-    RUNTIME.write().unwrap_or_else(|poison| poison.into_inner())
+    let waiting = e2e::timing::Span::new("runtime.exclusive.WAIT");
+    let guard = RUNTIME.write().unwrap_or_else(|poison| poison.into_inner());
+    waiting.finish("ACQUIRED");
+    guard
 }

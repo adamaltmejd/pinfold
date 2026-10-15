@@ -17,13 +17,14 @@ permissions:
 
 jobs:
   linux:
-    name: Linux (${{ matrix.runner }})
+    name: Linux (${{ matrix.runner }}, observation ${{ matrix.sample }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-26.04, ubuntu-26.04-arm]
+        runner: [ubuntu-26.04]
+        sample: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -53,8 +54,26 @@ jobs:
       - name: Lint
         run: cargo clippy --all-targets --locked -- -D warnings
 
-      - name: End-to-end tests
-        run: cargo test -p e2e --locked
+      - name: End-to-end tests with temporary observations
+        run: |
+          mkdir -p target/issue-92
+          podman info --format json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps({"store": d.get("store"), "version": d.get("version")}))' >target/issue-92/runtime.json
+          python3 scripts/diagnose-suite-host.py >target/issue-92/host.jsonl &
+          observer_pid=$!
+          trap 'kill "$observer_pid" 2>/dev/null || true; wait "$observer_pid" || true' EXIT
+          set +e
+          /usr/bin/time -f 'elapsed=%e user=%U system=%S max_rss_kib=%M exit=%x' -o target/issue-92/command-time.txt cargo test -p e2e --locked -- --nocapture 2>&1 | tee target/issue-92/suite.log
+          result=${PIPESTATUS[0]}
+          set -e
+          exit "$result"
+
+      - name: Retain diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: issue-92-x64-${{ matrix.sample }}
+          path: target/issue-92/
+          retention-days: 14
 
       - name: Prototype Bun version
         id: tools
