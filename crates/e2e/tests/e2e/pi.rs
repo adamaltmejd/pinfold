@@ -1026,11 +1026,14 @@ fn both_pi_config_levels_load_behind_a_route() {
 "#,
     )
     .expect("write the profile's models.json");
+    // This fixture customizes mounted configuration, not image contents.
+    let image = default_image(&env);
+    fs::write(profile_dir.join("Containerfile"), format!("FROM {image}\n"))
+        .expect("write the fixture's Containerfile");
     build_profile(&env, profile);
     let _image = ImageCleanup {
         repository: format!("pinfold/profile-{profile}"),
     };
-    default_image(&env);
     build_profile(&env, "full");
     // The pinned Ponytail instruction hook emits this marker for explicit full input.
     let ponytail_rule = "PONYTAIL MODE ACTIVE — level: full";
