@@ -36,13 +36,16 @@ def stop_profiler():
     global profiler
     if profiler is None:return
     pid,start=profiler_identity or (None,None)
-    if pid is not None and identity(pid)==start:
-        stopped=subprocess.run(['sudo','-n','kill','-INT',str(pid)],stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL,timeout=5)
-        if stopped.returncode:status['errors'].append('profiler INT failed')
+    if profiler.poll() is None and ctl is not None:
+        try:
+            os.write(ctl,b'stop\n')
+            status['perf_stop_method']='control-fifo'
+        except OSError:
+            status['errors'].append('profiler control stop failed')
     try:
         profiler.wait(timeout=15)
     except subprocess.TimeoutExpired:
+        status['errors'].append('profiler did not stop through control FIFO')
         if pid is not None and identity(pid)==start:
             subprocess.run(['sudo','-n','kill','-TERM',str(pid)],stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL,timeout=5)
@@ -130,6 +133,9 @@ try:
                         if b'ack' in os.read(ack,4096):ready=True;break
                     if profiler.poll() is not None:break
                 if ready and profiler_identity:
+                    pid,start=profiler_identity
+                    if identity(pid)!=start or pathlib.Path(f'/proc/{pid}/comm').read_text().strip()!='perf':
+                        raise RuntimeError('recording process identity is not perf')
                     status['profile']='recording'
                 else:
                     status['errors'].append('perf record startup/control failed; profile unrun')
@@ -154,7 +160,7 @@ try:
     if status['profile']=='recording':
         with open(private/'report.stderr','wb') as errors:
             report=subprocess.run(['sudo','-n',str(perf),'report','--stdio','--no-children',
-                '--sort','pid,comm,dso,symbol','--comms=pinfold,pinfold-init',
+                '--fields','overhead,pid,comm,dso,symbol','--comms=pinfold,pinfold-init',
                 '--field-separator',';','--percent-limit','0','-i',str(private/'perf.data')],
                 stdout=subprocess.PIPE,stderr=errors,timeout=45)
         status['perf_report_exit']=report.returncode
@@ -164,17 +170,17 @@ try:
             aggregate=[];unparsed=0
             for line in report.stdout.decode(errors='replace').splitlines():
                 if not line.strip() or line.lstrip().startswith('#'):continue
-                fields=[x.strip() for x in line.split(';')]
-                while fields and not fields[-1]:fields.pop()
-                if len(fields)!=5:unparsed+=1;continue
-                overhead,pidfield,comm,dso,symbol=fields
-                pidmatch=re.fullmatch(r'(?:[^:]*:)?\s*(\d+)',pidfield)
-                if comm not in ('pinfold','pinfold-init') or not pidmatch:unparsed+=1;continue
+                fields=[x.strip() for x in line.split(';',3)]
+                if len(fields)!=4:unparsed+=1;continue
+                overhead,pidcomm,dso,symbol=fields
+                pidfield,separator,comm=pidcomm.partition(':')
+                if not separator or not pidfield.isdecimal() or comm not in ('pinfold','pinfold-init'):
+                    unparsed+=1;continue
                 try:percentage=float(overhead.rstrip('%'))
                 except ValueError:unparsed+=1;continue
                 dso=pathlib.PurePosixPath(dso).name
                 if '/' in symbol or '\\' in symbol:symbol='[path-bearing symbol omitted]'
-                aggregate.append({'overhead_percent':percentage,'pid':int(pidmatch[1]),
+                aggregate.append({'overhead_percent':percentage,'pid':int(pidfield),
                                   'comm':comm,'dso':dso,'symbol':symbol})
             (out/'perf-summary.json').write_text(json.dumps({'records':aggregate,
                 'unparsed_lines':unparsed,'comm_filter':['pinfold','pinfold-init'],
