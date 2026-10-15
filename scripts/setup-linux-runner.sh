@@ -34,6 +34,40 @@ sudo install -m 0644 "$podman_source/vendor/go.podman.io/storage/storage.conf" \
   /usr/share/containers/storage.conf
 export PATH="/usr/local/bin:$PATH"
 echo /usr/local/bin >>"$GITHUB_PATH"
+# Hosted x64 runners own this empty store until the disposable VM is removed.
+pinfold_ci_tmpfs=false
+if [ "${GITHUB_ACTIONS:-}" = true ] && [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] && [ "$(uname -m)" = x86_64 ]; then
+  pinfold_ci_tmpfs=true
+  python3 - <<'PY_PREPARE'
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+
+home = Path.home()
+graph = home / ".local/share/containers/storage"
+assert os.getuid() != 0 and home.is_absolute() and graph.resolve() == graph, "unexpected rootless store path"
+assert not os.environ.get("XDG_DATA_HOME") and not os.environ.get("CONTAINERS_STORAGE_CONF"), "storage override present"
+assert not (home / ".config/containers/storage.conf").exists(), "user storage configuration present"
+mounted = subprocess.run(["findmnt", "--mountpoint", str(graph), "--noheadings"], capture_output=True, timeout=10)
+assert mounted.returncode == 1 and not mounted.stdout and not mounted.stderr, "store already mounted or mount inventory failed"
+if graph.exists():
+    metadata = graph.stat()
+    assert graph.is_dir() and not any(graph.iterdir()), "store is not empty"
+    assert (metadata.st_uid, metadata.st_gid) == (os.getuid(), os.getgid()), "store ownership differs"
+    assert stat.S_IMODE(metadata.st_mode) == 0o700, "store permissions differ"
+else:
+    graph.mkdir(mode=0o700, parents=True)
+options = f"size=6G,mode=0700,uid={os.getuid()},gid={os.getgid()}"
+subprocess.run(["sudo", "mount", "-t", "tmpfs", "-o", options, "pinfold-ci-tmpfs", str(graph)], check=True, timeout=30)
+mounted = json.loads(subprocess.check_output(["findmnt", "--json", "--mountpoint", str(graph), "-o", "TARGET,FSTYPE,SOURCE"], timeout=10))["filesystems"]
+assert len(mounted) == 1 and mounted[0] == {"target": str(graph), "fstype": "tmpfs", "source": "pinfold-ci-tmpfs"}, "unexpected store mount"
+metadata = graph.stat()
+assert (metadata.st_uid, metadata.st_gid, stat.S_IMODE(metadata.st_mode)) == (os.getuid(), os.getgid(), 0o700)
+assert os.statvfs(graph).f_blocks * os.statvfs(graph).f_frsize == 6 * 1024**3, "store cap differs"
+PY_PREPARE
+fi
 test "$(podman --version)" = "podman version 6.1.4"
 
 sudo loginctl enable-linger "$(id -un)"
@@ -45,6 +79,27 @@ export XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
 systemctl --user daemon-reload
 systemctl --user enable --now dbus.socket
 podman system migrate
+
+if [ "$pinfold_ci_tmpfs" = true ]; then
+  python3 - <<'PY_VERIFY'
+import json
+import os
+from pathlib import Path
+import subprocess
+
+info = json.loads(subprocess.check_output(["podman", "info", "--format", "json"], timeout=90))
+store = info["store"]
+assert info["host"]["security"]["rootless"] is True
+assert store["graphRoot"] == str(Path.home() / ".local/share/containers/storage")
+assert store["runRoot"] == f"/run/user/{os.getuid()}/containers"
+assert store["graphDriverName"] == "overlay" and not store["transientStore"]
+assert store["graphOptions"].get("overlay.mountopt") == "nodev"
+assert not store["graphOptions"].get("overlay.mount_program"), "FUSE fallback refused"
+assert store["graphStatus"]["Native Overlay Diff"] == "true"
+assert store["graphStatus"]["Backing Filesystem"] == "tmpfs"
+assert store["graphRootAllocated"] == 6 * 1024**3, "store cap differs"
+PY_VERIFY
+fi
 
 {
   echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"

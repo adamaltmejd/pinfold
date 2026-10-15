@@ -940,7 +940,9 @@ It uses private network and mount namespaces: `api.github.com` resolves to
 a fixture address assigned only there, with a fixture CA trusted only by
 the guest. It exercises the unchanged CONNECT policy and production
 five-minute idle deadline. The ordinary Rust suite retains its five-minute
-CI budget; the two slow gates run separately.
+CI budget, measured over the complete `cargo test -p e2e --locked` command,
+including compilation. CI fails when that command takes 300 seconds or more.
+The two slow gates run separately.
 
 | # | Guarantee | Shown by |
 |---|---|---|
