@@ -32,8 +32,17 @@ jobs:
           result=$?
           printf '%s\n' "$result" >target/issue-92-profile/profile-tools-install-exit.txt
           if [ "$result" -ne 0 ]; then
-            echo "Matching distro profiler tools unavailable; profiling will be unrun. Suite still runs."
+            echo "Matching distro profiler tools unavailable; the profiling step will report unrun."
           fi
+          command -v perf >target/issue-92-profile/perf-location.txt || true
+          if command -v perf >/dev/null 2>&1; then
+            ls -l "$(command -v perf)" >>target/issue-92-profile/perf-location.txt
+            if [ "$(head -c 2 "$(command -v perf)")" = '#!' ]; then
+              head -60 "$(command -v perf)" >>target/issue-92-profile/perf-location.txt
+            fi
+          fi
+          dpkg-query -L linux-tools-common "linux-tools-$(uname -r)" \
+            >target/issue-92-profile/profile-tool-paths.txt 2>&1 || true
           exit 0
       - name: Rust musl target
         run: |
@@ -43,10 +52,12 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: false
+      - name: Format
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
       - name: Existing full suite with independent profiling status
         run: sh scripts/profile-suite.sh target/issue-92-profile
-      - name: Same-byte executable placement ABBA
-        run: python3 scripts/stage-abba.py
       - name: Retain sanitized observations only
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -63,5 +74,6 @@ jobs:
             target/issue-92-profile/profile-tools.log
             target/issue-92-profile/profile-tools-install-exit.txt
             target/issue-92-profile/perf-summary.json
-            target/issue-92-profile/staging-abba.json
+            target/issue-92-profile/perf-location.txt
+            target/issue-92-profile/profile-tool-paths.txt
           retention-days: 14

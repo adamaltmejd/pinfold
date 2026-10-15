@@ -10,9 +10,10 @@ if os.getuid()==0 or os.environ.get('GITHUB_ACTIONS')!='true':
     raise SystemExit('Requires a nonroot disposable GitHub Actions job')
 private=pathlib.Path(tempfile.mkdtemp(prefix='pf-perf-',dir=os.environ['RUNNER_TEMP']))
 private.chmod(0o700)
-perf=pathlib.Path('/usr/lib/linux-tools')/os.uname().release/'perf'
+perf=pathlib.Path(shutil.which('perf') or '/nonexistent-perf')
 status={'profile':'unrun','suite_exit':None,'errors':[],
         'scope':'user CPU only; exact Pinfold comms; no callgraph, stack, argv or environment export'}
+status['perf_command']=str(perf)
 observer=profiler=suite=None
 profiler_identity=None
 handles=[]
@@ -139,6 +140,8 @@ try:
         try:stop_profiler()
         except Exception as cleanup:status['errors'].append('profiler startup cleanup error: '+type(cleanup).__name__)
     persist()
+    if status['profile']!='recording':
+        raise RuntimeError('profiling unavailable; do not run another unprofiled suite')
     with open(out/'suite.log','wb') as log:
         suite=subprocess.Popen(['/usr/bin/time','-f','elapsed=%e user=%U system=%S max_rss_kib=%M exit=%x',
             '-o',str(out/'command-time.txt'),'cargo','test','-p','e2e','--locked','--','--nocapture'],
