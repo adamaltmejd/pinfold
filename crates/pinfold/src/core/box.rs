@@ -559,9 +559,10 @@ async fn start(
     // before the runtime is asked to create anything.
     tokio::task::yield_now().await;
     let runtime = runtime();
-    let child = progress
-        .child
-        .insert(runtime.up(plan, init, socket.as_deref(), seccomp)?);
+    let child =
+        progress
+            .child
+            .insert(runtime.up(plan, init, state_dir, socket.as_deref(), seccomp)?);
     let stdout = child
         .stdout
         .take()
@@ -582,27 +583,33 @@ async fn start(
     }
     // Apple can forward init's ready before it records the box running.
     // Wait even without egress, before the caller can issue its first exec.
-    if cfg!(target_os = "macos") {
-        apple::wait_until_running(&plan.name)?;
+    let actual = if cfg!(target_os = "macos") {
+        let actual = apple::wait_until_running(&plan.name)?;
         // Finish the one root exec before ready reaches the caller.
         if socket.is_some() {
             apple::make_proxy_connectable(&plan.name)?;
         }
-    }
+        Some(actual)
+    } else {
+        None
+    };
     // Keep the pipe drained so a talkative box cannot block on it.
     tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
     // `ready` reports the labels `list` will: podman adds every image label
     // to the box, so the plan's set is not the box's.
-    let actual = runtime
-        .list(None)?
-        .into_iter()
-        .find(|box_| box_.id == plan.name)
-        .ok_or_else(|| {
-            io::Error::other(format!(
-                "the runtime does not list box {:?} after ready",
-                plan.name
-            ))
-        })?;
+    let actual = match actual {
+        Some(actual) => actual,
+        None => runtime
+            .list(None)?
+            .into_iter()
+            .find(|box_| box_.id == plan.name)
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "the runtime does not list box {:?} after ready",
+                    plan.name
+                ))
+            })?,
+    };
     Ok((actual, egress_log))
 }
 
@@ -627,7 +634,9 @@ fn check_mount_aliases(
         guest: init_guest,
         readonly: true,
     });
-    let mut files: BTreeMap<(u64, u64), (bool, PathBuf)> = BTreeMap::new();
+    // Index read-only identities before checking writable exports.
+    mounts.sort_by_key(|mount| !mount.readonly);
+    let mut readonly_files: BTreeMap<(u64, u64), PathBuf> = BTreeMap::new();
     for mount in &mounts {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(io::Error::from(io::ErrorKind::Interrupted).into());
@@ -657,20 +666,18 @@ fn check_mount_aliases(
                     directories.push((entry.path(), guest));
                 } else if metadata.is_file() {
                     let identity = (metadata.dev(), metadata.ino());
-                    if let Some((readonly, previous)) = files.get(&identity) {
-                        if *readonly != mount.readonly {
-                            return Err(Stop::Refused(Refusal {
-                                box_name: Some(plan.name.clone()),
-                                reason: RefusalReason::MountAlias,
-                                detail: format!(
-                                    "regular file exposed read-only and writable at {} and {}",
-                                    previous.display(),
-                                    guest.display(),
-                                ),
-                            }));
-                        }
-                    } else {
-                        files.insert(identity, (mount.readonly, guest));
+                    if mount.readonly {
+                        readonly_files.entry(identity).or_insert(guest);
+                    } else if let Some(previous) = readonly_files.get(&identity) {
+                        return Err(Stop::Refused(Refusal {
+                            box_name: Some(plan.name.clone()),
+                            reason: RefusalReason::MountAlias,
+                            detail: format!(
+                                "regular file exposed read-only and writable at {} and {}",
+                                previous.display(),
+                                guest.display(),
+                            ),
+                        }));
                     }
                 }
             }
@@ -803,8 +810,6 @@ fn home_mount(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
         return Err(refuse("the box spec has no exact HOME env entry".into()));
     };
     let home = Path::new(home);
-    // The deepest mount holding `$HOME`. The duplicate check ran first, so
-    // no two mounts can name one guest path and the pick is unambiguous.
     let Some((mount, relative)) = plan
         .mounts
         .iter()

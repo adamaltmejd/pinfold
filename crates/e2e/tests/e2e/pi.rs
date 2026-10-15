@@ -12,6 +12,7 @@
 use std::fs;
 use std::io::{BufReader, Write};
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 
@@ -631,6 +632,85 @@ fn the_box_cannot_write_git_or_protected_config() {
         fs::remove_file(&alias).unwrap();
     }
 
+    // Sabotage: restore hooks_path's lexical absolute-outside return. An
+    // external alias then admits RPC instead of refusing its in-project
+    // hook, including an absent leaf below the alias. Host fixture bytes
+    // and a harmless host Git hook are the independent expectations.
+    let husky_hook = husky.join("pre-commit");
+    let marker = root.join("host-hook-ran");
+    let expected_hook = format!("#!/bin/sh\nprintf host-hook > '{}'\n", marker.display());
+    fs::write(&husky_hook, &expected_hook).unwrap();
+    fs::set_permissions(&husky_hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let external_alias = env.root.join("external-hooks-alias");
+    std::os::unix::fs::symlink(&husky, &external_alias).unwrap();
+    let dangling_alias = env.root.join("dangling-hooks-alias");
+    std::os::unix::fs::symlink(root.join("future-hooks"), &dangling_alias).unwrap();
+    for target in [
+        external_alias.clone(),
+        external_alias.join("future-hooks"),
+        dangling_alias,
+        env.root
+            .join("missing-hook-parent")
+            .join("..")
+            .join(root.file_name().unwrap())
+            .join(".husky/_"),
+    ] {
+        fs::write(
+            global,
+            format!("[core]\n\thooksPath = {}\n", target.display()),
+        )
+        .unwrap();
+        let refused = pinfold_in(&env, root, &["pi", "--mode", "rpc"])
+            .env("GIT_CONFIG_GLOBAL", global)
+            .output()
+            .expect("run pi with an external hooks alias");
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert_eq!(refused.status.code(), Some(1), "{stderr}");
+        assert!(
+            stderr.contains("protected-path-invalid"),
+            "wrong hooks alias refusal: {stderr}"
+        );
+        assert_eq!(fs::read(&husky_hook).unwrap(), expected_hook.as_bytes());
+    }
+    fs::write(
+        global,
+        format!("[core]\n\thooksPath = {}\n", external_alias.display()),
+    )
+    .unwrap();
+    run_ok(
+        env.command(Path::new("git"))
+            .arg("-C")
+            .arg(root)
+            .args([
+                "-c",
+                "user.name=Hook fixture",
+                "-c",
+                "user.email=hook-fixture@example.invalid",
+                "-c",
+                "commit.gpgSign=false",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "host hook control",
+            ])
+            .env("GIT_CONFIG_GLOBAL", global),
+    );
+    assert_eq!(fs::read(&marker).unwrap(), b"host-hook");
+
+    let outside_hooks = env.root.join("outside-hooks");
+    fs::create_dir(&outside_hooks).unwrap();
+    fs::write(
+        global,
+        format!("[core]\n\thooksPath = {}\n", outside_hooks.display()),
+    )
+    .unwrap();
+    run_ok(pinfold_in(&env, root, &["pi", "--version"]).env("GIT_CONFIG_GLOBAL", global));
+    fs::write(
+        global,
+        format!("[core]\n\thooksPath = {}\n", husky.display()),
+    )
+    .unwrap();
+
     let (run, _, name) = PiRpc::start_with_env(&env, root, &[("GIT_CONFIG_GLOBAL", global)]);
 
     // The box cannot write into the protected directory it did not have.
@@ -647,7 +727,6 @@ fn the_box_cannot_write_git_or_protected_config() {
 
     // Host git runs `.husky/_/pre-commit` on the next commit because the
     // global `core.hooksPath` names it; the box cannot write it.
-    let husky_hook = husky.join("pre-commit");
     let denied = box_exec(
         &env,
         &name,
@@ -905,6 +984,9 @@ fn both_pi_config_levels_load_behind_a_route() {
     // project's settings, or keep using full's package after selecting
     // default; the returning default request still advertises documents.
     // Reseed existing settings on a profile switch; the host marker changes.
+    // Return a forced systemPrompt from operating-context instead of adding
+    // its section; Pi projects that text over Ponytail's later section, so
+    // full loses its active rules while the allowlist still reaches the model.
     // Omit the operating-context extension; its host-chosen allowlist never
     // reaches the model. Cache that allowlist across starts; the returning
     // default request reports the earlier marker.
@@ -944,12 +1026,17 @@ fn both_pi_config_levels_load_behind_a_route() {
 "#,
     )
     .expect("write the profile's models.json");
+    // This fixture customizes mounted configuration, not image contents.
+    let image = default_image(&env);
+    fs::write(profile_dir.join("Containerfile"), format!("FROM {image}\n"))
+        .expect("write the fixture's Containerfile");
     build_profile(&env, profile);
     let _image = ImageCleanup {
         repository: format!("pinfold/profile-{profile}"),
     };
-    default_image(&env);
     build_profile(&env, "full");
+    // The pinned Ponytail instruction hook emits this marker for explicit full input.
+    let ponytail_rule = "PONYTAIL MODE ACTIVE — level: full";
 
     // The project carries the project level: a skill under .pi/.
     let project_marker = "pinfold-e2e-project-skill-marker";
@@ -991,6 +1078,7 @@ fn both_pi_config_levels_load_behind_a_route() {
             .env("PINFOLD_ALLOW", allow)
             .env("PINFOLD_ROUTES", format!("fake.model={}", model.route()))
             .env("PINFOLD_ENV_OPENAI_API_KEY", "sk-fake")
+            .env("PINFOLD_ENV_PONYTAIL_DEFAULT_MODE", "full")
             .output()
             .expect("run pi -p");
         assert!(
@@ -1047,6 +1135,11 @@ fn both_pi_config_levels_load_behind_a_route() {
             .find(|message| message["role"] == "system")
             .and_then(|message| message["content"].as_str())
             .expect("the model request has a system prompt");
+        assert_eq!(
+            system.contains(ponytail_rule),
+            selected == "full",
+            "{selected} carried the wrong active Ponytail rules: {system}"
+        );
         assert!(
             system.contains(allow)
                 && selections

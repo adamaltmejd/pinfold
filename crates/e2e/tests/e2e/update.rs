@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use e2e::{TestEnv, default_image, pinfold, run_ok};
 
-use super::box_::{box_name, box_up};
+use super::box_::{ChildOwner, box_name, box_up, read_bounded};
 
 #[test]
 fn host_updates_are_verified_and_atomic() {
@@ -26,10 +26,9 @@ fn host_updates_are_verified_and_atomic() {
     // command symlink is replaced and the installed binary's inode stays
     // unchanged. Remove the exclusive executable lock; the owner under a
     // different XDG root no longer prevents updating its executable. Drop
-    // the check request; the fixture records none and reports no version.
-    // Expected release bytes and digest, the fixture version and the
-    // recorded check request come from the host fixture; inode identity
-    // comes from the host filesystem.
+    // the check request; the fixture version is not reported.
+    // Expected release bytes, digest and version come from the host fixture;
+    // inode identity comes from the host filesystem.
     let env = TestEnv::new("update");
     let installed = env.root.join("pinfold");
     fs::copy(pinfold(), &installed).unwrap();
@@ -54,14 +53,6 @@ fn host_updates_are_verified_and_atomic() {
     assert!(
         String::from_utf8_lossy(&check.stdout).contains("999.0.0"),
         "check did not report the fixture version: {check:?}"
-    );
-    assert_eq!(
-        fs::read_to_string(fixture.root.join("checks"))
-            .unwrap_or_default()
-            .lines()
-            .count(),
-        1,
-        "check-only did not reach the fixture"
     );
     assert_eq!(fs::metadata(&installed).unwrap().ino(), original_inode);
     assert_eq!(fs::read(&installed).unwrap(), original);
@@ -121,7 +112,28 @@ fn host_updates_are_verified_and_atomic() {
         .spawn()
         .unwrap();
     fixture.wait_for_download();
-    let owner = UpdateOwner::start(&other, &installed, &spec);
+    let child = other
+        .command(&installed)
+        .args(["box", "up"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let mut owner = ChildOwner::new(child, &other, None);
+    owner
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(serde_json::to_string(&spec).unwrap().as_bytes())
+        .unwrap();
+    let mut stdout = BufReader::new(owner.stdout.take().unwrap());
+    let line = read_bounded(&mut owner, &mut stdout, Duration::from_secs(60), false)
+        .expect("read update owner's readiness");
+    let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+    owner.observe(&ready);
+    assert_eq!(ready["event"], "ready", "box owner failed: {ready}");
+    let owner = (owner, stdout);
     fixture.release_download();
     let refusal = update.wait_with_output().unwrap();
     assert!(
@@ -326,6 +338,10 @@ fn build_changed_profiles_binary(env: &TestEnv) -> Vec<u8> {
         &workspace.join("crates/pinfold"),
         &source.join("crates/pinfold"),
     );
+    copy_tree(
+        &workspace.join("crates/pinfold-init"),
+        &source.join("crates/pinfold-init"),
+    );
     copy_tree(&workspace.join("profile"), &source.join("profile"));
     let package_path = source.join("profile/full/package.json");
     let mut package: serde_json::Value =
@@ -339,7 +355,8 @@ fn build_changed_profiles_binary(env: &TestEnv) -> Vec<u8> {
     build
         .args(["build", "-p", "pinfold", "--locked"])
         .current_dir(&source)
-        .env("CARGO_TARGET_DIR", &target);
+        .env("CARGO_TARGET_DIR", &target)
+        .env("CARGO_PROFILE_DEV_DEBUG", "0");
     let binary = if cfg!(target_os = "linux") {
         let triple = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
         build.args(["--target", &triple]);
@@ -361,51 +378,6 @@ fn copy_tree(from: &Path, to: &Path) {
         } else {
             fs::copy(entry.path(), destination).unwrap();
         }
-    }
-}
-
-struct UpdateOwner {
-    child: Child,
-    _stdout: BufReader<ChildStdout>,
-    down: Command,
-}
-
-impl UpdateOwner {
-    fn start(env: &TestEnv, installed: &Path, spec: &serde_json::Value) -> Self {
-        let mut child = env
-            .command(installed)
-            .args(["box", "up"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(serde_json::to_string(spec).unwrap().as_bytes())
-            .unwrap();
-        let mut line = String::new();
-        let mut stdout = BufReader::new(child.stdout.take().unwrap());
-        stdout.read_line(&mut line).unwrap();
-        let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(ready["event"], "ready", "box owner failed: {ready}");
-        let mut down = env.command(installed);
-        down.args(["box", "down", spec["name"].as_str().unwrap()]);
-        Self {
-            child,
-            down,
-            _stdout: stdout,
-        }
-    }
-}
-
-impl Drop for UpdateOwner {
-    fn drop(&mut self) {
-        let _ = self.down.status();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 

@@ -225,17 +225,21 @@ fn up(args: &[String]) -> io::Result<i32> {
         };
         // Every error from here on has removed what the start made; it ends
         // the stream as one `failed` line.
-        Ok(hold_up(&plan, signals).await.unwrap_or_else(|error| {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "event": "failed",
-                    "box": &plan.name,
-                    "detail": error.to_string(),
-                })
-            );
-            1
-        }))
+        match hold_up(&plan, signals).await {
+            Ok(code) => Ok(code),
+            Err(error) => {
+                writeln!(
+                    io::stdout(),
+                    "{}",
+                    serde_json::json!({
+                        "event": "failed",
+                        "box": &plan.name,
+                        "detail": error.to_string(),
+                    })
+                )?;
+                Ok(1)
+            }
+        }
     });
     // `Box::hold` watches stdin through tokio's blocking pool. A caller that
     // keeps stdin open leaves that read parked, and dropping the runtime
@@ -256,23 +260,29 @@ async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
         }
         Err(UpError::Other(error)) => return Err(error),
     };
-    let egress_log = box_
-        .egress_log
-        .as_deref()
-        .map(|path| utf8(path, "egress log"))
-        .transpose()?;
-    println!(
-        "{}",
-        serde_json::json!({
+    let ready = (|| {
+        let egress_log = box_
+            .egress_log
+            .as_deref()
+            .map(|path| utf8(path, "egress log"))
+            .transpose()?;
+        let line = serde_json::to_string(&serde_json::json!({
             "event": "ready",
             "box": &plan.name,
             "owner": std::process::id(),
             "labels": &box_.labels,
             "image": { "id": &box_.image_id, "ref": &box_.image_ref },
             "egress_log": egress_log,
-        })
-    );
-    io::stdout().flush()?;
+        }))
+        .map_err(io::Error::other)?;
+        let mut stdout = io::stdout();
+        writeln!(stdout, "{line}")?;
+        stdout.flush()
+    })();
+    if let Err(error) = ready {
+        box_.down().await?;
+        return Err(error);
+    }
     let shutdown = box_.hold(&mut signals).await?;
     Ok(down(Some(&plan.name), shutdown))
 }

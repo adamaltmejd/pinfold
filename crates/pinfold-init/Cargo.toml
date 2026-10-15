@@ -1,0 +1,8 @@
+[package]
+name = "pinfold-init"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+nix.workspace = true

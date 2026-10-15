@@ -18,9 +18,8 @@ nothing else of the host. Its only way out is its own allowlisting proxy.
 | macOS 26+ | Apple `container` 1.5.0+ (stable) |
 | Linux | rootless podman 6.1.4+ (stable) |
 
-Startup refuses older or prerelease runtime versions. On Linux, podman must
-be rootless with `cgroupManager=systemd`, and long-lived boxes need
-`loginctl enable-linger`.
+On Linux, podman also needs `cgroupManager=systemd`; run
+`loginctl enable-linger` for long-lived boxes.
 
 ## Install
 
@@ -130,6 +129,15 @@ See [Configuration](docs/ARCHITECTURE.md#configuration) for layers, keys and def
 
 For `pinfold pi`, forward host variables with `PINFOLD_ENV_<NAME>`.
 Programmatic callers use the [box spec](docs/ARCHITECTURE.md#process-interface).
+
+For disposable Rust build outputs in guest memory:
+
+```sh
+PINFOLD_ENV_CARGO_TARGET_DIR=/tmp/pinfold-target pi
+```
+
+Keep outputs within the guest's available memory and `/tmp` capacity. Copy
+deliverables into the shared project before the box exits; `/tmp` is discarded.
 
 ## Limits
 

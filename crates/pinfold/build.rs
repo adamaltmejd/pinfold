@@ -1,16 +1,17 @@
 //! Cross-builds the Linux init the macOS CLI embeds.
 //!
 //! The init always comes from the CLI's own build. On macOS the CLI embeds
-//! the `aarch64-unknown-linux-musl` binary, so this script cross-builds it
+//! the `aarch64-unknown-linux-musl` init binary, so this script cross-builds it
 //! with `cargo zigbuild` into its own target directory: the outer build
-//! holds the lock on the workspace's `target/`. `TARGET` is what is being
-//! built, so the nested musl build, whose host is still macOS, skips this
-//! script and Linux builds never run `zig` at all.
+//! holds the lock on the workspace's `target/`. Linux builds mount the CLI
+//! itself and never run `zig`.
 
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+
+use sha2::{Digest, Sha256};
 
 fn main() {
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
@@ -21,9 +22,18 @@ fn main() {
         // gates check it; this placeholder is never mounted.
         fs::write(&embedded, []).expect("write placeholder init");
         println!("cargo:rustc-env=PINFOLD_INIT={}", embedded.display());
+        println!("cargo:rustc-env=PINFOLD_INIT_SHA256=");
         return;
     }
-    for path in ["src", "Cargo.toml", "build.rs"] {
+    for path in [
+        "src",
+        "Cargo.toml",
+        "build.rs",
+        "../pinfold-init",
+        "../../Cargo.toml",
+        "../../Cargo.lock",
+        "../../rust-toolchain.toml",
+    ] {
         println!("cargo:rerun-if-changed={path}");
     }
 
@@ -34,8 +44,10 @@ fn main() {
             "zigbuild",
             "--locked",
             "--release",
+            "--package",
+            "pinfold-init",
             "--bin",
-            "pinfold",
+            "pinfold-init",
             "--target",
             "aarch64-unknown-linux-musl",
         ])
@@ -52,8 +64,14 @@ fn main() {
     let built = target_dir
         .join("aarch64-unknown-linux-musl")
         .join("release")
-        .join("pinfold");
+        .join("pinfold-init");
     fs::copy(&built, &embedded)
         .unwrap_or_else(|error| panic!("copy embedded init {}: {error}", built.display()));
+    let bytes = fs::read(&embedded).expect("read embedded init");
+    let hash: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     println!("cargo:rustc-env=PINFOLD_INIT={}", embedded.display());
+    println!("cargo:rustc-env=PINFOLD_INIT_SHA256={hash}");
 }

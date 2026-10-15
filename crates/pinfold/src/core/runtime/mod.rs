@@ -22,12 +22,9 @@ use tokio::process::{Child, Command};
 use crate::core::pipe::{nonblocking, remaining};
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
+use crate::init::BOX_ENV_PREFIX;
 
 const BUILD_LOG_BYTES: usize = 64 * 1024;
-
-/// Guest values travel under names the host runtime does not interpret.
-/// Hex preserves arbitrary environment bytes through runtime JSON encoding.
-pub const BOX_ENV_PREFIX: &str = "PINFOLD_BOX_ENV_";
 
 /// The runtime's native Linux image architecture.
 pub const TARGET_ARCH: &str = if cfg!(target_arch = "aarch64") {
@@ -367,10 +364,12 @@ pub trait Runtime: Sync {
     /// Start the attached `container run` process that owns the box. When
     /// `proxy_socket` is set, carry that host unix socket into the box.
     /// `seccomp` is the profile [`Runtime::preflight`] returned.
+    /// `state_dir` belongs to this claim until runtime removal.
     fn up(
         &self,
         plan: &Plan,
         init: &Path,
+        state_dir: &Path,
         proxy_socket: Option<&Path>,
         seccomp: Option<&Path>,
     ) -> io::Result<Child>;

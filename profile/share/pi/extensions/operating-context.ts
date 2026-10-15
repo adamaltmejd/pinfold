@@ -12,6 +12,6 @@ export default function operatingContext(pi) {
             "- A proxy 403 is final. Do not retry it, route around it, or probe other hosts.",
             "- Commits are made on the host. The box never writes the host's .git.",
         ].join("\n");
-        return { systemPrompt: `${event.systemPrompt}\n\n${facts}` };
+        event.systemPromptOptions.sections.pinfold = facts;
     });
 }

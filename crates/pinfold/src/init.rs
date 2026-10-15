@@ -21,7 +21,9 @@ use std::time::Duration;
 
 use nix::sys::signal::{SigHandler, SigSet, Signal};
 
-use crate::core::runtime::BOX_ENV_PREFIX;
+/// Guest values travel under names the host runtime does not interpret.
+/// Hex preserves arbitrary environment bytes through runtime JSON encoding.
+pub const BOX_ENV_PREFIX: &str = "PINFOLD_BOX_ENV_";
 
 const RELAY_LISTEN: &str = "127.0.0.1:3128";
 

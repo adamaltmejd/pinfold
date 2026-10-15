@@ -28,6 +28,7 @@ impl Runtime for Apple {
         &self,
         plan: &Plan,
         init: &Path,
+        _state_dir: &Path,
         proxy_socket: Option<&Path>,
         _seccomp: Option<&Path>,
     ) -> io::Result<Child> {
@@ -214,19 +215,15 @@ impl Runtime for Apple {
 /// Wait, bounded, until `list` reports box `name` running. Apple records
 /// `.running` only after the box's first process starts, so `ready` can
 /// arrive first; an exec is refused in that gap.
-pub fn wait_until_running(name: &str) -> io::Result<()> {
+pub fn wait_until_running(name: &str) -> io::Result<BoxInfo> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let state = Apple
-            .list(None)?
-            .into_iter()
-            .find(|box_| box_.id == name)
-            .map(|box_| box_.running);
+        let state = Apple.list(None)?.into_iter().find(|box_| box_.id == name);
         match state {
-            Some(true) => return Ok(()),
+            Some(box_) if box_.running => return Ok(box_),
             _ if Instant::now() >= deadline => {
                 return Err(io::Error::other(match state {
-                    Some(false) => format!("box {name:?} is not running after ready"),
+                    Some(_) => format!("box {name:?} is not running after ready"),
                     _ => format!("the runtime does not list box {name:?} after ready"),
                 }));
             }

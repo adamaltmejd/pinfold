@@ -196,7 +196,7 @@ pub fn init() -> io::Result<PathBuf> {
     const INIT: &[u8] = include_bytes!(env!("PINFOLD_INIT"));
     let dir = dirs::artifacts_dir()?
         .join("init")
-        .join(super::sha256_hex(INIT))
+        .join(env!("PINFOLD_INIT_SHA256"))
         .join("linux-arm64");
     dirs::install_dir(&dir, |staging| {
         let path = staging.join("pinfold");

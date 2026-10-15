@@ -365,6 +365,10 @@ The box spec `up` reads from stdin:
 
 Runtime command lines are built as data.
 
+On Linux, each box applies the host seccomp profile read for its startup,
+with the namespace restrictions above. Concurrent startups cannot replace
+another box's selected profile.
+
 ### Process supervision
 
 - Always `-i`. `-t` only when stdin and stdout are both terminals, with the
@@ -525,6 +529,7 @@ profile image.
   callers set different `NO_COLOR` or `BUILDKIT_COLORS`.
 - Apple base refresh pulls only the host platform unless the first `FROM`
   names an explicit platform. An unresolved platform is not pulled.
+  The empty `scratch` base has no digest and is not pulled.
 
 Built-in images use `debian:trixie-slim`, upgrade Debian packages at each
 build, record the resolved base digest and strip setuid/setgid bits.
@@ -601,8 +606,9 @@ codex also pins a host helper, `codex-app-server`, per host `os-arch`
 `up` with a codex login route. It never enters a box.
 
 The init is not an artifact: it always comes from the CLI's own build. The
-macOS CLI embeds the `aarch64-unknown-linux-musl` build and writes it to the
-cache once; a Linux CLI mounts its own executable.
+macOS CLI embeds the `aarch64-unknown-linux-musl` `pinfold-init` build and writes
+it to the cache once; a Linux CLI mounts its own executable. Both use the same
+init source.
 
 ## Profiles
 
@@ -921,7 +927,8 @@ the command refuses as `project-in-git`.
 ## Guarantees
 
 Each has one end-to-end test. Testing policy is in `AGENTS.md`.
-Guarantees 1–34 run through the Rust E2E crate. Guarantee 35 is the standalone
+Guarantees 1–34 and Linux-only guarantee 37 run through the Rust E2E crate.
+Guarantee 35 is the standalone
 `examples/pi-durable/durable_recovery_preserves_boxed_execution.ts` gate;
 its README gives installation and execution commands. Run it with exclusive
 runtime ownership, after the Rust suite.
@@ -945,12 +952,12 @@ CI budget; the two slow gates run separately.
 | 6 | The environment is exactly the spec | Unprefixed host proxy variables stay out; PINFOLD_ENV_SECRET arrives without entering host argv. Guest PATH, HOME, runtime-selection variables, multiline values and a transport-prefixed name arrive exactly while local list/exec/down still manage the box. Always-applied values win. |
 | 7 | No egress means no way out | Without `egress`, nothing gets out, not even through a route. |
 | 8 | Losing the owner fails closed | After SIGKILL, egress fails closed; another XDG root sees the owner dead even with a misleading live pid file, prunes the box and reuses its name. An abandoned partial claim is reclaimable. |
-| 9 | The lifecycle works for a caller | Without egress, `exec` immediately after `ready` streams and returns the exit code, honors explicit workdir and tty, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; on Linux a real image-store lock stalls a fresh caller's listing, which returns exit 1 and `runtime-timeout` with no inventory within 20 seconds, leaves no runtime waiter, and preserves the live box and ownership for a successful listing after release; SIGINT and SIGTERM interrupt listings blocked on that lock with exit 128 plus the signal number, no inventory and no surviving runtime waiter; `down` removes even while attached output is active; on Linux an owner completes teardown while its requester is stopped, and that requester succeeds after resuming with the image-store lock held, without another inventory; closing `up`'s stdin tears the box down with reason `stdin-closed`. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box, an empty name or a flag-like name (`--filter=…`) exits 0, prints nothing and leaves live boxes alone; a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. A SIGSTOP owner keeps its claim after down times out; a second XDG root waits the ten-second claim deadline before name-in-use and cannot replace it until acknowledged teardown. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. A cold harness download holds startup while its image tag moves; startup fails as `image-changed`, and the stable replacement then starts. Pre-ready cancellation with a host bookkeeping permission failure still yields `down`/`signal`, with recoverable state and successful name reuse. |
+| 9 | The lifecycle works for a caller | Without egress, `exec` immediately after `ready` streams and returns the exit code, honors explicit workdir and tty, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; on Linux a real image-store lock stalls a fresh caller's listing, which returns exit 1 and `runtime-timeout` with no inventory within 20 seconds, leaves no runtime waiter, and preserves the live box and ownership for a successful listing after release; SIGINT and SIGTERM interrupt listings blocked on that lock with exit 128 plus the signal number, no inventory and no surviving runtime waiter; `down` removes even while attached output is active; on Linux an owner completes teardown while its requester is stopped, and that requester succeeds after resuming with the image-store lock held, without another inventory; closing `up`'s stdin tears the box down with reason `stdin-closed`. A closed readiness output pipe returns exit 1 after removing the runtime box and its state; the same name can start again. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box, an empty name or a flag-like name (`--filter=…`) exits 0, prints nothing and leaves live boxes alone; a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. A SIGSTOP owner keeps its claim after down times out; a second XDG root waits the ten-second claim deadline before name-in-use and cannot replace it until acknowledged teardown. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. A cold harness download holds startup while its image tag moves; startup fails as `image-changed`, and the stable replacement then starts. Pre-ready cancellation with a host bookkeeping permission failure still yields `down`/`signal`, with recoverable state and successful name reuse. |
 | 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. |
-| 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, or writing into `.vscode/` in a project without one fails, also under a top level named by a space, and a symlinked protected path refuses the run as `protected-path-invalid`; replacing it with a real directory runs. Starting inside `.git` is refused as `project-in-git`; starting from the project root runs. A non-UTF-8 project home fails plan assembly as `path-not-utf8` and leaves no newly created protected directories; an existing protected directory survives. Pre-existing Git and protected configuration hardlinks in the writable project refuse startup as `mount-alias`, leave no box or box state, preserve host bytes and remove newly created protected directories. Removing the alias permits RPC and project writes. Control: a project file is writable. |
+| 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, or writing into `.vscode/` in a project without one fails, also under a top level named by a space, and a symlinked protected path refuses the run as `protected-path-invalid`; replacing it with a real directory runs. External hook paths resolving into the project, including missing targets below aliases, refuse as `protected-path-invalid`; genuinely external hooks remain allowed. Starting inside `.git` is refused as `project-in-git`; starting from the project root runs. A non-UTF-8 project home fails plan assembly as `path-not-utf8` and leaves no newly created protected directories; an existing protected directory survives. Pre-existing Git and protected configuration hardlinks in the writable project refuse startup as `mount-alias`, leave no box or box state, preserve host bytes and remove newly created protected directories. Removing the alias permits RPC and project writes. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |
 | 13 | Project state persists and stays separate | Settings survive reseeding and profile copies omit auth.json. Guest writes in two same-named projects remain separate on A/B/A runs. With two live boxes for one project, attach --box reads and changes only the selected box. A long valid project basename launches. |
-| 14 | Both pi config levels load behind a route | A routed fake model receives profile and project skills. The same home switches default/full/default: document skill and operating context follow the selected profile while saved settings remain byte-identical. |
+| 14 | Both pi config levels load behind a route | A routed fake model receives profile and project skills. The same home switches default/full/default: document skill, active Ponytail rules and operating context follow the selected profile while saved settings remain byte-identical. |
 | 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself; an image built on a profile's is its own family; a source a build left above two drops to two on a later `pinfold clean` with no build after. `--dry-run` leaves a project state the real clean removes. Two names built from identical inputs share one image id; `image rm` of one removes its tags while a box of the other name runs the image, and leaves the other name's tags, the image and the box; an image's last tag stays while a box uses it. An unlabeled image, a container started with the runtime's CLI from a pinfold-built image, a live box, its project's state and `~/.cache` survive `pinfold clean`, also with `--unused 0s`, which removes an idle project's state; a dead box is removed and protects no project's cache. On Apple, a build in another state directory held active in RUN succeeds across clean; a real build writes and deletes 64 MiB, dry-run preserves its allocated host blocks and reports at least the builder backing filesystem's allocation, and clean reclaims freed blocks. A claimed pi startup awaiting its real harness download preserves project state across clean while its checkout is temporarily absent; restoring the checkout lets the launch succeed, and the same stale state is removable afterward. |
 | 16 | The highest layer sets the allowlist | The environment replaces project allow, CPU, memory, protection and route settings. Kernel observations, a protected write refusal with a writable control, and a host HTTP fixture prove the result. Invalid UTF-8 overrides fail without disclosing their bytes. |
 | 17 | up refuses before it creates | A missing image, a misspelled spec or nested env key, a bad env name, a `dev.pinfold.` label, a memory below 256M or without a unit, a malformed string route, a login route naming another harness, a suffix allow entry on or above a public suffix, a mount path with a comma, a file mount, a missing mount host (including a dangling symlink), duplicate caller mount destinations (including normalized-equivalent spellings), a mount at a path pinfold mounts and a live name are refused as data, naming the cause; a misspelled key's refusal also names the box; each leaves no box and no state dir. The box whose name was reused still answers exec, and of two `up`s racing for one name exactly one wins. |
@@ -973,6 +980,7 @@ CI budget; the two slow gates run separately.
 | 34 | Blocked route responses release the upstream | A normal routed response succeeds. A guest that keeps its upload open but stops reading causes the host fixture connection to close after the production write deadline, while the guest holder remains alive. Slow gate only. |
 | 35 | Durable recovery preserves boxed execution | The host fixture refuses authority overlap before work, then observes a successful boxed command, a competing checkpoint writer refused without disrupting its owner, a mutation followed by SIGKILL before tool-result commit, a new box generation before recovery, no unsafe replay, and whole-box cancellation including a background child. Standalone prototype gate on macOS and Linux x64 and arm64. |
 | 36 | CONNECT tunnels share activity | Initially idle TLS tunnels start at staggered times and expire after the production idle interval. Real TLS tunnels carry upload-only and download-only traffic for longer than the production idle deadline. Neither closes while bytes flow; both then close after a full idle interval with `idle timeout` in the egress log while the guest holders remain alive. Standalone Linux slow gate. |
+| 37 | Linux boxes apply their own seccomp profile | Two startups read different host profiles before their runtime clients wait on the real image-store lock. Releasing the lock preserves the first box's allowed syscall and the second box's explicit EPERM for the same syscall. A benign syscall succeeds in the second box. |
 
 Linux (podman) runs in CI on every push to main and every pull request,
 and on a dispatched ref, on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm`
@@ -992,7 +1000,7 @@ lives in `cli.rs`.
 | Target | Role |
 |---|---|
 | `aarch64-apple-darwin` | macOS CLI |
-| `aarch64-unknown-linux-musl` | Linux arm64 CLI; init on Macs and arm64 hosts |
+| `aarch64-unknown-linux-musl` | Linux arm64 CLI; init on arm64 hosts; separate init on Macs |
 | `x86_64-unknown-linux-musl` | Linux x64 CLI; init on x64 hosts |
 
 Dependencies: `tokio`, `httparse`, `serde`, `serde_json`, `sha2`, `toml`, `nix`,
