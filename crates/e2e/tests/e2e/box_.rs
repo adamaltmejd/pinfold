@@ -1684,14 +1684,7 @@ int main(void) {
                 .custom_flags(nix::libc::O_NONBLOCK)
                 .open(source)
             {
-                Ok(writer) => {
-                    nix::fcntl::fcntl(
-                        &writer,
-                        nix::fcntl::FcntlArg::F_SETFL(nix::fcntl::OFlag::empty()),
-                    )
-                    .unwrap();
-                    break writer;
-                }
+                Ok(writer) => break writer,
                 Err(error) if error.raw_os_error() == Some(nix::libc::ENXIO) => {
                     assert!(
                         std::time::Instant::now() < deadline,
@@ -1732,9 +1725,28 @@ int main(void) {
     };
     nix::fcntl::fcntl(&lock, nix::fcntl::FcntlArg::F_SETLK(&held)).unwrap();
     for ((mut writer, policy), starting) in writers.into_iter().zip([normal, strict]).zip(&starts) {
-        writer
-            .write_all(&serde_json::to_vec(&policy).unwrap())
-            .unwrap();
+        let policy = serde_json::to_vec(&policy).unwrap();
+        let mut remaining = policy.as_slice();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !remaining.is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "box up stopped reading its host seccomp profile"
+            );
+            match writer.write(remaining) {
+                Ok(0) => panic!("host seccomp fixture wrote no bytes"),
+                Ok(written) => remaining = &remaining[written..],
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("write host seccomp fixture: {error}"),
+            }
+        }
         drop(writer);
         // Podman's image lookup precedes seccomp consumption. Its kernel
         // lock waiter proves derivation finished while consumption is held.
