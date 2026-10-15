@@ -18,9 +18,8 @@ nothing else of the host. Its only way out is its own allowlisting proxy.
 | macOS 26+ | Apple `container` 1.5.0+ (stable) |
 | Linux | rootless podman 6.1.4+ (stable) |
 
-Startup refuses older or prerelease runtime versions. On Linux, podman must
-be rootless with `cgroupManager=systemd`, and long-lived boxes need
-`loginctl enable-linger`.
+On Linux, podman also needs `cgroupManager=systemd`; run
+`loginctl enable-linger` for long-lived boxes.
 
 ## Install
 
