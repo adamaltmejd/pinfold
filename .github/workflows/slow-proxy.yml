@@ -1,9 +1,6 @@
 name: Slow proxy proof
 
 on:
-  # Validate a new gate before it exists on the default branch.
-  push:
-    branches: ['codex/slow-proxy/**']
   workflow_dispatch:
   workflow_call:
     inputs:
