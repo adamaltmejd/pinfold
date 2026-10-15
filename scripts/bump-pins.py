@@ -267,18 +267,25 @@ def repin_build_tools(texts):
                 f"https://hub.docker.com/v2/repositories/library/rust/tags/{target}-slim-trixie"
             )
         )
+        if not isinstance(image["images"], list):
+            raise ValueError(f"Rust {target}: invalid Yard image platform list")
         platforms = {(row["os"], row["architecture"]) for row in image["images"]}
+        if any(
+            not isinstance(value, str) or not value
+            for row in platforms
+            for value in row
+        ):
+            raise ValueError(f"Rust {target}: invalid Yard image platform")
         if not {("linux", "amd64"), ("linux", "arm64")} <= platforms:
-            raise ValueError(
-                f"Rust {target}: Yard image is missing a Linux architecture"
+            print(f"rust {current}: {target} awaits both Yard image architectures")
+        else:
+            print(f"rust {current} -> {target}")
+            texts[path] = replace(
+                texts[path], f'channel = "{current}"', f'channel = "{target}"'
             )
-        print(f"rust {current} -> {target}")
-        texts[path] = replace(
-            texts[path], f'channel = "{current}"', f'channel = "{target}"'
-        )
-        texts[YARD] = replace(
-            texts[YARD], f"rust:{current}-slim-trixie", f"rust:{target}-slim-trixie"
-        )
+            texts[YARD] = replace(
+                texts[YARD], f"rust:{current}-slim-trixie", f"rust:{target}-slim-trixie"
+            )
 
     path = ROOT / "Cargo.toml"
     for name, dependency in tomllib.loads(texts[path])["workspace"][

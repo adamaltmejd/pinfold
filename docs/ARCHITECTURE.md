@@ -570,9 +570,9 @@ Nightly CI repins harnesses, image tools, Rust, Cargo dependencies, prototype
 packages and Yard tools with
 `scripts/bump-pins.py`. Cargo requirements advance to the latest stable,
 non-yanked versions, including incompatible updates; Cargo and Bun regenerate
-their lockfiles. Rust advances to the stable channel's version and the Yard
-Rust image follows it. CI reads Bun's version from the candidate's image
-recipe after checkout.
+their lockfiles. Rust advances to the stable channel's version once its Yard
+image provides Linux amd64 and arm64; the toolchain and Yard image move
+together. CI reads Bun's version from the candidate's image recipe after checkout.
 GitHub Actions retain full commit pins and change only in reviewed manual
 updates. The Public Suffix List advances to a newer dated snapshot from
 `publicsuffix.org`. A version pin only moves up, to a stable version at or
