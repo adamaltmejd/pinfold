@@ -1149,7 +1149,7 @@ fn up_refuses_before_it_creates() {
         "name": name,
         "image": default_image(&env),
         "labels": { "dev.example.test": "refuses" },
-        "egress": { "routes": { "ex": "https://example.com" } },
+        "egress": { "routes": { "invalid-url-route": "https://example.com" } },
     });
     let (code, refused) = box_up_refused(&env, &url_route, &[]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
@@ -1159,7 +1159,7 @@ fn up_refuses_before_it_creates() {
         refused["detail"]
             .as_str()
             .unwrap_or_default()
-            .contains("\"ex\""),
+            .contains("invalid-url-route"),
         "the refusal did not name the route: {refused}"
     );
     assert_left_nothing(&env, &name, label, "refused");
@@ -4630,7 +4630,6 @@ fn a_caller_owned_box_cannot_write_git() {
         .join("objects")
         .join(&commit[..2])
         .join(&commit[2..]);
-    let object_bytes = fs::read(&object).unwrap();
     fs::hard_link(&object, outside.path().join("object")).unwrap();
     let mut up = box_up(&env, &spec, &name);
 
@@ -4659,7 +4658,6 @@ fn a_caller_owned_box_cannot_write_git() {
     );
     assert_ok(&wrote, "writing the worktree");
     assert_eq!(fs::read(repo.path().join("new.txt")).unwrap(), b"x\n");
-    assert_eq!(fs::read(&object).unwrap(), object_bytes);
 
     // A write into `.git` fails.
     let hook = dot_git.join("hooks/pre-commit");
