@@ -1,10 +1,5 @@
 //! The end-to-end suite's one test binary.
 //!
-//! The modules split it by area: `box_` the box lifecycle and runtime, `pi`
-//! the pi run, `cli` the top-level CLI. `cargo test -p e2e` builds the
-//! `pinfold` binary and runs tests in parallel except the two orphan
-//! scenarios; the harness, fixtures and helpers live in the crate's `e2e::`.
-//!
 //! They run on a macOS host with the Apple `container` CLI, or a Linux host
 //! with rootless podman.
 
