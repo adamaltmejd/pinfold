@@ -1,16 +1,7 @@
-name: CI
+name: Issue 92 contingent sha2 dev candidate
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  # scripts/e2e-linux.sh dispatches exact-ref checks at a temporary branch.
   workflow_dispatch:
-  workflow_call:
-    inputs:
-      ref:
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -19,7 +10,7 @@ jobs:
   linux:
     name: Linux (${{ matrix.runner }}, ${{ matrix.storage }}, sample ${{ matrix.sample }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -31,7 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+
+      - name: Require frozen production, setup, controls and sole Cargo candidate
+        run: |
+          mkdir -p target/issue-92
+          python3 scripts/sha2-candidate-diagnostic.py --guard-only >target/issue-92/source-guard.json
 
       - name: Rootless podman
         run: sh scripts/setup-linux-runner.sh
@@ -45,11 +41,10 @@ jobs:
           rustup target add "$(uname -m)-unknown-linux-musl"
           echo "CC_$(uname -m)_unknown_linux_musl=musl-gcc" >>"$GITHUB_ENV"
 
-      # Dependencies' build output, per runner. Only main saves; temporary
-      # checks/<sha> branches restore its cache.
+      # Restore existing dependencies; diagnostic jobs never save the cache.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          save-if: ${{ !inputs.ref && github.ref == 'refs/heads/main' }}
+          save-if: false
 
       - name: Format
         run: cargo fmt --check
@@ -74,14 +69,16 @@ jobs:
           set -e
           exit "$result"
 
+      - name: Isolated real-update ABBA after suite timer
+        run: python3 scripts/sha2-candidate-diagnostic.py
+
       - name: Retain diagnostic evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: issue-92-storage-${{ matrix.runner }}-${{ matrix.storage }}-${{ matrix.sample }}
+          name: issue-92-sha2-${{ matrix.runner }}-${{ matrix.storage }}-${{ matrix.sample }}
           path: |
             target/issue-92/
-            ${{ runner.temp }}/issue92-*/
           retention-days: 14
 
       - name: Prototype Bun version
