@@ -984,6 +984,9 @@ fn both_pi_config_levels_load_behind_a_route() {
     // project's settings, or keep using full's package after selecting
     // default; the returning default request still advertises documents.
     // Reseed existing settings on a profile switch; the host marker changes.
+    // Return a forced systemPrompt from operating-context instead of adding
+    // its section; Pi projects that text over Ponytail's later section, so
+    // full loses its active rules while the allowlist still reaches the model.
     // Omit the operating-context extension; its host-chosen allowlist never
     // reaches the model. Cache that allowlist across starts; the returning
     // default request reports the earlier marker.
@@ -1029,6 +1032,8 @@ fn both_pi_config_levels_load_behind_a_route() {
     };
     default_image(&env);
     build_profile(&env, "full");
+    // The pinned Ponytail instruction hook emits this marker for explicit full input.
+    let ponytail_rule = "PONYTAIL MODE ACTIVE — level: full";
 
     // The project carries the project level: a skill under .pi/.
     let project_marker = "pinfold-e2e-project-skill-marker";
@@ -1070,6 +1075,7 @@ fn both_pi_config_levels_load_behind_a_route() {
             .env("PINFOLD_ALLOW", allow)
             .env("PINFOLD_ROUTES", format!("fake.model={}", model.route()))
             .env("PINFOLD_ENV_OPENAI_API_KEY", "sk-fake")
+            .env("PINFOLD_ENV_PONYTAIL_DEFAULT_MODE", "full")
             .output()
             .expect("run pi -p");
         assert!(
@@ -1126,6 +1132,11 @@ fn both_pi_config_levels_load_behind_a_route() {
             .find(|message| message["role"] == "system")
             .and_then(|message| message["content"].as_str())
             .expect("the model request has a system prompt");
+        assert_eq!(
+            system.contains(ponytail_rule),
+            selected == "full",
+            "{selected} carried the wrong active Ponytail rules: {system}"
+        );
         assert!(
             system.contains(allow)
                 && selections
