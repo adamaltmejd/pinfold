@@ -54,7 +54,7 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: End-to-end tests
-        run: cargo test -p e2e --locked
+        run: python3 scripts/e2e-budget.py
 
       - name: Prototype Bun version
         id: tools

@@ -1,0 +1,9 @@
+# Issue 92: final candidate test audit
+
+Guarantee 9 keeps all its existing assertion blocks, positive controls, outside expected values and named sabotages. The Linux-only change atomically downgrades the suite's exclusive runtime guard after both global-store-lock scenarios and their cleanup. A read guard remains across the stopped-owner sequence and fixture destruction. It is declared before the fixtures so unwinding preserves that isolation. Both production waits, including the full claim wait after down times out, remain ordered and unchanged.
+
+Two independent reviewers accepted the guard boundary and drop order. No assertion was removed, added or rewritten. No guarantee-table row changed. This is a measured scheduling correction, not a new guarantee. The source diff adds eight lines in the existing test and zero lines to production Rust. The remaining shipping changes are a three-line Cargo dependency-profile override, a sixteen-line CI budget runner, its one-line workflow call and a terse specification clarification.
+
+The same-host real-update ABBA comparison and all eight full Linux diagnostic suites are recorded in the issue-92 investigation archive. Effective compiler profiles retain debug assertions and overflow checks. Development SHA2 optimization does not change any checksum comparison, production timeout, isolation rule or release profile.
+
+The final uninstrumented host run passed 33 tests, zero failed, one separately gated ignored test: libtest 316.63 seconds, complete Cargo command 319.55 seconds. This local budget miss is retained; it is not one of the Linux acceptance samples. The preceding instrumented SHA2 Mac candidate passed in 248.94 seconds. Neither result establishes a local Mac timing guarantee. Format and clippy passed on the final candidate. The exact final source still requires the fixed nine-cell Linux acceptance series and separate applicable gates; this audit does not declare #92 complete.

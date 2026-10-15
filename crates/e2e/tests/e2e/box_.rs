@@ -31,6 +31,9 @@ fn box_lifecycle_works_for_a_caller() {
                 .status();
         }
     }
+    // Declare before fixtures so their cleanup retains the downgraded guard.
+    #[cfg(target_os = "linux")]
+    let _shared_runtime;
     #[cfg(target_os = "linux")]
     let _runtime = crate::exclusive_runtime();
     #[cfg(not(target_os = "linux"))]
@@ -621,6 +624,11 @@ sys.exit(result.returncode)
     #[cfg(not(target_os = "linux"))]
     assert!(up.wait().success(), "box up did not exit cleanly");
 
+    // Store locks are gone; keep cleanup isolated while other readers run.
+    #[cfg(target_os = "linux")]
+    {
+        _shared_runtime = std::sync::RwLockWriteGuard::downgrade(_runtime);
+    }
     // A stopped owner still owns its name. Sabotage: restore down's
     // timed fallback removal; down succeeds, its state disappears, and a
     // replacement can start before the previous owner finishes cleanup.
