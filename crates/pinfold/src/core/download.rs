@@ -84,7 +84,6 @@ fn transfer(
                         return Err(io::Error::other("download exceeds byte limit"));
                     }
                     output.write_all(&buffer[..read])?;
-                    continue;
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     wait_ready(
