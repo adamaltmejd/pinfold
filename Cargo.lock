@@ -102,6 +102,7 @@ version = "0.2.6"
 dependencies = [
  "nix",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

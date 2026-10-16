@@ -1,5 +1,4 @@
-//! End-to-end tests for the top-level CLI, the paths every caller hits
-//! before a verb is chosen.
+//! End-to-end tests for host CLI options, diagnostics and self-update.
 //!
 //! The options need no runtime. Doctor is exercised with the host runtime
 //! available and absent from PATH.
@@ -8,6 +7,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use e2e::{TestEnv, pinfold};
+
+#[path = "update.rs"]
+mod update;
 
 /// A fresh host with no runtime on PATH: `pinfold --version` and `pinfold
 /// box list --help` answer from the binary alone, spawn nothing and leave the

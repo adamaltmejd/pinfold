@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use e2e::{TestEnv, default_image, pinfold, run_ok};
 
-use super::box_::{ChildOwner, box_name, box_up, read_bounded};
+use crate::box_::{ChildOwner, box_name, box_up, read_bounded};
 
 #[test]
 fn host_updates_are_verified_and_atomic() {
