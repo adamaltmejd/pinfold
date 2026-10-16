@@ -210,11 +210,8 @@ fn interactive_update_checks_are_bounded() {
     // A fresh host cache makes an offline check due without modifying
     // pinfold's cache record or waiting for the clock to advance.
     let offline = TestEnv::with_private_cache("update-offline");
-    run_ok(
-        offline
-            .command(&installed)
-            .args(["box", "list", "--label", "dev.pinfold.project"]),
-    );
+    // Run daily maintenance before the terminal deadline; box list skips it.
+    run_ok(offline.command(&installed).args(["box", "prune"]));
     fs::write(fixture.root.join("offline"), b"").unwrap();
     let result = fixture
         .terminal(&offline, &installed, &attach)
@@ -228,7 +225,7 @@ fn interactive_update_checks_are_bounded() {
     assert_eq!(checks(), 2, "offline check did not reach the fixture");
     assert_eq!(
         result.stdout, unchecked.stdout,
-        "offline check changed command output"
+        "offline check changed command output: {result:?}; control: {unchecked:?}"
     );
     fixture
         .terminal(&offline, &installed, &attach)
