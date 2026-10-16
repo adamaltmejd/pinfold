@@ -1,75 +1,40 @@
-name: CI
-
+name: v0.2.6 fixed scheduling acceptance
 on:
-  push:
-    branches: [main]
-  pull_request:
-  # scripts/e2e-linux.sh dispatches exact-ref checks at a temporary branch.
   workflow_dispatch:
-  workflow_call:
-    inputs:
-      ref:
-        required: true
-        type: string
-
 permissions:
   contents: read
-
 jobs:
-  linux:
-    name: Linux (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+  round_1:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-26.04, ubuntu-26.04-arm]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.ref || github.sha }}
-
-      - name: Rootless podman
-        run: sh scripts/setup-linux-runner.sh
-
-      - name: Rust musl target
-        run: |
-          # ring's C sources need the musl C compiler; the runner has none
-          # until musl-tools is installed, and cc-rs looks for it under the
-          # target's own name, so it is named for the target explicitly.
-          sudo apt-get install -y -qq musl-tools
-          rustup target add "$(uname -m)-unknown-linux-musl"
-          echo "CC_$(uname -m)_unknown_linux_musl=musl-gcc" >>"$GITHUB_ENV"
-
-      # Dependencies' build output, per runner. Only main saves; temporary
-      # checks/<sha> branches restore its cache.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: ${{ !inputs.ref && github.ref == 'refs/heads/main' }}
-
-      - name: Format
-        run: cargo fmt --check
-
-      - name: Lint
-        run: cargo clippy --all-targets --locked -- -D warnings
-
-      - name: End-to-end tests
-        run: python3 scripts/e2e-budget.py
-
-      - name: Prototype Bun version
-        id: tools
-        run: |
-          python3 scripts/bun-version.py >>"$GITHUB_OUTPUT"
-
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: ${{ steps.tools.outputs.bun }}
-
-      - name: Durable recovery preserves boxed execution
-        working-directory: examples/pi-durable
-        run: |
-          bun install --frozen-lockfile
-          bun run check
-          bun durable_recovery_preserves_boxed_execution.ts \
-            --pinfold "$GITHUB_WORKSPACE/target/$(uname -m)-unknown-linux-musl/debug/pinfold" \
-            --image pinfold/profile-default:latest
+        case: [x64-normal, x64-coldmusl, arm-normal]
+    uses: ./.github/workflows/v026-acceptance-cell.yml
+    with:
+      source_sha: 3d49304b9c55a7a8605c870db02f178d7c35c985
+      round: 1
+      case: ${{ matrix.case }}
+  round_2:
+    needs: [round_1]
+    if: always()
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [x64-normal, x64-coldmusl, arm-normal]
+    uses: ./.github/workflows/v026-acceptance-cell.yml
+    with:
+      source_sha: 3d49304b9c55a7a8605c870db02f178d7c35c985
+      round: 2
+      case: ${{ matrix.case }}
+  round_3:
+    needs: [round_2]
+    if: always()
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [x64-normal, x64-coldmusl, arm-normal]
+    uses: ./.github/workflows/v026-acceptance-cell.yml
+    with:
+      source_sha: 3d49304b9c55a7a8605c870db02f178d7c35c985
+      round: 3
+      case: ${{ matrix.case }}
