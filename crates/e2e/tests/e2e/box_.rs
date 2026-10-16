@@ -2493,22 +2493,10 @@ fn a_route_reaches_exactly_one_host_service() {
     fs::create_dir(&log_path).expect("make audit append fail");
     let failed = curl(&env, &name, "5", &["http://fixture.internal/"]);
     assert_ne!(failed.code, 0, "request succeeded without its audit record");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let status = loop {
-        if let Some(status) = up
-            .starting
-            .child
-            .try_wait()
-            .expect("observe audit shutdown")
-        {
-            break status;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "audit failure did not stop the owner"
-        );
-        std::thread::yield_now();
-    };
+    assert_ne!(failed.code, 28, "audit failure only timed out the request");
+    // Native exit bookkeeping may wait behind another box's startup. This
+    // observes completed teardown with the same bound as other owner exits.
+    let status = up.wait();
     let lines = up.starting.rest();
     assert_eq!(
         lines.last().expect("audit down line")["reason"],
