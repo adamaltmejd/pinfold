@@ -1,7 +1,7 @@
 # The toolchain rust-toolchain.toml pins, with its components. Boxes set
 # their own HOME and PATH, so the toolchain is copied out of rustup and linked
 # onto the default PATH; rust-toolchain.toml is not read inside a box.
-FROM docker.io/library/rust:1.99.0-slim-trixie AS rust
+FROM docker.io/library/rust:1.99.1-slim-trixie AS rust
 RUN rustup component add rustfmt clippy && cp -a "$(rustc --print sysroot)" /toolchain
 
 FROM pinfold/profile-default:latest
