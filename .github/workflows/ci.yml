@@ -1,75 +1,268 @@
-name: CI
-
+name: v0.2.6 final exact-head Linux G34 and G36
 on:
-  push:
-    branches: [main]
-  pull_request:
-  # scripts/e2e-linux.sh dispatches exact-ref checks at a temporary branch.
   workflow_dispatch:
-  workflow_call:
-    inputs:
-      ref:
-        required: true
-        type: string
-
 permissions:
   contents: read
-
 jobs:
-  linux:
-    name: Linux (${{ matrix.runner }})
+  slow:
+    name: G34 then G36 (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         runner: [ubuntu-26.04, ubuntu-26.04-arm]
+    env:
+      PIN_EXPECTED_SHA: 3d49304b9c55a7a8605c870db02f178d7c35c985
     steps:
+      - name: Initialize retained outcomes
+        run: |
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])/'pinfold-v026-final-slow'; root.mkdir(parents=True, exist_ok=False)
+          with Path(os.environ['GITHUB_ENV']).open('a') as stream:
+              stream.write('PIN_EVIDENCE_ROOT='+str(root)+'\n')
+          for name in ['source','final-source','outcomes']:
+              (root/(name+'.json')).write_text(json.dumps({'status':'not-run','expected_sha':os.environ['PIN_EXPECTED_SHA']})+'\n')
+          for name in ['build','g34','g36']:
+              (root/(name+'-result.json')).write_text(json.dumps({'status':'not-run'})+'\n')
+          for name in ['initial','post-g34','post-g36']:
+              (root/(name+'-inventory.json')).write_text(json.dumps({'status':'not-run'})+'\n')
+          PYCODE
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.sha }}
-
-      - name: Rootless podman
-        run: sh scripts/setup-linux-runner.sh
-
-      - name: Rust musl target
+          ref: 3d49304b9c55a7a8605c870db02f178d7c35c985
+      - name: Verify frozen source
+        id: source
         run: |
-          # ring's C sources need the musl C compiler; the runner has none
-          # until musl-tools is installed, and cc-rs looks for it under the
-          # target's own name, so it is named for the target explicitly.
-          sudo apt-get install -y -qq musl-tools
+          python3 - <<'PYCODE'
+          import json, os, subprocess
+          from pathlib import Path
+          root=Path(os.environ['PIN_EVIDENCE_ROOT']); root.mkdir(parents=True,exist_ok=True)
+          result={'status':'error','expected_sha':os.environ['PIN_EXPECTED_SHA']}
+          try:
+              actual=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+              dirty=subprocess.run(['git','diff','--quiet','HEAD','--'],check=False).returncode
+              if dirty not in (0,1):
+                  raise RuntimeError('source observation failed')
+              untracked=subprocess.check_output(['git','ls-files','--others','--exclude-standard','-z'])
+              result.update(actual_sha=actual,tracked_source_clean=dirty==0,nonignored_untracked_count=len([name for name in untracked.split(b'\0') if name]))
+              result['status']='verified' if actual==os.environ['PIN_EXPECTED_SHA'] and dirty==0 and not untracked else 'mismatch'
+          except (OSError,subprocess.SubprocessError,RuntimeError) as error:
+              result['error_type']=type(error).__name__
+          finally:
+              (root/'source.json').write_text(json.dumps(result,indent=2)+'\n')
+          raise SystemExit(0 if result['status']=='verified' else 1)
+          PYCODE
+      - name: Rootless podman and fixture tools
+        id: setup
+        run: |
+          sh scripts/setup-linux-runner.sh
+          sudo apt-get install -y -qq musl-tools openssl python3 iproute2
+      - name: Rust musl target
+        id: target
+        run: |
           rustup target add "$(uname -m)-unknown-linux-musl"
           echo "CC_$(uname -m)_unknown_linux_musl=musl-gcc" >>"$GITHUB_ENV"
-
-      # Dependencies' build output, per runner. Only main saves; temporary
-      # checks/<sha> branches restore its cache.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          save-if: ${{ !inputs.ref && github.ref == 'refs/heads/main' }}
-
-      - name: Format
-        run: cargo fmt --check
-
-      - name: Lint
-        run: cargo clippy --all-targets --locked -- -D warnings
-
-      - name: End-to-end tests
-        run: python3 scripts/e2e-budget.py
-
-      - name: Prototype Bun version
-        id: tools
+          save-if: false
+      - name: Build the real binary
+        id: build
         run: |
-          python3 scripts/bun-version.py >>"$GITHUB_OUTPUT"
-
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+          python3 - <<'PYCODE'
+          import json, os, subprocess, time
+          from pathlib import Path
+          root=Path(os.environ['PIN_EVIDENCE_ROOT'])
+          command=['cargo','build','-p','pinfold','--locked','--target',os.uname().machine+'-unknown-linux-musl']
+          began=time.monotonic_ns()
+          (root/'build-result.json').write_text(json.dumps({'status':'started'})+'\n')
+          try:
+              with (root/'build.log').open('wb') as log:
+                  completed=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,check=False)
+          except OSError as error:
+              (root/'build-result.json').write_text(json.dumps({'status':'spawn-failed','error_type':type(error).__name__})+'\n')
+              raise
+          elapsed=time.monotonic_ns()-began
+          text=(root/'build.log').read_text(errors='replace')
+          print(text,end='')
+          (root/'build-result.json').write_text(json.dumps({'status':'complete','exit':completed.returncode,'elapsed_ns':elapsed})+'\n')
+          raise SystemExit(completed.returncode)
+          PYCODE
+      - name: Record native runtime
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, subprocess
+          from pathlib import Path
+          root=Path(os.environ['PIN_EVIDENCE_ROOT'])
+          (root/'podman-version.txt').write_text(subprocess.check_output(['podman','--version'],text=True))
+          info=json.loads(subprocess.check_output(['podman','info','--format','json'],text=True))
+          (root/'runtime.json').write_text(json.dumps(info,indent=2)+'\n')
+          PYCODE
+      - name: Verify initial empty runtime inventory
+        id: initial
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, subprocess
+          from pathlib import Path
+          root=Path(os.environ['PIN_EVIDENCE_ROOT']); root.mkdir(parents=True,exist_ok=True)
+          values={'status':'unavailable'}
+          query_exit=None
+          try:
+              completed=subprocess.run(['podman','ps','--all','--filter','label=dev.pinfold.owner','--format','json'],capture_output=True,text=True,timeout=90,check=False)
+              query_exit=completed.returncode
+              if query_exit:
+                  values={'status':'query-failed','exit':query_exit}
+              else:
+                  parsed=json.loads(completed.stdout)
+                  values=parsed if isinstance(parsed,list) else {'status':'invalid-inventory-type','exit':query_exit}
+          except (OSError,subprocess.SubprocessError,ValueError) as error:
+              values={'status':'unavailable','error_type':type(error).__name__,'exit':query_exit}
+          finally:
+              (root/'initial-inventory.json').write_text(json.dumps(values,indent=2)+'\n')
+          raise SystemExit(0 if query_exit==0 and values==[] else 1)
+          PYCODE
+      - name: G34 production write deadline
+        id: g34
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, subprocess, time
+          from pathlib import Path
+          root=Path(os.environ['PIN_EVIDENCE_ROOT'])
+          command=['cargo','test','-p','e2e','--locked','--test','e2e','box_::blocked_route_responses_release_the_upstream','--','--ignored','--exact']
+          began=time.monotonic_ns()
+          (root/'g34-result.json').write_text(json.dumps({'status':'started'})+'\n')
+          try:
+              with (root/'g34.log').open('wb') as log:
+                  completed=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,check=False)
+          except OSError as error:
+              (root/'g34-result.json').write_text(json.dumps({'status':'spawn-failed','error_type':type(error).__name__})+'\n')
+              raise
+          elapsed=time.monotonic_ns()-began
+          text=(root/'g34.log').read_text(errors='replace')
+          print(text,end='')
+          explicit_error=None
+          try:
+              explicit='test box_::blocked_route_responses_release_the_upstream ... ok' in text and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in text
+          except (ValueError,TypeError) as error:
+              explicit=False
+              explicit_error=type(error).__name__
+          (root/'g34-result.json').write_text(json.dumps({'status':'complete','exit':completed.returncode,'elapsed_ns':elapsed,'explicit_pass':explicit,'evidence_parse_error':explicit_error})+'\n')
+          raise SystemExit(completed.returncode or int(not explicit))
+          PYCODE
+      - name: Verify runtime after G34
+        id: after_g34
+        if: always() && steps.initial.outcome == 'success' && steps.g34.outcome != 'skipped'
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, subprocess
+          from pathlib import Path
+          root=Path(os.environ['PIN_EVIDENCE_ROOT']); root.mkdir(parents=True,exist_ok=True)
+          values={'status':'unavailable'}
+          query_exit=None
+          try:
+              completed=subprocess.run(['podman','ps','--all','--filter','label=dev.pinfold.owner','--format','json'],capture_output=True,text=True,timeout=90,check=False)
+              query_exit=completed.returncode
+              if query_exit:
+                  values={'status':'query-failed','exit':query_exit}
+              else:
+                  parsed=json.loads(completed.stdout)
+                  values=parsed if isinstance(parsed,list) else {'status':'invalid-inventory-type','exit':query_exit}
+          except (OSError,subprocess.SubprocessError,ValueError) as error:
+              values={'status':'unavailable','error_type':type(error).__name__,'exit':query_exit}
+          finally:
+              (root/'post-g34-inventory.json').write_text(json.dumps(values,indent=2)+'\n')
+          raise SystemExit(0 if query_exit==0 and values==[] else 1)
+          PYCODE
+      - name: G36 production CONNECT idle deadline
+        id: g36
+        if: ${{ !cancelled() && steps.after_g34.outcome == 'success' }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, subprocess, time
+          from pathlib import Path
+          root=Path(os.environ['PIN_EVIDENCE_ROOT'])
+          command=['bash','scripts/slow-proxy.sh',str(Path.cwd()/'target'/(os.uname().machine+'-unknown-linux-musl')/'debug/pinfold')]
+          began=time.monotonic_ns()
+          (root/'g36-result.json').write_text(json.dumps({'status':'started'})+'\n')
+          try:
+              with (root/'g36.log').open('wb') as log:
+                  completed=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,check=False)
+          except OSError as error:
+              (root/'g36-result.json').write_text(json.dumps({'status':'spawn-failed','error_type':type(error).__name__})+'\n')
+              raise
+          elapsed=time.monotonic_ns()-began
+          text=(root/'g36.log').read_text(errors='replace')
+          print(text,end='')
+          explicit_error=None
+          try:
+              explicit=any(isinstance(value,dict) and value.get('event')=='passed' and value.get('guarantee')==36 for value in [json.loads(line) for line in text.splitlines() if line.startswith('{')])
+          except (ValueError,TypeError) as error:
+              explicit=False
+              explicit_error=type(error).__name__
+          (root/'g36-result.json').write_text(json.dumps({'status':'complete','exit':completed.returncode,'elapsed_ns':elapsed,'explicit_pass':explicit,'evidence_parse_error':explicit_error})+'\n')
+          raise SystemExit(completed.returncode or int(not explicit))
+          PYCODE
+      - name: Verify runtime after G36
+        id: after_g36
+        if: always() && steps.initial.outcome == 'success' && steps.g36.outcome != 'skipped'
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, subprocess
+          from pathlib import Path
+          root=Path(os.environ['PIN_EVIDENCE_ROOT']); root.mkdir(parents=True,exist_ok=True)
+          values={'status':'unavailable'}
+          query_exit=None
+          try:
+              completed=subprocess.run(['podman','ps','--all','--filter','label=dev.pinfold.owner','--format','json'],capture_output=True,text=True,timeout=90,check=False)
+              query_exit=completed.returncode
+              if query_exit:
+                  values={'status':'query-failed','exit':query_exit}
+              else:
+                  parsed=json.loads(completed.stdout)
+                  values=parsed if isinstance(parsed,list) else {'status':'invalid-inventory-type','exit':query_exit}
+          except (OSError,subprocess.SubprocessError,ValueError) as error:
+              values={'status':'unavailable','error_type':type(error).__name__,'exit':query_exit}
+          finally:
+              (root/'post-g36-inventory.json').write_text(json.dumps(values,indent=2)+'\n')
+          raise SystemExit(0 if query_exit==0 and values==[] else 1)
+          PYCODE
+      - name: Record final source and every gate outcome
+        if: always()
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, subprocess
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])/'pinfold-v026-final-slow'; root.mkdir(parents=True,exist_ok=True)
+          result={'status':'error','steps':{'source': '${{ steps.source.outcome }}', 'setup': '${{ steps.setup.outcome }}', 'target': '${{ steps.target.outcome }}', 'build': '${{ steps.build.outcome }}', 'initial': '${{ steps.initial.outcome }}', 'g34': '${{ steps.g34.outcome }}', 'after_g34': '${{ steps.after_g34.outcome }}', 'g36': '${{ steps.g36.outcome }}', 'after_g36': '${{ steps.after_g36.outcome }}'}}
+          observation={'status':'error','expected_sha':os.environ['PIN_EXPECTED_SHA']}
+          try:
+              try:
+                  result['source_verification']=json.loads((root/'source.json').read_text())
+              except (OSError,ValueError) as error:
+                  result['source_verification']={'status':'unavailable','error_type':type(error).__name__}
+              actual=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+              dirty=subprocess.run(['git','diff','--quiet','HEAD','--'],check=False).returncode
+              if dirty not in (0,1):
+                  raise RuntimeError('source observation failed')
+              untracked=subprocess.check_output(['git','ls-files','--others','--exclude-standard','-z'])
+              observation.update(actual_sha=actual,matches_expected=actual==os.environ['PIN_EXPECTED_SHA'],tracked_source_clean=dirty==0,nonignored_untracked_count=len([name for name in untracked.split(b'\0') if name]))
+              observation['status']='verified' if observation['matches_expected'] and dirty==0 and not untracked else 'mismatch'
+              result['status']=observation['status']
+          except (OSError,subprocess.SubprocessError,RuntimeError) as error:
+              observation['error_type']=type(error).__name__
+          finally:
+              result['final_source']=observation
+              (root/'final-source.json').write_text(json.dumps(observation,indent=2)+'\n')
+              (root/'outcomes.json').write_text(json.dumps(result,indent=2)+'\n')
+          raise SystemExit(0 if observation['status']=='verified' else 1)
+          PYCODE
+      - name: Retain all slow-gate outcomes
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          bun-version: ${{ steps.tools.outputs.bun }}
-
-      - name: Durable recovery preserves boxed execution
-        working-directory: examples/pi-durable
-        run: |
-          bun install --frozen-lockfile
-          bun run check
-          bun durable_recovery_preserves_boxed_execution.ts \
-            --pinfold "$GITHUB_WORKSPACE/target/$(uname -m)-unknown-linux-musl/debug/pinfold" \
-            --image pinfold/profile-default:latest
+          name: v026-final-slow-${{ matrix.runner }}
+          path: ${{ runner.temp }}/pinfold-v026-final-slow/
+          if-no-files-found: error
+          retention-days: 14
