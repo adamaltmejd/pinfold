@@ -238,8 +238,8 @@ state; a pre-ready signal still ends with `down`, `signal`, exit 0.
 A tag resolving to a different image during startup fails with
 `image-changed` in `detail` before `ready`.
 
-`down` uses a host-only control socket and addresses the observed
-generation. The owner acknowledges after teardown. A timed-out request
+`down` skips daily maintenance. It uses a host-only control socket and addresses
+the observed generation. The owner acknowledges after teardown. A timed-out request
 fails without releasing ownership or removing a live owner's state.
 Completed teardown acknowledged by the owner succeeds without another
 runtime inventory.
@@ -729,7 +729,7 @@ Automatic, never prompting:
   in the last hour stays, so the ref its `built` line named still comes
   up; past the hour the newest two rule applies.
 - At most once a day, at the start of any working command (not
-  `--version`, `--help`, `doctor`, `config`, `artifacts`, `update`, `box list` or `init`): prune boxes whose owner
+  `--version`, `--help`, `doctor`, `config`, `artifacts`, `update`, `box list`, `box down` or `init`): prune boxes whose owner
   is gone (nothing owns its generation's lifetime lock), leftover sockets,
   artifact `<name>/<version>` directories no pin names (`init/` aside),
   builds beyond each source's newest two (the after-build rule, applied
