@@ -1,37 +1,36 @@
-name: v0.2.6 fixed x64 budget diagnosis
+name: v0.2.6 fixed Tokio admission ACCA diagnosis
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   linux:
-    name: Native x64 phase sample ${{ matrix.sample }}
+    name: Native x64 ACCA host ${{ matrix.host }}
     runs-on: ubuntu-26.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        sample: [1]
+        host: [1]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Require fixed candidate and exact existing observations
-        run: |
-          mkdir -p target/issue-92
-          printf '{"status":"not-run"}\n' >target/issue-92/suite-result.json
-          printf '{"status":"not-run"}\n' >target/issue-92/g35-result.json
-          python3 scripts/issue92-phase-source-guard.py >target/issue-92/source-guard.json
+      - name: Set evidence directory outside the restored cache
+        run: echo "PINFOLD_SCHEDULING_EVIDENCE=$RUNNER_TEMP/pinfold-tokio-evidence" >>"$GITHUB_ENV"
+      - name: Verify frozen diagnostic source
+        run: python3 scripts/release-scheduling-abba.py --verify-only
       - name: Original native rootless Podman setup
         run: sh scripts/setup-linux-runner.sh
       - name: Record native runtime
         run: |
-          podman --version >target/issue-92/podman-version.txt
-          podman info --format json >target/issue-92/runtime.json
+          mkdir -p ${{ env.PINFOLD_SCHEDULING_EVIDENCE }}
+          podman --version >${{ env.PINFOLD_SCHEDULING_EVIDENCE }}/podman-version.txt
+          podman info --format json >${{ env.PINFOLD_SCHEDULING_EVIDENCE }}/runtime.json
           python3 - <<'PYCODE'
           import json, pathlib
-          info=json.loads(pathlib.Path('target/issue-92/runtime.json').read_text())
+          info=json.loads(pathlib.Path('${{ env.PINFOLD_SCHEDULING_EVIDENCE }}/runtime.json').read_text())
           assert info['host']['security']['rootless'] is True
           assert info['store']['graphDriverName']=='overlay'
           assert not info['store'].get('graphOptions',{}).get('overlay.mount_program')
@@ -48,57 +47,19 @@ jobs:
         run: cargo fmt --check
       - name: Lint
         run: cargo clippy --all-targets --locked -- -D warnings
-      - name: Full diagnostic suite with existing phase and host observations
-        id: e2e
-        env:
-          RUST_TEST_NOCAPTURE: "1"
-        run: |
-          python3 scripts/diagnose-suite-host.py >target/issue-92/host.jsonl 2>target/issue-92/observer.stderr &
-          observer_pid=$!
-          # shellcheck disable=SC2329 # Called by the EXIT trap.
-          stop_observer() {
-            kill "$observer_pid" 2>/dev/null || true
-            set +e
-            wait "$observer_pid"
-            observer_result=$?
-            printf '{"status":"complete","exit":%s}\n' "$observer_result" >target/issue-92/observer-result.json
-          }
-          trap stop_observer EXIT
-          set +e
-          /usr/bin/time -f 'elapsed=%e user=%U system=%S max_rss_kib=%M exit=%x' -o target/issue-92/command-time.txt python3 scripts/e2e-budget.py 2>&1 | tee target/issue-92/suite.log
-          result=${PIPESTATUS[0]}
-          set -e
-          printf '{"status":"complete","exit":%s}\n' "$result" >target/issue-92/suite-result.json
-          exit "$result"
       - name: Prototype Bun version
         id: tools
-        if: ${{ !cancelled() && steps.e2e.outcome != 'skipped' }}
         run: python3 scripts/bun-version.py >>"$GITHUB_OUTPUT"
-      - id: bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ steps.tools.outputs.bun }}
-      - name: Durable recovery preserves boxed execution
-        if: ${{ !cancelled() && steps.bun.outcome == 'success' }}
-        working-directory: examples/pi-durable
-        run: |
-          set +e
-          {
-            bun install --frozen-lockfile &&
-            bun run check &&
-            bun durable_recovery_preserves_boxed_execution.ts \
-              --pinfold "$GITHUB_WORKSPACE/target/$(uname -m)-unknown-linux-musl/debug/pinfold" \
-              --image pinfold/profile-default:latest
-          } >"$GITHUB_WORKSPACE/target/issue-92/g35.log" 2>&1
-          result=$?
-          cat "$GITHUB_WORKSPACE/target/issue-92/g35.log"
-          printf '{"status":"complete","exit":%s}\n' "$result" >"$GITHUB_WORKSPACE/target/issue-92/g35-result.json"
-          exit "$result"
-      - name: Retain every scheduled outcome
+      - name: Four full suites and four G35 gates, fixed ACCA order
+        run: python3 scripts/release-scheduling-abba.py
+      - name: Retain all scheduled outcomes
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: v026-budget-x64-${{ matrix.sample }}
-          path: target/issue-92/
+          name: v026-tokio-abba-x64-${{ matrix.host }}
+          path: ${{ runner.temp }}/pinfold-tokio-evidence/
+          if-no-files-found: error
           retention-days: 14
