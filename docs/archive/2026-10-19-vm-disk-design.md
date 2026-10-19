@@ -164,3 +164,11 @@ questions) gates replacing podman.
   cannot act on a new box with the same name.
 - Exec metadata apart from guest output (`2026-10-19-run-records-spec.md`
   stage 3: the `--diagnostic-fd`), so exit 3 from a guest is not "no box".
+
+### Decided
+
+Adam, 2026-10-19: VMM confinement (a), the rootless jail; guest PID 1
+option A. Preflight names Ubuntu 24.04+'s AppArmor userns restriction
+(`kernel.apparmor_restrict_unprivileged_userns=1`) with its own token,
+`userns-apparmor`. gominimal/minimal ships an AppArmor profile for the
+same case; pinfold only names the cause for now.

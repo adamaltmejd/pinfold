@@ -90,7 +90,11 @@ versions. Inventory and cleanup remain available on older versions.
 Linux preflight requires `/dev/kvm` readable and writable by the user (the
 `kvm` group), unprivileged user namespaces, Landlock, `mkfs.ext4`
 (e2fsprogs), and podman with `rootless=true` for builds. Without user
-namespaces or Landlock, `up` is refused; there is no unjailed fallback.
+namespaces or Landlock, `up` is refused as `runtime`, naming the missing
+requirement's token (below); there is no unjailed fallback. Ubuntu
+24.04+ restricts unprivileged user namespaces through AppArmor
+(`kernel.apparmor_restrict_unprivileged_userns=1`); that case has its
+own token, and pinfold ships no AppArmor profile.
 
 ## Box
 
@@ -963,7 +967,9 @@ build cache is unmeasured.
 When runtime checks fail, it skips runtime-dependent image and disk
 probes. On Linux, failed preflight also reports missing host requirements
 independently of each other: `kvm` names an inaccessible `/dev/kvm`,
-`mkfs` a missing `mkfs.ext4`, and `runtime-dir` the selected
+`mkfs` a missing `mkfs.ext4`, `userns` unprivileged user namespaces
+turned off, `userns-apparmor` them restricted by AppArmor, `landlock` no
+Landlock, and `runtime-dir` the selected
 `$XDG_RUNTIME_DIR` or `/run/user/<uid>` that podman builds need.
 
 A launch holds shared project ownership before recording its run, through
@@ -1178,7 +1184,7 @@ The two slow gates run separately.
 | 24 | Every build reruns its steps | A second build changes a random RUN-generated stamp. On Podman the fixture-labeled set of dangling image IDs gains no member; concurrent builds and deletion of old images cannot conceal or fabricate a leak. |
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box list --help` exits 0, with no runtime and leaving the state dir untouched. |
 | 26 | A login route keeps the login on the host | With `to` at a host fixture, claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. With that refresh held, a caller under distinct XDG roots and the same CODEX_HOME reports `login-busy` once; no second refresh reaches the fixture, and releasing the first lets both boxes use the refreshed login. A stalled real helper refresh is deadline-bounded; cancellation reaps the helper and closes its fixture connection before returning without a box. An empty `CODEX_HOME` is refused as `login`. On macOS only, with a real login, codex completes one tool round trip through a route with no `to`. |
-| 27 | Doctor reports without changing state | With and without a runtime, doctor leaves complete Pinfold-owned state/config/cache trees unchanged, including absent roots, and reports host configuration. Native runtime bookkeeping is outside those trees. Linux runtime-dir and missing-kvm diagnostics use real failures. |
+| 27 | Doctor reports without changing state | With and without a runtime, doctor leaves complete Pinfold-owned state/config/cache trees unchanged, including absent roots, and reports host configuration. Native runtime bookkeeping is outside those trees. Linux runtime-dir, missing-kvm and userns-apparmor diagnostics use real failures. |
 | 28 | Updates verify before atomic replacement | A host HTTPS release fixture supplies a different valid executable. Wrong checksums and live owners preserve the original bytes/inode; an owner starting during a held asset transfer also prevents replacement. After teardown the verified bytes replace the inode and preserve the invoked command symlink. |
 | 29 | Interactive update checks are bounded | A host HTTPS fixture observes one interactive check per interval and none for opt-out/noninteractive commands. A stalled request closes within 1.75 seconds of fixture receipt and is not retried by the next launch. |
 | 30 | Changed image inputs prompt a rebuild | Profile and trusted project Containerfile changes produce `image-outdated` without refusing a pi launch. A project also detects changed profile inputs before the profile is rebuilt, then detects its changed base digest afterward. Rebuilding the affected profile and project clears the hints. |
@@ -1248,7 +1254,8 @@ data, `crates/pinfold/public_suffix_list.dat`, embedded with `include_str!`.
 - The VMM jail is untested: neither prototype ran it (#111 ran
   Firecracker unjailed and under its jailer as root). Whether the hosted
   runner, yard-sthlm's LXC and Debian allow unprivileged user namespaces
-  rides on the same throwaway workflow as `/dev/kvm`.
+  rides on the same throwaway workflow as `/dev/kvm`. An Ubuntu runner
+  restricts them by default, so CI would set the AppArmor sysctl to 0.
 - Whether the pinned guest kernel has vsock loopback. If it does, row 1
   adds a box connection to its own exec port, refused as `peer`.
 - Before Firecracker replaces podman, one real caller workflow gates it:
