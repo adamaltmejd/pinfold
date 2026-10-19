@@ -124,11 +124,126 @@ not retry.
   `protected-path-invalid`. This is a hard break.
 - No new reason token, JSON field, exit code or flag.
 
+## Named alternative: copy in, push back, attach
+
+This follows gominimal/minimal's sessions
+(https://github.com/gominimal/minimal, `docs/concepts/sessions.md`):
+
+- `min session activate` uploads the project into the session's
+  workspace. `--sync none` skips the upload.
+- Results leave only through `git push min://<session>`.
+- `min session attach` opens a shell in the running session.
+- Hooks are inert there.
+
+In pinfold terms, the box gets a copy of the worktree on box-local storage
+and never a writable view of the host checkout. The host takes results
+back as Git objects. Docker Sandboxes' clone mode is the same shape
+(`2026-10-15-worktree-research/alternatives.md`). This is an alternative to
+pointer masks, not only a fallback. Nothing in ARCHITECTURE.md specs it.
+
+### What it removes
+
+- **Pointer mask planning.** No eight-spelling masks, no filesystem
+  classification, no APFS name-resolution assumption.
+- **Alias and overlap admission for the worktree.** No writable host
+  export of the checkout. G22's admission stays for caller mounts that
+  remain.
+- **The topology assumption.** The host may move, repair or check out the
+  worktree while a box runs, because the box holds no view of it.
+- **#106 for that project.** No protected directory sits inside a writable
+  export, so neither the direct-child rule nor ancestor protection is
+  needed.
+- **The ~1 s native cache and the 4–10x small-file I/O cost.** Both apply
+  to project files only while they are shared.
+
+### What the push-back channel must guarantee
+
+The guest controls everything it sends: refs, objects and tracked file
+contents.
+
+- **The host fetches; the guest does not push into the host.** The host
+  runs `git fetch` from the box's repository. For example the transport
+  could be `ext::pinfold box exec <box> -- git-upload-pack <dir>`, which
+  needs `protocol.ext.allow` for that one command. Then the only host code
+  on the path is git's fetch-pack, which already treats a remote as
+  untrusted. No `receive-pack` runs on the host, so no host receive hook is
+  triggered by the guest. The guest's own hooks and config run only in the
+  box.
+- **Refs land in a namespace**, such as `refs/pinfold/<box>/*`. A fetch
+  never updates HEAD, a checked-out branch, the index or the work tree.
+  `receive.denyCurrentBranch=updateInstead` never applies.
+- **`transfer.fsckObjects=true` on the fetch**, so malformed trees and
+  `.gitmodules` paths are refused.
+- **Protected paths move from "the box cannot write" to "the box can
+  propose".** A commit can change `.vscode/`, `.husky/`, `.gitattributes`
+  or a hook script. Those land on disk only when the host checks out or
+  merges the fetched ref. The guarantee becomes: nothing the box sends
+  reaches the work tree or runs before an explicit host-side merge.
+  pinfold could list a fetched range's changes to protected paths. It
+  cannot make them safe to merge unread.
+- **Unpushed work dies with the box**, because boxes are disposable.
+  `down` would need a final fetch, or a refusal while unfetched commits
+  exist. That is new lifecycle, not existing behavior.
+
+### Startup cost for a large repo
+
+There are no measurements of a copy into a box. Measured on the host:
+
+- **100,002-file, 477 MB fixture**
+  (`2026-10-15-worktree-research/import-benchmark.json`): local
+  `git clone` 8.6 s, hashing the base 12.4 s, diffing the work tree 20.2 s,
+  patch check and apply under 0.04 s.
+- **Same fixture, copy to another APFS volume:** median 32.96 s.
+
+A copy over Apple container's native share pays the 4–10x small-file
+penalty, so it would be slower than any of these.
+
+The cheaper shape avoids the per-file copy:
+
+1. Export the host's common dir read-only, as pointer masks also do.
+2. Run `git clone --shared` inside the box onto box-local storage.
+3. Check out inside the guest.
+
+The box then writes 100k files to its own disk, not across the share. The
+cost is a spec change: the box today has a read-only rootfs and a tmpfs
+`/tmp`, so a workspace of that size needs a box-local writable volume,
+which is not in the spec. "No disk cap on either runtime" is already an
+open question.
+
+Dirty and untracked host state does not travel with a clone. Carrying it
+needs the snapshot-and-patch import shape in `alternatives.md`. Its cost is
+the hash and diff times above.
+
+### What "attach" means here
+
+There is no new mechanism. minimal's `attach` is an interactive shell in
+the session's workspace.
+
+- pinfold has `pinfold box exec BOX --tty --workdir D -- bash` (G9 covers
+  workdir and tty) and pi's `pinfold attach`.
+- What changes is the role. With pointer masks, the host editor sees the
+  box's edits live, and attach is optional. With copy+push, the box's work
+  is visible on the host only after a fetch, so attach becomes the only
+  live view.
+- Host editors, file watchers and language servers lose the workspace.
+
+### Comparison
+
+| | Pointer masks | Copy + push |
+|---|---|---|
+| Host checkout writable by the box | Yes, minus masked paths | No |
+| New admission logic | Masks, layout checks, directory overlap | Fetch namespace, fsck, lifecycle on `down` |
+| Topology assumption | Required | None |
+| Protected paths | Read-only, direct children only | Proposed in commits, merged by the host |
+| Startup | Native share, no copy | Clone or copy; seconds for 100k files, not measured in a box |
+| Live host view | Yes | Only through attach or fetch |
+| New spec surface | None beyond derived mounts | Box-local volume, fetch transport, `down` semantics |
+
 ## Dropped alternatives
 
 - **Case-sensitive APFS volume.** It needs a user-attached volume and moves
   the working files. Relocating a 100,002-file tree took a median 32.96 s.
-  It is a fallback only if masks are rejected.
+  It is a fallback only if both masks and copy+push are rejected.
 - **SSHFS broker.** It needs a new host service and a startup-privilege
   spec change. Overheads were 5.2x for enumeration, 9.3x for a 64 MiB read
   and 6.5x for atomic edits. The proposal is to drop it.
