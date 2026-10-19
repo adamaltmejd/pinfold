@@ -1,0 +1,25 @@
+ready_ms=715 ready 6.1.188
+-- host listeners once ready:
+v.sock
+v.sock_3128
+peer_cid=2
+1000
+probe cid=2 port=1024: errno 104 (Connection reset by peer (os error 104)) after 0.3 ms
+probe cid=2 port=1026: errno 104 (Connection reset by peer (os error 104)) after 0.3 ms
+probe cid=2 port=4444: errno 104 (Connection reset by peer (os error 104)) after 0.3 ms
+probe cid=2 port=1000: errno 104 (Connection reset by peer (os error 104)) after 0.2 ms
+probe cid=2 port=3128: connected after 0.3 ms, reply Resource temporarily unavailable (os error 11)
+probe cid=1 port=1024: errno 110 (Operation timed out (os error 110)) after 2015.5 ms
+probe cid=1 port=1026: errno 110 (Operation timed out (os error 110)) after 2013.5 ms
+probe cid=3 port=1024: errno 19 (No such device (os error 19)) after 0.0 ms
+probe cid=3 port=1026: errno 19 (No such device (os error 19)) after 0.0 ms
+probe cid=1 port=4444: errno 110 (Operation timed out (os error 110)) after 2014.4 ms
+vsock modules: vsock 
+/proc/config.gz
+loopback symbols: 0
+kallsyms readable: 0000000000000000 T startup_64
+exit=0
+-- host-initiated connections, as PID 1 logged them:
+unknown
+pf-guest: ctl: peer cid 2 request "status"
+pf-guest: ctl: unknown

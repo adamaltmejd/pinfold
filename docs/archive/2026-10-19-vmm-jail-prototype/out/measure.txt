@@ -1,0 +1,22 @@
+jail run=1 ready_ms=968 setup_us=2418 vmm_rss_kib=64152
+--no-jail run=1 ready_ms=943 setup_us=204 vmm_rss_kib=62176
+jail run=2 ready_ms=961 setup_us=1032 vmm_rss_kib=64208
+--no-jail run=2 ready_ms=1039 setup_us=248 vmm_rss_kib=62160
+jail run=3 ready_ms=927 setup_us=2992 vmm_rss_kib=66248
+--no-jail run=3 ready_ms=986 setup_us=252 vmm_rss_kib=64204
+jail run=4 ready_ms=986 setup_us=1065 vmm_rss_kib=64200
+--no-jail run=4 ready_ms=901 setup_us=204 vmm_rss_kib=64200
+jail run=5 ready_ms=845 setup_us=6037 vmm_rss_kib=64200
+--no-jail run=5 ready_ms=956 setup_us=254 vmm_rss_kib=64204
+jail run=6 ready_ms=987 setup_us=1045 vmm_rss_kib=64200
+--no-jail run=6 ready_ms=1013 setup_us=243 vmm_rss_kib=62168
+jail run=7 ready_ms=907 setup_us=4860 vmm_rss_kib=64208
+--no-jail run=7 ready_ms=939 setup_us=215 vmm_rss_kib=60120
+jail run=8 ready_ms=981 setup_us=2908 vmm_rss_kib=62160
+--no-jail run=8 ready_ms=1001 setup_us=252 vmm_rss_kib=64204
+jail run=9 ready_ms=966 setup_us=1049 vmm_rss_kib=62164
+--no-jail run=9 ready_ms=976 setup_us=243 vmm_rss_kib=62172
+jail run=10 ready_ms=904 setup_us=4601 vmm_rss_kib=64208
+--no-jail run=10 ready_ms=895 setup_us=248 vmm_rss_kib=64208
+jail ready_ms min=845 median=963 max=987 mean=943; launcher setup mean_us=2801
+--no-jail ready_ms min=895 median=966 max=1039 mean=965; launcher setup mean_us=236

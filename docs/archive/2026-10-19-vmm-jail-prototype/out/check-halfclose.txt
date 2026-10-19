@@ -1,0 +1,2 @@
+keep-open 1013 ms b'OK 1073741824\npeer_cid=2\nafter-sleep\nexit=0\n'
+halfclose 1005 ms b'OK 1073741825\n'

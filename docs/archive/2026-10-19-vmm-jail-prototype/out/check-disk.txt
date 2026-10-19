@@ -1,0 +1,174 @@
+=== negative control: VM killed, no unmount (mode A, down: kill)
+peer_cid=2
+/dev/vdc /data ext4 rw,nosuid,nodev,relatime 0 0
+written
+exit=0
+  console: pf-guest: mount /dev: errno 16 (Resource busy (os error 16))
+  console: pf-guest: mode A kernel 6.1.188
+  console: pf-guest: mount /data rw: Ok(())
+  console: pf-guest: pid1 caps set, exec service pid 295
+  host: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype needs_recovery extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum orphan_present
+  host: Filesystem state:         clean
+  ro console: pf-guest: mount /dev: errno 16 (Resource busy (o[    0.756647] EXT4-fs (vdc): write access unavailable, cannot proceed (try mounting with noload)
+  ro console: pf-guest: mount /data ro: errno 30 (Read-only file system (os error 30))
+peer_cid=2
+no /data mount
+sha256sum: f.sum2: No such file or directory
+exit=1
+  host after ro: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype needs_recovery extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum orphan_present
+  host after ro: Filesystem state:         clean
+=== option A without ending the work (mode A, down: unmount-nokill)
+peer_cid=2
+/dev/vdc /data ext4 rw,nosuid,nodev,relatime 0 0
+written
+exit=0
+down reply: umount errno 16 (Resource busy (os error 16))
+  console: pf-guest: mount /dev: errno 16 (Resource busy (os error 16))
+  console: pf-guest: mode A kernel 6.1.188
+  console: pf-guest: mount /data rw: Ok(())
+  console: pf-guest: pid1 caps set, exec service pid 294
+  console: pf-guest: ctl: peer cid 2 request "unmount-nokill"
+  console: pf-guest: ctl: umount errno 16 (Resource busy (os error 16))
+  host: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype needs_recovery extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum orphan_present
+  host: Filesystem state:         clean
+  ro console: pf-guest: mount /dev: errno 16 (Resource busy (os error 16))
+  ro console: pf[    0.746380] EXT4-fs (vdc): write access unavailable, cannot proceed (try mounting with noload)
+  ro console: pf-guest: mount /data ro: errno 30 (Read-only file system (os error 30))
+peer_cid=2
+no /data mount
+sha256sum: f.sum2: No such file or directory
+exit=1
+  host after ro: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype needs_recovery extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum orphan_present
+  host after ro: Filesystem state:         clean
+=== option A #1 (mode A, down: unmount)
+peer_cid=2
+/dev/vdc /data ext4 rw,nosuid,nodev,relatime 0 0
+written
+exit=0
+down reply: cgroup.kill Ok(()) umount ok ms=41
+  console: pf-guest: mount /dev: errno 16 (Resource busy (os error 16))
+  console: pf-guest: mode A kernel 6.1.188
+  console: pf-guest: mount /data rw: Ok(())
+  console: pf-guest: pid1 caps set, exec service pid 293
+  console: pf-guest: ctl: peer cid 2 request "unmount"
+  console: pf-guest: ctl: cgroup.kill Ok(()) umount ok ms=41
+  host: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+  host: Filesystem state:         clean
+  ro console: pf-guest: mount /dev: errno 16 (Resource busy (os error 16))
+  ro console: pf-guest: mount /data ro: ok
+peer_cid=2
+/dev/vdc /data ext4 ro,nosuid,nodev,relatime 0 0
+f: OK
+exit=0
+  host after ro: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+  host after ro: Filesystem state:         clean
+=== option A #2 (mode A, down: unmount)
+peer_cid=2
+/dev/vdc /data ext4 rw,nosuid,nodev,relatime 0 0
+written
+exit=0
+down reply: cgroup.kill Ok(()) umount ok ms=43
+  console: pf-guest: mount /dev: errno 16 (Resource busy (os error 16))
+  console: pf-guest: mode A kernel 6.1.188
+  console: pf-guest: mount /data rw: Ok(())
+  console: pf-guest: pid1 caps set, exec service pid 294
+  console: pf-guest: ctl: peer cid 2 request "unmount"
+  console: pf-guest: ctl: cgroup.kill Ok(()) umount ok ms=43
+  host: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+  host: Filesystem state:         clean
+  ro console: pf-guest: mount /dev: errno 16 (Resource busy (os error 16))
+  ro console: pf-guest: mount /data ro: ok
+peer_cid=2
+/dev/vdc /data ext4 ro,nosuid,nodev,relatime 0 0
+f: OK
+exit=0
+  host after ro: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+  host after ro: Filesystem state:         clean
+=== option A #3 (mode A, down: unmount)
+peer_cid=2
+/dev/vdc /data ext4 rw,nosuid,nodev,relatime 0 0
+written
+exit=0
+down reply: cgroup.kill Ok(()) umount ok ms=41
+  console: pf-guest: mount /dev: errno 16 (Resource busy (os error 16))
+  console: pf-guest: mode A kernel 6.1.188
+  console: pf-guest: mount /data rw: Ok(())
+  console: pf-guest: pid1 caps set, exec service pid 295
+  console: pf-guest: ctl: peer cid 2 request "unmount"
+  console: pf-guest: ctl: cgroup.kill Ok(()) umount ok ms=41
+  host: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+  host: Filesystem state:         clean
+  ro console: pf-guest: mount /dev: errno 16 (Resource busy (os error 16))
+  ro console: pf-guest: mount /data ro: ok
+peer_cid=2
+/dev/vdc /data ext4 ro,nosuid,nodev,relatime 0 0
+f: OK
+exit=0
+  host after ro: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+  host after ro: Filesystem state:         clean
+=== option C #1 (mode C, down: unmount)
+peer_cid=2
+/dev/vdc /data ext4 rw,nosuid,nodev,relatime 0 0
+written
+exit=0
+down reply: reaped_ms=24 ext4_gone=true ms=24
+  console: pf-guest: mount /dev: errno 16 (Resource busy (os error 16))
+  console: pf-guest: mode C kernel 6.1.188
+  console: pf-guest: pid1 caps set, exec service pid 292
+  console: pf-guest: C: mount /data rw in child ns: Ok(())
+  console: pf-guest: ctl: peer cid 2 request "unmount"
+  console: pf-guest: ctl: reaped_ms=24 ext4_gone=true ms=24
+  host: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+  host: Filesystem state:         clean
+  ro console: pf-guest: mount /dev: errno 16 (Resource busy (os error 16))
+  ro console: pf-guest: mount /data ro: ok
+peer_cid=2
+/dev/vdc /data ext4 ro,nosuid,nodev,relatime 0 0
+f: OK
+exit=0
+  host after ro: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+  host after ro: Filesystem state:         clean
+=== option C #2 (mode C, down: unmount)
+peer_cid=2
+/dev/vdc /data ext4 rw,nosuid,nodev,relatime 0 0
+written
+exit=0
+down reply: reaped_ms=36 ext4_gone=true ms=36
+  console: pf-guest: mount /dev: errno 16 (Resource busy (os error 16))
+  console: pf-guest: mode C kernel 6.1.188
+  console: pf-guest: pid1 caps set, exec service pid 291
+  console: pf-guest: C: mount /data rw in child ns: Ok(())
+  console: pf-guest: ctl: peer cid 2 request "unmount"
+  console: pf-guest: ctl: reaped_ms=36 ext4_gone=true ms=36
+  host: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+  host: Filesystem state:         clean
+  ro console: pf-guest: mount /dev: errno 16 (Resource busy (os error 16))
+  ro console: pf-guest: mount /data ro: ok
+peer_cid=2
+/dev/vdc /data ext4 ro,nosuid,nodev,relatime 0 0
+f: OK
+exit=0
+  host after ro: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+  host after ro: Filesystem state:         clean
+=== option C #3 (mode C, down: unmount)
+peer_cid=2
+/dev/vdc /data ext4 rw,nosuid,nodev,relatime 0 0
+written
+exit=0
+down reply: reaped_ms=26 ext4_gone=true ms=26
+  console: pf-guest: mount /dev: errno 16 (Resource busy (os error 16))
+  console: pf-guest: mode C kernel 6.1.188
+  console: pf-guest: pid1 caps set, exec service pid 292
+  console: pf-guest: C: mount /data rw in child ns: Ok(())
+  console: pf-guest: ctl: peer cid 2 request "unmount"
+  console: pf-guest: ctl: reaped_ms=26 ext4_gone=true ms=26
+  host: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+  host: Filesystem state:         clean
+  ro console: pf-guest: mount /dev: errno 16 (Resource busy (os error 16))
+  ro console: pf-guest: mount /data ro: ok
+peer_cid=2
+/dev/vdc /data ext4 ro,nosuid,nodev,relatime 0 0
+f: OK
+exit=0
+  host after ro: Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+  host after ro: Filesystem state:         clean
