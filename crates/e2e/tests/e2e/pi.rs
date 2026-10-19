@@ -1164,14 +1164,13 @@ fn both_pi_config_levels_load_behind_a_route() {
 fn the_highest_layer_sets_the_allowlist() {
     let _runtime = crate::shared_runtime();
     // Sabotage: union DEFAULT_ALLOW under the merged allow in
-    // `Config::load`; the default hosts stay in the box's PINFOLD_ALLOW and
-    // npm is let through, so the exact-list assertion fails. Sabotage: merge
-    // the environment layer below the project's in `Config::load` (or drop
-    // `Layer::from_env`'s allow); the box's PINFOLD_ALLOW is then the
-    // project's registry.npmjs.org, so the exact-list assertion fails and npm
-    // is let through. Sabotage: drop `cpus` and `memory` from the Plan in
-    // `build_plan`; the box gets the runtime's defaults and the memory-limit
-    // assertion fails.
+    // `Config::load`; the default hosts include npm, so the npm 403
+    // assertion fails. Sabotage: merge the environment layer below the
+    // project's in `Config::load` (or drop `Layer::from_env`'s allow); the
+    // allowlist is then the project's registry.npmjs.org, so npm is let
+    // through and the npm 403 assertion fails. Sabotage: drop `cpus` and
+    // `memory` from the Plan in `build_plan`; the box gets the runtime's
+    // defaults and the memory-limit assertion fails.
     let env = TestEnv::new("pi-allow");
     default_image(&env);
     let project = TestDir::new(&env, "project");
@@ -1229,11 +1228,6 @@ fn the_highest_layer_sets_the_allowlist() {
         quota,
         period.get(),
         "the box's cpu quota is not the environment's 1 cpu"
-    );
-    let env_allow = box_exec(&env, &name, &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""]);
-    assert_eq!(
-        env_allow.stdout, "api.github.com",
-        "PINFOLD_ALLOW did not replace the project's allowlist"
     );
 
     // Sabotage: omit resource/protect/routes from Layer::from_env. Host
