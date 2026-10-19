@@ -392,7 +392,7 @@ another box's selected profile.
 - **Apple `container`:** `--ssh` with `SSH_AUTH_SOCK` set to the proxy socket
   for that one `container run`. It appears at
   `/var/host-services/ssh-auth.sock`, root-owned and not connectable by the
-  box user; the root exec in step 4 chmods it.
+  box user; the root exec in step 5 chmods it.
 - The socket carries only proxy connections.
 
 ## Egress proxy
@@ -470,11 +470,10 @@ network listener, no token: the socket identifies the box.
   A write blocked for 5 minutes closes the connection even when the other
   direction has activity. A fatal relay error closes both directions.
 - **Log:** one JSON line per decision in the box's egress log at
-  `~/.local/state/pinfold/egress/<box>.jsonl` (`$XDG_STATE_HOME` is
-  honored). It names the decision's UTC time (RFC 3339 to the second), the
-  host, the decision and its reason. A route request's line also names the
-  method, the request path without its query, and the upstream's status
-  (null when no status line arrived). No header value is ever written.
+  `~/.local/state/pinfold/egress/<box>.jsonl`. It names the decision's UTC
+  time (RFC 3339 to the second), the host, the decision and its reason. A
+  route request's line also names the method, the request path without its
+  query, and the upstream's status (null when no status line arrived). No header value is ever written.
   An append failure stops the box with `audit-log`. Storage failure can
   prevent recording a request already forwarded to its upstream.
 
@@ -494,17 +493,17 @@ profile image.
   build whose layers and labels are unchanged returns the existing image.
   Every build sets both family labels, `dev.pinfold.profile` and
   `dev.pinfold.project`, and `dev.pinfold.base`, the other family empty.
-- A profile build is tagged uniquely `pinfold/profile-<name>:<build>` and
-  moves the stable `pinfold/profile-<name>:latest` to it. The stable ref is
+  Every build is tagged uniquely `<repo>:<build>` and moves the stable
+  `<repo>:latest` to it.
+- A profile build uses `pinfold/profile-<name>`. The stable ref is
   what a project Containerfile `FROM`s and what `doctor` compares against.
   Images carry `dev.pinfold.profile=<name>` and `dev.pinfold.base=<digest>`
   (the resolved base) so Maintenance can find them.
 - A caller image is built by `pinfold image build NAME` from a context
   directory the caller vouches for, as it vouches for its mounts: no trust
   record, no project, no `.pinfold.toml`. The Containerfile may lie outside
-  the context. NAME is validated like a profile name. The build is tagged
-  uniquely `pinfold/image-<NAME>:<build>` and moves the stable
-  `pinfold/image-<NAME>:latest` to it; a box spec's `image` names either.
+  the context. NAME is validated like a profile name. The repo is
+  `pinfold/image-<NAME>`; a box spec's `image` names either tag.
   Identical inputs under two names build one image. It carries
   `dev.pinfold.base` (the first `FROM`'s digest when it resolves to one,
   else empty; a base pinfold built is read from local storage, never
@@ -512,8 +511,7 @@ profile image.
   which may start with `dev.pinfold.`. It uses
   the runtime's layer cache unless the caller passes `--no-cache`; podman
   labels the cache's intermediate images `dev.pinfold.layer`.
-- A project build is tagged uniquely `pinfold/project-<id>:<build>` and
-  moves the stable `pinfold/project-<id>:latest` to it, where `<id>` is the
+- A project build uses `pinfold/project-<id>`, where `<id>` is the
   project's state id. A project image carries `dev.pinfold.project=<id>`,
   and records the digest of the profile image it was built from as
   `dev.pinfold.base`.
@@ -648,9 +646,8 @@ profile's live package chooses its extensions and skills, so switching
 profiles does not rewrite saved settings. Every built-in includes the operating-context
 extension, which writes the box's facts into the system prompt (the
 allowlist from `PINFOLD_ALLOW`, that a 403 is final, and that commits are
-made on the host). Documents and full include `read-documents`, which uses
-local AnyDoc and Poppler. Full also registers rtk and ponytail. Shared
-resources stay live and read-only. Metadata lookup and fingerprints write
+made on the host). Documents and full include `read-documents`. Full also
+registers rtk and ponytail. Shared resources stay live and read-only. Metadata lookup and fingerprints write
 nothing; embedded shared files are materialized only after a box claims
 its name.
 
@@ -710,8 +707,7 @@ independently of the network interval. No history means a silent baseline;
 self-update records a missing baseline before replacement. Saved project
 settings and user profiles are preserved.
 `PINFOLD_NO_UPDATE_CHECK=1` disables automatic checks and notices. The
-timestamp and fingerprint live under `~/.cache/pinfold/update-check`,
-honoring `XDG_CACHE_HOME`.
+timestamp and fingerprint live under `~/.cache/pinfold/update-check`.
 
 ## Maintenance
 
@@ -795,7 +791,7 @@ measurement does not authorize a later deletion.
   preparation if still empty. One
   that is a symlink, or is reached through one, refuses the run as
   `protected-path-invalid`.
-- **herdr:** no socket in v1. The TTY passes through, so screen detection
+- **herdr:** no herdr socket. The TTY passes through, so screen detection
   works, and the shim sets `HERDR_AGENT=pi`.
 - **Attach:** `pinfold attach [--box NAME] [cmd…]` execs bash (or cmd) in
   this project's running pi box. It fails if none is running and asks for a
@@ -932,14 +928,12 @@ Guarantee 35 is the standalone
 `examples/pi-durable/durable_recovery_preserves_boxed_execution.ts` gate;
 its README gives installation and execution commands. Run it with exclusive
 runtime ownership, after the Rust suite.
-Guarantee 34 is an ignored slow test because it exercises the real
-five-minute production write deadline. Run it separately with
+Guarantee 34 is an ignored slow test. Run it separately with
 `cargo test -p e2e --locked --test e2e box_::blocked_route_responses_release_the_upstream -- --ignored --exact`.
 Guarantee 36 is the separate Linux slow gate, `scripts/slow-proxy.sh`.
 It uses private network and mount namespaces: `api.github.com` resolves to
 a fixture address assigned only there, with a fixture CA trusted only by
-the guest. It exercises the unchanged CONNECT policy and production
-five-minute idle deadline. The ordinary Rust suite retains its five-minute
+the guest. The ordinary Rust suite retains its five-minute
 CI budget, measured over the complete `cargo test -p e2e --locked` command,
 including compilation. CI fails when that command takes 300 seconds or more.
 The two slow gates run separately.

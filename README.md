@@ -7,7 +7,6 @@ nothing else of the host. Its only way out is its own allowlisting proxy.
 - **Interactive:** `pi` on the host is a shim for `pinfold pi`.
 - **Programmatic:** drive boxes through `pinfold box` (JSON on stdio),
   and read project settings with `pinfold config`.
-
 - Spec: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ## Requirements
@@ -39,9 +38,8 @@ commands first; the install directory must be writable. Interactive `pi`
 and `pinfold attach` show at most one daily update notice.
 `PINFOLD_NO_UPDATE_CHECK=1` disables automatic checks.
 
-The macOS binary is not notarized. `gh` and `curl` downloads run as they
-are; a browser download carries the quarantine attribute and Gatekeeper
-refuses it until `xattr -d com.apple.quarantine` clears it.
+The macOS binary is not notarized. Clear a browser download's quarantine
+with `xattr -d com.apple.quarantine pinfold-*`.
 
 Linux, a static musl binary:
 
