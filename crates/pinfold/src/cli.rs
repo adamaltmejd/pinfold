@@ -294,13 +294,13 @@ fn down(name: Option<&str>, shutdown: Shutdown) -> i32 {
         "box": name,
         "reason": shutdown.as_str(),
     });
-    let code = if let Shutdown::BoxExited(status) = shutdown {
-        line["detail"] = status.to_string().into();
-        1
-    } else if shutdown == Shutdown::AuditLog {
-        1
-    } else {
-        0
+    let code = match shutdown {
+        Shutdown::BoxExited(status) => {
+            line["detail"] = status.to_string().into();
+            1
+        }
+        Shutdown::AuditLog => 1,
+        Shutdown::StdinEof | Shutdown::Signal => 0,
     };
     println!("{line}");
     code
@@ -460,8 +460,8 @@ struct CleanPlan {
     /// The pass's box list from `measure`: dead boxes to remove, and live
     /// projects to protect.
     boxes: clean::Boxes,
-    /// Dead boxes' state dirs, leftover socket dirs, unpinned artifact
-    /// versions and old egress logs.
+    /// Unpinned artifact versions and old egress logs. Dead boxes' state
+    /// dirs and leftover socket dirs count in `automatic_bytes` only.
     automatic: BTreeSet<PathBuf>,
     project_paths: BTreeMap<String, PathBuf>,
     automatic_bytes: u64,
@@ -645,12 +645,8 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     let runtime = runtime();
     println!("runtime: {} ({})", runtime.name(), runtime.isolation());
     match runtime.version() {
-        Ok(version) => {
-            println!("  version: {version}");
-        }
-        Err(error) => {
-            println!("  version: unavailable: {error}");
-        }
+        Ok(version) => println!("  version: {version}"),
+        Err(error) => println!("  version: unavailable: {error}"),
     }
     let runtime_ready = match runtime.preflight() {
         Ok(_) => {
