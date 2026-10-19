@@ -2323,9 +2323,8 @@ fn file_from_image(env: &TestEnv, reference: &str, name: &str, path: &str) -> St
 }
 
 /// The unique tag of the image that `pinfold/profile-<profile>:latest` names
-/// now, with podman's `localhost/` prefix stripped. Each build tags its image
-/// `:latest` and one unique tag; the stable tag moves to every new build, so
-/// a box pins an image by the unique tag. The unique tag is collected from
+/// now. Each build tags its image `:latest` and one unique tag; the stable
+/// tag moves to every new build, so a box pins an image by the unique tag. The unique tag is collected from
 /// every runtime image entry sharing the `:latest` image's id, because a
 /// runtime may list one entry per tag.
 pub(super) fn built_unique_ref(profile: &str) -> String {
@@ -2336,10 +2335,8 @@ pub(super) fn built_unique_ref(profile: &str) -> String {
         .iter()
         .filter(|image| image.id == id)
         .flat_map(|image| image.names.iter())
-        .find_map(|name| {
-            let name = name.strip_prefix("localhost/").unwrap_or(name);
-            (name != latest).then(|| name.to_string())
-        })
+        .find(|name| **name != latest)
+        .cloned()
         .unwrap_or_else(|| panic!("the image {latest} names has no unique tag"))
 }
 #[test]

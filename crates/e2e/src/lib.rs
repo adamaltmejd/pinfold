@@ -157,13 +157,22 @@ pub fn runtime_images() -> Result<Vec<RuntimeImage>, String> {
 /// One image list entry, whatever the runtime's schema.
 fn normalize_image(image: &serde_json::Value) -> RuntimeImage {
     // podman: `Id`, `Names` and `Labels`, the last two null when empty.
+    // Names drop podman's `localhost/` prefix so they compare to the
+    // unqualified references pinfold prints.
     let labels = |value: &serde_json::Value| -> BTreeMap<String, String> {
         serde_json::from_value(value.clone()).unwrap_or_default()
     };
     if let Some(id) = image["Id"].as_str() {
         return RuntimeImage {
             id: id.to_string(),
-            names: serde_json::from_value(image["Names"].clone()).unwrap_or_default(),
+            names: serde_json::from_value::<Vec<String>>(image["Names"].clone())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|name| match name.strip_prefix("localhost/") {
+                    Some(short) => short.to_string(),
+                    None => name,
+                })
+                .collect(),
             labels: labels(&image["Labels"]),
         };
     }
@@ -183,19 +192,11 @@ fn normalize_image(image: &serde_json::Value) -> RuntimeImage {
     }
 }
 
-/// The id of the image the runtime lists under `reference`, ignoring
-/// podman's `localhost/` prefix.
+/// The id of the image the runtime lists under `reference`.
 pub fn image_id(reference: &str) -> Option<String> {
-    runtime_images()
-        .expect("list the runtime's images")
+    image_ids(|image| image.names.iter().any(|name| name == reference))
         .into_iter()
-        .find(|image| {
-            image
-                .names
-                .iter()
-                .any(|name| name.strip_prefix("localhost/").unwrap_or(name) == reference)
-        })
-        .map(|image| image.id)
+        .next()
 }
 
 /// The ids of every image carrying `label = value`, from the runtime
@@ -209,9 +210,7 @@ pub fn labeled_images(label: &str, value: &str) -> Vec<String> {
 pub fn tagged_images(repository: &str) -> Vec<String> {
     image_ids(|image| {
         image.names.iter().any(|name| {
-            name.strip_prefix("localhost/")
-                .unwrap_or(name)
-                .strip_prefix(repository)
+            name.strip_prefix(repository)
                 .is_some_and(|rest| rest.starts_with(':'))
         })
     })
