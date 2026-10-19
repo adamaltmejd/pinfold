@@ -1,0 +1,172 @@
+[
+  {
+    "name": "directory_alias_first_chmod",
+    "result": {
+      "exit": 1,
+      "out": "",
+      "err": "chmod: changing permissions of '.HOOKS/pre-commit': Read-only file system\n"
+    },
+    "mode": "0o644"
+  },
+  {
+    "name": "new_hook_hardlink",
+    "result": {
+      "exit": 1,
+      "out": "",
+      "err": "ln: failed to create hard link 'new-hook-alias' => '.HOOKS/pre-commit': Invalid cross-device link\n"
+    }
+  },
+  {
+    "name": "pointer_case_.git",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .git: Read-only file system\n"
+    },
+    "unchanged": true
+  },
+  {
+    "name": "pointer_case_.giT",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .giT: Permission denied\n"
+    },
+    "unchanged": true
+  },
+  {
+    "name": "pointer_case_.gIt",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .gIt: Permission denied\n"
+    },
+    "unchanged": true
+  },
+  {
+    "name": "pointer_case_.gIT",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .gIT: Permission denied\n"
+    },
+    "unchanged": true
+  },
+  {
+    "name": "pointer_case_.Git",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .Git: Permission denied\n"
+    },
+    "unchanged": true
+  },
+  {
+    "name": "pointer_case_.GiT",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .GiT: Permission denied\n"
+    },
+    "unchanged": true
+  },
+  {
+    "name": "pointer_case_.GIt",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .GIt: Permission denied\n"
+    },
+    "unchanged": true
+  },
+  {
+    "name": "pointer_case_.GIT",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .GIT: Permission denied\n"
+    },
+    "unchanged": true
+  },
+  {
+    "name": "pointer_alias_chmod",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    },
+    "pointer_bytes_unchanged": true,
+    "mode": "0o777"
+  },
+  {
+    "name": "preexisting_hook_alias_chmod",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    },
+    "mode": "0o755",
+    "acl": {
+      "exit": 0,
+      "out": "-rwxr-xr-x@ 2 adam  wheel  89 Oct 15 10:37 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.hooks/pre-commit\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+      "err": ""
+    }
+  },
+  {
+    "name": "host_fixture_commit",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    },
+    "marker_exists": true,
+    "marker": "executed"
+  },
+  {
+    "name": "host_commit_visibility_measurement",
+    "expected": "b5eb3058b5732bb3981861b16b305d2eabb5e5f9",
+    "samples": [
+      {
+        "seconds": 0.06227258301805705,
+        "exit": 0,
+        "out": "b5eb3058b5732bb3981861b16b305d2eabb5e5f9\n",
+        "err": ""
+      }
+    ]
+  },
+  {
+    "name": "remove_box",
+    "result": {
+      "exit": 0,
+      "out": "pf-native-acl-hybrid-20261015\n",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_fixture_acl",
+    "path": "/private/tmp/pinfold-native-acl-20261015/fixture/wt/.hooks/pre-commit",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_fixture_acl",
+    "path": "/private/tmp/pinfold-native-acl-20261015/fixture/wt/.hooks",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_fixture_acl",
+    "path": "/private/tmp/pinfold-native-acl-20261015/fixture/wt/.git",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  }
+]

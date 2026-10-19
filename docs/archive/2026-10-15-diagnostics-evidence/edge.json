@@ -1,0 +1,111 @@
+{
+  "binary": "/private/tmp/pd-1015/pinfold-prototype",
+  "tag": "edge",
+  "cases": {
+    "ready": {
+      "box": "pd-edge",
+      "egress_log": "/private/tmp/pd-1015/edge/s/pinfold/egress/4ac08cfdbe5c854aad22219fdb3e3b94284bf542c833580c3b7233a6e04c0969.jsonl",
+      "event": "ready",
+      "image": {
+        "id": "5273bc371c263b1f137a11dd8c14ffd91a1ddd9cfa6609bd19377ad33c2d6e9b",
+        "ref": "pinfold/profile-default:latest"
+      },
+      "labels": {
+        "dev.pinfold.base": "sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f",
+        "dev.pinfold.containerfile-sha256": "3d605a9d37c5dcf676d5d312859b736de9ab6b94fe8be164ba4eba3a54ad003f",
+        "dev.pinfold.generation": "4ac08cfdbe5c854aad22219fdb3e3b94284bf542c833580c3b7233a6e04c0969",
+        "dev.pinfold.owner": "36124",
+        "dev.pinfold.profile": "default",
+        "dev.pinfold.project": ""
+      },
+      "owner": 36124,
+      "run_id": "4ac08cfdbe5c854aad22219fdb3e3b94284bf542c833580c3b7233a6e04c0969"
+    },
+    "connect-positive": {
+      "code": 0,
+      "out": "200",
+      "err": "",
+      "seconds": 0.283
+    },
+    "many-decisions": {
+      "code": 0,
+      "out": "",
+      "err": "",
+      "seconds": 0.889
+    },
+    "slow-observer": {
+      "readable": true,
+      "still_waiting_after_200ms": false
+    },
+    "owner-during-slow-observer": {
+      "code": 0,
+      "out": "still-alive",
+      "err": "",
+      "seconds": 0.096
+    },
+    "cancelled-query": {
+      "code": 0,
+      "captured_bytes": 13726
+    },
+    "fresh-bounded-query": {
+      "code": 0,
+      "out": "{\"current_liveness\":\"not-probed\",\"egress\":{\"availability\":\"available\",\"byte_limit\":65536,\"order\":\"oldest-first\",\"records\":[{\"decision\":\"allowed\",\"host\":\"api.github.com\",\"reason\":\"allowlisted\",\"time\":\"2026-10-15T04:51:51Z\"},{\"decision\":\"allowed\",\"host\":\"ok.internal\",\"method\":\"GET\",\"path\":\"/ok\",\"reason\":\"route\",\"status\":200,\"time\":\"2026-10-15T04:51:51Z\"},{\"decision\":\"allowed\",\"host\":\"ok.internal\",\"method\":\"GET\",\"path\":\"/ok\",\"reason\":\"route\",\"status\":200,\"time\":\"2026-10-15T04:51:51Z\"}],\"truncated\":true},\"snapshot\":{\"box\":\"pd-edge\",\"egress\":{\"allow\":[\"api.github.com\"],\"routes\":[\"ok.internal\"]},\"image_id\":\"5273bc371c263b1f137a11dd8c14ffd91a1ddd9cfa6609bd19377ad33c2d6e9b\",\"observation\":\"ready\",\"observed_at\":1792039910,\"resources_requested\":{\"cpus\":1.0,\"memory\":\"512M\"},\"run_id\":\"4ac08cfdbe5c854aad22219fdb3e3b94284bf542c833580c3b7233a6e04c0969\",\"runtime\":\"Apple container\"},\"terminal\":{\"availability\":\"not-observed\"}}\n",
+      "err": "",
+      "seconds": 0.009
+    },
+    "runtime-kill": {
+      "code": 0,
+      "stderr": ""
+    },
+    "unexpected-runtime-end": {
+      "events": [
+        {
+          "box": "pd-edge",
+          "egress_log": "/private/tmp/pd-1015/edge/s/pinfold/egress/4ac08cfdbe5c854aad22219fdb3e3b94284bf542c833580c3b7233a6e04c0969.jsonl",
+          "event": "ready",
+          "image": {
+            "id": "5273bc371c263b1f137a11dd8c14ffd91a1ddd9cfa6609bd19377ad33c2d6e9b",
+            "ref": "pinfold/profile-default:latest"
+          },
+          "labels": {
+            "dev.pinfold.base": "sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f",
+            "dev.pinfold.containerfile-sha256": "3d605a9d37c5dcf676d5d312859b736de9ab6b94fe8be164ba4eba3a54ad003f",
+            "dev.pinfold.generation": "4ac08cfdbe5c854aad22219fdb3e3b94284bf542c833580c3b7233a6e04c0969",
+            "dev.pinfold.owner": "36124",
+            "dev.pinfold.profile": "default",
+            "dev.pinfold.project": ""
+          },
+          "owner": 36124,
+          "run_id": "4ac08cfdbe5c854aad22219fdb3e3b94284bf542c833580c3b7233a6e04c0969"
+        },
+        {
+          "box": "pd-edge",
+          "detail": "exit status: 137",
+          "event": "down",
+          "reason": "exited"
+        }
+      ],
+      "code": 1
+    },
+    "unexpected-postmortem": {
+      "code": 0,
+      "out": "{\"current_liveness\":\"not-probed\",\"egress\":{\"availability\":\"available\",\"byte_limit\":65536,\"order\":\"oldest-first\",\"records\":[{\"decision\":\"allowed\",\"host\":\"api.github.com\",\"reason\":\"allowlisted\",\"time\":\"2026-10-15T04:51:51Z\"},{\"decision\":\"allowed\",\"host\":\"ok.internal\",\"method\":\"GET\",\"path\":\"/ok\",\"reason\":\"route\",\"status\":200,\"time\":\"2026-10-15T04:51:51Z\"},{\"decision\":\"allowed\",\"host\":\"ok.internal\",\"method\":\"GET\",\"path\":\"/ok\",\"reason\":\"route\",\"status\":200,\"time\":\"2026-10-15T04:51:51Z\"}],\"truncated\":true},\"snapshot\":{\"box\":\"pd-edge\",\"egress\":{\"allow\":[\"api.github.com\"],\"routes\":[\"ok.internal\"]},\"image_id\":\"5273bc371c263b1f137a11dd8c14ffd91a1ddd9cfa6609bd19377ad33c2d6e9b\",\"observation\":\"ready\",\"observed_at\":1792039910,\"resources_requested\":{\"cpus\":1.0,\"memory\":\"512M\"},\"run_id\":\"4ac08cfdbe5c854aad22219fdb3e3b94284bf542c833580c3b7233a6e04c0969\",\"runtime\":\"Apple container\"},\"terminal\":{\"observed_at\":1792039912,\"reason\":\"exited\"}}\n",
+      "err": "",
+      "seconds": 0.008
+    }
+  },
+  "cleanup": {
+    "pd-edge": {
+      "code": 0,
+      "out": "",
+      "err": "",
+      "seconds": 0.022
+    }
+  },
+  "final_inventory": {
+    "code": 0,
+    "out": "{\"created\":\"2026-10-15T04:51:44Z\",\"image\":{\"id\":\"5273bc371c263b1f137a11dd8c14ffd91a1ddd9cfa6609bd19377ad33c2d6e9b\",\"ref\":\"pinfold/profile-default:latest\"},\"labels\":{\"dev.example.box\":\"pinfold-e2e-31772-lifecycle---------------------------------\",\"dev.example.test\":\"lifecycle\",\"dev.pinfold.base\":\"sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f\",\"dev.pinfold.containerfile-sha256\":\"3d605a9d37c5dcf676d5d312859b736de9ab6b94fe8be164ba4eba3a54ad003f\",\"dev.pinfold.generation\":\"cda7f6d56214c6c48ee465145451682ac694bb2bc6f1e56035d975cdea2e6bcc\",\"dev.pinfold.owner\":\"35541\",\"dev.pinfold.profile\":\"default\",\"dev.pinfold.project\":\"\"},\"name\":\"pinfold-e2e-31772-lifecycle-stopped\",\"owner\":35541,\"owner_alive\":true,\"state\":\"running\"}\n",
+    "err": "",
+    "seconds": 0.025
+  }
+}

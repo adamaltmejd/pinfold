@@ -1,0 +1,713 @@
+[
+  {
+    "name": "native_owner_can_remove_acl",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "host_pointer_write",
+    "result": {
+      "exit": 1,
+      "out": "",
+      "err": "probe: /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git: Permission denied\n"
+    }
+  },
+  {
+    "name": "identity_controls",
+    "uid": "501:20",
+    "result": {
+      "exit": 0,
+      "out": "uid=501 gid=20(dialout) groups=20(dialout)\n501:20 644\n",
+      "err": "sh: 1: cannot create deny-adam: Permission denied\n"
+    }
+  },
+  {
+    "name": "write_.git",
+    "uid": "501:20",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .git: Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rw-rw-rw-@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rw-rw-rw-@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "write_.GIT",
+    "uid": "501:20",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .GIT: Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rw-rw-rw-@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rw-rw-rw-@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "write_pointer-hardlink",
+    "uid": "501:20",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create pointer-hardlink: Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rw-rw-rw-@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rw-rw-rw-@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "write_pointer-symlink",
+    "uid": "501:20",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create pointer-symlink: Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rw-rw-rw-@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rw-rw-rw-@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "metadata_strip_attempt",
+    "uid": "501:20",
+    "result": {
+      "exit": 0,
+      "out": "list r=21 errno=0\nname=com.apple.provenance\nget com.apple.system.Security r=-1 errno=1\nremove com.apple.system.Security r=-1 errno=1\nget user.com.apple.system.Security r=-1 errno=61\nremove user.com.apple.system.Security r=-1 errno=13\nget system.posix_acl_access r=-1 errno=61\nremove system.posix_acl_access r=-1 errno=13\nget system.posix_acl_default r=-1 errno=61\nremove system.posix_acl_default r=0 errno=0\nchmod r=0 errno=0\nchown r=-1 errno=1\nopen r=-1 errno=13\n",
+      "err": ""
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rw-rw-rw-@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "identity_controls",
+    "uid": "0:0",
+    "result": {
+      "exit": 0,
+      "out": "uid=0(root) gid=0(root) groups=0(root)\n0:0 644\n",
+      "err": "sh: 1: cannot create deny-adam: Permission denied\n"
+    }
+  },
+  {
+    "name": "write_.git",
+    "uid": "0:0",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .git: Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "write_.GIT",
+    "uid": "0:0",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .GIT: Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "write_pointer-hardlink",
+    "uid": "0:0",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create pointer-hardlink: Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "write_pointer-symlink",
+    "uid": "0:0",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create pointer-symlink: Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "metadata_strip_attempt",
+    "uid": "0:0",
+    "result": {
+      "exit": 0,
+      "out": "list r=21 errno=0\nname=com.apple.provenance\nget com.apple.system.Security r=-1 errno=1\nremove com.apple.system.Security r=-1 errno=1\nget user.com.apple.system.Security r=-1 errno=61\nremove user.com.apple.system.Security r=-1 errno=13\nget system.posix_acl_access r=-1 errno=61\nremove system.posix_acl_access r=-1 errno=1\nget system.posix_acl_default r=-1 errno=61\nremove system.posix_acl_default r=0 errno=0\nchmod r=-1 errno=1\nchown r=-1 errno=1\nopen r=-1 errno=13\n",
+      "err": ""
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "identity_controls",
+    "uid": "12345:12345",
+    "result": {
+      "exit": 0,
+      "out": "uid=12345 gid=12345 groups=12345\n12345:12345 644\n",
+      "err": "sh: 1: cannot create deny-adam: Permission denied\n"
+    }
+  },
+  {
+    "name": "write_.git",
+    "uid": "12345:12345",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .git: Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "write_.GIT",
+    "uid": "12345:12345",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .GIT: Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "write_pointer-hardlink",
+    "uid": "12345:12345",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create pointer-hardlink: Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "write_pointer-symlink",
+    "uid": "12345:12345",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create pointer-symlink: Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "metadata_strip_attempt",
+    "uid": "12345:12345",
+    "result": {
+      "exit": 0,
+      "out": "list r=21 errno=0\nname=com.apple.provenance\nget com.apple.system.Security r=-1 errno=1\nremove com.apple.system.Security r=-1 errno=1\nget user.com.apple.system.Security r=-1 errno=61\nremove user.com.apple.system.Security r=-1 errno=13\nget system.posix_acl_access r=-1 errno=61\nremove system.posix_acl_access r=-1 errno=13\nget system.posix_acl_default r=-1 errno=61\nremove system.posix_acl_default r=0 errno=0\nchmod r=0 errno=0\nchown r=0 errno=0\nopen r=-1 errno=13\n",
+      "err": ""
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "unlink",
+    "uid": "501:20",
+    "result": {
+      "exit": 1,
+      "out": "",
+      "err": "rm: cannot remove '.GIT': Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "rename",
+    "uid": "501:20",
+    "result": {
+      "exit": 1,
+      "out": "",
+      "err": "mv: cannot move '.GIT' to 'pointer-moved': Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "replace",
+    "uid": "501:20",
+    "result": {
+      "exit": 1,
+      "out": "",
+      "err": "mv: cannot move 'tmp-pointer' to '.GIT': Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "hardlink_create",
+    "uid": "501:20",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 2 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 3 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "editor_create",
+    "uid": "501:20",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .VSCODE/new: Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 3 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 3 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "editor_replace",
+    "uid": "501:20",
+    "result": {
+      "exit": 1,
+      "out": "",
+      "err": "mv: cannot move 'tmp-config' to '.VSCODE/settings.json': Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 3 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 3 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "editor_rename",
+    "uid": "501:20",
+    "result": {
+      "exit": 1,
+      "out": "",
+      "err": "mv: cannot move '.VSCODE' to 'editor-moved': Permission denied\n"
+    },
+    "before": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 3 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    },
+    "after": {
+      "bytes": "gitdir: /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/worktrees/wt\n",
+      "acl": {
+        "exit": 0,
+        "out": "-rwxrwxrwx@ 3 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+        "err": ""
+      }
+    }
+  },
+  {
+    "name": "ordinary_atomic_edit",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "guest_git_reads",
+    "result": {
+      "exit": 0,
+      "out": " M source\n?? .vscode/\n?? cleanup-control\n?? deny-adam\n?? deny-nobody\n?? new-pointer-alias\n?? newdir/\n?? ordinary-0\n?? ordinary-12345\n?? ordinary-501\n?? pointer-hardlink\n?? pointer-symlink\n?? tmp-config\n?? tmp-pointer\ndc72aa6 base\n",
+      "err": ""
+    }
+  },
+  {
+    "name": "guest_external_metadata_write",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create /private/tmp/pinfold-native-acl-20261015/fixture/main/.git/config: Read-only file system\n"
+    }
+  },
+  {
+    "name": "host_commit",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "host_commit_result",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "guest_after_host_commit",
+    "result": {
+      "exit": 128,
+      "out": "",
+      "err": "fatal: your current branch 'work' does not have any commits yet\n"
+    }
+  },
+  {
+    "name": "host_new_files_ownership",
+    "result": {
+      "exit": 0,
+      "out": "-rw-r--r--  1 501  0  7 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/ordinary-0\n-rw-r--r--  1 501  0  7 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/ordinary-12345\n-rw-r--r--  1 501  0  7 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/ordinary-501\n",
+      "err": ""
+    }
+  },
+  {
+    "name": "remove_box",
+    "result": {
+      "exit": 0,
+      "out": "pf-native-acl-20261015\n",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_fixture_acl",
+    "path": "/private/tmp/pinfold-native-acl-20261015/fixture/wt/.vscode/settings.json",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_fixture_acl",
+    "path": "/private/tmp/pinfold-native-acl-20261015/fixture/wt/.vscode",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_fixture_acl",
+    "path": "/private/tmp/pinfold-native-acl-20261015/fixture/wt/deny-nobody",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_fixture_acl",
+    "path": "/private/tmp/pinfold-native-acl-20261015/fixture/wt/deny-adam",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_fixture_acl",
+    "path": "/private/tmp/pinfold-native-acl-20261015/fixture/wt/cleanup-control",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_fixture_acl",
+    "path": "/private/tmp/pinfold-native-acl-20261015/fixture/wt/.git",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  }
+]

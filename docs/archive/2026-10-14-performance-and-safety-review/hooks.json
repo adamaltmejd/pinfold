@@ -1,0 +1,41 @@
+{
+  "binary_sha256": "ec5bbacd11b5944ac847544725ea242239cc402dcc9b58feadbeb8d6507a7c9b",
+  "scenarios": [
+    {
+      "mode": "external_symlink",
+      "configured_path": "/private/tmp/pf-review-hooks-b4c5dpun/external-hooks",
+      "resolved_path": "/private/tmp/pf-review-hooks-b4c5dpun/project/hooks",
+      "rpc_ready": true,
+      "box": "pi-project-f0f12797b758-90485",
+      "guest_hook_write_exit": 0,
+      "guest_hook_write_stderr": "",
+      "ordinary_write_exit": 0,
+      "host_ordinary_bytes": "allowed",
+      "host_commit_exit": 0,
+      "host_marker_exists": true,
+      "host_marker": "review-hook-executed",
+      "owner_exit": 0,
+      "cleanup_exit": 0,
+      "remaining_box": false,
+      "owner_stderr": ""
+    },
+    {
+      "mode": "direct_inside_control",
+      "configured_path": "/private/tmp/pf-review-hooks-b4c5dpun/project/hooks",
+      "resolved_path": "/private/tmp/pf-review-hooks-b4c5dpun/project/hooks",
+      "rpc_ready": true,
+      "box": "pi-project-f0f12797b758-90909",
+      "guest_hook_write_exit": 2,
+      "guest_hook_write_stderr": "sh: 1: cannot create /private/tmp/pf-review-hooks-b4c5dpun/project/hooks/pre-commit: Read-only file system\n",
+      "ordinary_write_exit": 0,
+      "host_ordinary_bytes": "allowed",
+      "host_commit_exit": 0,
+      "host_marker_exists": false,
+      "host_marker": null,
+      "owner_exit": 0,
+      "cleanup_exit": 0,
+      "remaining_box": false,
+      "owner_stderr": ""
+    }
+  ]
+}

@@ -1,0 +1,203 @@
+[
+  {
+    "name": "host_non_ascii_spelling_checks",
+    "aliases": {
+      ".g\u0130t": false,
+      ".g\u0131t": false,
+      ".\uff47\uff49\uff54": false
+    }
+  },
+  {
+    "name": ".git",
+    "chmod": {
+      "exit": 1,
+      "out": "",
+      "err": "chmod: changing permissions of '.git': Read-only file system\n"
+    },
+    "write": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .git: Read-only file system\n"
+    },
+    "link": {
+      "exit": 1,
+      "out": "",
+      "err": "ln: failed to create hard link 'eight-link-0' => '.git': Invalid cross-device link\n"
+    },
+    "host_mode": "0o644",
+    "unchanged": true
+  },
+  {
+    "name": ".giT",
+    "chmod": {
+      "exit": 1,
+      "out": "",
+      "err": "chmod: changing permissions of '.giT': Read-only file system\n"
+    },
+    "write": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .giT: Read-only file system\n"
+    },
+    "link": {
+      "exit": 1,
+      "out": "",
+      "err": "ln: failed to create hard link 'eight-link-1' => '.giT': Invalid cross-device link\n"
+    },
+    "host_mode": "0o644",
+    "unchanged": true
+  },
+  {
+    "name": ".gIt",
+    "chmod": {
+      "exit": 1,
+      "out": "",
+      "err": "chmod: changing permissions of '.gIt': Read-only file system\n"
+    },
+    "write": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .gIt: Read-only file system\n"
+    },
+    "link": {
+      "exit": 1,
+      "out": "",
+      "err": "ln: failed to create hard link 'eight-link-2' => '.gIt': Invalid cross-device link\n"
+    },
+    "host_mode": "0o644",
+    "unchanged": true
+  },
+  {
+    "name": ".gIT",
+    "chmod": {
+      "exit": 1,
+      "out": "",
+      "err": "chmod: changing permissions of '.gIT': Read-only file system\n"
+    },
+    "write": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .gIT: Read-only file system\n"
+    },
+    "link": {
+      "exit": 1,
+      "out": "",
+      "err": "ln: failed to create hard link 'eight-link-3' => '.gIT': Invalid cross-device link\n"
+    },
+    "host_mode": "0o644",
+    "unchanged": true
+  },
+  {
+    "name": ".Git",
+    "chmod": {
+      "exit": 1,
+      "out": "",
+      "err": "chmod: changing permissions of '.Git': Read-only file system\n"
+    },
+    "write": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .Git: Read-only file system\n"
+    },
+    "link": {
+      "exit": 1,
+      "out": "",
+      "err": "ln: failed to create hard link 'eight-link-4' => '.Git': Invalid cross-device link\n"
+    },
+    "host_mode": "0o644",
+    "unchanged": true
+  },
+  {
+    "name": ".GiT",
+    "chmod": {
+      "exit": 1,
+      "out": "",
+      "err": "chmod: changing permissions of '.GiT': Read-only file system\n"
+    },
+    "write": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .GiT: Read-only file system\n"
+    },
+    "link": {
+      "exit": 1,
+      "out": "",
+      "err": "ln: failed to create hard link 'eight-link-5' => '.GiT': Invalid cross-device link\n"
+    },
+    "host_mode": "0o644",
+    "unchanged": true
+  },
+  {
+    "name": ".GIt",
+    "chmod": {
+      "exit": 1,
+      "out": "",
+      "err": "chmod: changing permissions of '.GIt': Read-only file system\n"
+    },
+    "write": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .GIt: Read-only file system\n"
+    },
+    "link": {
+      "exit": 1,
+      "out": "",
+      "err": "ln: failed to create hard link 'eight-link-6' => '.GIt': Invalid cross-device link\n"
+    },
+    "host_mode": "0o644",
+    "unchanged": true
+  },
+  {
+    "name": ".GIT",
+    "chmod": {
+      "exit": 1,
+      "out": "",
+      "err": "chmod: changing permissions of '.GIT': Read-only file system\n"
+    },
+    "write": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create .GIT: Read-only file system\n"
+    },
+    "link": {
+      "exit": 1,
+      "out": "",
+      "err": "ln: failed to create hard link 'eight-link-7' => '.GIT': Invalid cross-device link\n"
+    },
+    "host_mode": "0o644",
+    "unchanged": true
+  },
+  {
+    "name": "pointer_symlink_chmod",
+    "result": {
+      "exit": 1,
+      "out": "",
+      "err": "chmod: changing permissions of 'pointer-symlink': Read-only file system\n"
+    },
+    "host_mode": "0o644"
+  },
+  {
+    "name": "ordinary_positive",
+    "result": {
+      "exit": 0,
+      "out": "replacement",
+      "err": ""
+    }
+  },
+  {
+    "name": "remove_box",
+    "result": {
+      "exit": 0,
+      "out": "pf-native-acl-eight-20261015\n",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_acl",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  }
+]

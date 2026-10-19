@@ -1,0 +1,15 @@
+{
+  "name": "review-closed-stdout-923d87f112",
+  "binary_sha256": "ec5bbacd11b5944ac847544725ea242239cc402dcc9b58feadbeb8d6507a7c9b",
+  "owner_exit": 101,
+  "owner_stderr": "\nthread 'main' (67657530) panicked at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/io/stdio.rs:1168:9:\nfailed printing to stdout: Broken pipe (os error 32)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+  "native_after_owner_exit": [
+    {
+      "id": "review-closed-stdout-923d87f112",
+      "state": "running"
+    }
+  ],
+  "cleanup_exit": 0,
+  "cleanup_stderr": "",
+  "native_after_cleanup": []
+}

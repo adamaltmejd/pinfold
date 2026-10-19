@@ -1,0 +1,144 @@
+{
+  "trust": {
+    "code": 0,
+    "out": "",
+    "err": ""
+  },
+  "rpc-ready": {
+    "id": "research-ready",
+    "type": "response",
+    "command": "get_state",
+    "success": true,
+    "data": {
+      "model": {
+        "id": "unknown",
+        "name": "unknown",
+        "api": "unknown",
+        "provider": "unknown",
+        "baseUrl": "",
+        "reasoning": false,
+        "input": [],
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "contextWindow": 0,
+        "maxTokens": 0
+      },
+      "thinkingLevel": "off",
+      "isStreaming": false,
+      "isCompacting": false,
+      "steeringMode": "one-at-a-time",
+      "followUpMode": "one-at-a-time",
+      "sessionFile": "/private/tmp/pd-1015/pi-prototype/s/pinfold/projects/project-c74f67d28539/home/.pi/agent/sessions/--private-tmp-pd-1015-pi-prototype-project--/2026-10-15T04-51-00-613Z_01a13de6-3985-7428-ac50-4ed9297803ac.jsonl",
+      "sessionId": "01a13de6-3985-7428-ac50-4ed9297803ac",
+      "autoCompactionEnabled": true,
+      "messageCount": 0,
+      "pendingMessageCount": 0
+    }
+  },
+  "box": {
+    "created": "2026-10-15T04:50:59Z",
+    "image": {
+      "id": "7adc426249b0dc3c26ea1d3c5a49a7b8fb190330905bdbd38bf7f4fc2787dd3c",
+      "ref": "pinfold/profile-full:latest"
+    },
+    "labels": {
+      "dev.pinfold.base": "sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f",
+      "dev.pinfold.containerfile-sha256": "c7abba87ade0560711f8d96950b9794172124030e4feb1dd4961e43e0ae10890",
+      "dev.pinfold.generation": "49a3703b8288201535d233ea2857a612502294e3454befa553819fc816568087",
+      "dev.pinfold.owner": "30581",
+      "dev.pinfold.profile": "full",
+      "dev.pinfold.project": "project-c74f67d28539"
+    },
+    "name": "pi-project-c74f67d28539-30581",
+    "owner": 30581,
+    "owner_alive": true,
+    "state": "running"
+  },
+  "current-before": {
+    "containerfile": "profile",
+    "cpus": 1.0,
+    "egress": {
+      "allow": [
+        "api.github.com"
+      ],
+      "routes": {}
+    },
+    "env": [],
+    "image": "pinfold/profile-full:latest",
+    "image_built": true,
+    "image_error": null,
+    "memory": "512M",
+    "profile": "full",
+    "project": {
+      "home": "/private/tmp/pd-1015/pi-prototype/s/pinfold/projects/project-c74f67d28539/home",
+      "id": "project-c74f67d28539"
+    },
+    "protect": [],
+    "root": "/private/tmp/pd-1015/pi-prototype/project",
+    "trust": {
+      "detail": "ok",
+      "ok": true
+    }
+  },
+  "denied-before": {
+    "code": 0,
+    "out": " HTTP=403",
+    "err": ""
+  },
+  "current-after": {
+    "containerfile": "profile",
+    "cpus": 1.0,
+    "egress": {
+      "allow": [
+        "example.com"
+      ],
+      "routes": {}
+    },
+    "env": [],
+    "image": "pinfold/profile-full:latest",
+    "image_built": true,
+    "image_error": null,
+    "memory": "512M",
+    "profile": "full",
+    "project": {
+      "home": "/private/tmp/pd-1015/pi-prototype/s/pinfold/projects/project-c74f67d28539/home",
+      "id": "project-c74f67d28539"
+    },
+    "protect": [],
+    "root": "/private/tmp/pd-1015/pi-prototype/project",
+    "trust": {
+      "detail": ".pinfold.toml is new or changed; run `pinfold allow` to trust it",
+      "ok": false
+    }
+  },
+  "denied-after": {
+    "code": 0,
+    "out": " HTTP=403",
+    "err": ""
+  },
+  "applied-after": {
+    "code": 0,
+    "out": "{\"current_liveness\":\"not-probed\",\"egress\":{\"availability\":\"available\",\"byte_limit\":65536,\"order\":\"oldest-first\",\"records\":[{\"decision\":\"refused\",\"host\":\"example.com\",\"reason\":\"not allowlisted\",\"time\":\"2026-10-15T04:51:01Z\"},{\"decision\":\"refused\",\"host\":\"example.com\",\"reason\":\"not allowlisted\",\"time\":\"2026-10-15T04:51:01Z\"}],\"truncated\":false},\"snapshot\":{\"box\":\"pi-project-c74f67d28539-30581\",\"egress\":{\"allow\":[\"api.github.com\"],\"routes\":[]},\"image_id\":\"7adc426249b0dc3c26ea1d3c5a49a7b8fb190330905bdbd38bf7f4fc2787dd3c\",\"observation\":\"ready\",\"observed_at\":1792039860,\"resources_requested\":{\"cpus\":1.0,\"memory\":\"512M\"},\"run_id\":\"49a3703b8288201535d233ea2857a612502294e3454befa553819fc816568087\",\"runtime\":\"Apple container\"},\"terminal\":{\"availability\":\"not-observed\"}}\n",
+    "err": ""
+  },
+  "explain-after": {
+    "code": 0,
+    "out": "{\"basis\":\"recorded-policy\",\"decision\":\"refused\",\"delivery\":\"not-tested\",\"dns\":\"unevaluated\",\"reason\":\"not allowlisted\",\"request_framing\":\"unevaluated\",\"run_id\":\"49a3703b8288201535d233ea2857a612502294e3454befa553819fc816568087\",\"scope\":\"authority-only\",\"sni\":\"unevaluated\"}\n",
+    "err": ""
+  },
+  "stderr": "",
+  "cleanup": {
+    "code": 0,
+    "out": "",
+    "err": ""
+  },
+  "final": {
+    "code": 0,
+    "out": "",
+    "err": ""
+  }
+}
