@@ -128,9 +128,10 @@ fn a_runs_end_is_recorded_apart_from_its_start() {
     // Guarantee 40. Sabotage: drop `detail` from the terminal record; the
     // 137 assertion fails. Sabotage: write a `signal` record from `prune`
     // (or from orphan removal); the killed owner's terminal is then
-    // available after prune. Sabotage: write the terminal record after
-    // `finish` acknowledges `box down`; the first inspect then races the
-    // write and fails whenever it reads first.
+    // available after prune. Sabotage: write no terminal record for a
+    // requested stop; the first inspect reports terminal `not-observed`.
+    // Writing it after `finish` acknowledges `box down` is not caught every
+    // run: no outside observer can hold the owner between ack and write.
     let env = TestEnv::new("run-end");
     let image = default_image(&env);
     let spec = |name: &str| serde_json::json!({ "name": name, "image": image });
