@@ -94,7 +94,8 @@ namespaces or Landlock, `up` is refused as `runtime`, naming the missing
 requirement's token (below); there is no unjailed fallback. Ubuntu
 24.04+ restricts unprivileged user namespaces through AppArmor
 (`kernel.apparmor_restrict_unprivileged_userns=1`); that case has its
-own token, and pinfold ships no AppArmor profile.
+own token, chosen from the sysctl rather than the failing call, and
+pinfold ships no AppArmor profile.
 
 ## Box
 
@@ -119,13 +120,16 @@ own token, and pinfold ships no AppArmor profile.
    disks first; on Apple the runtime does. Disks attach only here, at
    boot; nothing attaches or detaches one later. On Linux PID 1 then
    forks the exec service as the host uid with every capability set
-   empty and keeps only `CAP_SYS_ADMIN` itself. PID 1 then only reaps
-   and answers step 8's unmount; it handles no workload bytes.
+   empty, in a root-owned work cgroup that holds the pids cap and that
+   box work cannot leave, and keeps only `CAP_SYS_ADMIN` itself. PID 1
+   then only reaps and answers step 8's unmount; it handles no workload
+   bytes.
 6. Apple only: wait until the runtime lists the box running, including
    without egress. With a socket, one transient root exec makes it connectable.
 7. `exec` work runs with `HTTPS_PROXY` and `http_proxy` set to
    `http://127.0.0.1:3128`.
-8. Sync and unmount the disks (Linux: init; Apple: the runtime's stop),
+8. Sync and unmount the disks (Linux: init, after ending box work with
+   the work cgroup's `cgroup.kill`; Apple: the runtime's stop),
    stop and remove the box, record the disks clean and release them, and
    delete the socket.
 
@@ -487,9 +491,17 @@ before it execs Firecracker:
   the guest kernel, the root and init disks (read-only binds), the box's
   disks, `/dev/kvm`, the vsock socket directory and the VM configuration
   file (Firecracker runs with `--no-api`); the old root is detached;
-- a capability bounding set of zero, `no_new_privs`, supplementary
-  groups reduced to the one that grants `/dev/kvm`, and a Landlock ruleset allowing only those paths. Firecracker's
-  own seccomp filters then apply.
+- a capability bounding set of zero, `no_new_privs`, and the user's
+  supplementary groups, which reach nothing in the jail (dropping them
+  needs privilege);
+- a Landlock ruleset that handles every access right of the running ABI
+  (5 or later, so `/dev/kvm`'s ioctls are explicit), TCP included, and
+  allows only: read and execute on the binary; read on the kernel, the
+  root and init disks and the configuration; read and write on the box's
+  disks; read, write and ioctl on `/dev/kvm`; making sockets, removing
+  files and reading the directory in the vsock socket directory.
+
+Firecracker's own seccomp filters then apply.
 
 A compromised VMM reaches only that tree, as the user: no home, no other
 box's disks or socket, no host network or abstract socket, no host
@@ -502,7 +514,9 @@ process. Getting further needs a host kernel bug.
 - TTY: the exec client (Apple's runtime exec; on Linux, pinfold's own over
   vsock) stays in pinfold's foreground process group, handles raw mode and
   forwards window size. No TTY: its own process group.
-- The box is the unit of lifetime; pinfold never signals a process in it.
+- The box is the unit of lifetime; pinfold never signals a process in it
+  from the host or through `exec`. At `down` on Linux, init kills the
+  work cgroup so the disks can unmount; the box is ending anyway.
   Once pi runs on a TTY, Ctrl-C and Ctrl-\ reach it as bytes. A closed
   terminal, SIGTERM, SIGHUP or SIGINT removes the box.
   Revisit when apple/container#1941 lands: add a graceful SIGTERM before
@@ -521,7 +535,9 @@ process. Getting further needs a host kernel bug.
   Firecracker resets a guest connection to CID 2 on any other port. Exec
   and the unmount request run over the VM's own vsock socket, in the same
   directory, and only the host connects: the guest's listeners accept
-  peer CID 2 alone and refuse any other peer with a `peer` frame.
+  peer CID 2 alone and refuse any other peer with a `peer` frame. The
+  host never half-closes an exec connection, since Firecracker then ends
+  the stream; stdin's end travels as a frame.
 - **Apple `container`:** `--ssh` with `SSH_AUTH_SOCK` set to the proxy socket
   for that one `container run`. It appears at
   `/var/host-services/ssh-auth.sock`, root-owned and not connectable by the
@@ -1194,7 +1210,7 @@ The two slow gates run separately.
 | 34 | Blocked route responses release the upstream | A normal routed response succeeds. A guest that keeps its upload open but stops reading causes the host fixture connection to close after the production write deadline, while the guest holder remains alive. Slow gate only. |
 | 35 | Durable recovery preserves boxed execution | The host fixture refuses authority overlap before work, then observes a successful boxed command, a competing checkpoint writer refused without disrupting its owner, a mutation followed by SIGKILL before tool-result commit, a new box generation before recovery, no unsafe replay, and whole-box cancellation including a background child. Standalone prototype gate on macOS and Linux x64, and arm64 once a KVM host runs it. |
 | 36 | CONNECT tunnels share activity | Initially idle TLS tunnels start at staggered times and expire after the production idle interval. Real TLS tunnels carry upload-only and download-only traffic for longer than the production idle deadline. Neither closes while bytes flow; both then close after a full idle interval with `idle timeout` in the egress log while the guest holders remain alive. Standalone Linux slow gate. |
-| 37 | Each box has its own kernel | Inside, `uname -r` and `/proc/version` differ from the host's, on both runtimes; on Linux the VMM's process is a child of `box up` and runs as the user with `CapBnd` 0, `NoNewPrivs` 1 and exactly one supplementary group, the one owning `/dev/kvm`; its user, mount, PID and network namespaces differ from `box up`'s, its mountinfo holds only the jail's entries and not the user's home, and SIGKILL of `box up` ends the VM. |
+| 37 | Each box has its own kernel | Inside, `uname -r` and `/proc/version` differ from the host's, on both runtimes; on Linux the VMM's process is a child of `box up` and runs as the user with `CapBnd` 0, `NoNewPrivs` 1; its user, mount, PID and network namespaces differ from `box up`'s, its mount points are only the jail's and none is under the user's home, and SIGKILL of `box up` ends the VM. |
 | 38 | Each run's history is its own | Two `up`s of one name in sequence; the first makes an allowed and a refused request before `down`. The second's `ready.run_id` equals its `dev.pinfold.generation` label and differs from the first's, and its `ready.egress_log` is empty before its first request. After the second makes its own request, `events` for the first run still returns exactly the first run's two decisions. Each `down` names its own run_id. |
 | 39 | The launch record is the applied policy | A pi box starts from a trusted `.pinfold.toml` with an allow list, a host-service route and an injecting route whose header comes from a host variable, plus `PINFOLD_ENV_SECRET`. While it runs, the file's allow list changes and is not re-allowed: `config` reports the change, but `inspect` still reports the started allow list, route kinds and targets, env names, cpus and memory, equal to what the test wrote, and the box's next request is decided by the started list. No file under the state root holds the secret or the header value. |
 | 40 | A run's end is recorded apart from its start | When `box down` returns, `inspect` already reports terminal `signal`. An init killed from the host runtime gives terminal `exited` whose detail names exit status 137. An owner SIGKILLed after `ready` leaves the launch record `available` and terminal `not-observed`, also after `box prune` removes its box. |
@@ -1256,8 +1272,6 @@ data, `crates/pinfold/public_suffix_list.dat`, embedded with `include_str!`.
   runner, yard-sthlm's LXC and Debian allow unprivileged user namespaces
   rides on the same throwaway workflow as `/dev/kvm`. An Ubuntu runner
   restricts them by default, so CI would set the AppArmor sysctl to 0.
-- Whether the pinned guest kernel has vsock loopback. If it does, row 1
-  adds a box connection to its own exec port, refused as `peer`.
 - Before Firecracker replaces podman, one real caller workflow gates it:
   start from dirty and staged work, make a real edit, build and test, keep
   state across `down` and `up`, export for review, and apply while the

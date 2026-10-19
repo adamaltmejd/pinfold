@@ -84,7 +84,7 @@ options:
 
 | | (a) pinfold's own rootless jail (specified) | (b) a privileged fixed-function launcher (Codex) |
 |---|---|---|
-| Mechanism | user, mount, PID, net, IPC, UTS namespaces; `pivot_root` to an empty tmpfs; bounding set 0; `no_new_privs`; groups reduced to the `kvm` group (the bind-mounted `/dev/kvm` is still root:kvm 0660, and the jail cannot `mknod` and `chown` it as the stock jailer does); Landlock; Firecracker's seccomp | root-installed launcher takes resource IDs, no caller paths; runs the stock jailer; VMM as a dedicated uid (60001) |
+| Mechanism | user, mount, PID, net, IPC, UTS namespaces; `pivot_root` to an empty tmpfs; bounding set 0; `no_new_privs`; the user's groups kept (`setgroups` needs privilege, PR #114); Landlock; Firecracker's seccomp | root-installed launcher takes resource IDs, no caller paths; runs the stock jailer; VMM as a dedicated uid (60001) |
 | A compromised VMM reaches | the jail: kernel, root and init disks (ro), this box's disks (rw, already guest-writable), `/dev/kvm`, the vsock dir; as the user's uid | the same jail, as a uid that owns nothing |
 | A further escape lands as | the user (needs a host kernel bug in userns, Landlock or KVM) | uid 60001, unless the launcher itself has a bug, which is root |
 | Install | none beyond today's `kvm` group | a setuid or root-daemon launcher on every host; a Caller change |
@@ -100,8 +100,8 @@ beats namespaces and Landlock is the user. Adam decides.
 
 The stock jailer left `CapBnd=000001ffffffffff` (Codex). Under (a) the
 VMM drops its bounding set inside its user namespace, which holds
-`CAP_SETPCAP` there; the rule is bounding set 0, `no_new_privs` and only
-the `kvm` supplementary group before exec, asserted in row 37. Under (b) the
+`CAP_SETPCAP` there; the rule is bounding set 0 and `no_new_privs` before
+exec, asserted in row 37. Under (b) the
 launcher would have to drop it before setuid.
 
 ### Control channel
@@ -172,3 +172,14 @@ option A. Preflight names Ubuntu 24.04+'s AppArmor userns restriction
 (`kernel.apparmor_restrict_unprivileged_userns=1`) with its own token,
 `userns-apparmor`. gominimal/minimal ships an AppArmor profile for the
 same case; pinfold only names the cause for now.
+
+### After the jail prototype (PR #114)
+
+Both designs ran. Four spec lines changed: the VMM keeps the user's
+supplementary groups; row 37 checks mount points, not mountinfo's bind
+sources; init kills the work cgroup before unmounting at `down` (Adam
+agreed, 2026-10-19: the box is ending, and the never-signal rule stays
+for the host side and `exec`); stdin's end on an exec connection is a
+frame. The guest kernel has no vsock loopback, so that open question
+closed. The `userns-apparmor` token is chosen from the sysctl, since on
+Ubuntu the first failure is reportedly a `mount` EPERM, not `clone`.
