@@ -20,10 +20,12 @@ use sha2::{Digest, Sha256};
 /// The sha256 of `bytes` as lowercase hex. Ids and cache paths on disk are
 /// made of it.
 pub(crate) fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    hex(&Sha256::digest(bytes))
+}
+
+/// `bytes` as lowercase hex.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Seconds since the Unix epoch; 0 for a clock before it.

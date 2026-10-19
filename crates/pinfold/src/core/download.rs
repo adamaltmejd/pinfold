@@ -117,9 +117,5 @@ pub fn sha256_file(path: &Path) -> io::Result<String> {
         }
         hash.update(&buffer[..read]);
     }
-    Ok(hash
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
+    Ok(crate::core::hex(&hash.finalize()))
 }
