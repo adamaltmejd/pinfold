@@ -1,7 +1,7 @@
 # pinfold
 
-Run a coding agent in a disposable box: an Apple `container` micro-VM on
-macOS, a rootless podman container on Linux. The box works on its own
+Run a coding agent in a disposable box: a micro-VM, Apple `container` on
+macOS and Firecracker on Linux. The box works on its own
 copy of the project; `pinfold fetch` brings its commits back as branches.
 Its only way out is its own allowlisting proxy.
 
@@ -15,10 +15,7 @@ Its only way out is its own allowlisting proxy.
 | Host | Runtime |
 |---|---|
 | macOS 26+ | Apple `container` 1.5.0+ (stable) |
-| Linux | rootless podman 6.1.4+ (stable) |
-
-On Linux, podman also needs `cgroupManager=systemd`; run
-`loginctl enable-linger` for long-lived boxes.
+| Linux | `/dev/kvm` for the user (the `kvm` group), e2fsprogs, and rootless podman 6.1.4+ (stable) for image builds; pinfold fetches its pinned Firecracker |
 
 ## Install
 
