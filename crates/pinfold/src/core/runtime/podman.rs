@@ -55,8 +55,7 @@ impl Runtime for Podman {
         }
         let source = seccomp.expect("podman's preflight refuses a host with no seccomp profile");
         let seccomp = seccomp_profile(source, state_dir)?;
-        // --dns none cannot be combined with --network none on podman
-        // 5.4.2; without this bind podman writes a resolver of its own.
+        // Without this bind podman writes a resolver of its own.
         let resolv_conf = state_dir.join("resolv.conf");
         fs::write(&resolv_conf, "")?;
         let mut extra: Vec<OsString> = vec![

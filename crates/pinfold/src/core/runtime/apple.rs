@@ -87,9 +87,7 @@ impl Runtime for Apple {
     /// The limits Apple reports, and null for what the VM cannot answer
     /// (kills, memory use, pids use).
     fn stat(&self, name: &str) -> io::Result<BoxStat> {
-        let resources = containers(None)?
-            .into_iter()
-            .find(|container| container.id == name)
+        let resources = container(name)?
             .ok_or_else(|| {
                 io::Error::new(io::ErrorKind::NotFound, format!("no box named {name:?}"))
             })?
@@ -321,11 +319,14 @@ fn containers(cancel: Option<&AtomicBool>) -> io::Result<Vec<ListedContainer>> {
     parse_json("container list", &json)
 }
 
+/// The listed container with this id, if the runtime has one.
+fn container(name: &str) -> io::Result<Option<ListedContainer>> {
+    Ok(containers(None)?.into_iter().find(|entry| entry.id == name))
+}
+
 /// The shared BuildKit builder, if the runtime has one.
 fn builder() -> io::Result<Option<ListedContainer>> {
-    Ok(containers(None)?
-        .into_iter()
-        .find(|entry| entry.id == "buildkit"))
+    container("buildkit")
 }
 
 /// One `container image list --format json` entry, as much as pinfold needs.
