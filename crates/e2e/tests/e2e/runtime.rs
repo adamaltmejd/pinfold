@@ -1087,7 +1087,7 @@ fn losing_the_owner_fails_closed() {
     // does not reliably close after the owner dies.
     // The log-line count is the assertion; the curl exit is only a
     // precondition, since a hang and a refusal both exit non-zero.
-    let before = json_lines(&egress_log(&env, &name));
+    let before = json_lines(&egress_log(up.ready()));
     assert!(
         !before.is_empty(),
         "the positive control left no egress log line"
@@ -1102,7 +1102,7 @@ fn losing_the_owner_fails_closed() {
         denied.code, 0,
         "the box still had egress after the owner died"
     );
-    let after = json_lines(&egress_log(&env, &name));
+    let after = json_lines(&egress_log(up.ready()));
     assert_eq!(
         after.len(),
         before.len(),

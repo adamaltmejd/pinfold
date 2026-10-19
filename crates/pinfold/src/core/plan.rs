@@ -163,7 +163,7 @@ const LOGIN_PLACEHOLDER: &str = "pinfold-placeholder";
 
 impl Login {
     /// The origin this login dials: the harness's own, or the spec's `to`.
-    fn origin(&self) -> Result<&str, String> {
+    pub fn origin(&self) -> Result<&str, String> {
         let default = match self.login.as_str() {
             "claude" => "https://api.anthropic.com",
             "codex" => "https://chatgpt.com",

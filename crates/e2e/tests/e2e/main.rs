@@ -9,6 +9,7 @@ mod box_;
 mod cli;
 mod image_warning;
 mod pi;
+mod runs;
 mod runtime;
 
 // Daily maintenance can remove another test's dead box. Hold each guard

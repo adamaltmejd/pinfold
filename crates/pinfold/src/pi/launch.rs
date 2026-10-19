@@ -9,9 +9,10 @@ use tokio::runtime::Builder;
 
 use crate::cli;
 use crate::config::Config;
-use crate::core::r#box::{Box, Signals, UpError};
+use crate::core::r#box::{Box, Shutdown, Signals, UpError};
 use crate::core::clean;
 use crate::core::plan::{Egress, Env, Mount, Plan};
+use crate::core::runs::Terminal;
 use crate::core::runtime::{ImageInfo, runtime};
 use crate::core::{artifacts, image, ownership, sha256_hex};
 use crate::pi::git::{Git, git};
@@ -248,16 +249,35 @@ fn run_box(plan: &Plan, cwd: &Path, args: &[String]) -> io::Result<i32> {
         let exec = tokio::task::spawn_blocking(move || {
             box_runtime.exec(&name, &init, tty, Some(&workdir), &argv)
         });
-        let code = tokio::select! {
+        let ended = tokio::select! {
             status = exec => status
                 .map_err(|error| io::Error::other(format!("pi exec failed: {error}")))
-                .and_then(|status| status.map(cli::exit_code)),
-            stop = box_.stop_requested() => stop.map(|()| 0),
-            signal = signals.recv() => Ok(128 + signal as i32),
+                .and_then(|status| status)
+                .map(|status| (Terminal { reason: "harness-exited", detail: Some(status.to_string()) }, cli::exit_code(status))),
+            shutdown = box_.ended() => shutdown.map(|shutdown| {
+                let code = match shutdown {
+                    Shutdown::BoxExited(status) => cli::exit_code(status),
+                    Shutdown::AuditLog => 1,
+                    Shutdown::StdinEof | Shutdown::Signal => 0,
+                };
+                (shutdown.terminal(), code)
+            }),
+            signal = signals.recv() => Ok((Shutdown::Signal.terminal(), 128 + signal as i32)),
         };
         // Remove the box exactly once, whatever ended the run. A failed
         // removal must not hide the error that ended pi.
-        let down = box_.down().await;
+        let (terminal, code) = match ended {
+            Ok((terminal, code)) => (Some(terminal), Ok(code)),
+            Err(error) => (None, Err(error)),
+        };
+        let reason = terminal.as_ref().map(|terminal| terminal.reason);
+        let down = box_.down(terminal).await;
+        if let Some(reason) = reason.filter(|reason| !matches!(*reason, "harness-exited" | "signal")) {
+            eprintln!(
+                "pinfold pi: the box ended with {reason}; see `pinfold box inspect {}`",
+                box_.run_id
+            );
+        }
         let code = code?;
         down?;
         Ok(code)
