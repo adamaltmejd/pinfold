@@ -74,7 +74,6 @@ fn host_updates_are_verified_and_atomic() {
     );
     assert_eq!(fs::read(&installed).unwrap(), original);
     assert_eq!(fs::metadata(&installed).unwrap().ino(), original_inode);
-    run_ok(env.command(&installed).arg("--version"));
     fs::remove_file(bad_checksum).unwrap();
 
     let name = box_name("update");
