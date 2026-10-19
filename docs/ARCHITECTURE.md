@@ -123,6 +123,8 @@ pinfold box stat BOX              # one JSON object of the box's memory, pids an
 pinfold box down BOX              # asks its owner to tear down; an absent box exits 0
 pinfold box list --label KEY[=VALUE]…      # JSON lines; repeat --label to AND filters
 pinfold box prune                 # remove boxes whose `up` is gone, print each removed
+pinfold box inspect RUN           # one JSON object: a run's retained records
+pinfold box events RUN [--limit N] [--after CURSOR]   # one JSON object: a page of a run's egress log
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache]   # one JSON line
 pinfold image rm NAME             # one JSON line
 ```
@@ -178,10 +180,12 @@ absent box, `stat` exits 3 with `pinfold box stat: no box named ...`, like
 `up` prints one `ready` line once the box accepts `exec`:
 
 ```json
-{"event":"ready","box":NAME,"owner":PID,"labels":{…},"image":{"id":ID,"ref":REF},"egress_log":PATH|null}
+{"event":"ready","box":NAME,"run_id":ID,"owner":PID,"labels":{…},"image":{"id":ID,"ref":REF},"egress_log":PATH|null}
 ```
 
-`owner` is the `box up` process; `labels` is the box's full label set, as
+`run_id` is the box's generation, the value of its `dev.pinfold.generation`
+label: 64 lowercase hex characters, new at every `up`. It names the run's
+records (Run records). `owner` is the `box up` process; `labels` is the box's full label set, as
 the runtime reports them, image labels included. `image.id` is the image the
 runtime resolved `image` to; `image.ref` is the reference as the spec (or its
 profile) gave it. `list` spells `ref` as the runtime records it (podman adds
@@ -195,14 +199,14 @@ The caller keeps `up`'s stdin open for the life of the box; closing it is
 `down`. The stream ends with one `down` line after teardown:
 
 ```json
-{"event":"down","box":NAME,"reason":REASON}
+{"event":"down","box":NAME,"run_id":ID|null,"reason":REASON}
 ```
 
 `REASON` is one of `stdin-closed`, `signal` (SIGTERM, SIGINT or an accepted
 `box down` request), `audit-log` (an egress log append failed), or `exited` (the box's init ended on its own;
 `detail` carries its exit status). `up` exits 0 for `stdin-closed` and
 `signal`, and 1 for `exited` or `audit-log`; `box` is null when a signal ended `up` before
-its spec parsed.
+its spec parsed, and `run_id` is null when it ended `up` before `ready`.
 
 When `up` refuses, it prints one JSON line instead of `ready` and exits 1:
 
@@ -352,6 +356,78 @@ The box spec `up` reads from stdin:
 - An unknown key at any level of the spec is refused as `spec`, naming the
   key; pinfold never applies a spec partially.
 
+### Run records
+
+A run is one `up` from `ready` to its end. Its records live in
+`~/.local/state/pinfold/runs/<run_id>/`, outside the box's state dir, so
+they outlast teardown. The directory is 0700 and its files 0600, created
+without following symlinks. `refused` and `failed` retain no run.
+
+The launch record is written once, atomically, after the box accepts
+`exec` (Lifecycle step 5) and immediately before `ready`. Failed-start
+cleanup removes the run's directory:
+
+```json
+{"run_id":ID,"box":NAME,"time":RFC3339,"pinfold":VERSION,"runtime":{"name":"apple"|"podman","version":V},"image":{"id":ID,"ref":REF},"profile":NAME|null,"harness":{"name":NAME,"version":V}|null,"labels":{…},"mounts":[{"host":PATH,"guest":PATH,"readonly":BOOL}],"env":[NAME,…],"egress":{"allow":[…],"routes":{NAME:{"kind":"host-service"|"injecting"|"login","to":TARGET}}}|null,"cpus":N,"memory":M}
+```
+
+Every field is a value the box spec carries or that `ready`, `list`,
+`artifacts` or `doctor` already prints. It never holds an env value, a header name,
+value or prefix, a login token, argv or command output. `env` lists names
+only. A route's `to` is its `host:port` or origin. The record is what this
+run applied at start; a later change to config or trust leaves it as it is.
+
+The terminal record is written once, after teardown, before the owner
+acknowledges `box down` and before `up` prints `down`:
+
+```json
+{"run_id":ID,"time":RFC3339,"reason":REASON,"detail":TEXT|null}
+```
+
+`reason` and `detail` are the `down` line's. A pi box, which prints no
+`down`, adds `harness-exited` for its harness ending, with its exit status
+in `detail`. An owner that dies without
+teardown writes none, and nothing infers one later: `prune` writes no
+terminal record.
+
+The egress log append rule (Egress proxy) is unchanged; it is the only
+write failure that stops a running box. A launch record that cannot be
+written fails the start with `failed`, naming it. A terminal record that
+cannot be written is reported on stderr; `down`, its reason and the exit
+code are unchanged. A run-record write never delays or alters an audit
+append.
+
+`inspect` prints:
+
+```json
+{"run_id":ID,"launch":{"state":STATE,"record":{…}|null},"terminal":{"state":STATE,"record":{…}|null},"egress_log":{"state":STATE,"path":PATH|null,"bytes":N|null}}
+```
+
+`events` prints the egress log's complete lines from `--after`'s position,
+oldest first, at most `--limit` lines (1–100, default 100) and 64 KiB:
+
+```json
+{"run_id":ID,"state":STATE,"events":[{…},…],"next":CURSOR|null,"more":BOOL}
+```
+
+`next` is an opaque cursor after the last returned line; `more` is true
+when complete lines remained past it at the read. A line that is not a JSON
+object, or exceeds 64 KiB, appears in place as `{"unreadable":true}`. An
+incomplete final line is not returned.
+
+`STATE` is `available`, `not-observed` (no terminal record: the run is live,
+or its owner died without one), `not-applicable` (no egress), or
+`unavailable` (unreadable, malformed, or over 64 KiB). Neither query
+reports liveness; `list` does. Run records never enter a box.
+
+Both queries skip daily maintenance, take no lifetime lock, start no runtime client
+and read only the run's directory, so they answer with no runtime and while
+the runtime stalls. A RUN that is not 64 lowercase hex characters, a
+`--limit` out of range, or a cursor from another run exits 1 before any
+path is built. A run with no records exits 3 with `pinfold box inspect: no
+run ...` (or `events`); it may never have existed or have been removed
+(Maintenance).
+
 ### Always applied
 
 - `--network none`, `--cap-drop ALL`, `--read-only` with a tmpfs `/tmp`.
@@ -469,8 +545,9 @@ network listener, no token: the socket identifies the box.
   closed, only when neither direction has carried bytes for 5 minutes.
   A write blocked for 5 minutes closes the connection even when the other
   direction has activity. A fatal relay error closes both directions.
-- **Log:** one JSON line per decision in the box's egress log at
-  `~/.local/state/pinfold/egress/<box>.jsonl`. It names the decision's UTC
+- **Log:** one JSON line per decision in the run's egress log at
+  `~/.local/state/pinfold/runs/<run_id>/egress.jsonl`, so a reused name
+  starts an empty log. It names the decision's UTC
   time (RFC 3339 to the second), the host, the decision and its reason. A
   route request's line also names the method, the request path without its
   query, and the upstream's status (null when no status line arrived). No header value is ever written.
@@ -725,11 +802,19 @@ Automatic, never prompting:
   in the last hour stays, so the ref its `built` line named still comes
   up; past the hour the newest two rule applies.
 - At most once a day, at the start of any working command (not
-  `--version`, `--help`, `doctor`, `config`, `artifacts`, `update`, `box list`, `box down` or `init`): prune boxes whose owner
+  `--version`, `--help`, `doctor`, `config`, `artifacts`, `update`, `box list`, `box down`, `box inspect`, `box events` or `init`): prune boxes whose owner
   is gone (nothing owns its generation's lifetime lock), leftover sockets,
   artifact `<name>/<version>` directories no pin names (`init/` aside),
   builds beyond each source's newest two (the after-build rule, applied
-  even when no build follows), and egress logs older than 14 days.
+  even when no build follows), and inactive runs' records (below).
+
+Run records are retained by run. A run is inactive when its generation
+owns no lifetime lock. An inactive run's directory goes when its newest
+file is older than 14 days; then, while inactive runs together exceed
+128 MiB, the oldest inactive run goes first. The quota can remove an
+inactive run's egress log before 14 days. A live run's records are never
+removed or truncated; its egress log can grow without bound. The first
+pass removes the old name-keyed `egress/` directory.
 
 `pinfold image rm NAME` retires a caller image name: it removes every tag
 of NAME, whatever its age, and no other name's. The last-tag rule above
@@ -747,7 +832,7 @@ applies to an image a box uses.
   project's with a live box. Never automatic: state holds sessions and
   logins.
 
-`--dry-run` only lists. `doctor` shows disk use per category and suggests
+`--dry-run` only lists. Run records are a category of their own. `doctor` shows disk use per category and suggests
 `clean` above 20 GB. `doctor` runs no maintenance and changes no pinfold
 state or artifacts. On Apple, disk use includes allocated builder backing
 storage, including a stopped builder; cleanup may reclaim less. Podman's
@@ -793,6 +878,10 @@ measurement does not authorize a later deletion.
   `protected-path-invalid`.
 - **herdr:** no herdr socket. The TTY passes through, so screen detection
   works, and the shim sets `HERDR_AGENT=pi`.
+- **After a run:** when the box ends for a reason other than
+  `harness-exited` or `signal` (an `audit-log` stop, the box's init
+  exiting), `pinfold pi` prints that reason and `pinfold box inspect
+  <run_id>` on stderr after teardown.
 - **Attach:** `pinfold attach [--box NAME] [cmd…]` execs bash (or cmd) in
   this project's running pi box. It fails if none is running and asks for a
   box name if several are; `--box NAME` selects one. Its processes end with
@@ -923,7 +1012,8 @@ the command refuses as `project-in-git`.
 ## Guarantees
 
 Each has one end-to-end test. Testing policy is in `AGENTS.md`.
-Guarantees 1–34 and Linux-only guarantee 37 run through the Rust E2E crate.
+Guarantees 1–34 and 38–42, and Linux-only guarantee 37, run through the
+Rust E2E crate.
 Guarantee 35 is the standalone
 `examples/pi-durable/durable_recovery_preserves_boxed_execution.ts` gate;
 its README gives installation and execution commands. Run it with exclusive
@@ -977,6 +1067,11 @@ The two slow gates run separately.
 | 35 | Durable recovery preserves boxed execution | The host fixture refuses authority overlap before work, then observes a successful boxed command, a competing checkpoint writer refused without disrupting its owner, a mutation followed by SIGKILL before tool-result commit, a new box generation before recovery, no unsafe replay, and whole-box cancellation including a background child. Standalone prototype gate on macOS and Linux x64 and arm64. |
 | 36 | CONNECT tunnels share activity | Initially idle TLS tunnels start at staggered times and expire after the production idle interval. Real TLS tunnels carry upload-only and download-only traffic for longer than the production idle deadline. Neither closes while bytes flow; both then close after a full idle interval with `idle timeout` in the egress log while the guest holders remain alive. Standalone Linux slow gate. |
 | 37 | Linux boxes apply their own seccomp profile | Two startups read different host profiles before their runtime clients wait on the real image-store lock. Releasing the lock preserves the first box's allowed syscall and the second box's explicit EPERM for the same syscall. A benign syscall succeeds in the second box. |
+| 38 | Each run's history is its own | Two `up`s of one name in sequence; the first makes an allowed and a refused request before `down`. The second's `ready.run_id` equals its `dev.pinfold.generation` label and differs from the first's, and its `ready.egress_log` is empty before its first request. After the second makes its own request, `events` for the first run still returns exactly the first run's two decisions. Each `down` names its own run_id. |
+| 39 | The launch record is the applied policy | A pi box starts from a trusted `.pinfold.toml` with an allow list, a host-service route and an injecting route whose header comes from a host variable, plus `PINFOLD_ENV_SECRET`. While it runs, the file's allow list changes and is not re-allowed: `config` reports the change, but `inspect` still reports the started allow list, route kinds and targets, env names, cpus and memory, equal to what the test wrote, and the box's next request is decided by the started list. No file under the state root holds the secret or the header value. |
+| 40 | A run's end is recorded apart from its start | When `box down` returns, `inspect` already reports terminal `signal`. An init killed from the host runtime gives terminal `exited` whose detail names exit status 137. An owner SIGKILLed after `ready` leaves the launch record `available` and terminal `not-observed`, also after `box prune` removes its box. |
+| 41 | Run queries are bounded and need no runtime | With no runtime on `PATH`, and on Linux while a real image-store lock holds a concurrent `box list` blocked, `inspect` and `events` answer for a finished run. A run with 150 decisions, paged at the default limit while its box keeps appending, returns every line once, in order, across `next`. A no-egress run reports egress `not-applicable`. A malformed run id, `--limit 101` and another run's cursor exit 1; an unknown run id exits 3. |
+| 42 | Run records are retained within bounds | `clean` removes an inactive run whose directory is aged 15 days on the host (`inspect` exits 3), while a live run aged the same stays `available` and its log keeps appending. With inactive runs padded on the host past 128 MiB in valid decision lines, `clean` removes the oldest inactive run and keeps the newest. |
 
 Linux (podman) runs in CI on every push to main and every pull request,
 and on a dispatched ref, on GitHub's `ubuntu-26.04` and `ubuntu-26.04-arm`
