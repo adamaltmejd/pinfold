@@ -1,0 +1,170 @@
+== host
+6.12.107+deb13-cloud-amd64
+uid=1000(agent) gid=1000(agent) groups=1000(agent),4(adm),20(dialout),24(cdrom),25(floppy),27(sudo),29(audio),30(dip),44(video),46(plugdev),992(kvm)
+unprivileged_userns_clone=1
+apparmor_display_secid_mode=0
+apparmor_restrict_unprivileged_unconfined=1
+unprivileged_userns_apparmor_policy=1
+unprivileged_userns_clone=1
+lsm=lockdown,capability,landlock,yama,apparmor,tomoyo,bpf,ipe,ima,evm
+== boot jailed, proxy over vsock
+ready_ms=713 ready 6.1.188
+fcjail: setgroups([]) before unshare: errno 1
+fcjail: landlock abi 6
+fcjail: setgroups([]) inside userns: errno 1
+fcjail: setup_us=1133
+launcher=18515 vmm=18516
+Name:	firecracker
+PPid:	18515
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+Groups:	4 20 24 25 27 29 30 44 46 992 1000 
+NSpid:	18516	1
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+Seccomp:	2
+Seccomp_filters:	1
+groups of the launcher: Groups:	4 20 24 25 27 29 30 44 46 992 1000 
+ns user launcher=user:[4026531837] vmm=user:[4026532296] differs
+ns mnt launcher=mnt:[4026531841] vmm=mnt:[4026532298] differs
+ns pid launcher=pid:[4026531836] vmm=pid:[4026532301] differs
+ns net launcher=net:[4026531840] vmm=net:[4026532302] differs
+ns ipc launcher=ipc:[4026531839] vmm=ipc:[4026532300] differs
+ns uts launcher=uts:[4026531838] vmm=uts:[4026532299] differs
+ns cgroup launcher=cgroup:[4026531835] vmm=cgroup:[4026531835] SAME
+-- /proc/18516/mountinfo
+296 172 0:54 / / ro,nosuid,nodev,relatime - tmpfs tmpfs ro,size=64k,nr_inodes=32,mode=755,uid=1000,gid=1000,inode64
+297 296 8:1 /home/agent/fc/firecracker /firecracker ro,nosuid,relatime - ext4 /dev/sda1 rw,discard,errors=remount-ro
+298 296 8:1 /home/agent/fc/vmlinux /vmlinux ro,nosuid,relatime - ext4 /dev/sda1 rw,discard,errors=remount-ro
+299 296 8:1 /home/agent/fc/rootfs.ext4 /rootfs.ext4 ro,nosuid,relatime - ext4 /dev/sda1 rw,discard,errors=remount-ro
+300 296 8:1 /home/agent/fc/init.ext4 /init.ext4 ro,nosuid,relatime - ext4 /dev/sda1 rw,discard,errors=remount-ro
+301 296 8:1 /home/agent/.local/state/fcproto/j/config.json /config.json ro,nosuid,relatime - ext4 /dev/sda1 rw,discard,errors=remount-ro
+302 296 8:1 /home/agent/.local/state/fcproto/j.ext4 /data.ext4 rw,relatime - ext4 /dev/sda1 rw,discard,errors=remount-ro
+303 296 0:6 /kvm /dev/kvm rw,nosuid,relatime - devtmpfs udev rw,size=1995528k,nr_inodes=498882,mode=755,inode64
+304 296 8:1 /home/agent/.local/state/fcproto/j/vsock /vsock rw,relatime - ext4 /dev/sda1 rw,discard,errors=remount-ro
+-- mount points (field 5) under /home: 0
+-- entries naming /home anywhere: 7
+-- /proc/18516/root listing (as the host sees the VMM's root)
+/proc/18516/root/:
+total 337380
+drwxr-xr-x 4 agent agent       200 Oct 19 19:12 .
+drwxr-xr-x 4 agent agent       200 Oct 19 19:12 ..
+-rw-rw-r-- 1 agent agent       603 Oct 19 19:12 config.json
+-rw------- 1 agent agent 268435456 Oct 19 19:12 data.ext4
+drwxrwxr-x 2 agent agent        60 Oct 19 19:12 dev
+-rwxr-xr-x 1 agent agent   3676680 Oct 19 19:01 firecracker
+-r--r--r-- 1 agent agent   8388608 Oct 19 19:07 init.ext4
+-r--r--r-- 1 agent agent 536870912 Oct 19 19:12 rootfs.ext4
+-rw-rw-r-- 1 agent agent  45064368 Oct 19 19:01 vmlinux
+drwx------ 2 agent agent      4096 Oct 19 19:12 vsock
+
+/proc/18516/root/dev:
+total 0
+drwxrwxr-x 2 agent agent      60 Oct 19 19:12 .
+drwxr-xr-x 4 agent agent     200 Oct 19 19:12 ..
+crw-rw---- 1 root  kvm   10, 232 Oct 19 19:12 kvm
+
+/proc/18516/root/vsock:
+total 4
+drwx------ 2 agent agent 4096 Oct 19 19:12 .
+drwxr-xr-x 4 agent agent  200 Oct 19 19:12 ..
+srwxrwxr-x 1 agent agent    0 Oct 19 19:12 v.sock
+srw------- 1 agent agent    0 Oct 19 19:12 v.sock_3128
+-- guest
+host uname -r: 6.12.107+deb13-cloud-amd64
+peer_cid=2
+6.1.188
+lo
+api.github.com 200
+curl: (56) CONNECT tunnel failed, response 403
+example.com 000
+exit=56
+-- egress log
+allow CONNECT api.github.com:443 HTTP/1.1
+deny CONNECT example.com:443 HTTP/1.1
+-- host listeners in the vsock dir once ready
+total 8
+drwx------ 2 agent agent 4096 Oct 19 19:12 .
+drwxrwxr-x 4 agent agent 4096 Oct 19 19:12 ..
+srwxrwxr-x 1 agent agent    0 Oct 19 19:12 v.sock
+srw------- 1 agent agent    0 Oct 19 19:12 v.sock_3128
+== SIGKILL of the launcher ends the VM
+/home/agent/proto/check-jail.sh: line 37: 18515 Killed                  "$FC/fcjail" $jailflag "$s" "$FC/firecracker" "$FC/vmlinux" "$FC/rootfs.ext4" "$FC/init.ext4" "$data" > "$s/console.log" 2> "$s/fcjail.err" < /dev/null
+vmm gone after 35 ms
+== escape probes after every restriction (FCJAIL_PROBE), with and without Landlock
+host controls: tcp 127.0.0.1:8080 200, abstract ok, kill -0 18609 ok
+-- FCJAIL_NO_LANDLOCK=unset
+fcjail: setgroups([]) before unshare: errno 1
+fcjail: landlock abi 6
+fcjail: setgroups([]) inside userns: errno 1
+probe open /dev/kvm rw: ok (5)
+probe ioctl KVM_GET_API_VERSION: ok (12)
+probe open /data.ext4 rw: ok (6)
+probe open /vmlinux ro: ok (7)
+probe connect /vsock/v.sock_3128 (the proxy): ok (0)
+probe open /vmlinux rw: errno 30 (Read-only file system (os error 30))
+probe create /x: errno 30 (Read-only file system (os error 30))
+probe open /proc/self/status: errno 2 (No such file or directory (os error 2))
+probe open /home: errno 2 (No such file or directory (os error 2))
+probe open /etc/passwd: errno 2 (No such file or directory (os error 2))
+probe create regular file /vsock/f: errno 13 (Permission denied (os error 13))
+probe mknod fifo /vsock/p: errno 13 (Permission denied (os error 13))
+probe ftruncate /data.ext4: errno 13 (Permission denied (os error 13))
+probe tcp connect 127.0.0.1:8080: errno 13 (Permission denied (os error 13))
+probe connect abstract @fcjail-probe-abstract: errno 111 (Connection refused (os error 111))
+probe kill(0 signal) host pid 18609: errno 3 (No such process (os error 3))
+probe setgroups([]): errno 1 (Operation not permitted (os error 1))
+Firecracker v1.17.0
+
+2026-10-19T19:12:52.209375305 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0
+fcjail: vmm 18631 ended, status 0
+2026/10/19 19:12:52 socat[18629] W exiting on signal 15
+-- FCJAIL_NO_LANDLOCK=1
+fcjail: setgroups([]) before unshare: errno 1
+fcjail: setgroups([]) inside userns: errno 1
+probe open /dev/kvm rw: ok (4)
+probe ioctl KVM_GET_API_VERSION: ok (12)
+probe open /data.ext4 rw: ok (5)
+probe open /vmlinux ro: ok (6)
+probe connect /vsock/v.sock_3128 (the proxy): ok (0)
+probe open /vmlinux rw: errno 30 (Read-only file system (os error 30))
+probe create /x: errno 30 (Read-only file system (os error 30))
+probe open /proc/self/status: errno 2 (No such file or directory (os error 2))
+probe open /home: errno 2 (No such file or directory (os error 2))
+probe open /etc/passwd: errno 2 (No such file or directory (os error 2))
+probe create regular file /vsock/f: ok (8)
+probe mknod fifo /vsock/p: ok (0)
+probe ftruncate /data.ext4: ok (0)
+probe tcp connect 127.0.0.1:8080: errno 101 (Network unreachable (os error 101))
+probe connect abstract @fcjail-probe-abstract: errno 111 (Connection refused (os error 111))
+probe kill(0 signal) host pid 18609: errno 3 (No such process (os error 3))
+probe setgroups([]): errno 1 (Operation not permitted (os error 1))
+Firecracker v1.17.0
+
+2026-10-19T19:12:52.220537762 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0
+fcjail: vmm 18640 ended, status 0
+2026/10/19 19:12:52 socat[18638] W exiting on signal 15
+f
+p
+== unprivileged user namespaces off (Debian knob)
+2026/10/19 19:12:52 socat[18610] W exiting on signal 15
+fcjail: setgroups([]) before unshare: errno 1
+fcjail: clone: errno 1 (Operation not permitted (os error 1))
+exit=125
+-- apparmor_restrict_unprivileged_unconfined=1
+fcjail: setgroups([]) before unshare: errno 1
+fcjail: landlock abi 6
+fcjail: setgroups([]) inside userns: errno 1
+probe ioctl KVM_GET_API_VERSION: ok (12)
+exit=0
+-- unprivileged_userns_apparmor_policy=1
+fcjail: setgroups([]) before unshare: errno 1
+fcjail: landlock abi 6
+fcjail: setgroups([]) inside userns: errno 1
+probe ioctl KVM_GET_API_VERSION: ok (12)
+exit=0
+-- apparmor_restrict_unprivileged_userns: absent on this kernel
