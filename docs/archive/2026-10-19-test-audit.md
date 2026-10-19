@@ -17,5 +17,6 @@ now attributable on any host.
 
 Lines: tests +28 / -3, binary 0.
 
-Not fixed, out of this scope: the review's cleanup helper finding in
-`box_.rs` (directory-read errors read as an empty directory).
+The review's fourth finding, `assert_left_nothing` reading directory
+errors as an empty directory, was already fixed on main by `7feaf89`: only
+`NotFound` counts as empty, and other read or entry errors fail.
