@@ -54,7 +54,8 @@ running on the host.
 | No network | No interface but loopback. One socket to the box's own proxy (vsock on Linux). |
 | Egress proxy | Default deny, allowlist by name, every decision logged. |
 | Kernel boundary | A VM per box, with its own guest kernel. |
-| No privilege | Box work runs as the host uid with an empty capability bounding set; read-only root, no setuid files. On Linux the guest's PID 1 alone stays root, to mount and unmount disks. |
+| No privilege | Box work runs as the host uid with an empty capability bounding set; read-only root, no setuid files. On Linux the guest's PID 1 alone stays root, holding only `CAP_SYS_ADMIN` after boot, to unmount disks at `down`. |
+| VMM jail | On Linux the VMM runs as the user in a jail `box up` builds: it reaches only its own VM's files. |
 | Host files | A box writes no host file. Its work leaves only by `fetch` (git refs under one remote namespace, no guest hook or config) and `export` (regular files into a new directory). |
 | Profiles | Nothing a box can write maps to a profile. Only host-side commands change one. |
 
@@ -76,10 +77,10 @@ One runtime per OS, not configurable:
 | Host | Runtime | Kernel |
 |---|---|---|
 | macOS 26+ | Apple `container` 1.5.0+ (stable) | one VM per box |
-| Linux | Firecracker, pinned (Pinned artifacts), run as the user | one VM per box, pinned guest kernel |
+| Linux | Firecracker, pinned (Pinned artifacts), run as the user in pinfold's VMM jail | one VM per box, pinned guest kernel |
 
 Anything else is refused: podman or docker as a box runtime, Firecracker
-as root or under its jailer. Nothing warns at run time; `doctor` reports
+as root, under its own jailer or outside pinfold's VMM jail. Nothing warns at run time; `doctor` reports
 the runtime. On Linux, rootless podman 6.1.4+ builds images and runs no
 box.
 
@@ -87,8 +88,9 @@ Preflight refuses box startup on older, prerelease or unrecognized runtime
 versions. Inventory and cleanup remain available on older versions.
 
 Linux preflight requires `/dev/kvm` readable and writable by the user (the
-`kvm` group), `mkfs.ext4` (e2fsprogs), and podman with `rootless=true` for
-builds.
+`kvm` group), unprivileged user namespaces, Landlock, `mkfs.ext4`
+(e2fsprogs), and podman with `rootless=true` for builds. Without user
+namespaces or Landlock, `up` is refused; there is no unjailed fallback.
 
 ## Box
 
@@ -108,8 +110,13 @@ builds.
 4. Run the box with no network interface and the socket carried in
    (Transport). PID 1 is `pinfold init`.
 5. `pinfold init` relays `127.0.0.1:3128` to the socket, runs box work as
-   the host uid, reaps children, and reports ready. On Linux it mounts the
-   disks first; on Apple the runtime does.
+   the host uid, reaps children, and reports ready (on Linux its exec
+   service does the relay, exec and ready report). On Linux it mounts the
+   disks first; on Apple the runtime does. Disks attach only here, at
+   boot; nothing attaches or detaches one later. On Linux PID 1 then
+   forks the exec service as the host uid with every capability set
+   empty and keeps only `CAP_SYS_ADMIN` itself. PID 1 then only reaps
+   and answers step 8's unmount; it handles no workload bytes.
 6. Apple only: wait until the runtime lists the box running, including
    without egress. With a socket, one transient root exec makes it connectable.
 7. `exec` work runs with `HTTPS_PROXY` and `http_proxy` set to
@@ -457,10 +464,32 @@ run ...` (or `events`); it may never have existed or have been removed
 - Firecracker adds: no network device; the root disk and init disk
   read-only; `vcpu_count` and `mem_size_mib` from `cpus` and `memory`; no
   swap; a pids cap in the guest; an empty `/etc/resolv.conf`; Firecracker's
-  own seccomp filters. `box up` runs the VMM as the user with a
-  parent-death signal, so the VM ends with its owner.
+  own seccomp filters. `box up` runs the VMM as the user in the VMM jail
+  with a parent-death signal, so the VM ends with its owner.
+- No secret value in a kernel command line, a VM configuration, an image
+  layer, a disk or a persisted request. On Linux the spec's env reaches
+  the guest only over the exec connection, after boot, and the exec
+  service holds it in memory.
 
 Runtime command lines and VM configurations are built as data.
+
+### VMM jail
+
+On Linux `box up` builds each VMM's jail itself, with no privileged helper,
+before it execs Firecracker:
+- new user, mount, PID, network, IPC and UTS namespaces; only the host uid
+  and gid map, each to itself;
+- `pivot_root` into an empty tmpfs holding only the Firecracker binary,
+  the guest kernel, the root and init disks (read-only binds), the box's
+  disks, `/dev/kvm`, the vsock socket directory and the VM configuration
+  file (Firecracker runs with `--no-api`); the old root is detached;
+- a capability bounding set of zero, `no_new_privs`, supplementary
+  groups reduced to the one that grants `/dev/kvm`, and a Landlock ruleset allowing only those paths. Firecracker's
+  own seccomp filters then apply.
+
+A compromised VMM reaches only that tree, as the user: no home, no other
+box's disks or socket, no host network or abstract socket, no host
+process. Getting further needs a host kernel bug.
 
 ### Process supervision
 
@@ -484,8 +513,11 @@ Runtime command lines and VM configurations are built as data.
 
 - **Firecracker:** the socket is the VM's vsock path for host port 3128,
   mode 0600 in a 0700 dir; a guest connection to CID 2 port 3128 reaches
-  it. No other host port has a listener once the box is ready. Exec runs
-  over the VM's own vsock socket, in the same directory.
+  it. No other host port has a listener once the box is ready, so
+  Firecracker resets a guest connection to CID 2 on any other port. Exec
+  and the unmount request run over the VM's own vsock socket, in the same
+  directory, and only the host connects: the guest's listeners accept
+  peer CID 2 alone and refuse any other peer with a `peer` frame.
 - **Apple `container`:** `--ssh` with `SSH_AUTH_SOCK` set to the proxy socket
   for that one `container run`. It appears at
   `/var/host-services/ssh-auth.sock`, root-owned and not connectable by the
@@ -1121,12 +1153,12 @@ The two slow gates run separately.
 
 | # | Guarantee | Shown by |
 |---|---|---|
-| 1 | No network but loopback | Inside: only `lo`; `1.1.1.1` unreachable. Control: the fixture answers through a route. |
+| 1 | No network but loopback | Inside: only `lo`; `1.1.1.1` unreachable. Control: the fixture answers through a route. On Linux, from inside, a vsock connection to CID 2 on the exec port and on an unused port is reset at once, not timed out; control: CID 2 port 3128 reaches the proxy. |
 | 2 | Only allowlisted hosts get through | `api.github.com` answers. `example.com` gets a proxy 403, logged "not allowlisted"; `ready` names that log's path. |
 | 3 | The proxy refuses the tricks | Each trick has a positive control: IP literal, loopback resolution, SNI mismatch, CONNECT to a route and ambiguous Content-Length framing. A raw valid Content-Length POST delivers its body to the same host fixture. |
 | 4 | A route reaches exactly one host service | A route reaches the fixture and logs method, queryless path and upstream status. Replacing its writable audit log with a directory makes the next request stop the owner with audit-log, exit 1 and no runtime box. |
-| 5 | Nothing can gain privileges | `CapBnd` 0 and the host uid in exec'd processes; no setuid or setgid files; rootfs not writable; init's credentials are the host uid on Apple and root on Linux. |
-| 6 | The environment is exactly the spec | Unprefixed host proxy variables stay out; PINFOLD_ENV_SECRET arrives without entering host argv. Guest PATH, HOME, runtime-selection variables, multiline values and a transport-prefixed name arrive exactly while local list/exec/down still manage the box. Always-applied values win. |
+| 5 | Nothing can gain privileges | `CapBnd` 0 and the host uid in exec'd processes; no setuid or setgid files; rootfs not writable; init's credentials are the host uid on Apple; on Linux PID 1 is root with `CapBnd` exactly `CAP_SYS_ADMIN`, and the exec service is the host uid with every capability set empty. |
+| 6 | The environment is exactly the spec | Unprefixed host proxy variables stay out; PINFOLD_ENV_SECRET arrives without entering host argv; on Linux it is in neither `/proc/cmdline`, the VM configuration, the init disk nor any disk image. Guest PATH, HOME, runtime-selection variables, multiline values and a transport-prefixed name arrive exactly while local list/exec/down still manage the box. Always-applied values win. |
 | 7 | No egress means no way out | Without `egress`, nothing gets out, not even through a route. |
 | 8 | Losing the owner fails closed | After SIGKILL, egress fails closed; another XDG root sees the owner dead even with a misleading live pid file, prunes the box and reuses its name. An abandoned partial claim is reclaimable. |
 | 9 | The lifecycle works for a caller | Without egress, `exec` immediately after `ready` streams and returns the exit code, honors explicit workdir and tty, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; a held runtime inventory stalls a fresh caller's listing, which returns exit 1 and `runtime-timeout` with no inventory within 20 seconds, leaves no runtime waiter, and preserves the live box and ownership for a successful listing after release; SIGINT and SIGTERM interrupt listings blocked on that lock with exit 128 plus the signal number, no inventory and no surviving runtime waiter; `down` removes even while attached output is active; an owner completes teardown while its requester is stopped, and that requester succeeds after resuming with the inventory held, without another inventory; closing `up`'s stdin tears the box down with reason `stdin-closed`. A closed readiness output pipe returns exit 1 after removing the runtime box and its state; the same name can start again. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box, an empty name or a flag-like name (`--filter=…`) exits 0, prints nothing and leaves live boxes alone; a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. A SIGSTOP owner keeps its claim after down times out; a second XDG root waits the ten-second claim deadline before name-in-use and cannot replace it until acknowledged teardown. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. A cold harness download holds startup while its image tag moves; startup fails as `image-changed`, and the stable replacement then starts. Pre-ready cancellation with a host bookkeeping permission failure still yields `down`/`signal`, with recoverable state and successful name reuse. |
@@ -1156,7 +1188,7 @@ The two slow gates run separately.
 | 34 | Blocked route responses release the upstream | A normal routed response succeeds. A guest that keeps its upload open but stops reading causes the host fixture connection to close after the production write deadline, while the guest holder remains alive. Slow gate only. |
 | 35 | Durable recovery preserves boxed execution | The host fixture refuses authority overlap before work, then observes a successful boxed command, a competing checkpoint writer refused without disrupting its owner, a mutation followed by SIGKILL before tool-result commit, a new box generation before recovery, no unsafe replay, and whole-box cancellation including a background child. Standalone prototype gate on macOS and Linux x64, and arm64 once a KVM host runs it. |
 | 36 | CONNECT tunnels share activity | Initially idle TLS tunnels start at staggered times and expire after the production idle interval. Real TLS tunnels carry upload-only and download-only traffic for longer than the production idle deadline. Neither closes while bytes flow; both then close after a full idle interval with `idle timeout` in the egress log while the guest holders remain alive. Standalone Linux slow gate. |
-| 37 | Each box has its own kernel | Inside, `uname -r` and `/proc/version` differ from the host's, on both runtimes; on Linux the VMM's process is a child of `box up` and runs as the user, and SIGKILL of `box up` ends the VM. |
+| 37 | Each box has its own kernel | Inside, `uname -r` and `/proc/version` differ from the host's, on both runtimes; on Linux the VMM's process is a child of `box up` and runs as the user with `CapBnd` 0, `NoNewPrivs` 1 and exactly one supplementary group, the one owning `/dev/kvm`; its user, mount, PID and network namespaces differ from `box up`'s, its mountinfo holds only the jail's entries and not the user's home, and SIGKILL of `box up` ends the VM. |
 | 38 | Each run's history is its own | Two `up`s of one name in sequence; the first makes an allowed and a refused request before `down`. The second's `ready.run_id` equals its `dev.pinfold.generation` label and differs from the first's, and its `ready.egress_log` is empty before its first request. After the second makes its own request, `events` for the first run still returns exactly the first run's two decisions. Each `down` names its own run_id. |
 | 39 | The launch record is the applied policy | A pi box starts from a trusted `.pinfold.toml` with an allow list, a host-service route and an injecting route whose header comes from a host variable, plus `PINFOLD_ENV_SECRET`. While it runs, the file's allow list changes and is not re-allowed: `config` reports the change, but `inspect` still reports the started allow list, route kinds and targets, env names, cpus and memory, equal to what the test wrote, and the box's next request is decided by the started list. No file under the state root holds the secret or the header value. |
 | 40 | A run's end is recorded apart from its start | When `box down` returns, `inspect` already reports terminal `signal`. An init killed from the host runtime gives terminal `exited` whose detail names exit status 137. An owner SIGKILLed after `ready` leaves the launch record `available` and terminal `not-observed`, also after `box prune` removes its box. |
@@ -1185,7 +1217,8 @@ lives in `cli.rs`.
 | `x86_64-unknown-linux-musl` | Linux x64 CLI; init on x64 hosts |
 
 Dependencies: `tokio`, `httparse`, `serde`, `serde_json`, `sha2`, `toml`, `nix`
-(with `socket` for vsock),
+(with `socket` for vsock, `sched` and `mount` for the VMM jail; Landlock
+through nix's `libc` syscalls),
 and the TLS client for injecting routes: `rustls` (ring) with
 `rustls-native-certs` for the host's roots.
 SNI comes from a small ClientHello parser. The Public Suffix List is
@@ -1212,3 +1245,20 @@ data, `crates/pinfold/public_suffix_list.dat`, embedded with `include_str!`.
 - Continuous `push`: whether `pinfold pi` should watch the checkout and
   push host edits as they happen.
 - More than one pi box per project: each would need its own project disk.
+- The VMM jail is untested: neither prototype ran it (#111 ran
+  Firecracker unjailed and under its jailer as root). Whether the hosted
+  runner, yard-sthlm's LXC and Debian allow unprivileged user namespaces
+  rides on the same throwaway workflow as `/dev/kvm`.
+- Whether the pinned guest kernel has vsock loopback. If it does, row 1
+  adds a box connection to its own exec port, refused as `peer`.
+- Before Firecracker replaces podman, one real caller workflow gates it:
+  start from dirty and staged work, make a real edit, build and test, keep
+  state across `down` and `up`, export for review, and apply while the
+  host edits a conflicting file. Setup, ready, work, export and teardown
+  are measured apart.
+- pi's apply: `fetch` and the user's own merge is git's apply. A
+  file-level apply into a live checkout is unspecified; plain copying
+  loses host edits (`2026-10-19-vm-disk-design.md`).
+- Browser previews: nothing here precludes a later host-loopback port
+  forwarded to one named box's port over that box's vsock socket,
+  host-initiated and ending with the box.

@@ -15,7 +15,7 @@ Its only way out is its own allowlisting proxy.
 | Host | Runtime |
 |---|---|
 | macOS 26+ | Apple `container` 1.5.0+ (stable) |
-| Linux | `/dev/kvm` for the user (the `kvm` group), e2fsprogs, and rootless podman 6.1.4+ (stable) for image builds; pinfold fetches its pinned Firecracker |
+| Linux | `/dev/kvm` for the user (the `kvm` group), unprivileged user namespaces and Landlock, e2fsprogs, and rootless podman 6.1.4+ (stable) for image builds; pinfold fetches its pinned Firecracker |
 
 ## Install
 
