@@ -91,10 +91,19 @@ that stops a running box. Run records are diagnostics, not a control.
 - Records never delay or alter an audit append. Eviction never touches a
   live run, so the quota cannot truncate an active audit log.
 
+## Launch record timing
+
+The record is written after the box accepts `exec` and immediately
+before `ready`. Writing it at the claim would leave a run directory for
+starts that end in `image-changed`, a runtime start failure or a late
+`mount-alias` refusal, contradicting "`failed` and `refused` retain no
+run" and guarantee 17's "no state". Failed-start cleanup removes the
+directory.
+
 ## Launch record fields
 
 The rule is closed: a field is a value the box spec carries or that
-`ready`, `list` or `artifacts` already prints. Never env values, header
+`ready`, `list`, `artifacts` or `doctor` already prints. Never env values, header
 names, values or prefixes, login tokens, argv or command output. Route
 targets (`host:port` or origin) are included; the prototype left them out
 from caution, but they are not secret and they explain a route's 502.
@@ -119,6 +128,9 @@ For the release notes of the release that implements this.
   age out after 14 days.
 - `ready` gains `run_id`.
 - `down` gains `run_id` (null when `up` ended before `ready`).
+- Terminal records use the `down` reasons plus `harness-exited`, a
+  terminal-record-only token for a pi box whose harness ended. It is not
+  a `down` reason.
 - New commands `box inspect RUN` and `box events RUN [--limit N] [--after
   CURSOR]`, each one JSON object. Exit 0 on an answer, 1 on a malformed
   argument, 3 on a run with no records.
@@ -143,6 +155,13 @@ image commands, exit codes of existing commands, or stdin ownership.
 4. Write-failure policy: launch record fails the start (recommended) or is
    best effort.
 5. The two host-side seams in guarantee 42.
+6. Legacy `egress/<box>.jsonl` logs. The spec lets them age out under the
+   14-day rule, which is a compatibility path the repository rules
+   otherwise forbid. The alternative is to remove the legacy directory at
+   the implementing release's first maintenance pass, losing under 14
+   days of audit history for runs before the upgrade.
+7. Pi box terminal reason: the new token `harness-exited` (above), rather
+   than reusing `exited`, which means the box's init ended.
 
 ## Future work (stage 3, not specified here)
 

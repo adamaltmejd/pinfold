@@ -363,15 +363,16 @@ A run is one `up` from `ready` to its end. Its records live in
 they outlast teardown. The directory is 0700 and its files 0600, created
 without following symlinks. `refused` and `failed` retain no run.
 
-The launch record is written once, atomically, after the claim and before
-`ready`:
+The launch record is written once, atomically, after the box accepts
+`exec` (Lifecycle step 5) and immediately before `ready`. Failed-start
+cleanup removes the run's directory:
 
 ```json
 {"run_id":ID,"box":NAME,"time":RFC3339,"pinfold":VERSION,"runtime":{"name":"apple"|"podman","version":V},"image":{"id":ID,"ref":REF},"profile":NAME|null,"harness":{"name":NAME,"version":V}|null,"labels":{…},"mounts":[{"host":PATH,"guest":PATH,"readonly":BOOL}],"env":[NAME,…],"egress":{"allow":[…],"routes":{NAME:{"kind":"host-service"|"injecting"|"login","to":TARGET}}}|null,"cpus":N,"memory":M}
 ```
 
-Every field is a value the box spec carries or that `ready`, `list` or
-`artifacts` already prints. It never holds an env value, a header name,
+Every field is a value the box spec carries or that `ready`, `list`,
+`artifacts` or `doctor` already prints. It never holds an env value, a header name,
 value or prefix, a login token, argv or command output. `env` lists names
 only. A route's `to` is its `host:port` or origin. The record is what this
 run applied at start; a later change to config or trust leaves it as it is.
@@ -383,7 +384,9 @@ acknowledges `box down` and before `up` prints `down`:
 {"run_id":ID,"time":RFC3339,"reason":REASON,"detail":TEXT|null}
 ```
 
-`reason` and `detail` are the `down` line's. An owner that dies without
+`reason` and `detail` are the `down` line's. A pi box, which prints no
+`down`, adds `harness-exited` for its harness ending, with its exit status
+in `detail`. An owner that dies without
 teardown writes none, and nothing infers one later: `prune` writes no
 terminal record.
 
@@ -415,9 +418,9 @@ incomplete final line is not returned.
 `STATE` is `available`, `not-observed` (no terminal record: the run is live,
 or its owner died without one), `not-applicable` (no egress), or
 `unavailable` (unreadable, malformed, or over 64 KiB). Neither query
-reports liveness; `list` does.
+reports liveness; `list` does. Run records never enter a box.
 
-Both queries skip daily maintenance, take no lock, start no runtime client
+Both queries skip daily maintenance, take no lifetime lock, start no runtime client
 and read only the run's directory, so they answer with no runtime and while
 the runtime stalls. A RUN that is not 64 lowercase hex characters, a
 `--limit` out of range, or a cursor from another run exits 1 before any
@@ -876,10 +879,10 @@ measurement does not authorize a later deletion.
   `protected-path-invalid`.
 - **herdr:** no herdr socket. The TTY passes through, so screen detection
   works, and the shim sets `HERDR_AGENT=pi`.
-- **After a run:** when the box ends for a reason other than pi exiting or
-  a signal to `pinfold pi` (an `audit-log` stop, the box's init exiting),
-  `pinfold pi` prints that reason and `pinfold box inspect <run_id>` on
-  stderr after teardown. The box gets no access to run records.
+- **After a run:** when the box ends for a reason other than
+  `harness-exited` or `signal` (an `audit-log` stop, the box's init
+  exiting), `pinfold pi` prints that reason and `pinfold box inspect
+  <run_id>` on stderr after teardown.
 - **Attach:** `pinfold attach [--box NAME] [cmd…]` execs bash (or cmd) in
   this project's running pi box. It fails if none is running and asks for a
   box name if several are; `--box NAME` selects one. Its processes end with
@@ -1067,7 +1070,7 @@ The two slow gates run separately.
 | 37 | Linux boxes apply their own seccomp profile | Two startups read different host profiles before their runtime clients wait on the real image-store lock. Releasing the lock preserves the first box's allowed syscall and the second box's explicit EPERM for the same syscall. A benign syscall succeeds in the second box. |
 | 38 | Each run's history is its own | Two `up`s of one name in sequence; the first makes an allowed and a refused request before `down`. The second's `ready.run_id` equals its `dev.pinfold.generation` label and differs from the first's, and its `ready.egress_log` is empty before its first request. After the second makes its own request, `events` for the first run still returns exactly the first run's two decisions. Each `down` names its own run_id. |
 | 39 | The launch record is the applied policy | A pi box starts from a trusted `.pinfold.toml` with an allow list, a host-service route and an injecting route whose header comes from a host variable, plus `PINFOLD_ENV_SECRET`. While it runs, the file's allow list changes and is not re-allowed: `config` reports the change, but `inspect` still reports the started allow list, route kinds and targets, env names, cpus and memory, equal to what the test wrote, and the box's next request is decided by the started list. No file under the state root holds the secret or the header value. |
-| 40 | A run's end is recorded apart from its start | When `box down` returns, `inspect` already reports terminal `signal`. An init killed from the host runtime gives terminal `exited` with the `down` line's detail. An owner SIGKILLed after `ready` leaves the launch record `available` and terminal `not-observed`, also after `box prune` removes its box. |
+| 40 | A run's end is recorded apart from its start | When `box down` returns, `inspect` already reports terminal `signal`. An init killed from the host runtime gives terminal `exited` whose detail names exit status 137. An owner SIGKILLed after `ready` leaves the launch record `available` and terminal `not-observed`, also after `box prune` removes its box. |
 | 41 | Run queries are bounded and need no runtime | With no runtime on `PATH`, and on Linux while a real image-store lock holds a concurrent `box list` blocked, `inspect` and `events` answer for a finished run. A run with 150 decisions, paged at the default limit while its box keeps appending, returns every line once, in order, across `next`. A no-egress run reports egress `not-applicable`. A malformed run id, `--limit 101` and another run's cursor exit 1; an unknown run id exits 3. |
 | 42 | Run records are retained within bounds | `clean` removes an inactive run whose directory is aged 15 days on the host (`inspect` exits 3), while a live run aged the same stays `available` and its log keeps appending. With inactive runs padded on the host past 128 MiB in valid decision lines, `clean` removes the oldest inactive run and keeps the newest. |
 
