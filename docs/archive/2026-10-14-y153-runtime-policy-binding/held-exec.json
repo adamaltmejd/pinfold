@@ -1,0 +1,42 @@
+{
+  "purpose": "Bind policy record to one real held exec, not a production gate",
+  "observer_sha256": "4b5f3450d5204b3a64a6ae66cf2cf3d9ca339b82c0646e6496ce47f6ac8ffdad",
+  "owner_pid": 562416,
+  "pinfold_exec_pid": 562516,
+  "pinfold_exec_sha256": "7d1a82ad1496fc855ff19c706f3a41e83419c7ba500bd6288ba0d63c0747a27f",
+  "container_id": "431722ea07050341983ae175a070153683e67357a50d8d652f0b534a07ceadc9",
+  "container_pid": 562504,
+  "generation": "ef53d49c7245dbdfd6adc9111076fc99e7e498d00a94640496da773d712e0893",
+  "started_at": "2026-10-14T15:59:20.407693392+02:00",
+  "exec_session": "f07af9a30a2b08e9d8a60eb6f78693d5dac5d6d59ab00e1e40671c130b112b09",
+  "host_exec_pid": 562541,
+  "guest_observation": {
+    "guest_pid": 2,
+    "getppid": 0,
+    "errno": 0,
+    "seccomp": 2,
+    "no_new_privileges": 1
+  },
+  "host_process_status": {
+    "Uid": "1000\t1000\t1000\t1000",
+    "NSpid": "562541\t2",
+    "CapEff": "0000000000000000",
+    "CapBnd": "0000000000000000",
+    "NoNewPrivs": "1",
+    "Seccomp": "2",
+    "Seccomp_filters": "2"
+  },
+  "live_observer_sha256": "4b5f3450d5204b3a64a6ae66cf2cf3d9ca339b82c0646e6496ce47f6ac8ffdad",
+  "bpf_sha256": "4e2fdd050f4f738a8342156dc79de24b6cdb28ddd0d9f3151ea63a1286e870c9",
+  "seccomp_options": {},
+  "notification_annotations_present": [],
+  "host_receiver_present": false,
+  "exec_exit": 42,
+  "lifetime_and_bpf_unchanged": true,
+  "status": "completed",
+  "cleanup": {
+    "owner_exit": 0,
+    "down_observed": true,
+    "exists_exit": 1
+  }
+}

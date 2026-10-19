@@ -1,0 +1,241 @@
+{
+  "purpose": "Disposable policy-binding investigation; no production qualification",
+  "observations": [
+    {
+      "label": "baseline",
+      "name": "codex-y153-baseline",
+      "owner_pid": 561391,
+      "container_id": "d49b2fae3d5b86c1642e29234eb6550b5f26b0c02ad9cfc3c34aefe3372c93eb",
+      "container_pid": 561479,
+      "started_at": "2026-10-14T15:56:47.408502367+02:00",
+      "restart_count": 0,
+      "generation": "5bfcc139da0025a83ae50e5fededec25fbcd502aecbbb7e384add6066291f8c3",
+      "image_id": "c5fc428fad13dbabcee7880a41a2715d48d17ee15b041aad3b1c3858b126e978",
+      "oci_seccomp_sha256": "613419814ef0d5ec3d3e0986108ef8211747eebb8e9d01c33203d27fc02288e2",
+      "oci_hooks_present": false,
+      "crun_state_dir": "/run/user/1000/crun/d49b2fae3d5b86c1642e29234eb6550b5f26b0c02ad9cfc3c34aefe3372c93eb",
+      "crun_state_files": [
+        "config.json",
+        "seccomp.bpf",
+        "status"
+      ],
+      "bpf_sha256": "4e2fdd050f4f738a8342156dc79de24b6cdb28ddd0d9f3151ea63a1286e870c9",
+      "bpf_bytes": 9360,
+      "crun_no_new_privileges": true,
+      "crun_seccomp_options": {},
+      "crun_notification_annotations_present": [],
+      "exec_exit": 0,
+      "syscalls": {
+        "getppid": 0,
+        "getppid_errno": 0,
+        "unshare": -1,
+        "unshare_errno": 1,
+        "uid": 1000
+      }
+    },
+    {
+      "label": "restricted",
+      "name": "codex-y153-restricted",
+      "owner_pid": 561534,
+      "container_id": "4730aeada0af247d6564da013ef859b1e8b6feea30b56dc04df077e236eefe6f",
+      "container_pid": 561596,
+      "started_at": "2026-10-14T15:56:48.217793987+02:00",
+      "restart_count": 0,
+      "generation": "199af5a3bd1cd2b8c9e995b9bed3ab6d711d840f80647ee0864deeb3e3fabd05",
+      "image_id": "c5fc428fad13dbabcee7880a41a2715d48d17ee15b041aad3b1c3858b126e978",
+      "oci_seccomp_sha256": "3875444361cb6d8f6dfb2bc3dd5d99e6ed6c0dca17601e51b20c8fa5ec43ded1",
+      "oci_hooks_present": false,
+      "crun_state_dir": "/run/user/1000/crun/4730aeada0af247d6564da013ef859b1e8b6feea30b56dc04df077e236eefe6f",
+      "crun_state_files": [
+        "config.json",
+        "seccomp.bpf",
+        "status"
+      ],
+      "bpf_sha256": "c8bc43e7184e2b481bfabe406595b8f62437b691ab688593598d830c86e5ed31",
+      "bpf_bytes": 9360,
+      "crun_no_new_privileges": true,
+      "crun_seccomp_options": {},
+      "crun_notification_annotations_present": [],
+      "exec_exit": 0,
+      "syscalls": {
+        "getppid": -1,
+        "getppid_errno": 1,
+        "unshare": -1,
+        "unshare_errno": 1,
+        "uid": 1000
+      }
+    },
+    {
+      "label": "baseline-after-host-change",
+      "name": "codex-y153-baseline",
+      "owner_pid": 561391,
+      "container_id": "d49b2fae3d5b86c1642e29234eb6550b5f26b0c02ad9cfc3c34aefe3372c93eb",
+      "container_pid": 561479,
+      "started_at": "2026-10-14T15:56:47.408502367+02:00",
+      "restart_count": 0,
+      "generation": "5bfcc139da0025a83ae50e5fededec25fbcd502aecbbb7e384add6066291f8c3",
+      "image_id": "c5fc428fad13dbabcee7880a41a2715d48d17ee15b041aad3b1c3858b126e978",
+      "oci_seccomp_sha256": "613419814ef0d5ec3d3e0986108ef8211747eebb8e9d01c33203d27fc02288e2",
+      "oci_hooks_present": false,
+      "crun_state_dir": "/run/user/1000/crun/d49b2fae3d5b86c1642e29234eb6550b5f26b0c02ad9cfc3c34aefe3372c93eb",
+      "crun_state_files": [
+        "config.json",
+        "seccomp.bpf",
+        "status"
+      ],
+      "bpf_sha256": "4e2fdd050f4f738a8342156dc79de24b6cdb28ddd0d9f3151ea63a1286e870c9",
+      "bpf_bytes": 9360,
+      "crun_no_new_privileges": true,
+      "crun_seccomp_options": {},
+      "crun_notification_annotations_present": [],
+      "exec_exit": 0,
+      "syscalls": {
+        "getppid": 0,
+        "getppid_errno": 0,
+        "unshare": -1,
+        "unshare_errno": 1,
+        "uid": 1000
+      }
+    },
+    {
+      "label": "same-name-replacement",
+      "name": "codex-y153-baseline",
+      "owner_pid": 561731,
+      "container_id": "2256ad1d9fdff229dc760baab2c87d3416aa202f209a33e44d9ffb063668710d",
+      "container_pid": 561794,
+      "started_at": "2026-10-14T15:56:49.585601534+02:00",
+      "restart_count": 0,
+      "generation": "a1d81575da173ea8e4d9bb1f385fc0d198342961a9be19a52eb050864b3360de",
+      "image_id": "c5fc428fad13dbabcee7880a41a2715d48d17ee15b041aad3b1c3858b126e978",
+      "oci_seccomp_sha256": "3875444361cb6d8f6dfb2bc3dd5d99e6ed6c0dca17601e51b20c8fa5ec43ded1",
+      "oci_hooks_present": false,
+      "crun_state_dir": "/run/user/1000/crun/2256ad1d9fdff229dc760baab2c87d3416aa202f209a33e44d9ffb063668710d",
+      "crun_state_files": [
+        "config.json",
+        "seccomp.bpf",
+        "status"
+      ],
+      "bpf_sha256": "c8bc43e7184e2b481bfabe406595b8f62437b691ab688593598d830c86e5ed31",
+      "bpf_bytes": 9360,
+      "crun_no_new_privileges": true,
+      "crun_seccomp_options": {},
+      "crun_notification_annotations_present": [],
+      "exec_exit": 0,
+      "syscalls": {
+        "getppid": -1,
+        "getppid_errno": 1,
+        "unshare": -1,
+        "unshare_errno": 1,
+        "uid": 1000
+      }
+    },
+    {
+      "label": "concurrent-a",
+      "name": "codex-y153-concurrent-a",
+      "owner_pid": 561914,
+      "container_id": "b38568df8774c5e17ccf78e434db966950fe4d94c5f605a9198845406c2a3c9c",
+      "container_pid": 562039,
+      "started_at": "2026-10-14T15:56:50.875538584+02:00",
+      "restart_count": 0,
+      "generation": "6d2b7a3da8d65fe87535d86a04afced750a5e1a489509e089b56d682819f1307",
+      "image_id": "c5fc428fad13dbabcee7880a41a2715d48d17ee15b041aad3b1c3858b126e978",
+      "oci_seccomp_sha256": "613419814ef0d5ec3d3e0986108ef8211747eebb8e9d01c33203d27fc02288e2",
+      "oci_hooks_present": false,
+      "crun_state_dir": "/run/user/1000/crun/b38568df8774c5e17ccf78e434db966950fe4d94c5f605a9198845406c2a3c9c",
+      "crun_state_files": [
+        "config.json",
+        "seccomp.bpf",
+        "status"
+      ],
+      "bpf_sha256": "4e2fdd050f4f738a8342156dc79de24b6cdb28ddd0d9f3151ea63a1286e870c9",
+      "bpf_bytes": 9360,
+      "crun_no_new_privileges": true,
+      "crun_seccomp_options": {},
+      "crun_notification_annotations_present": [],
+      "exec_exit": 0,
+      "syscalls": {
+        "getppid": 0,
+        "getppid_errno": 0,
+        "unshare": -1,
+        "unshare_errno": 1,
+        "uid": 1000
+      }
+    },
+    {
+      "label": "concurrent-b",
+      "name": "codex-y153-concurrent-b",
+      "owner_pid": 561915,
+      "container_id": "3dfd6179fafb94f3790776ea2fd5fce9aacb7db68d823257c0d5c0377a69a997",
+      "container_pid": 562032,
+      "started_at": "2026-10-14T15:56:50.860610636+02:00",
+      "restart_count": 0,
+      "generation": "15c1eeb2ffd1db19f690a4cc94ce1113f761c47814fd0b17ffe241c20e2cbf17",
+      "image_id": "c5fc428fad13dbabcee7880a41a2715d48d17ee15b041aad3b1c3858b126e978",
+      "oci_seccomp_sha256": "613419814ef0d5ec3d3e0986108ef8211747eebb8e9d01c33203d27fc02288e2",
+      "oci_hooks_present": false,
+      "crun_state_dir": "/run/user/1000/crun/3dfd6179fafb94f3790776ea2fd5fce9aacb7db68d823257c0d5c0377a69a997",
+      "crun_state_files": [
+        "config.json",
+        "seccomp.bpf",
+        "status"
+      ],
+      "bpf_sha256": "4e2fdd050f4f738a8342156dc79de24b6cdb28ddd0d9f3151ea63a1286e870c9",
+      "bpf_bytes": 9360,
+      "crun_no_new_privileges": true,
+      "crun_seccomp_options": {},
+      "crun_notification_annotations_present": [],
+      "exec_exit": 0,
+      "syscalls": {
+        "getppid": 0,
+        "getppid_errno": 0,
+        "unshare": -1,
+        "unshare_errno": 1,
+        "uid": 1000
+      }
+    }
+  ],
+  "cleanup": [
+    {
+      "name": "codex-y153-baseline",
+      "owner_exit": 0,
+      "down_observed": true,
+      "exists_exit": 1
+    },
+    {
+      "name": "codex-y153-baseline",
+      "owner_exit": 0,
+      "down_observed": true,
+      "exists_exit": 1
+    },
+    {
+      "name": "codex-y153-restricted",
+      "owner_exit": 0,
+      "down_observed": true,
+      "exists_exit": 1
+    },
+    {
+      "name": "codex-y153-concurrent-a",
+      "owner_exit": 0,
+      "down_observed": true,
+      "exists_exit": 1
+    },
+    {
+      "name": "codex-y153-concurrent-b",
+      "owner_exit": 0,
+      "down_observed": true,
+      "exists_exit": 1
+    }
+  ],
+  "binary_sha256": {
+    "/home/yard/.local/bin/pinfold": "7d1a82ad1496fc855ff19c706f3a41e83419c7ba500bd6288ba0d63c0747a27f",
+    "/usr/local/bin/podman": "11326740634a0929f438256c4e3ff90273c4399a279c68e9fde02be25f75c2a5",
+    "/usr/bin/crun": "8c6226f9ef4f0607e3e81bcb8ba7156df93400f434b38ecd63eb38920ff3cb6b"
+  },
+  "concurrent_requested_policy_matches": {
+    "a": true,
+    "b": false
+  },
+  "all_observed_uid_and_namespace_controls_preserved": true,
+  "status": "completed",
+  "binary_unchanged": true
+}

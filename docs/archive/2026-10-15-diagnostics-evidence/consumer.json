@@ -1,0 +1,163 @@
+{
+  "ready": {
+    "box": "pd-consumer",
+    "egress_log": null,
+    "event": "ready",
+    "image": {
+      "id": "d44cb091aee72c3630d5fcf1077a0ca47ca422c0df718a5a7fc909235ef75c98",
+      "ref": "pinfold/profile-default:latest"
+    },
+    "labels": {
+      "dev.pinfold.base": "sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f",
+      "dev.pinfold.containerfile-sha256": "3d605a9d37c5dcf676d5d312859b736de9ab6b94fe8be164ba4eba3a54ad003f",
+      "dev.pinfold.generation": "5fb24a37a1d280fc3d48f1f47223aca43334adeb2d3cc7186e973a2750c1334f",
+      "dev.pinfold.owner": "27110",
+      "dev.pinfold.profile": "default",
+      "dev.pinfold.project": ""
+    },
+    "owner": 27110
+  },
+  "largeOutput": {
+    "code": 3,
+    "stdoutBytesDelivered": 200000,
+    "stderrBytesDelivered": 3,
+    "retained": 65536,
+    "truncated": true,
+    "stderr": {
+      "text": "err",
+      "truncated": false
+    }
+  },
+  "cancelObserver": {
+    "code": null,
+    "signal": "SIGTERM",
+    "stdout": {
+      "text": "",
+      "truncated": false
+    },
+    "stderr": {
+      "text": "",
+      "truncated": false
+    }
+  },
+  "afterObserver": {
+    "code": 0,
+    "signal": null,
+    "stdout": {
+      "text": "still-alive",
+      "truncated": false
+    },
+    "stderr": {
+      "text": "",
+      "truncated": false
+    }
+  },
+  "complete": {
+    "events": [
+      {
+        "box": "pd-consumer",
+        "egress_log": null,
+        "event": "ready",
+        "image": {
+          "id": "d44cb091aee72c3630d5fcf1077a0ca47ca422c0df718a5a7fc909235ef75c98",
+          "ref": "pinfold/profile-default:latest"
+        },
+        "labels": {
+          "dev.pinfold.base": "sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f",
+          "dev.pinfold.containerfile-sha256": "3d605a9d37c5dcf676d5d312859b736de9ab6b94fe8be164ba4eba3a54ad003f",
+          "dev.pinfold.generation": "5fb24a37a1d280fc3d48f1f47223aca43334adeb2d3cc7186e973a2750c1334f",
+          "dev.pinfold.owner": "27110",
+          "dev.pinfold.profile": "default",
+          "dev.pinfold.project": ""
+        },
+        "owner": 27110
+      },
+      {
+        "box": "pd-consumer",
+        "event": "down",
+        "reason": "signal"
+      }
+    ],
+    "eventsTruncated": false,
+    "stderr": {
+      "text": "",
+      "truncated": false
+    },
+    "protocolErrors": [],
+    "ownerEnd": {
+      "code": 0,
+      "signal": null,
+      "outputDrain": "complete"
+    }
+  },
+  "refused": {
+    "lifecycle": {
+      "box": "pd-consumer-missing",
+      "detail": "image \"pinfold/diag-does-not-exist:absent\" is not present locally; build or pull it first: Error: image not found: pinfold/diag-does-not-exist:absent",
+      "event": "refused",
+      "reason": "image-missing"
+    },
+    "evidence": {
+      "events": [
+        {
+          "box": "pd-consumer-missing",
+          "detail": "image \"pinfold/diag-does-not-exist:absent\" is not present locally; build or pull it first: Error: image not found: pinfold/diag-does-not-exist:absent",
+          "event": "refused",
+          "reason": "image-missing"
+        }
+      ],
+      "eventsTruncated": false,
+      "stderr": {
+        "text": "",
+        "truncated": false
+      },
+      "protocolErrors": [],
+      "ownerEnd": {
+        "code": 1,
+        "signal": null,
+        "outputDrain": "complete"
+      }
+    }
+  },
+  "killed": {
+    "exit": {
+      "code": null,
+      "signal": "SIGKILL",
+      "outputDrain": "deadline"
+    },
+    "events": [
+      {
+        "box": "pd-consumer-killed",
+        "egress_log": null,
+        "event": "ready",
+        "image": {
+          "id": "d44cb091aee72c3630d5fcf1077a0ca47ca422c0df718a5a7fc909235ef75c98",
+          "ref": "pinfold/profile-default:latest"
+        },
+        "labels": {
+          "dev.pinfold.base": "sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f",
+          "dev.pinfold.containerfile-sha256": "3d605a9d37c5dcf676d5d312859b736de9ab6b94fe8be164ba4eba3a54ad003f",
+          "dev.pinfold.generation": "efca47f132129b3a418ad14f378595a8a604598ec61b944c0352487511841691",
+          "dev.pinfold.owner": "27182",
+          "dev.pinfold.profile": "default",
+          "dev.pinfold.project": ""
+        },
+        "owner": 27182
+      }
+    ],
+    "eventsTruncated": false,
+    "stderr": {
+      "text": "",
+      "truncated": false
+    },
+    "protocolErrors": [],
+    "ownerEnd": {
+      "code": null,
+      "signal": "SIGKILL",
+      "outputDrain": "deadline"
+    }
+  },
+  "killCleanup": {
+    "code": 0
+  }
+}

@@ -1,0 +1,7 @@
+Box pi-project-c74f67d28539-30581 — recorded run 49a3703b8288201535d233ea2857a612502294e3454befa553819fc816568087
+Applied allowlist: api.github.com
+Source provenance: unavailable in this prototype.
+Current liveness: not-probed
+example.com: proxy refused (not allowlisted).
+example.com: proxy refused (not allowlisted).
+Terminal observation: {"observed_at": 1792039861, "reason": "pi-ended"}

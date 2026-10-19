@@ -1,0 +1,405 @@
+--- a/crates/pinfold/src/core/mod.rs
++++ b/crates/pinfold/src/core/mod.rs
+@@ -3,6 +3,7 @@
+ pub mod artifacts;
+ pub mod r#box;
+ pub mod clean;
++pub mod diagnostics;
+ pub mod download;
+ pub mod image;
+ pub mod login;
+--- a/crates/pinfold/src/core/box.rs
++++ b/crates/pinfold/src/core/box.rs
+@@ -325,6 +325,7 @@
+             }
+         };
+ 
++        crate::core::diagnostics::ready(claim.generation(), &plan, &identity.id);
+         Ok(Box {
+             name: plan.name.clone(),
+             labels,
+@@ -341,6 +342,7 @@
+     /// Wait until the box exits, stdin closes, or a termination signal
+     /// arrives, then stop and remove the box.
+     pub async fn hold(&mut self, signals: &mut Signals) -> io::Result<Shutdown> {
++        let run_id = self.run_id().to_string();
+         let reason = tokio::select! {
+             reason = wait_for_shutdown(signals) => reason,
+             stop = self.ownership.stop_requested() => stop.map(|()| Shutdown::Signal),
+@@ -349,6 +351,14 @@
+         };
+         // Tear down whatever ended the wait, so a failed wait leaves no box.
+         let down = self.down().await;
++        crate::core::diagnostics::terminal(
++            &run_id,
++            match (&reason, &down) {
++                (_, Err(_)) => "teardown-failed",
++                (Ok(reason), _) => reason.as_str(),
++                (Err(_), _) => "owner-wait-failed",
++            },
++        );
+         let reason = reason?;
+         down?;
+         Ok(reason)
+@@ -361,6 +371,10 @@
+         }
+     }
+ 
++    pub fn run_id(&self) -> &str {
++        self.ownership.generation()
++    }
++
+     /// Stop and remove the box, then delete its state directory.
+     pub async fn down(&mut self) -> io::Result<()> {
+         // Runtime removal waits for attached output to close. Keep its
+@@ -547,7 +561,10 @@
+     let socket = match &plan.egress {
+         Some(egress) => {
+             let socket = state_dir.join("proxy.sock");
+-            let log = dirs::egress_dir()?.join(format!("{}.jsonl", plan.name));
++            let log = dirs::egress_dir()?.join(format!(
++                "{}.jsonl",
++                plan.labels[ownership::GENERATION_LABEL]
++            ));
+             progress.audit = Audit::Waiting(proxy::start(&socket, egress, codex, log.clone())?);
+             egress_log = Some(log);
+             Some(socket)
+--- a/crates/pinfold/src/core/proxy.rs
++++ b/crates/pinfold/src/core/proxy.rs
+@@ -145,16 +145,41 @@
+             routes,
+         })
+     }
++}
+ 
+-    fn allows(&self, host: &str) -> bool {
+-        let host = host.to_ascii_lowercase();
+-        self.allow
+-            .iter()
+-            .any(|entry| match entry.strip_prefix('.') {
+-                Some(name) if !name.is_empty() => host == name || host.ends_with(entry.as_str()),
+-                _ => host == *entry,
+-            })
++/// Authority checks shared by enforcement and the static diagnostic. Parsing,
++/// DNS, SNI and delivery remain separate and are never implied by success.
++pub fn static_check<'a>(
++    allow: &[String],
++    mut routes: impl Iterator<Item = &'a str>,
++    host: &str,
++    port: Option<u16>,
++    connect: bool,
++) -> Option<&'static str> {
++    if !connect && port != Some(80) {
++        return Some("port not allowed");
++    }
++    if network::literal(host).is_some() {
++        return Some("ip literal");
++    }
++    let host = host.to_ascii_lowercase();
++    if routes.any(|name| name.eq_ignore_ascii_case(&host)) {
++        return if connect { Some("route") } else { None };
++    }
++    let allowed = allow.iter().any(|entry| {
++        let entry = entry.to_ascii_lowercase();
++        match entry.strip_prefix('.') {
++            Some(name) if !name.is_empty() => host == name || host.ends_with(&entry),
++            _ => host == entry,
++        }
++    });
++    if !allowed {
++        return Some("not allowlisted");
++    }
++    if connect && port != Some(443) {
++        return Some("port not allowed");
+     }
++    None
+ }
+ 
+ /// The TLS client for `https` routes, built on the first one. It verifies
+@@ -243,17 +268,14 @@
+     let Some((host, port)) = target.rsplit_once(':').filter(|(host, _)| !host.is_empty()) else {
+         return refuse(client, log, "", 400, "malformed request");
+     };
+-    if network::literal(host).is_some() {
+-        return refuse(client, log, host, 403, "ip literal");
+-    }
+-    if rules.routes.contains_key(&host.to_ascii_lowercase()) {
+-        return refuse(client, log, host, 403, "route");
+-    }
+-    if !rules.allows(host) {
+-        return refuse(client, log, host, 403, "not allowlisted");
+-    }
+-    if port.parse::<u16>() != Ok(443) {
+-        return refuse(client, log, host, 403, "port not allowed");
++    if let Some(reason) = static_check(
++        &rules.allow,
++        rules.routes.keys().map(String::as_str),
++        host,
++        port.parse().ok(),
++        true,
++    ) {
++        return refuse(client, log, host, 403, reason);
+     }
+     let Some(address) = resolve_checked(client, log, host, host, 443) else {
+         return;
+@@ -284,20 +306,20 @@
+ /// Handle one plain HTTP request: an allowlisted host or a route, port 80
+ /// only, framed by Content-Length, one request per connection.
+ fn plain(client: &mut UnixStream, rules: &Rules, log: &AuditLog, request: &Plain) {
+-    if request.port != 80 {
+-        return refuse(client, log, &request.host, 403, "port not allowed");
+-    }
+-    if network::literal(&request.host).is_some() {
+-        return refuse(client, log, &request.host, 403, "ip literal");
++    if let Some(reason) = static_check(
++        &rules.allow,
++        rules.routes.keys().map(String::as_str),
++        &request.host,
++        Some(request.port),
++        false,
++    ) {
++        return refuse(client, log, &request.host, 403, reason);
+     }
+     let host = request.host.to_ascii_lowercase();
+     if let Some(upstream) = rules.routes.get(&host) {
+         route(client, log, request, upstream);
+         return;
+     }
+-    if !rules.allows(&host) {
+-        return refuse(client, log, &request.host, 403, "not allowlisted");
+-    }
+     let Some(address) = resolve_checked(client, log, &request.host, &host, 80) else {
+         return;
+     };
+--- a/crates/pinfold/src/cli.rs
++++ b/crates/pinfold/src/cli.rs
+@@ -188,6 +188,8 @@
+         Some("up") => up(&args[1..]),
+         Some("exec") => exec(&args[1..]),
+         Some("stat") => stat(&args[1..]),
++        Some("inspect-run") => crate::core::diagnostics::query(&args[1..], false),
++        Some("check-run") => crate::core::diagnostics::query(&args[1..], true),
+         Some("down") => {
+             crate::core::r#box::down(&single_name(&args[1..], "down")?)?;
+             Ok(0)
+@@ -265,6 +267,7 @@
+         "{}",
+         serde_json::json!({
+             "event": "ready",
++            "run_id": box_.run_id(),
+             "box": &plan.name,
+             "owner": std::process::id(),
+             "labels": &box_.labels,
+--- a/crates/pinfold/src/main.rs
++++ b/crates/pinfold/src/main.rs
+@@ -88,7 +88,8 @@
+     // so its SIGTERM and SIGINT handlers come before the pass lists the
+     // runtime.
+     match (verb, args.first().map(String::as_str)) {
+-        ("init" | "doctor" | "config" | "artifacts", _) | ("box", Some("up" | "list")) => {}
++        ("init" | "doctor" | "config" | "artifacts", _)
++        | ("box", Some("up" | "list" | "inspect-run" | "check-run")) => {}
+         _ => crate::core::clean::maintain(),
+     }
+     ExitCode::from(cli::report(verb, run(args)) as u8)
+--- a/crates/pinfold/src/pi/launch.rs
++++ b/crates/pinfold/src/pi/launch.rs
+@@ -245,6 +245,7 @@
+             }
+             Err(error) => return Err(error.into()),
+         };
++        let run_id = box_.run_id().to_string();
+         let exec = tokio::task::spawn_blocking(move || {
+             box_runtime.exec(&name, &init, tty, Some(&workdir), &argv)
+         });
+@@ -258,6 +259,16 @@
+         // Remove the box exactly once, whatever ended the run. A failed
+         // removal must not hide the error that ended pi.
+         let down = box_.down().await;
++        crate::core::diagnostics::terminal(
++            &run_id,
++            if down.is_err() {
++                "teardown-failed"
++            } else if code.is_err() {
++                "pi-exec-failed"
++            } else {
++                "pi-ended"
++            },
++        );
+         let code = code?;
+         down?;
+         Ok(code)
+--- /dev/null
++++ b/crates/pinfold/src/core/diagnostics.rs
+@@ -0,0 +1,171 @@
++//! Disposable research contract: retained observations, never ownership.
++use std::fs::{self, File};
++use std::io::{self, BufRead, BufReader, Read};
++use std::path::PathBuf;
++
++use serde_json::{Value, json};
++
++use crate::core::{now, plan::Plan, proxy, runtime::runtime};
++use crate::dirs;
++
++const BYTES: u64 = 64 * 1024;
++
++fn path(id: &str, suffix: &str) -> io::Result<PathBuf> {
++    if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
++        return Err(io::Error::other("invalid run id"));
++    }
++    Ok(dirs::state_dir()?
++        .join("runs")
++        .join(format!("{id}.{suffix}")))
++}
++
++fn save(id: &str, suffix: &str, value: Value) -> io::Result<()> {
++    let destination = path(id, suffix)?;
++    let bytes = serde_json::to_vec(&value)?;
++    if bytes.len() as u64 > BYTES {
++        return Err(io::Error::other("snapshot limit"));
++    }
++    fs::create_dir_all(destination.parent().unwrap())?;
++    let staging = destination.with_extension(format!("tmp-{}", std::process::id()));
++    fs::write(&staging, bytes)?;
++    fs::rename(staging, destination)
++}
++
++pub fn ready(id: &str, plan: &Plan, image_id: &str) {
++    let egress = plan.egress.as_ref().map(|egress| {
++        json!({
++            "allow": egress.allow,
++            "routes": egress.routes.keys().collect::<Vec<_>>(),
++        })
++    });
++    let result = save(
++        id,
++        "json",
++        json!({
++            "run_id": id, "box": plan.name, "observed_at": now(),
++            "observation": "ready", "runtime": runtime().name(),
++            "image_id": image_id, "egress": egress,
++            "resources_requested": {"cpus": plan.cpus, "memory": plan.memory},
++        }),
++    );
++    if result.is_err() {
++        eprintln!("pinfold: diagnostic snapshot unavailable");
++    }
++}
++
++pub fn terminal(id: &str, reason: &str) {
++    if save(
++        id,
++        "end.json",
++        json!({"observed_at": now(), "reason": reason}),
++    )
++    .is_err()
++    {
++        eprintln!("pinfold: terminal diagnostic unavailable");
++    }
++}
++
++fn read(id: &str, suffix: &str) -> io::Result<Value> {
++    let mut bytes = Vec::new();
++    File::open(path(id, suffix)?)?
++        .take(BYTES + 1)
++        .read_to_end(&mut bytes)?;
++    if bytes.len() as u64 > BYTES {
++        return Err(io::Error::other("snapshot limit"));
++    }
++    serde_json::from_slice(&bytes).map_err(io::Error::other)
++}
++
++pub fn query(args: &[String], check: bool) -> io::Result<i32> {
++    let Some(id) = args.first() else {
++        return Err(io::Error::other("run id required"));
++    };
++    // Validate even an absent id; no caller-controlled filesystem traversal.
++    path(id, "json")?;
++    let snapshot = match read(id, "json") {
++        Ok(snapshot) => snapshot,
++        Err(_) => {
++            println!(
++                "{}",
++                json!({"run_id": id, "availability": "unavailable", "reason": "snapshot-unavailable"})
++            );
++            return Ok(1);
++        }
++    };
++    if check {
++        if args.len() != 4 || !matches!(args[3].as_str(), "CONNECT" | "HTTP") {
++            return Err(io::Error::other("check-run RUN_ID HOST PORT CONNECT|HTTP"));
++        }
++        let port: u16 = args[2].parse().map_err(io::Error::other)?;
++        let egress = &snapshot["egress"];
++        let names = |key: &str| -> Vec<String> {
++            egress[key]
++                .as_array()
++                .into_iter()
++                .flatten()
++                .filter_map(Value::as_str)
++                .map(str::to_string)
++                .collect()
++        };
++        let (allow, routes) = (names("allow"), names("routes"));
++        let reason = if egress.is_null() {
++            Some("no egress")
++        } else {
++            proxy::static_check(
++                &allow,
++                routes.iter().map(String::as_str),
++                &args[1],
++                Some(port),
++                args[3] == "CONNECT",
++            )
++        };
++        println!(
++            "{}",
++            json!({"run_id": id, "basis": "recorded-policy", "scope": "authority-only", "decision": if reason.is_some() {"refused"} else {"passes-static"}, "reason": reason, "request_framing": "unevaluated", "dns": "unevaluated", "sni": "unevaluated", "delivery": "not-tested"})
++        );
++        return Ok(0);
++    }
++    if args.len() != 3 || args[1] != "--limit" {
++        return Err(io::Error::other("inspect-run RUN_ID --limit N"));
++    }
++    let limit: usize = args[2].parse().map_err(io::Error::other)?;
++    if !(1..=100).contains(&limit) {
++        return Err(io::Error::other("limit must be 1..100"));
++    }
++    let mut records = Vec::new();
++    let mut truncated = false;
++    let mut log_status = "not-applicable";
++    if !snapshot["egress"].is_null() {
++        match File::open(dirs::egress_dir()?.join(format!("{id}.jsonl"))) {
++            Ok(file) => {
++                log_status = "available";
++                let mut reader = BufReader::new(file.take(BYTES));
++                loop {
++                    let mut line = String::new();
++                    if reader.read_line(&mut line)? == 0 {
++                        break;
++                    }
++                    if records.len() == limit || !line.ends_with('\n') {
++                        truncated = true;
++                        break;
++                    }
++                    match serde_json::from_str::<Value>(&line) {
++                        Ok(value) => records.push(value),
++                        Err(_) => {
++                            log_status = "partial";
++                            break;
++                        }
++                    }
++                }
++                truncated |= reader.get_ref().limit() == 0;
++            }
++            Err(_) => log_status = "unavailable",
++        }
++    }
++    let terminal = read(id, "end.json").unwrap_or(json!({"availability": "not-observed"}));
++    println!(
++        "{}",
++        json!({"snapshot": snapshot, "terminal": terminal, "current_liveness": "not-probed", "egress": {"availability": log_status, "records": records, "truncated": truncated, "order": "oldest-first", "byte_limit": BYTES}})
++    );
++    Ok(0)
++}

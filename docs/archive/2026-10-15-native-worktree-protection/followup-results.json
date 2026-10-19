@@ -1,0 +1,198 @@
+[
+  {
+    "name": "git_on_fresh_mount",
+    "result": {
+      "exit": 0,
+      "out": "host edit\n",
+      "err": ""
+    }
+  },
+  {
+    "name": "valid_posix_acl_set_control",
+    "result": {
+      "exit": 0,
+      "out": "set system.posix_acl_access result=0 errno=0\nset system.posix_acl_default result=-1 errno=13\nset com.apple.system.Security result=-1 errno=1\nset user.com.apple.system.Security result=0 errno=0\nopen result=3 errno=0\n",
+      "err": ""
+    },
+    "host_acl": {
+      "exit": 0,
+      "out": "-rw-rw-rw-@ 1 adam  wheel  3 Oct 15 10:37 /private/tmp/pinfold-native-acl-20261015/fixture/wt/acl-set-control\n",
+      "err": ""
+    }
+  },
+  {
+    "name": "valid_posix_acl_set_pointer",
+    "result": {
+      "exit": 0,
+      "out": "set system.posix_acl_access result=-1 errno=13\nset system.posix_acl_default result=-1 errno=13\nset com.apple.system.Security result=-1 errno=1\nset user.com.apple.system.Security result=-1 errno=13\nopen result=-1 errno=13\n",
+      "err": ""
+    },
+    "host_acl": {
+      "exit": 0,
+      "out": "-rwxrwxrwx@ 3 adam  wheel  80 Oct 15 10:29 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.git\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+      "err": ""
+    },
+    "pointer_unchanged": true
+  },
+  {
+    "name": "new_hardlink_write",
+    "result": {
+      "exit": 2,
+      "out": "",
+      "err": "sh: 1: cannot create new-alias-followup: Permission denied\n"
+    },
+    "pointer_unchanged": true
+  },
+  {
+    "name": "ancestor1",
+    "result": {
+      "exit": 1,
+      "out": "",
+      "err": "mv: cannot move 'DEEP' to 'deep-moved': Permission denied\n"
+    }
+  },
+  {
+    "name": "ancestor2",
+    "result": {
+      "exit": 1,
+      "out": "",
+      "err": "mv: cannot move 'DEEP/MIDDLE' to 'DEEP/middle-moved': Permission denied\n"
+    }
+  },
+  {
+    "name": "ancestor_ordinary_child",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "host_commit_disabled_hook",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": "hint: The '/private/tmp/pinfold-native-acl-20261015/fixture/wt/.hooks/pre-commit' hook was ignored because it's not set as executable.\nhint: You can disable this warning with `git config set advice.ignoredHook false`.\n"
+    },
+    "marker_exists": false
+  },
+  {
+    "name": "literal_hook_chmod",
+    "result": {
+      "exit": 1,
+      "out": "",
+      "err": "chmod: changing permissions of '.hooks/pre-commit': Read-only file system\n"
+    },
+    "host_mode": "0o644"
+  },
+  {
+    "name": "alias_hook_chmod",
+    "result": {
+      "exit": 1,
+      "out": "",
+      "err": "chmod: changing permissions of '.HOOKS/pre-commit': Read-only file system\n"
+    },
+    "host_mode": "0o644",
+    "host_acl": {
+      "exit": 0,
+      "out": "-rw-r--r--@ 1 adam  wheel  89 Oct 15 10:37 /private/tmp/pinfold-native-acl-20261015/fixture/wt/.hooks/pre-commit\n 0: user:adam deny write,delete,append,writeattr,writeextattr,writesecurity,chown\n",
+      "err": ""
+    }
+  },
+  {
+    "name": "host_commit_after_guest_chmod",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": "hint: The '/private/tmp/pinfold-native-acl-20261015/fixture/wt/.hooks/pre-commit' hook was ignored because it's not set as executable.\nhint: You can disable this warning with `git config set advice.ignoredHook false`.\n"
+    },
+    "marker_exists": false,
+    "marker": null
+  },
+  {
+    "name": "preopened_descriptor",
+    "exit": 0,
+    "out": "",
+    "err": "",
+    "host_bytes": "late"
+  },
+  {
+    "name": "later_git_visibility",
+    "result": {
+      "exit": 128,
+      "out": "",
+      "err": "fatal: your current branch 'work' does not have any commits yet\n"
+    }
+  },
+  {
+    "name": "remove_box",
+    "result": {
+      "exit": 0,
+      "out": "pf-native-acl-followup-20261015\n",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_fixture_acl",
+    "path": "/private/tmp/pinfold-native-acl-20261015/fixture/wt/held-open",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_fixture_acl",
+    "path": "/private/tmp/pinfold-native-acl-20261015/fixture/wt/deep/middle/hooks",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_fixture_acl",
+    "path": "/private/tmp/pinfold-native-acl-20261015/fixture/wt/deep/middle",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_fixture_acl",
+    "path": "/private/tmp/pinfold-native-acl-20261015/fixture/wt/deep",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_fixture_acl",
+    "path": "/private/tmp/pinfold-native-acl-20261015/fixture/wt/.hooks",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_fixture_acl",
+    "path": "/private/tmp/pinfold-native-acl-20261015/fixture/wt/.hooks/pre-commit",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  },
+  {
+    "name": "clear_fixture_acl",
+    "path": "/private/tmp/pinfold-native-acl-20261015/fixture/wt/.git",
+    "result": {
+      "exit": 0,
+      "out": "",
+      "err": ""
+    }
+  }
+]

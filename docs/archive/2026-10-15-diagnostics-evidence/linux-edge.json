@@ -1,0 +1,113 @@
+{
+  "binary": "/tmp/pd-1015/pinfold-prototype",
+  "tag": "linux-edge",
+  "cases": {
+    "ready": {
+      "box": "pd-edge",
+      "egress_log": "/tmp/pd-1015/linux-edge/s/pinfold/egress/d7256afa0fd6ce058739cc260ca7933d606532d12a35381c68406e340cce6603.jsonl",
+      "event": "ready",
+      "image": {
+        "id": "c5fc428fad13dbabcee7880a41a2715d48d17ee15b041aad3b1c3858b126e978",
+        "ref": "pinfold/profile-default:latest"
+      },
+      "labels": {
+        "dev.pinfold.base": "sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483",
+        "dev.pinfold.containerfile-sha256": "3d605a9d37c5dcf676d5d312859b736de9ab6b94fe8be164ba4eba3a54ad003f",
+        "dev.pinfold.generation": "d7256afa0fd6ce058739cc260ca7933d606532d12a35381c68406e340cce6603",
+        "dev.pinfold.owner": "230001",
+        "dev.pinfold.profile": "default",
+        "dev.pinfold.project": "",
+        "io.buildah.version": "1.39.3"
+      },
+      "owner": 230001,
+      "run_id": "d7256afa0fd6ce058739cc260ca7933d606532d12a35381c68406e340cce6603"
+    },
+    "connect-positive": {
+      "code": 0,
+      "out": "200",
+      "err": "",
+      "seconds": 0.428
+    },
+    "many-decisions": {
+      "code": 0,
+      "out": "",
+      "err": "",
+      "seconds": 1.177
+    },
+    "slow-observer": {
+      "readable": true,
+      "still_waiting_after_200ms": true
+    },
+    "owner-during-slow-observer": {
+      "code": 0,
+      "out": "still-alive",
+      "err": "",
+      "seconds": 0.275
+    },
+    "cancelled-query": {
+      "code": -15,
+      "captured_bytes": 4081
+    },
+    "fresh-bounded-query": {
+      "code": 0,
+      "out": "{\"current_liveness\":\"not-probed\",\"egress\":{\"availability\":\"available\",\"byte_limit\":65536,\"order\":\"oldest-first\",\"records\":[{\"decision\":\"allowed\",\"host\":\"api.github.com\",\"reason\":\"allowlisted\",\"time\":\"2026-10-15T04:53:04Z\"},{\"decision\":\"allowed\",\"host\":\"ok.internal\",\"method\":\"GET\",\"path\":\"/ok\",\"reason\":\"route\",\"status\":200,\"time\":\"2026-10-15T04:53:05Z\"},{\"decision\":\"allowed\",\"host\":\"ok.internal\",\"method\":\"GET\",\"path\":\"/ok\",\"reason\":\"route\",\"status\":200,\"time\":\"2026-10-15T04:53:05Z\"}],\"truncated\":true},\"snapshot\":{\"box\":\"pd-edge\",\"egress\":{\"allow\":[\"api.github.com\"],\"routes\":[\"ok.internal\"]},\"image_id\":\"c5fc428fad13dbabcee7880a41a2715d48d17ee15b041aad3b1c3858b126e978\",\"observation\":\"ready\",\"observed_at\":1792039984,\"resources_requested\":{\"cpus\":1.0,\"memory\":\"512M\"},\"run_id\":\"d7256afa0fd6ce058739cc260ca7933d606532d12a35381c68406e340cce6603\",\"runtime\":\"podman\"},\"terminal\":{\"availability\":\"not-observed\"}}\n",
+      "err": "",
+      "seconds": 0.001
+    },
+    "runtime-kill": {
+      "code": 0,
+      "stderr": ""
+    },
+    "unexpected-runtime-end": {
+      "events": [
+        {
+          "box": "pd-edge",
+          "egress_log": "/tmp/pd-1015/linux-edge/s/pinfold/egress/d7256afa0fd6ce058739cc260ca7933d606532d12a35381c68406e340cce6603.jsonl",
+          "event": "ready",
+          "image": {
+            "id": "c5fc428fad13dbabcee7880a41a2715d48d17ee15b041aad3b1c3858b126e978",
+            "ref": "pinfold/profile-default:latest"
+          },
+          "labels": {
+            "dev.pinfold.base": "sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483",
+            "dev.pinfold.containerfile-sha256": "3d605a9d37c5dcf676d5d312859b736de9ab6b94fe8be164ba4eba3a54ad003f",
+            "dev.pinfold.generation": "d7256afa0fd6ce058739cc260ca7933d606532d12a35381c68406e340cce6603",
+            "dev.pinfold.owner": "230001",
+            "dev.pinfold.profile": "default",
+            "dev.pinfold.project": "",
+            "io.buildah.version": "1.39.3"
+          },
+          "owner": 230001,
+          "run_id": "d7256afa0fd6ce058739cc260ca7933d606532d12a35381c68406e340cce6603"
+        },
+        {
+          "box": "pd-edge",
+          "detail": "exit status: 137",
+          "event": "down",
+          "reason": "exited"
+        }
+      ],
+      "code": 1
+    },
+    "unexpected-postmortem": {
+      "code": 0,
+      "out": "{\"current_liveness\":\"not-probed\",\"egress\":{\"availability\":\"available\",\"byte_limit\":65536,\"order\":\"oldest-first\",\"records\":[{\"decision\":\"allowed\",\"host\":\"api.github.com\",\"reason\":\"allowlisted\",\"time\":\"2026-10-15T04:53:04Z\"},{\"decision\":\"allowed\",\"host\":\"ok.internal\",\"method\":\"GET\",\"path\":\"/ok\",\"reason\":\"route\",\"status\":200,\"time\":\"2026-10-15T04:53:05Z\"},{\"decision\":\"allowed\",\"host\":\"ok.internal\",\"method\":\"GET\",\"path\":\"/ok\",\"reason\":\"route\",\"status\":200,\"time\":\"2026-10-15T04:53:05Z\"}],\"truncated\":true},\"snapshot\":{\"box\":\"pd-edge\",\"egress\":{\"allow\":[\"api.github.com\"],\"routes\":[\"ok.internal\"]},\"image_id\":\"c5fc428fad13dbabcee7880a41a2715d48d17ee15b041aad3b1c3858b126e978\",\"observation\":\"ready\",\"observed_at\":1792039984,\"resources_requested\":{\"cpus\":1.0,\"memory\":\"512M\"},\"run_id\":\"d7256afa0fd6ce058739cc260ca7933d606532d12a35381c68406e340cce6603\",\"runtime\":\"podman\"},\"terminal\":{\"observed_at\":1792039988,\"reason\":\"exited\"}}\n",
+      "err": "",
+      "seconds": 0.002
+    }
+  },
+  "cleanup": {
+    "pd-edge": {
+      "code": 0,
+      "out": "",
+      "err": "",
+      "seconds": 0.063
+    }
+  },
+  "final_inventory": {
+    "code": 0,
+    "out": "",
+    "err": "",
+    "seconds": 0.065
+  }
+}
