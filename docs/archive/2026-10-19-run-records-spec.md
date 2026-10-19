@@ -124,8 +124,9 @@ For the release notes of the release that implements this.
   `~/.local/state/pinfold/runs/<run_id>/egress.jsonl`. A caller that
   composes the path breaks; one that reads `ready.egress_log` does not.
   Switchyard does not read the path; Pi Durable runs without egress.
-  Existing name-keyed logs are not migrated and are never queried; they
-  age out after 14 days.
+  Existing name-keyed logs are not migrated: the first maintenance pass
+  after upgrade deletes the `egress/` directory, with up to 14 days of
+  history.
 - `ready` gains `run_id`.
 - `down` gains `run_id` (null when `up` ended before `ready`).
 - Terminal records use the `down` reasons plus `harness-exited`, a
@@ -146,6 +147,11 @@ No change to `refused`, `failed`'s shape, `exec`, `stat`, `list`, `prune`,
 image commands, exit codes of existing commands, or stdin ownership.
 
 ## Decisions for Adam
+
+Answered 2026-10-19: all seven as recommended. Stage 2 authorized; 14
+days and 128 MiB; a launch-record write failure fails the start; the pi
+notice ships; both test seams allowed; legacy logs are deleted on upgrade
+(option 6's alternative, now in the spec); `harness-exited`.
 
 1. Authorize stage 2 as specified.
 2. Retention defaults: 14 days and 128 MiB of inactive runs. The quota can
@@ -177,8 +183,6 @@ Each needs its own ticket and guarantee when admitted.
   predicate, with an evaluator version in the launch record.
 - Per-setting provenance in the launch record (above).
 - A disk cap for live egress logs (already an open question).
-- Drop the legacy `egress/` age-out once no release writes there has been
-  out for 14 days.
 
 ## Stage 1 consumer repairs (not done here)
 
