@@ -384,17 +384,26 @@ pub fn retired() -> io::Result<Vec<PathBuf>> {
         if launched_box_alive(&path, run_id) {
             continue;
         }
-        let (mut newest, mut bytes) = (None, 0);
-        for file in dirs::entries(&path)? {
-            let metadata = file.metadata()?;
-            newest = newest.max(Some(metadata.modified()?));
-            bytes += metadata.len();
-        }
-        // An empty run, from an owner killed while starting, ages by its
-        // directory.
-        let newest = match newest {
-            Some(newest) => newest,
-            None => entry.metadata()?.modified()?,
+        let measured = (|| -> io::Result<_> {
+            let (mut newest, mut bytes) = (None, 0);
+            for file in dirs::entries(&path)? {
+                let metadata = file.metadata()?;
+                newest = newest.max(Some(metadata.modified()?));
+                bytes += metadata.len();
+            }
+            // An empty run, from an owner killed while starting, ages by
+            // its directory.
+            let newest = match newest {
+                Some(newest) => newest,
+                None => entry.metadata()?.modified()?,
+            };
+            Ok((newest, bytes))
+        })();
+        // A concurrent pass removed the run, or a starting run renamed its
+        // staged record.
+        let (newest, bytes) = match measured {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            measured => measured?,
         };
         inactive.push(Stored {
             path,

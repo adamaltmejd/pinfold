@@ -243,8 +243,10 @@ fn run_queries_are_bounded_and_need_no_runtime() {
     // Guarantee 41. Sabotage: list the runtime's boxes (or take the name
     // lock) in `inspect`; with no runtime on PATH it exits 1, and on Linux
     // it stalls behind the image-store lock past the list it should beat.
-    // Sabotage: count an incomplete final line into `next`; a line being
-    // appended during paging is skipped and the order assertion fails.
+    // Sabotage: resume after the cursor's line rather than at it; each
+    // page boundary skips a line and the order assertion fails. Counting
+    // an incomplete final line into `next` is not caught every run: the
+    // proxy appends each line in one write, so a partial line is rare.
     // Sabotage: drop the run from the cursor; another run's cursor exits 0.
     // Sabotage: report a no-egress run's log `unavailable`; the
     // not-applicable assertions fail.
@@ -434,8 +436,10 @@ fn run_records_are_retained_within_bounds() {
     // `clean` prunes dead boxes host-wide.
     let _runtime = crate::exclusive_runtime();
     // Guarantee 42. Sabotage: age out runs without checking the lifetime
-    // lock; the live run is removed. Sabotage: evict the newest inactive run
-    // first; the newer padded run goes and the older stays. Sabotage:
+    // lock; the live run is removed. Sabotage: drop the 14-day rule; the
+    // aged run survives the first clean, which is under the quota.
+    // Sabotage: evict the newest inactive run first; the newer padded run
+    // goes and the older stays. Sabotage:
     // truncate the live run's log to meet the quota; its bytes shrink.
     // Sabotage: count live runs toward the quota; the newer padded run goes
     // too. The 128 MiB pad and the backdated mtimes act on host paths the
@@ -464,13 +468,22 @@ fn run_records_are_retained_within_bounds() {
     let mut live_up = box_up(&env, &spec(&name), &name);
     let live = run_id(&live_up);
 
+    // Under the quota, only age retires: the aged run goes, the live one
+    // stays however old.
+    let day = Duration::from_secs(24 * 60 * 60);
+    age(&run_dir(&env, &aged), 15 * day);
+    age(&run_dir(&env, &live), 15 * day);
+    run_ok(env.command(pinfold()).arg("clean"));
+    assert_eq!(inspect(&env, &aged).0, 3, "the aged inactive run was kept");
+    let (code, record) = inspect(&env, &live);
+    assert_eq!(code, 0, "the aged live run was removed");
+    assert_eq!(record["launch"]["state"], "available", "{record}");
+
     // Inactive runs together hold just over 128 MiB; the live one would
     // tip the newer over the quota if it counted.
     pad(&run_dir(&env, &older), (64 << 20) + (256 << 10));
     pad(&run_dir(&env, &newer), (64 << 20) + (256 << 10));
     pad(&run_dir(&env, &live), 64 << 20);
-    let day = Duration::from_secs(24 * 60 * 60);
-    age(&run_dir(&env, &aged), 15 * day);
     age(&run_dir(&env, &live), 15 * day);
     age(&run_dir(&env, &older), 3 * day);
     age(&run_dir(&env, &newer), 2 * day);
@@ -478,12 +491,7 @@ fn run_records_are_retained_within_bounds() {
 
     run_ok(env.command(pinfold()).arg("clean"));
 
-    for (run, what) in [
-        (&aged, "the aged inactive run"),
-        (&older, "the older padded run"),
-    ] {
-        assert_eq!(inspect(&env, run).0, 3, "{what} was kept");
-    }
+    assert_eq!(inspect(&env, &older).0, 3, "the older padded run was kept");
     let (code, record) = inspect(&env, &newer);
     assert_eq!(code, 0, "the newer padded run was removed");
     assert_eq!(record["launch"]["state"], "available", "{record}");
