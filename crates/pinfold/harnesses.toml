@@ -28,20 +28,20 @@ as = "pi"
 
 [[harness]]
 name = "claude"
-version = "2.1.301"
+version = "2.1.303"
 env = { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
 
 [[harness.asset]]
 os-arch = "linux-arm64"
-url = "https://downloads.claude.ai/claude-code-releases/2.1.301/linux-arm64/claude"
-sha256 = "1e119036a802d359ba5f9886428e031586e8796f7a858d5a8ee179ac7b8604f0"
+url = "https://downloads.claude.ai/claude-code-releases/2.1.303/linux-arm64/claude"
+sha256 = "f384f49826336d4ac0484ac6ac9d8d16f64d244d186ce227cbd7cc088c03315d"
 install = "executable"
 as = "claude/claude"
 
 [[harness.asset]]
 os-arch = "linux-x64"
-url = "https://downloads.claude.ai/claude-code-releases/2.1.301/linux-x64/claude"
-sha256 = "bc1aad9982c7b59c7d889ff92595d61cf46e0a6eae074cb551d932a989bcd222"
+url = "https://downloads.claude.ai/claude-code-releases/2.1.303/linux-x64/claude"
+sha256 = "375988f457756524234695cf2d8f64ace99c5f68682e47ea24862a843c191450"
 install = "executable"
 as = "claude/claude"
 
