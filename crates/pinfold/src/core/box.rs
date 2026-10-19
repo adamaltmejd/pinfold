@@ -20,8 +20,9 @@ use tokio::process::Child;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::core::clean;
-use crate::core::plan::{Env, Mount, Plan, guest_path, valid_name};
+use crate::core::plan::{Env, Mount, Plan, Route, guest_path, valid_name};
 use crate::core::profile::{Profile, Seed};
+use crate::core::runs::{self, Terminal};
 use crate::core::runtime::{BoxInfo, apple, runtime};
 use crate::core::{artifacts, login, ownership, proxy};
 use crate::dirs;
@@ -39,6 +40,8 @@ pub struct Box {
     pub image_ref: String,
     /// The egress log `up` gave the proxy; `None` without `egress`.
     pub egress_log: Option<PathBuf>,
+    /// The box's generation, which names its run records.
+    pub run_id: String,
     ownership: ownership::Claim,
     _project: Option<nix::fcntl::Flock<std::fs::File>>,
     audit: Audit,
@@ -63,6 +66,21 @@ impl Shutdown {
             Shutdown::Signal => "signal",
             Shutdown::AuditLog => "audit-log",
             Shutdown::BoxExited(_) => "exited",
+        }
+    }
+
+    /// The `down` line's detail: the exit status of a box that exited.
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            Shutdown::BoxExited(status) => Some(status.to_string()),
+            _ => None,
+        }
+    }
+
+    pub fn terminal(&self) -> Terminal {
+        Terminal {
+            reason: self.as_str(),
+            detail: self.detail(),
         }
     }
 }
@@ -257,10 +275,9 @@ impl Box {
             ));
         }
         claim.prepare(&state_dir)?;
-        plan.labels.insert(
-            ownership::GENERATION_LABEL.to_string(),
-            claim.generation().to_string(),
-        );
+        let run_id = claim.generation().to_string();
+        plan.labels
+            .insert(ownership::GENERATION_LABEL.to_string(), run_id.clone());
 
         // Dropping a start part-way tears nothing down, so a signal ends it
         // here and `child` says what to remove.
@@ -270,6 +287,7 @@ impl Box {
             if let Some(share) = profile.as_ref().and_then(|profile| profile.share.as_ref()) {
                 share.materialize()?;
             }
+            runs::create(&run_id)?;
             let (observed, egress_log) = start(
                 &mut plan,
                 init,
@@ -285,6 +303,9 @@ impl Box {
                     "image-changed: box started a different image",
                 )));
             }
+            // Last before ready: every ready run has a launch record, and a
+            // run that fails to start leaves none.
+            runs::write_launch(&run_id, launch_record(&plan, &observed, &image))?;
             Ok((observed.labels, egress_log))
         };
         let started = tokio::select! {
@@ -303,6 +324,9 @@ impl Box {
                     let _ = preparing.await;
                 }
                 let (removed, status) = abort(&plan.name, progress.child).await;
+                if let Err(error) = runs::remove(&run_id) {
+                    eprintln!("pinfold: startup cleanup: {error}");
+                }
                 if let Err(error) = claim.finish(removed.is_ok()).await {
                     eprintln!("pinfold: startup cleanup: {error}");
                 }
@@ -327,6 +351,7 @@ impl Box {
             image_id: identity.id,
             image_ref: image,
             egress_log,
+            run_id,
             ownership: claim,
             _project: project,
             audit: progress.audit,
@@ -339,26 +364,31 @@ impl Box {
     pub async fn hold(&mut self, signals: &mut Signals) -> io::Result<Shutdown> {
         let reason = tokio::select! {
             reason = wait_for_shutdown(signals) => reason,
-            stop = self.ownership.stop_requested() => stop.map(|()| Shutdown::Signal),
-            _ = audit_failure(&mut self.audit) => Ok(Shutdown::AuditLog),
-            status = self.child.wait() => status.map(Shutdown::BoxExited),
+            reason = self.ended() => reason,
         };
         // Tear down whatever ended the wait, so a failed wait leaves no box.
-        let down = self.down().await;
+        let down = self
+            .down(reason.as_ref().ok().map(Shutdown::terminal))
+            .await;
         let reason = reason?;
         down?;
         Ok(reason)
     }
 
-    pub async fn stop_requested(&mut self) -> io::Result<()> {
+    /// Wait for what ends a box without its caller: an accepted `box down`
+    /// (`Signal`), an egress log append failure, or the box's init exiting.
+    pub async fn ended(&mut self) -> io::Result<Shutdown> {
         tokio::select! {
-            stop = self.ownership.stop_requested() => stop,
-            _ = audit_failure(&mut self.audit) => Err(io::Error::other("audit-log: egress logging failed")),
+            stop = self.ownership.stop_requested() => stop.map(|()| Shutdown::Signal),
+            _ = audit_failure(&mut self.audit) => Ok(Shutdown::AuditLog),
+            status = self.child.wait() => status.map(Shutdown::BoxExited),
         }
     }
 
-    /// Stop and remove the box, then delete its state directory.
-    pub async fn down(&mut self) -> io::Result<()> {
+    /// Stop and remove the box, write `terminal` as the run's terminal
+    /// record, then delete its state directory and acknowledge `box down`.
+    /// `None` writes no terminal record.
+    pub async fn down(&mut self, terminal: Option<Terminal>) -> io::Result<()> {
         // Runtime removal waits for attached output to close. Keep its
         // drain running on the owner while the runtime command blocks.
         let name = self.name.clone();
@@ -367,6 +397,11 @@ impl Box {
             .map_err(io::Error::other)
             .and_then(|result| result);
         let _ = self.child.wait().await;
+        // Before the acknowledgement, so `inspect` after `box down` returns
+        // already sees the end. A box that may still run gets none.
+        if let Some(terminal) = terminal.filter(|_| result.is_ok()) {
+            runs::write_terminal(&self.run_id, &terminal);
+        }
         let cleanup = self.ownership.finish(result.is_ok()).await;
         result.and(cleanup)
     }
@@ -540,7 +575,7 @@ async fn start(
     let socket = match &plan.egress {
         Some(egress) => {
             let socket = state_dir.join("proxy.sock");
-            let log = dirs::egress_dir()?.join(format!("{}.jsonl", plan.name));
+            let log = runs::egress_log(&plan.labels[ownership::GENERATION_LABEL])?;
             progress.audit = Audit::Waiting(proxy::start(&socket, egress, codex, log.clone())?);
             egress_log = Some(log);
             Some(socket)
@@ -604,6 +639,60 @@ async fn start(
             })?,
     };
     Ok((actual, egress_log))
+}
+
+/// The launch record's fields from the prepared plan and the started box.
+/// Built field by field: the plan holds env values and header sources, which
+/// the record never does.
+fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json::Value {
+    let runtime = runtime();
+    let egress = plan.egress.as_ref().map(|egress| {
+        let routes: serde_json::Map<String, serde_json::Value> = egress
+            .routes
+            .iter()
+            .map(|(name, route)| {
+                let (kind, to) = match route {
+                    Route::Address(address) => ("host-service", address.as_str()),
+                    Route::Inject(inject) => ("injecting", inject.to.as_str()),
+                    Route::Login(login) => ("login", login.origin().unwrap_or_default()),
+                };
+                (name.clone(), serde_json::json!({ "kind": kind, "to": to }))
+            })
+            .collect();
+        serde_json::json!({ "allow": &egress.allow, "routes": routes })
+    });
+    let harness =
+        plan.harness.as_deref().and_then(artifacts::harness).map(
+            |harness| serde_json::json!({ "name": &harness.name, "version": &harness.version }),
+        );
+    let mounts: Vec<serde_json::Value> = plan
+        .mounts
+        .iter()
+        .map(|mount| {
+            serde_json::json!({
+                "host": mount.host.to_string_lossy(),
+                "guest": mount.guest.to_string_lossy(),
+                "readonly": mount.readonly,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "box": &plan.name,
+        "pinfold": env!("CARGO_PKG_VERSION"),
+        "runtime": {
+            "name": if cfg!(target_os = "macos") { "apple" } else { "podman" },
+            "version": runtime.version().ok(),
+        },
+        "image": { "id": &observed.image_id, "ref": image_ref },
+        "profile": &plan.profile,
+        "harness": harness,
+        "labels": &observed.labels,
+        "mounts": mounts,
+        "env": plan.env.keys().collect::<Vec<_>>(),
+        "egress": egress,
+        "cpus": plan.cpus,
+        "memory": &plan.memory,
+    })
 }
 
 /// Check observed regular-file identities in effective directory exports.

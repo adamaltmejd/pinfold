@@ -2,7 +2,6 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::fd::{AsFd, AsRawFd};
@@ -21,7 +20,7 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 use crate::core::login;
 use crate::core::plan::{Egress, Route, Target};
-use crate::core::{network, now, rfc3339, tls};
+use crate::core::{network, now, rfc3339, runs, tls};
 
 /// The loopback URL clients reach through `pinfold init`'s relay.
 pub const PROXY_URL: &str = "http://127.0.0.1:3128";
@@ -59,15 +58,9 @@ pub fn start(
             format!("proxy socket {}: {error}", socket.display()),
         )
     })?;
-    if let Some(parent) = log.parent() {
-        fs::create_dir_all(parent)?;
-    }
     // The log exists before the first decision, so it is found from the
     // host even for a box that made no request.
-    fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log)?;
+    runs::open_log(&log)?;
     let (failure, failed) = oneshot::channel();
     let log = Arc::new(AuditLog {
         path: log,
@@ -749,11 +742,7 @@ fn record(
     if failure.is_none() {
         return Err(io::Error::other("egress audit log failed"));
     }
-    let written = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log.path)
-        .and_then(|mut file| file.write_all(line.as_bytes()));
+    let written = runs::open_log(&log.path).and_then(|mut file| file.write_all(line.as_bytes()));
     if written.is_err() {
         if let Some(failure) = failure.take() {
             let _ = failure.send(());

@@ -12,6 +12,7 @@ mod pipe;
 pub mod plan;
 pub mod profile;
 pub mod proxy;
+pub mod runs;
 pub mod runtime;
 pub mod tls;
 

@@ -30,10 +30,10 @@ pub fn artifacts_dir() -> io::Result<PathBuf> {
     Ok(cache_dir()?.join("artifacts"))
 }
 
-/// `$XDG_STATE_HOME/pinfold/egress`: one JSON log per box, kept past the
-/// box's teardown for Maintenance to age out.
-pub fn egress_dir() -> io::Result<PathBuf> {
-    Ok(state_dir()?.join("egress"))
+/// `$XDG_STATE_HOME/pinfold/runs`: one directory of run records per run,
+/// kept past the box's teardown for Maintenance to retire.
+pub fn runs_dir() -> io::Result<PathBuf> {
+    Ok(state_dir()?.join("runs"))
 }
 
 /// `$XDG_STATE_HOME/pinfold/boxes`: the directory holding one state dir per

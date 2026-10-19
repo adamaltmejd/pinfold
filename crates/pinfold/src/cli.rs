@@ -10,11 +10,11 @@ use std::time::Duration;
 use crate::config::Config;
 use crate::core::artifacts;
 use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, Signals, UpError};
-use crate::core::clean;
 use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
 use crate::core::plan::Plan;
 use crate::core::profile::{self, Profile};
 use crate::core::runtime::{BoxInfo, Runtime, podman, runtime};
+use crate::core::{clean, runs};
 use crate::dirs;
 use crate::pi::launch::utf8;
 use crate::trust;
@@ -47,7 +47,9 @@ pinfold box exec BOX [--tty] [--workdir DIR] -- argv
 pinfold box stat BOX
 pinfold box down BOX
 pinfold box list --label KEY[=VALUE]…
-pinfold box prune";
+pinfold box prune
+pinfold box inspect RUN
+pinfold box events RUN [--limit N] [--after CURSOR]";
 
 pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
     result.unwrap_or_else(|error| {
@@ -194,6 +196,8 @@ pub fn run(args: &[String]) -> io::Result<i32> {
         }
         Some("list") => list(&args[1..]),
         Some("prune") => prune(&args[1..]),
+        Some("inspect") => inspect(&args[1..]),
+        Some("events") => events(&args[1..]),
         Some(verb) => Err(usage("box", &format!("unknown box verb {verb:?}"))),
         None => Err(usage("box", "a box verb is required")),
     }
@@ -214,7 +218,7 @@ fn up(args: &[String]) -> io::Result<i32> {
         let mut signals = Signals::new()?;
         let plan = tokio::select! {
             biased;
-            _ = signals.recv() => return Ok(down(None, Shutdown::Signal)),
+            _ = signals.recv() => return Ok(down(None, None, Shutdown::Signal)),
             plan = tokio::task::spawn_blocking(|| {
                 clean::maintain();
                 Plan::from_reader(io::stdin())
@@ -256,7 +260,7 @@ async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
         Ok(box_) => box_,
         Err(UpError::Refused(refusal)) => return Ok(refused_box(&refusal)),
         Err(UpError::Signal | UpError::Control) => {
-            return Ok(down(Some(&plan.name), Shutdown::Signal));
+            return Ok(down(Some(&plan.name), None, Shutdown::Signal));
         }
         Err(UpError::Other(error)) => return Err(error),
     };
@@ -269,6 +273,7 @@ async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
         let line = serde_json::to_string(&serde_json::json!({
             "event": "ready",
             "box": &plan.name,
+            "run_id": &box_.run_id,
             "owner": std::process::id(),
             "labels": &box_.labels,
             "image": { "id": &box_.image_id, "ref": &box_.image_ref },
@@ -280,26 +285,29 @@ async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
         stdout.flush()
     })();
     if let Err(error) = ready {
-        box_.down().await?;
+        // No ready reached the caller: a failed start retains no run.
+        box_.down(None).await?;
+        crate::core::runs::remove(&box_.run_id)?;
         return Err(error);
     }
     let shutdown = box_.hold(&mut signals).await?;
-    Ok(down(Some(&plan.name), shutdown))
+    Ok(down(Some(&plan.name), Some(&box_.run_id), shutdown))
 }
 
-/// `name` is null when a signal ends `up` before its spec parses.
-fn down(name: Option<&str>, shutdown: Shutdown) -> i32 {
+/// `name` is null when a signal ends `up` before its spec parses, and
+/// `run_id` when `up` ends before ready.
+fn down(name: Option<&str>, run_id: Option<&str>, shutdown: Shutdown) -> i32 {
     let mut line = serde_json::json!({
         "event": "down",
         "box": name,
+        "run_id": run_id,
         "reason": shutdown.as_str(),
     });
+    if let Some(detail) = shutdown.detail() {
+        line["detail"] = detail.into();
+    }
     let code = match shutdown {
-        Shutdown::BoxExited(status) => {
-            line["detail"] = status.to_string().into();
-            1
-        }
-        Shutdown::AuditLog => 1,
+        Shutdown::BoxExited(_) | Shutdown::AuditLog => 1,
         Shutdown::StdinEof | Shutdown::Signal => 0,
     };
     println!("{line}");
@@ -436,6 +444,75 @@ fn prune(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
+/// `box inspect RUN`: one JSON object of the run's records; exit 3 for a
+/// run with none.
+fn inspect(args: &[String]) -> io::Result<i32> {
+    let [run_id] = args else {
+        return Err(usage("box", "inspect needs exactly one run id"));
+    };
+    let run_id = parse_run_id(run_id)?;
+    answer("inspect", run_id, runs::inspect(run_id)?)
+}
+
+/// `box events RUN [--limit N] [--after CURSOR]`: one page of the run's
+/// egress log. Every argument is checked before any path is built.
+fn events(args: &[String]) -> io::Result<i32> {
+    let Some((run_id, options)) = args.split_first() else {
+        return Err(usage("box", "events needs a run id"));
+    };
+    let run_id = parse_run_id(run_id)?;
+    let mut limit = runs::MAX_EVENTS;
+    let mut after = None;
+    let mut options = options.iter();
+    while let Some(option) = options.next() {
+        let value = options.next();
+        match (option.as_str(), value) {
+            ("--limit", Some(value)) => {
+                limit = value
+                    .parse()
+                    .ok()
+                    .filter(|limit| (1..=runs::MAX_EVENTS).contains(limit))
+                    .ok_or_else(|| usage("box", &format!("--limit {value:?} is not 1 to 100")))?;
+            }
+            ("--after", Some(value)) => {
+                after = Some(runs::Cursor::parse(run_id, value).ok_or_else(|| {
+                    usage(
+                        "box",
+                        &format!("--after {value:?} is not a cursor of this run"),
+                    )
+                })?);
+            }
+            _ => return Err(usage("box", &format!("unknown events option {option:?}"))),
+        }
+    }
+    answer("events", run_id, runs::events(run_id, limit, after)?)
+}
+
+fn parse_run_id(run_id: &str) -> io::Result<&str> {
+    if runs::valid_id(run_id) {
+        Ok(run_id)
+    } else {
+        Err(usage(
+            "box",
+            &format!("run id {run_id:?} is not 64 lowercase hex characters"),
+        ))
+    }
+}
+
+/// Print a query's object, or exit 3 for a run with no records.
+fn answer(verb: &str, run_id: &str, answer: Option<serde_json::Value>) -> io::Result<i32> {
+    match answer {
+        Some(answer) => {
+            println!("{answer}");
+            Ok(0)
+        }
+        None => {
+            eprintln!("pinfold box {verb}: no run {run_id:?}");
+            Ok(3)
+        }
+    }
+}
+
 pub fn clean(args: &[String]) -> io::Result<i32> {
     let (dry_run, unused) = parse_clean(args)?;
     let runtime = runtime();
@@ -460,9 +537,12 @@ struct CleanPlan {
     /// The pass's box list from `measure`: dead boxes to remove, and live
     /// projects to protect.
     boxes: clean::Boxes,
-    /// Unpinned artifact versions and old egress logs. Dead boxes' state
-    /// dirs and leftover socket dirs count in `automatic_bytes` only.
+    /// Unpinned artifact versions. Dead boxes' state dirs and leftover
+    /// socket dirs count in `automatic_bytes` only.
     automatic: BTreeSet<PathBuf>,
+    /// Retired runs' directories, and the old name-keyed egress logs.
+    runs: Vec<PathBuf>,
+    run_bytes: u64,
     project_paths: BTreeMap<String, PathBuf>,
     automatic_bytes: u64,
     project_caches: u64,
@@ -482,7 +562,7 @@ impl CleanPlan {
             .collect();
         let mut automatic = BTreeSet::new();
         automatic.extend(artifacts::unpinned_versions()?);
-        automatic.extend(clean::old_egress_logs()?);
+        let runs = runs::retired()?;
 
         let mut project_paths = BTreeMap::new();
         let mut project_caches = 0;
@@ -509,6 +589,8 @@ impl CleanPlan {
             project_caches,
             project_state,
             automatic,
+            run_bytes: runs.iter().map(|path| clean::path_bytes(path)).sum(),
+            runs,
             project_paths,
             unused,
         })
@@ -518,6 +600,7 @@ impl CleanPlan {
     /// overhead and active records, so pruning may reclaim less.
     fn total(&self) -> u64 {
         self.automatic_bytes
+            + self.run_bytes
             + self.project_caches
             + self.project_state
             + self.build_cache_bytes.unwrap_or(0)
@@ -525,6 +608,7 @@ impl CleanPlan {
 
     fn print(&self, runtime: &dyn Runtime) {
         println!("  automatic maintenance: {} B", self.automatic_bytes);
+        println!("  run records: {} B", self.run_bytes);
         match self.build_cache_bytes {
             Some(bytes) => println!("  build cache: {bytes} B; {}", runtime.build_cache()),
             None => println!("  build cache: unmeasured; {}", runtime.build_cache()),
@@ -541,6 +625,7 @@ impl CleanPlan {
         clean::prune_leftover_states(runtime)?;
         runtime.purge_build_cache()?;
         clean::remove_paths(self.automatic.into_iter().collect())?;
+        clean::remove_paths(self.runs)?;
         let mut locks = BTreeMap::new();
         for id in self.project_paths.keys() {
             if let Some(lock) = crate::core::ownership::try_project_lock(id)? {

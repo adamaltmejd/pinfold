@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use nix::fcntl::Flock;
 
 use crate::core::runtime::{BoxInfo, ImageInfo, Runtime, runtime};
-use crate::core::{artifacts, ownership};
+use crate::core::{artifacts, ownership, runs};
 use crate::dirs;
 
 pub const PROFILE_LABEL: &str = "dev.pinfold.profile";
@@ -25,7 +25,6 @@ pub const LAYER_LABEL: &str = "dev.pinfold.layer";
 pub const BASE_LABEL: &str = "dev.pinfold.base";
 pub const OWNER_LABEL: &str = "dev.pinfold.owner";
 
-const EGRESS_LOG_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 const PASS_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// A caller build tag made within this window is never removed: the ref its
 /// `built` line named must still come up when the caller uses it later.
@@ -70,7 +69,7 @@ fn maintain_due() -> io::Result<()> {
         "artifacts",
         artifacts::unpinned_versions().and_then(remove_paths),
     );
-    report("egress logs", old_egress_logs().and_then(remove_paths));
+    report("runs", runs::retired().and_then(remove_paths));
     Ok(())
 }
 
@@ -234,23 +233,6 @@ pub fn prune_leftover_states(runtime: &dyn Runtime) -> io::Result<()> {
         }
     }
     Ok(())
-}
-
-pub fn old_egress_logs() -> io::Result<Vec<PathBuf>> {
-    let mut old = Vec::new();
-    for entry in dirs::entries(&dirs::egress_dir()?)? {
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        let age = metadata
-            .modified()
-            .ok()
-            .and_then(|modified| modified.elapsed().ok());
-        if metadata.is_file() && age.is_some_and(|age| age > EGRESS_LOG_AGE) {
-            old.push(entry.path());
-        }
-    }
-    Ok(old)
 }
 
 /// Remove each path, a directory with everything under it. A path already

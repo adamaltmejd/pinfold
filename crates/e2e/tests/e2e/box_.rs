@@ -1818,7 +1818,7 @@ fn the_proxy_refuses_the_tricks() {
     }
 
     // Every refusal names its own reason, distinct from "not allowlisted".
-    let lines = json_lines(&egress_log(&env, &name));
+    let lines = json_lines(&egress_log(&up.ready));
     for (host, reason) in [
         ("127.0.0.1", "ip literal"),
         ("[::1]", "ip literal"),
@@ -2478,7 +2478,7 @@ fn a_route_reaches_exactly_one_host_service() {
         "the missing route failed: {}",
         missing.stderr
     );
-    let log = egress_log(&env, &name);
+    let log = egress_log(&up.ready);
     assert!(
         !log.contains(&sentinel),
         "the egress log holds the query sentinel"
@@ -2733,7 +2733,7 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
     );
 
     // The log never holds the value.
-    let log = egress_log(&env, &name);
+    let log = egress_log(&up.ready);
     assert!(!log.contains(&secret), "the egress log holds the value");
 
     up.down(&env);
@@ -2839,7 +2839,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     );
 
     // The egress log never holds the value.
-    let log = egress_log(&env, &name);
+    let log = egress_log(&up.ready);
     assert!(!log.contains(&secret), "the egress log holds the value");
 
     up.down(&env);
@@ -3123,7 +3123,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
         "the codex box's files hold a token, or the scan missed the canary: {}",
         scan.stderr
     );
-    let log = egress_log(&env, &codex_name);
+    let log = egress_log(&up.ready);
     for (what, value) in [("lapsing", &lapsing), ("refreshed", &refreshed)] {
         assert!(
             !log.contains(value.as_str()),
@@ -3821,6 +3821,10 @@ pub(crate) struct Up {
 }
 
 impl Up {
+    pub(super) fn ready(&self) -> &serde_json::Value {
+        &self.ready
+    }
+
     pub(super) fn pid(&self) -> u32 {
         self.starting.child.id()
     }

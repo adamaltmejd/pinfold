@@ -19,8 +19,8 @@ use std::process::{ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use crate::box_::{ChildOwner, assert_left_nothing, box_name, box_up, read_bounded};
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, allow, assert_denied, assert_ok, box_exec,
-    box_list, box_stat, build_profile, curl, default_image, egress_log, git, json_lines, pinfold,
-    pinfold_in, project_id, project_state_dir, run_ok,
+    box_list, box_stat, build_profile, curl, default_image, git, inspect, json_lines, pinfold,
+    pinfold_in, project_id, project_state_dir, run_egress_log, run_ok,
 };
 
 #[test]
@@ -1303,7 +1303,7 @@ fn the_highest_layer_sets_the_allowlist() {
     assert_denied(&denied, "403", "a request to registry.npmjs.org");
 
     // The log names the refused host and the reason.
-    let lines = json_lines(&egress_log(&env, &name));
+    let lines = json_lines(&run_egress_log(&env, &pi_run_id(&env, &name)));
     assert!(
         lines.iter().any(|line| line["host"] == "registry.npmjs.org"
             && line["decision"] == "refused"
@@ -1338,6 +1338,128 @@ fn the_highest_layer_sets_the_allowlist() {
         );
     }
     run_ok(&mut pinfold_in(&env, project.path(), &["config"]));
+}
+
+#[test]
+fn the_launch_record_is_the_applied_policy() {
+    let _runtime = crate::shared_runtime();
+    // Guarantee 39. Sabotage: build `inspect`'s launch section by loading
+    // the project's config at query time; the changed allow list then
+    // appears. Sabotage: write the plan's env as name and value, or a
+    // route's resolved headers, into the launch record; the state-root scan
+    // finds the secret or the header value. Sabotage: drop `cpus` from the
+    // record; its equality fails.
+    let env = TestEnv::new("pi-launch");
+    default_image(&env);
+    let project = TestDir::new(&env, "project");
+    git(project.path(), &["init", "-q"]);
+    let service = HttpFixture::start(Some(("text/plain", "service")));
+    let upstream = HttpFixture::start(Some(("text/plain", "upstream")));
+    let upstream_origin = format!("http://{}", upstream.route());
+    let config = project.path().join(".pinfold.toml");
+    fs::write(
+        &config,
+        format!(
+            "allow = [\"api.github.com\"]\ncpus = 2\nmemory = \"1G\"\n[routes]\n'service.internal' = '{}'\n[routes.'inject.internal']\nto = '{upstream_origin}'\nheaders = {{ Authorization = {{ from = \"PINFOLD_E2E_LAUNCH_KEY\", prefix = \"Bearer \" }} }}\n",
+            service.route()
+        ),
+    )
+    .expect("write .pinfold.toml");
+    allow(&env, project.path());
+    let secret = format!("pf-launch-secret-{}", std::process::id());
+    let header = format!("pf-launch-header-{}", std::process::id());
+    let (run, _, name) = PiRpc::start_with_env(
+        &env,
+        project.path(),
+        &[
+            ("PINFOLD_ENV_SECRET", &secret),
+            ("PINFOLD_E2E_LAUNCH_KEY", &header),
+        ],
+    );
+    let run_id = pi_run_id(&env, &name);
+
+    // The live box's file changes and is not re-allowed.
+    fs::write(
+        &config,
+        fs::read_to_string(&config)
+            .unwrap()
+            .replace("api.github.com", "example.com"),
+    )
+    .unwrap();
+    let report = config_json(&env, project.path());
+    assert_eq!(report["trust"]["ok"], false, "the change was trusted");
+    assert_eq!(
+        report["egress"]["allow"],
+        serde_json::json!(["example.com"])
+    );
+
+    let (code, record) = inspect(&env, &run_id);
+    assert_eq!(code, 0, "inspect of the live pi run failed");
+    assert_eq!(record["launch"]["state"], "available", "{record}");
+    let launch = &record["launch"]["record"];
+    assert_eq!(
+        launch["egress"]["allow"],
+        serde_json::json!(["api.github.com"])
+    );
+    assert_eq!(
+        launch["egress"]["routes"],
+        serde_json::json!({
+            "inject.internal": { "kind": "injecting", "to": upstream_origin },
+            "service.internal": { "kind": "host-service", "to": service.route() },
+        })
+    );
+    assert!(
+        launch["env"]
+            .as_array()
+            .is_some_and(|names| names.iter().any(|name| name == "SECRET")),
+        "the launch record lacks env name SECRET: {launch}"
+    );
+    assert_eq!(launch["cpus"], 2.0);
+    assert_eq!(launch["memory"], "1G");
+
+    // The started list still decides: the started host passes and the new
+    // one is refused.
+    let allowed = curl(
+        &env,
+        &name,
+        "30",
+        &["-o", "/dev/null", "https://api.github.com/"],
+    );
+    assert_ok(&allowed, "the started list's host");
+    let denied = curl(
+        &env,
+        &name,
+        "30",
+        &["-o", "/dev/null", "https://example.com/"],
+    );
+    assert_denied(&denied, "403", "the changed list's host");
+
+    assert!(run.finish().success(), "pinfold pi did not exit cleanly");
+    let (_, record) = inspect(&env, &run_id);
+    assert_eq!(
+        record["terminal"]["record"]["reason"], "harness-exited",
+        "{record}"
+    );
+    let mut leaked = Vec::new();
+    let mut dirs = vec![env.state.clone()];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(&dir).unwrap().flatten() {
+            let kind = entry.file_type().unwrap();
+            if kind.is_dir() {
+                dirs.push(entry.path());
+            } else if kind.is_file() {
+                let bytes = fs::read(entry.path()).unwrap_or_default();
+                let text = String::from_utf8_lossy(&bytes);
+                if text.contains(&secret) || text.contains(&header) {
+                    leaked.push(entry.path());
+                }
+            }
+        }
+    }
+    assert!(
+        leaked.is_empty(),
+        "the state root holds a secret: {leaked:?}"
+    );
 }
 
 #[test]
@@ -1642,4 +1764,18 @@ fn write_skill(dir: &Path, name: &str, marker: &str) {
         ),
     )
     .expect("write SKILL.md");
+}
+
+/// A running pi box's run id: its `dev.pinfold.generation`, as `list`
+/// reports it.
+fn pi_run_id(env: &TestEnv, name: &str) -> String {
+    box_list(env, "dev.pinfold.owner")
+        .into_iter()
+        .find(|box_| box_["name"] == name)
+        .and_then(|box_| {
+            box_["labels"]["dev.pinfold.generation"]
+                .as_str()
+                .map(String::from)
+        })
+        .unwrap_or_else(|| panic!("no listed generation for {name}"))
 }

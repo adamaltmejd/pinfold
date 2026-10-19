@@ -418,15 +418,45 @@ pub fn box_stat(env: &TestEnv, name: &str) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).expect("stat output is one JSON object")
 }
 
-/// The text of the box's egress log, at the fixed path under pinfold's
-/// state dir.
-pub fn egress_log(env: &TestEnv, name: &str) -> String {
+/// The text of the egress log a `ready` line names.
+pub fn egress_log(ready: &serde_json::Value) -> String {
+    let path = ready["egress_log"]
+        .as_str()
+        .unwrap_or_else(|| panic!("ready names no egress log: {ready}"));
+    fs::read_to_string(path).unwrap_or_else(|error| panic!("read {path}: {error}"))
+}
+
+/// A run's egress log by its run id, at the path the spec names under
+/// pinfold's state dir, for a pi box, which prints no `ready`.
+pub fn run_egress_log(env: &TestEnv, run_id: &str) -> String {
     let path = env
         .state
-        .join("pinfold")
-        .join("egress")
-        .join(format!("{name}.jsonl"));
+        .join("pinfold/runs")
+        .join(run_id)
+        .join("egress.jsonl");
     fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+}
+
+/// Run `pinfold box inspect` or `box events` with `args` and return its exit
+/// code and, on exit 0, its one JSON object (else null).
+pub fn run_query(command: &mut Command) -> (i32, serde_json::Value) {
+    let output = command.output().expect("run a pinfold run query");
+    let code = exit_code(output.status);
+    if code != 0 {
+        return (code, serde_json::Value::Null);
+    }
+    let answer = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "a run query printed {:?}, not one JSON object: {error}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    });
+    (code, answer)
+}
+
+/// `box inspect RUN` in `env`, its exit code and object.
+pub fn inspect(env: &TestEnv, run_id: &str) -> (i32, serde_json::Value) {
+    run_query(env.command(pinfold()).args(["box", "inspect", run_id]))
 }
 
 pub fn exit_code(status: ExitStatus) -> i32 {
