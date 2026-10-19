@@ -72,14 +72,19 @@ impl Share {
     /// Install embedded files after the box has claimed its name.
     pub fn materialize(&self) -> io::Result<()> {
         if let Self::Embedded(files) = self {
-            dirs::install_dir(&self.path()?, |staging| write_files(files, staging))?;
+            dirs::install_dir(&self.path()?, |staging| {
+                write_files(files.iter().copied(), staging)
+            })?;
         }
         Ok(())
     }
 }
 
 /// Write embedded files directly, also for `profile new`.
-pub fn write_files(files: &[(&str, &[u8])], root: &Path) -> io::Result<()> {
+pub fn write_files(
+    files: impl IntoIterator<Item = (impl AsRef<Path>, impl AsRef<[u8]>)>,
+    root: &Path,
+) -> io::Result<()> {
     for (path, contents) in files {
         let target = root.join(path);
         if let Some(parent) = target.parent() {
@@ -260,17 +265,12 @@ pub fn check_name(what: &str, name: &str) -> io::Result<()> {
 pub fn write_profile(source: &Profile, target: &Path) -> io::Result<()> {
     fs::write(target.join("Containerfile"), &source.containerfile)?;
     fs::write(target.join("pinfold.toml"), &source.config)?;
-    for seed in &source.home {
-        let path = target.join("home").join(&seed.path);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&path, &seed.contents)?;
-    }
+    let seeds = source.home.iter().map(|seed| (&seed.path, &seed.contents));
+    write_files(seeds, &target.join("home"))?;
     if let Some(share) = &source.share {
         match share {
             Share::Directory(path) => copy_tree(path, &target.join("share"), |_| false)?,
-            Share::Embedded(files) => write_files(files, &target.join("share"))?,
+            Share::Embedded(files) => write_files(files.iter().copied(), &target.join("share"))?,
         }
     }
     Ok(())
