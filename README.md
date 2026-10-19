@@ -1,8 +1,9 @@
 # pinfold
 
 Run a coding agent in a disposable box: an Apple `container` micro-VM on
-macOS, a rootless podman container on Linux. The box sees its mounts and
-nothing else of the host. Its only way out is its own allowlisting proxy.
+macOS, a rootless podman container on Linux. The box works on its own
+copy of the project; `pinfold fetch` brings its commits back as branches.
+Its only way out is its own allowlisting proxy.
 
 - **Interactive:** `pi` on the host is a shim for `pinfold pi`.
 - **Programmatic:** drive boxes through `pinfold box` (JSON on stdio),
@@ -134,12 +135,12 @@ PINFOLD_ENV_CARGO_TARGET_DIR=/tmp/pinfold-target pi
 ```
 
 Keep outputs within the guest's available memory and `/tmp` capacity. Copy
-deliverables into the shared project before the box exits; `/tmp` is discarded.
+deliverables into the project before the box exits; `/tmp` is discarded.
 
 ## Limits
 
 Read the [threat model](docs/ARCHITECTURE.md#threat-model) and
-[shared files](docs/ARCHITECTURE.md#shared-files) before using pinfold with a repository.
+[disks](docs/ARCHITECTURE.md#disks) before using pinfold with a repository.
 
 The experimental [Pi Durable example](examples/pi-durable/README.md)
 provides a host adapter for boxed execution and recovery.
