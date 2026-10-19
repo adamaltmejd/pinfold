@@ -50,7 +50,7 @@ running on the host.
 | Egress proxy | Default deny, allowlist by name, every decision logged. |
 | Kernel boundary | A VM per box on macOS. On Linux, boxes share the host kernel. |
 | No privilege | Empty capability bounding set, nothing long-lived as uid 0, read-only rootfs, no setuid files. |
-| Read-only `.git` | The box never writes the host's `.git`. |
+| Read-only `.git` | The box never writes the host's `.git`, nor a linked worktree's pointer file and administrative directory. |
 | Protected editor config | `protect` directories, which the host runs on open, are read-only. |
 | Profiles | Nothing a box can write maps to a profile. Only host-side commands change one. |
 
@@ -65,6 +65,12 @@ Not protected:
   interception).
 - Allowlisted services that accept writes (GitHub with a token, registries).
 - Image builds: user- or caller-run, trusted, unrestricted egress.
+- Host changes to the layout after startup: a new hardlink or symlink, a
+  `git worktree move`, `repair` or `remove`, a checkout that changes a
+  tracked protected path, a replaced pointer file. Admission checks the
+  layout once, at startup. The host is trusted.
+- A caller's read-only export nested below a direct child of a writable
+  export: the box can rename its writable ancestor and replace it.
 
 ## Runtimes
 
@@ -336,8 +342,13 @@ The box spec `up` reads from stdin:
   read-only init directory masks a plan mount at its exact destination.
   Skip paths masked by descendant guest mounts. An observed regular file
   with the same device and inode exposed both read-only and writable is refused as
-  `mount-alias`, naming the guest paths. Traversal errors fail startup.
+  `mount-alias`, naming the guest paths. So is a read-only directory export
+  whose host directory a writable export also reaches at a guest path the
+  read-only export does not mask, whatever the directory holds. Traversal
+  errors fail startup.
   This is a check of the observed layout, not atomic or ongoing enforcement.
+- A writable export whose host root is a linked worktree gets the
+  read-only mounts in Linked worktrees, or is refused as `spec`.
 - A mount path holding `,` or an ASCII control character is refused as
   `spec`, naming the path.
 - `memory` is a whole number followed by `M` or `G`, at least `256M`;
@@ -808,7 +819,37 @@ commits are made on the host. A caller-owned box protects its repository
 the same way by mounting `.git` read-only; its commits are the caller's own
 host-side operation, hooks and signing off.
 
-Worktrees are refused.
+A protected directory, whether a `protect` entry or an in-project
+`core.hooksPath`, must be a direct child of the project root. A deeper one
+has a writable ancestor the box could rename and replace, so it refuses the
+run as `protected-path-invalid`.
+
+#### Linked worktrees
+
+A linked worktree is admitted in one layout. This applies to pi's project
+root and to a caller's writable export whose host root holds a regular
+`.git` file.
+
+- The root is on APFS on macOS, or in a case-sensitive directory on Linux.
+  Any other filesystem is refused.
+- The `.git` pointer is a single-link regular file. It names a gitdir
+  `<common>/worktrees/<id>`, whose `commondir` names `<common>`. None of
+  these paths is missing or has a symlink component. `<common>` is outside
+  every writable export. A submodule pointer or object alternates are
+  refused.
+- pinfold masks the pointer read-only at every spelling the volume resolves
+  to it. On case-insensitive APFS these are the eight ASCII case spellings,
+  `.git` through `.GIT`, set with the runtime's read-only path option.
+  pinfold assumes APFS resolves no non-ASCII name to `.git`. Elsewhere the
+  one name is a read-only file bind.
+- `<common>` is exported read-only at its own path. It holds the gitdir,
+  the hooks and the config, `config.worktree` included. `core.hooksPath`
+  resolves as for a repository (above).
+- Mount admission (Box spec) applies to the result. A caller mount at a
+  derived path is refused as `spec`, as a mount at a path pinfold mounts.
+
+pi refuses an unsupported layout as `protected-path-invalid`. `box up`
+refuses it as `spec`.
 
 ## Experimental durable caller
 
@@ -949,19 +990,19 @@ The two slow gates run separately.
 | 7 | No egress means no way out | Without `egress`, nothing gets out, not even through a route. |
 | 8 | Losing the owner fails closed | After SIGKILL, egress fails closed; another XDG root sees the owner dead even with a misleading live pid file, prunes the box and reuses its name. An abandoned partial claim is reclaimable. |
 | 9 | The lifecycle works for a caller | Without egress, `exec` immediately after `ready` streams and returns the exit code, honors explicit workdir and tty, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; on Linux a real image-store lock stalls a fresh caller's listing, which returns exit 1 and `runtime-timeout` with no inventory within 20 seconds, leaves no runtime waiter, and preserves the live box and ownership for a successful listing after release; SIGINT and SIGTERM interrupt listings blocked on that lock with exit 128 plus the signal number, no inventory and no surviving runtime waiter; `down` removes even while attached output is active; on Linux an owner completes teardown while its requester is stopped, and that requester succeeds after resuming with the image-store lock held, without another inventory; closing `up`'s stdin tears the box down with reason `stdin-closed`. A closed readiness output pipe returns exit 1 after removing the runtime box and its state; the same name can start again. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box, an empty name or a flag-like name (`--filter=…`) exits 0, prints nothing and leaves live boxes alone; a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. A SIGSTOP owner keeps its claim after down times out; a second XDG root waits the ten-second claim deadline before name-in-use and cannot replace it until acknowledged teardown. `ready` and `list` name the image's id; an image named by ID (podman) or without its tag comes up. A 60-character name comes up. A cold harness download holds startup while its image tag moves; startup fails as `image-changed`, and the stable replacement then starts. Pre-ready cancellation with a host bookkeeping permission failure still yields `down`/`signal`, with recoverable state and successful name reuse. |
-| 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. |
-| 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, or writing into `.vscode/` in a project without one fails, also under a top level named by a space, and a symlinked protected path refuses the run as `protected-path-invalid`; replacing it with a real directory runs. External hook paths resolving into the project, including missing targets below aliases, refuse as `protected-path-invalid`; genuinely external hooks remain allowed. Starting inside `.git` is refused as `project-in-git`; starting from the project root runs. A non-UTF-8 project home fails plan assembly as `path-not-utf8` and leaves no newly created protected directories; an existing protected directory survives. Pre-existing Git and protected configuration hardlinks in the writable project refuse startup as `mount-alias`, leave no box or box state, preserve host bytes and remove newly created protected directories. Removing the alias permits RPC and project writes. Control: a project file is writable. |
+| 10 | Host and box share files seamlessly | Box-created files are the user's, 644/755, exec bit intact. Host 0600/0700 files are writable in the box. In a linked worktree, a box edit at the root shows in host `git status`, and the host commits it with its hooks; guest `git log` and `git status` read a host commit made before ready. |
+| 11 | The box cannot write `.git` or protected config | Writing a hook under `core.hooksPath`, `core.fsmonitor`, renaming `.git`, or writing into `.vscode/` in a project without one fails, also under a top level named by a space, and a symlinked protected path refuses the run as `protected-path-invalid`; replacing it with a real directory runs. External hook paths resolving into the project, including missing targets below aliases, refuse as `protected-path-invalid`; genuinely external hooks remain allowed. Starting inside `.git` is refused as `project-in-git`; starting from the project root runs. A non-UTF-8 project home fails plan assembly as `path-not-utf8` and leaves no newly created protected directories; an existing protected directory survives. Pre-existing Git and protected configuration hardlinks in the writable project refuse startup as `mount-alias`, leave no box or box state, preserve host bytes and remove newly created protected directories. Removing the alias permits RPC and project writes. A `protect` entry or in-project `core.hooksPath` below a direct child of the root, such as `.husky/_`, refuses as `protected-path-invalid` before the box could rename `.husky`; a direct child runs. In a linked worktree project, write, chmod, unlink, rename, replacement and a new hardlink of the pointer fail through each of its eight ASCII case spellings, with an uppercase spelling as the box's first lookup, and a hook write in the common dir fails; host pointer bytes and mode are unchanged. Control: a project file is writable. |
 | 12 | A changed project file stops the run | The agent adds a domain to `.pinfold.toml`, or changes the project Containerfile; the next run and `pinfold build` refuse until `pinfold allow`. |
 | 13 | Project state persists and stays separate | Settings survive reseeding and profile copies omit auth.json. Guest writes in two same-named projects remain separate on A/B/A runs. With two live boxes for one project, attach --box reads and changes only the selected box. A long valid project basename launches. |
 | 14 | Both pi config levels load behind a route | A routed fake model receives profile and project skills. The same home switches default/full/default: document skill, active Ponytail rules and operating context follow the selected profile while saved settings remain byte-identical. |
 | 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself; an image built on a profile's is its own family; a source a build left above two drops to two on a later `pinfold clean` with no build after. `--dry-run` leaves a project state the real clean removes. Two names built from identical inputs share one image id; `image rm` of one removes its tags while a box of the other name runs the image, and leaves the other name's tags, the image and the box; an image's last tag stays while a box uses it. An unlabeled image, a container started with the runtime's CLI from a pinfold-built image, a live box, its project's state and `~/.cache` survive `pinfold clean`, also with `--unused 0s`, which removes an idle project's state; a dead box is removed and protects no project's cache. On Apple, a build in another state directory held active in RUN succeeds across clean; a real build writes and deletes 64 MiB, dry-run preserves its allocated host blocks and reports at least the builder backing filesystem's allocation, and clean reclaims freed blocks. A claimed pi startup awaiting its real harness download preserves project state across clean while its checkout is temporarily absent; restoring the checkout lets the launch succeed, and the same stale state is removable afterward. |
 | 16 | The highest layer sets the allowlist | The environment replaces project allow, CPU, memory, protection and route settings. Kernel observations, a protected write refusal with a writable control, and a host HTTP fixture prove the result. Invalid UTF-8 overrides fail without disclosing their bytes. |
-| 17 | up refuses before it creates | A missing image, a misspelled spec or nested env key, a bad env name, a `dev.pinfold.` label, a memory below 256M or without a unit, a malformed string route, a login route naming another harness, a suffix allow entry on or above a public suffix, a mount path with a comma, a file mount, a missing mount host (including a dangling symlink), duplicate caller mount destinations (including normalized-equivalent spellings), a mount at a path pinfold mounts and a live name are refused as data, naming the cause; a misspelled key's refusal also names the box; each leaves no box and no state dir. The box whose name was reused still answers exec, and of two `up`s racing for one name exactly one wins. |
+| 17 | up refuses before it creates | A missing image, a misspelled spec or nested env key, a bad env name, a `dev.pinfold.` label, a memory below 256M or without a unit, a malformed string route, a login route naming another harness, a suffix allow entry on or above a public suffix, a mount path with a comma, a file mount, a missing mount host (including a dangling symlink), duplicate caller mount destinations (including normalized-equivalent spellings), a mount at a path pinfold mounts (including a linked worktree's common dir), a linked worktree with a symlinked or multiply linked pointer, a dangling gitdir, a submodule pointer or object alternates, and a live name are refused as data, naming the cause; a misspelled key's refusal also names the box; each leaves no box and no state dir. The box whose name was reused still answers exec, and of two `up`s racing for one name exactly one wins. |
 | 18 | A caller reads the effective configuration as data | config reports project policy, trust and the home actually mounted. Without a runtime it still reports host policy, image_built null and image_error without creating state/cache/config files. Unknown project/profile TOML keys and a profile's containerfile are refused with the source and key; correcting the same file restores the fixture policy. |
 | 19 | A caller-owned box launches the pinned harness | A spec with each harness (pi, claude, codex) runs `/opt/pinfold/<name>/<name> --version` at the version `pinfold artifacts` pins, and the box's PINFOLD_ALLOW is the spec's allow list. After the host deletes the cached pi executable, a new pi box repairs it and runs the pinned pi. |
 | 20 | A caller can tell an OOM kill from a failure | On podman, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, every field is present, and `exec`'d processes carry `oom_score_adj` 1000, so init is never the victim. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
-| 22 | A caller-owned box cannot write .git | Pre-existing aliases in the project or an additional writable export refuse as `mount-alias` in either mount order, as does a writable duplicate directory export of a single-link protected file; refusals leave no box or box state and preserve host bytes. Removing conflicting names or exports admits the same fixture, including an object hardlink outside writable exports. With REPO/.git read-only at guest REPO/.git/../.git listed before REPO writable, and safe.directory set by the caller: a worktree write succeeds, git log and git status succeed, and a hook write fails. |
+| 22 | A caller-owned box cannot write .git | Pre-existing aliases in the project or an additional writable export refuse as `mount-alias` in either mount order, as does a writable duplicate directory export of a single-link protected file; refusals leave no box or box state and preserve host bytes. Removing conflicting names or exports admits the same fixture, including an object hardlink outside writable exports. With REPO/.git read-only at guest REPO/.git/../.git listed before REPO writable, and safe.directory set by the caller: a worktree write succeeds, git log and git status succeed, and a hook write fails. An empty protected directory exported read-only and reached through a second writable export refuses as `mount-alias` in either mount order; removing the second export admits it. A writable export rooted at a linked worktree, with no other mount, cannot change the pointer through any spelling or write the common dir, while a root file write succeeds. |
 | 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref, the image's id and the labels; three builds of one name move latest, and the first build's ref still comes up; two builds of unchanged inputs make one image under two refs; a failed build prints a bounded trailing log even after a 200,000-byte unterminated line, retains its final context marker and makes no image. Cached caller builds preserve a RUN-generated random stamp; --no-cache changes it. On Apple, builds from two state directories with different `NO_COLOR` and `BUILDKIT_COLORS` both succeed while one is held active in RUN. |
 | 24 | Every build reruns its steps | A second build changes a random RUN-generated stamp. On Podman the fixture-labeled set of dangling image IDs gains no member; concurrent builds and deletion of old images cannot conceal or fabricate a leak. |
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box list --help` exits 0, with no runtime and leaving the state dir untouched. |
