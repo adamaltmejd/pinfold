@@ -32,13 +32,14 @@ fn root() -> io::Result<PathBuf> {
         Err(error) => return Err(error),
     }
     let metadata = fs::symlink_metadata(&path)?;
-    if !metadata.is_dir()
-        || metadata.uid() != nix::unistd::getuid().as_raw()
-        || metadata.mode() & 0o077 != 0
-    {
+    if !private(&metadata, metadata.is_dir()) {
         return Err(io::Error::other("unsafe host ownership directory"));
     }
     Ok(path)
+}
+
+fn private(metadata: &fs::Metadata, kind: bool) -> bool {
+    kind && metadata.uid() == nix::unistd::getuid().as_raw() && metadata.mode() & 0o077 == 0
 }
 
 fn path(key: &str, suffix: &str) -> io::Result<PathBuf> {
@@ -58,10 +59,7 @@ pub fn open_lock(key: &str) -> io::Result<File> {
         .custom_flags(nix::libc::O_NOFOLLOW)
         .open(path(key, "lock")?)?;
     let metadata = file.metadata()?;
-    if !metadata.is_file()
-        || metadata.uid() != nix::unistd::getuid().as_raw()
-        || metadata.mode() & 0o077 != 0
-    {
+    if !private(&metadata, metadata.is_file()) {
         return Err(io::Error::other("unsafe host ownership lock"));
     }
     Ok(file)
@@ -87,10 +85,7 @@ pub fn name_alive(name: &str) -> io::Result<bool> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error),
     };
-    if !metadata.is_dir()
-        || metadata.uid() != nix::unistd::getuid().as_raw()
-        || metadata.mode() & 0o077 != 0
-    {
+    if !private(&metadata, metadata.is_dir()) {
         return Err(io::Error::other("unsafe host ownership directory"));
     }
     let file = match File::options()
@@ -103,10 +98,7 @@ pub fn name_alive(name: &str) -> io::Result<bool> {
         Err(error) => return Err(error),
     };
     let metadata = file.metadata()?;
-    if !metadata.is_file()
-        || metadata.uid() != nix::unistd::getuid().as_raw()
-        || metadata.mode() & 0o077 != 0
-    {
+    if !private(&metadata, metadata.is_file()) {
         return Err(io::Error::other("unsafe host ownership lock"));
     }
     match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
@@ -279,14 +271,9 @@ impl Claim {
 
     /// Acknowledge only completed teardown. Ownership stays held until Drop.
     pub async fn finish(&mut self, success: bool) -> io::Result<()> {
-        let cleanup = if success {
-            if let Some(record) = self.record.as_ref() {
-                remove_record(&self.name, &record.generation)
-            } else {
-                Ok(())
-            }
-        } else {
-            Ok(())
+        let cleanup = match (success, self.record.as_ref()) {
+            (true, Some(record)) => remove_record(&self.name, &record.generation),
+            _ => Ok(()),
         };
         let completed = success && cleanup.is_ok();
         if completed {

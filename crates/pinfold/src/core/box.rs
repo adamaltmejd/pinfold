@@ -249,16 +249,12 @@ impl Box {
                 "name remained busy through the claim deadline".to_string(),
             )
         })?;
-        match runtime.list(None) {
-            Ok(boxes) if boxes.iter().all(|box_| box_.id != plan.name) => {}
-            Ok(_) => {
-                return Err(refused(
-                    &plan,
-                    RefusalReason::NameInUse,
-                    format!("the runtime already has a box named {:?}", plan.name),
-                ));
-            }
-            Err(error) => return Err(error.into()),
+        if runtime.list(None)?.iter().any(|box_| box_.id == plan.name) {
+            return Err(refused(
+                &plan,
+                RefusalReason::NameInUse,
+                format!("the runtime already has a box named {:?}", plan.name),
+            ));
         }
         claim.prepare(&state_dir)?;
         plan.labels.insert(
@@ -382,27 +378,24 @@ pub fn down(name: &str) -> io::Result<()> {
         return Ok(());
     }
     let observed = ownership::record(name)?;
-    if let Some(lock) = ownership::try_name_lock(name)? {
-        return clean::remove_orphan(
+    let remove_orphan = |lock| {
+        clean::remove_orphan(
             runtime(),
             name,
             observed.as_ref().map(|record| record.generation.as_str()),
             &lock,
         )
-        .map(|_| ());
+        .map(|_| ())
+    };
+    if let Some(lock) = ownership::try_name_lock(name)? {
+        return remove_orphan(lock);
     }
     let stopped = ownership::request_stop(name, observed.as_ref());
     if matches!(stopped, Ok(true)) {
         return Ok(());
     }
     if let Some(lock) = ownership::try_name_lock(name)? {
-        clean::remove_orphan(
-            runtime(),
-            name,
-            observed.as_ref().map(|record| record.generation.as_str()),
-            &lock,
-        )?;
-        return Ok(());
+        return remove_orphan(lock);
     }
     stopped.map(|_| ())
 }
@@ -637,20 +630,20 @@ fn check_mount_aliases(
     // Index read-only identities before checking writable exports.
     mounts.sort_by_key(|mount| !mount.readonly);
     let mut readonly_files: BTreeMap<(u64, u64), PathBuf> = BTreeMap::new();
-    for mount in &mounts {
+    let interrupted = || -> Result<(), Stop> {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(io::Error::from(io::ErrorKind::Interrupted).into());
         }
+        Ok(())
+    };
+    for mount in &mounts {
+        interrupted()?;
         let root = fs::canonicalize(&mount.host)?;
         let mut directories = vec![(root, mount.guest.clone())];
         while let Some((host, guest)) = directories.pop() {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err(io::Error::from(io::ErrorKind::Interrupted).into());
-            }
+            interrupted()?;
             for entry in fs::read_dir(host)? {
-                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                    return Err(io::Error::from(io::ErrorKind::Interrupted).into());
-                }
+                interrupted()?;
                 let entry = entry?;
                 let guest = guest.join(entry.file_name());
                 // Nested exports mask this occurrence, regardless of order.
