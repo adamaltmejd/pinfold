@@ -1576,6 +1576,19 @@ fn nothing_can_gain_privileges() {
         // Positive control: the same box still runs a plain child process.
         let child = box_exec(&env, &name, &["true"]);
         assert_ok(&child, "a plain child process");
+        // Attribution: under podman's own default profile the same image
+        // creates a user namespace on this host. A host that refuses them
+        // (a sysctl or AppArmor policy) would otherwise pass the refusal
+        // above with the sabotage applied.
+        run_ok(Command::new("podman").args([
+            "run",
+            "--rm",
+            "--network=none",
+            image,
+            "unshare",
+            "-U",
+            "true",
+        ]));
     }
 
     up.down(&env);
@@ -1949,14 +1962,19 @@ fn a_caller_builds_an_image_from_its_own_tree() {
             .unwrap_or_else(|| panic!("built carries no ref: {built}"))
             .to_string();
         assert_eq!(built["labels"]["dev.example.test"], "image");
+        // The runtime must hold the ref, or a missing ref, latest and a null
+        // id compare equal. Sabotage: drop the build's tag arguments; neither
+        // ref resolves and this assertion fails.
+        let id =
+            image_id(&reference).unwrap_or_else(|| panic!("the runtime has no image {reference}"));
         assert_eq!(
-            image_id(&latest),
-            image_id(&reference),
+            image_id(&latest).as_deref(),
+            Some(id.as_str()),
             "{latest} does not name the {marker} build"
         );
         assert_eq!(
             built["id"].as_str(),
-            image_id(&reference).as_deref(),
+            Some(id.as_str()),
             "the {marker} built line names another image id"
         );
         refs.push(reference);

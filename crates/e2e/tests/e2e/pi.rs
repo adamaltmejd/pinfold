@@ -174,6 +174,13 @@ fn the_environment_is_exactly_the_spec() {
         .args(["-ww", "-A", "-o", "command"])
         .output()
         .expect("run ps");
+    // A failed ps prints nothing and would pass the absence check whatever
+    // argv held, hiding the argv sabotage above.
+    assert!(
+        ps.status.success(),
+        "host ps failed: {}",
+        String::from_utf8_lossy(&ps.stderr)
+    );
     let ps = String::from_utf8_lossy(&ps.stdout);
     assert!(
         !ps.contains("shhh"),
