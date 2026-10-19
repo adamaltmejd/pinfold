@@ -1,0 +1,22 @@
+podman cold first_exec_ms=1669 memory={"current":5550080,"peak":6057984,"limit":null}
+podman warm first_exec_ms=904 memory={"current":2469888,"peak":3055616,"limit":null}
+podman warm first_exec_ms=946 memory={"current":2473984,"peak":2994176,"limit":null}
+podman warm first_exec_ms=921 memory={"current":2469888,"peak":2973696,"limit":null}
+podman warm first_exec_ms=928 memory={"current":2469888,"peak":3002368,"limit":null}
+podman warm first_exec_ms=918 memory={"current":2469888,"peak":3051520,"limit":null}
+firecracker jail=1 cold first_exec_ms=1218 copy_in_ms=183 boot_ms=960 ready 6.1.188 vmm_rss_kib=82632 guest_used_kib=100660
+firecracker jail=1 warm first_exec_ms=859 copy_in_ms=55 boot_ms=785 ready 6.1.188 vmm_rss_kib=82636 guest_used_kib=101928
+firecracker jail=1 warm first_exec_ms=858 copy_in_ms=55 boot_ms=783 ready 6.1.188 vmm_rss_kib=82636 guest_used_kib=101220
+firecracker jail=1 warm first_exec_ms=820 copy_in_ms=54 boot_ms=747 ready 6.1.188 vmm_rss_kib=80592 guest_used_kib=98948
+firecracker jail=1 warm first_exec_ms=824 copy_in_ms=63 boot_ms=741 ready 6.1.188 vmm_rss_kib=82632 guest_used_kib=100204
+firecracker jail=1 warm first_exec_ms=814 copy_in_ms=52 boot_ms=743 ready 6.1.188 vmm_rss_kib=84672 guest_used_kib=103000
+firecracker jail=0 cold first_exec_ms=1157 copy_in_ms=117 boot_ms=959 ready 6.1.188 vmm_rss_kib=80472 guest_used_kib=99400
+firecracker jail=0 warm first_exec_ms=763 copy_in_ms=23 boot_ms=716 ready 6.1.188 vmm_rss_kib=84612 guest_used_kib=101432
+firecracker jail=0 warm first_exec_ms=813 copy_in_ms=41 boot_ms=753 ready 6.1.188 vmm_rss_kib=82572 guest_used_kib=101440
+firecracker jail=0 warm first_exec_ms=808 copy_in_ms=37 boot_ms=753 ready 6.1.188 vmm_rss_kib=80540 guest_used_kib=101276
+firecracker jail=0 warm first_exec_ms=767 copy_in_ms=31 boot_ms=717 ready 6.1.188 vmm_rss_kib=80520 guest_used_kib=100664
+firecracker jail=0 warm first_exec_ms=808 copy_in_ms=28 boot_ms=760 ready 6.1.188 vmm_rss_kib=84620 guest_used_kib=103916
+copy-in tree=/home/agent/proto/fixture kib=272 files=69 ms=72
+copy-in tree=/home/agent/proto/pinfold-git kib=5452 files=354 ms=137
+copy-in tree=/home/agent/pinfold kib=181916 files=1084 ms=1171
+measure-exit=0

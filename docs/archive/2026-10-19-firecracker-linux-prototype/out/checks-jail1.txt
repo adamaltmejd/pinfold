@@ -1,0 +1,26 @@
+copy_in_ms=67 boot_ms=748 ready 6.1.188
+mode: FC_JAIL=1
+CHECK kernel: ok host=6.12.107+deb13-cloud-amd64 guest=6.1.188
+CHECK no-nic: ok links=lo 
+CHECK direct-refused: ok curl exit=6 curl: (6) Could not resolve host: api.github.com
+CHECK egress-allowed: ok http=200
+CHECK egress-denied: ok curl exit=56 curl: (56) CONNECT tunnel failed, response 403
+  log: {"decision":"refused","host":"example.com","reason":"not allowlisted","time":"2026-10-19T13:11:31Z"}
+CHECK exec-streams: ok rc=7
+CHECK exec-uid: ok uid=1000
+CHECK cap-bounding: ok CapBnd=0000000000000000
+CHECK rootfs-ro: ok 
+CHECK exec-stdin: ok 
+CHECK cancel: ok sleepers=0
+CHECK tty-attach: ok [?2004l/dev/pts/0
+CHECK host-checkout-untouched: ok 
+  mount: /dev/root / ext4 ro,relatime 0 0
+  mount: /dev/vdb /workspace ext4 rw,nosuid,nodev,relatime 0 0
+touch: cannot touch '/home/agent/proto/out/PWNED': No such file or directory
+touch: cannot touch '/home/agent/proto/out/PWNED': No such file or directory
+warning: could not open directory 'lost+found/': Permission denied
+touch: cannot touch '/home/agent/proto/out/PWNED': No such file or directory
+touch: cannot touch '/home/agent/proto/out/PWNED': No such file or directory
+CHECK pushback-no-hooks: ok fetched box work
+CHECK hook-marker-control: ok 
+CHECK teardown: ok firecracker procs=0
