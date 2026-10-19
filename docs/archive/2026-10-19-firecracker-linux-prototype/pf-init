@@ -1,0 +1,23 @@
+#!/bin/sh
+# PID 1 in the guest. The rootfs is read-only; the project disk is /dev/vdb.
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev
+mkdir -p /dev/pts && mount -t devpts devpts /dev/pts
+mount -t tmpfs -o mode=1777 tmp /tmp
+mount -t tmpfs run /run
+mount -t tmpfs -o uid=1000,gid=1000,mode=0700 home /home/box
+mount -o nodev,nosuid /dev/vdb /workspace
+ip link set lo up
+# Egress: loopback 3128 -> host CID 2 port 3128 -> pinfold's proxy socket.
+socat -d -d TCP-LISTEN:3128,bind=127.0.0.1,reuseaddr,fork VSOCK-CONNECT:2:3128 2>/run/l3128 &
+# Exec and attach.
+socat -d -d VSOCK-LISTEN:1024,reuseaddr,fork EXEC:"/sbin/pf-agent serve",nofork 2>/run/l1024 &
+socat -d -d VSOCK-LISTEN:1025,reuseaddr,fork \
+  EXEC:/sbin/pf-shell,pty,setsid,ctty,stderr,sane 2>/run/l1025 &
+# Readiness: one line to host port 1000 once the listeners are up.
+# The guest kernel has no vsock_diag, so ss cannot see vsock listeners.
+for l in 3128 1024 1025; do until grep -q 'listening on' /run/l$l 2>/dev/null; do :; done; done
+echo "ready $(uname -r)" | socat -u - VSOCK-CONNECT:2:1000
+# Reap orphans forever.
+while :; do wait; sleep 3600 & wait $!; done

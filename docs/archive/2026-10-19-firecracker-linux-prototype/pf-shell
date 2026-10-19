@@ -1,0 +1,7 @@
+#!/bin/sh
+# The attach shell: the box user, an empty bounding set, the proxy env.
+exec setpriv --reuid 1000 --regid 1000 --clear-groups --bounding-set -all \
+  --inh-caps -all --no-new-privs env -i HOME=/home/box TERM=xterm \
+  PATH=/usr/local/bin:/usr/bin:/bin HTTPS_PROXY=http://127.0.0.1:3128 \
+  http_proxy=http://127.0.0.1:3128 NODE_USE_ENV_PROXY=1 \
+  sh -c 'cd /workspace && exec bash -l'

@@ -1,0 +1,17 @@
+== sabotage: proxy socket path points nowhere
+CHECK direct-refused: ok curl exit=6 curl: (6) Could not resolve host: api.github.com
+CHECK egress-allowed: FAIL http=000
+CHECK egress-denied: FAIL rc=56
+== uncached guest layer
+guest_layer_s=2 export_mkfs_s=4 rootfs_kib=214656
+-rw-r--r-- 1 agent agent 330877952 Oct 19 13:25 /home/agent/fc/rootfs.ext4
+== memory under load (pinfold tree, 1 GiB guest)
+copy_in_ms=741 boot_ms=741 ready 6.1.188
+after boot rss_kib=80520
+0
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+find: '/workspace/lost+found': Permission denied
+head: error writing 'standard output': No space left on device
+Mem:             984         147         767           0         197         837
+after 600 MiB write+read+rm rss_kib=576144

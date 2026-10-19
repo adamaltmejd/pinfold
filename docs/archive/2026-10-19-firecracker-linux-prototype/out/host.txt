@@ -1,0 +1,6 @@
+Linux labvm-sthlm 6.12.107+deb13-cloud-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.107-1 (2026-08-29) x86_64 GNU/Linux
+podman version 6.1.4
+Firecracker v1.17.0
+Model name:                              Intel(R) Core(TM) i5-9500T CPU @ 2.20GHz
+2
+Mem:            3922         652        2525         278        1245        3269
