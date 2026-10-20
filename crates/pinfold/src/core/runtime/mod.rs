@@ -408,6 +408,20 @@ pub trait Runtime: Sync {
         workdir: Option<&Path>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
+        self.exec_command(name, init, tty, workdir, argv)
+            .status()
+            .map_err(|error| spawn_error(self.program(), error))
+    }
+
+    /// The command [`Runtime::exec`] runs, for a caller that pipes its stdio.
+    fn exec_command(
+        &self,
+        name: &str,
+        init: &Path,
+        tty: bool,
+        workdir: Option<&Path>,
+        argv: &[String],
+    ) -> std::process::Command {
         let program = self.program();
         let mut command = std::process::Command::new(program);
         command.args(["exec", "-i"]);
@@ -432,9 +446,8 @@ pub trait Runtime: Sync {
             .arg(name)
             .arg(init)
             .args(["init", "exec", "--"])
-            .args(argv)
-            .status()
-            .map_err(|error| spawn_error(program, error))
+            .args(argv);
+        command
     }
 
     /// One box's OOM kills, memory and pids facts. `name` is the box

@@ -10,6 +10,7 @@ use std::time::Duration;
 use crate::config::Config;
 use crate::core::artifacts;
 use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, Signals, UpError};
+use crate::core::crossing::{self, CrossingError};
 use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
 use crate::core::plan::{Plan, valid_name};
 use crate::core::profile::{self, Profile};
@@ -51,6 +52,8 @@ pinfold box list --label KEY[=VALUE]…
 pinfold box prune
 pinfold box inspect RUN
 pinfold box events RUN [--limit N] [--after CURSOR]
+pinfold box push BOX --repo REPO --into GUEST_REPO [--remote NAME]
+pinfold box fetch BOX --repo GUEST_REPO --into REPO [--remote NAME]
 pinfold disk list
 pinfold disk rm NAME";
 
@@ -201,6 +204,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
         Some("prune") => prune(&args[1..]),
         Some("inspect") => inspect(&args[1..]),
         Some("events") => events(&args[1..]),
+        Some(verb @ ("push" | "fetch")) => crossing(verb, &args[1..]),
         Some(verb) => Err(usage("box", &format!("unknown box verb {verb:?}"))),
         None => Err(usage("box", "a box verb is required")),
     }
@@ -366,6 +370,87 @@ fn stat(args: &[String]) -> io::Result<i32> {
     let report = serde_json::to_string(&runtime.stat(&name)?).map_err(io::Error::other)?;
     println!("{report}");
     Ok(0)
+}
+
+/// `push` and `fetch`: one JSON line, exit 0, 1 on a refusal or a broken
+/// transfer, 3 on an absent box.
+fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
+    let (name, repo, into, remote) = parse_crossing(verb, args)?;
+    let runtime = runtime();
+    if !present(runtime, verb, &name)? {
+        return Ok(3);
+    }
+    let remote = remote.unwrap_or_else(|| {
+        if verb == "push" {
+            "host".into()
+        } else {
+            name.clone()
+        }
+    });
+    let init = artifacts::init()?;
+    let result = if verb == "push" {
+        crossing::push(runtime, &init, &name, Path::new(&repo), &into, &remote)
+    } else {
+        crossing::fetch(runtime, &init, &name, &repo, Path::new(&into), &remote)
+    };
+    match result {
+        Ok(refs) => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "event": if verb == "push" { "pushed" } else { "fetched" },
+                    "box": name,
+                    "remote": remote,
+                    "refs": refs,
+                })
+            );
+            Ok(0)
+        }
+        Err(CrossingError::Refused(reason, detail)) => {
+            Ok(refused("box", Some(&name), reason, &detail))
+        }
+        Err(CrossingError::Failed(detail)) => {
+            println!(
+                "{}",
+                serde_json::json!({ "event": "failed", "box": name, "detail": detail })
+            );
+            Ok(1)
+        }
+    }
+}
+
+/// `BOX --repo R --into I [--remote NAME]`, options in any order after BOX.
+fn parse_crossing(
+    verb: &str,
+    args: &[String],
+) -> io::Result<(String, String, String, Option<String>)> {
+    let (name, mut rest) = match args {
+        [name, rest @ ..] if !name.starts_with('-') => (name.clone(), rest),
+        _ => return Err(usage("box", &format!("{verb} needs a box name"))),
+    };
+    let (mut repo, mut into, mut remote) = (None, None, None);
+    while let [option, value, tail @ ..] = rest {
+        let slot = match option.as_str() {
+            "--repo" => &mut repo,
+            "--into" => &mut into,
+            "--remote" => &mut remote,
+            _ => return Err(usage("box", &format!("unknown {verb} option {option:?}"))),
+        };
+        if slot.replace(value.clone()).is_some() {
+            return Err(usage("box", &format!("{verb} takes {option} once")));
+        }
+        rest = tail;
+    }
+    if let [option] = rest {
+        return Err(usage(
+            "box",
+            &format!("{verb} option {option:?} needs a value"),
+        ));
+    }
+    match (repo, into) {
+        (Some(repo), Some(into)) => Ok((name, repo, into, remote)),
+        _ => Err(usage("box", &format!("{verb} needs --repo and --into"))),
+    }
 }
 
 /// Whether the runtime lists pinfold box `name`. An absent box is pinfold's

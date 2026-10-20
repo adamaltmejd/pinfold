@@ -1787,6 +1787,350 @@ impl Drop for DiskCleanup {
     }
 }
 
+/// Every client-side hook name in githooks(5).
+const CLIENT_HOOKS: &[&str] = &[
+    "applypatch-msg",
+    "pre-applypatch",
+    "post-applypatch",
+    "pre-commit",
+    "pre-merge-commit",
+    "prepare-commit-msg",
+    "commit-msg",
+    "post-commit",
+    "pre-rebase",
+    "post-checkout",
+    "post-merge",
+    "pre-push",
+    "pre-auto-gc",
+    "post-rewrite",
+    "sendemail-validate",
+    "fsmonitor-watchman",
+    "p4-changelist",
+    "p4-prepare-changelist",
+    "p4-post-changelist",
+    "p4-pre-submit",
+    "post-index-change",
+    "reference-transaction",
+];
+
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Linux disks arrive with the Firecracker runtime"
+)]
+fn work_leaves_the_box_only_by_fetch() {
+    let _runtime = crate::shared_runtime();
+    // Guarantee 10's caller parts: disk writes stay in the box, push and
+    // fetch move branches only, and nothing the box plants runs on the host.
+    // Sabotage: write fetched branches under `refs/heads/` in crossing.rs;
+    // the fetched refs assertion fails. Sabotage: push with
+    // `+refs/heads/*:refs/heads/*` and `--update-head-ok` in the box script;
+    // nothing lands under refs/remotes/host/. Sabotage: bundle without the
+    // held commits (`--branches` alone); the second fetch's pack carries
+    // every commit. Sabotage: bundle `--tags` too and fetch with `--tags`
+    // for `--no-tags`; the box's tag lands. Sabotage: set REPO's
+    // `core.hooksPath` to `.githooks` after the fetch, as if fetch adopted
+    // the box's config; a host checkout touches a marker. Sabotage: drop
+    // `check_branch` from crossing.rs; the hostile bundle's
+    // `refs/heads/injected` lands on the host.
+    let env = TestEnv::new("crossing");
+    let name = box_name("crossing");
+    let _disks = DiskCleanup(vec![name.clone()]);
+    let project = TestDir::new(&env, "project");
+    let repo = project.path();
+    let markers = TestDir::new(&env, "markers");
+    let marker = |hook: &str| markers.path().join(hook);
+    let host_git = |args: &[&str]| git(repo, args).trim().to_string();
+    host_git(&["init", "-q", "-b", "main"]);
+    host_git(&["config", "user.name", "host"]);
+    host_git(&["config", "user.email", "host@example.test"]);
+    // Every fetch keeps its pack whole, so a fetch's objects can be counted.
+    host_git(&["config", "fetch.unpackLimit", "1"]);
+    fs::write(repo.join("a.txt"), b"a\n").unwrap();
+    fs::write(repo.join("run.sh"), b"#!/bin/sh\n").unwrap();
+    fs::set_permissions(repo.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::create_dir(repo.join("sub")).unwrap();
+    fs::write(repo.join("sub/b.txt"), b"b\n").unwrap();
+    host_git(&["add", "-A"]);
+    host_git(&["commit", "-q", "-m", "host one"]);
+    host_git(&["branch", "feature"]);
+
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+        "disks": [{ "name": name, "guest": "/work", "size": "1G", "from": repo }],
+        // The hostile case's `git` goes here, absent until then.
+        "env": { "PATH": "/work/.hostile:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" },
+    });
+    let mut up = box_up(&env, &spec, &name);
+    let in_box = |script: &str| {
+        let output = box_exec(&env, &name, &["sh", "-c", script]);
+        assert_ok(&output, script);
+        output.stdout
+    };
+    in_box("git -C /work config user.name box && git -C /work config user.email box@example.test");
+
+    // The box writes, chmods and deletes on its disk; the host project,
+    // .git included, keeps its bytes, modes and mtimes.
+    let before = tree_snapshot(repo);
+    in_box(
+        "printf more >> /work/a.txt && chmod 600 /work/run.sh && rm /work/sub/b.txt \
+         && echo box > /work/box.txt && git -C /work add box.txt \
+         && git -C /work commit -q -m 'box one'",
+    );
+    assert_eq!(
+        tree_snapshot(repo),
+        before,
+        "the box changed the host project"
+    );
+
+    // push: the host moves on and pushes. Its branches land under
+    // refs/remotes/host/*; the box's tree and branches stay.
+    fs::write(repo.join("host.txt"), b"host\n").unwrap();
+    host_git(&["add", "host.txt"]);
+    host_git(&["commit", "-q", "-m", "host two"]);
+    let box_state = "cd /work && git symbolic-ref HEAD && git for-each-ref refs/heads/ \
+                     && git status --porcelain && cat a.txt && stat -c %a run.sh";
+    let unpushed = in_box(box_state);
+    let (code, pushed) = one_json_line(env.command(pinfold()).args([
+        "box",
+        "push",
+        name.as_str(),
+        "--repo",
+        repo.to_str().unwrap(),
+        "--into",
+        "/work",
+    ]));
+    assert_eq!(code, 0, "{pushed}");
+    let host_branches = branch_map(
+        &host_git(&["for-each-ref", "refs/heads/"]),
+        "refs/remotes/host/",
+    );
+    assert_eq!(pushed["event"], "pushed", "{pushed}");
+    assert_eq!(pushed["remote"], "host", "{pushed}");
+    assert_eq!(pushed["refs"], serde_json::json!(host_branches), "{pushed}");
+    let landed = in_box("git -C /work for-each-ref refs/remotes/");
+    assert_eq!(branch_map(&landed, ""), host_branches);
+    assert_eq!(
+        in_box(box_state),
+        unpushed,
+        "push changed the box's tree or branches"
+    );
+
+    // The box merges the host's work, tracks hooks in .githooks/ and
+    // .husky/, tags, and only then plants hooks under every client-side
+    // name, core.hooksPath and core.fsmonitor, each touching a host marker.
+    let hooks: String = CLIENT_HOOKS.iter().map(|hook| format!("{hook} ")).collect();
+    in_box(&format!(
+        "cd /work && git merge -q --no-edit refs/remotes/host/main \
+         && for dir in .githooks .husky; do mkdir -p $dir; for hook in {hooks}; do \
+              printf '#!/bin/sh\\ntouch {markers}/%s-%s\\n' $dir $hook > $dir/$hook; \
+              chmod 755 $dir/$hook; done; done \
+         && git add .githooks .husky && git commit -q -m hooks && git tag box-tag \
+         && for hook in {hooks}; do \
+              printf '#!/bin/sh\\ntouch {markers}/git-%s\\n' $hook > .git/hooks/$hook; \
+              chmod 755 .git/hooks/$hook; done \
+         && git config core.hooksPath .githooks \
+         && git config core.fsmonitor 'touch {markers}/fsmonitor'",
+        markers = markers.path().display(),
+    ));
+    let host_heads = host_git(&["for-each-ref", "refs/heads/"]);
+    let (code, fetched) = crossing_fetch(&env, &name, repo);
+    assert_eq!(code, 0, "{fetched}");
+    let box_branches = branch_map(
+        &in_box("git -C /work for-each-ref refs/heads/"),
+        &format!("refs/remotes/{name}/"),
+    );
+    assert_eq!(fetched["event"], "fetched", "{fetched}");
+    assert_eq!(fetched["remote"], name.as_str(), "{fetched}");
+    assert_eq!(
+        fetched["refs"],
+        serde_json::json!(box_branches),
+        "{fetched}"
+    );
+    // Only the box's branches arrive, under its namespace: no tag, and the
+    // host's own branches are as they were.
+    let mut expected = branch_map(&host_heads, "refs/heads/");
+    expected.extend(box_branches.clone());
+    assert_eq!(
+        branch_map(&host_git(&["for-each-ref"]), "refs/heads/"),
+        expected,
+        "the host's refs after fetch"
+    );
+
+    // A fast-forward merge and two checkouts on the host run nothing the box
+    // planted.
+    host_git(&[
+        "merge",
+        "-q",
+        "--ff-only",
+        &format!("refs/remotes/{name}/main"),
+    ]);
+    assert!(
+        repo.join(".husky/post-checkout").exists(),
+        "the merge brought the hooks"
+    );
+    host_git(&["checkout", "-q", "feature"]);
+    host_git(&["checkout", "-q", "main"]);
+    let touched: Vec<_> = fs::read_dir(markers.path()).unwrap().collect();
+    assert!(
+        touched.is_empty(),
+        "a box hook ran on the host: {touched:?}"
+    );
+    // Control: the same hook in the host's own .git/hooks runs.
+    let control = repo.join(".git/hooks/post-checkout");
+    fs::write(
+        &control,
+        format!("#!/bin/sh\ntouch {}\n", marker("control").display()),
+    )
+    .unwrap();
+    fs::set_permissions(&control, fs::Permissions::from_mode(0o755)).unwrap();
+    host_git(&["checkout", "-q", "feature"]);
+    assert!(
+        marker("control").exists(),
+        "the host's own hook did not run"
+    );
+    fs::remove_file(&control).unwrap();
+
+    // A second fetch after one more box commit carries only that commit,
+    // and a new branch at a commit the host already holds lands too.
+    let first = box_branches[&format!("refs/remotes/{name}/main")].clone();
+    // The box's own planted hooks stay out of its way here.
+    let commit = in_box(&format!(
+        "cd /work && g() {{ git -c core.hooksPath=/nonexistent -c core.fsmonitor=false \"$@\"; }} \
+         && echo two > two.txt && g add two.txt && g commit -q -m 'box two' \
+         && g branch old {first} && git rev-parse HEAD"
+    ));
+    let held = packs(repo);
+    let (code, fetched) = crossing_fetch(&env, &name, repo);
+    assert_eq!(code, 0, "{fetched}");
+    assert_eq!(
+        fetched["refs"][format!("refs/remotes/{name}/main")],
+        commit.trim()
+    );
+    assert_eq!(
+        fetched["refs"][format!("refs/remotes/{name}/old")],
+        first.as_str()
+    );
+    let new: Vec<_> = packs(repo).difference(&held).cloned().collect();
+    assert_eq!(new.len(), 1, "the second fetch's packs: {new:?}");
+    let pack = git(repo, &["verify-pack", "-v", new[0].to_str().unwrap()]);
+    let commits: Vec<_> = pack
+        .lines()
+        .filter(|line| line.split_whitespace().nth(1) == Some("commit"))
+        .map(|line| line.split_whitespace().next().unwrap())
+        .collect();
+    assert_eq!(commits, [commit.trim()], "the second fetch's commits");
+
+    // A box that writes its own bundle: a `git` ahead of the real one on
+    // PATH stands in for a box that controls its processes' output. Its
+    // bundle carries a real commit under a `refs/heads/x` head, a
+    // `refs/heads/x:refs/heads/injected` head and a
+    // `refs/heads/x:refs/replace/<host main>` head. The fetch fails and no
+    // host ref changes.
+    let host_main = host_git(&["rev-parse", "main"]);
+    let host_refs = host_git(&["for-each-ref"]);
+    in_box(&format!(
+        r#"set -e
+cd /work
+mkdir .hostile
+g() {{ git -c core.hooksPath=/nonexistent -c core.fsmonitor=false "$@"; }}
+evil=$(g commit-tree -m evil 'HEAD^{{tree}}')
+g update-ref refs/evil/x "$evil"
+g bundle create -q .hostile/real refs/evil/x
+header=$(sed -n '1,/^$/p' .hostile/real | wc -c)
+{{ printf '# v2 git bundle\n%s refs/heads/x\n%s refs/heads/x:refs/heads/injected\n%s refs/heads/x:refs/replace/{host_main}\n\n' "$evil" "$evil" "$evil"
+  tail -c +$((header + 1)) .hostile/real; }} > .hostile/bundle
+cat > .hostile/git <<'END'
+#!/bin/sh
+case " $* " in
+*" rev-list "*) echo more; exit 0 ;;
+*" bundle create "*) exec cat /work/.hostile/bundle ;;
+esac
+exec /usr/bin/git "$@"
+END
+chmod 755 .hostile/git"#
+    ));
+    let (code, failed) = crossing_fetch(&env, &name, repo);
+    assert_eq!((code, &failed["event"]), (1, &"failed".into()), "{failed}");
+    assert_eq!(
+        host_git(&["for-each-ref"]),
+        host_refs,
+        "the hostile bundle changed a host ref"
+    );
+
+    up.down(&env);
+    assert!(up.wait().success(), "the box did not exit cleanly");
+}
+
+fn crossing_fetch(env: &TestEnv, name: &str, repo: &Path) -> (i32, serde_json::Value) {
+    one_json_line(env.command(pinfold()).args([
+        "box",
+        "fetch",
+        name,
+        "--repo",
+        "/work",
+        "--into",
+        repo.to_str().unwrap(),
+    ]))
+}
+
+/// `for-each-ref` output as `{name: oid}`, each branch's `refs/heads/`
+/// replaced by `prefix`.
+fn branch_map(listing: &str, prefix: &str) -> std::collections::BTreeMap<String, String> {
+    listing
+        .lines()
+        .map(|line| {
+            let (oid, name) = line.split_once(" commit\t").expect("a commit ref");
+            let name = match name.strip_prefix("refs/heads/") {
+                Some(branch) => format!("{prefix}{branch}"),
+                None => name.to_string(),
+            };
+            (name, oid.to_string())
+        })
+        .collect()
+}
+
+/// The repository's pack index files.
+fn packs(repo: &Path) -> std::collections::BTreeSet<PathBuf> {
+    fs::read_dir(repo.join(".git/objects/pack"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "idx"))
+        .collect()
+}
+
+/// Every path under `dir` with its bytes (files only), mode and mtime.
+fn tree_snapshot(dir: &Path) -> std::collections::BTreeMap<PathBuf, (Vec<u8>, u32, i64, i64)> {
+    let mut snapshot = std::collections::BTreeMap::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        let bytes = if metadata.is_file() {
+            fs::read(&path).unwrap()
+        } else {
+            Vec::new()
+        };
+        if metadata.is_dir() {
+            pending.extend(
+                fs::read_dir(&path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path()),
+            );
+        }
+        snapshot.insert(
+            path,
+            (
+                bytes,
+                metadata.mode(),
+                metadata.mtime(),
+                metadata.mtime_nsec(),
+            ),
+        );
+    }
+    snapshot
+}
+
 #[test]
 fn box_shares_files_with_the_host() {
     let _runtime = crate::shared_runtime();
