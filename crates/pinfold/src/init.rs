@@ -187,18 +187,30 @@ pub const STREAM_EXECUTABLE: u8 = b'x';
 pub const STREAM_SYMLINK: u8 = b'l';
 pub const STREAM_END: u8 = 0;
 
-/// `init receive DIR`: write the copy stream on stdin below DIR, as the
-/// box user.
+/// `init receive [--missing] DIR`: write the copy stream on stdin below
+/// DIR, as the box user. With `--missing`, an entry already present is
+/// left as it is: a profile's seeds.
 fn receive(args: &[String]) -> io::Result<()> {
-    let [root] = args else {
-        return Err(io::Error::other("usage: pinfold init receive DIR"));
+    let (missing, root) = match args {
+        [flag, root] if flag == "--missing" => (true, root),
+        [root] => (false, root),
+        _ => {
+            return Err(io::Error::other(
+                "usage: pinfold init receive [--missing] DIR",
+            ));
+        }
     };
-    receive_into(Path::new(root), &mut io::BufReader::new(io::stdin().lock()))
+    receive_into(
+        Path::new(root),
+        &mut io::BufReader::new(io::stdin().lock()),
+        missing,
+    )
 }
 
 /// Write one copy stream from `input` below `root`, up to its
 /// [`STREAM_END`]. Directories and executables get 755, other files 644.
-fn receive_into(root: &Path, mut input: &mut impl io::Read) -> io::Result<()> {
+/// With `missing`, an existing entry is skipped and keeps its mode.
+fn receive_into(root: &Path, mut input: &mut impl io::Read, missing: bool) -> io::Result<()> {
     use std::io::Read;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
     fn read_bytes(input: &mut impl Read, length: usize) -> io::Result<Vec<u8>> {
@@ -206,6 +218,10 @@ fn receive_into(root: &Path, mut input: &mut impl io::Read) -> io::Result<()> {
         input.read_exact(&mut bytes)?;
         Ok(bytes)
     }
+    let present = |result: io::Result<()>| match result {
+        Err(error) if missing && error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        result => result.map(|()| true),
+    };
     loop {
         let tag = read_bytes(&mut input, 1)?[0];
         if tag == STREAM_END {
@@ -225,8 +241,9 @@ fn receive_into(root: &Path, mut input: &mut impl io::Read) -> io::Result<()> {
         let path = root.join(&relative);
         match tag {
             STREAM_DIR => {
-                fs::DirBuilder::new().mode(0o755).create(&path)?;
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+                if present(fs::DirBuilder::new().mode(0o755).create(&path))? {
+                    fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+                }
             }
             STREAM_FILE | STREAM_EXECUTABLE => {
                 let mode = if tag == STREAM_EXECUTABLE {
@@ -235,12 +252,21 @@ fn receive_into(root: &Path, mut input: &mut impl io::Read) -> io::Result<()> {
                     0o644
                 };
                 let size = u64::from_be_bytes(read_bytes(&mut input, 8)?.try_into().unwrap());
-                let mut file = fs::OpenOptions::new()
+                let mut payload = (&mut input).take(size);
+                let file = fs::OpenOptions::new()
                     .write(true)
                     .create_new(true)
                     .mode(mode)
-                    .open(&path)?;
-                let copied = io::copy(&mut (&mut input).take(size), &mut file)?;
+                    .open(&path);
+                let mut file = match file {
+                    Err(error) if missing && error.kind() == io::ErrorKind::AlreadyExists => {
+                        // Present, whatever it is; drain its payload.
+                        io::copy(&mut payload, &mut io::sink())?;
+                        continue;
+                    }
+                    file => file?,
+                };
+                let copied = io::copy(&mut payload, &mut file)?;
                 if copied != size {
                     return Err(io::ErrorKind::UnexpectedEof.into());
                 }
@@ -250,7 +276,7 @@ fn receive_into(root: &Path, mut input: &mut impl io::Read) -> io::Result<()> {
                 let length =
                     u32::from_be_bytes(read_bytes(&mut input, 4)?.try_into().unwrap()) as usize;
                 let target = OsString::from_vec(read_bytes(&mut input, length)?);
-                std::os::unix::fs::symlink(target, &path)?;
+                present(std::os::unix::fs::symlink(target, &path))?;
             }
             _ => return Err(io::Error::other(format!("unknown stream tag {tag}"))),
         }

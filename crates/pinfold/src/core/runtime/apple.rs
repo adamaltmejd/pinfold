@@ -341,17 +341,20 @@ pub fn own_disks(
 }
 
 /// Run `init receive GUEST` in box `name` as the box user with `stream`
-/// written to its stdin: a new disk's `from` copy.
+/// written to its stdin: a new disk's `from` copy, or with `missing`, the
+/// profile's seeds, each written only when absent.
 pub fn copy_in(
     name: &str,
     init: &Path,
     guest: &Path,
+    missing: bool,
     stream: impl FnOnce(&mut dyn io::Write) -> io::Result<()>,
 ) -> io::Result<()> {
     let mut child = std::process::Command::new("container")
         .args(["exec", "-i", name])
         .arg(init)
         .args(["init", "receive"])
+        .args(missing.then_some("--missing"))
         .arg(guest)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())

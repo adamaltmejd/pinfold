@@ -9,6 +9,10 @@ use e2e::{
 };
 
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Linux disks arrive with the Firecracker runtime"
+)]
 fn changed_image_inputs_prompt_a_rebuild() {
     let _runtime = crate::shared_runtime();
     // Sabotage: remove the profile Containerfile comparison in ensure_image;

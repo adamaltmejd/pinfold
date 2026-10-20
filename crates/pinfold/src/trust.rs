@@ -76,7 +76,6 @@ pub fn validate_host_paths(root: &Path, config: &Config) -> io::Result<()> {
         config_dir.join("profiles").join(&config.profile.name),
         config_dir,
         state_dir.join("trust"),
-        state::project_home(&root)?,
         state_dir,
         dirs::artifacts_dir()?,
         cache_dir,

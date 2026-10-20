@@ -114,6 +114,20 @@ impl TestEnv {
 
 impl Drop for TestEnv {
     fn drop(&mut self) {
+        // Disks outlive XDG roots: remove each recorded project's two (Pi
+        // layer), named `pi-<id>-home` and `pi-<id>-project`.
+        if cfg!(target_os = "macos")
+            && let Ok(projects) = fs::read_dir(self.state.join("pinfold/projects"))
+        {
+            for project in projects.flatten() {
+                let id = project.file_name().to_string_lossy().into_owned();
+                for disk in ["home", "project"] {
+                    let _ = Command::new(image_cli())
+                        .args(["volume", "rm", &format!("pi-{id}-{disk}")])
+                        .output();
+                }
+            }
+        }
         let _ = fs::remove_dir_all(&self.root);
         let _ = fs::remove_dir_all(&self.state);
     }

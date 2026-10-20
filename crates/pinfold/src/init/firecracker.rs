@@ -558,7 +558,7 @@ fn exec_service(request: &Request, host: UnixStream, mut dropped: io::PipeReader
     let started = (|| -> io::Result<(OwnedFd, TcpListener)> {
         become_box_user(request.uid, request.gid)?;
         for fill in &request.fills {
-            super::receive_into(fill, &mut host).map_err(|error| {
+            super::receive_into(fill, &mut host, false).map_err(|error| {
                 io::Error::other(format!("copy into {}: {error}", fill.display()))
             })?;
         }

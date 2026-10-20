@@ -1031,7 +1031,8 @@ measurement does not authorize a later deletion.
   asks core for it with `"harness": "pi"`.
 - **State:** `~/.local/state/pinfold/projects/<name>-<hash>/` on the host,
   where the hash is of the canonical project root path, and two disks,
-  `pi-<name>-<hash>-home` attached as `$HOME` and `pi-<name>-<hash>-project`.
+  `pi-<name>-<hash>-home` attached as `$HOME`, `/home/pi`, and
+  `pi-<name>-<hash>-project`.
   pi's agent dir, sessions, `~/.config` and caches sit at their default
   paths in the home disk. The cosmetic name is at most 32 ASCII bytes.
   State, config and cache roots inside the project are refused as
@@ -1041,7 +1042,8 @@ measurement does not authorize a later deletion.
   The first start creates it with the whole checkout as its `from`:
   `.git`, untracked and ignored files included. Later starts reuse it as
   the box left it; host edits after that reach it only as branches. One pi box runs per project; a second start is refused as
-  `disk-in-use`.
+  `disk-in-use`. A checkout whose `.git` is not a directory (a worktree)
+  is refused as `worktree` by `pi`, `push` and `fetch`.
 - **Arguments** pass through unchanged. The box starts in the invoking
   directory. Paths outside the project fail, and pi reports them. A
   non-UTF-8 path in a pi box spec or configuration report is refused as
@@ -1073,8 +1075,9 @@ under the box's hooks and config, none of which reach the host.
   `refs/remotes/host/*`; the agent merges or rebases them. Uncommitted
   host edits do not cross.
 
-Both use the project's running pi box, or a transient box on the project
-disk without egress. Worktrees are refused.
+Both check trust as `pinfold pi` does, then use the project's running pi
+box, or a transient box on the project disk without egress, and print
+`box push`'s and `box fetch`'s lines.
 
 ## Experimental durable caller
 
@@ -1143,7 +1146,8 @@ naming the file and the key. `containerfile` in a profile's `pinfold.toml` is
 refused: it is a project key.
 
 `pinfold config` prints the effective configuration without changing state,
-even when the runtime is unavailable. `image_built` is true or false when
+even when the runtime is unavailable. Its `project` names the id, `home`
+and the home and project disks. `image_built` is true or false when
 the runtime image inventory succeeds, and null when it cannot be observed;
 `image_error` names that failure. Host configuration and trust facts remain
 available. `artifacts` is also read-only.
@@ -1221,7 +1225,7 @@ The two slow gates run separately.
 | 10 | Work leaves the box only by fetch | A box writes, chmods and deletes on its disk; the host project's bytes, modes and mtimes are unchanged. `push` lands host branches under `refs/remotes/host/*` and leaves the box's working tree and branches unchanged. Before `fetch`, the box plants an executable hook under every client-side hook name, `core.hooksPath` and `core.fsmonitor` in its config, and tracked `.githooks/` and `.husky/` files, each touching a host marker path. `fetch` lands its branches under `refs/remotes/<box>/*` and no tag; after a fast-forward merge and two checkouts on the host, no marker exists. Control: the same hook placed in the host's `.git/hooks` creates the marker. A second `fetch` after one more box commit carries only that commit. A box that emits its own bundle with a `refs/heads/x:refs/heads/injected` head and a `refs/heads/x:refs/replace/*` head fails the fetch and changes no host ref. Starting inside `.git` is refused as `project-in-git`; starting from the project root runs. |
 | 11 | Disks persist and attach exclusively | A disk created with `from` holds the host tree's files with their exec bits and a symlink as a link, and no FIFO; files the host adds after that never appear, and a `from` whose sizes (one sparse file) pass the disk's `size` is refused as `limit` with no disk left. A file one box writes to a disk is read by the next box that attaches it. While a box attaches a disk writable, a second `up` naming it is refused as `disk-in-use` and creates nothing, and of two writable `up`s racing for one new disk exactly one runs and the other is refused as `disk-in-use`; after `down`, two boxes attach it read-only at once and neither can write it, nor any mount. After the runtime kills a writer's box, and after a writer's owner is SIGKILLed and its box pruned, a read-only attachment is refused as `disk-unclean`; a writable one runs, and after its `down` a read-only one runs. `disk rm` of an attached disk is refused as `disk-in-use`; after `down` it removes the disk, an absent disk exits 0, and a malformed name is refused as `spec`. A fresh `64G` disk's `allocated` is under 1 GiB, and a write past a `1G` disk's size fails in the box with ENOSPC. |
 | 12 | A changed project file stops the run | A domain added to `.pinfold.toml` by a box commit, fetched and merged on the host, or a changed project Containerfile, makes the next run and `pinfold build` refuse until `pinfold allow`. |
-| 13 | Project state persists and stays separate | Settings survive reseeding and profile copies omit auth.json. Guest writes in two same-named projects remain separate on A/B/A runs. A second `pinfold pi` in a project with a live box is refused as `disk-in-use`. A long valid project basename launches. |
+| 13 | Project state persists and stays separate | Settings survive reseeding. Guest writes in two same-named projects remain separate on A/B/A runs. A second `pinfold pi` in a project with a live box is refused as `disk-in-use`. A long valid project basename launches. |
 | 14 | Both pi config levels load behind a route | A routed fake model receives profile and project skills. The same home switches default/full/default: document skill, active Ponytail rules and operating context follow the selected profile while saved settings remain byte-identical. |
 | 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself; an image built on a profile's is its own family; a source a build left above two drops to two on a later `pinfold clean` with no build after. `--dry-run --unused 0s` leaves a project state the real one removes. A project whose checkout was moved keeps its state and disks under plain `clean`. Two names built from identical inputs share one image id; `image rm` of one removes its tags while a box of the other name runs the image, and leaves the other name's tags, the image and the box; an image's last tag stays while a box uses it. An unlabeled image, a container started with the runtime's CLI from a pinfold-built image, a live box, its project's state and disks survive `pinfold clean`, also with `--unused 0s`, which removes an idle project's state and disks; a dead box is removed and protects nothing. On Apple, a build in another state directory held active in RUN succeeds across clean; a real build writes and deletes 64 MiB, dry-run preserves its allocated host blocks and reports at least the builder backing filesystem's allocation, and clean reclaims freed blocks. A claimed pi startup awaiting its real harness download preserves project state across clean while its checkout is temporarily absent; restoring the checkout lets the launch succeed, and the same stale state is removable afterward. |
 | 16 | The highest layer sets the allowlist | The environment replaces project allow, CPU, memory and route settings. Kernel observations and a host HTTP fixture prove the result. Invalid UTF-8 overrides fail without disclosing their bytes. |
