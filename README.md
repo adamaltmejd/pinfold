@@ -15,7 +15,15 @@ Its only way out is its own allowlisting proxy.
 | Host | Runtime |
 |---|---|
 | macOS 26+ | Apple `container` 1.5.0+ (stable) |
-| Linux | `/dev/kvm` for the user (the `kvm` group), unprivileged user namespaces and Landlock, e2fsprogs, and rootless podman 6.1.4+ (stable) for image builds; pinfold fetches its pinned Firecracker |
+| Linux x64, kernel 6.10+ | `/dev/kvm` for the user (the `kvm` group), unprivileged user namespaces and Landlock, e2fsprogs, and rootless podman 6.1.4+ (stable) for image builds; pinfold fetches its pinned Firecracker |
+
+On Ubuntu 24.04+, AppArmor restricts user namespaces. Load pinfold's
+profile once instead of turning the restriction off:
+
+```sh
+pinfold apparmor-profile | sudo tee /etc/apparmor.d/pinfold >/dev/null
+sudo apparmor_parser -r /etc/apparmor.d/pinfold
+```
 
 ## Install
 
@@ -89,13 +97,13 @@ In a project:
    Later runs show an `image-outdated` rebuild hint when the Containerfile
    changes. Rebuilding keeps project settings, sessions and logins.
 3. Start pi: `pi`. The first run downloads the pinned pi release and
-   creates the project home under `~/.local/state/pinfold/projects/`.
+   creates the project home and project disks.
 4. Run `/login` in pi once per project: state is per project. API keys
    arrive through the environment instead.
 
-To reuse one project's pi configuration in another, `pinfold profile new
-NAME --from-project [PATH]` copies it into a profile (see Profiles in the
-spec).
+The first start copies the checkout into the box, which keeps that copy.
+`pinfold fetch` brings the box's commits back as `pinfold/*` branches for
+you to merge; `pinfold push` sends your branches in as `host/*`.
 
 Interactive launches report `bundled-profiles-changed` once without changing
 saved settings or user profiles. To inspect or edit a built-in, run
@@ -132,7 +140,8 @@ PINFOLD_ENV_CARGO_TARGET_DIR=/tmp/pinfold-target pi
 ```
 
 Keep outputs within the guest's available memory and `/tmp` capacity. Copy
-deliverables into the project before the box exits; `/tmp` is discarded.
+deliverables into the project and commit them before the box exits;
+`/tmp` is discarded.
 
 ## Limits
 
