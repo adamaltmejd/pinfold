@@ -9,7 +9,7 @@ publish = false
 
 [workspace.dependencies]
 httparse = "1.10.1"
-nix = { version = "0.31.3", default-features = false, features = ["feature", "fs", "poll", "process", "signal", "user"] }
+nix = { version = "0.31.3", default-features = false, features = ["feature", "fs", "mount", "poll", "process", "signal", "socket", "user"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8.5"
 serde = { version = "1.0.229", features = ["derive"] }
