@@ -166,6 +166,11 @@ pub fn fetch(
         .to_str()
         .ok_or_else(|| io::Error::other(format!("{} is not UTF-8", bundle.path.display())))?;
     if fs::metadata(&bundle.path)?.len() > 0 {
+        if filtered(&bundle.path)? {
+            return Err(CrossingError::Failed(
+                "the box sent a filtered bundle".into(),
+            ));
+        }
         succeeded(git(repo, &["bundle", "verify", "-q", path])?)?;
         let heads = bundle_heads(repo, path)?;
         let wanted: String = heads
@@ -317,6 +322,25 @@ fn receive(child: &mut Child, bundle: &Path) -> Result<Vec<(String, String)>, Cr
     }
     file.flush()?;
     Ok(listed)
+}
+
+/// Whether a bundle's header names a filter. Fetching a filtered bundle
+/// fails its connectivity check but leaves a promisor pack in REPO first.
+fn filtered(bundle: &Path) -> io::Result<bool> {
+    let mut reader = BufReader::new(File::open(bundle)?);
+    let mut line = Vec::new();
+    // The signature line, then capability lines, each starting with `@`.
+    (&mut reader).take(4096).read_until(b'\n', &mut line)?;
+    loop {
+        line.clear();
+        (&mut reader).take(4096).read_until(b'\n', &mut line)?;
+        if !line.starts_with(b"@") {
+            return Ok(false);
+        }
+        if line.starts_with(b"@filter") {
+            return Ok(true);
+        }
+    }
 }
 
 /// A bundle's branches, as git on the host reads them.

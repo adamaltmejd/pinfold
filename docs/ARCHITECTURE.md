@@ -886,15 +886,18 @@ no ref on the receiving side.
 - **`fetch --repo GUEST_REPO --into REPO [--remote NAME]`** has the box
   bundle GUEST_REPO's branches, less what REPO's `refs/remotes/NAME/*`
   already hold. On the host, pinfold runs `git bundle verify`, then
-  `git fetch` with `transfer.fsckObjects`, force-updating
-  `refs/remotes/NAME/*` from the box's `refs/heads/*`; NAME is the box
+  `git fetch` of the bundle's objects with `transfer.fsckObjects`, then
+  force-updates `refs/remotes/NAME/*` from the box's `refs/heads/*` in
+  one `update-ref` transaction. A branch the bundle leaves out lands only
+  at a commit `refs/remotes/NAME/*` already reaches. NAME is the box
   name by default. Tags and other refs stay in the box. A bundle carries
-  no hook or config, and nothing is checked out. REPO's own hooks and
+  no hook or config, and nothing is checked out; a filtered bundle fails. REPO's own hooks and
   config are the user's and apply as to any fetch. A bundle past 4 GiB is
   refused as `limit`.
   `{"event":"fetched","box":NAME,"remote":NAME,"refs":{REF:OID,…}}`
 
-NAME is validated like a profile name.
+NAME is validated like a profile name. REF is the full ref set on the
+receiving side.
 
 `disk list` prints one line per disk:
 
