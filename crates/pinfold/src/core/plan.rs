@@ -441,7 +441,11 @@ impl Plan {
                 )));
             }
         }
+        let mut names = std::collections::BTreeSet::new();
         for disk in &self.disks {
+            if !names.insert(&disk.name) {
+                return Err(invalid(format!("disk {:?} is named twice", disk.name)));
+            }
             if !valid_name(&disk.name) {
                 return Err(invalid(format!(
                     "disk name {:?} must start alphanumeric and hold only [A-Za-z0-9._-]",

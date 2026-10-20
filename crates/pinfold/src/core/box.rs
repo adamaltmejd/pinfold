@@ -339,16 +339,18 @@ impl Box {
                     let _ = preparing.await;
                 }
                 let ran = progress.child.is_some();
+                let requested = progress.child.as_mut().is_some_and(running);
                 let (removed, status) = abort(&plan.name, progress.child).await;
                 if removed.is_ok() {
                     if ran {
-                        // The box mounted the disks; its stop synced them.
+                        // The box mounted the disks. Only a stop pinfold
+                        // asked of a running box synced them.
                         progress.claimed.marked.clear();
-                        if let Err(error) = disk::detached(&plan.disks) {
+                        if requested && let Err(error) = disk::detached(&plan.disks) {
                             eprintln!("pinfold: startup cleanup: {error}");
                         }
                     }
-                    progress.claimed.undo(runtime);
+                    progress.claimed.undo(runtime, &plan.name);
                 }
                 if let Err(error) = runs::remove(&run_id) {
                     eprintln!("pinfold: startup cleanup: {error}");
@@ -418,6 +420,7 @@ impl Box {
     pub async fn down(&mut self, terminal: Option<Terminal>) -> io::Result<()> {
         // Runtime removal waits for attached output to close. Keep its
         // drain running on the owner while the runtime command blocks.
+        let requested = running(&mut self.child);
         let name = self.name.clone();
         let result = tokio::task::spawn_blocking(move || runtime().down(&name))
             .await
@@ -426,7 +429,13 @@ impl Box {
         let _ = self.child.wait().await;
         // Before the acknowledgement, so `inspect` after `box down` returns
         // already sees the end. A box that may still run gets none.
-        let result = result.and_then(|()| disk::detached(&self.disks));
+        let result = result.and_then(|()| {
+            if requested {
+                disk::detached(&self.disks)
+            } else {
+                Ok(())
+            }
+        });
         if let Some(terminal) = terminal.filter(|_| result.is_ok()) {
             runs::write_terminal(&self.run_id, &terminal);
         }
@@ -521,6 +530,12 @@ impl From<io::Error> for Stop {
 
 /// Stop a failed start's runtime child and remove its box. The caller
 /// removes the claimed state only after successful runtime removal.
+/// Whether the runtime child still runs, so a stop now is one pinfold
+/// requested rather than the box ending on its own.
+fn running(child: &mut Child) -> bool {
+    matches!(child.try_wait(), Ok(None))
+}
+
 async fn abort(
     name: &str,
     child: Option<Child>,

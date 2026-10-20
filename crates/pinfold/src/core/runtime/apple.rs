@@ -274,8 +274,16 @@ pub fn make_proxy_connectable(name: &str) -> io::Result<()> {
 /// Give new volumes' roots, which arrive `0:0 755`, to the box user. A box's
 /// root exec cannot: the box drops every capability. So a transient
 /// container of the box's image runs init as root with only `CAP_CHOWN`
-/// and no network.
-pub fn own_disks(names: &[&str], image: &str, init: &Path) -> io::Result<()> {
+/// and no network. It takes the box's name, still held by its claim, and
+/// its owner and generation labels, so `clean` sees a leftover as a dead
+/// box and removes it.
+pub fn own_disks(
+    names: &[&str],
+    image: &str,
+    init: &Path,
+    name: &str,
+    labels: &BTreeMap<String, String>,
+) -> io::Result<()> {
     let init_dir = init
         .parent()
         .expect("box::up refuses an init without a directory");
@@ -284,8 +292,12 @@ pub fn own_disks(names: &[&str], image: &str, init: &Path) -> io::Result<()> {
     command
         .args(["run", "--rm", "--progress", "none", "--network", "none"])
         .args(["--read-only", "--cap-drop", "ALL", "--cap-add", "CAP_CHOWN"])
+        .args(["--name", name])
         .args(["--user", "0:0", "--mount"])
         .arg(super::bind(init_dir, init_dir, true));
+    for (key, value) in labels {
+        command.arg("--label").arg(format!("{key}={value}"));
+    }
     let mut setup: Vec<OsString> = vec!["init".into(), "setup".into()];
     for (index, name) in names.iter().enumerate() {
         let guest = format!("/pinfold-disk/{index}");

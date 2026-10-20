@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use nix::fcntl::Flock;
 
 use crate::core::r#box::RefusalReason;
+use crate::core::clean;
 use crate::core::ownership::{self, Attachment, Claim};
 use crate::core::plan::{Disk, Plan};
 use crate::core::runtime::{Runtime, apple};
@@ -42,11 +43,12 @@ pub struct Claimed {
 }
 
 impl Claimed {
-    /// Undo a claim whose box never ran: remove the disks it created and
-    /// the marks it added, so a disk no box mounted keeps its old state.
-    pub fn undo(&self, runtime: &dyn Runtime) {
+    /// Undo a claim whose box `name` failed to start: remove the disks it
+    /// created that no other box attached since, and the marks it added,
+    /// so a disk no box mounted keeps its old state.
+    pub fn undo(&self, runtime: &dyn Runtime, name: &str) {
         for disk in &self.created {
-            if let Err(error) = runtime.remove_disk(&disk.name) {
+            if let Err(error) = remove(runtime, &disk.name, Some(name)) {
                 eprintln!("pinfold: startup cleanup: disk {:?}: {error}", disk.name);
             }
         }
@@ -72,7 +74,7 @@ pub fn claim(
     }
     // Sorted, so two `up`s never wait on each other's locks in a cycle.
     let names: BTreeSet<&str> = disks.iter().map(|disk| disk.name.as_str()).collect();
-    let _locks = names
+    let locks = names
         .iter()
         .map(|disk| ownership::disk_lock(disk))
         .collect::<io::Result<Vec<Flock<File>>>>()
@@ -138,7 +140,17 @@ pub fn claim(
         if cfg!(target_os = "macos") && !created.is_empty() {
             let names: Vec<&str> = created.iter().map(|disk| disk.name.as_str()).collect();
             let image = plan.image.as_deref().expect("up resolved the image");
-            apple::own_disks(&names, image, init)?;
+            let labels = BTreeMap::from([
+                (
+                    clean::OWNER_LABEL.to_string(),
+                    plan.labels[clean::OWNER_LABEL].clone(),
+                ),
+                (
+                    ownership::GENERATION_LABEL.to_string(),
+                    claim.generation().to_string(),
+                ),
+            ]);
+            apple::own_disks(&names, image, init, name, &labels)?;
         }
         for disk in disks.iter().filter(|disk| !disk.readonly) {
             if !unclean(&disk.name)? {
@@ -158,14 +170,17 @@ pub fn claim(
     })();
     if let Err(error) = result {
         claimed.created = created;
-        claimed.undo(runtime);
+        // `undo` takes each disk's lock again.
+        drop(locks);
+        claimed.undo(runtime, name);
         return Err(Err(error));
     }
     Ok(claimed)
 }
 
-/// After the runtime stopped and removed a box that ran: its disks were
-/// synced and unmounted, so record each writable one clean.
+/// After a requested stop of a box that ran: the runtime synced and
+/// unmounted its disks, so record each writable one clean. A box that ended
+/// on its own leaves them unclean.
 pub fn detached(disks: &[Disk]) -> io::Result<()> {
     for disk in disks.iter().filter(|disk| !disk.readonly) {
         mark_clean(&disk.name)?;
@@ -321,10 +336,10 @@ pub enum Removal {
     InUse(String),
 }
 
-/// Remove a disk no box attaches.
-pub fn remove(runtime: &dyn Runtime, name: &str) -> io::Result<Removal> {
+/// Remove a disk no box but `except` attaches.
+pub fn remove(runtime: &dyn Runtime, name: &str, except: Option<&str>) -> io::Result<Removal> {
     let _lock = ownership::disk_lock(name)?;
-    if let Some((holder, _)) = attachments(runtime, None)?
+    if let Some((holder, _)) = attachments(runtime, except)?
         .remove(name)
         .and_then(|boxes| boxes.into_iter().next())
     {

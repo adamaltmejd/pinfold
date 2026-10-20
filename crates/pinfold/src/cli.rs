@@ -562,7 +562,7 @@ pub fn disk(args: &[String]) -> io::Result<i32> {
                     ),
                 );
             }
-            match disk::remove(runtime, name)? {
+            match disk::remove(runtime, name, None)? {
                 disk::Removal::InUse(holder) => refused(
                     "disk-in-use",
                     format!("box {holder:?} attaches disk {name:?}"),
@@ -749,7 +749,7 @@ impl CleanPlan {
                 if Self::idle(&project, &live, self.unused) {
                     // A disk a box attaches stays; `disk::remove` checks.
                     for name in self.project_disks.get(&project.id).into_iter().flatten() {
-                        disk::remove(runtime, name)?;
+                        disk::remove(runtime, name, None)?;
                     }
                 }
             }
