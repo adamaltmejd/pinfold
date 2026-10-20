@@ -1,8 +1,9 @@
 # pinfold
 
-Run a coding agent in a disposable box: an Apple `container` micro-VM on
-macOS, a rootless podman container on Linux. The box sees its mounts and
-nothing else of the host. Its only way out is its own allowlisting proxy.
+Run a coding agent in a disposable box: a micro-VM, Apple `container` on
+macOS and Firecracker on Linux. The box works on its own
+copy of the project; `pinfold fetch` brings its commits back as branches.
+Its only way out is its own allowlisting proxy.
 
 - **Interactive:** `pi` on the host is a shim for `pinfold pi`.
 - **Programmatic:** drive boxes through `pinfold box` (JSON on stdio),
@@ -14,10 +15,15 @@ nothing else of the host. Its only way out is its own allowlisting proxy.
 | Host | Runtime |
 |---|---|
 | macOS 26+ | Apple `container` 1.5.0+ (stable) |
-| Linux | rootless podman 6.1.4+ (stable) |
+| Linux x64, kernel 6.10+ | `/dev/kvm` for the user (the `kvm` group), unprivileged user namespaces and Landlock, e2fsprogs, and rootless podman 6.1.4+ (stable) for image builds; pinfold fetches its pinned Firecracker |
 
-On Linux, podman also needs `cgroupManager=systemd`; run
-`loginctl enable-linger` for long-lived boxes.
+On Ubuntu 24.04+, AppArmor restricts user namespaces. Load pinfold's
+profile once instead of turning the restriction off:
+
+```sh
+pinfold apparmor-profile | sudo tee /etc/apparmor.d/pinfold >/dev/null
+sudo apparmor_parser -r /etc/apparmor.d/pinfold
+```
 
 ## Install
 
@@ -91,13 +97,13 @@ In a project:
    Later runs show an `image-outdated` rebuild hint when the Containerfile
    changes. Rebuilding keeps project settings, sessions and logins.
 3. Start pi: `pi`. The first run downloads the pinned pi release and
-   creates the project home under `~/.local/state/pinfold/projects/`.
+   creates the project home and project disks.
 4. Run `/login` in pi once per project: state is per project. API keys
    arrive through the environment instead.
 
-To reuse one project's pi configuration in another, `pinfold profile new
-NAME --from-project [PATH]` copies it into a profile (see Profiles in the
-spec).
+The first start copies the checkout into the box, which keeps that copy.
+`pinfold fetch` brings the box's commits back as `pinfold/*` branches for
+you to merge; `pinfold push` sends your branches in as `host/*`.
 
 Interactive launches report `bundled-profiles-changed` once without changing
 saved settings or user profiles. To inspect or edit a built-in, run
@@ -134,12 +140,13 @@ PINFOLD_ENV_CARGO_TARGET_DIR=/tmp/pinfold-target pi
 ```
 
 Keep outputs within the guest's available memory and `/tmp` capacity. Copy
-deliverables into the shared project before the box exits; `/tmp` is discarded.
+deliverables into the project and commit them before the box exits;
+`/tmp` is discarded.
 
 ## Limits
 
 Read the [threat model](docs/ARCHITECTURE.md#threat-model) and
-[shared files](docs/ARCHITECTURE.md#shared-files) before using pinfold with a repository.
+[disks](docs/ARCHITECTURE.md#disks) before using pinfold with a repository.
 
 The experimental [Pi Durable example](examples/pi-durable/README.md)
 provides a host adapter for boxed execution and recovery.
