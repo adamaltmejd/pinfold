@@ -17,21 +17,26 @@ and a GICv3 vGIC. `/dev/kvm` opens and `KVM_CREATE_VM` succeeds. Inside
 that box, Firecracker 1.17.0 aarch64 boots its CI guest kernel 6.1.188
 and runs a command over vsock, three times out of three.
 
-The nightly Mac mini does not qualify. It is an M1 (Macmini9,1), and
-Apple's Virtualization framework offers nested virtualization only on M3
-and later, on macOS 15 and later. Bringing arm64 back needs an M3+ Mac as
-a runner.
+The nightly Mac mini does not qualify. It is an M1 (Macmini9,1) on
+macOS 27.0.1, and `VZGenericPlatformConfiguration.isNestedVirtualizationSupported`
+returns `false` there (`true` on this M5). Apple's documentation for that
+property says nested virtualization "is available for Mac with the M3
+chip, and later", from macOS 15.0
+(<https://developer.apple.com/documentation/virtualization/vzgenericplatformconfiguration/isnestedvirtualizationsupported>).
+Bringing arm64 back needs an M3+ Mac as a runner.
 
 Not covered: pinfold itself, its rootless VMM jail, or the Linux suite.
-Apple's kernel config has `# CONFIG_SECURITY_LANDLOCK is not set`, and the
-jail #114 prototyped uses Landlock, so the suite's kernel needs
-`-e SECURITY_LANDLOCK` as well. `CONFIG_USER_NS`, `CONFIG_SECCOMP_FILTER`
+Apple's kernel config has `# CONFIG_SECURITY_LANDLOCK is not set`. The
+jail #114 prototyped uses Landlock. If pinfold's jail keeps it, the
+suite's kernel needs `-e SECURITY_LANDLOCK` as well. `CONFIG_USER_NS`, `CONFIG_SECCOMP_FILTER`
 and cgroups are already on.
 
 ## Setup steps
 
 1. Mac: M3 or later, macOS 15 or later, Apple `container` 1.5.0.
-2. Extract the default kernel's config. It is embedded (`IKCFG_ST`):
+2. Extract the default kernel's config. `container system property
+   list` names a Kata 6.18.35 kernel, but `kernels/default.kernel-arm64`
+   links to `vmlinux-6.18.15-186`, which is what boots. Its config is embedded (`IKCFG_ST`):
    `python3 -I ikcfg.py ~/Library/Application\ Support/com.apple.container/kernels/vmlinux-6.18.15-186 > apple-6.18.15.config`.
 3. Build in a container: `container run --rm --cpus 5 --memory 8g -v
    DIR:/work debian:trixie-slim /work/build.sh`. It fetches

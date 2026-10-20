@@ -4,7 +4,15 @@ Apple M5
 27.0.1
 container CLI version 1.5.0 (build: release, commit: unspeci)
 
-# Default guest kernel (Apple container's installed kernel)
+$ cat nv.swift
+import Virtualization
+print(VZGenericPlatformConfiguration.isNestedVirtualizationSupported)
+$ swift nv.swift
+true
+
+# Default guest kernel. `container system property list` names a Kata
+# 6.18.35 kernel under [kernel], but kernels/default.kernel-arm64 links to
+# vmlinux-6.18.15-186, and that is what boots (uname 6.18.15).
 $ file kernels/vmlinux-6.18.15-186
 Linux kernel ARM64 boot executable Image, little-endian, 4K pages
 $ python3 -I ikcfg.py kernels/vmlinux-6.18.15-186 | grep -E 'VIRTUALIZATION|^CONFIG_KVM'
@@ -18,7 +26,15 @@ $ container run --rm debian:trixie-slim sh -c 'dmesg | grep "started at EL"'
 [    0.001675] CPU: All CPU(s) started at EL1
 
 # Nightly runner (labels self-hosted, macOS, ARM64, pinfold-nightly)
-$ ssh macmini 'sysctl -n machdep.cpu.brand_string; sw_vers -productVersion; sysctl -n hw.model'
+$ ssh macmini 'sysctl -n machdep.cpu.brand_string; sw_vers -productVersion'
 Apple M1
 27.0.1
+$ ssh macmini 'scutil --get ComputerName; sysctl -n hw.model; pgrep -fl Runner.Listener'
+Mac mini som tillhör Adam
 Macmini9,1
+41483 /Users/runner/actions-runner/bin/Runner.Listener run --startuptype service
+41486 /Users/runner/actions-runner-switchyard/bin/Runner.Listener run --startuptype service
+$ ssh macmini 'cd /tmp && swift nvprobe.swift'   # same two lines as nv.swift
+false
+$ ssh macmini 'ls /usr/local/bin/container'
+ls: /usr/local/bin/container: No such file or directory
