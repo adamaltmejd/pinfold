@@ -32,10 +32,15 @@ make -C "$podman_source" bin/podman PREFIX=/usr
 sudo install -m 0755 "$podman_source/bin/podman" /usr/local/bin/podman
 # AppArmor's unprivileged-userns restriction stays on, as for pinfold.
 # Ubuntu's podman profile attaches to /usr/bin/podman, not this build.
-printf '%s\n' 'abi <abi/4.0>,' \
-  'profile ci-podman /usr/local/bin/podman flags=(unconfined) {' \
-  '  userns,' '}' | sudo tee /etc/apparmor.d/ci-podman >/dev/null
-sudo apparmor_parser -r /etc/apparmor.d/ci-podman
+# The doctor test's no-tun scenario runs `unshare -U` on the host, so a
+# copy ahead of /usr/bin on PATH gets the same grant.
+sudo install -m 0755 /usr/bin/unshare /usr/local/bin/unshare
+for tool in podman unshare; do
+  printf '%s\n' 'abi <abi/4.0>,' \
+    "profile ci-$tool /usr/local/bin/$tool flags=(unconfined) {" \
+    '  userns,' '}' | sudo tee "/etc/apparmor.d/ci-$tool" >/dev/null
+  sudo apparmor_parser -r "/etc/apparmor.d/ci-$tool"
+done
 # Older vendor storage configs override the new runtime's rootless paths.
 sudo install -m 0644 "$podman_source/vendor/go.podman.io/storage/storage.conf" \
   /usr/share/containers/storage.conf
