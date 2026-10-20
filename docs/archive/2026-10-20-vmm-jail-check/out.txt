@@ -1,0 +1,104 @@
+== host
+6.12.107+deb13-cloud-amd64
+uid=1000(agent) gid=1000(agent) groups=1000(agent),4(adm),20(dialout),24(cdrom),25(floppy),27(sudo),29(audio),30(dip),44(video),46(plugdev),992(kvm)
+landlock abi: 6
+== two boxes up
+a ready: ready 6.1.188
+b ready: ready 6.1.188
+-- box a: pjail=17373 vmm=17375
+Name:	firecracker
+PPid:	17373
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+Groups:	4 20 24 25 27 29 30 44 46 992 1000 
+NSpid:	17375	1
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+Seccomp:	2
+Seccomp_filters:	1
+ns user differs
+ns mnt differs
+ns pid differs
+ns net differs
+ns ipc differs
+ns uts differs
+ns cgroup SAME
+root: config.json dev disk0.ext4 firecracker init.ext4 root.ext4 vmlinux vsock  | dev: kvm | vsock: v.sock v.sock_3128 
+disk0 inode 397805; a.ext4 397805; b.ext4 397806
+mount points: / /firecracker /vmlinux /root.ext4 /init.ext4 /config.json /dev/kvm /vsock /disk0.ext4 
+mount points under /home/agent: 0
+peer_cid=2
+api.github.com 200
+curl: (56) CONNECT tunnel failed, response 403
+example.com 000
+exit=56
+-- box b: pjail=17388 vmm=17390
+Name:	firecracker
+PPid:	17388
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+Groups:	4 20 24 25 27 29 30 44 46 992 1000 
+NSpid:	17390	1
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+Seccomp:	2
+Seccomp_filters:	1
+ns user differs
+ns mnt differs
+ns pid differs
+ns net differs
+ns ipc differs
+ns uts differs
+ns cgroup SAME
+root: config.json dev disk0.ext4 firecracker init.ext4 root.ext4 vmlinux vsock  | dev: kvm | vsock: v.sock v.sock_3128 
+disk0 inode 397806; a.ext4 397805; b.ext4 397806
+mount points: / /firecracker /vmlinux /root.ext4 /init.ext4 /config.json /dev/kvm /vsock /disk0.ext4 
+mount points under /home/agent: 0
+peer_cid=2
+api.github.com 200
+curl: (56) CONNECT tunnel failed, response 403
+example.com 000
+exit=56
+== SIGKILL of a's pjail ends a's VM; b stays
+/home/agent/check-pjail.sh: line 76: 17373 Killed                  "$PJ" "$s" "$fc" "$FC/vmlinux" "$FC/rootfs.ext4" "$FC/init.ext4" "$data" > "$s/console.log" 2> "$s/pjail.err" < /dev/null
+vmm a gone after 48 ms; vmm b alive: yes
+/home/agent/check-pjail.sh: line 78: 17388 Killed                  "$PJ" "$s" "$fc" "$FC/vmlinux" "$FC/rootfs.ext4" "$FC/init.ext4" "$data" > "$s/console.log" 2> "$s/pjail.err" < /dev/null
+== escape probes as /firecracker inside the jail
+host controls: tcp 200, abstract ok, kill -0 ok
+probe open /dev/kvm rw: ok (3)
+probe ioctl KVM_GET_API_VERSION: ok (12)
+probe open /disk0.ext4 rw: ok (4)
+probe open /vmlinux ro: ok (5)
+probe connect /vsock/v.sock_3128 (the proxy): ok (0)
+probe open /vmlinux rw: errno 30 (Read-only file system (os error 30))
+probe create /x: errno 30 (Read-only file system (os error 30))
+probe open /proc/self/status: errno 2 (No such file or directory (os error 2))
+probe open /home: errno 2 (No such file or directory (os error 2))
+probe open /etc/passwd: errno 2 (No such file or directory (os error 2))
+probe create regular file /vsock/f: errno 13 (Permission denied (os error 13))
+probe mknod fifo /vsock/p: errno 13 (Permission denied (os error 13))
+probe ftruncate /disk0.ext4: errno 13 (Permission denied (os error 13))
+probe tcp connect 127.0.0.1:8080: errno 13 (Permission denied (os error 13))
+probe connect abstract @fcjail-probe-abstract: errno 111 (Connection refused (os error 111))
+probe kill(0 signal) host pid 1: ok (0)
+probe setgroups([]): errno 1 (Operation not permitted (os error 1))
+probe open /root.ext4 ro: ok (10)
+probe open /root.ext4 rw: errno 13 (Permission denied (os error 13))
+pjail: vmm 17575 ended, status 0
+pjail exit=0
+vsock dir after probes: v.sock_3128 
+== preflight's user-namespace probe
+2026/10/20 14:34:43 socat[17553] W exiting on signal 15
+probe ok
+probe failed: VMM jail: clone: EPERM: Operation not permitted
+== a failing step is named
+pjail: statvfs /home/agent/fc/missing.ext4: ENOENT: No such file or directory
+exit=125
