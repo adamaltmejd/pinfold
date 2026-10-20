@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::runtime::output;
 use crate::dirs;
 
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
@@ -237,6 +236,7 @@ pub fn init() -> io::Result<PathBuf> {
 
 /// Write a read-only ext4 init disk at `disk` holding this executable as
 /// `/pinfold`: a Linux CLI's init for a box.
+#[cfg(target_os = "linux")]
 #[expect(dead_code, reason = "the Firecracker runtime calls it, #141")]
 pub fn init_disk(disk: &Path) -> io::Result<()> {
     let tree = disk.with_extension("tree");
@@ -248,8 +248,8 @@ pub fn init_disk(disk: &Path) -> io::Result<()> {
         fs::set_permissions(&init, fs::Permissions::from_mode(0o755))?;
         // 10% and 4 MiB for the filesystem's own metadata.
         let kib = fs::metadata(&init)?.len() / 1024 * 11 / 10 + 4096;
-        output(&[
-            "mkfs.ext4",
+        super::runtime::output(&[
+            &super::image::mkfs_ext4()?.to_string_lossy(),
             "-q",
             "-F",
             "-m",

@@ -285,6 +285,7 @@ pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Op
 /// The read-only ext4 root disk a Linux box boots for image `id`, at
 /// `~/.cache/pinfold/root/<id>.ext4`, made at the image's first use. It goes
 /// when the image goes ([`clean::prune_root_disks`]).
+#[cfg(target_os = "linux")]
 #[expect(dead_code, reason = "the Firecracker runtime calls it, #141")]
 pub fn root_disk(id: &str) -> io::Result<PathBuf> {
     let dir = dirs::root_disks_dir()?;
@@ -292,6 +293,7 @@ pub fn root_disk(id: &str) -> io::Result<PathBuf> {
     if disk.is_file() {
         return Ok(disk);
     }
+    let mkfs = mkfs_ext4()?;
     fs::create_dir_all(&dir)?;
     // A concurrent first use writes its own staging; either rename wins.
     let staging = dir.join(format!("{}{}", clean::ROOT_STAGING, std::process::id()));
@@ -313,7 +315,7 @@ mkdir -p "$1/tree"
 podman export "$2" | tar -xpf - -C "$1/tree"
 kib=$(du -sk "$1/tree" | cut -f1)
 entries=$(find "$1/tree" | wc -l)
-mkfs.ext4 -q -F -m 0 -O ^has_journal -N $((entries + 1024)) -d "$1/tree" \
+"$3" -q -F -m 0 -O ^has_journal -N $((entries + 1024)) -d "$1/tree" \
   "$1/disk" $((kib + kib / 10 + entries / 4 + 16384))k
 "#;
     let staging_arg = staging.to_string_lossy();
@@ -326,9 +328,17 @@ mkfs.ext4 -q -F -m 0 -O ^has_journal -N $((entries + 1024)) -d "$1/tree" \
         "sh",
         &staging_arg,
         &container,
+        &mkfs.to_string_lossy(),
     ]);
     let _ = output(&["podman", "rm", "--force", &container]);
     let result = made.and_then(|_| fs::rename(&file, &disk));
     clean::remove_root_staging(&staging);
     result.map(|()| disk)
+}
+
+/// `mkfs.ext4`, which Debian keeps off a user's PATH.
+#[cfg(target_os = "linux")]
+pub fn mkfs_ext4() -> io::Result<PathBuf> {
+    crate::core::runtime::firecracker::preflight::mkfs_ext4()
+        .ok_or_else(|| io::Error::other("mkfs: no mkfs.ext4 on PATH, in /usr/sbin or in /sbin"))
 }
