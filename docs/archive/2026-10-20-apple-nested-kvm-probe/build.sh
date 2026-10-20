@@ -1,4 +1,5 @@
 #!/bin/sh
+# Prototype for the 2026-10-20 Apple nested KVM probe. Not pinfold code.
 set -eu
 export DEBIAN_FRONTEND=noninteractive
 t0=$(date +%s)

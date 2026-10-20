@@ -29,11 +29,8 @@ $ container run --rm debian:trixie-slim sh -c 'dmesg | grep "started at EL"'
 $ ssh macmini 'sysctl -n machdep.cpu.brand_string; sw_vers -productVersion'
 Apple M1
 27.0.1
-$ ssh macmini 'scutil --get ComputerName; sysctl -n hw.model; pgrep -fl Runner.Listener'
-Mac mini som tillhör Adam
+$ ssh macmini 'sysctl -n hw.model'
 Macmini9,1
-41483 /Users/runner/actions-runner/bin/Runner.Listener run --startuptype service
-41486 /Users/runner/actions-runner-switchyard/bin/Runner.Listener run --startuptype service
 $ ssh macmini 'cd /tmp && swift nvprobe.swift'   # same two lines as nv.swift
 false
 $ ssh macmini 'ls /usr/local/bin/container'

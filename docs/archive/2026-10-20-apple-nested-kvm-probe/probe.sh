@@ -1,4 +1,5 @@
 #!/bin/sh
+# Prototype for the 2026-10-20 Apple nested KVM probe. Not pinfold code.
 # Runs inside the L1 box (Apple container, --virtualization, custom kernel).
 # Checks /dev/kvm, then boots a Firecracker arm64 guest and runs one command
 # over vsock. Writes results to /work.

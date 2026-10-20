@@ -8,44 +8,57 @@ pinfold code.
 
 ## Verdict
 
-It works on an M3 or later Mac, with one custom guest kernel.
-`container run --virtualization` already starts the guest at EL2. Apple's
-default guest kernel has `CONFIG_VIRTUALIZATION` unset, so there is no
-`/dev/kvm`. The same kernel (6.18.15, Apple's embedded config) with
-`CONFIG_VIRTUALIZATION=y` and `CONFIG_KVM=y` boots with KVM in nVHE mode
-and a GICv3 vGIC. `/dev/kvm` opens and `KVM_CREATE_VM` succeeds. Inside
-that box, Firecracker 1.17.0 aarch64 boots its CI guest kernel 6.1.188
-and runs a command over vsock, three times out of three.
+It works on this M5 (macOS 27.0.1) with one custom guest kernel. Apple
+documents nested virtualization for M3 and later; M3 and M4 are
+untested. `container run --virtualization` already starts the guest at
+EL2. Apple's default guest kernel has `CONFIG_VIRTUALIZATION` unset, so
+there is no `/dev/kvm`. The same kernel (6.18.15, Apple's embedded config) with
+`CONFIG_VIRTUALIZATION=y` and `CONFIG_KVM=y` boots with KVM in nVHE
+mode. A GICv3 vGIC is inferred: KVM enables the GIC system register
+interface, and Firecracker's guests need GICv3 and boot. `/dev/kvm`
+opens and `KVM_CREATE_VM` succeeds. Inside that box, Firecracker 1.17.0
+aarch64 boots its CI guest kernel 6.1.188 and runs a command over vsock,
+three times out of three.
 
 The nightly Mac mini does not qualify. It is an M1 (Macmini9,1) on
-macOS 27.0.1, and `VZGenericPlatformConfiguration.isNestedVirtualizationSupported`
-returns `false` there (`true` on this M5). Apple's documentation for that
-property says nested virtualization "is available for Mac with the M3
-chip, and later", from macOS 15.0
+macOS 27.0.1, and
+`VZGenericPlatformConfiguration.isNestedVirtualizationSupported` returns
+`false` there (`true` on this M5). That flag is the only evidence:
+`container` is not installed on the mini, so no boot was tried there.
+Apple's documentation for that property says nested virtualization "is
+available for Mac with the M3 chip, and later", from macOS 15.0
 (<https://developer.apple.com/documentation/virtualization/vzgenericplatformconfiguration/isnestedvirtualizationsupported>).
-Bringing arm64 back needs an M3+ Mac as a runner.
+Bringing arm64 back needs an M3 or later Mac as a runner, and a check on
+the chip actually used if it is not an M5.
 
 Not covered: pinfold itself, its rootless VMM jail, or the Linux suite.
 Apple's kernel config has `# CONFIG_SECURITY_LANDLOCK is not set`. The
 jail #114 prototyped uses Landlock. If pinfold's jail keeps it, the
-suite's kernel needs `-e SECURITY_LANDLOCK` as well. `CONFIG_USER_NS`, `CONFIG_SECCOMP_FILTER`
-and cgroups are already on.
+suite's kernel needs `-e SECURITY_LANDLOCK` as well. `CONFIG_USER_NS`,
+`CONFIG_SECCOMP_FILTER` and cgroups are already on.
 
 ## Setup steps
 
-1. Mac: M3 or later, macOS 15 or later, Apple `container` 1.5.0.
+1. Mac: M3 or later per Apple (tested on M5 only), macOS 15 or later,
+   Apple `container` 1.5.0.
 2. Extract the default kernel's config. `container system property
    list` names a Kata 6.18.35 kernel, but `kernels/default.kernel-arm64`
-   links to `vmlinux-6.18.15-186`, which is what boots. Its config is embedded (`IKCFG_ST`):
-   `python3 -I ikcfg.py ~/Library/Application\ Support/com.apple.container/kernels/vmlinux-6.18.15-186 > apple-6.18.15.config`.
+   links to `vmlinux-6.18.15-186`, which is what boots. Its config is
+   embedded (`IKCFG_ST`):
+
+   ```
+   K=~/Library/Application\ Support/com.apple.container/kernels
+   python3 -I ikcfg.py "$K/vmlinux-6.18.15-186" > apple-6.18.15.config
+   ```
 3. Build in a container: `container run --rm --cpus 5 --memory 8g -v
    DIR:/work debian:trixie-slim /work/build.sh`. It fetches
-   `linux-6.18.15.tar.xz` from kernel.org (checked against
-   `sha256sums.asc`), applies the config, enables `VIRTUALIZATION` and
-   `KVM`, runs `olddefconfig`, fails unless `CONFIG_KVM=y` survives, and
-   copies out `arch/arm64/boot/Image`. Apple's `vmlinux-*` files are raw
-   arm64 boot Images too, not ELF. 28 s setup, 212 s build on 6 vCPUs,
-   16 MB output.
+   `linux-6.18.15.tar.xz` from kernel.org (sha256 only, against
+   `sha256sums.asc`; its PGP signature is not verified), applies the
+   config, enables `VIRTUALIZATION` and `KVM`, runs `olddefconfig`,
+   fails unless `CONFIG_KVM=y` survives, and copies out
+   `arch/arm64/boot/Image`. Apple's `vmlinux-*` files are raw arm64 boot
+   Images too, not ELF. 28 s setup, 212 s build on 6 vCPUs, 16 MB
+   output.
 4. Boot with it: `container run --virtualization --kernel Image ...`.
    `/dev/kvm` is `crw------- root root` in the box.
 
@@ -83,13 +96,22 @@ L2 guest (Firecracker, 2 vCPU, 512 MiB, read-only ext4 root, init runs
 | 2   | 4296 ms | 595 ms | 2.85 s |
 | 3   | 3711 ms | 598 ms | 2.49 s |
 
-For comparison, #114 measured about 950 ms per boot on x86 labvm with
-nested KVM. In the guest, CPU bring-up and devtmpfs are where the time
-shows: each step that traps to L0 is slow under nVHE nesting. One
-earlier run reached init at 8.57 s, with a 5.9 s gap after `devtmpfs:
-initialized`. It ran while the host polled with blocking `socat`
-processes, and three clean runs did not reproduce it. The 600 ms exec
-time is the prototype's socat and shell, not a tuned agent.
+Excluded runs. The first run's `boot_to_exec_ms=41106`
+(`out/halfclose.txt`) is the retry loop running out against the
+half-close bug below, not a boot time. A later run reached guest init at
+8.57 s, with a 5.9 s gap after `devtmpfs: initialized`. Its host-side
+poll ran blocking `socat` processes that each held stdin open for 10 s,
+so its readiness time measured the poll, and the three clean runs above
+did not reproduce the stall. Neither run is in the table.
+
+For comparison, #114 measured launcher start to the guest's ready line
+at a 963 ms median (ten runs, x86 labvm, nested KVM). The nearest
+metric here is Firecracker start to vsock ready, 3.7–4.3 s, about 4x.
+The two differ: #114's guest and init are its own, and ready there is an
+agent's signal, not a socat listener. In the guest, CPU bring-up and
+devtmpfs are where the time shows: each step that traps to L0 is slow
+under nVHE nesting. The 600 ms exec time is the prototype's socat and
+shell, not a tuned agent.
 
 ## Findings for the spec
 
@@ -98,7 +120,8 @@ time is the prototype's socat and shell, not a tuned agent.
   the guest's writes fail with `EPIPE`). This is the same as #114's
   finding 4, now seen on aarch64 too. `socat ...,shut-none` avoids it.
 - The suite on an arm64 Mac would run as L2 inside an Apple container
-  VM. Box boots are about 4x slower than on x86 labvm. That is a budget
+  VM. Start to ready is about 4x #114's x86 labvm figure (see Results for
+the two metrics). That is a budget
   risk for the 5-minute suite, so measure it before the suite is
   admitted on this host.
 
@@ -110,7 +133,7 @@ time is the prototype's socat and shell, not a tuned agent.
   resulting options, timing and the Image's sha256.
 - `probe.sh` runs in the L1 box. It prints the EL and KVM boot lines,
   opens `/dev/kvm` with three ioctls, fetches Firecracker
-  `v1.17.0-aarch64` (checked against its `.sha256.txt`) and
+  `v1.17.0-aarch64` (sha256 only, against its `.sha256.txt`) and
   `firecracker-ci/20261016-5732b8331e1e-0/aarch64/vmlinux-6.1.188`, and
   turns the box's own Debian trixie userland, which has socat, into the
   guest root. It then boots three times, polls until a bare `CONNECT`
