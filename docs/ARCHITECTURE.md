@@ -116,8 +116,8 @@ sysctl rather than the failing call.
    A name still held at the deadline is `name-in-use`; abandoned partial
    claims are reclaimable. Nothing (seeds, disks, proxy, box) is created
    before the claim.
-2. Claim the box's disks (Disks), creating any that are new and filling
-   each new one from its `from`.
+2. Claim the box's disks (Disks), creating any that are new; a new
+   disk's `from` is size-checked here.
 3. Start the box's proxy on a new unix socket in the state dir. Keep the path
    under macOS's 104-byte limit.
 4. Run the box with no network interface and the socket carried in
@@ -132,7 +132,8 @@ sysctl rather than the failing call.
    empty, in a root-owned work cgroup that holds the pids cap and that
    box work cannot leave, and keeps only `CAP_SYS_ADMIN` itself. PID 1
    then only reaps and answers step 8's unmount; it handles no workload
-   bytes.
+   bytes. Before ready, the box copies each new disk's `from` in as the
+   box user.
 6. Apple only: wait until the runtime lists the box running, including
    without egress. One transient root exec makes the socket connectable,
    when there is one, and gives the root of each disk this `up` created
@@ -845,7 +846,7 @@ On Linux a disk is a sparse ext4 image at
 `~/.local/state/pinfold/disks/<name>.ext4`, mode 0600, created by
 pinfold; on macOS it is an Apple `container` volume of that name. The host
 never mounts, reads or parses a disk's content; only boxes do. A disk's
-`from` copy is written by the box that creates it. In a box, a
+`from` copy is written by the box that creates it, before `ready`. In a box, a
 disk's root belongs to the box user. A disk has no labels and no owner
 beyond its attachments.
 
