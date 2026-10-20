@@ -1378,6 +1378,15 @@ fn up_refuses_before_it_creates() {
         serde_json::json!({ "name": disk, "guest": "/work/../work" }),
         "/work/../work",
     ));
+    // A disk at or below the guest kernel's /proc, /sys or /dev would
+    // replace the userns sysctl or the work cgroup; the hard case reaches
+    // one only after normalization. The positive control is the race's
+    // winner below, whose mount at /devices shares the text but not the
+    // component. Sabotage: drop the KERNEL_PATHS check from
+    // `validate_guests`; these specs come up `ready` on Apple.
+    for guest in ["/proc/sys/user", "/work/../sys/fs/cgroup", "/dev"] {
+        cases.push((serde_json::json!({ "name": disk, "guest": guest }), guest));
+    }
     for (case, named) in cases {
         let (code, refused) = box_up_refused(&env, &disk_spec(case), &[]);
         assert_eq!(code, 1, "a refused up exits 1: {refused}");
@@ -1396,6 +1405,23 @@ fn up_refuses_before_it_creates() {
             "a refused disk spec left a disk"
         );
     }
+    let kernel_mount = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+        "labels": { "dev.example.test": "refuses" },
+        "mounts": [{ "host": work, "guest": "/sys/fs/cgroup", "readonly": true }],
+    });
+    let (code, refused) = box_up_refused(&env, &kernel_mount, &[]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["reason"], "spec", "{refused}");
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("/sys/fs/cgroup"),
+        "the refusal did not name the path: {refused}"
+    );
+    assert_left_nothing(&env, &name, label, "refused");
 
     // Refuse both an absent directory and a dangling symlink to it. The
     // race below uses the same spec after the target is created, proving
@@ -1407,7 +1433,7 @@ fn up_refuses_before_it_creates() {
         "name": name,
         "image": default_image(&env),
         "labels": { "dev.example.test": "refuses" },
-        "mounts": [{ "host": absent_host, "guest": "/workspace", "readonly": true }],
+        "mounts": [{ "host": absent_host, "guest": "/devices", "readonly": true }],
         "egress": { "allow": [".github.com"] },
         "env": { "NESTED_VALUE": { "from": "PINFOLD_E2E_NESTED" } },
     });

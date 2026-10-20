@@ -1,0 +1,191 @@
+up one: ready
+== row 1: interfaces
+lo
+[exit 0]
+== row 1: vsock to CID 2 from inside (1024 exec, 1025 control, 4444 unused, 3128 proxy)
+1024 ConnectionResetError errno 104 0.3 ms
+1025 ConnectionResetError errno 104 0.2 ms
+4444 ConnectionResetError errno 104 0.1 ms
+3128 connected: proxy-standin 0.3 ms
+[exit 0]
+== row 1: relay 127.0.0.1:3128
+proxy-standin
+[exit 0]
+== row 1: guest kernel config
+# CONFIG_VSOCKETS_LOOPBACK is not set
+CONFIG_VIRTIO_VSOCKETS=y
+[exit 0]
+== row 5: PID 1
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+CapInh:	0000000000000000
+CapPrm:	0000000000200000
+CapEff:	0000000000200000
+CapBnd:	0000000000200000
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+[exit 0]
+== row 5: exec service (parent of the exec'd shell)
+Name:	pinfold
+Uid:	1000	1000	1000	1000
+Gid:	992	992	992	992
+Groups:	 
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+0::/work
+[exit 0]
+== row 5: exec'd process
+Uid:	1000	1000	1000	1000
+Groups:	 
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+[exit 0]
+== row 5: unshare -U
+unshare: unshare failed: No space left on device
+[exit 1]
+== row 5: control: unshare -m without privilege also fails, for another reason
+unshare: unshare failed: Operation not permitted
+[exit 1]
+== row 5: max_user_namespaces
+0
+[exit 0]
+== row 5: rootfs
+touch: cannot touch '/x': Read-only file system
+[exit 1]
+== row 5: setuid or setgid files
+find: '/lost+found': Permission denied
+find: '/var/cache/ldconfig': Permission denied
+find: '/root': Permission denied
+0
+[exit 0]
+== resolv.conf bytes
+0 /etc/resolv.conf
+[exit 0]
+== row 6: env in the box
+marker-fa18721f255d2522
+[exit 0]
+== row 6: guest cmdline
+console=ttyS0 reboot=k panic=1 pci=off init=/pinfold pci=off root=/dev/vda ro virtio_mmio.device=4K@0xc0001000:5 virtio_mmio.device=4K@0xc0002000:6 virtio_mmio.device=4K@0xc0003000:7 virtio_mmio.device=4K@0xc0004000:8 virtio_mmio.device=4K@0xc0005000:9 -- init boot
+[exit 0]
+== row 6: host files holding the value (none expected)
+[grep exit 1 (1 = none)]
+== row 6: control: the same grep finds a value written to the work disk later
+== exec: exit code, signal, stdin, stderr, workdir, missing program
+[exit 7]
+[exit 137]
+hello-stdin
+[exit 0]
+out
+[exit 0]
+stderr: err
+/work
+[exit 0]
+pinfold init exec: no-such-program: No such file or directory (os error 2)
+[exit 127]
+== exec: tty and resize
+/dev/pts/0
+40 100
+xterm
+[exit 0]
+== exec: orphan reaped
+[exit 0]
+zombies: 0
+[exit 0]
+== row 11: from copy
+.:
+total 15
+-rw-r--r-- 1 1000 992     2 Oct 20 15:59 a
+lrwxrwxrwx 1 1000 992     1 Oct 20 15:59 link -> a
+drwx------ 2    0   0 12288 Oct 20 15:59 lost+found
+-rwxr-xr-x 1 1000 992    19 Oct 20 15:59 run.sh
+drwxr-xr-x 2 1000 992  1024 Oct 20 15:59 sub
+
+sub:
+total 1
+-rw-r--r-- 1 1000 992 2 Oct 20 15:59 b
+a
+b
+run
+a
+[exit 0]
+== row 11: read-only disk
+corpus
+touch: cannot touch '/corpus/y': Read-only file system
+[exit 1]
+== row 11: ownership of the disk roots
+/work 1000:992 755
+/corpus 0:0 755
+[exit 0]
+== row 20: oom_score_adj of exec'd work
+1000
+[exit 0]
+== row 20: stat before
+{"memory.current": 31670272, "memory.peak": 32538624, "pids.current": 3, "pids.max": 2048, "oom_kills": 0}
+== row 20: memory hog
+[exit 137]
+== row 20: stat after
+{"memory.current": 2568192, "memory.peak": 481890304, "pids.current": 3, "pids.max": 2048, "oom_kills": 1}
+== row 20: box still answers
+alive
+[exit 0]
+== pids cap: fill the work cgroup, then the service recovers
+[exit 2]
+at the cap, stat: {"memory.current": 368885760, "memory.peak": 481890304, "pids.current": 1900, "pids.max": 2048, "oom_kills": 1}
+after the sleeps end:
+alive
+[exit 0]
+{"memory.current": 369160192, "memory.peak": 481890304, "pids.current": 1900, "pids.max": 2048, "oom_kills": 1}
+== row 11: hardest case: 64 MiB unsynced and a busy cwd at down
+sh: 1: Cannot fork
+[exit 2]
+sh: 0: Cannot fork
+[exit 2]
+sh: 1: Cannot fork
+[exit 2]
+down one: clean
+== row 11: needs_recovery after down (absent expected)
+Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+Filesystem state:         clean
+== row 6: control: the grep finds the value the box wrote
+[grep exit 1]
+up two: ready
+== row 11: read-only reattach
+sha256sum: big.sum: No such file or directory
+touch: cannot touch '/work/z': Read-only file system
+[exit 1]
+down two: clean
+== guest refuses a disk below /proc
+up four: ready
+== exec before ENV waits for it
+up three: ready
+after 1 s without ENV: still waiting
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+[exit 0]
+== the exec service's end ends the VM (PID 1 exits; panic=1 reboots)
+Traceback (most recent call last):
+  File "/home/agent/pinfold/docs/archive/2026-10-20-linux-init-boot/fcinit.py", line 249, in <module>
+    main()
+    ~~~~^^
+  File "/home/agent/pinfold/docs/archive/2026-10-20-linux-init-boot/fcinit.py", line 240, in main
+    run_exec(state, rest)
+    ~~~~~~~~^^^^^^^^^^^^^
+  File "/home/agent/pinfold/docs/archive/2026-10-20-linux-init-boot/fcinit.py", line 201, in run_exec
+    kind, data = read_frame(conn)
+                 ~~~~~~~~~~^^^^^^
+  File "/home/agent/pinfold/docs/archive/2026-10-20-linux-init-boot/fcinit.py", line 50, in read_frame
+    head = readn(sock, 5)
+  File "/home/agent/pinfold/docs/archive/2026-10-20-linux-init-boot/fcinit.py", line 44, in readn
+    raise EOFError("connection ended")
+EOFError: connection ended
+[exit 1]
+VMM after the service's death: exited
+[    2.165967] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000100
+== done

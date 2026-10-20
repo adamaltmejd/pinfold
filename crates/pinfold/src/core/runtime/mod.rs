@@ -1,6 +1,8 @@
 //! Container runtimes: one per OS, behind a trait.
 
 pub mod apple;
+#[cfg(target_os = "linux")]
+pub mod firecracker;
 pub mod podman;
 
 use std::collections::{BTreeMap, VecDeque};

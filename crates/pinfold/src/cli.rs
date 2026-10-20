@@ -14,7 +14,7 @@ use crate::core::crossing::{self, CrossingError};
 use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
 use crate::core::plan::{Plan, valid_name};
 use crate::core::profile::{self, Profile};
-use crate::core::runtime::{BoxInfo, Runtime, podman, runtime};
+use crate::core::runtime::{BoxInfo, Runtime, runtime};
 use crate::core::{clean, disk, runs};
 use crate::dirs;
 use crate::pi::launch::utf8;
@@ -949,23 +949,16 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         }
         Err(error) => {
             println!("  preflight: {error}");
-            if !cfg!(target_os = "macos") {
-                for requirement in podman::host_requirements() {
-                    println!("  {requirement}");
-                }
+            #[cfg(target_os = "linux")]
+            for requirement in crate::core::runtime::firecracker::preflight::host_requirements()
+                .into_iter()
+                .chain(crate::core::runtime::podman::host_requirements())
+            {
+                println!("  {requirement}");
             }
             false
         }
     };
-    if !cfg!(target_os = "macos") && runtime_ready {
-        match podman::linger() {
-            Ok(true) => println!("  linger: enabled"),
-            Ok(false) => println!(
-                "  linger: disabled; long-lived boxes stop at logout; run `loginctl enable-linger`"
-            ),
-            Err(error) => println!("  linger: unavailable: {error}"),
-        }
-    }
 
     match nix::sys::utsname::uname() {
         Ok(uname) => println!(

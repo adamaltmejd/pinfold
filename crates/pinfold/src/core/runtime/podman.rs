@@ -289,8 +289,9 @@ fn cgroup_event(dir: &Path, file: &str, key: &str) -> Option<u64> {
         .find_map(|line| line.strip_prefix(key)?.strip_prefix(' ')?.parse().ok())
 }
 
-/// Host checks that do not depend on `podman info` succeeding. Doctor calls
-/// these after a failed preflight; none changes the host.
+/// The runtime-dir check, which does not depend on `podman info`
+/// succeeding. Doctor calls it after a failed preflight; it changes nothing.
+#[cfg(target_os = "linux")]
 pub fn host_requirements() -> Vec<String> {
     let mut missing = Vec::new();
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
@@ -314,46 +315,7 @@ pub fn host_requirements() -> Vec<String> {
             dir.display()
         ));
     }
-    if !Path::new("/run/systemd/system").is_dir() {
-        missing.push(
-            "systemd: /run/systemd/system is absent; pinfold requires the systemd cgroup manager and a systemd user session".to_string(),
-        );
-    }
-    #[cfg(target_os = "linux")]
-    match nix::sys::statfs::statfs("/sys/fs/cgroup") {
-        Ok(stat) if stat.filesystem_type() == nix::sys::statfs::CGROUP2_SUPER_MAGIC => {}
-        Ok(_) => missing.push(
-            "cgroup-v2: /sys/fs/cgroup is not a cgroup2 filesystem; pinfold needs cgroup v2 for rootless resource limits".to_string(),
-        ),
-        Err(error) => missing.push(format!(
-            "cgroup-v2: cannot inspect /sys/fs/cgroup: {error}"
-        )),
-    }
-    #[cfg(target_os = "linux")]
-    if let Err(error) = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/net/tun")
-    {
-        missing.push(format!(
-            "tun: /dev/net/tun: {error}; rootless podman networking needs access to the tun device"
-        ));
-    }
     missing
-}
-
-/// Whether `loginctl enable-linger` is on for this user, for `doctor`. A box
-/// outlives the login that started it only with linger.
-pub fn linger() -> io::Result<bool> {
-    let uid = nix::unistd::getuid().to_string();
-    let stdout = output(&[
-        "loginctl",
-        "show-user",
-        &uid,
-        "--property=Linger",
-        "--value",
-    ])?;
-    Ok(String::from_utf8_lossy(&stdout).trim() == "yes")
 }
 
 /// What preflight reads from `podman info`.
