@@ -863,7 +863,8 @@ beyond its attachments.
   disk, and pinfold records each clean once the runtime confirms it. A
   disk whose writable box ended on its own, or whose owner died, stays
   unclean: a read-only attachment is refused as `disk-unclean` until a
-  writable one, which recovers the disk, ends with `down`.
+  writable one, which recovers the disk, ends with `down`. The unclean
+  record is per state root: another state root does not see it.
 
 ### Crossing
 
