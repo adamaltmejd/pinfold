@@ -521,9 +521,9 @@ before it execs Firecracker:
   running ABI, TCP included; a newer ABI runs normally, and its new rights
   stay unhandled. It allows only: read and execute on the binary; read on
   the kernel, the root and init disks and the configuration; read and
-  write on the box's disks; read, write and ioctl on `/dev/kvm`; making and connecting to
-  sockets (ABI 9's `RESOLVE_UNIX`), removing files and reading the
-  directory in the vsock socket directory.
+  write on the box's disks; read, write and ioctl on `/dev/kvm`; making
+  and connecting to sockets (ABI 9's `RESOLVE_UNIX`), removing files and
+  reading the directory in the vsock socket directory.
 
 Firecracker's own seccomp filters then apply.
 
