@@ -803,7 +803,6 @@ fn the_highest_layer_sets_the_allowlist() {
         "PINFOLD_PROFILE",
         "PINFOLD_ALLOW",
         "PINFOLD_ROUTES",
-        "PINFOLD_PROTECT",
         "PINFOLD_CPUS",
         "PINFOLD_MEMORY",
     ] {
