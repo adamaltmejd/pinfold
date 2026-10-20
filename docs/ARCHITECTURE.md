@@ -775,11 +775,13 @@ profile.
 On Linux, `crates/pinfold/vmm.toml` pins Firecracker and its guest kernel
 for `linux-x64`. Firecracker is its GitHub release binary, checked
 against its published digest. The guest kernel is pinfold's own build: a
-pinned kernel.org stable release, verified against kernel.org's
-signature, built with Firecracker's guest config for the pinned
+pinned kernel.org 6.18 stable release, verified against kernel.org's
+signature, built with Firecracker's x86_64 6.18 guest config for the pinned
 Firecracker version, without vsock loopback and with its config at
-`/proc/config.gz`. It is published as a pinfold
-release asset whose digest `vmm.toml` pins. Both install like a harness,
+`/proc/config.gz`. `guest-kernel/` pins and builds it, and its workflow
+publishes it as the asset of a prerelease tagged
+`guest-kernel-<kernel>-firecracker-<version>`, never the latest release;
+`vmm.toml` pins that asset's digest. Both install like a harness,
 into `~/.cache/pinfold/artifacts/vmm/<version>/<os-arch>/`, on the first
 `up`. They move only with a pinfold release; nightly CI repins Firecracker
 like a harness, once a release has been out seven full days, and the
