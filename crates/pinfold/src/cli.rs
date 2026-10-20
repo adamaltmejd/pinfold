@@ -286,8 +286,12 @@ async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
     })();
     if let Err(error) = ready {
         // No ready reached the caller: a failed start retains no run.
-        box_.down(None).await?;
-        crate::core::runs::remove(&box_.run_id)?;
+        // Removed even when teardown fails, as `Box::up`'s abort does.
+        let down = box_.down(None).await;
+        if let Err(cleanup) = crate::core::runs::remove(&box_.run_id) {
+            eprintln!("pinfold: startup cleanup: {cleanup}");
+        }
+        down?;
         return Err(error);
     }
     let shutdown = box_.hold(&mut signals).await?;
