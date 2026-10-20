@@ -1,0 +1,10 @@
+#!/bin/busybox sh
+b=/bin/busybox
+$b mount -t proc proc /proc
+$b mount -t devtmpfs dev /dev
+echo "uname: $($b uname -r)"
+echo "version: $($b cat /proc/version)"
+$b zcat /proc/config.gz | $b grep -E 'CONFIG_IKCONFIG_PROC|VSOCKETS_LOOPBACK|CONFIG_VIRTIO_VSOCKETS=|SECURITY_LANDLOCK=|CONFIG_USER_NS='
+echo "guest-to-host" | LD_LIBRARY_PATH=/lib/socat /lib/socat/ld-linux-x86-64.so.2 /bin/socat - VSOCK-CONNECT:2:3128; echo "socat exit $?"
+echo "boot-check-done"
+$b reboot -f
