@@ -1,0 +1,59 @@
+/home/agent/pinfold/target/x86_64-unknown-linux-musl/debug/pinfold: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), static-pie linked, BuildID[sha1]=f888e53b64e377273ef29ecb7478186c0d7458d8, with debug_info, not stripped
+{"base":"sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483","event":"built","id":"d1eec828211768a2fd05178f1444f185c6cf9dfb6dd699bb807a15ad03ba9cfb","image":"boot","labels":{"dev.pinfold.base":"sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483","dev.pinfold.containerfile-sha256":"","dev.pinfold.profile":"","dev.pinfold.project":""},"latest":"pinfold/image-boot:latest","ref":"pinfold/image-boot:18e04b092fe6de17-13736"}
+/home/agent/.cache/pinfold/artifacts/vmm/1.17.0+6.18.57/linux-x64/firecracker/firecracker-v1.17.0-x86_64 /home/agent/.cache/pinfold/artifacts/vmm/1.17.0+6.18.57/linux-x64/vmlinux /home/agent/.cache/pinfold/root/d1eec828211768a2fd05178f1444f185c6cf9dfb6dd699bb807a15ad03ba9cfb.ext4 /home/agent/fc/init.ext4
+
+real	0m3.443s
+user	0m1.395s
+sys	0m0.931s
+        "path": "/home/agent/.cache/pinfold/artifacts/codex/0.163.0/linux-x64/codex",
+        "version": "0.163.0"
+    },
+    {
+        "assets": [
+            {
+                "sha256": "06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558",
+                "url": "https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz"
+            },
+            {
+                "sha256": "1a1b28b34f89a8e49d90c72997f1b89bfd236ff44669dda9e91486c89adafc99",
+                "url": "https://github.com/adamaltmejd/pinfold/releases/download/guest-kernel-6.18.57-firecracker-v1.17.0/vmlinux-6.18.57"
+            }
+        ],
+        "cached": true,
+        "name": "vmm",
+        "path": "/home/agent/.cache/pinfold/artifacts/vmm/1.17.0+6.18.57/linux-x64",
+        "version": "1.17.0+6.18.57"
+    }
+]
+76M -rw-r--r-- 1 agent agent 109M Oct 20 16:52 /home/agent/.cache/pinfold/root/d1eec828211768a2fd05178f1444f185c6cf9dfb6dd699bb807a15ad03ba9cfb.ext4
+65M -rw-rw-r-- 1 agent agent  75M Oct 20 16:52 /home/agent/fc/init.ext4
+109M	/home/agent/.cache/pinfold/root/d1eec828211768a2fd05178f1444f185c6cf9dfb6dd699bb807a15ad03ba9cfb.ext4
+{"boot-source":{"kernel_image_path":"/home/agent/.cache/pinfold/artifacts/vmm/1.17.0+6.18.57/linux-x64/vmlinux","boot_args":"console=ttyS0 reboot=k panic=1 ro root=/dev/vda init=/bin/sh -- -c \"mount -t proc p /proc; mount -o ro -t ext4 /dev/vdb /mnt; echo uname=$(uname -r); /mnt/pinfold --version; echo marker-owner=$(stat -c %u:%g /etc/boot-marker); touch /rootwrite 2>&1 || echo root-readonly; touch /mnt/x 2>&1 || echo init-readonly; echo boot-check-done\""},
+ "drives":[{"drive_id":"root","path_on_host":"/home/agent/.cache/pinfold/root/d1eec828211768a2fd05178f1444f185c6cf9dfb6dd699bb807a15ad03ba9cfb.ext4","is_root_device":true,"is_read_only":true},
+           {"drive_id":"init","path_on_host":"/home/agent/fc/init.ext4","is_root_device":false,"is_read_only":true}],
+ "machine-config":{"vcpu_count":1,"mem_size_mib":256}}
+2026-10-20T16:52:38.662026555 [anonymous-instance:main] Running Firecracker v1.17.0
+2026-10-20T16:52:38.668598482 [anonymous-instance:main] Artificially kick devices
+2026-10-20T16:52:38.668669078 [anonymous-instance:fc_vcpu 0] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-10-20T16:52:38.668722222 [anonymous-instance:main] Successfully started microvm that was configured from one single json
+2026-10-20T16:52:38.680150500 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0xcf8:0x4 failed: Failed to find address range.
+2026-10-20T16:52:38.680224082 [anonymous-instance:fc_vcpu 0] vcpu: IO read @ 0xcfc:0x2 failed: Failed to find address range.
+2026-10-20T16:52:39.701795402 [anonymous-instance:fc_vcpu 0] vcpu: IO read @ 0x87:0x1 failed: Failed to find address range.
+2026-10-20T16:52:39.809585485 [anonymous-instance:fc_vcpu 0] [Block:root] notifying queues
+2026-10-20T16:52:39.821840495 [anonymous-instance:fc_vcpu 0] [Block:init] notifying queues
+uname=6.18.57
+pinfold 0.2.7
+marker-owner=1234:2345
+touch: cannot touch '/rootwrite': Read-only file system
+root-readonly
+touch: cannot touch '/mnt/x': Read-only file system
+init-readonly
+boot-check-done
+2026-10-20T16:52:41.173176751 [anonymous-instance:main] Vmm is stopping.
+2026-10-20T16:52:41.173203529 [anonymous-instance:main] Killing vCPU threads
+2026-10-20T16:52:41.220427227 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0
+{"event":"removed","ids":["d1eec828211768a2fd05178f1444f185c6cf9dfb6dd699bb807a15ad03ba9cfb"],"image":"boot","in_use":[]}
+total 8
+drwxrwxr-x 2 agent agent 4096 Oct 20 16:52 .
+drwxrwxr-x 4 agent agent 4096 Oct 20 16:52 ..
+LABVM-DONE
