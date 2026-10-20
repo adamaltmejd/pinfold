@@ -520,8 +520,9 @@ before it execs Firecracker:
   (5 or later, so `/dev/kvm`'s ioctls are explicit), TCP included, and
   allows only: read and execute on the binary; read on the kernel, the
   root and init disks and the configuration; read and write on the box's
-  disks; read, write and ioctl on `/dev/kvm`; making sockets, removing
-  files and reading the directory in the vsock socket directory.
+  disks; read, write and ioctl on `/dev/kvm`; making and connecting to
+  sockets (ABI 9's `RESOLVE_UNIX`), removing files and reading the
+  directory in the vsock socket directory.
 
 Firecracker's own seccomp filters then apply.
 

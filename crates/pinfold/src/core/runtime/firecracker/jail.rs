@@ -208,7 +208,10 @@ impl Plan {
             ),
             (
                 inside(VSOCK)?,
-                landlock::MAKE_SOCK | landlock::REMOVE_FILE | landlock::READ_DIR,
+                landlock::MAKE_SOCK
+                    | landlock::RESOLVE_UNIX
+                    | landlock::REMOVE_FILE
+                    | landlock::READ_DIR,
             ),
         ];
         for (index, source) in jail.disks.iter().enumerate() {
@@ -545,7 +548,9 @@ fn restrict(exec: &Exec) -> Result<(), Failure> {
             Mode::empty(),
         )
         .map_err(fail("open a Landlock path", index))?;
-        landlock::allow(&ruleset, &fd, *access).map_err(fail("add a Landlock rule", index))?;
+        // A right the running ABI lacks is not handled, so not allowed.
+        landlock::allow(&ruleset, &fd, access & landlock::handled_fs(abi))
+            .map_err(fail("add a Landlock rule", index))?;
     }
     landlock::restrict(&ruleset).map_err(fail("restrict to the Landlock ruleset", 0))?;
     // Drop every capability in the bounding set, up to the kernel's last.
@@ -597,12 +602,14 @@ pub mod landlock {
     pub const REMOVE_FILE: u64 = 1 << 5;
     pub const MAKE_SOCK: u64 = 1 << 9;
     pub const IOCTL_DEV: u64 = 1 << 15;
+    pub const RESOLVE_UNIX: u64 = 1 << 16;
 
-    /// Every filesystem right of ABIs 1 to 5: 13 in ABI 1, `REFER` in 2,
-    /// `TRUNCATE` in 3, `IOCTL_DEV` in 5. ABI 4 adds TCP and 6 adds scopes.
-    /// ABIs 7 and 8 add no right. Revisit when an ABI adds one: until it is
-    /// listed here, the jail does not handle it.
-    fn handled_fs(abi: i32) -> u64 {
+    /// Every filesystem right of ABIs 1 to 10: 13 in ABI 1, `REFER` in 2,
+    /// `TRUNCATE` in 3, `IOCTL_DEV` in 5, `RESOLVE_UNIX` in 9. ABIs 4 and 10
+    /// add network rights, 6 adds scopes, 7 and 8 add none. Revisit when an
+    /// ABI past 10 adds a right: until it is listed here, the jail does not
+    /// handle it.
+    pub fn handled_fs(abi: i32) -> u64 {
         let mut rights = (1 << 13) - 1;
         if abi >= 2 {
             rights |= 1 << 13;
@@ -612,6 +619,9 @@ pub mod landlock {
         }
         if abi >= 5 {
             rights |= IOCTL_DEV;
+        }
+        if abi >= 9 {
+            rights |= RESOLVE_UNIX;
         }
         rights
     }
@@ -645,12 +655,18 @@ pub mod landlock {
     }
 
     /// A ruleset handling every right of `abi`: filesystem, TCP bind and
-    /// connect (ABI 4), and abstract unix socket and signal scoping (ABI 6).
+    /// connect (ABI 4), abstract unix socket and signal scoping (ABI 6), and
+    /// UDP bind and send (ABI 10).
     pub fn ruleset(abi: i32) -> Result<OwnedFd, Errno> {
         let attr = RulesetAttr {
             handled_access_fs: handled_fs(abi),
-            // Bind and connect TCP, with no rule allowing either.
-            handled_access_net: if abi >= 4 { 0b11 } else { 0 },
+            // TCP bind and connect, then UDP bind and send, with no rule
+            // allowing any.
+            handled_access_net: match abi {
+                ..4 => 0,
+                4..10 => 0b11,
+                _ => 0b1111,
+            },
             // Abstract unix sockets and signals.
             scoped: if abi >= 6 { 0b11 } else { 0 },
         };
