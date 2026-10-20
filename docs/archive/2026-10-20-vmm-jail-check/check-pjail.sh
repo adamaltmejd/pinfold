@@ -30,8 +30,11 @@ JSON
   echo $! >"$s/proxy.pid"
   until [ -S "$s/vsock/v.sock_3128" ]; do :; done
   if [ "$fc" != "$FC/firecracker" ]; then
+    socat -u UNIX-LISTEN:"$s/vsock/v.sock_9" - >"$s/probe.out" &
+    until [ -S "$s/vsock/v.sock_9" ]; do :; done
     "$PJ" "$s" "$fc" "$FC/vmlinux" "$FC/rootfs.ext4" "$FC/init.ext4" "$data" 2>&1
     echo "pjail exit=$?"
+    wait $!; cat "$s/probe.out"
     kill "$(cat "$s/proxy.pid")"
     return
   fi

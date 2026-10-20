@@ -26,12 +26,19 @@ Two boxes up, each with its own data disk:
 | `/disk0.ext4` inode | its own disk's, not the other box's |
 | mount points (mountinfo field 5) | `/` and the 8 binds; none under `/home/agent` |
 | egress | api.github.com 200; example.com 403 |
+| `/proc/PID/fd` | `/dev/null` on 0–2; otherwise only the VMM's own (`/dev/kvm`, the disks, sockets, anon inodes) |
 
-SIGKILL of box a's `pjail` ended a's VMM in 48 ms; b's stayed up.
+`pjail` was started holding fd 7 (`/etc/hostname`) without close-on-exec,
+as a careless caller might pass it to `box up`. pjail had it; neither VMM
+did. The VMM's own fd 7 is a timerfd.
 
-Escape probes run as `/firecracker` in the full jail (`pjprobe.rs`), with
-host controls succeeding: `/dev/kvm` and the disk open read-write,
-`KVM_GET_API_VERSION` 12, the proxy socket connects. Refused: writing
+SIGKILL of box a's `pjail` ended a's VMM in 75 ms; b's stayed up.
+
+Escape probes run as `/firecracker` in the full jail (`pjprobe.rs`). The
+jail gives it `/dev/null` as stdout, so it reports through a socket in the
+vsock directory. Host controls succeed, and so do the probes of what the
+VMM needs: `/dev/kvm` and the disk open read-write, `KVM_GET_API_VERSION`
+12, the proxy socket connects. Refused: writing
 `/vmlinux` or creating `/x` (EROFS); `/proc`, `/home`, `/etc/passwd`
 (ENOENT); a file, a fifo or `ftruncate` in the vsock dir or on the disk,
 TCP to 127.0.0.1:8080, and opening `/root.ext4` read-write (EACCES, from

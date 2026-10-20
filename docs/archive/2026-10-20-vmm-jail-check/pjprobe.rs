@@ -27,6 +27,7 @@ unsafe extern "C" {
     fn mknod(p: *const u8, mode: u32, dev: u64) -> i32;
     fn ftruncate(fd: i32, len: i64) -> i32;
     fn __errno_location() -> *mut i32;
+    fn dup2(old: i32, new: i32) -> i32;
 }
 
 fn errno() -> i32 { unsafe { *__errno_location() } }
@@ -79,4 +80,15 @@ fn probe() -> ! {
     std::process::exit(0)
 }
 
-fn main() { probe() }
+// The jail gives the VMM /dev/null as stdout; report through the vsock dir.
+fn main() {
+    let mut sun = [0u8; 110];
+    sun[0] = 1;
+    let path = b"/vsock/v.sock_9";
+    sun[2..2 + path.len()].copy_from_slice(path);
+    let u = unsafe { socket(1, 1, 0) };
+    if unsafe { connect(u, sun.as_ptr(), (2 + path.len()) as u32) } == 0 {
+        unsafe { dup2(u, 1) };
+    }
+    probe()
+}
