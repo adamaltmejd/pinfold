@@ -516,11 +516,12 @@ before it execs Firecracker:
 - a capability bounding set of zero, `no_new_privs`, and the user's
   supplementary groups, which reach nothing in the jail (dropping them
   needs privilege);
-- a Landlock ruleset that handles every access right of the running ABI
-  (5 or later, so `/dev/kvm`'s ioctls are explicit), TCP included, and
-  allows only: read and execute on the binary; read on the kernel, the
-  root and init disks and the configuration; read and write on the box's
-  disks; read, write and ioctl on `/dev/kvm`; making and connecting to
+- a Landlock ruleset on ABI 5 or later (so `/dev/kvm`'s ioctls are
+  explicit) that handles every access right pinfold knows up to the
+  running ABI, TCP included; a newer ABI runs normally, and its new rights
+  stay unhandled. It allows only: read and execute on the binary; read on
+  the kernel, the root and init disks and the configuration; read and
+  write on the box's disks; read, write and ioctl on `/dev/kvm`; making and connecting to
   sockets (ABI 9's `RESOLVE_UNIX`), removing files and reading the
   directory in the vsock socket directory.
 

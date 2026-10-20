@@ -677,9 +677,9 @@ pub mod landlock {
 
     /// Every filesystem right of ABIs 1 to 10: 13 in ABI 1, `REFER` in 2,
     /// `TRUNCATE` in 3, `IOCTL_DEV` in 5, `RESOLVE_UNIX` in 9. ABIs 4 and 10
-    /// add network rights, 6 adds scopes, 7 and 8 add none. Revisit when an
-    /// ABI past 10 adds a right: until it is listed here, the jail does not
-    /// handle it.
+    /// add network rights, 6 adds scopes, 7 and 8 add none. A newer ABI's
+    /// new rights stay unhandled until they are listed here (ARCHITECTURE.md
+    /// "VMM jail").
     pub fn handled_fs(abi: i32) -> u64 {
         let mut rights = (1 << 13) - 1;
         if abi >= 2 {
