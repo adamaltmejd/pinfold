@@ -290,7 +290,7 @@ pub fn own_disks(
     let owner = format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid());
     let mut command = std::process::Command::new("container");
     command
-        .args(["run", "--rm", "--progress", "none", "--network", "none"])
+        .args(["run", "--progress", "none", "--network", "none"])
         .args(["--read-only", "--cap-drop", "ALL", "--cap-add", "CAP_CHOWN"])
         .args(["--name", name])
         .args(["--user", "0:0", "--mount"])
@@ -313,14 +313,22 @@ pub fn own_disks(
         .args(setup)
         .stdin(std::process::Stdio::null())
         .output()
-        .map_err(|error| spawn_error("container", error))?;
+        .map_err(|error| spawn_error("container", error));
+    // The box reuses the helper's name, so the helper must be gone first.
+    // Apple reports a container `running` for a moment after `run` returns,
+    // and `rm` refuses it then; `run --rm` removes it just as late. `stop`
+    // returns once it has stopped, after which `rm` succeeds.
+    let stopped = output(&["container", "stop", name]);
+    let removed = output(&["container", "rm", name]);
+    let result = result?;
     if !result.status.success() {
         return Err(io::Error::other(format!(
             "give new disks to the box user: {}",
             String::from_utf8_lossy(&result.stderr).trim()
         )));
     }
-    Ok(())
+    stopped?;
+    removed.map(drop)
 }
 
 /// Run `init receive GUEST` in box `name` as the box user with `stream`
