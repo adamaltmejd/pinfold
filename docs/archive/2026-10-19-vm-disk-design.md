@@ -71,10 +71,10 @@ recovers a disk whose box was killed.
 
 Same day. Inputs: Codex's Firecracker prototype of 2026-10-16 (jailer,
 VMM as uid 60001, 42 observations), its worktree isolation investigation
-and the sandbox comparison, all dated 2026-10-19 and kept outside this
-repository (`~/.codex/worktrees/2007/.../2026-10-19-firecracker-runtime-investigation.md`,
-`~/.codex/worktrees/7459/.../2026-10-19-worktree-isolation-investigation.md`,
-`/Users/adam/Code/pinfold/docs/archive/2026-10-19-sandbox-comparison-and-recommendations.md`).
+and the sandbox comparison, all dated 2026-10-19 and archived beside this file
+([`2026-10-19-firecracker-runtime-investigation.md`](2026-10-19-firecracker-runtime-investigation.md),
+[`2026-10-19-worktree-isolation-investigation.md`](2026-10-19-worktree-isolation-investigation.md),
+[`2026-10-19-sandbox-comparison-and-recommendations.md`](2026-10-19-sandbox-comparison-and-recommendations.md)).
 
 ### VMM confinement
 
@@ -90,7 +90,7 @@ options:
 | Install | none beyond today's `kvm` group | a setuid or root-daemon launcher on every host; a Caller change |
 | Disk layout | disks stay `~/.local/state/pinfold/disks`, user-owned 0600 | disks must move to root-protected state or be chowned per run; the user loses direct access while a box runs; the vsock dir must be shared between the VMM uid and the user's proxy |
 | Owner death | `PR_SET_PDEATHSIG` survives (no setuid) | cleared across setuid; needs Codex's cgroup record and guardian |
-| Host requirement | unprivileged user namespaces and Landlock; Ubuntu 23.10+ restricts userns through AppArmor by default | root at install |
+| Host requirement | unprivileged user namespaces and Landlock; Ubuntu 24.04+ restricts userns through AppArmor by default | root at install |
 
 Recommendation: (a). It keeps pinfold rootless, which is the reason the
 Linux backend exists in this shape; a root launcher reachable by every
