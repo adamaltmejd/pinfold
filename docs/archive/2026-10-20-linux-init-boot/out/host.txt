@@ -1,0 +1,2 @@
+6.12.107+deb13-cloud-amd64
+Firecracker v1.17.0
