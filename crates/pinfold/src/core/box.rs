@@ -344,13 +344,11 @@ impl Box {
                     && progress.child.as_mut().is_some_and(running);
                 let (removed, status) = abort(&plan.name, progress.child).await;
                 if removed.is_ok() {
-                    if ran {
-                        // The box mounted the disks. Only a stop pinfold
-                        // asked of a running box synced them.
+                    // Only a stop pinfold asked of a running box synced its
+                    // disks. Even then, a disk unclean before this `up` stays
+                    // so: an aborted start is no recovery.
+                    if ran && !requested {
                         progress.claimed.marked.clear();
-                        if requested && let Err(error) = disk::detached(&plan.disks) {
-                            eprintln!("pinfold: startup cleanup: {error}");
-                        }
                     }
                     progress.claimed.undo(runtime, &plan.name);
                 }
