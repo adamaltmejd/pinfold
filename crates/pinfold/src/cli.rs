@@ -34,6 +34,7 @@ pinfold profile new NAME [--from PROFILE] [--builtin] [--from-project [PATH]]   
 pinfold clean [--dry-run] [--unused AGE]   reclaim unused disk space
 pinfold doctor                   runtime, kernel, image, artifacts, trust, config, disk use
 pinfold artifacts                pinned harnesses as JSON
+pinfold apparmor-profile         the AppArmor profile for this executable (Linux)
 pinfold update [--check]         check for a release, or download and install it
 pinfold config [ROOT]            effective configuration and project facts as JSON
 pinfold box …                    the process interface
@@ -812,6 +813,38 @@ pub fn artifacts(args: &[String]) -> io::Result<i32> {
         return Err(usage("artifacts", "artifacts takes no arguments"));
     }
     println!("{}", pins_json()?);
+    Ok(0)
+}
+
+/// An unconfined profile that grants only `userns`, named for and attached
+/// to this executable's path, so the VMM jail works where AppArmor restricts
+/// unprivileged user namespaces.
+pub fn apparmor_profile(args: &[String]) -> io::Result<i32> {
+    if !args.is_empty() {
+        return Err(usage(
+            "apparmor-profile",
+            "apparmor-profile takes no arguments",
+        ));
+    }
+    if !cfg!(target_os = "linux") {
+        return Err(io::Error::other("AppArmor profiles are for Linux hosts"));
+    }
+    let exe = std::env::current_exe()?;
+    // Pattern characters would attach the profile to other paths too.
+    let path = exe
+        .to_str()
+        .filter(|path| {
+            !path
+                .chars()
+                .any(|c| c.is_control() || "\"\\*?[]{}^".contains(c))
+        })
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "{} cannot be named in an AppArmor profile",
+                exe.display()
+            ))
+        })?;
+    println!("abi <abi/4.0>,\n\n\"{path}\" flags=(unconfined) {{\n  userns,\n}}");
     Ok(0)
 }
 
