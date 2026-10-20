@@ -58,6 +58,7 @@ fn main() -> ExitCode {
         "clean" => cli::clean,
         "doctor" => cli::doctor,
         "artifacts" => cli::artifacts,
+        "apparmor-profile" => cli::apparmor_profile,
         "config" => cli::config,
         "profile" => cli::profile,
         "pi" => launch::run,
@@ -84,11 +85,11 @@ fn main() -> ExitCode {
     update::notice(verb, args);
     // The daily pass runs before any working command, the `pi` shim
     // included; `init` is PID 1 in a box with no runtime to prune, and the
-    // options, help, doctor, box list and the run queries touch nothing. `box down` skips
+    // options, help, doctor, apparmor-profile, box list and the run queries touch nothing. `box down` skips
     // unrelated maintenance before its bounded owner request. `box up`
     // installs its signal handlers before running the pass itself.
     match (verb, args.first().map(String::as_str)) {
-        ("init" | "doctor" | "config" | "artifacts", _)
+        ("init" | "doctor" | "config" | "artifacts" | "apparmor-profile", _)
         | ("box", Some("up" | "list" | "down" | "inspect" | "events")) => {}
         _ => crate::core::clean::maintain(),
     }
