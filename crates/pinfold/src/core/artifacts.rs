@@ -235,7 +235,8 @@ pub fn init() -> io::Result<PathBuf> {
 }
 
 /// Write a read-only ext4 init disk at `disk` holding this executable as
-/// `/pinfold`: a Linux CLI's init for a box.
+/// `/pinfold`, and the empty `/dev` and `/mnt` PID 1 mounts on: a Linux
+/// CLI's init for a box, and the guest kernel's root.
 #[cfg(target_os = "linux")]
 #[expect(dead_code, reason = "the Firecracker runtime calls it, #141")]
 pub fn init_disk(disk: &Path) -> io::Result<()> {
@@ -243,6 +244,8 @@ pub fn init_disk(disk: &Path) -> io::Result<()> {
     let _ = fs::remove_dir_all(&tree);
     fs::create_dir(&tree)?;
     let made = (|| {
+        fs::create_dir(tree.join("dev"))?;
+        fs::create_dir(tree.join("mnt"))?;
         let init = tree.join("pinfold");
         fs::copy(std::env::current_exe()?, &init)?;
         fs::set_permissions(&init, fs::Permissions::from_mode(0o755))?;
@@ -281,7 +284,7 @@ pub struct Pin {
     assets: Vec<&'static Asset>,
 }
 
-/// Every pinned harness, then on Linux the VMM, and whether the cache holds
+/// Every pinned harness, then on Linux x64 the VMM, and whether the cache holds
 /// each. Never downloads.
 pub fn pins() -> io::Result<Vec<Pin>> {
     let pin = |harness: &'static Harness, path: fn(PathBuf, &str) -> PathBuf| {
@@ -298,7 +301,7 @@ pub fn pins() -> io::Result<Vec<Pin>> {
         .iter()
         .map(|harness| pin(harness, |dir, name| dir.join(name)))
         .collect::<io::Result<Vec<_>>>()?;
-    if cfg!(target_os = "linux") {
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         pins.push(pin(&VMM, |dir, _| dir)?);
     }
     Ok(pins)

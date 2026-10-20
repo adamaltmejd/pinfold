@@ -795,8 +795,8 @@ harness, into `~/.cache/pinfold/artifacts/vmm/<version>/<os-arch>/`, where
 `<version>` names Firecracker's and the kernel's, on the first `up`. They
 move only with a pinfold release; nightly CI repins Firecracker like a
 harness, once a release has been out seven full days, and the kernel's
-config and release move with it: the repin builds and publishes a missing
-kernel release before pinning its digest.
+config and release move with it. The repin waits for the matching kernel
+release, which the guest-kernel workflow publishes; it never publishes one.
 
 codex also pins a host helper, `codex-app-server`, per host `os-arch`
 (`darwin-arm64`, `linux-x64`), installed the same way into

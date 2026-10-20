@@ -452,7 +452,10 @@ pub fn remove_images(runtime: &dyn Runtime, source: &str) -> io::Result<Removed>
         }
         removed.ids.push(id);
     }
-    prune_root_disks(runtime)?;
+    // The images are gone already; a failed prune is the next one's.
+    if let Err(error) = prune_root_disks(runtime) {
+        eprintln!("pinfold: maintenance: root disks: {error}");
+    }
     Ok(removed)
 }
 

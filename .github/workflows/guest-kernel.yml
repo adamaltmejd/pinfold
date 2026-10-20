@@ -6,8 +6,18 @@ on:
       - guest-kernel/**
       - crates/pinfold/vmm.toml
       - .github/workflows/guest-kernel.yml
-  # Publishing runs only from main.
+  # Publishing runs only from main. The inputs build for a Firecracker
+  # version vmm.toml does not pin yet; the nightly repin waits for it.
   workflow_dispatch:
+    inputs:
+      firecracker:
+        description: Firecracker version to build for, like v1.18.0; empty for vmm.toml's
+        type: string
+        default: ""
+      config_sha256:
+        description: sha256 of that version's guest config; required with firecracker
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -26,7 +36,15 @@ jobs:
           sudo apt-get install -y -qq build-essential flex bison bc libelf-dev libssl-dev
 
       - name: Build
-        run: guest-kernel/build.sh dist
+        env:
+          GUEST_FIRECRACKER: ${{ inputs.firecracker }}
+          GUEST_CONFIG_SHA256: ${{ inputs.config_sha256 }}
+        run: |
+          if [ -n "$GUEST_FIRECRACKER$GUEST_CONFIG_SHA256" ]; then
+            echo "$GUEST_FIRECRACKER" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'
+            echo "$GUEST_CONFIG_SHA256" | grep -Eqx '[0-9a-f]{64}'
+          fi
+          guest-kernel/build.sh dist
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -57,9 +75,11 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          GUEST_FIRECRACKER: ${{ inputs.firecracker }}
         run: |
           . guest-kernel/pins
           firecracker=v$(sed -n 's/^version = "\([^+"]*\)+[^"]*"$/\1/p' crates/pinfold/vmm.toml)
+          firecracker=${GUEST_FIRECRACKER:-$firecracker}
           tag="guest-kernel-$KERNEL-firecracker-$firecracker"
           printf 'Firecracker guest kernel %s with Firecracker %s guest config.\n\n## Caller changes\n\nNone\n' \
             "$KERNEL" "$firecracker" >"$RUNNER_TEMP/notes"

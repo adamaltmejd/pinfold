@@ -308,13 +308,17 @@ pub fn root_disk(id: &str) -> io::Result<PathBuf> {
     // namespace, so files keep their image owners and the host user can
     // still remove what the namespace wrote. The image is never larger
     // than its tree: allow 10% and 16 MiB for metadata, an inode per entry.
+    // The export goes to a file: in a pipe, a failed export could still
+    // leave tar a short archive to extract and cache.
     const SCRIPT: &str = r#"set -eu
-trap 'rm -rf "$1/tree"' EXIT
-rm -rf "$1/tree" "$1/disk"
+trap 'rm -rf "$1/tree" "$1/export.tar"' EXIT
+rm -rf "$1/tree" "$1/export.tar" "$1/disk"
 mkdir -p "$1/tree"
-podman export "$2" | tar -xpf - -C "$1/tree"
+podman export -o "$1/export.tar" "$2"
+tar -xpf "$1/export.tar" -C "$1/tree"
+rm "$1/export.tar"
 kib=$(du -sk "$1/tree" | cut -f1)
-entries=$(find "$1/tree" | wc -l)
+entries=$(find "$1/tree" -print0 | tr -dc '\0' | wc -c)
 "$3" -q -F -m 0 -O ^has_journal -N $((entries + 1024)) -d "$1/tree" \
   "$1/disk" $((kib + kib / 10 + entries / 4 + 16384))k
 "#;
