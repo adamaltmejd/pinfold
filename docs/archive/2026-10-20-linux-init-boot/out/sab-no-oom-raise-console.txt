@@ -1,0 +1,3 @@
+[    4.261328] python3 invoked oom-killer: gfp_mask=0x140dca(GFP_HIGHUSER_MOVABLE|__GFP_ZERO|__GFP_COMP), order=0, oom_score_adj=-1000
+[    4.793093] Out of memory and no killable processes...
+[    4.795147] Kernel panic - not syncing: System is deadlocked on memory

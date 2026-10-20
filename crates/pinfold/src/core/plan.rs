@@ -612,7 +612,20 @@ impl Plan {
             .chain(self.disks.iter().map(|disk| disk.guest.as_path()))
             .chain(extra.iter().copied())
         {
-            if !guests.insert(guest_path(guest)) {
+            let normalized = guest_path(guest);
+            // The guest kernel's filesystems carry the box's controls (the
+            // userns sysctl, the work cgroup); a disk or mount there would
+            // replace them.
+            if KERNEL_PATHS
+                .iter()
+                .any(|kernel| normalized.starts_with(kernel))
+            {
+                return Err(invalid(format!(
+                    "guest path {} is at or below /proc, /sys or /dev",
+                    guest.display()
+                )));
+            }
+            if !guests.insert(normalized) {
                 return Err(invalid(format!(
                     "two mounts or disks name the same guest path {}",
                     guest.display()
@@ -622,6 +635,9 @@ impl Plan {
         Ok(())
     }
 }
+
+/// Guest paths no mount or disk may name, at or below.
+const KERNEL_PATHS: [&str; 3] = ["/proc", "/sys", "/dev"];
 
 /// Resolve guest components lexically, without consulting the host filesystem.
 pub(crate) fn guest_path(path: &Path) -> PathBuf {

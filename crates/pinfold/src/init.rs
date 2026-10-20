@@ -5,7 +5,8 @@
 //! actions, so waiting for the blocked signal is what makes a stop possible.
 //! When the transport carries the proxy socket in, it also relays
 //! `127.0.0.1:3128` to that socket, because clients only know how to reach a
-//! proxy over TCP.
+//! proxy over TCP. On Linux, `init boot` is PID 1 of a Firecracker box
+//! instead (`init/firecracker.rs`).
 
 use std::ffi::OsString;
 use std::fs;
@@ -21,6 +22,10 @@ use std::time::Duration;
 
 use nix::sys::signal::{SigHandler, SigSet, Signal};
 
+#[cfg(target_os = "linux")]
+#[path = "init/firecracker.rs"]
+mod firecracker;
+
 /// Guest values travel under names the host runtime does not interpret.
 /// Hex preserves arbitrary environment bytes through runtime JSON encoding.
 pub const BOX_ENV_PREFIX: &str = "PINFOLD_BOX_ENV_";
@@ -34,6 +39,8 @@ pub fn run(args: &[String]) -> ! {
         Some("exec") => exec(&args[1..]),
         Some("setup") => exit_with("setup", setup(&args[1..])),
         Some("receive") => exit_with("receive", receive(&args[1..])),
+        #[cfg(target_os = "linux")]
+        Some("boot") => firecracker::boot(),
         _ => {}
     }
 
@@ -62,7 +69,7 @@ pub fn run(args: &[String]) -> ! {
         thread::spawn(move || {
             for client in listener.incoming().flatten() {
                 let target = target.clone();
-                thread::spawn(move || relay(client, &target));
+                thread::spawn(move || relay(client, UnixStream::connect(&target)?));
             }
         });
     }
@@ -181,15 +188,19 @@ pub const STREAM_SYMLINK: u8 = b'l';
 pub const STREAM_END: u8 = 0;
 
 /// `init receive DIR`: write the copy stream on stdin below DIR, as the
-/// box user. Directories and executables get 755, other files 644.
+/// box user.
 fn receive(args: &[String]) -> io::Result<()> {
-    use std::io::Read;
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
     let [root] = args else {
         return Err(io::Error::other("usage: pinfold init receive DIR"));
     };
-    let root = Path::new(root);
-    let mut input = io::BufReader::new(io::stdin().lock());
+    receive_into(Path::new(root), &mut io::BufReader::new(io::stdin().lock()))
+}
+
+/// Write one copy stream from `input` below `root`, up to its
+/// [`STREAM_END`]. Directories and executables get 755, other files 644.
+fn receive_into(root: &Path, mut input: &mut impl io::Read) -> io::Result<()> {
+    use std::io::Read;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
     fn read_bytes(input: &mut impl Read, length: usize) -> io::Result<Vec<u8>> {
         let mut bytes = vec![0; length];
         input.read_exact(&mut bytes)?;
@@ -248,8 +259,7 @@ fn receive(args: &[String]) -> io::Result<()> {
 
 /// Guest upload EOF preserves the response path. Proxy EOF completes the
 /// exchange and interrupts a guest that kept its upload half open.
-fn relay(mut client: TcpStream, target: &Path) -> io::Result<()> {
-    let mut server = UnixStream::connect(target)?;
+fn relay(mut client: TcpStream, mut server: UnixStream) -> io::Result<()> {
     client.set_write_timeout(Some(Duration::from_secs(300)))?;
     server.set_write_timeout(Some(Duration::from_secs(300)))?;
     let mut client_reader = client.try_clone()?;
