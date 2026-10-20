@@ -1830,7 +1830,9 @@ fn work_leaves_the_box_only_by_fetch() {
     // every commit. Sabotage: bundle `--tags` too and fetch with `--tags`
     // for `--no-tags`; the box's tag lands. Sabotage: set REPO's
     // `core.hooksPath` to `.githooks` after the fetch, as if fetch adopted
-    // the box's config; a host checkout touches a marker.
+    // the box's config; a host checkout touches a marker. Sabotage: drop
+    // `check_branch` from crossing.rs; the hostile bundle's
+    // `refs/heads/injected` lands on the host.
     let env = TestEnv::new("crossing");
     let name = box_name("crossing");
     let _disks = DiskCleanup(vec![name.clone()]);
@@ -1857,6 +1859,8 @@ fn work_leaves_the_box_only_by_fetch() {
         "name": name,
         "image": default_image(&env),
         "disks": [{ "name": name, "guest": "/work", "size": "1G", "from": repo }],
+        // The hostile case's `git` goes here, absent until then.
+        "env": { "PATH": "/work/.hostile:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" },
     });
     let mut up = box_up(&env, &spec, &name);
     let in_box = |script: &str| {
@@ -2017,6 +2021,43 @@ fn work_leaves_the_box_only_by_fetch() {
         .map(|line| line.split_whitespace().next().unwrap())
         .collect();
     assert_eq!(commits, [commit.trim()], "the second fetch's commits");
+
+    // A box that writes its own bundle: a `git` ahead of the real one on
+    // PATH stands in for a box that controls its processes' output. Its
+    // bundle carries a real commit under a `refs/heads/x` head, a
+    // `refs/heads/x:refs/heads/injected` head and a `refs/replace/*` head
+    // over the host's main. The fetch fails and no host ref changes.
+    let host_main = host_git(&["rev-parse", "main"]);
+    let host_refs = host_git(&["for-each-ref"]);
+    in_box(&format!(
+        r#"set -e
+cd /work
+mkdir .hostile
+g() {{ git -c core.hooksPath=/nonexistent -c core.fsmonitor=false "$@"; }}
+evil=$(g commit-tree -m evil 'HEAD^{{tree}}')
+g update-ref refs/evil/x "$evil"
+g bundle create -q .hostile/real refs/evil/x
+header=$(sed -n '1,/^$/p' .hostile/real | wc -c)
+{{ printf '# v2 git bundle\n%s refs/heads/x\n%s refs/heads/x:refs/heads/injected\n%s refs/replace/{host_main}\n\n' "$evil" "$evil" "$evil"
+  tail -c +$((header + 1)) .hostile/real; }} > .hostile/bundle
+cat > .hostile/git <<'END'
+#!/bin/sh
+case " $* " in
+*" rev-list "*) echo more; exit 0 ;;
+*" bundle create "*) exec cat /work/.hostile/bundle ;;
+esac
+exec /usr/bin/git "$@"
+END
+chmod 755 .hostile/git"#
+    ));
+    let (code, failed) = crossing_fetch(&env, &name, repo);
+    assert_eq!((code, &failed["event"]), (1, &"failed".into()), "{failed}");
+    assert_eq!(
+        host_git(&["for-each-ref"]),
+        host_refs,
+        "the hostile bundle changed a host ref"
+    );
+    assert_eq!(host_git(&["log", "-1", "--format=%H", "main"]), host_main);
 
     up.down(&env);
     assert!(up.wait().success(), "the box did not exit cleanly");

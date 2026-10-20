@@ -322,8 +322,17 @@ pub fn own_disks(
     let removed = output(&["container", "rm", name]);
     let result = result?;
     if !result.status.success() {
+        // Name a failed stop or removal too, so a leftover helper shows.
+        let leftover = match (&stopped, &removed) {
+            (Ok(_), Ok(_)) => String::new(),
+            _ => format!(
+                "; removing helper {name}: {:?}, {:?}",
+                stopped.err(),
+                removed.err()
+            ),
+        };
         return Err(io::Error::other(format!(
-            "give new disks to the box user: {}",
+            "give new disks to the box user: {}{leftover}",
             String::from_utf8_lossy(&result.stderr).trim()
         )));
     }

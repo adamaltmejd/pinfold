@@ -19,6 +19,9 @@ use crate::dirs;
 /// A fetched bundle larger than this is refused as `limit`.
 const LIMIT: u64 = 4 << 30;
 
+/// A box listing or bundling more branches than this fails the fetch.
+const BRANCHES: usize = 4096;
+
 /// The box script's exit code for a GUEST_REPO that is not a repository,
 /// which the host reports as `spec`.
 const NOT_A_REPO: i32 = 64;
@@ -49,8 +52,9 @@ held=$(git -C "$repo" cat-file --batch-check='%(objectname) %(objecttype)' |
   sed -n 's/^\([0-9a-f]*\) commit$/^\1/p') || exit
 git -C "$repo" for-each-ref --format='%(objectname) %(refname)' refs/heads/ || exit
 echo
-[ -n "$(git -C "$repo" rev-list -n1 --branches $held)" ] || exit 0
-exec git -C "$repo" bundle create -q - --branches $held
+revs() { echo --branches; printf '%s\n' $held; }
+[ -n "$(revs | git -C "$repo" rev-list -n1 --stdin)" ] || exit 0
+revs | exec git -C "$repo" bundle create -q - --stdin
 "#;
 
 pub enum CrossingError {
@@ -156,10 +160,15 @@ pub fn fetch(
     // listing short.
     box_status(status.code(), &stderr.join(), guest_repo)?;
     let listed = received?;
+    for (branch, _) in &listed {
+        check_branch(repo, &namespace, branch)?;
+    }
 
-    // The box's listing and bundle are untrusted. A ref lands only at a
-    // commit the bundle carried, which fetch checked whole with fsck, or
-    // one the host already reaches from this remote's refs.
+    // The box's listing and bundle are untrusted. Every branch name passes
+    // check-ref-format under the namespace before git sees it in a refspec
+    // or a ref update. A ref lands only at a commit the bundle carried,
+    // which fetch checked whole with fsck, or one the host already reaches
+    // from this remote's refs.
     let mut refs = BTreeMap::new();
     let path = bundle
         .path
@@ -173,6 +182,12 @@ pub fn fetch(
         }
         succeeded(git(repo, &["bundle", "verify", "-q", path])?)?;
         let heads = bundle_heads(repo, path)?;
+        if heads.len() > BRANCHES {
+            return Err(too_many());
+        }
+        for branch in heads.keys() {
+            check_branch(repo, &namespace, branch)?;
+        }
         let wanted: String = heads
             .keys()
             .map(|branch| format!("refs/heads/{branch}\n"))
@@ -187,6 +202,7 @@ pub fn fetch(
                 "fetch",
                 "-q",
                 "--no-tags",
+                "--no-recurse-submodules",
                 "--no-write-fetch-head",
                 "--stdin",
                 path,
@@ -217,21 +233,20 @@ pub fn fetch(
         refs.insert(branch, oid);
     }
 
-    // One transaction: every ref lands or none does. update-ref refuses a
-    // malformed name, `..` included, so a box branch cannot leave the
-    // namespace.
+    // One transaction: every ref lands or none does. `-z` keeps each value
+    // a single field, never a revision expression read from a name.
     let refs: Refs = refs
         .into_iter()
         .map(|(branch, oid)| (format!("{namespace}{branch}"), oid))
         .collect();
     let updates: String = refs
         .iter()
-        .map(|(name, oid)| format!("update {name} {oid}\n"))
+        .map(|(name, oid)| format!("update {name}\0{oid}\0\0"))
         .collect();
     if !refs.is_empty() {
         succeeded(git_input(
             repo,
-            &["update-ref", "--stdin"],
+            &["update-ref", "-z", "--stdin"],
             updates.as_bytes(),
         )?)?;
     }
@@ -258,6 +273,23 @@ fn check_args(repo: &Path, guest_repo: &str, remote: &str) -> Result<(), Crossin
         )));
     }
     Ok(())
+}
+
+/// Fail unless `NAMESPACE + branch` is a well-formed ref name: no `:`,
+/// space, `..`, `@{` or other text git would read as more than one name.
+fn check_branch(repo: &Path, namespace: &str, branch: &str) -> Result<(), CrossingError> {
+    let name = format!("{namespace}{branch}");
+    if git(repo, &["check-ref-format", &name])?.status.success() {
+        Ok(())
+    } else {
+        Err(CrossingError::Failed(format!(
+            "the box named a malformed branch: {branch:?}"
+        )))
+    }
+}
+
+fn too_many() -> CrossingError {
+    CrossingError::Failed(format!("the box has more than {BRANCHES} branches"))
 }
 
 fn spec(detail: String) -> CrossingError {
@@ -304,10 +336,13 @@ fn receive(child: &mut Child, bundle: &Path) -> Result<Vec<(String, String)>, Cr
         if line.is_empty() {
             break;
         }
+        if listed.len() == BRANCHES {
+            return Err(too_many());
+        }
         let line = std::str::from_utf8(line).map_err(|_| malformed())?;
         let (oid, name) = line.split_once(' ').ok_or_else(malformed)?;
         let branch = name.strip_prefix("refs/heads/").ok_or_else(malformed)?;
-        if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if !object_id(oid) {
             return Err(malformed());
         }
         listed.push((branch.to_owned(), oid.to_owned()));
@@ -343,16 +378,31 @@ fn filtered(bundle: &Path) -> io::Result<bool> {
     }
 }
 
-/// A bundle's branches, as git on the host reads them.
+/// A bundle's branches, as git on the host reads them. Their names are
+/// the bundle's bytes, unchecked.
 fn bundle_heads(repo: &Path, path: &str) -> Result<Refs, CrossingError> {
     let listed = succeeded(git(repo, &["bundle", "list-heads", path])?)?;
-    Ok(String::from_utf8_lossy(&listed.stdout)
-        .lines()
-        .filter_map(|line| {
-            let (oid, name) = line.split_once(' ')?;
-            Some((name.strip_prefix("refs/heads/")?.to_owned(), oid.to_owned()))
-        })
-        .collect())
+    let mut heads = Refs::new();
+    for line in String::from_utf8_lossy(&listed.stdout).lines() {
+        let Some((oid, name)) = line.split_once(' ') else {
+            continue;
+        };
+        let Some(branch) = name.strip_prefix("refs/heads/") else {
+            continue;
+        };
+        if !object_id(oid) {
+            return Err(CrossingError::Failed(format!(
+                "the bundle names {oid:?} for {name:?}"
+            )));
+        }
+        heads.insert(branch.to_owned(), oid.to_owned());
+    }
+    Ok(heads)
+}
+
+/// Whether `oid` is a full sha1 or sha256 object name.
+fn object_id(oid: &str) -> bool {
+    matches!(oid.len(), 40 | 64) && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// The first [`STDERR_KEPT`] bytes of a child's stderr, read on a thread
