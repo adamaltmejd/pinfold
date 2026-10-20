@@ -108,6 +108,11 @@ grep -l -a -F "$PINFOLD_ENV_SECRET" "$st/work.ext4"; echo "[grep exit $?]"
 upbox two --disk "$st/work.ext4:/work:ro" --mem 256
 echo "== row 11: read-only reattach"; x two -- sh -c 'cd /work && sha256sum -c big.sum; touch /work/z'
 down two
+echo "== guest refuses a disk below /proc"
+truncate -s 64M "$st/proc.ext4"; mkfs.ext4 -q -F "$st/proc.ext4"
+upbox four --disk "$st/proc.ext4:/proc/sys/user:rw" --mem 256
+pkill -9 -f "[f]cinit.py up $st/four"; kill -9 "$(cat "$st/four/vmm.pid")" 2>/dev/null
+
 echo "== exec before ENV waits for it"
 upbox three --mem 256 --defer-env 1
 x three -- sh -c 'echo "PATH=$PATH"' >"$st/early" 2>&1 &
@@ -116,5 +121,39 @@ sleep 1
 echo "after 1 s without ENV: $(kill -0 $early 2>/dev/null && echo still waiting || echo finished)"
 fc env "$st/three"
 wait $early; cat "$st/early"
-down three
+echo "== the exec service's end ends the VM (PID 1 exits; panic=1 reboots)"
+pid=$(cat "$st/three/vmm.pid")
+x three -- sh -c 'kill -9 $PPID'
+for i in $(seq 100); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+echo "VMM after the service's death: $(kill -0 "$pid" 2>/dev/null && echo still running || echo exited)"
+grep -m1 -E "Kernel panic" "$st/three/console.log"
+echo "== pids cap: hold the work cgroup at pids.max, then the service recovers"
+# 1 GiB so the box user's RLIMIT_NPROC (half the kernel's threads-max, about
+# 1900 at 512 MiB) is above pids.max and the cgroup is the limit hit.
+upbox five --mem 1024
+x five -- python3 -c '
+import os, time
+n = 0
+while True:
+    try:
+        os.posix_spawn("/bin/sleep", ["sleep", "30"], {})
+    except OSError as refused:
+        error = refused
+        break
+    n += 1
+print("spawn", n + 1, "refused:", error, flush=True)
+time.sleep(30)' >"$st/fill" 2>&1 &
+fill=$!
+until grep -q refused "$st/fill"; do sleep 0.2; done
+cat "$st/fill"
+pid=$(cat "$st/five/vmm.pid")
+echo "exec at the cap: $(fc exec "$st/five" -- echo at-cap 2>&1 | tail -1)"
+echo "stat at the cap: $(fc stat "$st/five" 2>&1 | tail -1)"
+echo "VMM at the cap: $(kill -0 "$pid" 2>/dev/null && echo running || echo exited)"
+wait $fill
+until fc stat "$st/five" 2>/dev/null | grep -q '"pids.current": [0-9],'; do sleep 1; done
+echo "after the sleeps end:"; x five -- echo alive
+fc stat "$st/five"
+down five
+
 echo "== done"

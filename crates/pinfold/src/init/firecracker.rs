@@ -101,21 +101,25 @@ pub fn boot() -> ! {
         Ok(prepared) => prepared,
         Err(error) => fail(&mut host, &error),
     };
+    // The service reports ready only once this pipe closes, after PID 1
+    // has dropped to CAP_SYS_ADMIN.
+    let (dropped, dropping) = io::pipe().unwrap_or_else(|error| fail(&mut host, &error));
     // Safety: PID 1 has started no thread, so the child is a whole copy.
     let service = match unsafe { nix::unistd::fork() } {
         Ok(ForkResult::Child) => {
-            drop(control);
-            exec_service(&request, host)
+            drop((control, dropping));
+            exec_service(&request, host, dropped)
         }
         Ok(ForkResult::Parent { child }) => child,
         Err(error) => fail(&mut host, &io::Error::from(error)),
     };
-    drop(host);
+    drop((host, dropped));
     if let Err(error) =
         drop_bounding(Some(CAP_SYS_ADMIN)).and_then(|()| set_capabilities(Some(CAP_SYS_ADMIN)))
     {
         die(&format!("keep only CAP_SYS_ADMIN: {error}"))
     }
+    drop(dropping);
     // With SIGCHLD ignored the kernel reaps every exited child, orphans
     // reparented to PID 1 included; the service's exit shows on its pidfd.
     // Safety: SIG_IGN runs no code.
@@ -204,9 +208,12 @@ fn guest_path(fields: &mut Fields) -> io::Result<PathBuf> {
     if components.next() != Some(Component::RootDir)
         || path.components().count() < 2
         || !components.all(|component| matches!(component, Component::Normal(_)))
+        || ["/proc", "/sys", "/dev"]
+            .iter()
+            .any(|kernel| path.starts_with(kernel))
     {
         return Err(io::Error::other(format!(
-            "guest path {} is not plain, absolute and below /",
+            "guest path {} is not plain, absolute, below / and outside /proc, /sys and /dev",
             path.display()
         )));
     }
@@ -499,8 +506,13 @@ fn serve_control(request: &Request, control: &OwnedFd, service: &OwnedFd) -> ! {
         if !fds[0].any().unwrap_or(false) {
             continue;
         }
-        let Ok(mut connection) = accept_host(control) else {
-            continue;
+        let mut connection = match accept_host(control) {
+            Ok(connection) => connection,
+            Err(Accepted::Peer) => continue,
+            Err(Accepted::Failed) => {
+                back_off();
+                continue;
+            }
         };
         let reply = match read_frame(&mut connection) {
             Ok((UNMOUNT, _)) => unmounted
@@ -532,7 +544,7 @@ fn unmount(request: &Request) -> io::Result<()> {
     }
     nix::unistd::sync();
     for attachment in request.attachments.iter().rev() {
-        nix::mount::umount2(&attachment.guest, MntFlags::empty()).map_err(|error| {
+        nix::mount::umount2(&attachment.guest, MntFlags::UMOUNT_NOFOLLOW).map_err(|error| {
             io::Error::other(format!("unmount {}: {error}", attachment.guest.display()))
         })?;
     }
@@ -541,7 +553,7 @@ fn unmount(request: &Request) -> io::Result<()> {
 
 /// The exec service: forked from PID 1, still root until
 /// [`become_box_user`].
-fn exec_service(request: &Request, host: UnixStream) -> ! {
+fn exec_service(request: &Request, host: UnixStream, mut dropped: io::PipeReader) -> ! {
     let mut host = BufReader::new(host);
     let started = (|| -> io::Result<(OwnedFd, TcpListener)> {
         become_box_user(request.uid, request.gid)?;
@@ -559,14 +571,26 @@ fn exec_service(request: &Request, host: UnixStream) -> ! {
         Ok(listeners) => listeners,
         Err(error) => fail(&mut host, &error),
     };
-    thread::spawn(move || {
-        for client in relay.incoming().flatten() {
-            thread::spawn(move || {
-                let server = vsock_connect(PROXY_PORT)?;
-                super::relay(client, server)
-            });
+    let relaying = spawn(move || {
+        loop {
+            match relay.accept() {
+                Ok((client, _)) => {
+                    let _ = spawn(move || {
+                        if let Ok(server) = vsock_connect(PROXY_PORT) {
+                            let _ = super::relay(client, server);
+                        }
+                    });
+                }
+                Err(_) => back_off(),
+            }
         }
     });
+    if let Err(error) = relaying {
+        fail(&mut host, &error)
+    }
+    // EOF once PID 1 holds only CAP_SYS_ADMIN, or has died.
+    let _ = dropped.read(&mut [0]);
+    drop(dropped);
     if let Err(error) = write_frame(&mut host, READY, &[]) {
         die(&format!("report ready: {error}"))
     }
@@ -574,12 +598,31 @@ fn exec_service(request: &Request, host: UnixStream) -> ! {
 
     let env = Arc::new(Env::default());
     loop {
-        let Ok(connection) = accept_host(&exec) else {
-            continue;
-        };
-        let env = Arc::clone(&env);
-        thread::spawn(move || serve(connection, &env));
+        match accept_host(&exec) {
+            // A thread that cannot start, at the pids cap, drops its
+            // connection; the service stays up.
+            Ok(connection) => {
+                let env = Arc::clone(&env);
+                let _ = spawn(move || serve(connection, &env));
+            }
+            Err(Accepted::Peer) => {}
+            Err(Accepted::Failed) => back_off(),
+        }
     }
+}
+
+/// Start a thread, or fail instead of panicking as `thread::spawn` does
+/// when the work cgroup's pids cap is reached.
+fn spawn<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> io::Result<thread::JoinHandle<T>> {
+    thread::Builder::new().spawn(work)
+}
+
+/// Pause after an accept error, such as EMFILE, that would otherwise
+/// repeat at once.
+fn back_off() {
+    thread::sleep(Duration::from_millis(100));
 }
 
 /// Join the work cgroup, out of the OOM killer's reach, then drop to the
@@ -734,12 +777,12 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
     let mut pumps = Vec::new();
     let input: Box<dyn Write + Send> = match &pty {
         Some(master) => {
-            pumps.push(pump(master.try_clone()?, STDOUT, &output));
+            pumps.push(pump(master.try_clone()?, STDOUT, &output)?);
             Box::new(master.try_clone()?)
         }
         None => {
-            pumps.push(pump(child.stdout.take().expect("piped"), STDOUT, &output));
-            pumps.push(pump(child.stderr.take().expect("piped"), STDERR, &output));
+            pumps.push(pump(child.stdout.take().expect("piped"), STDOUT, &output)?);
+            pumps.push(pump(child.stderr.take().expect("piped"), STDERR, &output)?);
             Box::new(child.stdin.take().expect("piped"))
         }
     };
@@ -748,7 +791,7 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
         None => None,
     };
     let mut reader = connection.try_clone()?;
-    thread::spawn(move || relay_input(&mut reader, input, resize.as_ref()));
+    spawn(move || relay_input(&mut reader, input, resize.as_ref()))?;
 
     let status = child.wait()?;
     for pump in pumps {
@@ -806,9 +849,9 @@ fn pump(
     mut from: impl Read + Send + 'static,
     kind: u8,
     output: &Arc<Mutex<UnixStream>>,
-) -> thread::JoinHandle<()> {
+) -> io::Result<thread::JoinHandle<()>> {
     let output = Arc::clone(output);
-    thread::spawn(move || {
+    spawn(move || {
         let mut buffer = [0; 32 * 1024];
         let mut open = true;
         loop {
@@ -959,18 +1002,23 @@ fn vsock_listen(port: u32) -> io::Result<OwnedFd> {
 /// Accept the next connection from the host. Any other peer is closed at
 /// once. The guest kernel has no vsock loopback, so none can reach a guest
 /// listener today; the check keeps that true if one ever does.
-fn accept_host(listener: &OwnedFd) -> io::Result<UnixStream> {
-    let fd = nix::sys::socket::accept4(listener.as_raw_fd(), SockFlag::SOCK_CLOEXEC)?;
+fn accept_host(listener: &OwnedFd) -> Result<UnixStream, Accepted> {
+    let fd = nix::sys::socket::accept4(listener.as_raw_fd(), SockFlag::SOCK_CLOEXEC)
+        .map_err(|_| Accepted::Failed)?;
     // Safety: accept4 returned a new descriptor, owned here alone.
     let connection = unsafe { OwnedFd::from_raw_fd(fd) };
-    let peer: VsockAddr = nix::sys::socket::getpeername(connection.as_raw_fd())?;
-    if peer.cid() != HOST_CID {
-        return Err(io::Error::other(format!(
-            "refused vsock peer {}",
-            peer.cid()
-        )));
+    match nix::sys::socket::getpeername::<VsockAddr>(connection.as_raw_fd()) {
+        Ok(peer) if peer.cid() == HOST_CID => Ok(UnixStream::from(connection)),
+        _ => Err(Accepted::Peer),
     }
-    Ok(UnixStream::from(connection))
+}
+
+/// Why [`accept_host`] returned no connection.
+enum Accepted {
+    /// A peer other than the host, closed.
+    Peer,
+    /// accept itself failed.
+    Failed,
 }
 
 fn write_frame(output: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {

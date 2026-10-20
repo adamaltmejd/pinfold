@@ -1,13 +1,16 @@
 #!/bin/bash
-# sabotage.sh SRC: build each named sabotage of SRC's init into
+# sabotage.sh SRC [NAME]...: build each named sabotage (default all) of SRC's init into
 # ~/fc/sab-NAME.ext4, then run checks.sh against it into out/sab-NAME.txt.
 set -euo pipefail
 src=$1
+shift
+only=" $* "
 here=$(cd "$(dirname "$0")" && pwd)
 export CARGO_TARGET_DIR=~/sab-target
 mkdir -p "$here/out"
 sabotage() {
   local name=$1 find=$2 replace=$3
+  [ "$only" = "  " ] || [[ $only == *" $name "* ]] || return 0
   rm -rf ~/sab-src && cp -a "$src" ~/sab-src && rm -rf ~/sab-src/target
   python3 - ~/sab-src/crates/pinfold/src/init/firecracker.rs "$find" "$replace" <<'PY'
 import sys
@@ -26,3 +29,5 @@ sabotage pid1-keeps-all \
 sabotage service-bounding 'drop_bounding(None)?;' ''
 sabotage userns-on 'fs::write("/proc/sys/user/max_user_namespaces", "0")?;' ''
 sabotage no-oom-raise '|| !raise_oom_score()' ''
+sabotage spawn-panics 'thread::Builder::new().spawn(work)' 'Ok(thread::spawn(work))'
+sabotage guest-allows-proc '|| ["/proc", "/sys", "/dev"]' '|| ["/no-such-root"]'

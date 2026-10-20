@@ -119,7 +119,7 @@ def up(state, args):
     config = {
         "boot-source": {"kernel_image_path": opts["--kernel"][0], "boot_args": BOOT_ARGS},
         "drives": drives,
-        "machine-config": {"vcpu_count": 2, "mem_size_mib": int(opts["--mem"][0])},
+        "machine-config": {"vcpu_count": 2, "mem_size_mib": int(opts["--mem"][-1])},
         "vsock": {"guest_cid": 3, "uds_path": f"{state}/vsock/v.sock"},
     }
     with open(f"{state}/config.json", "w") as file:

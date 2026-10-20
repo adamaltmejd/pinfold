@@ -45,9 +45,24 @@ workdir applies; a missing program exits 127; `--tty` runs on
 `/dev/pts/0` and a RESIZE to 40×100 shows in `stty size`; an orphan
 leaves no zombie.
 
+Review fixes, rechecked on a second lease:
+
+- **Pids cap.** In a 1 GiB box, a process spawns until the work cgroup
+  refuses spawn 2042 (EAGAIN; the service's threads hold the rest of
+  `pids.max` 2048), then holds it there. An exec and a stat at the cap
+  get their connection dropped, the VMM stays up, and once the processes
+  end the box answers. At 512 MiB the box
+  user's `RLIMIT_NPROC` (half the kernel's `threads-max`) binds first, near
+  1900.
+- **Kernel paths.** A disk at `/proc/sys/user` fails `up` in the guest,
+  naming the path. The host refuses it earlier, as `spec` (row 17).
+- **PID 1's exit ends the VM.** `kill -9` of the exec service: the VMM
+  exits within 0.1 s and the console shows "Kernel panic - not syncing:
+  Attempted to kill init!" (`panic=1 reboot=k`).
+
 ## Sabotages (`out/sab-*.txt`)
 
-Each is a one-line patch of `firecracker.rs`, built and run through the
+The first five ran against the first version of `checks.sh`, the last two against the current one. Each is a one-line patch of `firecracker.rs`, built and run through the
 whole check (`sabotage.sh`):
 
 | Sabotage | What failed |
@@ -57,6 +72,12 @@ whole check (`sabotage.sh`):
 | service skips the bounding-set drop | exec'd `CapBnd` `000001ffffffffff` |
 | no `max_user_namespaces` 0 | `unshare -U` succeeds; the sysctl reads 1904 |
 | no `oom_score_adj` raise | exec'd work at -1000 (the service's); the hog panics the guest, "Out of memory and no killable processes" (`out/sab-no-oom-raise-console.txt`) |
+| `thread::spawn` in place of `Builder::spawn` | at the cap, the exec and stat connections end and the VMM exits: the service panicked, PID 1 exited |
+| no guest refusal of kernel paths | the disk at `/proc/sys/user` comes up `ready` |
+
+The first version of the pids check (now replaced) hit the box user's
+`RLIMIT_NPROC` instead: `fcinit.py` ignored `--mem`, so every box had
+512 MiB.
 
 ## Found on the way
 

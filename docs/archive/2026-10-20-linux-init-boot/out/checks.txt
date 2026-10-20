@@ -4,9 +4,9 @@ lo
 [exit 0]
 == row 1: vsock to CID 2 from inside (1024 exec, 1025 control, 4444 unused, 3128 proxy)
 1024 ConnectionResetError errno 104 0.3 ms
-1025 ConnectionResetError errno 104 0.2 ms
-4444 ConnectionResetError errno 104 0.1 ms
-3128 connected: proxy-standin 0.3 ms
+1025 ConnectionResetError errno 104 0.3 ms
+4444 ConnectionResetError errno 104 0.2 ms
+3128 connected: proxy-standin 0.4 ms
 [exit 0]
 == row 1: relay 127.0.0.1:3128
 proxy-standin
@@ -28,7 +28,7 @@ NoNewPrivs:	0
 == row 5: exec service (parent of the exec'd shell)
 Name:	pinfold
 Uid:	1000	1000	1000	1000
-Gid:	1000	1000	1000	1000
+Gid:	992	992	992	992
 Groups:	 
 CapInh:	0000000000000000
 CapPrm:	0000000000000000
@@ -62,15 +62,15 @@ touch: cannot touch '/x': Read-only file system
 [exit 1]
 == row 5: setuid or setgid files
 find: '/lost+found': Permission denied
-find: '/root': Permission denied
 find: '/var/cache/ldconfig': Permission denied
+find: '/root': Permission denied
 0
 [exit 0]
 == resolv.conf bytes
 0 /etc/resolv.conf
 [exit 0]
 == row 6: env in the box
-marker-16717cee223c2280
+marker-e24ffad5a9b8a352
 [exit 0]
 == row 6: guest cmdline
 console=ttyS0 reboot=k panic=1 pci=off init=/pinfold pci=off root=/dev/vda ro virtio_mmio.device=4K@0xc0001000:5 virtio_mmio.device=4K@0xc0002000:6 virtio_mmio.device=4K@0xc0003000:7 virtio_mmio.device=4K@0xc0004000:8 virtio_mmio.device=4K@0xc0005000:9 -- init boot
@@ -102,15 +102,15 @@ zombies: 0
 == row 11: from copy
 .:
 total 15
--rw-r--r-- 1 1000 1000     2 Oct 20 14:29 a
-lrwxrwxrwx 1 1000 1000     1 Oct 20 14:29 link -> a
-drwx------ 2    0    0 12288 Oct 20 14:29 lost+found
--rwxr-xr-x 1 1000 1000    19 Oct 20 14:29 run.sh
-drwxr-xr-x 2 1000 1000  1024 Oct 20 14:29 sub
+-rw-r--r-- 1 1000 992     2 Oct 20 16:02 a
+lrwxrwxrwx 1 1000 992     1 Oct 20 16:02 link -> a
+drwx------ 2    0   0 12288 Oct 20 16:02 lost+found
+-rwxr-xr-x 1 1000 992    19 Oct 20 16:02 run.sh
+drwxr-xr-x 2 1000 992  1024 Oct 20 16:02 sub
 
 sub:
 total 1
--rw-r--r-- 1 1000 1000 2 Oct 20 14:29 b
+-rw-r--r-- 1 1000 992 2 Oct 20 16:02 b
 a
 b
 run
@@ -121,18 +121,18 @@ corpus
 touch: cannot touch '/corpus/y': Read-only file system
 [exit 1]
 == row 11: ownership of the disk roots
-/work 1000:1000 755
+/work 1000:992 755
 /corpus 0:0 755
 [exit 0]
 == row 20: oom_score_adj of exec'd work
 1000
 [exit 0]
 == row 20: stat before
-{"memory.current": 31887360, "memory.peak": 32800768, "pids.current": 3, "pids.max": 2048, "oom_kills": 0}
+{"memory.current": 31670272, "memory.peak": 32489472, "pids.current": 3, "pids.max": 2048, "oom_kills": 0}
 == row 20: memory hog
 [exit 137]
 == row 20: stat after
-{"memory.current": 2818048, "memory.peak": 480174080, "pids.current": 3, "pids.max": 2048, "oom_kills": 1}
+{"memory.current": 2465792, "memory.peak": 481988608, "pids.current": 3, "pids.max": 2048, "oom_kills": 1}
 == row 20: box still answers
 alive
 [exit 0]
@@ -155,10 +155,41 @@ up two: ready
 touch: cannot touch '/work/z': Read-only file system
 [exit 1]
 down two: clean
+== guest refuses a disk below /proc
+up four: failed: guest path /proc/sys/user is not plain, absolute, below / and outside /proc, /sys and /dev
 == exec before ENV waits for it
 up three: ready
 after 1 s without ENV: still waiting
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 [exit 0]
-down three: clean
+== the exec service's end ends the VM (PID 1 exits; panic=1 reboots)
+Traceback (most recent call last):
+  File "/home/agent/pinfold/docs/archive/2026-10-20-linux-init-boot/fcinit.py", line 249, in <module>
+    main()
+    ~~~~^^
+  File "/home/agent/pinfold/docs/archive/2026-10-20-linux-init-boot/fcinit.py", line 240, in main
+    run_exec(state, rest)
+    ~~~~~~~~^^^^^^^^^^^^^
+  File "/home/agent/pinfold/docs/archive/2026-10-20-linux-init-boot/fcinit.py", line 201, in run_exec
+    kind, data = read_frame(conn)
+                 ~~~~~~~~~~^^^^^^
+  File "/home/agent/pinfold/docs/archive/2026-10-20-linux-init-boot/fcinit.py", line 50, in read_frame
+    head = readn(sock, 5)
+  File "/home/agent/pinfold/docs/archive/2026-10-20-linux-init-boot/fcinit.py", line 44, in readn
+    raise EOFError("connection ended")
+EOFError: connection ended
+[exit 1]
+VMM after the service's death: exited
+[    2.250124] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000100
+== pids cap: hold the work cgroup at pids.max, then the service recovers
+up five: ready
+spawn 2042 refused: [Errno 11] Resource temporarily unavailable: '/bin/sleep'
+exec at the cap: ConnectionResetError: [Errno 104] Connection reset by peer
+stat at the cap: BrokenPipeError: [Errno 32] Broken pipe
+VMM at the cap: running
+after the sleeps end:
+alive
+[exit 0]
+{"memory.current": 10113024, "memory.peak": 403308544, "pids.current": 3, "pids.max": 2048, "oom_kills": 0}
+down five: clean
 == done
