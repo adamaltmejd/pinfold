@@ -1,4 +1,4 @@
-//! Pinned harnesses, and the init the CLI's own build provides.
+//! Pinned harnesses and VMM, and the init the CLI's own build provides.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::runtime::output;
 use crate::dirs;
 
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
@@ -30,13 +31,20 @@ pub static HARNESSES: LazyLock<Vec<Harness>> = LazyLock::new(|| {
         .harness
 });
 
-/// One pinned harness: a row of `harnesses.toml`.
+/// Firecracker and the guest kernel for Linux boxes: `vmm.toml`, installed
+/// like a harness. A parse error is a bug in this build.
+pub static VMM: LazyLock<Harness> = LazyLock::new(|| {
+    toml::from_str(include_str!("../../vmm.toml")).expect("the embedded vmm.toml parses")
+});
+
+/// One pinned harness, a row of `harnesses.toml`, or the VMM.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Harness {
     pub name: String,
     pub version: String,
     /// Env defaults in the box; the spec's own env wins.
+    #[serde(default)]
     pub env: BTreeMap<String, String>,
     asset: Vec<Asset>,
 }
@@ -166,6 +174,29 @@ impl Harness {
     }
 }
 
+/// The installed VMM: the Firecracker binary and the guest kernel.
+#[expect(dead_code, reason = "the Firecracker runtime reads it, #141")]
+pub struct Vmm {
+    pub firecracker: PathBuf,
+    pub kernel: PathBuf,
+}
+
+/// Install [`VMM`] for this host if the cache lacks it.
+#[expect(dead_code, reason = "the Firecracker runtime calls it, #141")]
+pub fn vmm(cancel: Option<&AtomicBool>) -> io::Result<Vmm> {
+    let dir = VMM.install_os_arch(OS_ARCH, cancel)?;
+    let (firecracker, _) = VMM
+        .version
+        .split_once('+')
+        .expect("vmm.toml's version is firecracker+kernel");
+    Ok(Vmm {
+        firecracker: dir
+            .join("firecracker")
+            .join(format!("firecracker-v{firecracker}-x86_64")),
+        kernel: dir.join("vmlinux"),
+    })
+}
+
 /// The `os-arch` of a box on this host: Apple `container` and podman run
 /// native images.
 const OS_ARCH: &str = if cfg!(target_arch = "aarch64") {
@@ -204,13 +235,45 @@ pub fn init() -> io::Result<PathBuf> {
     Ok(dir.join("pinfold"))
 }
 
-/// One pinned harness's cache state, as `doctor` and `artifacts` report it.
-/// Nothing here downloads.
+/// Write a read-only ext4 init disk at `disk` holding this executable as
+/// `/pinfold`: a Linux CLI's init for a box.
+#[expect(dead_code, reason = "the Firecracker runtime calls it, #141")]
+pub fn init_disk(disk: &Path) -> io::Result<()> {
+    let tree = disk.with_extension("tree");
+    let _ = fs::remove_dir_all(&tree);
+    fs::create_dir(&tree)?;
+    let made = (|| {
+        let init = tree.join("pinfold");
+        fs::copy(std::env::current_exe()?, &init)?;
+        fs::set_permissions(&init, fs::Permissions::from_mode(0o755))?;
+        // 10% and 4 MiB for the filesystem's own metadata.
+        let kib = fs::metadata(&init)?.len() / 1024 * 11 / 10 + 4096;
+        output(&[
+            "mkfs.ext4",
+            "-q",
+            "-F",
+            "-m",
+            "0",
+            "-O",
+            "^has_journal",
+            "-d",
+            &tree.to_string_lossy(),
+            &disk.to_string_lossy(),
+            &format!("{kib}k"),
+        ])
+    })();
+    let _ = fs::remove_dir_all(&tree);
+    made.map(drop)
+}
+
+/// One pin's cache state, as `doctor` and `artifacts` report it. Nothing
+/// here downloads.
 #[derive(Serialize)]
 pub struct Pin {
     pub name: &'static str,
     pub version: &'static str,
-    /// The host directory mounted at `/opt/pinfold/<name>`.
+    /// A harness's host directory mounted at `/opt/pinfold/<name>`; the
+    /// VMM's install directory.
     pub path: PathBuf,
     /// Whether the cache holds this host's assets.
     pub cached: bool,
@@ -218,25 +281,31 @@ pub struct Pin {
     assets: Vec<&'static Asset>,
 }
 
-/// Every pinned harness and whether the cache holds it. Never downloads.
+/// Every pinned harness, then on Linux the VMM, and whether the cache holds
+/// each. Never downloads.
 pub fn pins() -> io::Result<Vec<Pin>> {
-    HARNESSES
-        .iter()
-        .map(|harness| {
-            let dir = harness.dir(OS_ARCH)?;
-            Ok(Pin {
-                name: &harness.name,
-                version: &harness.version,
-                path: dir.join(&harness.name),
-                cached: dirs::installed(&dir)?,
-                assets: harness.assets(OS_ARCH),
-            })
+    let pin = |harness: &'static Harness, path: fn(PathBuf, &str) -> PathBuf| {
+        let dir = harness.dir(OS_ARCH)?;
+        Ok(Pin {
+            name: &harness.name,
+            version: &harness.version,
+            path: path(dir.clone(), &harness.name),
+            cached: dirs::installed(&dir)?,
+            assets: harness.assets(OS_ARCH),
         })
-        .collect()
+    };
+    let mut pins = HARNESSES
+        .iter()
+        .map(|harness| pin(harness, |dir, name| dir.join(name)))
+        .collect::<io::Result<Vec<_>>>()?;
+    if cfg!(target_os = "linux") {
+        pins.push(pin(&VMM, |dir, _| dir)?);
+    }
+    Ok(pins)
 }
 
-/// Every `<name>/<version>` in the cache that no harness pins, names no
-/// harness has included. The embedded init lives under `init/` and is never
+/// Every `<name>/<version>` in the cache that no harness or the VMM pins,
+/// names neither has included. The embedded init lives under `init/` and is never
 /// listed.
 pub fn unpinned_versions() -> io::Result<Vec<PathBuf>> {
     let mut unpinned = Vec::new();
@@ -245,7 +314,7 @@ pub fn unpinned_versions() -> io::Result<Vec<PathBuf>> {
             continue;
         }
         for version in dirs::entries(&name.path())? {
-            let pinned = HARNESSES.iter().any(|harness| {
+            let pinned = HARNESSES.iter().chain([&*VMM]).any(|harness| {
                 name.file_name() == harness.name.as_str()
                     && version.file_name() == harness.version.as_str()
             });

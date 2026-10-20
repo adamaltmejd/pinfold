@@ -7,13 +7,18 @@ import hashlib
 import json
 import os
 import re
+import subprocess
+import tempfile
 import tomllib
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGE = ROOT / "profile" / "image"
 HARNESSES = ROOT / "crates" / "pinfold" / "harnesses.toml"
+VMM = ROOT / "crates" / "pinfold" / "vmm.toml"
+KERNEL = ROOT / "guest-kernel" / "pins"
 YARD = ROOT / ".yard" / "Dockerfile"
 # Containerfile pins that move together, by ADD destination. AnyDoc's CLI comes
 # first: its optionalDependencies must name its native packages' version.
@@ -252,6 +257,98 @@ def replace(text, old, new):
     return text.replace(old, new)
 
 
+def repin_firecracker(texts, cutoff):
+    """Move Firecracker in vmm.toml and the guest config pin it implies. The
+    kernel release follows in repin_guest_kernel, once these are written."""
+    vmm = tomllib.loads(texts[VMM])
+    firecracker = vmm["asset"][0]
+    update = github([firecracker["url"]], cutoff)
+    if update is None:
+        return
+    current, target, rows = update
+    current, target = ".".join(map(str, current)), ".".join(map(str, target))
+    if rows is None:
+        print(f"firecracker {current}: {target} is not yet eligible")
+        return
+    [(url, sha)] = rows
+    kernel = re.search(r"^KERNEL=(\S+)$", texts[KERNEL], re.MULTILINE)[1]
+    config = fetch(
+        "https://raw.githubusercontent.com/firecracker-microvm/firecracker/"
+        f"v{target}/resources/guest_configs/"
+        f"microvm-kernel-ci-x86_64-{kernel.rsplit('.', 1)[0]}.config"
+    )
+    old = re.search(r"^CONFIG_SHA256=[0-9a-f]{64}$", texts[KERNEL], re.MULTILINE)[0]
+    print(f"firecracker {current} -> {target}")
+    texts[KERNEL] = replace(
+        texts[KERNEL], old, f"CONFIG_SHA256={hashlib.sha256(config).hexdigest()}"
+    )
+    texts[VMM] = replace(texts[VMM], firecracker["url"], url)
+    texts[VMM] = replace(texts[VMM], firecracker["sha256"], sha)
+    texts[VMM] = replace(texts[VMM], f'version = "{current}+', f'version = "{target}+')
+
+
+def repin_guest_kernel(texts):
+    """Pin the guest kernel release that vmm.toml's Firecracker version and
+    guest-kernel/pins name. A missing release is built and published from
+    the written pins, only in GitHub Actions. Return whether vmm.toml moved."""
+    vmm = tomllib.loads(texts[VMM])
+    pins = dict(re.findall(r"^([A-Z0-9_]+)=(\S+)$", texts[KERNEL], re.MULTILINE))
+    firecracker = vmm["version"].split("+")[0]
+    tag = f"guest-kernel-{pins['KERNEL']}-firecracker-v{firecracker}"
+    name = f"vmlinux-{pins['KERNEL']}"
+    kernel = vmm["asset"][1]
+    if kernel["url"].endswith(f"/{tag}/{name}"):
+        return False
+    api = f"https://api.github.com/repos/adamaltmejd/pinfold/releases/tags/{tag}"
+
+    def release():
+        try:
+            return json.loads(fetch(api, github=True))
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                return None
+            raise
+
+    published = release()
+    if published is None:
+        if os.environ.get("GITHUB_ACTIONS") != "true":
+            raise ValueError(f"{tag} is not published; nightly CI publishes it")
+        print(f"guest kernel: building and publishing {tag}")
+        with tempfile.TemporaryDirectory() as dist:
+            subprocess.run([ROOT / "guest-kernel" / "build.sh", dist], check=True)
+            head = subprocess.run(
+                ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+            ).stdout.strip()
+            # A prerelease is never the latest release, which `pinfold update` reads.
+            notes = (
+                f"Firecracker guest kernel {pins['KERNEL']} with Firecracker "
+                f"v{firecracker} guest config.\n\n## Caller changes\n\nNone\n"
+            )
+            subprocess.run(
+                ["gh", "release", "create", tag, "--target", head, "--prerelease"]
+                + ["--latest=false", "--title", tag, "--notes", notes]
+                + [Path(dist) / name, Path(dist) / "SHA256SUMS"],
+                check=True,
+            )
+        published = release()
+    assets = {asset["name"]: asset for asset in published.get("assets", [])}
+    if name not in assets:
+        raise ValueError(f"{tag}: no {name}")
+    url, digest = assets[name]["browser_download_url"], assets[name].get("digest")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest or ""):
+        raise ValueError(f"{url}: no publisher SHA-256")
+    sha = verified(url, "sha256", bytes.fromhex(digest[7:]))
+    print(f"guest kernel -> {tag}")
+    texts[VMM] = replace(texts[VMM], kernel["url"], url)
+    texts[VMM] = replace(texts[VMM], kernel["sha256"], sha)
+    texts[VMM] = replace(
+        texts[VMM],
+        f'version = "{vmm["version"]}"',
+        f'version = "{firecracker}+{pins["KERNEL"]}"',
+    )
+    return True
+
+
 def repin_build_tools(texts):
     path = ROOT / "rust-toolchain.toml"
     current = tomllib.loads(texts[path])["toolchain"]["channel"]
@@ -406,6 +503,8 @@ def main():
         for path in [
             *recipes,
             HARNESSES,
+            VMM,
+            KERNEL,
             YARD,
             ROOT / "rust-toolchain.toml",
             ROOT / "Cargo.toml",
@@ -463,12 +562,22 @@ def main():
                 f'name = "{name}"\nversion = "{target}"',
             )
 
+    repin_firecracker(texts, cutoff)
     repin_build_tools(texts)
     repin_packages(texts, cutoff)
     repin_yard(texts, cutoff)
     repin_suffix_list(texts)
+    originals = {path: path.read_text() for path in texts}
     for path, text in texts.items():
         path.write_text(text)
+    # The kernel builds from the written pins; a failure restores them all.
+    try:
+        if repin_guest_kernel(texts):
+            VMM.write_text(texts[VMM])
+    except BaseException:
+        for path, text in originals.items():
+            path.write_text(text)
+        raise
 
 
 if __name__ == "__main__":

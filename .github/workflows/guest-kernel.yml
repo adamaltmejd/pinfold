@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - guest-kernel/**
+      - crates/pinfold/vmm.toml
       - .github/workflows/guest-kernel.yml
   # Publishing runs only from main.
   workflow_dispatch:
@@ -43,6 +44,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -56,8 +59,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           . guest-kernel/pins
-          tag="guest-kernel-$KERNEL-firecracker-$FIRECRACKER"
+          firecracker=v$(sed -n 's/^version = "\([^+"]*\)+[^"]*"$/\1/p' crates/pinfold/vmm.toml)
+          tag="guest-kernel-$KERNEL-firecracker-$firecracker"
           printf 'Firecracker guest kernel %s with Firecracker %s guest config.\n\n## Caller changes\n\nNone\n' \
-            "$KERNEL" "$FIRECRACKER" >"$RUNNER_TEMP/notes"
+            "$KERNEL" "$firecracker" >"$RUNNER_TEMP/notes"
           gh release create "$tag" --target "$GITHUB_SHA" --prerelease --latest=false \
             --title "$tag" --notes-file "$RUNNER_TEMP/notes" dist/*

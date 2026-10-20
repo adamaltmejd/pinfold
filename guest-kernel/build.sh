@@ -1,10 +1,15 @@
 #!/bin/sh
 # Builds pinfold's Firecracker guest kernel into the directory $1:
-# vmlinux-$KERNEL and SHA256SUMS. Pins are in ./pins.
+# vmlinux-$KERNEL and SHA256SUMS. Pins are in ./pins, Firecracker's version
+# in vmm.toml.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/pins"
+FIRECRACKER=v$(sed -n 's/^version = "\([^+"]*\)+[^"]*"$/\1/p' "$here/../crates/pinfold/vmm.toml")
+# Fixed build metadata, so a rebuild can be compared with the pinned digest.
+export KBUILD_BUILD_TIMESTAMP='1970-01-01 00:00:00 UTC'
+export KBUILD_BUILD_USER=pinfold KBUILD_BUILD_HOST=pinfold
 mkdir -p "$1"
 out=$(cd "$1" && pwd)
 series=${KERNEL%.*}

@@ -281,3 +281,54 @@ pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Op
         _ => Ok(None),
     }
 }
+
+/// The read-only ext4 root disk a Linux box boots for image `id`, at
+/// `~/.cache/pinfold/root/<id>.ext4`, made at the image's first use. It goes
+/// when the image goes ([`clean::prune_root_disks`]).
+#[expect(dead_code, reason = "the Firecracker runtime calls it, #141")]
+pub fn root_disk(id: &str) -> io::Result<PathBuf> {
+    let dir = dirs::root_disks_dir()?;
+    let disk = dir.join(format!("{id}.ext4"));
+    if disk.is_file() {
+        return Ok(disk);
+    }
+    fs::create_dir_all(&dir)?;
+    // A concurrent first use writes its own staging; either rename wins.
+    let staging = dir.join(format!("{}{}", clean::ROOT_STAGING, std::process::id()));
+    let file = staging.join("disk");
+    // The container is never started; it only gives `export` the image's
+    // filesystem.
+    let container =
+        String::from_utf8_lossy(&output(&["podman", "create", "--pull=never", id, "true"])?)
+            .trim()
+            .to_string();
+    // Extraction, mkfs and removal of the tree run in podman's user
+    // namespace, so files keep their image owners and the host user can
+    // still remove what the namespace wrote. The image is never larger
+    // than its tree: allow 10% and 16 MiB for metadata, an inode per entry.
+    const SCRIPT: &str = r#"set -eu
+trap 'rm -rf "$1/tree"' EXIT
+rm -rf "$1/tree" "$1/disk"
+mkdir -p "$1/tree"
+podman export "$2" | tar -xpf - -C "$1/tree"
+kib=$(du -sk "$1/tree" | cut -f1)
+entries=$(find "$1/tree" | wc -l)
+mkfs.ext4 -q -F -m 0 -O ^has_journal -N $((entries + 1024)) -d "$1/tree" \
+  "$1/disk" $((kib + kib / 10 + entries / 4 + 16384))k
+"#;
+    let staging_arg = staging.to_string_lossy();
+    let made = output(&[
+        "podman",
+        "unshare",
+        "sh",
+        "-c",
+        SCRIPT,
+        "sh",
+        &staging_arg,
+        &container,
+    ]);
+    let _ = output(&["podman", "rm", "--force", &container]);
+    let result = made.and_then(|_| fs::rename(&file, &disk));
+    clean::remove_root_staging(&staging);
+    result.map(|()| disk)
+}
