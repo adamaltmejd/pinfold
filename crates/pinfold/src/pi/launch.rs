@@ -200,6 +200,7 @@ fn build_plan(
         harness: Some(HARNESS.to_string()),
         labels,
         mounts,
+        disks: Vec::new(),
         env,
         egress: Some(Egress {
             allow: config.allow.clone(),

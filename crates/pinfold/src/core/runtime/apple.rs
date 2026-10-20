@@ -13,8 +13,8 @@ use tokio::process::Child;
 
 use crate::core::plan::Plan;
 use crate::core::runtime::{
-    BoxInfo, BoxStat, BuildRequest, ImageInfo, MemoryStat, PidsStat, Runtime, inspect, list_output,
-    output, parse_json, spawn_error,
+    BoxInfo, BoxStat, BuildRequest, DiskInfo, ImageInfo, MemoryStat, PidsStat, Runtime, inspect,
+    list_output, output, parse_json, spawn_error,
 };
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
@@ -192,6 +192,31 @@ impl Runtime for Apple {
         allocated_bytes(&root.join("containers/buildkit")).map(Some)
     }
 
+    fn list_disks(&self) -> io::Result<Vec<DiskInfo>> {
+        let json = list_output(&["container", "volume", "list", "--format", "json"], None)?;
+        let volumes: Vec<ListedVolume> = parse_json("container volume list", &json)?;
+        volumes
+            .into_iter()
+            .map(|volume| {
+                let configuration = volume.configuration;
+                Ok(DiskInfo {
+                    allocated: allocated_bytes(Path::new(&configuration.source))?,
+                    name: configuration.name,
+                    size: configuration.size,
+                })
+            })
+            .collect()
+    }
+
+    fn create_disk(&self, name: &str, bytes: u64) -> io::Result<()> {
+        let size = format!("{}G", bytes >> 30);
+        output(&["container", "volume", "create", "-s", &size, name]).map(drop)
+    }
+
+    fn remove_disk(&self, name: &str) -> io::Result<()> {
+        output(&["container", "volume", "rm", name]).map(drop)
+    }
+
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
         let cache_flags: &[&str] = if request.cache { &[] } else { &["--no-cache"] };
         super::build("container", cache_flags, request)
@@ -244,6 +269,78 @@ pub fn make_proxy_connectable(name: &str) -> io::Result<()> {
         GUEST_PROXY_SOCKET,
     ])
     .map(drop)
+}
+
+/// Give new volumes' roots, which arrive `0:0 755`, to the box user. A box's
+/// root exec cannot: the box drops every capability. So a transient
+/// container of the box's image runs init as root with only `CAP_CHOWN`
+/// and no network.
+pub fn own_disks(names: &[&str], image: &str, init: &Path) -> io::Result<()> {
+    let init_dir = init
+        .parent()
+        .expect("box::up refuses an init without a directory");
+    let owner = format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid());
+    let mut command = std::process::Command::new("container");
+    command
+        .args(["run", "--rm", "--progress", "none", "--network", "none"])
+        .args(["--read-only", "--cap-drop", "ALL", "--cap-add", "CAP_CHOWN"])
+        .args(["--user", "0:0", "--mount"])
+        .arg(super::bind(init_dir, init_dir, true));
+    let mut setup: Vec<OsString> = vec!["init".into(), "setup".into()];
+    for (index, name) in names.iter().enumerate() {
+        let guest = format!("/pinfold-disk/{index}");
+        command
+            .arg("--mount")
+            .arg(format!("type=volume,source={name},target={guest}"));
+        setup.extend(["--own".into(), owner.clone().into(), guest.into()]);
+    }
+    let result = command
+        .arg("--entrypoint")
+        .arg(init)
+        .arg(image)
+        .args(setup)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| spawn_error("container", error))?;
+    if !result.status.success() {
+        return Err(io::Error::other(format!(
+            "give new disks to the box user: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Run `init receive GUEST` in box `name` as the box user with `stream`
+/// written to its stdin: a new disk's `from` copy.
+pub fn copy_in(
+    name: &str,
+    init: &Path,
+    guest: &Path,
+    stream: impl FnOnce(&mut dyn io::Write) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut child = std::process::Command::new("container")
+        .args(["exec", "-i", name])
+        .arg(init)
+        .args(["init", "receive"])
+        .arg(guest)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| spawn_error("container", error))?;
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let sent = stream(&mut stdin);
+    drop(stdin);
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "copy into {}: {}",
+            guest.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    sent
 }
 
 /// One `container list --format json` entry, as much as pinfold needs.
@@ -327,6 +424,21 @@ fn container(name: &str) -> io::Result<Option<ListedContainer>> {
 /// The shared BuildKit builder, if the runtime has one.
 fn builder() -> io::Result<Option<ListedContainer>> {
     container("buildkit")
+}
+
+/// One `container volume list --format json` entry, as much as pinfold needs.
+#[derive(Deserialize)]
+struct ListedVolume {
+    configuration: ListedVolumeConfiguration,
+}
+
+#[derive(Deserialize)]
+struct ListedVolumeConfiguration {
+    name: String,
+    #[serde(rename = "sizeInBytes")]
+    size: u64,
+    /// The volume's image on the host.
+    source: String,
 }
 
 /// One `container image list --format json` entry, as much as pinfold needs.

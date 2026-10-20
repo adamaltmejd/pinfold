@@ -20,11 +20,11 @@ use tokio::process::Child;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::core::clean;
-use crate::core::plan::{Env, Mount, Plan, Route, guest_path, valid_name};
+use crate::core::plan::{Disk, Env, Mount, Plan, Route, guest_path, valid_name};
 use crate::core::profile::{Profile, Seed};
 use crate::core::runs::{self, Terminal};
 use crate::core::runtime::{BoxInfo, apple, runtime};
-use crate::core::{artifacts, login, ownership, proxy};
+use crate::core::{artifacts, disk, login, ownership, proxy};
 use crate::dirs;
 
 /// A started box, owned by this process.
@@ -43,6 +43,8 @@ pub struct Box {
     /// The box's generation, which names its run records.
     pub run_id: String,
     ownership: ownership::Claim,
+    /// The spec's disks, recorded clean once `down` removes the box.
+    disks: Vec<Disk>,
     _project: Option<nix::fcntl::Flock<std::fs::File>>,
     audit: Audit,
     child: Child,
@@ -99,6 +101,9 @@ pub enum RefusalReason {
     NameInUse,
     Login,
     MountAlias,
+    DiskInUse,
+    DiskUnclean,
+    Limit,
 }
 
 /// A refused `up`: why, and the detail the runtime or host gave. `box_name`
@@ -275,6 +280,13 @@ impl Box {
             ));
         }
         claim.prepare(&state_dir)?;
+        // Disk refusals come after the name claim; returning drops the
+        // claim, which removes its record and state.
+        let claimed = match disk::claim(runtime, &mut claim, &plan, init) {
+            Ok(claimed) => claimed,
+            Err(Ok((reason, detail))) => return Err(refused(&plan, reason, detail)),
+            Err(Err(error)) => return Err(error.into()),
+        };
         let run_id = claim.generation().to_string();
         plan.labels
             .insert(ownership::GENERATION_LABEL.to_string(), run_id.clone());
@@ -282,7 +294,10 @@ impl Box {
         // Dropping a start part-way tears nothing down, so a signal ends it
         // here and `child` says what to remove.
         claim.starting();
-        let mut progress = Starting::default();
+        let mut progress = Starting {
+            claimed,
+            ..Starting::default()
+        };
         let starting = async {
             if let Some(share) = profile.as_ref().and_then(|profile| profile.share.as_ref()) {
                 share.materialize()?;
@@ -323,7 +338,18 @@ impl Box {
                 if let Some(preparing) = progress.preparing.take() {
                     let _ = preparing.await;
                 }
+                let ran = progress.child.is_some();
                 let (removed, status) = abort(&plan.name, progress.child).await;
+                if removed.is_ok() {
+                    if ran {
+                        // The box mounted the disks; its stop synced them.
+                        progress.claimed.marked.clear();
+                        if let Err(error) = disk::detached(&plan.disks) {
+                            eprintln!("pinfold: startup cleanup: {error}");
+                        }
+                    }
+                    progress.claimed.undo(runtime);
+                }
                 if let Err(error) = runs::remove(&run_id) {
                     eprintln!("pinfold: startup cleanup: {error}");
                 }
@@ -353,6 +379,7 @@ impl Box {
             egress_log,
             run_id,
             ownership: claim,
+            disks: plan.disks.clone(),
             _project: project,
             audit: progress.audit,
             child: progress.child.expect("a started box has a runtime child"),
@@ -399,6 +426,7 @@ impl Box {
         let _ = self.child.wait().await;
         // Before the acknowledgement, so `inspect` after `box down` returns
         // already sees the end. A box that may still run gets none.
+        let result = result.and_then(|()| disk::detached(&self.disks));
         if let Some(terminal) = terminal.filter(|_| result.is_ok()) {
             runs::write_terminal(&self.run_id, &terminal);
         }
@@ -517,6 +545,8 @@ struct Starting {
     audit: Audit,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     preparing: Option<tokio::task::JoinHandle<Result<Plan, Stop>>>,
+    /// The disks claimed for the box, which a failed start releases.
+    claimed: disk::Claimed,
 }
 
 /// The start after the claim: harness, seeds, proxy, runtime, readiness.
@@ -613,9 +643,13 @@ async fn start(
     // Wait even without egress, before the caller can issue its first exec.
     let actual = if cfg!(target_os = "macos") {
         let actual = apple::wait_until_running(&plan.name)?;
-        // Finish the one root exec before ready reaches the caller.
+        // Finish the one root exec and the new disks' copies before ready
+        // reaches the caller.
         if socket.is_some() {
             apple::make_proxy_connectable(&plan.name)?;
+        }
+        for fill in &progress.claimed.fills {
+            apple::copy_in(&plan.name, init, &fill.guest, |out| disk::send(fill, out))?;
         }
         Some(actual)
     } else {
@@ -676,6 +710,17 @@ fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json
             })
         })
         .collect();
+    let disks: Vec<serde_json::Value> = plan
+        .disks
+        .iter()
+        .map(|disk| {
+            serde_json::json!({
+                "name": &disk.name,
+                "guest": disk.guest.to_string_lossy(),
+                "readonly": disk.readonly,
+            })
+        })
+        .collect();
     serde_json::json!({
         "box": &plan.name,
         "pinfold": env!("CARGO_PKG_VERSION"),
@@ -688,6 +733,7 @@ fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json
         "harness": harness,
         "labels": &observed.labels,
         "mounts": mounts,
+        "disks": disks,
         "env": plan.env.keys().collect::<Vec<_>>(),
         "egress": egress,
         "cpus": plan.cpus,

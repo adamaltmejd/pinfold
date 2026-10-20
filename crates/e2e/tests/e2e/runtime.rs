@@ -16,8 +16,8 @@ use e2e::{
 };
 
 use super::box_::{
-    ChildOwner, HeldBuild, HeldDownload, RuntimeContainer, box_name, box_up, built_unique_ref,
-    find_box_state_dir, image_build, image_rm, read_bounded,
+    ChildOwner, DiskCleanup, HeldBuild, HeldDownload, RuntimeContainer, box_name, box_up,
+    built_unique_ref, disk_names, find_box_state_dir, image_build, image_rm, read_bounded,
 };
 
 #[cfg(target_os = "linux")]
@@ -310,7 +310,24 @@ fn cleanup_removes_only_pinfolds_garbage() {
     };
     let live_ref = format!("{live_repository}:latest");
     runtime_build(&[&live_ref], &[&live_label]);
-    let live_spec = serde_json::json!({ "name": live, "image": live_ref });
+    // On Apple the live box attaches its project's home disk. Linux disks
+    // arrive with the Firecracker runtime.
+    let disks = cfg!(target_os = "macos");
+    let live_disk = format!("pi-{live_id}-home");
+    let other_disk = format!("pi-{other_id}-home");
+    let moved_project = TestDir::new(&env, "moved-project");
+    seed_project(&moved_project, b"moved\n");
+    let moved_state = project_state_dir(&env, moved_project.path());
+    let moved_disk = format!("pi-{}-project", project_id(&env, moved_project.path()));
+    let _disks = DiskCleanup(vec![
+        live_disk.clone(),
+        other_disk.clone(),
+        moved_disk.clone(),
+    ]);
+    let mut live_spec = serde_json::json!({ "name": live, "image": live_ref });
+    if disks {
+        live_spec["disks"] = serde_json::json!([{ "name": live_disk, "guest": "/home-disk" }]);
+    }
     let _live = box_up(&env, &live_spec, &live);
 
     let dead_label = "dev.example.test=e2e-cleanup-dead";
@@ -526,10 +543,59 @@ fn cleanup_removes_only_pinfolds_garbage() {
     );
     drop(user_container);
 
-    // `--unused AGE` removes the state of projects not run for that long,
-    // except one with a live box. Both projects last ran seconds ago, so
-    // `0s` ages them out and only the live one survives.
+    // Plain `clean` keeps every project's disks, and a moved checkout's
+    // state too. Sabotage: make `CleanPlan::idle` select every project
+    // under plain `clean`; the moved checkout's state goes and its
+    // assertion fails. Sabotage: drop the `--unused` disk removal from
+    // `CleanPlan::remove`; the idle project's disk survives and its
+    // assertion fails.
+    if disks {
+        for disk in [&other_disk, &moved_disk] {
+            let creator = box_name("cleanup-disk");
+            let spec = serde_json::json!({
+                "name": creator,
+                "image": default_image(&env),
+                "disks": [{ "name": disk, "guest": "/disk" }],
+            });
+            let mut up = box_up(&env, &spec, &creator);
+            up.down(&env);
+            assert!(up.wait().success(), "the disk's box did not exit cleanly");
+        }
+    }
+    fs::rename(moved_project.path(), env.root.join("moved-away")).unwrap();
+    run_ok(env.command(pinfold()).arg("clean"));
+    assert!(
+        moved_state.is_dir(),
+        "clean removed a moved checkout's state"
+    );
+    if disks {
+        let listed = disk_names(&env);
+        for disk in [&live_disk, &other_disk, &moved_disk] {
+            assert!(listed.contains(disk), "clean removed disk {disk}");
+        }
+    }
+
+    // `--unused AGE` removes the state and disks of projects not run for
+    // that long, except one with a live box. Every project last ran seconds
+    // ago, so `0s` ages them out and only the live one survives.
     run_ok(env.command(pinfold()).args(["clean", "--unused", "0s"]));
+    assert!(
+        !moved_state.exists(),
+        "clean --unused kept the moved checkout's state"
+    );
+    if disks {
+        let listed = disk_names(&env);
+        assert!(
+            listed.contains(&live_disk),
+            "clean --unused removed a live project's disk"
+        );
+        for disk in [&other_disk, &moved_disk] {
+            assert!(
+                !listed.contains(disk),
+                "clean --unused kept idle disk {disk}"
+            );
+        }
+    }
     assert!(
         !other_state.exists(),
         "clean --unused kept the state of a project that has not run"
@@ -542,7 +608,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // Sabotage: remove the shared project locks from pi startup and box up;
     // clean deletes the existing home while the cold download holds startup
     // after its claim but before a runtime box can protect the project.
-    // Moving the checkout makes its state stale without a clock wait.
+    // The checkout is moved away meanwhile; that alone protects nothing.
     {
         let env = TestEnv::with_private_cache("clean-startup");
         let project = TestDir::new(&env, "starting-project");

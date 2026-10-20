@@ -123,6 +123,22 @@ pub struct Record {
     pub generation: String,
     pub pid: i32,
     pub state_dir: PathBuf,
+    /// The disks this generation attaches; `prune` releases them by
+    /// removing the record.
+    #[serde(default)]
+    pub disks: Vec<Attachment>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct Attachment {
+    pub name: String,
+    pub readonly: bool,
+}
+
+/// Hold a disk's lock while deciding and recording its attachments.
+pub fn disk_lock(name: &str) -> io::Result<Flock<File>> {
+    Flock::lock(open_lock(&format!("disk:{name}"))?, FlockArg::LockExclusive)
+        .map_err(|(_, error)| error.into())
 }
 
 pub fn record(name: &str) -> io::Result<Option<Record>> {
@@ -218,6 +234,7 @@ impl Claim {
             generation: sha256_hex(random),
             pid: std::process::id() as i32,
             state_dir: state_dir.to_path_buf(),
+            disks: Vec::new(),
         };
         self.record = Some(record);
         // Retain the local pid as observable state; it is never signalled.
@@ -228,6 +245,17 @@ impl Claim {
         let endpoint = socket(&self.name)?;
         remove_file(&endpoint)?;
         self.listener = Some(UnixListener::bind(endpoint)?);
+        self.publish()
+    }
+
+    /// Record the disks this generation attaches. The caller holds each
+    /// disk's lock.
+    pub fn attach(&mut self, disks: Vec<Attachment>) -> io::Result<()> {
+        self.record.as_mut().expect("prepared ownership").disks = disks;
+        self.publish()
+    }
+
+    fn publish(&self) -> io::Result<()> {
         let destination = path(&format!("box:{}", self.name), "owner")?;
         let staging = destination.with_extension(format!("tmp-{}", std::process::id()));
         let published = fs::write(&staging, serde_json::to_vec(self.record.as_ref().unwrap())?)

@@ -343,6 +343,16 @@ pub struct ImageInfo {
     pub digest: Option<String>,
 }
 
+/// One disk the runtime stores.
+#[derive(Debug, Clone)]
+pub struct DiskInfo {
+    pub name: String,
+    /// The disk's size in bytes.
+    pub size: u64,
+    /// The host blocks its image holds, in bytes.
+    pub allocated: u64,
+}
+
 /// One image build: a context, a Containerfile, the names to tag the result
 /// with, and the labels to record on it.
 pub struct BuildRequest<'a> {
@@ -458,6 +468,15 @@ pub trait Runtime: Sync {
         Ok(None)
     }
 
+    /// Every disk the runtime stores.
+    fn list_disks(&self) -> io::Result<Vec<DiskInfo>>;
+
+    /// Create an empty disk of `bytes`.
+    fn create_disk(&self, name: &str, bytes: u64) -> io::Result<()>;
+
+    /// Remove a disk no box attaches.
+    fn remove_disk(&self, name: &str) -> io::Result<()>;
+
     /// Build an image from [`BuildRequest`]. The inner `Err` is the build's
     /// output, stdout and stderr in order, when the build ran and failed.
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>>;
@@ -557,6 +576,14 @@ fn up<'a>(
         command
             .arg("--mount")
             .arg(bind(&mount.host, &mount.guest, mount.readonly));
+    }
+    for disk in &plan.disks {
+        let mut value = OsString::from(format!("type=volume,source={},target=", disk.name));
+        value.push(&disk.guest);
+        if disk.readonly {
+            value.push(",readonly");
+        }
+        command.arg("--mount").arg(value);
     }
     let init_dir = init
         .parent()

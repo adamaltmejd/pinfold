@@ -3,6 +3,7 @@
 pub mod artifacts;
 pub mod r#box;
 pub mod clean;
+pub mod disk;
 pub mod download;
 pub mod image;
 pub mod login;

@@ -27,6 +27,8 @@ pub struct Plan {
     pub labels: BTreeMap<String, String>,
     #[serde(default)]
     pub mounts: Vec<Mount>,
+    #[serde(default)]
+    pub disks: Vec<Disk>,
     /// Exact environment. `{ "from": "NAME" }` takes the caller's value.
     #[serde(default)]
     pub env: BTreeMap<String, Env>,
@@ -273,6 +275,45 @@ pub struct Mount {
     pub readonly: bool,
 }
 
+/// One named disk and where it appears in the box.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Disk {
+    pub name: String,
+    pub guest: PathBuf,
+    /// `<n>G`; caps a disk pinfold creates.
+    pub size: Option<String>,
+    /// A host directory copied in when pinfold creates the disk.
+    pub from: Option<PathBuf>,
+    #[serde(default)]
+    pub readonly: bool,
+}
+
+impl Disk {
+    /// The size in bytes; `validate` has checked the spelling.
+    pub fn bytes(&self) -> u64 {
+        self.size
+            .as_deref()
+            .and_then(disk_gibibytes)
+            .unwrap_or(DEFAULT_DISK_GIB)
+            << 30
+    }
+}
+
+const DEFAULT_DISK_GIB: u64 = 64;
+
+/// A disk size: a whole number of gibibytes, at least 1, then `G`.
+fn disk_gibibytes(size: &str) -> Option<u64> {
+    let number = size.strip_suffix('G')?;
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    number
+        .parse::<u64>()
+        .ok()
+        .filter(|gib| (1..=u64::MAX >> 30).contains(gib))
+}
+
 /// One environment entry.
 #[derive(Debug, Clone)]
 pub enum Env {
@@ -400,6 +441,61 @@ impl Plan {
                 )));
             }
         }
+        for disk in &self.disks {
+            if !valid_name(&disk.name) {
+                return Err(invalid(format!(
+                    "disk name {:?} must start alphanumeric and hold only [A-Za-z0-9._-]",
+                    disk.name
+                )));
+            }
+            if let Some(size) = &disk.size
+                && disk_gibibytes(size).is_none()
+            {
+                return Err(invalid(format!(
+                    "disk {:?} size {size:?} must be a whole number of G, at least 1G",
+                    disk.name
+                )));
+            }
+            if !disk.guest.is_absolute() {
+                return Err(invalid(format!(
+                    "disk {:?} guest {} must be absolute",
+                    disk.name,
+                    disk.guest.display()
+                )));
+            }
+            for path in std::iter::once(&disk.guest).chain(&disk.from) {
+                if !valid_mount_path(path) {
+                    return Err(invalid(format!(
+                        "disk path {:?} must not hold ',' or an ASCII control character",
+                        path
+                    )));
+                }
+            }
+            if let Some(from) = &disk.from {
+                // A read-only attachment cannot receive the copy.
+                if disk.readonly {
+                    return Err(invalid(format!(
+                        "disk {:?} cannot be readonly with from",
+                        disk.name
+                    )));
+                }
+                if !from.is_absolute() {
+                    return Err(invalid(format!(
+                        "disk {:?} from {} must be absolute",
+                        disk.name,
+                        from.display()
+                    )));
+                }
+                let metadata = std::fs::metadata(from)
+                    .map_err(|error| invalid(format!("disk from {}: {error}", from.display())))?;
+                if !metadata.is_dir() {
+                    return Err(invalid(format!(
+                        "disk from {} is not a directory",
+                        from.display()
+                    )));
+                }
+            }
+        }
         self.validate_guests(&[])?;
         for (name, value) in &self.env {
             if !valid_env_name(name) {
@@ -500,7 +596,7 @@ impl Plan {
         resolved.map_err(|error| format!("{} login route {route:?}: {error}", login.login))
     }
 
-    /// Refuse two mounts at one lexical guest path. `extra` holds the paths
+    /// Refuse two mounts or disks at one lexical guest path. `extra` holds the paths
     /// pinfold mounts after `validate` has run, so `Box::up` checks the
     /// final list too.
     pub fn validate_guests(&self, extra: &[&Path]) -> Result<(), String> {
@@ -509,11 +605,12 @@ impl Plan {
             .mounts
             .iter()
             .map(|m| m.guest.as_path())
+            .chain(self.disks.iter().map(|disk| disk.guest.as_path()))
             .chain(extra.iter().copied())
         {
             if !guests.insert(guest_path(guest)) {
                 return Err(invalid(format!(
-                    "two mounts name the same guest path {}",
+                    "two mounts or disks name the same guest path {}",
                     guest.display()
                 )));
             }

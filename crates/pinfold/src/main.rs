@@ -56,6 +56,7 @@ fn main() -> ExitCode {
         "build" => cli::build,
         "image" => cli::image,
         "clean" => cli::clean,
+        "disk" => cli::disk,
         "doctor" => cli::doctor,
         "artifacts" => cli::artifacts,
         "config" => cli::config,
