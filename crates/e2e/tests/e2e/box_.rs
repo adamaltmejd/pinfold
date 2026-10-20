@@ -1796,16 +1796,15 @@ fn work_leaves_the_box_only_by_fetch() {
     let _runtime = crate::shared_runtime();
     // Guarantee 10's caller parts: disk writes stay in the box, push and
     // fetch move branches only, and nothing the box plants runs on the host.
-    // Sabotage: fetch every box branch into `refs/heads/` (crossing.rs's
-    // namespace); the host's own branches change and the refs assertion
-    // fails. Sabotage: push with `+refs/heads/*:refs/heads/*` and
-    // `--update-head-ok` in the box script; the box's branches change.
-    // Sabotage: bundle without the held commits (`--branches` alone); the
-    // second fetch's pack carries every commit. Sabotage: bundle `--tags`
-    // too and drop `--no-tags` from the host fetch; the box's tag lands.
-    // Sabotage: set REPO's `core.hooksPath` to `.githooks` after the fetch,
-    // as if fetch adopted the box's config; the host checkouts touch a
-    // marker.
+    // Sabotage: write fetched branches under `refs/heads/` in crossing.rs;
+    // the fetched refs assertion fails. Sabotage: push with
+    // `+refs/heads/*:refs/heads/*` and `--update-head-ok` in the box script;
+    // nothing lands under refs/remotes/host/. Sabotage: bundle without the
+    // held commits (`--branches` alone); the second fetch's pack carries
+    // every commit. Sabotage: bundle `--tags` too and fetch with `--tags`
+    // for `--no-tags`; the box's tag lands. Sabotage: set REPO's
+    // `core.hooksPath` to `.githooks` after the fetch, as if fetch adopted
+    // the box's config; a host checkout touches a marker.
     let env = TestEnv::new("crossing");
     let name = box_name("crossing");
     let _disks = DiskCleanup(vec![name.clone()]);
