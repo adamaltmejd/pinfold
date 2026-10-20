@@ -1,0 +1,8 @@
+# pinfold's Firecracker guest kernel. Sourced by build.sh and the
+# guest-kernel workflow; a change here needs a new guest-kernel release.
+KERNEL=6.18.57
+# linux-$KERNEL.tar.xz on cdn.kernel.org
+KERNEL_SHA256=5bd9acdc82ec5efc3790ae840e5aaa40dfde7efff261cf6dde902dc570acf98c
+FIRECRACKER=v1.17.0
+# resources/guest_configs/microvm-kernel-ci-x86_64-6.18.config at $FIRECRACKER
+CONFIG_SHA256=ba22401a0c7292a4c024ebcd10a562d4a1f1bfd2faed671406d3b159c0cf5215
