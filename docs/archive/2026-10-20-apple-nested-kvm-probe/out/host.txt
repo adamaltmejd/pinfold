@@ -1,0 +1,24 @@
+# Host (this Mac)
+$ sysctl -n machdep.cpu.brand_string; sw_vers -productVersion; container --version
+Apple M5
+27.0.1
+container CLI version 1.5.0 (build: release, commit: unspeci)
+
+# Default guest kernel (Apple container's installed kernel)
+$ file kernels/vmlinux-6.18.15-186
+Linux kernel ARM64 boot executable Image, little-endian, 4K pages
+$ python3 -I ikcfg.py kernels/vmlinux-6.18.15-186 | grep -E 'VIRTUALIZATION|^CONFIG_KVM'
+# CONFIG_VIRTUALIZATION is not set
+
+$ container run --rm --virtualization debian:trixie-slim sh -c 'dmesg | grep "started at EL"; ls -l /dev/kvm'
+[    0.005259] CPU: All CPU(s) started at EL2
+ls: cannot access '/dev/kvm': No such file or directory
+
+$ container run --rm debian:trixie-slim sh -c 'dmesg | grep "started at EL"'
+[    0.001675] CPU: All CPU(s) started at EL1
+
+# Nightly runner (labels self-hosted, macOS, ARM64, pinfold-nightly)
+$ ssh macmini 'sysctl -n machdep.cpu.brand_string; sw_vers -productVersion; sysctl -n hw.model'
+Apple M1
+27.0.1
+Macmini9,1

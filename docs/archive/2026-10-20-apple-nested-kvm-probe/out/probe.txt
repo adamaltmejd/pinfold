@@ -1,0 +1,120 @@
+== uname
+Linux kvm-probe 6.18.15 #1 SMP Tue Oct 20 08:30:35 UTC 2026 aarch64 GNU/Linux
+== boot EL and kvm dmesg
+[    0.000000] Linux version 6.18.15 (root@kvm-kbuild) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Tue Oct 20 08:30:35 UTC 2026
+[    0.000000] CPU features: detected: GICv3 CPU interface
+[    0.000000] GICv3: GIC: Using split EOI/Deactivate mode
+[    0.000000] GICv3: 988 SPIs implemented
+[    0.000000] GICv3: 0 Extended SPIs implemented
+[    0.000000] Root IRQ handler: gic_handle_irq
+[    0.000000] GICv3: GICv3 features: 16 PPIs, RSS
+[    0.000000] GICv3: GICD_CTLR.DS=1, SCR_EL3.FIQ=0
+[    0.000000] GICv3: CPU0: found redistributor 0 region 0:0x0000000010010000
+[    0.001708] GICv3: CPU1: found redistributor 1 region 0:0x0000000010030000
+[    0.002429] GICv3: CPU2: found redistributor 2 region 0:0x0000000010050000
+[    0.002783] GICv3: CPU3: found redistributor 3 region 0:0x0000000010070000
+[    0.003141] GICv3: CPU4: found redistributor 4 region 0:0x0000000010090000
+[    0.003238] CPU: All CPU(s) started at EL2
+[    0.013542] kvm [1]: nv: 568 coarse grained trap handlers
+[    0.013572] kvm [1]: IPA Size Limit: 40 bits
+[    0.013914] kvm [1]: GICv3: no GICV resource entry
+[    0.013920] kvm [1]: disabling GICv2 emulation
+[    0.013970] kvm [1]: GIC system register CPU interface enabled
+[    0.013987] kvm [1]: vgic interrupt IRQ9
+[    0.014056] kvm [1]: Hyp nVHE mode initialized successfully
+[    0.092440] virtio_blk virtio2: [vda] 1310720 512-byte logical blocks (671 MB/640 MiB)
+[    0.092821] virtio_blk virtio3: [vdb] 1075838976 512-byte logical blocks (551 GB/513 GiB)
+== /dev/kvm
+crw------- 1 root root 10, 232 Jan  1  1970 /dev/kvm
+KVM_GET_API_VERSION 12
+KVM_CAP_ARM_VM_IPA_SIZE 40
+KVM_CREATE_VM fd 4
+firecracker-v1.17.0-aarch64.tgz: OK
+fe726e0b43c04363ac07e358be4dee982c3947c65ed3ae10c770fef5e1cd756c  firecracker
+01455a3dba8a456623cf55b2cb0114e8d23015e156ae127fc0ded00c68fff467  vmlinux
+Firecracker v1.17.0
+== run 1 guest reply
+OK 1073741857
+Linux (none) 6.1.188 #1 SMP Fri Oct 16 15:30:37 UTC 2026 aarch64 GNU/Linux
+processor	: 0
+BogoMIPS	: 48.00
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm sb dcpodp flagm2 frint i8mm bf16 bti afp rpres ebf16
+vsock-ok
+run=1 boot_to_ready_ms=3955 exec_ms=600 guest_init_at=2.697866s
+== run 2 guest reply
+OK 1073741859
+Linux (none) 6.1.188 #1 SMP Fri Oct 16 15:30:37 UTC 2026 aarch64 GNU/Linux
+processor	: 0
+BogoMIPS	: 48.00
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm sb dcpodp flagm2 frint i8mm bf16 bti afp rpres ebf16
+vsock-ok
+run=2 boot_to_ready_ms=4296 exec_ms=595 guest_init_at=2.850918s
+== run 3 guest reply
+OK 1073741855
+Linux (none) 6.1.188 #1 SMP Fri Oct 16 15:30:37 UTC 2026 aarch64 GNU/Linux
+processor	: 0
+BogoMIPS	: 48.00
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm sb dcpodp flagm2 frint i8mm bf16 bti afp rpres ebf16
+vsock-ok
+run=3 boot_to_ready_ms=3711 exec_ms=598 guest_init_at=2.489518s
+== firecracker console (head)
+2026-10-20T08:34:58.773586547 [anonymous-instance:main] Running Firecracker v1.17.0
+2026-10-20T08:34:58.784137089 [anonymous-instance:main] Could not read the coherency line size, size, number of sets for cache level 1.
+2026-10-20T08:34:58.784339298 [anonymous-instance:main] Could not read the coherency line size, size, number of sets for cache level 1.
+2026-10-20T08:34:58.784554756 [anonymous-instance:main] Artificially kick devices
+2026-10-20T08:34:58.784694339 [anonymous-instance:fc_vcpu 0] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-10-20T08:34:58.784698506 [anonymous-instance:fc_vcpu 1] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-10-20T08:34:58.784906964 [anonymous-instance:main] Successfully started microvm that was configured from one single json
+[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x610f0000]
+[    0.000000] Linux version 6.1.188 (root@0a682cebf188) (gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #1 SMP Fri Oct 16 15:30:37 UTC 2026
+[    0.000000] random: crng init done
+[    0.000000] Machine model: linux,dummy-virt
+[    0.000000] PCI: Unknown option `off'
+[    0.000000] earlycon: uart0 at MMIO 0x0000000040002000 (options '')
+[    0.000000] printk: bootconsole [uart0] enabled
+[    0.000000] efi: UEFI not found.
+[    0.000000] NUMA: No NUMA configuration found
+[    0.000000] NUMA: Faking a node at [mem 0x0000000080200000-0x000000009fffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x9fecc340-0x9fef6a7f]
+[    0.000000] Zone ranges:
+[    0.000000]   DMA      [mem 0x0000000080200000-0x000000009fffffff]
+[    0.000000]   DMA32    empty
+[    0.000000]   Normal   empty
+[    0.000000]   Device   empty
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000080200000-0x000000009fffffff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000080200000-0x000000009fffffff]
+[    0.000000] On node 0, zone DMA: 512 pages in unavailable ranges
+[    0.000000] psci: probing for conduit method from DT.
+[    0.000000] psci: PSCIv1.3 detected in firmware.
+[    0.000000] psci: Using standard PSCI v0.2 function IDs
+[    0.000000] psci: Trusted OS migration not required
+[    0.000000] psci: SMC Calling Convention v1.1
+[    0.000000] smccc: KVM: hypervisor services detected (0x00000000 0x00000000 0x00000000 0x00000003)
+[    0.000000] percpu: Embedded 17 pages/cpu s40360 r0 d29272 u69632
+[    0.000000] Detected PIPT I-cache on CPU0
+[    0.000000] CPU features: detected: GIC system register CPU interface
+[    0.000000] CPU features: detected: Spectre-v4
+[    0.000000] CPU features: detected: Spectre-BHB
+[    0.000000] alternatives: applying boot alternatives
+[    0.000000] Fallback order for Node 0: 0 
+[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 128520
+[    0.000000] Policy zone: DMA
+[    0.000000] Kernel command line: console=ttyS0 reboot=k panic=1 ro init=/sbin/pf-init pci=off root=/dev/vda ro earlycon=uart,mmio,0x40002000
+[    0.000000] Dentry cache hash table entries: 65536 (order: 7, 524288 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.000000] mem auto-init: stack:off, heap alloc:off, heap free:off
+[    0.000000] Memory: 491872K/522240K available (11776K kernel code, 1054K rwdata, 2556K rodata, 2432K init, 1045K bss, 30368K reserved, 0K cma-reserved)
+[    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=2, Nodes=1
+[    0.000000] rcu: Hierarchical RCU implementation.
+[    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=64 to nr_cpu_ids=2.
+[    0.000000] 	Tracing variant of Tasks RCU enabled.
+[    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 10 jiffies.
+[    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=2
+[    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[    0.000000] GICv3: 96 SPIs implemented
+[    0.000000] GICv3: 0 Extended SPIs implemented
+[    0.000000] Root IRQ handler: gic_handle_irq
+[    0.000000] GICv3: GICv3 features: 16 PPIs, DirectLPI
+[    0.000000] GICv3: CPU0: found redistributor 0 region 0:0x000000003ffb0000

@@ -1,0 +1,8 @@
+== guest reply
+OK 1073742123
+boot_to_exec_ms=41106
+== firecracker console (tail)
+2026/10/20 08:31:56 socat[1355] E write(6, 0xaaaae5715000, 75): Broken pipe
+2026/10/20 08:31:56 socat[1360] E write(6, 0xaaaae5715000, 75): Broken pipe
+2026/10/20 08:31:56 socat[1365] E write(6, 0xaaaae5715000, 75): Broken pipe
+2026/10/20 08:31:56 socat[1370] E write(6, 0xaaaae5715000, 75): Broken pipe
