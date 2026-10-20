@@ -74,8 +74,10 @@ impl Vmm {
 }
 
 /// Build the jail and exec Firecracker in it, with `--no-api` and its own
-/// seccomp filters. The VMM inherits this process's stdin, stdout and stderr
-/// and gets an empty environment.
+/// seccomp filters. The VMM gets `/dev/null` as stdin, stdout and stderr,
+/// no other descriptor, default signal handling and an empty environment:
+/// Firecracker's serial console is its stdio, and `box up`'s stdio is the
+/// caller's.
 ///
 /// `PR_SET_PDEATHSIG` fires when the thread that created the child exits,
 /// not the process (#126). The child is created from a thread that lives
@@ -297,6 +299,9 @@ const STEPS: &[&str] = &[
     "drop the bounding set",
     "clear the ambient set",
     "clear the capability sets",
+    "redirect stdio to /dev/null",
+    "reset the signal mask",
+    "mark descriptors close-on-exec",
     "exec Firecracker",
 ];
 
@@ -331,6 +336,16 @@ fn start(plan: &Plan) -> io::Result<(Pid, OwnedFd)> {
         (exec, argv)
     });
     let envp: [*const c_char; 1] = [std::ptr::null()];
+    // The VMM's stdin, stdout and stderr.
+    let null = match plan.exec {
+        Some(_) => Some(open(
+            c"/dev/null",
+            OFlag::O_RDWR | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )?),
+        None => None,
+    };
+    let null = null.as_ref().map(|null| null.as_raw_fd());
     let fds = (
         alive_read.as_raw_fd(),
         alive_write.as_raw_fd(),
@@ -351,12 +366,15 @@ fn start(plan: &Plan) -> io::Result<(Pid, OwnedFd)> {
                 None => unsafe { libc::_exit(0) },
                 Some((exec, argv)) => match restrict(exec) {
                     Err(failure) => failure,
-                    Ok(()) => {
-                        // SAFETY: argv and envp are NUL-terminated arrays of
-                        // C strings that outlive the call.
-                        unsafe { libc::execve(argv[0], argv.as_ptr(), envp.as_ptr()) };
-                        (step("exec Firecracker"), 0, Errno::last())
-                    }
+                    Ok(()) => match exec_ready(null.expect("an exec plan opens /dev/null")) {
+                        Err(failure) => failure,
+                        Ok(()) => {
+                            // SAFETY: argv and envp are NUL-terminated arrays
+                            // of C strings that outlive the call.
+                            unsafe { libc::execve(argv[0], argv.as_ptr(), envp.as_ptr()) };
+                            (step("exec Firecracker"), 0, Errno::last())
+                        }
+                    },
                 },
             },
         };
@@ -397,6 +415,11 @@ fn start(plan: &Plan) -> io::Result<(Pid, OwnedFd)> {
         return Ok((pid, alive_write));
     }
     let _ = wait(pid);
+    if filled < report.len() {
+        return Err(io::Error::other(format!(
+            "VMM jail: the child's failure report was cut short at {filled} bytes"
+        )));
+    }
     let field =
         |range: std::ops::Range<usize>| u32::from_ne_bytes(report[range].try_into().unwrap());
     let (step, index) = (field(0..4) as usize, field(4..8) as usize);
@@ -519,6 +542,54 @@ fn enter(plan: &Plan, alive: RawFd) -> Result<(), Failure> {
     nix::unistd::pivot_root(c".", c".").map_err(fail("pivot_root", 0))?;
     umount2(c".", MntFlags::MNT_DETACH).map_err(fail("detach the old root", 0))?;
     nix::unistd::chdir(c"/").map_err(fail("enter the jail's root", 0))?;
+    Ok(())
+}
+
+/// In the child, last before `execve`: `/dev/null` as stdio, an empty
+/// signal mask and default dispositions (Rust's runtime ignores SIGPIPE),
+/// and every descriptor above stderr close-on-exec, the inherited ones
+/// included. The report pipe stays open until the exec succeeds.
+fn exec_ready(null: RawFd) -> Result<(), Failure> {
+    for target in 0..=2 {
+        // `/dev/null` opened as 0, 1 or 2 when pinfold's own was closed: dup2
+        // onto itself would keep close-on-exec.
+        // SAFETY: fcntl and dup2 on open descriptors.
+        let result = if null == target {
+            unsafe { libc::fcntl(target, libc::F_SETFD, 0) }
+        } else {
+            unsafe { libc::dup2(null, target) }
+        };
+        if result < 0 {
+            return Err(fail("redirect stdio to /dev/null", 0)(Errno::last()));
+        }
+    }
+    // SAFETY: an empty set on the stack.
+    let mut empty: libc::sigset_t = unsafe { std::mem::zeroed() };
+    // SAFETY: sigemptyset and sigprocmask on that set.
+    if unsafe {
+        libc::sigemptyset(&mut empty);
+        libc::sigprocmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut())
+    } != 0
+    {
+        return Err(fail("reset the signal mask", 0)(Errno::last()));
+    }
+    for signal in 1..=64 {
+        // SIGKILL and SIGSTOP refuse; every other one takes the default.
+        // SAFETY: signal with SIG_DFL.
+        unsafe { libc::signal(signal, libc::SIG_DFL) };
+    }
+    // SAFETY: close_range with the cloexec flag closes nothing now.
+    if unsafe {
+        libc::syscall(
+            libc::SYS_close_range,
+            3 as libc::c_uint,
+            libc::c_uint::MAX,
+            libc::CLOSE_RANGE_CLOEXEC,
+        )
+    } != 0
+    {
+        return Err(fail("mark descriptors close-on-exec", 0)(Errno::last()));
+    }
     Ok(())
 }
 

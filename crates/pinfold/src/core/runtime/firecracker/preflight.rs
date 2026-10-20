@@ -4,7 +4,6 @@
 use std::fs;
 use std::io;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use nix::libc;
@@ -78,9 +77,7 @@ pub fn mkfs_ext4() -> Option<PathBuf> {
         .chain([PathBuf::from("/usr/sbin"), PathBuf::from("/sbin")])
         .map(|dir| dir.join("mkfs.ext4"))
         .find(|path| {
-            fs::metadata(path).is_ok_and(|metadata| {
-                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-            })
+            path.is_file() && nix::unistd::access(path, nix::unistd::AccessFlags::X_OK).is_ok()
         })
 }
 

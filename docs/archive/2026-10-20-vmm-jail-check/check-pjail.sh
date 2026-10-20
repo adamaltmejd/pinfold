@@ -53,6 +53,9 @@ echo "landlock abi: $(python3 -c 'import ctypes;print(ctypes.CDLL(None).syscall(
 
 echo "== two boxes up"
 mkdata $ST/a.ext4 128M; mkdata $ST/b.ext4 128M
+# A descriptor without close-on-exec, as a careless caller would pass to
+# `box up`. pjail holds it; the VMM must not.
+exec 7</etc/hostname
 pjup a $ST/a.ext4 || exit 1
 pjup b $ST/b.ext4 || exit 1
 for n in a b; do
@@ -65,10 +68,13 @@ for n in a b; do
   done
   echo "root: $(ls -A /proc/$V/root/ | tr '\n' ' ') | dev: $(ls /proc/$V/root/dev) | vsock: $(ls /proc/$V/root/vsock | tr '\n' ' ')"
   echo "disk0 inode $(stat -Lc %i /proc/$V/root/disk0.ext4); a.ext4 $(stat -c %i $ST/a.ext4); b.ext4 $(stat -c %i $ST/b.ext4)"
+  echo "pjail fd 7: $(readlink /proc/$L/fd/7)"
+  echo "vmm fds: $(for f in /proc/$V/fd/*; do printf '%s=%s ' "${f##*/}" "$(readlink "$f")"; done)"
   echo "mount points: $(awk '{print $5}' /proc/$V/mountinfo | tr '\n' ' ')"
   echo "mount points under $HOME: $(awk -v h="$HOME" 'index($5, h) == 1' /proc/$V/mountinfo | wc -l)"
   gexec $n 'curl -sS -o /dev/null -w "api.github.com %{http_code}\n" https://api.github.com/; curl -sS -o /dev/null -w "example.com %{http_code}\n" https://example.com/'
 done
+exec 7<&-
 echo "== SIGKILL of a's pjail ends a's VM; b stays"
 La=$(cat $ST/a/launcher.pid) Va=$(cat $ST/a/vmm.pid) Vb=$(cat $ST/b/vmm.pid)
 t0=$(now); kill -KILL $La
