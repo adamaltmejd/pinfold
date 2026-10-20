@@ -36,6 +36,16 @@ J
 cat ~/fc/vm.json
 timeout 60 "$fc" --no-api --config-file ~/fc/vm.json > ~/fc/boot.txt 2>&1 || true
 grep -vE '^\[ *[0-9]+\.[0-9]+\]' ~/fc/boot.txt | tail -30
+# The merged Linux init (#151) as PID 1 from the init disk, the root disk as
+# the box's root, driven by #151's throwaway host side.
+F=~/pinfold/docs/archive/2026-10-20-linux-init-boot/fcinit.py
+st=~/st; rm -rf $st; mkdir -p $st
+timeout 120 python3 $F up $st/b --firecracker "$fc" --kernel "$kernel" --init "$init" --root "$root" >$st/b.up 2>&1 &
+for i in $(seq 1 300); do grep -qE "ready|failed|Error|Traceback" $st/b.up 2>/dev/null && break; sleep 0.2; done
+echo "up: $(cat $st/b.up)"
+timeout 30 python3 $F exec $st/b -- /bin/sh -c 'echo uname=$(uname -r); echo marker-owner=$(stat -c %u:%g /etc/boot-marker); echo id=$(id -u):$(id -g); touch /etc/x 2>&1 || echo root-readonly; echo init-exec-done'; echo "[exec exit $?]"
+timeout 30 python3 $F down $st/b; echo "[down exit $?]"
+sleep 2; grep -v '^\[ *[0-9]' $st/b/console.log | tail -15
 $P image rm boot
 ls -la ~/.cache/pinfold/root/
 echo LABVM-DONE
