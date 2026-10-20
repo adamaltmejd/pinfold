@@ -5,7 +5,7 @@
 //! default profile image once, and drives pinfold as a user would: the CLI,
 //! environment variables and the box spec are its only seams.
 
-use std::fs;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -1328,6 +1328,75 @@ fn up_refuses_before_it_creates() {
         assert_left_nothing(&env, &name, label, "refused");
     }
 
+    // Disk specs are refused as data, naming the cause, before anything is
+    // created: a path with a comma (the volume value is concatenated like a
+    // bind), a malformed size or name, `from` with `readonly` (a read-only
+    // attachment cannot receive the copy), and a disk at a mount's
+    // normalized guest path. The positive control, disks attaching, is guarantee 11's
+    // `disks_persist_and_attach_exclusively`. Sabotage: drop the size check
+    // from `Plan::validate`; `0G` and `1T` then reach the claim, which on
+    // Apple comes up `ready` at the default size, so the `refused` assertion
+    // fails. Sabotage: drop the `from` with `readonly` check; the spec, whose
+    // `from` is empty, comes up `ready` and the same assertion fails.
+    // Sabotage: drop the check for a disk named twice; the second create
+    // fails and the start ends `failed`.
+    let disk_spec = |disk: serde_json::Value| {
+        serde_json::json!({
+            "name": name,
+            "image": default_image(&env),
+            "labels": { "dev.example.test": "refuses" },
+            "mounts": [{ "host": work, "guest": "/work", "readonly": true }],
+            "disks": if disk.is_array() { disk } else { serde_json::json!([disk]) },
+        })
+    };
+    let disk = box_name("refused-disk");
+    let _disks = DiskCleanup(vec![disk.clone()]);
+    let comma_from = serde_json::json!({ "name": disk, "guest": "/disk", "from": comma });
+    let comma_guest = serde_json::json!({ "name": disk, "guest": "/a,b" });
+    let mut cases = vec![(comma_from, "a,b"), (comma_guest, "a,b")];
+    for size in ["64", "0G", "1.5G", "1T"] {
+        cases.push((
+            serde_json::json!({ "name": disk, "guest": "/disk", "size": size }),
+            size,
+        ));
+    }
+    for bad in ["-disk", "a/b"] {
+        cases.push((serde_json::json!({ "name": bad, "guest": "/disk" }), bad));
+    }
+    cases.push((
+        serde_json::json!({ "name": disk, "guest": "/disk", "from": work, "readonly": true }),
+        "readonly",
+    ));
+    cases.push((
+        serde_json::json!([
+            { "name": disk, "guest": "/disk" },
+            { "name": disk, "guest": "/disk2" },
+        ]),
+        "named twice",
+    ));
+    cases.push((
+        serde_json::json!({ "name": disk, "guest": "/work/../work" }),
+        "/work/../work",
+    ));
+    for (case, named) in cases {
+        let (code, refused) = box_up_refused(&env, &disk_spec(case), &[]);
+        assert_eq!(code, 1, "a refused up exits 1: {refused}");
+        assert_eq!(refused["reason"], "spec", "{refused}");
+        assert!(
+            refused["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(named),
+            "the refusal did not name {named}: {refused}"
+        );
+        assert_left_nothing(&env, &name, label, "refused");
+        let disks = run_ok(env.command(pinfold()).args(["disk", "list"]));
+        assert!(
+            !String::from_utf8_lossy(&disks.stdout).contains(&disk),
+            "a refused disk spec left a disk"
+        );
+    }
+
     // Refuse both an absent directory and a dangling symlink to it. The
     // race below uses the same spec after the target is created, proving
     // that a symlink to a directory remains a valid mount.
@@ -1397,6 +1466,299 @@ fn up_refuses_before_it_creates() {
         winner.wait().success(),
         "the winning up did not exit cleanly"
     );
+}
+
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Linux disks arrive with the Firecracker runtime"
+)]
+fn disks_persist_and_attach_exclusively() {
+    let _runtime = crate::exclusive_runtime();
+    // Guarantee 11: disks persist and attach exclusively.
+    // Sabotage: skip the attachment check in `disk::claim`; the read-only
+    // second `up` is refused `disk-unclean` instead, so the `disk-in-use`
+    // assertion fails. Sabotage: skip `mark_unclean`; after the prune the
+    // read-only `up` comes ready and the `disk-unclean` assertion fails.
+    // Sabotage: skip the size check; the sparse `from` reaches the copy,
+    // which fails in the box, and the `limit` assertion fails. Sabotage:
+    // write every copied file 644 in `init receive`; the exec-bit assertion
+    // fails. Sabotage: drop the disk locks in `disk::claim`; both racing
+    // `up`s create the disk and the loser ends `failed`, not `disk-in-use`.
+    // Sabotage: call `disk::detached` on every runtime stop in `Box::down`;
+    // after `container kill` the read-only `up` comes ready.
+    let env = TestEnv::new("disks");
+    let image = default_image(&env);
+    let names = ["work", "sparse", "fresh", "race"].map(|disk| box_name(&format!("disk-{disk}")));
+    let [work, sparse, fresh, race] = &names;
+    let _disks = DiskCleanup(names.to_vec());
+    let boxes =
+        ["writer", "second", "reader-a", "reader-b"].map(|b| box_name(&format!("disks-{b}")));
+    let [writer, second, reader_a, reader_b] = &boxes;
+    let label = "dev.example.test=disks";
+    let spec = |name: &str, disk: serde_json::Value| {
+        serde_json::json!({
+            "name": name,
+            "image": image,
+            "labels": { "dev.example.test": "disks" },
+            "disks": [disk],
+        })
+    };
+
+    // The host tree: a plain file, an executable, a symlink and a FIFO.
+    let from = TestDir::new(&env, "from");
+    fs::write(from.path().join("plain.txt"), b"plain\n").unwrap();
+    fs::write(from.path().join("run.sh"), b"#!/bin/sh\necho ran\n").unwrap();
+    fs::set_permissions(
+        from.path().join("run.sh"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    fs::create_dir(from.path().join("sub")).unwrap();
+    fs::write(from.path().join("sub/deep.txt"), b"deep\n").unwrap();
+    std::os::unix::fs::symlink("plain.txt", from.path().join("link")).unwrap();
+    nix::unistd::mkfifo(&from.path().join("fifo"), nix::sys::stat::Mode::S_IRWXU).unwrap();
+    let work_disk =
+        serde_json::json!({ "name": work, "guest": "/work", "size": "1G", "from": from.path() });
+    // `from` is read only when the disk is created; a reader names none.
+    let reader = serde_json::json!({ "name": work, "guest": "/work", "readonly": true });
+    let mut up = box_up(&env, &spec(writer, work_disk.clone()), writer);
+    fs::write(from.path().join("later.txt"), b"later\n").unwrap();
+    let tree = box_exec(
+        &env,
+        writer,
+        &[
+            "sh",
+            "-c",
+            "test -x /work/run.sh && /work/run.sh && test ! -x /work/plain.txt \
+             && cat /work/sub/deep.txt && test -L /work/link && readlink /work/link \
+             && test ! -e /work/fifo && test ! -e /work/later.txt",
+        ],
+    );
+    assert_ok(&tree, "the copied tree");
+    assert_eq!(tree.stdout, "ran\ndeep\nplain.txt\n");
+    let full = box_exec(
+        &env,
+        writer,
+        &["dd", "if=/dev/zero", "of=/work/big", "bs=1M", "count=1100"],
+    );
+    assert_denied(&full, "No space left on device", "a write past the 1G disk");
+    assert_ok(
+        &box_exec(
+            &env,
+            writer,
+            &["sh", "-c", "rm /work/big && echo kept > /work/written"],
+        ),
+        "writing the disk",
+    );
+
+    // While the writer attaches it, another `up` naming the disk, read-only
+    // or writable, is refused and creates nothing, and `disk rm` refuses.
+    for disk in [&reader, &work_disk] {
+        let (code, refused) = box_up_refused(&env, &spec(second, disk.clone()), &[]);
+        assert_eq!(code, 1, "a refused up exits 1: {refused}");
+        assert_eq!(refused["reason"], "disk-in-use", "{refused}");
+        let states = fs::read_dir(env.state.join("pinfold/boxes"))
+            .unwrap()
+            .count();
+        assert_eq!(states, 1, "the refused up left a state dir");
+        assert_eq!(box_list(&env, label).len(), 1, "the refused up left a box");
+    }
+    let (code, refused) = disk_rm(&env, work);
+    assert_eq!(
+        (code, &refused["reason"]),
+        (1, &"disk-in-use".into()),
+        "{refused}"
+    );
+
+    up.down(&env);
+    assert!(up.wait().success(), "the writer did not exit cleanly");
+
+    // A `from` whose file sizes pass the disk's size is refused as `limit`
+    // and leaves no disk.
+    let big = TestDir::new(&env, "big");
+    File::create(big.path().join("sparse"))
+        .unwrap()
+        .set_len(2 << 30)
+        .unwrap();
+    let sparse_disk =
+        serde_json::json!({ "name": sparse, "guest": "/big", "size": "1G", "from": big.path() });
+    let (code, refused) = box_up_refused(&env, &spec(second, sparse_disk), &[]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["reason"], "limit", "{refused}");
+    assert_left_nothing(&env, second, label, "limit");
+    assert!(
+        disk_names(&env).iter().all(|name| name != sparse),
+        "the limit refusal left a disk"
+    );
+
+    // Two writable `up`s racing for one new disk: exactly one runs. Both
+    // are spawned before either's first line is read.
+    let racer = serde_json::json!({ "name": race, "guest": "/race" });
+    let mut starts = [
+        box_up_start(&env, &spec(reader_a, racer.clone()), &[]),
+        box_up_start(&env, &spec(reader_b, racer), &[]),
+    ];
+    let lines = starts.each_mut().map(Starting::first_line);
+    let [first, second_start] = starts;
+    let [first_line, second_line] = lines;
+    let (winner, ready, mut loser, refused) = if first_line["event"] == "ready" {
+        (first, first_line, second_start, second_line)
+    } else {
+        (second_start, second_line, first, first_line)
+    };
+    assert_eq!(ready["event"], "ready", "neither racer came ready: {ready}");
+    assert_eq!(
+        refused["reason"], "disk-in-use",
+        "the losing racer: {refused}"
+    );
+    let loser_name = refused["box"].as_str().unwrap();
+    assert!(
+        !env.state.join("pinfold/boxes").join(loser_name).exists(),
+        "the losing racer left a state dir"
+    );
+    let winner_name = ready["box"].as_str().unwrap().to_string();
+    let mut winner = winner.into_up(&winner_name, ready);
+    drop(loser.stdin);
+    assert_eq!(exit_code(loser.child.wait_bounded()), 1, "the loser's exit");
+    winner.down(&env);
+    assert!(
+        winner.wait().success(),
+        "the racing winner did not exit cleanly"
+    );
+
+    // After `down`, two boxes attach it read-only at once, read the writer's
+    // file and can write neither it nor their mount.
+    let mount = TestDir::new(&env, "mount");
+    let with_mount = |name: &str| {
+        let mut spec = spec(name, reader.clone());
+        spec["mounts"] =
+            serde_json::json!([{ "host": mount.path(), "guest": "/mount", "readonly": true }]);
+        spec
+    };
+    let mut starts = [
+        box_up_start(&env, &with_mount(reader_a), &[]),
+        box_up_start(&env, &with_mount(reader_b), &[]),
+    ];
+    let lines = starts.each_mut().map(Starting::first_line);
+    let [a, b] = starts;
+    let [a_line, b_line] = lines;
+    let mut readers = [a.into_up(reader_a, a_line), b.into_up(reader_b, b_line)];
+    for name in [reader_a, reader_b] {
+        let read = box_exec(
+            &env,
+            name,
+            &["sh", "-c", "cat /work/written; test ! -e /work/later.txt"],
+        );
+        assert_ok(&read, "reading the disk read-only");
+        assert_eq!(read.stdout, "kept\n");
+        let write = box_exec(&env, name, &["touch", "/work/new"]);
+        assert_denied(
+            &write,
+            "Read-only file system",
+            "a write to a read-only disk",
+        );
+        let write = box_exec(&env, name, &["touch", "/mount/new"]);
+        assert_denied(&write, "Read-only file system", "a write to a mount");
+    }
+    for reader in &mut readers {
+        reader.down(&env);
+        assert!(reader.wait().success(), "a reader did not exit cleanly");
+    }
+
+    // A writer whose box is killed under it leaves the disk unclean: its
+    // owner tears the box down, but nobody asked it to stop.
+    let mut ended = box_up(&env, &spec(writer, work_disk.clone()), writer);
+    run_ok(Command::new(image_cli()).args(["kill", writer.as_str()]));
+    let _ = ended.wait();
+    let (code, refused) = box_up_refused(&env, &spec(reader_a, reader.clone()), &[]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["reason"], "disk-unclean", "{refused}");
+    let mut recovery = box_up(&env, &spec(writer, work_disk.clone()), writer);
+    recovery.down(&env);
+    assert!(recovery.wait().success());
+
+    // A writer whose owner dies leaves the disk unclean once its box is
+    // pruned: read-only is refused, writable recovers it.
+    let mut killed = box_up(&env, &spec(writer, work_disk.clone()), writer);
+    killed.kill();
+    let _ = killed.wait();
+    run_ok(env.command(pinfold()).args(["box", "prune"]));
+    let (code, refused) = box_up_refused(&env, &spec(reader_a, reader.clone()), &[]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["reason"], "disk-unclean", "{refused}");
+    assert_left_nothing(&env, reader_a, label, "unclean");
+    let mut recovery = box_up(&env, &spec(writer, work_disk.clone()), writer);
+    recovery.down(&env);
+    assert!(
+        recovery.wait().success(),
+        "the recovering writer did not exit cleanly"
+    );
+    let mut after = box_up(&env, &spec(reader_a, reader), reader_a);
+    assert_ok(
+        &box_exec(&env, reader_a, &["cat", "/work/written"]),
+        "reading after recovery",
+    );
+    after.down(&env);
+    assert!(after.wait().success());
+
+    // After `down`, `disk rm` removes it, and an absent disk exits 0. A
+    // name that is no disk name is refused as `spec`.
+    let (code, refused) = disk_rm(&env, "../escape");
+    assert_eq!((code, &refused["reason"]), (1, &"spec".into()), "{refused}");
+    let (code, removed) = disk_rm(&env, work);
+    assert_eq!((code, &removed["existed"]), (0, &true.into()), "{removed}");
+    let (code, removed) = disk_rm(&env, work);
+    assert_eq!((code, &removed["existed"]), (0, &false.into()), "{removed}");
+
+    // A fresh default-size disk is sparse.
+    let mut new = box_up(
+        &env,
+        &spec(
+            writer,
+            serde_json::json!({ "name": fresh, "guest": "/fresh" }),
+        ),
+        writer,
+    );
+    new.down(&env);
+    assert!(new.wait().success());
+    let listed = disk_list(&env)
+        .into_iter()
+        .find(|disk| disk["name"] == fresh.as_str())
+        .expect("the fresh disk is listed");
+    assert_eq!(listed["size"], 64u64 << 30, "{listed}");
+    assert!(listed["allocated"].as_u64().unwrap() < 1 << 30, "{listed}");
+}
+
+/// Every disk `disk list` prints.
+fn disk_list(env: &TestEnv) -> Vec<serde_json::Value> {
+    let output = run_ok(env.command(pinfold()).args(["disk", "list"]));
+    json_lines(&String::from_utf8_lossy(&output.stdout))
+}
+
+pub(super) fn disk_names(env: &TestEnv) -> Vec<String> {
+    disk_list(env)
+        .iter()
+        .filter_map(|disk| disk["name"].as_str().map(String::from))
+        .collect()
+}
+
+fn disk_rm(env: &TestEnv, name: &str) -> (i32, serde_json::Value) {
+    one_json_line(env.command(pinfold()).args(["disk", "rm", name]))
+}
+
+/// Disks a test names, removed through the runtime on drop: Apple's volume
+/// store is shared by every state root.
+pub(super) struct DiskCleanup(pub(super) Vec<String>);
+
+impl Drop for DiskCleanup {
+    fn drop(&mut self) {
+        for name in &self.0 {
+            let _ = Command::new(image_cli())
+                .args(["volume", "rm", name])
+                .output();
+        }
+    }
 }
 
 #[test]

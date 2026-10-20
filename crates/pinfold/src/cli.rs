@@ -11,10 +11,10 @@ use crate::config::Config;
 use crate::core::artifacts;
 use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, Signals, UpError};
 use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
-use crate::core::plan::Plan;
+use crate::core::plan::{Plan, valid_name};
 use crate::core::profile::{self, Profile};
 use crate::core::runtime::{BoxInfo, Runtime, podman, runtime};
-use crate::core::{clean, runs};
+use crate::core::{clean, disk, runs};
 use crate::dirs;
 use crate::pi::launch::utf8;
 use crate::trust;
@@ -34,13 +34,14 @@ pinfold profile new NAME [--from PROFILE] [--builtin] [--from-project [PATH]]   
 pinfold clean [--dry-run] [--unused AGE]   reclaim unused disk space
 pinfold doctor                   runtime, kernel, image, artifacts, trust, config, disk use
 pinfold artifacts                pinned harnesses as JSON
+pinfold apparmor-profile         the AppArmor profile for this executable (Linux)
 pinfold update [--check]         check for a release, or download and install it
 pinfold config [ROOT]            effective configuration and project facts as JSON
 pinfold box …                    the process interface
 pinfold --version                print the version
 pinfold --help                   print this usage";
 
-/// The box verbs, which the table above does not spell out.
+/// The process interface's verbs, which the table above does not spell out.
 const BOX_USAGE: &str = "\
 pinfold box up
 pinfold box exec BOX [--tty] [--workdir DIR] -- argv
@@ -49,7 +50,9 @@ pinfold box down BOX
 pinfold box list --label KEY[=VALUE]…
 pinfold box prune
 pinfold box inspect RUN
-pinfold box events RUN [--limit N] [--after CURSOR]";
+pinfold box events RUN [--limit N] [--after CURSOR]
+pinfold disk list
+pinfold disk rm NAME";
 
 pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
     result.unwrap_or_else(|error| {
@@ -517,6 +520,67 @@ fn answer(verb: &str, run_id: &str, answer: Option<serde_json::Value>) -> io::Re
     }
 }
 
+pub fn disk(args: &[String]) -> io::Result<i32> {
+    let runtime = runtime();
+    match args {
+        [verb] if verb == "list" => {
+            let attached = disk::attachments(runtime, None)?;
+            for found in runtime.list_disks()? {
+                let boxes: Vec<_> = attached
+                    .get(&found.name)
+                    .into_iter()
+                    .flatten()
+                    .map(
+                        |(name, readonly)| serde_json::json!({ "box": name, "readonly": readonly }),
+                    )
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "name": found.name,
+                        "size": found.size,
+                        "allocated": found.allocated,
+                        "attached": boxes,
+                        "clean": !disk::unclean(&found.name)?,
+                    })
+                );
+            }
+            Ok(0)
+        }
+        [verb, name] if verb == "rm" => {
+            let refused = |reason: &str, detail: String| {
+                println!(
+                    "{}",
+                    serde_json::json!({ "event": "refused", "disk": name, "reason": reason, "detail": detail })
+                );
+                Ok(1)
+            };
+            if !valid_name(name) {
+                return refused(
+                    "spec",
+                    format!(
+                        "disk name {name:?} must start alphanumeric and hold only [A-Za-z0-9._-]"
+                    ),
+                );
+            }
+            match disk::remove(runtime, name)? {
+                disk::Removal::InUse(holder) => refused(
+                    "disk-in-use",
+                    format!("box {holder:?} attaches disk {name:?}"),
+                ),
+                disk::Removal::Removed { existed } => {
+                    println!(
+                        "{}",
+                        serde_json::json!({ "event": "removed", "disk": name, "existed": existed })
+                    );
+                    Ok(0)
+                }
+            }
+        }
+        _ => Err(usage("disk", "disk takes list, or rm and one name")),
+    }
+}
+
 pub fn clean(args: &[String]) -> io::Result<i32> {
     let (dry_run, unused) = parse_clean(args)?;
     let runtime = runtime();
@@ -548,6 +612,13 @@ struct CleanPlan {
     runs: Vec<PathBuf>,
     run_bytes: u64,
     project_paths: BTreeMap<String, PathBuf>,
+    /// The disks of idle projects `--unused` removes, by project id.
+    project_disks: BTreeMap<String, Vec<String>>,
+    /// Every disk's allocated bytes, a category of its own.
+    disk_bytes: u64,
+    /// Recorded checkouts that are gone or moved; their state and disks
+    /// stay until `--unused` or `disk rm`.
+    moved: Vec<PathBuf>,
     automatic_bytes: u64,
     project_caches: u64,
     project_state: u64,
@@ -568,10 +639,25 @@ impl CleanPlan {
         automatic.extend(artifacts::unpinned_versions()?);
         let runs = runs::retired()?;
 
+        let disks = runtime.list_disks()?;
         let mut project_paths = BTreeMap::new();
+        let mut project_disks = BTreeMap::new();
         let mut project_caches = 0;
         let mut project_state = 0;
+        let mut moved = Vec::new();
         for project in crate::pi::state::state_dirs()? {
+            if !project.root.exists() {
+                moved.push(project.root.clone());
+            }
+            if Self::idle(&project, &boxes.live_projects, unused) {
+                let names: Vec<String> = Self::disk_names(&project.id)
+                    .into_iter()
+                    .filter(|name| disks.iter().any(|disk| &disk.name == name))
+                    .collect();
+                if !names.is_empty() {
+                    project_disks.insert(project.id.clone(), names);
+                }
+            }
             if let Some(path) = Self::project_path(&project, &boxes.live_projects, unused) {
                 if path == project.dir {
                     project_state += clean::path_bytes(&path);
@@ -596,6 +682,9 @@ impl CleanPlan {
             run_bytes: runs.iter().map(|path| clean::path_bytes(path)).sum(),
             runs,
             project_paths,
+            project_disks,
+            disk_bytes: disks.iter().map(|disk| disk.allocated).sum(),
+            moved,
             unused,
         })
     }
@@ -607,6 +696,7 @@ impl CleanPlan {
             + self.run_bytes
             + self.project_caches
             + self.project_state
+            + self.disk_bytes
             + self.build_cache_bytes.unwrap_or(0)
     }
 
@@ -619,6 +709,10 @@ impl CleanPlan {
         }
         println!("  project caches: {} B", self.project_caches);
         println!("  project state: {} B", self.project_state);
+        println!("  disks: {} B", self.disk_bytes);
+        for root in &self.moved {
+            println!("  checkout gone, state and disks kept: {}", root.display());
+        }
     }
 
     /// Remove everything the plan measured, then the builds past each
@@ -631,7 +725,12 @@ impl CleanPlan {
         clean::remove_paths(self.automatic.into_iter().collect())?;
         clean::remove_paths(self.runs)?;
         let mut locks = BTreeMap::new();
-        for id in self.project_paths.keys() {
+        let ids: BTreeSet<&String> = self
+            .project_paths
+            .keys()
+            .chain(self.project_disks.keys())
+            .collect();
+        for id in ids {
             if let Some(lock) = crate::core::ownership::try_project_lock(id)? {
                 locks.insert(id.as_str(), lock);
             }
@@ -648,10 +747,32 @@ impl CleanPlan {
                 {
                     clean::remove_paths(vec![path])?;
                 }
+                if Self::idle(&project, &live, self.unused) {
+                    // A disk a box attaches stays; `disk::remove` checks.
+                    for name in self.project_disks.get(&project.id).into_iter().flatten() {
+                        disk::remove(runtime, name)?;
+                    }
+                }
             }
         }
         drop(locks);
         clean::keep_two_images_per_source(runtime)
+    }
+
+    /// Whether `--unused` selects the project: not run for that long and no
+    /// live box. A moved checkout alone keeps its state and disks.
+    fn idle(
+        project: &crate::pi::state::StateDir,
+        live: &BTreeSet<String>,
+        unused: Option<Duration>,
+    ) -> bool {
+        let idle = crate::core::now().saturating_sub(project.last_run);
+        !live.contains(&project.id) && unused.is_some_and(|unused| idle >= unused.as_secs())
+    }
+
+    /// A project's disks: its home and its project disk.
+    fn disk_names(id: &str) -> [String; 2] {
+        [format!("pi-{id}-home"), format!("pi-{id}-project")]
     }
 
     fn project_path(
@@ -662,8 +783,7 @@ impl CleanPlan {
         if live.contains(&project.id) {
             return None;
         }
-        let idle = crate::core::now().saturating_sub(project.last_run);
-        if !project.root.exists() || unused.is_some_and(|unused| idle > unused.as_secs()) {
+        if Self::idle(project, live, unused) {
             Some(project.dir.clone())
         } else {
             let cache = project.dir.join("home/.cache");
@@ -812,6 +932,38 @@ pub fn artifacts(args: &[String]) -> io::Result<i32> {
         return Err(usage("artifacts", "artifacts takes no arguments"));
     }
     println!("{}", pins_json()?);
+    Ok(0)
+}
+
+/// An unconfined profile that grants only `userns`, named for and attached
+/// to this executable's path, so the VMM jail works where AppArmor restricts
+/// unprivileged user namespaces.
+pub fn apparmor_profile(args: &[String]) -> io::Result<i32> {
+    if !args.is_empty() {
+        return Err(usage(
+            "apparmor-profile",
+            "apparmor-profile takes no arguments",
+        ));
+    }
+    if !cfg!(target_os = "linux") {
+        return Err(io::Error::other("AppArmor profiles are for Linux hosts"));
+    }
+    let exe = std::env::current_exe()?;
+    // Pattern characters would attach the profile to other paths too.
+    let path = exe
+        .to_str()
+        .filter(|path| {
+            !path
+                .chars()
+                .any(|c| c.is_control() || "\"\\*?[]{}^".contains(c))
+        })
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "{} cannot be named in an AppArmor profile",
+                exe.display()
+            ))
+        })?;
+    println!("abi <abi/4.0>,\n\n\"{path}\" flags=(unconfined) {{\n  userns,\n}}");
     Ok(0)
 }
 

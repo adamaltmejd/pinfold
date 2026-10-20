@@ -1,12 +1,13 @@
 #!/bin/sh
 set -eu
 
-# AppArmor's unprivileged-userns restriction is enabled on the runner image
-# and denies rootless podman the user namespace it creates. The runner is
-# disposable, so clearing it is enough.
-if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-fi
+# /dev/kvm is root:kvm 0660 and the runner user is not in kvm.
+echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+  sudo tee /etc/udev/rules.d/99-kvm.rules >/dev/null
+sudo udevadm control --reload-rules
+sudo udevadm trigger --name-match=kvm
+sudo udevadm settle
+test -r /dev/kvm && test -w /dev/kvm
 
 # podman needs an active systemd user session to enforce --cpus and
 # --memory; under cgroupfs it silently ignores both and pinfold's preflight
@@ -29,6 +30,17 @@ test "$(git -C "$podman_source" rev-parse HEAD)" = "$podman_commit"
 # Use the distribution's helper binaries and configuration paths.
 make -C "$podman_source" bin/podman PREFIX=/usr
 sudo install -m 0755 "$podman_source/bin/podman" /usr/local/bin/podman
+# AppArmor's unprivileged-userns restriction stays on, as for pinfold.
+# Ubuntu's podman profile attaches to /usr/bin/podman, not this build.
+# The doctor test's no-tun scenario runs `unshare -U` on the host, so a
+# copy ahead of /usr/bin on PATH gets the same grant.
+sudo install -m 0755 /usr/bin/unshare /usr/local/bin/unshare
+for tool in podman unshare; do
+  printf '%s\n' 'abi <abi/4.0>,' \
+    "profile ci-$tool /usr/local/bin/$tool flags=(unconfined) {" \
+    '  userns,' '}' | sudo tee "/etc/apparmor.d/ci-$tool" >/dev/null
+  sudo apparmor_parser -r "/etc/apparmor.d/ci-$tool"
+done
 # Older vendor storage configs override the new runtime's rootless paths.
 sudo install -m 0644 "$podman_source/vendor/go.podman.io/storage/storage.conf" \
   /usr/share/containers/storage.conf

@@ -17,13 +17,9 @@ permissions:
 
 jobs:
   linux:
-    name: Linux (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
+    name: Linux (ubuntu-26.04)
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-26.04, ubuntu-26.04-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -52,6 +48,15 @@ jobs:
 
       - name: Lint
         run: cargo clippy --all-targets --locked -- -D warnings
+
+      # The executable the suite runs, profiled with the restriction on.
+      - name: AppArmor profile
+        run: |
+          cargo build -p pinfold --locked --target x86_64-unknown-linux-musl
+          target/x86_64-unknown-linux-musl/debug/pinfold apparmor-profile >"$RUNNER_TEMP/pinfold"
+          sudo install -m 0644 "$RUNNER_TEMP/pinfold" /etc/apparmor.d/pinfold
+          sudo apparmor_parser -r /etc/apparmor.d/pinfold
+          test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 1
 
       - name: End-to-end tests
         run: python3 scripts/e2e-budget.py

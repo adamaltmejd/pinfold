@@ -52,7 +52,7 @@ Linux, a static musl binary:
 ```sh
 sha256sum -c --ignore-missing SHA256SUMS
 mkdir -p ~/.local/bin
-install -m 0755 pinfold-*-"$(uname -m)"-unknown-linux-musl ~/.local/bin/pinfold
+install -m 0755 pinfold-*-x86_64-unknown-linux-musl ~/.local/bin/pinfold
 ```
 
 Or build from a checkout of this repository; the Rust toolchain is pinned
@@ -70,10 +70,10 @@ install -m 0755 target/release/pinfold ~/.local/bin/pinfold
 Linux builds the static musl binary:
 
 ```sh
-rustup target add "$(uname -m)-unknown-linux-musl"
-cargo build --release --target "$(uname -m)-unknown-linux-musl"
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-musl
 mkdir -p ~/.local/bin
-install -m 0755 "target/$(uname -m)-unknown-linux-musl/release/pinfold" ~/.local/bin/pinfold
+install -m 0755 target/x86_64-unknown-linux-musl/release/pinfold ~/.local/bin/pinfold
 ```
 
 Then make `pi` a symlink to the binary, in a directory on `PATH`:

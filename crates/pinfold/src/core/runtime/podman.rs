@@ -16,8 +16,8 @@ use crate::core::clean::LAYER_LABEL;
 use crate::core::plan::{Env, Plan};
 use crate::core::rfc3339;
 use crate::core::runtime::{
-    BoxInfo, BoxStat, BuildRequest, ImageInfo, MemoryStat, PidsStat, Runtime, bind, inspect,
-    list_output, output, parse_json, spawn_error,
+    BoxInfo, BoxStat, BuildRequest, DiskInfo, ImageInfo, MemoryStat, PidsStat, Runtime, bind,
+    inspect, list_output, output, parse_json, spawn_error,
 };
 
 /// Where the bind-mounted proxy socket appears in the box.
@@ -231,6 +231,19 @@ impl Runtime for Podman {
 
     fn build_cache(&self) -> &'static str {
         "the dev.pinfold.layer intermediate images no image builds on"
+    }
+
+    // Linux disks are ext4 images a VM boots with; podman boxes have none.
+    fn list_disks(&self) -> io::Result<Vec<DiskInfo>> {
+        Ok(Vec::new())
+    }
+
+    fn create_disk(&self, _name: &str, _bytes: u64) -> io::Result<()> {
+        Err(io::Error::other("disks need a VM box runtime"))
+    }
+
+    fn remove_disk(&self, _name: &str) -> io::Result<()> {
+        Ok(())
     }
 
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {

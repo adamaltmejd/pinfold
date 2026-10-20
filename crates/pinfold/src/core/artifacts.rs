@@ -175,11 +175,9 @@ const OS_ARCH: &str = if cfg!(target_arch = "aarch64") {
 };
 
 /// The `os-arch` of a host helper on this host, as its rows name it. The
-/// macOS CLI is arm64 only.
+/// macOS CLI is arm64 only; Linux arm64 is unsupported.
 const HOST_OS_ARCH: &str = if cfg!(target_os = "macos") {
     "host-darwin-arm64"
-} else if cfg!(target_arch = "aarch64") {
-    "host-linux-arm64"
 } else {
     "host-linux-x64"
 };

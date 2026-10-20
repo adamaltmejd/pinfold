@@ -1,0 +1,63 @@
+name: Guest kernel
+
+on:
+  pull_request:
+    paths:
+      - guest-kernel/**
+      - .github/workflows/guest-kernel.yml
+  # Publishing runs only from main.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential flex bison bc libelf-dev libssl-dev
+
+      - name: Build
+        run: guest-kernel/build.sh dist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guest-kernel
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: guest-kernel
+          path: dist
+
+      # A prerelease is never the latest release, which `pinfold update`
+      # reads. An existing tag fails the create; a new build needs new pins.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . guest-kernel/pins
+          tag="guest-kernel-$KERNEL-firecracker-$FIRECRACKER"
+          printf 'Firecracker guest kernel %s with Firecracker %s guest config.\n\n## Caller changes\n\nNone\n' \
+            "$KERNEL" "$FIRECRACKER" >"$RUNNER_TEMP/notes"
+          gh release create "$tag" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "$tag" --notes-file "$RUNNER_TEMP/notes" dist/*
