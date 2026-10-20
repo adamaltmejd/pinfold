@@ -119,7 +119,8 @@ sysctl rather than the failing call.
 2. Claim the box's disks (Disks), creating any that are new; a new
    disk's `from` is size-checked here. On Apple a transient container of
    the box's image, root with only `CAP_CHOWN` and no network, gives each
-   new disk's root to the box user.
+   new disk's root to the box user. It carries the box's name and its
+   owner and generation labels, so `clean` removes a leftover.
 3. Start the box's proxy on a new unix socket in the state dir. Keep the path
    under macOS's 104-byte limit.
 4. Run the box with no network interface and the socket carried in

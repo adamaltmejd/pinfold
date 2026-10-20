@@ -43,21 +43,63 @@ pub struct Claimed {
 }
 
 impl Claimed {
-    /// Undo a claim whose box `name` failed to start: remove the disks it
-    /// created that no other box attached since, and the marks it added,
-    /// so a disk no box mounted keeps its old state.
+    /// Undo a claim whose box `name` failed to start, under its disks'
+    /// locks.
     pub fn undo(&self, runtime: &dyn Runtime, name: &str) {
-        for disk in &self.created {
-            if let Err(error) = remove(runtime, &disk.name, Some(name)) {
+        let names: BTreeSet<&str> = self
+            .created
+            .iter()
+            .map(|disk| disk.name.as_str())
+            .chain(self.marked.iter().map(String::as_str))
+            .collect();
+        match locks(&names) {
+            Ok(_locks) => self.undo_locked(runtime, name),
+            Err(error) => eprintln!("pinfold: startup cleanup: disk locks: {error}"),
+        }
+    }
+
+    /// Remove the disks the claim created and the marks it added, except
+    /// on a disk another box attached since, so a disk no box mounted keeps
+    /// its old state.
+    fn undo_locked(&self, runtime: &dyn Runtime, name: &str) {
+        let attached = match attachments(runtime, Some(name)) {
+            Ok(attached) => attached,
+            Err(error) => {
+                eprintln!("pinfold: startup cleanup: disk attachments: {error}");
+                return;
+            }
+        };
+        for disk in self
+            .created
+            .iter()
+            .filter(|disk| !attached.contains_key(&disk.name))
+        {
+            let result = runtime
+                .remove_disk(&disk.name)
+                .and_then(|()| mark_clean(&disk.name));
+            if let Err(error) = result {
                 eprintln!("pinfold: startup cleanup: disk {:?}: {error}", disk.name);
             }
         }
-        for name in &self.marked {
-            if let Err(error) = mark_clean(name) {
-                eprintln!("pinfold: startup cleanup: disk {name:?}: {error}");
+        for disk in self
+            .marked
+            .iter()
+            .filter(|disk| !attached.contains_key(*disk))
+        {
+            if let Err(error) = mark_clean(disk) {
+                eprintln!("pinfold: startup cleanup: disk {disk:?}: {error}");
             }
         }
     }
+}
+
+/// Each named disk's lock, taken in sorted order so two `up`s never wait
+/// on each other's locks in a cycle.
+fn locks(names: &BTreeSet<&str>) -> io::Result<Vec<Flock<File>>> {
+    names
+        .iter()
+        .map(|disk| ownership::disk_lock(disk))
+        .collect()
 }
 
 /// Lifecycle step 2: claim `disks` for the box `claim` holds, creating any
@@ -72,13 +114,8 @@ pub fn claim(
     if disks.is_empty() {
         return Ok(Claimed::default());
     }
-    // Sorted, so two `up`s never wait on each other's locks in a cycle.
     let names: BTreeSet<&str> = disks.iter().map(|disk| disk.name.as_str()).collect();
-    let locks = names
-        .iter()
-        .map(|disk| ownership::disk_lock(disk))
-        .collect::<io::Result<Vec<Flock<File>>>>()
-        .map_err(Err)?;
+    let _locks = locks(&names).map_err(Err)?;
     let attached = attachments(runtime, Some(name)).map_err(Err)?;
     let existing: BTreeSet<String> = runtime
         .list_disks()
@@ -170,9 +207,7 @@ pub fn claim(
     })();
     if let Err(error) = result {
         claimed.created = created;
-        // `undo` takes each disk's lock again.
-        drop(locks);
-        claimed.undo(runtime, name);
+        claimed.undo_locked(runtime, name);
         return Err(Err(error));
     }
     Ok(claimed)
@@ -336,10 +371,10 @@ pub enum Removal {
     InUse(String),
 }
 
-/// Remove a disk no box but `except` attaches.
-pub fn remove(runtime: &dyn Runtime, name: &str, except: Option<&str>) -> io::Result<Removal> {
+/// Remove a disk no box attaches.
+pub fn remove(runtime: &dyn Runtime, name: &str) -> io::Result<Removal> {
     let _lock = ownership::disk_lock(name)?;
-    if let Some((holder, _)) = attachments(runtime, except)?
+    if let Some((holder, _)) = attachments(runtime, None)?
         .remove(name)
         .and_then(|boxes| boxes.into_iter().next())
     {

@@ -339,7 +339,9 @@ impl Box {
                     let _ = preparing.await;
                 }
                 let ran = progress.child.is_some();
-                let requested = progress.child.as_mut().is_some_and(running);
+                // A box that failed readiness ended, or may have, on its own.
+                let requested = !matches!(stop, Stop::NotReady(_))
+                    && progress.child.as_mut().is_some_and(running);
                 let (removed, status) = abort(&plan.name, progress.child).await;
                 if removed.is_ok() {
                     if ran {

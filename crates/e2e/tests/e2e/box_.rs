@@ -1612,6 +1612,11 @@ fn disks_persist_and_attach_exclusively() {
         refused["reason"], "disk-in-use",
         "the losing racer: {refused}"
     );
+    let loser_name = refused["box"].as_str().unwrap();
+    assert!(
+        !env.state.join("pinfold/boxes").join(loser_name).exists(),
+        "the losing racer left a state dir"
+    );
     let winner_name = ready["box"].as_str().unwrap().to_string();
     let mut winner = winner.into_up(&winner_name, ready);
     drop(loser.stdin);
