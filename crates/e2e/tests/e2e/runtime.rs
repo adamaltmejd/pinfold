@@ -953,7 +953,7 @@ int main(void) {
         l_len: 0,
         l_pid: 0,
     };
-    nix::fcntl::fcntl(&lock, nix::fcntl::FcntlArg::F_SETLK(&held)).unwrap();
+    crate::hold_image_lock(&lock, &held);
     for ((mut writer, policy), starting) in writers.into_iter().zip([normal, strict]).zip(&starts) {
         let policy = serde_json::to_vec(&policy).unwrap();
         let mut remaining = policy.as_slice();

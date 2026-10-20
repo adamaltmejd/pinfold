@@ -229,8 +229,7 @@ fn hold_image_store_lock(env: &TestEnv) -> File {
         l_len: 0,
         l_pid: 0,
     };
-    nix::fcntl::fcntl(&lock, nix::fcntl::FcntlArg::F_SETLK(&held))
-        .expect("hold Podman's image-store lock");
+    crate::hold_image_lock(&lock, &held);
     lock
 }
 
