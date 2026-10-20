@@ -1,0 +1,36 @@
+diff --git a/crates/pinfold/src/cli.rs b/crates/pinfold/src/cli.rs
+index 6949b52..785f65a 100644
+--- a/crates/pinfold/src/cli.rs
++++ b/crates/pinfold/src/cli.rs
+@@ -1370,3 +1370,19 @@ fn parse_profile_new(args: &[String]) -> io::Result<(String, String, Option<Path
+         builtin,
+     ))
+ }
++
++/// Scratch for the #138 labvm boot check; never committed.
++pub fn scratch_disks(args: &[String]) -> io::Result<i32> {
++    let vmm = crate::core::artifacts::vmm(None)?;
++    let root = crate::core::image::root_disk(&args[0])?;
++    let init = std::path::PathBuf::from(&args[1]);
++    crate::core::artifacts::init_disk(&init)?;
++    println!(
++        "{} {} {} {}",
++        vmm.firecracker.display(),
++        vmm.kernel.display(),
++        root.display(),
++        init.display()
++    );
++    Ok(0)
++}
+diff --git a/crates/pinfold/src/main.rs b/crates/pinfold/src/main.rs
+index 9d7d4f2..335470c 100644
+--- a/crates/pinfold/src/main.rs
++++ b/crates/pinfold/src/main.rs
+@@ -59,6 +59,7 @@ fn main() -> ExitCode {
+         "disk" => cli::disk,
+         "doctor" => cli::doctor,
+         "artifacts" => cli::artifacts,
++        "__disks" => cli::scratch_disks,
+         "apparmor-profile" => cli::apparmor_profile,
+         "config" => cli::config,
+         "profile" => cli::profile,

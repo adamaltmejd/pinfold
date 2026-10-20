@@ -789,11 +789,14 @@ Firecracker version, without vsock loopback and with its config at
 `/proc/config.gz`. `guest-kernel/` pins and builds it, and its workflow
 publishes it as the asset of a prerelease tagged
 `guest-kernel-<kernel>-firecracker-<version>`, never the latest release;
-`vmm.toml` pins that asset's digest. Both install like a harness,
-into `~/.cache/pinfold/artifacts/vmm/<version>/<os-arch>/`, on the first
-`up`. They move only with a pinfold release; nightly CI repins Firecracker
-like a harness, once a release has been out seven full days, and the
-kernel's release and config move with it.
+`vmm.toml` pins that asset's digest, and holds the one copy of
+Firecracker's version, which `guest-kernel/` reads. Both install like a
+harness, into `~/.cache/pinfold/artifacts/vmm/<version>/<os-arch>/`, where
+`<version>` names Firecracker's and the kernel's, on the first `up`. They
+move only with a pinfold release; nightly CI repins Firecracker like a
+harness, once a release has been out seven full days, and the kernel's
+config and release move with it. The repin waits for the matching kernel
+release, which the guest-kernel workflow publishes; it never publishes one.
 
 codex also pins a host helper, `codex-app-server`, per host `os-arch`
 (`darwin-arm64`, `linux-x64`), installed the same way into
@@ -1172,10 +1175,11 @@ pinfold box …                    the process interface
 pinfold init                     PID 1 in the box (Linux builds)
 ```
 
-`artifacts` prints one JSON array, an object per harness: `name`, `version`,
-`path` (the host directory mounted at `/opt/pinfold/<name>`), `cached`,
-and `assets`, a list of `{url, sha256}` for this host's `os-arch`. Nothing
-is downloaded. `doctor` reports the same list.
+`artifacts` prints one JSON array, an object per harness, then on Linux
+one named `vmm`: `name`, `version`, `path` (the host directory mounted at
+`/opt/pinfold/<name>`; for `vmm`, its install directory), `cached`, and
+`assets`, a list of `{url, sha256}` for this host's `os-arch`. Nothing is
+downloaded. `doctor` reports the same list.
 
 `pinfold --version` (`-V`) and `pinfold --help` (`-h`) answer without
 touching the runtime or the state dir; `--help` or `-h` after a subcommand, before any `--`,
