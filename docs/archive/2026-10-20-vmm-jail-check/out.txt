@@ -1,0 +1,108 @@
+== host
+6.12.107+deb13-cloud-amd64
+uid=1000(agent) gid=1000(agent) groups=1000(agent),4(adm),20(dialout),24(cdrom),25(floppy),27(sudo),29(audio),30(dip),44(video),46(plugdev),992(kvm)
+landlock abi: 6
+== two boxes up
+a ready: ready 6.1.188
+b ready: ready 6.1.188
+-- box a: pjail=17841 vmm=17843
+Name:	firecracker
+PPid:	17841
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+Groups:	4 20 24 25 27 29 30 44 46 992 1000 
+NSpid:	17843	1
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+Seccomp:	2
+Seccomp_filters:	1
+ns user differs
+ns mnt differs
+ns pid differs
+ns net differs
+ns ipc differs
+ns uts differs
+ns cgroup SAME
+root: config.json dev disk0.ext4 firecracker init.ext4 root.ext4 vmlinux vsock  | dev: kvm | vsock: v.sock v.sock_3128 
+disk0 inode 396072; a.ext4 396072; b.ext4 396073
+pjail fd 7: /etc/hostname
+vmm fds: 0=/dev/null 1=/dev/null 10=/init.ext4 11=anon_inode:[timerfd] 12=anon_inode:[eventfd] 13=anon_inode:[eventfd] 14=/disk0.ext4 15=anon_inode:[timerfd] 16=anon_inode:[eventfd] 17=anon_inode:[eventfd] 18=socket:[28452] 19=anon_inode:[eventpoll] 2=/dev/null 20=anon_inode:[eventfd] 21=anon_inode:[eventfd] 22=anon_inode:[eventfd] 23=anon_inode:[eventfd] 24=/dev/kvm 25=anon_inode:kvm-vm 26=anon_inode:[eventfd] 27=anon_inode:[eventfd] 28=anon_inode:kvm-vcpu:0 29=anon_inode:[eventfd] 3=anon_inode:[eventpoll] 30=anon_inode:[eventfd] 31=anon_inode:[eventfd] 32=anon_inode:[eventfd] 33=anon_inode:[eventfd] 34=anon_inode:[eventfd] 35=anon_inode:[eventfd] 36=anon_inode:[eventfd] 37=anon_inode:[eventfd] 38=anon_inode:[eventfd] 39=anon_inode:kvm-vcpu:0 4=anon_inode:[timerfd] 6=/root.ext4 7=anon_inode:[timerfd] 8=anon_inode:[eventfd] 9=anon_inode:[eventfd] 
+mount points: / /firecracker /vmlinux /root.ext4 /init.ext4 /config.json /dev/kvm /vsock /disk0.ext4 
+mount points under /home/agent: 0
+peer_cid=2
+api.github.com 200
+curl: (56) CONNECT tunnel failed, response 403
+example.com 000
+exit=56
+-- box b: pjail=17856 vmm=17858
+Name:	firecracker
+PPid:	17856
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+Groups:	4 20 24 25 27 29 30 44 46 992 1000 
+NSpid:	17858	1
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+Seccomp:	2
+Seccomp_filters:	1
+ns user differs
+ns mnt differs
+ns pid differs
+ns net differs
+ns ipc differs
+ns uts differs
+ns cgroup SAME
+root: config.json dev disk0.ext4 firecracker init.ext4 root.ext4 vmlinux vsock  | dev: kvm | vsock: v.sock v.sock_3128 
+disk0 inode 396073; a.ext4 396072; b.ext4 396073
+pjail fd 7: /etc/hostname
+vmm fds: 0=/dev/null 1=/dev/null 10=/init.ext4 11=anon_inode:[timerfd] 12=anon_inode:[eventfd] 13=anon_inode:[eventfd] 14=/disk0.ext4 15=anon_inode:[timerfd] 16=anon_inode:[eventfd] 17=anon_inode:[eventfd] 18=socket:[28535] 19=anon_inode:[eventpoll] 2=/dev/null 20=anon_inode:[eventfd] 21=anon_inode:[eventfd] 22=anon_inode:[eventfd] 23=anon_inode:[eventfd] 24=/dev/kvm 25=anon_inode:kvm-vm 26=anon_inode:[eventfd] 27=anon_inode:[eventfd] 28=anon_inode:kvm-vcpu:0 29=anon_inode:[eventfd] 3=anon_inode:[eventpoll] 30=anon_inode:[eventfd] 31=anon_inode:[eventfd] 32=anon_inode:[eventfd] 33=anon_inode:[eventfd] 34=anon_inode:[eventfd] 35=anon_inode:[eventfd] 36=anon_inode:[eventfd] 37=anon_inode:[eventfd] 38=anon_inode:[eventfd] 39=anon_inode:kvm-vcpu:0 4=anon_inode:[timerfd] 5=socket:[28605] 6=/root.ext4 7=anon_inode:[timerfd] 8=anon_inode:[eventfd] 9=anon_inode:[eventfd] 
+mount points: / /firecracker /vmlinux /root.ext4 /init.ext4 /config.json /dev/kvm /vsock /disk0.ext4 
+mount points under /home/agent: 0
+peer_cid=2
+api.github.com 200
+curl: (56) CONNECT tunnel failed, response 403
+example.com 000
+exit=56
+== SIGKILL of a's pjail ends a's VM; b stays
+/home/agent/check-pjail.sh: line 85: 17841 Killed                  "$PJ" "$s" "$fc" "$FC/vmlinux" "$FC/rootfs.ext4" "$FC/init.ext4" "$data" > "$s/console.log" 2> "$s/pjail.err" < /dev/null
+vmm a gone after 41 ms; vmm b alive: yes
+/home/agent/check-pjail.sh: line 87: 17856 Killed                  "$PJ" "$s" "$fc" "$FC/vmlinux" "$FC/rootfs.ext4" "$FC/init.ext4" "$data" > "$s/console.log" 2> "$s/pjail.err" < /dev/null
+== escape probes as /firecracker inside the jail
+host controls: tcp 200, abstract ok, kill -0 ok
+pjail: vmm 18117 ended, status 0
+pjail exit=0
+probe open /dev/kvm rw: ok (4)
+probe ioctl KVM_GET_API_VERSION: ok (12)
+probe open /disk0.ext4 rw: ok (5)
+probe open /vmlinux ro: ok (6)
+probe connect /vsock/v.sock_3128 (the proxy): ok (0)
+probe open /vmlinux rw: errno 30 (Read-only file system (os error 30))
+probe create /x: errno 30 (Read-only file system (os error 30))
+probe open /proc/self/status: errno 2 (No such file or directory (os error 2))
+probe open /home: errno 2 (No such file or directory (os error 2))
+probe open /etc/passwd: errno 2 (No such file or directory (os error 2))
+probe create regular file /vsock/f: errno 13 (Permission denied (os error 13))
+probe mknod fifo /vsock/p: errno 13 (Permission denied (os error 13))
+probe ftruncate /disk0.ext4: errno 13 (Permission denied (os error 13))
+probe tcp connect 127.0.0.1:8080: errno 13 (Permission denied (os error 13))
+probe connect abstract @fcjail-probe-abstract: errno 111 (Connection refused (os error 111))
+probe kill(0 signal) host pid 1: ok (0)
+probe setgroups([]): errno 1 (Operation not permitted (os error 1))
+probe open /root.ext4 ro: ok (11)
+probe open /root.ext4 rw: errno 13 (Permission denied (os error 13))
+vsock dir after probes: v.sock_3128 
+== preflight's user-namespace probe
+2026/10/20 15:19:56 socat[18093] W exiting on signal 15
+probe ok
+probe failed: VMM jail: clone: EPERM: Operation not permitted
+== a failing step is named
+pjail: statvfs /home/agent/fc/missing.ext4: ENOENT: No such file or directory
+exit=125
