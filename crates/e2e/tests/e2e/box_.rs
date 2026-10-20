@@ -292,8 +292,7 @@ sys.exit(result.returncode)
             l_len: 0,
             l_pid: 0,
         };
-        nix::fcntl::fcntl(&lock, nix::fcntl::FcntlArg::F_SETLK(&held))
-            .expect("hold Podman's image-store lock");
+        crate::hold_image_lock(&lock, &held);
 
         // Maintenance would be due for this fresh caller. Listing must
         // skip it and receive the failure within the listing deadline.
@@ -524,7 +523,7 @@ sys.exit(result.returncode)
         // First block real removal so the requester can be stopped before
         // its reply. Reaping the owner before relocking proves teardown is
         // complete while the paused requester still has its queued reply.
-        nix::fcntl::fcntl(&store_lock, nix::fcntl::FcntlArg::F_SETLK(&held)).unwrap();
+        crate::hold_image_lock(&store_lock, &held);
         let requested_at = std::time::Instant::now();
         let child = env
             .command(pinfold())
@@ -588,7 +587,7 @@ sys.exit(result.returncode)
             requested_at.elapsed() < std::time::Duration::from_secs(10),
             "owner did not complete within the requester's original deadline"
         );
-        nix::fcntl::fcntl(&lock, nix::fcntl::FcntlArg::F_SETLK(&held)).unwrap();
+        crate::hold_image_lock(&lock, &held);
         drop(resume);
         let status = down.wait_bounded();
         let mut stdout = Vec::new();
