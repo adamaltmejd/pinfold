@@ -86,13 +86,6 @@ install = "tar.gz"
 as = "codex-app-server"
 
 [[harness.asset]]
-os-arch = "host-linux-arm64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-app-server-aarch64-unknown-linux-musl.tar.gz"
-sha256 = "38cad7aadc6cf472fbaa43cacefb9802147592f95e570a75b7ced8406cda9919"
-install = "tar.gz"
-as = "codex-app-server"
-
-[[harness.asset]]
 os-arch = "host-linux-x64"
 url = "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-app-server-x86_64-unknown-linux-musl.tar.gz"
 sha256 = "bd587a5419f9b6fa488e4950b065c9127f7db0989388210a3785294b460cdf09"

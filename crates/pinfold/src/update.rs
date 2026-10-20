@@ -218,7 +218,6 @@ pub fn run(args: &[String]) -> io::Result<i32> {
 fn install(release: &str, path: &Path, staging: &Path) -> io::Result<()> {
     let target = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => "aarch64-apple-darwin",
-        ("linux", "aarch64") => "aarch64-unknown-linux-musl",
         ("linux", "x86_64") => "x86_64-unknown-linux-musl",
         _ => return Err(io::Error::other("no release binary for this host")),
     };

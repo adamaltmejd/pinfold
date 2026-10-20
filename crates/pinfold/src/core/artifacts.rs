@@ -178,8 +178,6 @@ const OS_ARCH: &str = if cfg!(target_arch = "aarch64") {
 /// macOS CLI is arm64 only.
 const HOST_OS_ARCH: &str = if cfg!(target_os = "macos") {
     "host-darwin-arm64"
-} else if cfg!(target_arch = "aarch64") {
-    "host-linux-arm64"
 } else {
     "host-linux-x64"
 };
