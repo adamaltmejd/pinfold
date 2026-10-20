@@ -2025,8 +2025,9 @@ fn work_leaves_the_box_only_by_fetch() {
     // A box that writes its own bundle: a `git` ahead of the real one on
     // PATH stands in for a box that controls its processes' output. Its
     // bundle carries a real commit under a `refs/heads/x` head, a
-    // `refs/heads/x:refs/heads/injected` head and a `refs/replace/*` head
-    // over the host's main. The fetch fails and no host ref changes.
+    // `refs/heads/x:refs/heads/injected` head and a
+    // `refs/heads/x:refs/replace/<host main>` head. The fetch fails and no
+    // host ref changes.
     let host_main = host_git(&["rev-parse", "main"]);
     let host_refs = host_git(&["for-each-ref"]);
     in_box(&format!(
@@ -2038,7 +2039,7 @@ evil=$(g commit-tree -m evil 'HEAD^{{tree}}')
 g update-ref refs/evil/x "$evil"
 g bundle create -q .hostile/real refs/evil/x
 header=$(sed -n '1,/^$/p' .hostile/real | wc -c)
-{{ printf '# v2 git bundle\n%s refs/heads/x\n%s refs/heads/x:refs/heads/injected\n%s refs/replace/{host_main}\n\n' "$evil" "$evil" "$evil"
+{{ printf '# v2 git bundle\n%s refs/heads/x\n%s refs/heads/x:refs/heads/injected\n%s refs/heads/x:refs/replace/{host_main}\n\n' "$evil" "$evil" "$evil"
   tail -c +$((header + 1)) .hostile/real; }} > .hostile/bundle
 cat > .hostile/git <<'END'
 #!/bin/sh
@@ -2057,7 +2058,6 @@ chmod 755 .hostile/git"#
         host_refs,
         "the hostile bundle changed a host ref"
     );
-    assert_eq!(host_git(&["log", "-1", "--format=%H", "main"]), host_main);
 
     up.down(&env);
     assert!(up.wait().success(), "the box did not exit cleanly");

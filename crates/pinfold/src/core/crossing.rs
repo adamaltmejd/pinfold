@@ -166,9 +166,11 @@ pub fn fetch(
 
     // The box's listing and bundle are untrusted. Every branch name passes
     // check-ref-format under the namespace before git sees it in a refspec
-    // or a ref update. A ref lands only at a commit the bundle carried,
-    // which fetch checked whole with fsck, or one the host already reaches
-    // from this remote's refs.
+    // or a ref update. A bundled head lands at a commit the bundle carries,
+    // which fetch checks with fsck, or one the host already holds
+    // connected: fetch's own connectivity check covers a head whose
+    // objects are already here. A listed branch the bundle leaves out lands
+    // only at a commit this remote's refs already reach.
     let mut refs = BTreeMap::new();
     let path = bundle
         .path
