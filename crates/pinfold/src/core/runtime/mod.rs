@@ -588,9 +588,7 @@ fn up<'a>(
         guest_env(command.as_std_mut(), "http_proxy", OsStr::new(PROXY_URL));
     }
     for mount in &plan.mounts {
-        command
-            .arg("--mount")
-            .arg(bind(&mount.host, &mount.guest, mount.readonly));
+        command.arg("--mount").arg(bind(&mount.host, &mount.guest));
     }
     for disk in &plan.disks {
         let mut value = OsString::from(format!("type=volume,source={},target=", disk.name));
@@ -605,7 +603,7 @@ fn up<'a>(
         .expect("box::up refuses an init without a directory");
     command
         .arg("--mount")
-        .arg(bind(init_dir, init_dir, true))
+        .arg(bind(init_dir, init_dir))
         .arg("--entrypoint")
         .arg(init)
         .arg(
@@ -692,14 +690,12 @@ fn build(
     }
 }
 
-/// A `type=bind` mount value, as both runtimes spell it.
-pub(crate) fn bind(host: &Path, guest: &Path, readonly: bool) -> OsString {
+/// A read-only `type=bind` mount value, as both runtimes spell it.
+pub(crate) fn bind(host: &Path, guest: &Path) -> OsString {
     let mut value = OsString::from("type=bind,source=");
     value.push(host);
     value.push(",target=");
     value.push(guest);
-    if readonly {
-        value.push(",readonly");
-    }
+    value.push(",readonly");
     value
 }

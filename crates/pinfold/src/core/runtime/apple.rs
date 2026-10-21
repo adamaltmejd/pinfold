@@ -294,7 +294,7 @@ pub fn own_disks(
         .args(["--read-only", "--cap-drop", "ALL", "--cap-add", "CAP_CHOWN"])
         .args(["--name", name])
         .args(["--user", "0:0", "--mount"])
-        .arg(super::bind(init_dir, init_dir, true));
+        .arg(super::bind(init_dir, init_dir));
     for (key, value) in labels {
         command.arg("--label").arg(format!("{key}={value}"));
     }

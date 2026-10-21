@@ -271,8 +271,6 @@ fn valid_header_name(name: &str) -> bool {
 pub struct Mount {
     pub host: PathBuf,
     pub guest: PathBuf,
-    #[serde(default)]
-    pub readonly: bool,
 }
 
 /// One named disk and where it appears in the box.

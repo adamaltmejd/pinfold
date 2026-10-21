@@ -1,26 +1,17 @@
 //! The box lifecycle: one attached `container run` process owns one box.
 
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::fs;
-use std::fs::File;
 use std::io;
-use std::io::Write;
-use std::os::fd::OwnedFd;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitStatus;
 
-use nix::errno::Errno;
-use nix::fcntl::{OFlag, openat};
-use nix::sys::stat::{Mode, mkdirat};
-use nix::unistd::{UnlinkatFlags, unlinkat};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Child;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::core::clean;
-use crate::core::plan::{Disk, Env, Mount, Plan, Route, guest_path, valid_name};
+use crate::core::plan::{Disk, Env, Mount, Plan, Route, valid_name};
 use crate::core::profile::{Profile, Seed};
 use crate::core::runs::{self, Terminal};
 use crate::core::runtime::{BoxInfo, apple, runtime};
@@ -89,8 +80,6 @@ impl Shutdown {
 
 /// Why `up` refused, serialized as the reason string of the process
 /// interface's `refused` line. Early refusals precede preparation.
-/// `MountAlias` follows preparation but precedes runtime spawn and ready;
-/// claimed state is removed, while fetched artifacts and home seeds remain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RefusalReason {
@@ -100,7 +89,6 @@ pub enum RefusalReason {
     ImageMissing,
     NameInUse,
     Login,
-    MountAlias,
     DiskInUse,
     DiskUnclean,
     Limit,
@@ -203,18 +191,13 @@ impl Box {
 
         // Pinfold adds the profile's `share/` above, and the harness mount
         // and a codex login's config dir in `start`. Check the spec's mounts
-        // against them before `home_mount` picks the mount behind `$HOME`, so
+        // against them before `home_disk` picks the disk behind `$HOME`, so
         // a clash is refused as spec and no tie can hide it.
         let harness = plan.harness.as_deref().map(artifacts::guest);
         let codex_config = codex.as_ref().map(|_| Path::new(login::CODEX_CONFIG_DIR));
         let extra: Vec<&Path> = harness.as_deref().into_iter().chain(codex_config).collect();
         plan.validate_guests(&extra)
             .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
-        let seeding = seeds
-            .map(|seeds| home_mount(&plan, seeds))
-            .transpose()
-            .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
-
         let runtime = runtime();
         let seccomp = runtime
             .preflight()
@@ -237,6 +220,10 @@ impl Box {
                 ),
             )
         })?;
+        let seeding = seeds
+            .map(|seeds| home_disk(&plan, seeds))
+            .transpose()
+            .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
         // The image's identity labels are the box's too: Apple copies no
         // image label onto a box. Every image also carries the other
         // families empty, so pinfold's own label (`dev.pinfold.project` for
@@ -362,7 +349,6 @@ impl Box {
                     Stop::Signal => UpError::Signal,
                     Stop::Control => UpError::Control,
                     Stop::Failed(error) => UpError::Other(error),
-                    Stop::Refused(refusal) => UpError::Refused(refusal),
                     Stop::NotReady(failure) => UpError::Other(io::Error::other(match status {
                         Some(Ok(status)) => format!("{failure}: {status}"),
                         Some(Err(error)) => format!("{failure}: {error}"),
@@ -518,7 +504,6 @@ enum Stop {
     /// Readiness failed; the runtime child's exit status completes the text.
     NotReady(String),
     Failed(io::Error),
-    Refused(Refusal),
 }
 
 impl From<io::Error> for Stop {
@@ -594,27 +579,6 @@ async fn start(
     progress.preparing.take();
     *plan = prepared?;
 
-    if let Some(seeding) = seeding
-        && let SeedTarget::Mount(mount) = &seeding.target
-    {
-        seed_home(seeding, mount)?;
-    }
-
-    let checked = plan.clone();
-    let scan_init = init.to_path_buf();
-    let cancel = progress.cancel.clone();
-    let worker = progress
-        .preparing
-        .insert(tokio::task::spawn_blocking(move || {
-            check_mount_aliases(&checked, &scan_init, &cancel)?;
-            Ok(checked)
-        }));
-    let checked = worker
-        .await
-        .map_err(|error| io::Error::other(format!("mount scan worker failed: {error}")))?;
-    progress.preparing.take();
-    checked?;
-
     // The proxy comes up before the box, so the socket is listening when
     // the runtime forwards it.
     let mut egress_log = None;
@@ -669,10 +633,8 @@ async fn start(
                 disk::send(fill, out)
             })?;
         }
-        if let Some(seeding) = seeding
-            && let SeedTarget::Disk(guest) = &seeding.target
-        {
-            apple::copy_in(&plan.name, init, guest, true, |out| {
+        if let Some(seeding) = seeding {
+            apple::copy_in(&plan.name, init, &seeding.guest, true, |out| {
                 disk::send_seeds(&seeding.relative, &seeding.seeds, out)
             })?;
         }
@@ -731,7 +693,6 @@ fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json
             serde_json::json!({
                 "host": mount.host.to_string_lossy(),
                 "guest": mount.guest.to_string_lossy(),
-                "readonly": mount.readonly,
             })
         })
         .collect();
@@ -766,79 +727,6 @@ fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json
     })
 }
 
-/// Check observed regular-file identities in effective directory exports.
-/// This is admission only: the host can change the layout after the scan.
-fn check_mount_aliases(
-    plan: &Plan,
-    init: &Path,
-    cancel: &std::sync::atomic::AtomicBool,
-) -> Result<(), Stop> {
-    let init_dir = init.parent().expect("up checked the init directory");
-    let mut mounts = plan.mounts.clone();
-    for mount in &mut mounts {
-        mount.guest = guest_path(&mount.guest);
-    }
-    // Only the runtime-added init export masks an exact plan destination.
-    // Duplicate plan destinations were refused before preparation.
-    let init_guest = guest_path(init_dir);
-    mounts.retain(|mount| mount.guest != init_guest);
-    mounts.push(Mount {
-        host: init_dir.to_path_buf(),
-        guest: init_guest,
-        readonly: true,
-    });
-    // Index read-only identities before checking writable exports.
-    mounts.sort_by_key(|mount| !mount.readonly);
-    let mut readonly_files: BTreeMap<(u64, u64), PathBuf> = BTreeMap::new();
-    let interrupted = || -> Result<(), Stop> {
-        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(io::Error::from(io::ErrorKind::Interrupted).into());
-        }
-        Ok(())
-    };
-    for mount in &mounts {
-        interrupted()?;
-        let root = fs::canonicalize(&mount.host)?;
-        let mut directories = vec![(root, mount.guest.clone())];
-        while let Some((host, guest)) = directories.pop() {
-            interrupted()?;
-            for entry in fs::read_dir(host)? {
-                interrupted()?;
-                let entry = entry?;
-                let guest = guest.join(entry.file_name());
-                // Nested exports mask this occurrence, regardless of order.
-                if mounts.iter().any(|other| {
-                    other.guest != mount.guest
-                        && other.guest.starts_with(&mount.guest)
-                        && guest.starts_with(&other.guest)
-                }) {
-                    continue;
-                }
-                let metadata = fs::symlink_metadata(entry.path())?;
-                if metadata.is_dir() {
-                    directories.push((entry.path(), guest));
-                } else if metadata.is_file() {
-                    let identity = (metadata.dev(), metadata.ino());
-                    if mount.readonly {
-                        readonly_files.entry(identity).or_insert(guest);
-                    } else if let Some(previous) = readonly_files.get(&identity) {
-                        return Err(Stop::Refused(Refusal {
-                            box_name: Some(plan.name.clone()),
-                            reason: RefusalReason::MountAlias,
-                            detail: format!(
-                                "regular file exposed read-only and writable at {} and {}",
-                                previous.display(),
-                                guest.display(),
-                            ),
-                        }));
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
     let mut stdin = tokio::io::stdin();
     let mut buffer = [0u8; 4096];
@@ -869,7 +757,6 @@ fn resolve_harness(
     plan.mounts.push(Mount {
         host: harness.install(Some(cancel))?,
         guest: artifacts::guest(&harness.name),
-        readonly: true,
     });
     let login = plan
         .login()
@@ -902,26 +789,19 @@ fn resolve_harness(
         plan.mounts.push(Mount {
             host: dir,
             guest: PathBuf::from(login::CODEX_CONFIG_DIR),
-            readonly: true,
         });
     }
     Ok(())
 }
 
-/// A profile's `home/` seeds and the writable mount or disk behind `$HOME`
-/// to copy them into.
+/// A profile's `home/` seeds and the writable disk behind `$HOME` to copy
+/// them into, in the box before ready.
 struct Seeding {
-    target: SeedTarget,
-    /// The plain path from the target's guest root to `$HOME`.
+    /// The disk's guest root.
+    guest: PathBuf,
+    /// The plain path from the disk's guest root to `$HOME`.
     relative: PathBuf,
     seeds: Vec<Seed>,
-}
-
-/// Where seeds go: a mount, written from the host before the box starts,
-/// or a disk's guest root, written in the box before ready.
-enum SeedTarget {
-    Mount(Mount),
-    Disk(PathBuf),
 }
 
 /// Load the spec's profile and fold its image and `share/` mount into the
@@ -939,7 +819,6 @@ fn resolve_profile(plan: &mut Plan) -> io::Result<Option<Profile>> {
         plan.mounts.push(Mount {
             host: share.path()?,
             guest: PathBuf::from("/opt/pinfold/profile"),
-            readonly: true,
         });
     }
     Ok(Some(profile))
@@ -954,11 +833,11 @@ fn refused(plan: &Plan, reason: RefusalReason, detail: impl Into<String>) -> UpE
     })
 }
 
-/// The mount or disk behind the spec's exact `$HOME` and the plain path
-/// from its guest root to `$HOME`, for the profile's `seeds`. It must be
-/// writable and the path must not step out of it. Called after the
-/// duplicate-guest check, so no two mounts or disks can hold `$HOME`.
-fn home_mount(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
+/// The disk behind the spec's exact `$HOME` and the plain path from its
+/// guest root to `$HOME`, for the profile's `seeds`. It must be writable
+/// and the path must not step out of it. Called after the duplicate-guest
+/// check, so no two disks can hold `$HOME`.
+fn home_disk(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
     let name = plan.profile.as_deref().unwrap_or_default();
     let refuse = |why: String| {
         io::Error::new(
@@ -970,50 +849,29 @@ fn home_mount(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
         return Err(refuse("the box spec has no exact HOME env entry".into()));
     };
     let home = Path::new(home);
-    let targets = plan
-        .mounts
+    let Some((disk, relative)) = plan
+        .disks
         .iter()
-        .map(|mount| {
-            (
-                &mount.guest,
-                mount.readonly,
-                SeedTarget::Mount(mount.clone()),
-            )
-        })
-        .chain(plan.disks.iter().map(|disk| {
-            (
-                &disk.guest,
-                disk.readonly,
-                SeedTarget::Disk(disk.guest.clone()),
-            )
-        }));
-    let Some((guest, readonly, target, relative)) = targets
-        .filter_map(|(guest, readonly, target)| {
-            Some((guest, readonly, target, home.strip_prefix(guest).ok()?))
-        })
-        .max_by_key(|(guest, ..)| guest.components().count())
+        .filter_map(|disk| Some((disk, home.strip_prefix(&disk.guest).ok()?)))
+        .max_by_key(|(disk, _)| disk.guest.components().count())
     else {
-        return Err(refuse(format!(
-            "$HOME={} is not on a mount or disk",
-            home.display()
-        )));
+        return Err(refuse(format!("$HOME={} is not on a disk", home.display())));
     };
     // The Firecracker boot request carries no seeds yet (#141).
-    if cfg!(target_os = "linux") && matches!(target, SeedTarget::Disk(_)) {
+    if cfg!(target_os = "linux") {
         return Err(refuse(format!(
             "$HOME={} is on a disk, which Linux cannot seed yet",
             home.display()
         )));
     }
-    if readonly {
+    if disk.readonly {
         return Err(refuse(format!(
-            "$HOME={} is on the read-only {}",
+            "$HOME={} is on the read-only disk {}",
             home.display(),
-            guest.display()
+            disk.guest.display()
         )));
     }
-    // The walk below handles normal components only; `..` would step out of
-    // the mount and `.` is noise.
+    // `..` would step out of the disk and `.` is noise.
     if relative
         .components()
         .any(|component| !matches!(component, Component::Normal(_)))
@@ -1021,112 +879,14 @@ fn home_mount(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
         return Err(refuse(format!(
             "$HOME={} is not a plain path under {}",
             home.display(),
-            guest.display()
+            disk.guest.display()
         )));
     }
     Ok(Seeding {
-        target,
+        guest: disk.guest.clone(),
         relative: relative.to_path_buf(),
         seeds,
     })
-}
-
-/// Copy seeds into the host `$HOME`, skipping anything already there. The
-/// walk starts at the mount's host directory and follows no symlink: the box
-/// can write the mount, so a planted symlink must not redirect a seed
-/// outside it.
-fn seed_home(seeding: &Seeding, mount: &Mount) -> io::Result<()> {
-    let host = &mount.host;
-    // The spec names the mount's host directory and the runtime mounts it,
-    // so it is the seed walk's trust root.
-    let root = nix::fcntl::open(host, OFlag::O_DIRECTORY | OFlag::O_CLOEXEC, Mode::empty())
-        .map_err(|error| seed_error(error, &format!("open mount {}", host.display())))?;
-    for seed in &seeding.seeds {
-        seed_file(
-            &root,
-            host,
-            &seeding.relative.join(&seed.path),
-            &seed.contents,
-        )?;
-    }
-    Ok(())
-}
-
-/// Write one seed at `relative` below `root`, walking it with `openat` and
-/// `mkdirat` and following no symlink. Anything already at the destination,
-/// a dangling symlink included, is left alone. `display` names `root`.
-fn seed_file(root: &OwnedFd, display: &Path, relative: &Path, contents: &[u8]) -> io::Result<()> {
-    let mut dir = root.try_clone()?;
-    let mut current = display.to_path_buf();
-    let mut components = relative.components().peekable();
-    while let Some(component) = components.next() {
-        let Component::Normal(name) = component else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("seed path {} is not a plain file path", relative.display()),
-            ));
-        };
-        current.push(name);
-        if components.peek().is_some() {
-            dir = open_seed_dir(&dir, name, &current)?;
-            continue;
-        }
-        let fd = match openat(
-            &dir,
-            name,
-            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-            Mode::from_bits_truncate(0o666),
-        ) {
-            Ok(fd) => fd,
-            // Present, whatever it is; a seed is copied only when missing.
-            Err(Errno::EEXIST | Errno::ELOOP) => return Ok(()),
-            Err(error) => return Err(seed_error(error, &format!("create {}", current.display()))),
-        };
-        let mut file = File::from(fd);
-        if let Err(error) = file.write_all(contents) {
-            // A partial seed must not look present to the next start.
-            drop(file);
-            let _ = unlinkat(&dir, name, UnlinkatFlags::NoRemoveDir);
-            return Err(io::Error::new(
-                error.kind(),
-                format!("write {}: {error}", current.display()),
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Open a seed's parent directory, creating it when missing. `O_NOFOLLOW`
-/// refuses a symlink planted at any component below `$HOME`.
-fn open_seed_dir(dir: &OwnedFd, name: &OsStr, path: &Path) -> io::Result<OwnedFd> {
-    let flags = OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-    match openat(dir, name, flags, Mode::empty()) {
-        Ok(fd) => Ok(fd),
-        Err(Errno::ENOENT) => {
-            match mkdirat(dir, name, Mode::from_bits_truncate(0o777)) {
-                Ok(()) | Err(Errno::EEXIST) => {}
-                Err(error) => {
-                    return Err(seed_error(
-                        error,
-                        &format!("create directory {}", path.display()),
-                    ));
-                }
-            }
-            // Open the directory just made; a symlink swapped in meanwhile
-            // is refused here.
-            openat(dir, name, flags, Mode::empty())
-                .map_err(|error| seed_error(error, &format!("open directory {}", path.display())))
-        }
-        Err(error) => Err(seed_error(
-            error,
-            &format!("open directory {}", path.display()),
-        )),
-    }
-}
-
-fn seed_error(error: Errno, context: &str) -> io::Error {
-    let kind = io::Error::from(error).kind();
-    io::Error::new(kind, format!("{context}: {error}"))
 }
 
 #[derive(Default)]

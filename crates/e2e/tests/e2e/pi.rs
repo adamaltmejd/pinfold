@@ -34,7 +34,6 @@ fn the_documents_profile_reads_documents_locally() {
     // image, not the reused default, so an older image's tools cannot hide
     // a removal.
     let env = TestEnv::new("pdf");
-    let home = TestDir::new(&env, "home");
     let documents = TestDir::new(&env, "documents");
     fs::write(
         documents.path().join("two pages.pdf"),
@@ -50,6 +49,14 @@ fn the_documents_profile_reads_documents_locally() {
         "documents",
         "--builtin",
     ]));
+    // Seeds need `$HOME` on a disk, and this test needs none.
+    fs::remove_dir_all(
+        env.config
+            .join("pinfold/profiles")
+            .join(profile)
+            .join("home"),
+    )
+    .expect("remove the profile's home seeds");
     build_profile(&env, profile);
     let _image = ImageCleanup {
         repository: format!("pinfold/profile-{profile}"),
@@ -58,27 +65,19 @@ fn the_documents_profile_reads_documents_locally() {
     let spec = serde_json::json!({
         "name": name,
         "profile": profile,
-        "env": { "HOME": "/home/pdf" },
-        "mounts": [
-            { "host": home.path(), "guest": "/home/pdf" },
-            { "host": documents.path(), "guest": "/documents" },
-        ],
+        "mounts": [{ "host": documents.path(), "guest": "/documents" }],
     });
     let _up = box_up(&env, &spec, &name);
 
     let converted = box_exec(
         &env,
         &name,
-        &[
-            "anydoc",
-            "/documents/two pages.pdf",
-            "-o",
-            "/documents/pdf.md",
-        ],
+        &["anydoc", "/documents/two pages.pdf", "-o", "/tmp/pdf.md"],
     );
     assert_ok(&converted, "converting the PDF to Markdown without egress");
-    let markdown =
-        fs::read_to_string(documents.path().join("pdf.md")).expect("read the converted PDF");
+    let markdown = box_exec(&env, &name, &["cat", "/tmp/pdf.md"]);
+    assert_ok(&markdown, "reading the converted PDF");
+    let markdown = markdown.stdout;
     let first = markdown.find("first page fixture");
     let second = markdown.find("second page fixture");
     assert!(
@@ -100,14 +99,20 @@ fn the_documents_profile_reads_documents_locally() {
             "-singlefile",
             "-png",
             "/documents/two pages.pdf",
-            "/documents/page",
+            "/tmp/page",
         ],
     );
     assert_ok(&rendered, "rendering the second PDF page without egress");
-    let png = fs::read(documents.path().join("page.png")).expect("read the rendered PNG");
+    // The PNG header's width and height, as big-endian bytes.
+    let size = box_exec(
+        &env,
+        &name,
+        &["od", "-An", "-tu1", "-j16", "-N8", "/tmp/page.png"],
+    );
+    assert_ok(&size, "reading the rendered PNG's size");
     assert_eq!(
-        png.get(16..24),
-        Some([0, 0, 0, 200, 0, 0, 0, 100].as_slice())
+        size.stdout.split_whitespace().collect::<Vec<_>>(),
+        ["0", "0", "0", "200", "0", "0", "0", "100"]
     );
 }
 
