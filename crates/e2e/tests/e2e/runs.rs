@@ -4,13 +4,13 @@
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, SystemTime};
 
 use crate::box_::{Up, box_name, box_up};
 use e2e::{
     HttpFixture, TestDir, TestEnv, assert_denied, assert_ok, curl, default_image, egress_log,
-    image_cli, inspect, pinfold, run_ok, run_query,
+    inspect, pinfold, run_ok, run_query,
 };
 
 /// `ready`'s run id, checked against the generation label it must equal.
@@ -156,11 +156,19 @@ fn a_runs_end_is_recorded_apart_from_its_start() {
     let down = up.close_stdin();
     assert_eq!(down.last().expect("down line")["reason"], "signal");
 
-    // SIGKILL of the box's init from the host runtime: the box exits 137.
+    // SIGKILL of the box from the host: of its init through Apple's runtime,
+    // of its VMM on Linux. The box exits 137.
     let name = box_name("run-end-killed");
     let mut up = box_up(&env, &spec(&name), &name);
     let run = run_id(&up);
-    run_ok(Command::new(image_cli()).args(["kill", "--signal", "KILL", &name]));
+    #[cfg(target_os = "linux")]
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(super::box_::vmm_pid(up.pid()) as i32),
+        nix::sys::signal::Signal::SIGKILL,
+    )
+    .expect("SIGKILL the box's VMM");
+    #[cfg(not(target_os = "linux"))]
+    run_ok(std::process::Command::new(e2e::image_cli()).args(["kill", "--signal", "KILL", &name]));
     assert_eq!(up.wait().code(), Some(1), "an exited box's up exit code");
     let down = up.close_stdin();
     let down = down.last().expect("down line");
@@ -203,46 +211,11 @@ fn a_runs_end_is_recorded_apart_from_its_start() {
     }
 }
 
-/// Hold Podman's real image-store lock, so its clients stall before they
-/// return inventory. The lock is released when the file closes.
-#[cfg(target_os = "linux")]
-fn hold_image_store_lock(env: &TestEnv) -> File {
-    let info = run_ok(
-        env.command(Path::new("podman"))
-            .args(["info", "--format", "json"]),
-    );
-    let info: serde_json::Value = serde_json::from_slice(&info.stdout).unwrap();
-    let store = &info["store"];
-    let path = Path::new(store["graphRoot"].as_str().unwrap()).join(format!(
-        "{}-images/images.lock",
-        store["graphDriverName"].as_str().unwrap()
-    ));
-    let lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .expect("open Podman's image-store lock");
-    let held = nix::libc::flock {
-        l_type: nix::libc::F_WRLCK as i16,
-        l_whence: nix::libc::SEEK_SET as i16,
-        l_start: 0,
-        l_len: 0,
-        l_pid: 0,
-    };
-    crate::hold_image_lock(&lock, &held);
-    lock
-}
-
 #[test]
 fn run_queries_are_bounded_and_need_no_runtime() {
-    // The held image-store lock stalls every podman client.
-    #[cfg(target_os = "linux")]
-    let _runtime = crate::exclusive_runtime();
-    #[cfg(not(target_os = "linux"))]
     let _runtime = crate::shared_runtime();
     // Guarantee 41. Sabotage: list the runtime's boxes (or take the name
-    // lock) in `inspect`; with no runtime on PATH it exits 1, and on Linux
-    // it stalls behind the image-store lock past the list it should beat.
+    // lock) in `inspect`; with no runtime on PATH it exits 1.
     // Sabotage: resume after the cursor's line rather than at it; each
     // page boundary skips a line and the order assertion fails. Counting
     // an incomplete final line into `next` is not caught every run: the
@@ -350,28 +323,6 @@ fn run_queries_are_bounded_and_need_no_runtime() {
     let (code, page) = offline(&["events", &quiet_run]);
     assert_eq!(code, 0, "events of the no-egress run failed");
     assert_eq!(page["state"], "not-applicable", "{page}");
-
-    #[cfg(target_os = "linux")]
-    {
-        let lock = hold_image_store_lock(&env);
-        let mut list = env
-            .command(pinfold())
-            .args(["box", "list", "--label", "dev.pinfold.owner"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn the stalled list");
-        let (code, _) = inspect(&env, &run);
-        assert_eq!(code, 0, "inspect behind the image-store lock failed");
-        let (code, _) = events(&env, &run, None);
-        assert_eq!(code, 0, "events behind the image-store lock failed");
-        assert!(
-            list.try_wait().unwrap().is_none(),
-            "the concurrent list was not blocked by the image-store lock"
-        );
-        drop(lock);
-        list.wait().expect("wait for the list");
-    }
 
     // Malformed arguments exit 1 and an unknown run exits 3.
     let upper = run.to_ascii_uppercase();

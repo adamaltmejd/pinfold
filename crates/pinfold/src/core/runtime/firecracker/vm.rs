@@ -227,6 +227,7 @@ impl Vm {
         let mut request = Vec::new();
         request.extend(uid.as_raw().to_be_bytes());
         request.extend(gid.as_raw().to_be_bytes());
+        request.push(u8::from(proxy_socket.is_some()));
         put(&mut request, device(1).as_bytes());
         request.extend((attachments.len() as u32).to_be_bytes());
         for (index, (guest, writable)) in attachments.iter().enumerate() {

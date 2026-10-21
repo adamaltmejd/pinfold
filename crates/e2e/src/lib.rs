@@ -95,6 +95,11 @@ impl TestEnv {
         env
     }
 
+    /// The `XDG_CACHE_HOME` this env's commands run with.
+    pub fn cache(&self) -> &Path {
+        &self.cache
+    }
+
     pub fn command(&self, binary: &Path) -> Command {
         let mut command = Command::new(binary);
         for (name, _) in std::env::vars_os() {
@@ -114,8 +119,9 @@ impl TestEnv {
 
 impl Drop for TestEnv {
     fn drop(&mut self) {
-        // Disks outlive XDG roots: remove each recorded project's two (Pi
-        // layer), named `pi-<id>-home` and `pi-<id>-project`.
+        // Apple's disks outlive XDG roots: remove each recorded project's
+        // two (Pi layer), named `pi-<id>-home` and `pi-<id>-project`. Linux
+        // disks live in the state root and go with it.
         if cfg!(target_os = "macos")
             && let Ok(projects) = fs::read_dir(self.state.join("pinfold/projects"))
         {

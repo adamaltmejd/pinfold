@@ -128,12 +128,15 @@ impl Runtime for Firecracker {
         })
     }
 
-    /// pinfold's own claims, running while each VMM lives. No runtime is
-    /// asked, so nothing can stall it.
+    /// pinfold's own claims whose VMM started, running while it lives. No
+    /// runtime is asked, so nothing can stall it.
     fn list(&self, _cancel: Option<&AtomicBool>) -> io::Result<Vec<BoxInfo>> {
         Ok(ownership::records()?
             .into_iter()
             .filter_map(|record| {
+                if !vmm_file(&record.state_dir).exists() {
+                    return None;
+                }
                 let described = record.described?;
                 Some(BoxInfo {
                     running: vmm_alive(&record.state_dir),

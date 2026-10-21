@@ -664,9 +664,8 @@ pub fn check_reserved_labels(labels: &BTreeMap<String, String>) -> Result<(), St
     }
 }
 
-/// A POSIX environment name: `[A-Za-z_][A-Za-z0-9_]*`. Podman expands a
-/// trailing `*` in `--env NAME` against its own environment, which is the
-/// caller's, so anything else would leak or fail unpredictably.
+/// A POSIX environment name: `[A-Za-z_][A-Za-z0-9_]*`. Anything else
+/// would leak or fail unpredictably in a runtime CLI's `--env`.
 fn valid_env_name(name: &str) -> bool {
     name.bytes()
         .next()

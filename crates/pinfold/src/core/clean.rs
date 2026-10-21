@@ -111,8 +111,8 @@ pub struct Boxes {
 }
 
 /// Whether `box_` is pinfold's: it carries the owner label. Another
-/// container may carry other `dev.pinfold.` labels, since podman copies an
-/// image's labels onto a container a user starts from it.
+/// container may carry other `dev.pinfold.` labels, since a runtime copies
+/// an image's labels onto a container a user starts from it.
 pub fn pinfold_box(box_: &BoxInfo) -> bool {
     box_.labels.contains_key(OWNER_LABEL)
 }

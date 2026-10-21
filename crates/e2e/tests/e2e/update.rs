@@ -102,8 +102,18 @@ fn host_updates_are_verified_and_atomic() {
     // Sabotage: hold the exclusive executable lock only before downloading.
     // A real owner starts after the fixture observes the asset request;
     // replacement must recheck that owner before its atomic rename.
+    // The owner runs the suite's binary, the one AppArmor profiles, and
+    // the update a hard link to it: one inode under two paths, so the
+    // owner holds the lock the update takes and only the link is
+    // replaced. The target dir keeps both on one filesystem.
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("update-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let linked = dir.join("pinfold");
+    fs::hard_link(pinfold(), &linked).unwrap();
+    let linked_inode = fs::metadata(&linked).unwrap().ino();
     fs::write(fixture.root.join("hold-download"), b"").unwrap();
-    let mut downloading = fixture.command(&env, &installed);
+    let mut downloading = fixture.command(&env, &linked);
     let update = downloading
         .arg("update")
         .stdout(Stdio::piped())
@@ -112,7 +122,7 @@ fn host_updates_are_verified_and_atomic() {
         .unwrap();
     fixture.wait_for_download();
     let child = other
-        .command(&installed)
+        .command(pinfold())
         .args(["box", "up"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -143,9 +153,9 @@ fn host_updates_are_verified_and_atomic() {
         String::from_utf8_lossy(&refusal.stderr).contains("update-busy"),
         "wrong race refusal: {refusal:?}"
     );
-    assert_eq!(fs::read(&installed).unwrap(), original);
-    assert_eq!(fs::metadata(&installed).unwrap().ino(), original_inode);
+    assert_eq!(fs::metadata(&linked).unwrap().ino(), linked_inode);
     drop(owner);
+    fs::remove_dir_all(&dir).unwrap();
     fs::remove_file(fixture.root.join("hold-download")).unwrap();
 
     run_ok(fixture.command(&env, &update_alias).arg("update"));

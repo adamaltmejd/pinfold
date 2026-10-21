@@ -1,7 +1,7 @@
 //! End-to-end tests for the guarantees in docs/ARCHITECTURE.md.
 //!
 //! They run on a macOS host with the Apple `container` CLI, or a Linux host
-//! with rootless podman. The harness builds the `pinfold` binary, builds the
+//! with Firecracker and rootless podman for images. The harness builds the `pinfold` binary, builds the
 //! default profile image once, and drives pinfold as a user would: the CLI,
 //! environment variables and the box spec are its only seams.
 
@@ -31,12 +31,6 @@ fn box_lifecycle_works_for_a_caller() {
                 .status();
         }
     }
-    // Declare before fixtures so their cleanup retains the downgraded guard.
-    #[cfg(target_os = "linux")]
-    let _shared_runtime;
-    #[cfg(target_os = "linux")]
-    let _runtime = crate::exclusive_runtime();
-    #[cfg(not(target_os = "linux"))]
     let _runtime = crate::shared_runtime();
     // Guarantee 9: the lifecycle works for a caller.
     // Sabotage: make `box down` a no-op; the post-down list assertion fails.
@@ -51,16 +45,9 @@ fn box_lifecycle_works_for_a_caller() {
     // zombie of PID 1 and the no-zombie assertion fails.
     // Sabotage: skip exec's existence check; the post-down exec returns the
     // runtime's 125 instead of 3.
-    // Sabotage: make `ready` print the merged spec set (`plan.labels`) again;
-    // on podman `list` also carries the image's `io.buildah.version`, so the
-    // labels equality assertion fails. This one fails only on Linux: on
-    // Apple the two sets already agree.
     // Sabotage: let Apple's `down` pass the runtime's stderr through again;
     // on macOS the second `down` prints the runtime's not-found error and the
     // empty-stderr assertion fails.
-    // Sabotage: drop `-f` from podman's `rm` argv in `down`; podman then refuses
-    // `-t`, so `down` treats the non-zero `rm` status as an error and on
-    // Linux the first `box down` fails the status assertion.
     // Sabotage: find the image in `Box::up` by exact string match against
     // `list_images()` references again; the tag-less `again` box is refused
     // `image-missing` on both runtimes, so `box_up` panics on a first line
@@ -74,10 +61,8 @@ fn box_lifecycle_works_for_a_caller() {
     // core::box::down's list check); exec or stat on the foreign container
     // runs, or down removes it. Drop list's owner-label filter and the
     // runtime-created container appears beside the live pinfold box.
-    // Sabotage: drop the valid-name gate in core::box::down; on podman the
-    // `--filter` name reaches `rm` as a flag and removes the live box, so the
-    // exec assertion fails; Apple's `rm` rejects the flag, so the exit
-    // assertion fails.
+    // Sabotage: drop the valid-name gate in core::box::down; Apple's `rm`
+    // rejects the `--filter` name as a flag, so the exit assertion fails.
     let env = TestEnv::new("lifecycle");
     // A caller's names can be long. The state dir is keyed by the name's
     // hash, so 60 characters, past the old socket-path budget, still come
@@ -255,149 +240,6 @@ sys.exit(result.returncode)
         "list names the wrong image id: {line}"
     );
 
-    #[cfg(target_os = "linux")]
-    let (store_lock, lock_identity, held) = {
-        // Sabotage: use unbounded runtime output for list again, or run
-        // maintenance before list; the caller misses the 25-second bound.
-        // Sabotage: return timeout without killing the runtime client;
-        // /proc/locks still reports its waiter after pinfold exits.
-        // Holding Podman's real image-store lock stalls its client before
-        // it can return inventory. No image metadata is changed.
-        let info = run_ok(
-            env.command(Path::new("podman"))
-                .args(["info", "--format", "json"]),
-        );
-        let info: serde_json::Value = serde_json::from_slice(&info.stdout).unwrap();
-        let store = &info["store"];
-        let lock_path = Path::new(store["graphRoot"].as_str().unwrap()).join(format!(
-            "{}-images/images.lock",
-            store["graphDriverName"].as_str().unwrap()
-        ));
-        let lock = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(lock_path)
-            .expect("open Podman's existing image-store lock");
-        let metadata = lock.metadata().unwrap();
-        let lock_identity = format!(
-            "{:02x}:{:02x}:{}",
-            nix::sys::stat::major(metadata.dev()),
-            nix::sys::stat::minor(metadata.dev()),
-            metadata.ino()
-        );
-        let held = nix::libc::flock {
-            l_type: nix::libc::F_WRLCK as i16,
-            l_whence: nix::libc::SEEK_SET as i16,
-            l_start: 0,
-            l_len: 0,
-            l_pid: 0,
-        };
-        crate::hold_image_lock(&lock, &held);
-
-        // Maintenance would be due for this fresh caller. Listing must
-        // skip it and receive the failure within the listing deadline.
-        let caller = TestEnv::new("lifecycle-list-stalled");
-        let output = command_bounded(
-            caller
-                .command(pinfold())
-                .args(["box", "list", "--label", label]),
-            std::time::Instant::now() + std::time::Duration::from_secs(25),
-        )
-        .expect("stalled list exceeded its 20-second production deadline");
-        assert_eq!(exit_code(output.status), 1);
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("runtime-timeout"),
-            "list failed for another reason: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(output.stdout.is_empty(), "a failed list printed inventory");
-        let locks = fs::read_to_string("/proc/locks").unwrap();
-        assert!(
-            !locks.lines().any(|line| {
-                let fields: Vec<_> = line.split_whitespace().collect();
-                fields.contains(&"->") && fields.contains(&lock_identity.as_str())
-            }),
-            "a runtime client still waits on the image-store lock: {locks}"
-        );
-        // Sabotage: leave list's SIGINT/SIGTERM disposition at its default;
-        // pinfold exits before killing its isolated runtime client's group,
-        // and the kernel still reports that client's image-lock waiter.
-        for signal in [
-            nix::sys::signal::Signal::SIGINT,
-            nix::sys::signal::Signal::SIGTERM,
-        ] {
-            let child = caller
-                .command(pinfold())
-                .args(["box", "list", "--label", label])
-                .process_group(0)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("start interrupted listing");
-            let mut listing = ChildOwner::new(child, &caller, Some(up.pid()));
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            loop {
-                let locks = fs::read_to_string("/proc/locks").unwrap();
-                let waiting = locks.lines().any(|line| {
-                    let fields: Vec<_> = line.split_whitespace().collect();
-                    if !fields.contains(&"->") || !fields.contains(&lock_identity.as_str()) {
-                        return false;
-                    }
-                    let Some(pid) = fields.get(5) else {
-                        return false;
-                    };
-                    fs::read_to_string(format!("/proc/{pid}/status")).is_ok_and(|status| {
-                        status_field(&status, "PPid:") == listing.id().to_string()
-                    })
-                });
-                if waiting {
-                    break;
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "listing did not wait on the image lock"
-                );
-                std::thread::yield_now();
-            }
-            nix::sys::signal::killpg(nix::unistd::Pid::from_raw(listing.id() as i32), signal)
-                .unwrap();
-            let status = listing.wait_bounded();
-            // A handled cancellation must complete cleanup before exiting.
-            assert_eq!(status.code(), Some(128 + signal as i32));
-            let mut stdout = Vec::new();
-            listing
-                .stdout
-                .take()
-                .unwrap()
-                .read_to_end(&mut stdout)
-                .unwrap();
-            assert!(stdout.is_empty(), "an interrupted list printed inventory");
-            let locks = fs::read_to_string("/proc/locks").unwrap();
-            assert!(
-                !locks.lines().any(|line| {
-                    let fields: Vec<_> = line.split_whitespace().collect();
-                    fields.contains(&"->") && fields.contains(&lock_identity.as_str())
-                }),
-                "an interrupted runtime client still waits on the image-store lock: {locks}"
-            );
-        }
-        let unlocked = nix::libc::flock {
-            l_type: nix::libc::F_UNLCK as i16,
-            ..held
-        };
-        nix::fcntl::fcntl(&lock, nix::fcntl::FcntlArg::F_SETLK(&unlocked)).unwrap();
-
-        let listed = box_list(&caller, label);
-        let live = listed
-            .iter()
-            .find(|box_| box_["name"].as_str() == Some(name.as_str()))
-            .unwrap_or_else(|| panic!("the timed-out list lost {name}: {listed:?}"));
-        assert_eq!(live["owner"], up.pid());
-        assert_eq!(live["owner_alive"], true);
-        (lock, lock_identity, held)
-    };
-
     // An empty name, or one a runtime would read as a flag, is not a box:
     // `down` behaves as for any absent box and leaves the live box alone.
     // The filter matches only this box, so a regression removes nothing
@@ -445,53 +287,57 @@ sys.exit(result.returncode)
         );
     }
 
-    // A container pinfold did not create is no box, even under a name `up`
-    // accepts: `exec` and `stat` exit 3 and `down` leaves it running.
-    let foreign = RuntimeContainer::run(&box_name("foreign"), image, Some(label));
-    let listed = run_ok(
-        env.command(pinfold())
-            .args(["box", "list", "--label", label]),
-    );
-    let listed = json_lines(&String::from_utf8_lossy(&listed.stdout));
-    assert!(listed.iter().any(|box_| box_["name"] == name));
-    assert!(
-        !listed.iter().any(|box_| box_["name"] == foreign.name),
-        "list included a runtime-created container: {listed:?}"
-    );
-    for args in [
-        &["box", "exec", foreign.name.as_str(), "--", "true"][..],
-        &["box", "stat", foreign.name.as_str()],
-    ] {
-        let refused = env
+    // On Apple, a container pinfold did not create is no box, even under a
+    // name `up` accepts: `exec` and `stat` exit 3 and `down` leaves it
+    // running. Linux has no runtime that holds boxes.
+    #[cfg(target_os = "macos")]
+    {
+        let foreign = RuntimeContainer::run(&box_name("foreign"), image, Some(label));
+        let listed = run_ok(
+            env.command(pinfold())
+                .args(["box", "list", "--label", label]),
+        );
+        let listed = json_lines(&String::from_utf8_lossy(&listed.stdout));
+        assert!(listed.iter().any(|box_| box_["name"] == name));
+        assert!(
+            !listed.iter().any(|box_| box_["name"] == foreign.name),
+            "list included a runtime-created container: {listed:?}"
+        );
+        for args in [
+            &["box", "exec", foreign.name.as_str(), "--", "true"][..],
+            &["box", "stat", foreign.name.as_str()],
+        ] {
+            let refused = env
+                .command(pinfold())
+                .args(args)
+                .stdin(Stdio::null())
+                .output()
+                .expect("run pinfold box");
+            assert_eq!(
+                refused.status.code(),
+                Some(3),
+                "{args:?} treated a foreign container as a box: {}",
+                String::from_utf8_lossy(&refused.stderr)
+            );
+        }
+        let down = env
             .command(pinfold())
-            .args(args)
+            .args(["box", "down", foreign.name.as_str()])
             .stdin(Stdio::null())
             .output()
-            .expect("run pinfold box");
-        assert_eq!(
-            refused.status.code(),
-            Some(3),
-            "{args:?} treated a foreign container as a box: {}",
-            String::from_utf8_lossy(&refused.stderr)
+            .expect("run pinfold box down");
+        assert!(
+            down.status.success() && down.stdout.is_empty() && down.stderr.is_empty(),
+            "down on a foreign container did not behave as for an absent box: {}: {}",
+            down.status,
+            String::from_utf8_lossy(&down.stderr)
         );
+        assert!(
+            foreign.listed(),
+            "down removed a container pinfold did not create"
+        );
+        drop(foreign);
     }
-    let down = env
-        .command(pinfold())
-        .args(["box", "down", foreign.name.as_str()])
-        .stdin(Stdio::null())
-        .output()
-        .expect("run pinfold box down");
-    assert!(
-        down.status.success() && down.stdout.is_empty() && down.stderr.is_empty(),
-        "down on a foreign container did not behave as for an absent box: {}: {}",
-        down.status,
-        String::from_utf8_lossy(&down.stderr)
-    );
-    assert!(
-        foreign.listed(),
-        "down removed a container pinfold did not create"
-    );
-    drop(foreign);
 
     // Keep the attached runtime output active through teardown. The FIFO
     // confirms a write to init's stdout, rather than the exec stream.
@@ -499,119 +345,26 @@ sys.exit(result.returncode)
     // its output drain stops and teardown can exceed the caller deadline.
     // Apple controls the race in which forced rm's two output waiters
     // split completion events; restoring rm -f reintroduces that race.
-    let writing = box_exec(
-        &env,
-        &name,
-        &[
-            "sh",
-            "-c",
-            "mkfifo /tmp/output-ready; \
+    // A Firecracker VM attaches no output to its owner.
+    #[cfg(target_os = "macos")]
+    {
+        let writing = box_exec(
+            &env,
+            &name,
+            &[
+                "sh",
+                "-c",
+                "mkfifo /tmp/output-ready; \
              (printf 'first\\n'; echo ready >/tmp/output-ready; exec yes output-pressure) \
              >/proc/1/fd/1 2>/dev/null </dev/null & \
              read -r ready </tmp/output-ready; test \"$ready\" = ready",
-        ],
-    );
-    assert_ok(&writing, "writing attached output before teardown");
+            ],
+        );
+        assert_ok(&writing, "writing attached output before teardown");
+    }
 
     // `down` removes the box and the owner exits with output still active.
-    #[cfg(not(target_os = "linux"))]
     up.down(&env);
-    #[cfg(target_os = "linux")]
-    {
-        // Sabotage: inventory again after the owner's done acknowledgment;
-        // unrelated storage contention makes completed teardown exit 1.
-        // First block real removal so the requester can be stopped before
-        // its reply. Reaping the owner before relocking proves teardown is
-        // complete while the paused requester still has its queued reply.
-        crate::hold_image_lock(&store_lock, &held);
-        let requested_at = std::time::Instant::now();
-        let child = env
-            .command(pinfold())
-            .args(["box", "down", &name])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("request teardown while removal is blocked");
-        let mut down = ChildOwner::new(child, &env, Some(up.pid()));
-        // Drop the lock before ChildOwner's panic cleanup can inventory.
-        let lock = store_lock;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            let locks = fs::read_to_string("/proc/locks").unwrap();
-            let waiting = locks.lines().any(|line| {
-                let fields: Vec<_> = line.split_whitespace().collect();
-                if !fields.contains(&"->") || !fields.contains(&lock_identity.as_str()) {
-                    return false;
-                }
-                let Some(pid) = fields.get(5) else {
-                    return false;
-                };
-                fs::read_to_string(format!("/proc/{pid}/status"))
-                    .is_ok_and(|status| status_field(&status, "PPid:") == up.pid().to_string())
-            });
-            if waiting {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "owner removal did not wait on the image lock"
-            );
-            std::thread::yield_now();
-        }
-        let resume = Resume(down.id());
-        run_ok(Command::new("kill").args(["-STOP", &down.id().to_string()]));
-        loop {
-            let status = fs::read_to_string(format!("/proc/{}/status", down.id())).unwrap();
-            if status_field(&status, "State:").starts_with('T') {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "teardown requester did not stop"
-            );
-            std::thread::yield_now();
-        }
-        let unlocked = nix::libc::flock {
-            l_type: nix::libc::F_UNLCK as i16,
-            ..held
-        };
-        nix::fcntl::fcntl(&lock, nix::fcntl::FcntlArg::F_SETLK(&unlocked)).unwrap();
-        let lines = up.starting.rest();
-        assert_eq!(
-            lines.last().expect("owner's terminal event")["event"],
-            "down"
-        );
-        assert!(up.wait().success(), "box up did not exit cleanly");
-        assert!(
-            requested_at.elapsed() < std::time::Duration::from_secs(10),
-            "owner did not complete within the requester's original deadline"
-        );
-        crate::hold_image_lock(&lock, &held);
-        drop(resume);
-        let status = down.wait_bounded();
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        down.stdout
-            .take()
-            .unwrap()
-            .read_to_end(&mut stdout)
-            .unwrap();
-        down.stderr
-            .take()
-            .unwrap()
-            .read_to_end(&mut stderr)
-            .unwrap();
-        assert!(
-            status.success(),
-            "acknowledged down failed: {}",
-            String::from_utf8_lossy(&stderr)
-        );
-        assert!(
-            stdout.is_empty() && stderr.is_empty(),
-            "acknowledged down printed output"
-        );
-    }
     let listed = box_list(&env, label);
     assert!(
         !listed
@@ -619,14 +372,8 @@ sys.exit(result.returncode)
             .any(|box_| box_["name"].as_str() == Some(name.as_str())),
         "box survived down: {listed:?}"
     );
-    #[cfg(not(target_os = "linux"))]
     assert!(up.wait().success(), "box up did not exit cleanly");
 
-    // Store locks are gone; keep cleanup isolated while other readers run.
-    #[cfg(target_os = "linux")]
-    {
-        _shared_runtime = tokio::sync::RwLockWriteGuard::downgrade(_runtime);
-    }
     // A stopped owner still owns its name. Sabotage: restore down's
     // timed fallback removal; down succeeds, its state disappears, and a
     // replacement can start before the previous owner finishes cleanup.
@@ -956,15 +703,14 @@ fn up_refuses_before_it_creates() {
     // `readonly` spec's `box` assertion fails.
     // Sabotage: drop the character-class check from the env-name validation,
     // keeping only the old empty-or-`=` test; the wildcard spec then comes up
-    // `ready`, so the refusal assertion fails, and on podman the box's
-    // environment also holds `HOSTSECRET_TOKEN=leaked`.
+    // `ready`, so the refusal assertion fails.
     // Sabotage: drop the comma and control-character check from the
     // mount-path validation; the comma path then reaches the runtime, whose
     // option parser reads the rest as mount options, so the refusal assertion
     // fails.
     // Sabotage: drop the not-a-directory check from the mount validation;
-    // the file-mount spec then comes up `ready` on podman and ends `failed`
-    // on Apple after the claim, so its `refused` assertion fails on both.
+    // the file-mount spec then reaches the runtime, so its `refused`
+    // assertion fails.
     // Sabotage: check duplicate guest paths before pinfold's own mounts are
     // added, as today; the profile-mount spec then comes up `ready` and its
     // `refused` assertion fails.
@@ -1075,9 +821,9 @@ fn up_refuses_before_it_creates() {
     assert_left_nothing(&env, &name, label, "refused");
 
     // A spec whose env name is not a POSIX name is refused as data, naming
-    // the key, and leaves no state dir and no box. `HOSTSECRET_*` would make
-    // podman import every `HOSTSECRET_` variable from `up`'s own
-    // environment, which is the caller's. The positive control, a valid name
+    // the key, and leaves no state dir and no box. A runtime's CLI may read
+    // `HOSTSECRET_*` as a pattern over `up`'s own environment, which is
+    // the caller's. The positive control, a valid name
     // arriving in the box, is guarantee 6's `the_environment_is_exactly_the_spec`.
     let wildcard = serde_json::json!({
         "name": name,
@@ -1497,10 +1243,6 @@ fn up_refuses_before_it_creates() {
 }
 
 #[test]
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "Linux disks arrive with the Firecracker runtime"
-)]
 fn disks_persist_and_attach_exclusively() {
     let _runtime = crate::exclusive_runtime();
     // Guarantee 11: disks persist and attach exclusively.
@@ -1699,7 +1441,10 @@ fn disks_persist_and_attach_exclusively() {
     // A writer whose box is killed under it leaves the disk unclean: its
     // owner tears the box down, but nobody asked it to stop.
     let mut ended = box_up(&env, &spec(writer, work_disk.clone()), writer);
+    #[cfg(target_os = "macos")]
     run_ok(Command::new(image_cli()).args(["kill", writer.as_str()]));
+    #[cfg(target_os = "linux")]
+    run_ok(Command::new("kill").args(["-KILL", &vmm_pid(ended.pid()).to_string()]));
     let _ = ended.wait();
     let (code, refused) = box_up_refused(&env, &spec(reader_a, reader.clone()), &[]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
@@ -1818,10 +1563,6 @@ const CLIENT_HOOKS: &[&str] = &[
 ];
 
 #[test]
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "Linux disks arrive with the Firecracker runtime"
-)]
 fn work_leaves_the_box_only_by_fetch() {
     let _runtime = crate::shared_runtime();
     // Guarantee 10: disk writes stay in the box, push and fetch move
@@ -2184,8 +1925,11 @@ fn nothing_can_gain_privileges() {
     let _runtime = crate::shared_runtime();
     // Sabotage: drop `find / -xdev -perm /6000 -type f -exec chmod a-s {} +`
     // from the bundled image fragments; the setuid/setgid scan then lists
-    // files and fails. Sabotage: drop `--read-only` from the adapter's `run` argv;
-    // the rootfs write then succeeds and its assertion fails.
+    // files and fails. Sabotage: drop `--read-only` from Apple's `run` argv,
+    // or init's read-only remount of the root on Linux; the rootfs write
+    // then succeeds and its assertion fails. Sabotage: keep every
+    // capability in PID 1 on Linux, or start the exec service before it
+    // drops them; the CapBnd assertions fail.
     let env = TestEnv::new("privileges");
     let image = default_image(&env);
     let name = box_name("privileges");
@@ -2207,10 +1951,34 @@ fn nothing_can_gain_privileges() {
     );
     assert_process_ids(&work.stdout, "exec");
 
-    // PID 1 also runs as the host uid:gid.
+    // On Apple PID 1 also runs as the host uid:gid. On Linux it is root
+    // with only CAP_SYS_ADMIN (bit 21), and the exec service, every exec's
+    // parent, is the host uid with every capability set empty.
     let init = box_exec(&env, &name, &["cat", "/proc/1/status"]);
     assert_ok(&init, "reading /proc/1/status");
-    assert_process_ids(&init.stdout, "PID 1");
+    if cfg!(target_os = "linux") {
+        assert_eq!(
+            status_field(&init.stdout, "Uid:").split_whitespace().next(),
+            Some("0")
+        );
+        assert_eq!(
+            status_field(&init.stdout, "CapBnd:"),
+            "0000000000200000",
+            "PID 1 capability bound"
+        );
+        let service = box_exec(&env, &name, &["sh", "-c", "cat /proc/$PPID/status"]);
+        assert_ok(&service, "reading the exec service's status");
+        assert_process_ids(&service.stdout, "the exec service");
+        for set in ["CapInh:", "CapPrm:", "CapEff:", "CapBnd:", "CapAmb:"] {
+            assert_eq!(
+                status_field(&service.stdout, set),
+                "0000000000000000",
+                "the exec service's {set}"
+            );
+        }
+    } else {
+        assert_process_ids(&init.stdout, "PID 1");
+    }
 
     // No setuid or setgid files on the root filesystem. The marker proves the
     // scan ran even though unreadable directories make find exit nonzero.
@@ -2247,35 +2015,221 @@ fn nothing_can_gain_privileges() {
     );
     assert_eq!(tmp.code, 0, "writing /tmp failed: {}", tmp.stderr);
 
-    // On Linux, the podman seccomp profile must also block nested user
-    // namespaces. Sabotage: prepend the ERRNO rules for clone and unshare
-    // instead of removing `clone`, `clone3` and `unshare` from the default
-    // profile's unconditional SCMP_ACT_ALLOW entry; the allow wins,
-    // `unshare -U true` succeeds, and this assertion fails. Nested user
-    // namespaces on Apple `container` are an open question in the spec, so
-    // assert nothing there.
+    // On Linux the guest allows no user namespace. Sabotage: skip init's
+    // `user.max_user_namespaces` 0; `unshare -U true` succeeds as the box
+    // user and this assertion fails. Nested user namespaces on Apple
+    // `container` are an open question in the spec, so assert nothing there.
     if cfg!(target_os = "linux") {
         let unshare = box_exec(&env, &name, &["unshare", "-U", "true"]);
-        assert_denied(&unshare, "Operation not permitted", "unshare -U");
+        assert_denied(&unshare, "No space left on device", "unshare -U");
         // Positive control: the same box still runs a plain child process.
         let child = box_exec(&env, &name, &["true"]);
         assert_ok(&child, "a plain child process");
-        // Attribution: under podman's own default profile the same image
-        // creates a user namespace on this host. A host that refuses them
-        // (a sysctl or AppArmor policy) would otherwise pass the refusal
-        // above with the sabotage applied.
-        run_ok(Command::new("podman").args([
-            "run",
-            "--rm",
-            "--network=none",
-            image,
-            "unshare",
-            "-U",
-            "true",
-        ]));
     }
 
     up.down(&env);
+}
+
+#[test]
+fn each_box_has_its_own_kernel() {
+    let _runtime = crate::shared_runtime();
+    // Guarantee 37. Sabotage: pin another guest kernel under vmm.toml's
+    // version (on Linux), or run the box on the host's kernel; `uname -r`
+    // then names another release and its assertion fails.
+    let env = TestEnv::new("own-kernel");
+    let name = box_name("own-kernel");
+    let spec = serde_json::json!({ "name": name, "image": default_image(&env) });
+    let up = box_up(&env, &spec, &name);
+    let release = box_exec(&env, &name, &["uname", "-r"]);
+    assert_ok(&release, "uname -r in the box");
+    let version = box_exec(&env, &name, &["cat", "/proc/version"]);
+    assert_ok(&version, "reading /proc/version in the box");
+    let host = run_ok(Command::new("uname").arg("-r"));
+    let host = String::from_utf8_lossy(&host.stdout);
+    assert_ne!(
+        release.stdout.trim(),
+        host.trim(),
+        "the box runs the host's kernel"
+    );
+    assert!(
+        !version.stdout.contains(host.trim()),
+        "the box's /proc/version names the host's release: {}",
+        version.stdout
+    );
+    if let Ok(host_version) = fs::read_to_string("/proc/version") {
+        assert_ne!(
+            version.stdout, host_version,
+            "the box shares the host's /proc/version"
+        );
+    }
+    // The release is the kernel half of the VMM pin, read from the pin file.
+    #[cfg(target_os = "linux")]
+    {
+        let pins =
+            fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../pinfold/vmm.toml"))
+                .expect("read vmm.toml");
+        let pinned = pins
+            .lines()
+            .find_map(|line| line.strip_prefix("version = "))
+            .and_then(|version| version.trim_matches('"').split_once('+'))
+            .map(|(_, kernel)| kernel.to_string())
+            .expect("vmm.toml pins firecracker+kernel");
+        assert_eq!(
+            release.stdout.trim(),
+            pinned,
+            "the box's kernel is not the pinned one"
+        );
+    }
+    up.down(&env);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn the_vmm_reaches_only_its_own_box() {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let _runtime = crate::shared_runtime();
+    // Guarantee 43. Sabotage: create the VMM from a `spawn_blocking` thread
+    // instead of its own; PDEATHSIG fires when that pool thread exits and
+    // the VMM's PPid or liveness assertion fails. Sabotage: drop CLONE_NEWPID
+    // from the jail's clone flags; the pid namespace assertion fails.
+    // Sabotage: skip `pivot_root`; the VMM's root lists the host's tree and
+    // its mount points lie under the home. Sabotage: bind the box's state
+    // dir into the jail; the root then holds that directory. Sabotage: drop
+    // `close_range` before exec; the VMM inherits a descriptor under the
+    // home and the fd assertion fails.
+    let env = TestEnv::new("vmm-jail");
+    let home = std::env::var("HOME").expect("HOME is set");
+    let names = [box_name("vmm-a"), box_name("vmm-b")];
+    let disks = [format!("{}-disk", names[0]), format!("{}-disk", names[1])];
+    let _disks = DiskCleanup(disks.to_vec());
+    let mut ups: Vec<Up> = names
+        .iter()
+        .zip(&disks)
+        .map(|(name, disk)| {
+            let spec = serde_json::json!({
+                "name": name,
+                "image": default_image(&env),
+                "disks": [{ "name": disk, "guest": "/disk" }],
+            });
+            box_up(&env, &spec, name)
+        })
+        .collect();
+    // Each disk's host file, by device and inode, from `disk list`'s names
+    // in the state root's disk store.
+    let disk_files: Vec<(u64, u64)> = disks
+        .iter()
+        .map(|disk| {
+            let metadata = fs::metadata(env.state.join(format!("pinfold/disks/{disk}.ext4")))
+                .unwrap_or_else(|error| panic!("stat disk {disk}: {error}"));
+            (metadata.dev(), metadata.ino())
+        })
+        .collect();
+    let vmms: Vec<u32> = ups.iter().map(|up| vmm_pid(up.pid())).collect();
+    let namespace = |pid: u32, kind: &str| {
+        fs::read_link(format!("/proc/{pid}/ns/{kind}"))
+            .unwrap_or_else(|error| panic!("read {pid}'s {kind} namespace: {error}"))
+    };
+    for (index, (up, &vmm)) in ups.iter().zip(&vmms).enumerate() {
+        let status =
+            fs::read_to_string(format!("/proc/{vmm}/status")).expect("read the VMM's status");
+        assert_eq!(
+            status_field(&status, "PPid:"),
+            up.pid().to_string(),
+            "the VMM's parent"
+        );
+        assert_eq!(
+            status_field(&status, "CapBnd:"),
+            "0000000000000000",
+            "the VMM's capability bound"
+        );
+        assert_eq!(
+            status_field(&status, "NoNewPrivs:"),
+            "1",
+            "the VMM's no_new_privs"
+        );
+        assert_process_ids(&status, "the VMM");
+        for kind in ["user", "mnt", "pid", "net", "ipc", "uts"] {
+            assert_ne!(
+                namespace(vmm, kind),
+                namespace(up.pid(), kind),
+                "the VMM shares box up's {kind} namespace"
+            );
+        }
+        // Its root holds its own disk and nothing of the host's or the
+        // other box's.
+        let root: Vec<(String, (u64, u64))> = fs::read_dir(format!("/proc/{vmm}/root"))
+            .expect("read the VMM's root")
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let metadata = fs::metadata(entry.path()).unwrap();
+                (
+                    entry.file_name().to_string_lossy().into_owned(),
+                    (metadata.dev(), metadata.ino()),
+                )
+            })
+            .collect();
+        assert!(
+            root.iter().any(|(_, file)| *file == disk_files[index]),
+            "the VMM's root lacks its own disk: {root:?}"
+        );
+        assert!(
+            !root.iter().any(|(_, file)| *file == disk_files[1 - index]),
+            "the VMM's root holds the other box's disk: {root:?}"
+        );
+        for host in ["home", "etc", "usr", "tmp"] {
+            assert!(
+                !root.iter().any(|(name, _)| name == host),
+                "the VMM's root holds the host's /{host}: {root:?}"
+            );
+        }
+        let mounts =
+            fs::read_to_string(format!("/proc/{vmm}/mountinfo")).expect("read the VMM's mounts");
+        for line in mounts.lines() {
+            let point = line.split_whitespace().nth(4).unwrap_or_default();
+            assert!(
+                !point.starts_with(&home),
+                "a VMM mount point is under the home: {line}"
+            );
+        }
+        for fd in fs::read_dir(format!("/proc/{vmm}/fd")).expect("read the VMM's descriptors") {
+            let fd = fd.unwrap();
+            let target = fs::read_link(fd.path()).unwrap_or_default();
+            let number: u32 = fd.file_name().to_string_lossy().parse().unwrap();
+            if number <= 2 {
+                assert_eq!(target, Path::new("/dev/null"), "the VMM's fd {number}");
+            }
+            assert!(
+                !target.starts_with(&home),
+                "the VMM holds fd {number} on {}",
+                target.display()
+            );
+        }
+    }
+
+    // SIGKILL of `box up` ends its VM; the other box keeps running.
+    // SAFETY: pidfd_open returns a new descriptor or -1.
+    let pidfd = unsafe { nix::libc::syscall(nix::libc::SYS_pidfd_open, vmms[0] as i32, 0u32) };
+    assert!(
+        pidfd >= 0,
+        "pidfd_open the first VMM: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: a new descriptor, owned here alone.
+    let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd as i32) };
+    ups[0].kill();
+    let mut ended = [nix::libc::pollfd {
+        fd: pidfd.as_raw_fd(),
+        events: nix::libc::POLLIN,
+        revents: 0,
+    }];
+    // SAFETY: poll on one owned descriptor.
+    let ready = unsafe { nix::libc::poll(ended.as_mut_ptr(), 1, 10_000) };
+    assert_eq!(ready, 1, "the VM outlived its box up's SIGKILL");
+    ups[0].wait();
+    let other = box_exec(&env, &names[1], &["true"]);
+    assert_ok(&other, "the other box after the first's owner died");
+    ups[1].down(&env);
+    run_ok(env.command(pinfold()).args(["box", "prune"]));
 }
 
 #[test]
@@ -4282,6 +4236,27 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
             up.down(&private);
             assert!(up.wait().success(), "box up did not exit cleanly");
         }
+    }
+}
+
+/// The VMM of a ready box on Linux: the one child process of its `box up`,
+/// across all of `up`'s threads.
+#[cfg(target_os = "linux")]
+pub(super) fn vmm_pid(up: u32) -> u32 {
+    let mut children = Vec::new();
+    for task in fs::read_dir(format!("/proc/{up}/task")).expect("read box up's threads") {
+        let task = task.expect("read a box up thread").path();
+        // A thread that ended since the listing has no children.
+        let listed = fs::read_to_string(task.join("children")).unwrap_or_default();
+        children.extend(
+            listed
+                .split_whitespace()
+                .map(|pid| pid.parse::<u32>().unwrap()),
+        );
+    }
+    match children.as_slice() {
+        [vmm] => *vmm,
+        _ => panic!("box up {up} has children {children:?}, not one VMM"),
     }
 }
 

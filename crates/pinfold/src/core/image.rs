@@ -294,7 +294,17 @@ pub fn root_disk(id: &str) -> io::Result<PathBuf> {
     }
     let mkfs = mkfs_ext4()?;
     fs::create_dir_all(&dir)?;
-    // A concurrent first use writes its own staging; either rename wins.
+    // One first use writes the disk; a concurrent one waits, then uses it.
+    let lock = fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(".lock"))?;
+    let _lock = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusive)
+        .map_err(|(_, error)| io::Error::from(error))?;
+    if disk.is_file() {
+        return Ok(disk);
+    }
     let staging = dir.join(format!("{}{}", clean::ROOT_STAGING, std::process::id()));
     let file = staging.join("disk");
     // The container is never started; it only gives `export` the image's

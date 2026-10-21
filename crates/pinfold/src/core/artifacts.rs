@@ -196,8 +196,8 @@ pub fn vmm(cancel: Option<&AtomicBool>) -> io::Result<Vmm> {
     })
 }
 
-/// The `os-arch` of a box on this host: Apple `container` and podman run
-/// native images.
+/// The `os-arch` of a box on this host: Apple `container` and Firecracker
+/// run native images.
 const OS_ARCH: &str = if cfg!(target_arch = "aarch64") {
     "linux-arm64"
 } else {
