@@ -100,39 +100,6 @@ pub fn install_dir(dir: &Path, fill: impl FnOnce(&Path) -> io::Result<()>) -> io
     Ok(())
 }
 
-/// Create the file `path` once: `make` writes a staging sibling under a
-/// lock beside it, which is then renamed into place. A concurrent caller
-/// waits, then uses the file.
-#[cfg(target_os = "linux")]
-pub fn write_once(path: &Path, make: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> {
-    if path.is_file() {
-        return Ok(());
-    }
-    fs::create_dir_all(path.parent().expect("a cache file has a parent"))?;
-    let lock = fs::File::options()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path.with_extension("lock"))?;
-    let _lock = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusive)
-        .map_err(|(_, error)| io::Error::from(error))?;
-    if path.is_file() {
-        return Ok(());
-    }
-    let name = path.file_name().expect("a cache file has a name");
-    let staging = path.with_file_name(format!(
-        ".tmp-{}-{}",
-        std::process::id(),
-        name.to_string_lossy()
-    ));
-    let _ = fs::remove_file(&staging);
-    let made = make(&staging).and_then(|()| fs::rename(&staging, path));
-    if made.is_err() {
-        let _ = fs::remove_file(&staging);
-    }
-    made
-}
-
 /// Whether `dir` is a complete install: it holds a manifest, and every path
 /// the manifest names, relative to `dir`, exists. A missing `dir` or
 /// manifest is not an install.

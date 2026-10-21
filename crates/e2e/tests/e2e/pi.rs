@@ -259,7 +259,7 @@ fn the_environment_is_exactly_the_spec() {
     // kernel command line, nor in any file pinfold writes for the box (the
     // VM configuration, the init disk, mount images, disks). Sabotage: put
     // the environment in BOOT_ARGS (config.json and /proc/cmdline fail) or
-    // write it into the init disk (the scan of artifacts/init fails).
+    // write it into the init disk (init.ext4 fails).
     #[cfg(target_os = "linux")]
     {
         let cmdline = box_exec(&env, &name, &["cat", "/proc/cmdline"]);
@@ -270,31 +270,21 @@ fn the_environment_is_exactly_the_spec() {
         );
         let mut scanned = Vec::new();
         holding(&env.state, SECRET.as_bytes(), &mut scanned);
-        let cache = env.cache().join("pinfold");
-        // Not all of artifacts/: other harnesses' trees and images are
-        // gigabytes no pi box reads.
-        for dir in ["root", "artifacts/init", "artifacts/pi"] {
-            holding(&cache.join(dir), SECRET.as_bytes(), &mut scanned);
-        }
-        // The VM configuration, and the init disk and harness image, which
-        // pinfold keeps once per executable and per harness version.
-        let config = scanned.iter().any(|path| path.ends_with("config.json"));
-        let init = scanned.iter().any(|path| {
-            path.starts_with(cache.join("artifacts/init"))
-                && path
-                    .extension()
-                    .is_some_and(|extension| extension == "ext4")
-        });
-        let harness = scanned.iter().any(|path| {
-            path.starts_with(cache.join("artifacts/pi"))
-                && path
-                    .extension()
-                    .is_some_and(|extension| extension == "ext4")
-        });
-        assert!(
-            config && init && harness,
-            "config.json {config}, init disk {init}, pi image {harness} among {scanned:?}"
+        holding(
+            &env.cache().join("pinfold/root"),
+            SECRET.as_bytes(),
+            &mut scanned,
         );
+        let names: Vec<String> = scanned
+            .iter()
+            .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
+            .collect();
+        for written in ["config.json", "init.ext4", "mount0.ext4"] {
+            assert!(
+                names.iter().any(|name| name == written),
+                "no {written} under the state dir: {names:?}"
+            );
+        }
     }
 
     assert!(run.finish().success(), "pinfold pi did not exit cleanly");

@@ -234,23 +234,11 @@ pub fn init() -> io::Result<PathBuf> {
     Ok(dir.join("pinfold"))
 }
 
-/// The read-only ext4 init disk holding this executable as `/pinfold`, and
-/// the empty `/dev` and `/mnt` PID 1 mounts on: a Linux CLI's init for a
-/// box, and the guest kernel's root. Like the macOS init, it is written
-/// once per executable content, under `init/`.
+/// Write a read-only ext4 init disk at `disk` holding this executable as
+/// `/pinfold`, and the empty `/dev` and `/mnt` PID 1 mounts on: a Linux
+/// CLI's init for a box, and the guest kernel's root.
 #[cfg(target_os = "linux")]
-pub fn init_disk() -> io::Result<PathBuf> {
-    let exe = std::env::current_exe()?;
-    let disk = dirs::artifacts_dir()?
-        .join("init")
-        .join(super::download::sha256_file(&exe)?)
-        .join(format!("{OS_ARCH}.ext4"));
-    dirs::write_once(&disk, |staging| write_init_disk(&exe, staging))?;
-    Ok(disk)
-}
-
-#[cfg(target_os = "linux")]
-fn write_init_disk(exe: &Path, disk: &Path) -> io::Result<()> {
+pub fn init_disk(disk: &Path) -> io::Result<()> {
     let tree = disk.with_extension("tree");
     let _ = fs::remove_dir_all(&tree);
     fs::create_dir(&tree)?;
@@ -258,7 +246,7 @@ fn write_init_disk(exe: &Path, disk: &Path) -> io::Result<()> {
         fs::create_dir(tree.join("dev"))?;
         fs::create_dir(tree.join("mnt"))?;
         let init = tree.join("pinfold");
-        fs::copy(exe, &init)?;
+        fs::copy(std::env::current_exe()?, &init)?;
         fs::set_permissions(&init, fs::Permissions::from_mode(0o755))?;
         // 10% and 4 MiB for the filesystem's own metadata.
         let kib = fs::metadata(&init)?.len() / 1024 * 11 / 10 + 4096;
@@ -278,22 +266,6 @@ fn write_init_disk(exe: &Path, disk: &Path) -> io::Result<()> {
     })();
     let _ = fs::remove_dir_all(&tree);
     made.map(drop)
-}
-
-/// Where the image of a mount from `host` is kept when `host` is a pinned
-/// harness: beside its `<os-arch>/` directory, so it goes with the
-/// version. `None` for any other mount. A version's tree is installed once
-/// and never changes, so an image of it from an earlier start is the image
-/// of this one.
-#[cfg(target_os = "linux")]
-pub fn harness_disk(host: &Path) -> io::Result<Option<PathBuf>> {
-    for harness in HARNESSES.iter() {
-        let dir = harness.dir(OS_ARCH)?;
-        if dir.join(&harness.name) == host {
-            return Ok(Some(dir.with_extension("ext4")));
-        }
-    }
-    Ok(None)
 }
 
 /// One pin's cache state, as `doctor` and `artifacts` report it. Nothing
