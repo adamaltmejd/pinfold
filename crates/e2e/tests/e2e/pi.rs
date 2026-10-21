@@ -271,7 +271,9 @@ fn the_environment_is_exactly_the_spec() {
         let mut scanned = Vec::new();
         holding(&env.state, SECRET.as_bytes(), &mut scanned);
         let cache = env.cache().join("pinfold");
-        for dir in ["root", "artifacts"] {
+        // Not all of artifacts/: other harnesses' trees and images are
+        // gigabytes no pi box reads.
+        for dir in ["root", "artifacts/init", "artifacts/pi"] {
             holding(&cache.join(dir), SECRET.as_bytes(), &mut scanned);
         }
         // The VM configuration, and the init disk and harness image, which
