@@ -16,6 +16,7 @@ use crate::core::disk::{self, Fill, Seeding};
 use crate::core::plan::Plan;
 use crate::core::runtime::{output, podman::Podman};
 use crate::core::{artifacts, image};
+use crate::dirs;
 use crate::init::firecracker::{BOOT, BOOT_PORT, FAILED, READY, read_frame, write_frame};
 
 /// Exactly these: no secret ever reaches a kernel command line.
@@ -81,13 +82,21 @@ pub fn prepare(
     cancelled()?;
     let root_disk = image::root_disk(image_id)?;
     cancelled()?;
-    let init_disk = state_dir.join("init.ext4");
-    artifacts::init_disk(&init_disk)?;
+    let init_disk = artifacts::init_disk()?;
     let mut mounts = Vec::new();
     for (index, mount) in plan.mounts.iter().enumerate() {
         cancelled()?;
-        let disk = state_dir.join(format!("mount{index}.ext4"));
-        mount_image(&mount.host, &disk)?;
+        let disk = match artifacts::harness_disk(&mount.host)? {
+            Some(disk) => {
+                dirs::write_once(&disk, |staging| mount_image(&mount.host, staging))?;
+                disk
+            }
+            None => {
+                let disk = state_dir.join(format!("mount{index}.ext4"));
+                mount_image(&mount.host, &disk)?;
+                disk
+            }
+        };
         mounts.push((disk, mount.guest.clone()));
     }
     Ok(Prepared {

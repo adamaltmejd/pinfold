@@ -126,7 +126,9 @@ sysctl rather than the failing call.
 4. Run the box with no network interface and the socket carried in
    (Transport). PID 1 is `pinfold init`. On Linux each mount reaches the
    guest as a read-only ext4 image written from the host directory at this
-   start, so a host change after it never appears in the box.
+   start, so a host change after it never appears in the box. A pinned
+   harness, whose installed tree never changes, has one image per version,
+   kept beside it in the cache.
 5. `pinfold init` relays `127.0.0.1:3128` to the socket, runs box work as
    the host uid, reaps children, and reports ready (on Linux its exec
    service does the relay, exec and ready report). On Linux it mounts the
@@ -814,7 +816,8 @@ codex also pins a host helper, `codex-app-server`, per host `os-arch`
 The init is not an artifact: it always comes from the CLI's own build. The
 macOS CLI embeds the `aarch64-unknown-linux-musl` `pinfold-init` build and writes
 it to the cache once; a Linux CLI writes its own executable into a
-read-only init disk. Both use the same init source.
+read-only init disk, once per executable content, under the same `init/`.
+Both use the same init source.
 
 ## Profiles
 
