@@ -32,21 +32,25 @@ original controller path for the host-boundary check. Direct Bun script
 launches resolve symlinks too early and are refused. The supplied Bun config
 disables `.env` loading and automatic dependency installation.
 
-Prepare real `.git`, `.vscode`, `.claude` and `.idea` directories in the project
-before starting. The example mounts those paths read-only and the remaining
-project read-write. It refuses symlinked protected directories. It supplies no
-box egress, since the host makes model requests. Choose an image that has a shell
+The project must be a git checkout with a `.git` directory. The box works on
+a project disk, `durable-<id>` at `/workspace`, filled from the checkout when
+the job first starts and kept across recovery. The host checkout is never
+written. After a completed job, the example fetches the box repository's
+branches into the checkout as `refs/remotes/durable-<id>/*`; only committed
+work crosses. Remove the disk with `pinfold disk rm durable-<id>` once the job
+is done with it. The example supplies no box egress, since the host makes model
+requests. Choose an image that has a shell
 and the project tools you need.
 
 The checkpoint directory, Pinfold and Bun executables, controller and dependencies,
 Pinfold's effective state/config/cache and ownership directories, and host PATH
-entries must be disjoint from the writable project. Linux runtime authority is
+entries must be disjoint from the project. Linux runtime authority is
 also checked. Paths and existing symlink ancestors are canonicalized before any
 box work, including absent directories under a symlink alias. A replaceable
 symlink inside the project is rejected even if its target is outside. This
-includes the script entrypoint used to launch the controller. Only the
-project and protected subdirectories are guest mounts, so neither checkpoint
-database nor writer database is exposed to the guest. Keep the state directory private on the host. Do not copy a live
+includes the script entrypoint used to launch the controller. The box has
+no mount, so neither checkpoint database nor writer database is exposed to
+the guest. Keep the state directory private on the host. Do not copy a live
 checkpoint to another path or run it on another host: the namespace is derived
 from its canonical path, and recovery refuses a moved namespace. The executable,
 project, image, endpoint, model and original prompt are immutable in `job.json`.
