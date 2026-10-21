@@ -66,7 +66,7 @@ impl Runtime for Podman {
             format!("seccomp={}", seccomp.display()).into(),
             "--no-hosts".into(),
             "--mount".into(),
-            bind(&resolv_conf, Path::new("/etc/resolv.conf"), true),
+            bind(&resolv_conf, Path::new("/etc/resolv.conf")),
             "--pids-limit".into(),
             PIDS_LIMIT.to_string().into(),
             // podman's run copies the client's proxy variables in by default.
@@ -83,7 +83,7 @@ impl Runtime for Podman {
         let default_home = ("HOME".to_string(), Env::Exact("/tmp".to_string()));
         if let Some(socket) = proxy_socket {
             extra.push("--mount".into());
-            extra.push(bind(socket, Path::new(GUEST_PROXY_SOCKET), true));
+            extra.push(bind(socket, Path::new(GUEST_PROXY_SOCKET)));
         }
         let guest_socket = proxy_socket.map(|_| GUEST_PROXY_SOCKET);
         let env = plan

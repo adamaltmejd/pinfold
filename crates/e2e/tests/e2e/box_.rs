@@ -948,11 +948,12 @@ sys.exit(result.returncode)
 fn up_refuses_before_it_creates() {
     let _runtime = crate::shared_runtime();
     // Guarantee 17: up refuses before it creates.
-    // Sabotage: drop `deny_unknown_fields` from `Mount`; the misspelled
-    // mount spec then comes up `ready` and the refusal assertion fails.
+    // Sabotage: give `Mount` a `readonly` field again (or drop its
+    // `deny_unknown_fields`); the `readonly` mount spec then comes up
+    // `ready` and the refusal assertion fails.
     // Sabotage: parse the first JSON value straight into `Plan` again; the
     // serde refusal is raised before any name is read, so the misspelled
-    // spec's `box` assertion fails.
+    // `readonly` spec's `box` assertion fails.
     // Sabotage: drop the character-class check from the env-name validation,
     // keeping only the old empty-or-`=` test; the wildcard spec then comes up
     // `ready`, so the refusal assertion fails, and on podman the box's
@@ -1013,8 +1014,10 @@ fn up_refuses_before_it_creates() {
     let mut missing_profile = missing.clone();
     missing_profile["profile"] = serde_json::json!("documents");
     missing_profile["env"] = serde_json::json!({ "HOME": "/home/refused" });
-    missing_profile["mounts"] = serde_json::json!([
-        { "host": env.root, "guest": "/home/refused" }
+    let home_disk = box_name("refused-home");
+    let _home_disk = DiskCleanup(vec![home_disk.clone()]);
+    missing_profile["disks"] = serde_json::json!([
+        { "name": home_disk, "guest": "/home/refused" }
     ]);
     let (code, refused) = box_up_refused(&env, &missing_profile, &[]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
@@ -1047,15 +1050,15 @@ fn up_refuses_before_it_creates() {
     );
     assert_left_nothing(&env, &name, label, "refused");
 
-    // A spec whose mount misspells `readonly` as `read_only` is refused as
-    // data, naming the key, and leaves no state dir and no box. The positive
-    // control, a spelled `readonly` that rejects writes, is the hook write in
-    // guarantee 22's `a_caller_owned_box_cannot_write_git`.
+    // Every mount is read-only, so a mount with a `readonly` key is refused
+    // as data, naming the key, and leaves no state dir and no box. The
+    // positive control is the race's winner below, whose mount has no
+    // `readonly` key and comes up `ready`.
     let misspelled = serde_json::json!({
         "name": name,
         "image": default_image(&env),
         "labels": { "dev.example.test": "refuses" },
-        "mounts": [{ "host": env.root, "guest": "/workspace", "read_only": true }],
+        "mounts": [{ "host": env.root, "guest": "/workspace", "readonly": true }],
     });
     let (code, refused) = box_up_refused(&env, &misspelled, &[]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
@@ -1066,7 +1069,7 @@ fn up_refuses_before_it_creates() {
         refused["detail"]
             .as_str()
             .unwrap_or_default()
-            .contains("read_only"),
+            .contains("readonly"),
         "the refusal did not name the key: {refused}"
     );
     assert_left_nothing(&env, &name, label, "refused");
@@ -1236,15 +1239,14 @@ fn up_refuses_before_it_creates() {
     // A spec whose mount path holds a comma is refused as data, naming the
     // path, and leaves no state dir and no box: the bind value is built by
     // concatenation, so the runtime reads the rest as mount options. The
-    // positive control, a plain path mounting, is guarantee 10's
-    // `box_shares_files_with_the_host`.
+    // positive control, a plain path mounting, is the race's winner below.
     let comma = env.root.join("a,b");
     fs::create_dir_all(&comma).unwrap();
     let comma_mount = serde_json::json!({
         "name": name,
         "image": default_image(&env),
         "labels": { "dev.example.test": "refuses" },
-        "mounts": [{ "host": comma, "guest": "/workspace", "readonly": false }],
+        "mounts": [{ "host": comma, "guest": "/workspace" }],
     });
     let (code, refused) = box_up_refused(&env, &comma_mount, &[]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
@@ -1270,7 +1272,7 @@ fn up_refuses_before_it_creates() {
         "name": name,
         "image": default_image(&env),
         "labels": { "dev.example.test": "refuses" },
-        "mounts": [{ "host": file, "guest": "/yard/f.txt", "readonly": true }],
+        "mounts": [{ "host": file, "guest": "/yard/f.txt" }],
     });
     let (code, refused) = box_up_refused(&env, &file_mount, &[]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
@@ -1303,8 +1305,8 @@ fn up_refuses_before_it_creates() {
         "labels": { "dev.example.test": "refuses" },
         "env": { "HOME": "/work" },
         "mounts": [
-            { "host": work, "guest": "/work", "readonly": false },
-            { "host": spec_mount, "guest": "/opt/pinfold/profile", "readonly": true },
+            { "host": work, "guest": "/work" },
+            { "host": spec_mount, "guest": "/opt/pinfold/profile" },
         ],
     });
     // Sabotage: compare raw guest paths or deduplicate caller destinations
@@ -1345,7 +1347,7 @@ fn up_refuses_before_it_creates() {
             "name": name,
             "image": default_image(&env),
             "labels": { "dev.example.test": "refuses" },
-            "mounts": [{ "host": work, "guest": "/work", "readonly": true }],
+            "mounts": [{ "host": work, "guest": "/work" }],
             "disks": if disk.is_array() { disk } else { serde_json::json!([disk]) },
         })
     };
@@ -1409,7 +1411,7 @@ fn up_refuses_before_it_creates() {
         "name": name,
         "image": default_image(&env),
         "labels": { "dev.example.test": "refuses" },
-        "mounts": [{ "host": work, "guest": "/sys/fs/cgroup", "readonly": true }],
+        "mounts": [{ "host": work, "guest": "/sys/fs/cgroup" }],
     });
     let (code, refused) = box_up_refused(&env, &kernel_mount, &[]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
@@ -1433,7 +1435,7 @@ fn up_refuses_before_it_creates() {
         "name": name,
         "image": default_image(&env),
         "labels": { "dev.example.test": "refuses" },
-        "mounts": [{ "host": absent_host, "guest": "/devices", "readonly": true }],
+        "mounts": [{ "host": absent_host, "guest": "/devices" }],
         "egress": { "allow": [".github.com"] },
         "env": { "NESTED_VALUE": { "from": "PINFOLD_E2E_NESTED" } },
     });
@@ -1513,6 +1515,9 @@ fn disks_persist_and_attach_exclusively() {
     // `up`s create the disk and the loser ends `failed`, not `disk-in-use`.
     // Sabotage: call `disk::detached` on every runtime stop in `Box::down`;
     // after `container kill` the read-only `up` comes ready.
+    // Sabotage: drop `value.push(",readonly")` from `runtime::bind`; the
+    // readers' mount is then writable and the "a write to a mount"
+    // assertion fails.
     let env = TestEnv::new("disks");
     let image = default_image(&env);
     let names = ["work", "sparse", "fresh", "race"].map(|disk| box_name(&format!("disk-{disk}")));
@@ -1658,8 +1663,7 @@ fn disks_persist_and_attach_exclusively() {
     let mount = TestDir::new(&env, "mount");
     let with_mount = |name: &str| {
         let mut spec = spec(name, reader.clone());
-        spec["mounts"] =
-            serde_json::json!([{ "host": mount.path(), "guest": "/mount", "readonly": true }]);
+        spec["mounts"] = serde_json::json!([{ "host": mount.path(), "guest": "/mount" }]);
         spec
     };
     let mut starts = [
@@ -2173,101 +2177,6 @@ fn tree_snapshot(dir: &Path) -> std::collections::BTreeMap<PathBuf, (Vec<u8>, u3
         );
     }
     snapshot
-}
-
-#[test]
-fn box_shares_files_with_the_host() {
-    let _runtime = crate::shared_runtime();
-    // Sabotage: bind every spec mount read-only in the adapter (pass `true`
-    // for `mount.readonly` in runtime/mod.rs); creating files in /workspace
-    // then fails and the create assertion fails. Sabotage: drop
-    // `--userns=keep-id` from podman's `run` argv; the box user is then a
-    // subordinate uid on the host, so the host 0600 file is not writable and
-    // the write assertion fails (Linux only).
-    // Not a sabotage on Apple: running `box exec` as root. virtiofs reports
-    // every host file as the host user's whatever the guest uid, so the owner
-    // assertion still passes; the uid itself is guarantee 5's to check.
-    let env = TestEnv::new("shared-files");
-    let dir = TestDir::new(&env, "mount");
-    let name = box_name("files");
-
-    // Host files the box must be able to change.
-    fs::write(dir.path().join("host-600"), b"before\n").unwrap();
-    fs::set_permissions(
-        dir.path().join("host-600"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .unwrap();
-    fs::create_dir(dir.path().join("host-700")).unwrap();
-    fs::set_permissions(
-        dir.path().join("host-700"),
-        fs::Permissions::from_mode(0o700),
-    )
-    .unwrap();
-
-    let spec = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "mounts": [{ "host": dir.path(), "guest": "/workspace" }],
-    });
-    let up = box_up(&env, &spec, &name);
-
-    // Box-created files: a 644 file, a 755 directory and an executable.
-    let created = box_exec(
-        &env,
-        &name,
-        &[
-            "sh",
-            "-c",
-            "printf created > /workspace/box-created && mkdir /workspace/box-dir \
-             && printf '#!/bin/sh\\n' > /workspace/box-script \
-             && chmod 755 /workspace/box-script",
-        ],
-    );
-    assert_eq!(created.code, 0, "creating files failed: {}", created.stderr);
-
-    // Host 0600 and 0700 files are writable in the box.
-    let wrote = box_exec(
-        &env,
-        &name,
-        &[
-            "sh",
-            "-c",
-            "printf changed >> /workspace/host-600 \
-             && printf inside > /workspace/host-700/from-box",
-        ],
-    );
-    assert_eq!(wrote.code, 0, "writing host files failed: {}", wrote.stderr);
-
-    // Host view of the same files.
-    let host_600 = fs::metadata(dir.path().join("host-600")).unwrap();
-    let box_created = fs::metadata(dir.path().join("box-created")).unwrap();
-    assert_eq!(box_created.mode() & 0o777, 0o644, "box file mode");
-    assert_eq!(box_created.uid(), host_600.uid(), "box file owner");
-    assert_eq!(
-        fs::read(dir.path().join("box-created")).unwrap(),
-        b"created"
-    );
-    assert_eq!(
-        fs::metadata(dir.path().join("box-dir")).unwrap().mode() & 0o777,
-        0o755,
-        "box directory mode"
-    );
-    assert_eq!(
-        fs::metadata(dir.path().join("box-script")).unwrap().mode() & 0o777,
-        0o755,
-        "box script mode"
-    );
-    assert_eq!(
-        fs::read(dir.path().join("host-600")).unwrap(),
-        b"before\nchanged"
-    );
-    assert_eq!(
-        fs::read(dir.path().join("host-700/from-box")).unwrap(),
-        b"inside"
-    );
-
-    up.down(&env);
 }
 
 #[test]
@@ -3695,14 +3604,12 @@ fn a_login_route_keeps_the_login_on_the_host() {
     });
     let model = HttpFixture::start(None);
     let codex_name = box_name("login-codex");
-    let box_home = TestDir::new(&env, "codex-box-home");
     let codex_spec = serde_json::json!({
         "name": codex_name,
         "image": default_image(&env),
         "labels": { "dev.example.test": "login" },
         "harness": "codex",
-        "mounts": [{ "host": box_home.path(), "guest": "/home/codex" }],
-        "env": { "HOME": "/home/codex" },
+        "env": { "HOME": "/tmp" },
         "egress": {
             "routes": {
                 "codex.internal": {
@@ -3728,10 +3635,8 @@ fn a_login_route_keeps_the_login_on_the_host() {
     // helper reaching the fixture proves its host artifact is installed.
     let contender = TestEnv::new("login-contender");
     let contender_name = box_name("login-contender");
-    let contender_home = TestDir::new(&contender, "home");
     let mut contender_spec = codex_spec.clone();
     contender_spec["name"] = serde_json::json!(contender_name);
-    contender_spec["mounts"][0]["host"] = serde_json::json!(contender_home.path());
     let child = contender
         .command(pinfold())
         .args(["box", "up"])
@@ -3872,7 +3777,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
         );
     }
     // Every file the box could hold them in: pinfold's config and harness,
-    // the spec's home mount, and the writable paths. A canary written to
+    // and the writable paths, `$HOME` among them. A canary written to
     // /tmp first is the control that the scan runs and reads files; it is
     // the only file the scan may list. /proc, /sys and /usr are left out for
     // speed; none is a place pinfold writes.
@@ -3885,7 +3790,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
             "-c",
             "printf %s \"$3\" > /tmp/pf-canary; \
              grep -rlsF -e \"$1\" -e \"$2\" -e \"$3\" \
-             /etc /opt/pinfold /tmp /workspace /home/codex; true",
+             /etc /opt/pinfold /tmp; true",
             "sh",
             &lapsing,
             &refreshed,
@@ -4068,15 +3973,13 @@ fn a_login_route_keeps_the_login_on_the_host() {
             let home = run_ok(Command::new("sh").args(["-c", "eval echo \"~$(id -un)\""]));
             format!("{}/.codex", String::from_utf8_lossy(&home.stdout).trim())
         });
-        let home = TestDir::new(&env, "codex-live-home");
         let live_name = box_name("login-live");
         let live_spec = serde_json::json!({
             "name": live_name,
             "image": default_image(&env),
             "labels": { "dev.example.test": "login" },
             "harness": "codex",
-            "mounts": [{ "host": home.path(), "guest": "/home/codex" }],
-            "env": { "HOME": "/home/codex" },
+            "env": { "HOME": "/tmp" },
             "egress": { "routes": { "codex.internal": { "login": "codex" } } },
         });
         let mut up = box_up_with_env(
@@ -4096,7 +3999,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
                 "--sandbox",
                 "danger-full-access",
                 "-C",
-                "/home/codex",
+                "/tmp",
                 "Run this exact shell command once and reply with its output: echo pf-$((40+2))-live",
             ],
         );
@@ -4290,8 +4193,6 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
     // codex's `codex-code-mode-host` companion is not asserted: only a
     // model-driven MCP tool call observes it.
     let env = TestEnv::new("harness");
-    let home = TestDir::new(&env, "home");
-    default_image(&env);
 
     // The versions `pinfold artifacts` pins. The caller records which
     // harness it ran from the same report.
@@ -4306,15 +4207,14 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
             .unwrap_or_else(|| panic!("pinfold artifacts does not name {harness}: {pins:?}"));
         let version = pin["version"].as_str().expect("pin version is a string");
 
-        // A caller-owned box: the spec names the harness and the allow list;
-        // the profile supplies the image and home seeds.
+        // A caller-owned box: the spec names the image, the harness and the
+        // allow list. `$HOME` is the box's tmpfs.
         let name = box_name(&format!("harness-{harness}"));
         let spec = serde_json::json!({
             "name": name,
-            "profile": "default",
+            "image": default_image(&env),
             "harness": harness,
-            "mounts": [{ "host": home.path(), "guest": "/home/harness" }],
-            "env": { "HOME": "/home/harness" },
+            "env": { "HOME": "/tmp" },
             "egress": { "allow": ["api.github.com"] },
         });
         let mut up = box_up(&env, &spec, &name);
@@ -4383,179 +4283,6 @@ fn a_caller_owned_box_launches_the_pinned_harness() {
             assert!(up.wait().success(), "box up did not exit cleanly");
         }
     }
-}
-
-#[test]
-fn a_caller_owned_box_cannot_write_git() {
-    use std::os::unix::fs::MetadataExt;
-    let _runtime = crate::shared_runtime();
-    // Guarantee 22: a caller-owned box cannot write `.git`.
-    // Sabotage: drop `readonly` from the adapter's bind mounts (pass `false`
-    // for `mount.readonly` in runtime/mod.rs); `.git` is then writable and
-    // the hook write assertion fails. The worktree write is the positive
-    // control that the same write works on a writable mount.
-    let env = TestEnv::new("caller-git");
-    let name = box_name("caller-git");
-    let image = default_image(&env);
-    let repo = TestDir::new(&env, "repo");
-    let root = repo.path().to_string_lossy().into_owned();
-    let dot_git = repo.path().join(".git");
-    // On Apple the top directory of every mount is root:root inside the
-    // box while the files under it keep the host ids: `stat` printed 0:0
-    // for REPO and REPO/.git and 501:20 for REPO/f.txt, so git refuses any
-    // mounted repository until `safe.directory` names it.
-    let safe = format!("safe.directory={root}");
-
-    // One host commit, so the box has history to read.
-    git(repo.path(), &["init", "-q"]);
-    fs::write(repo.path().join("committed.txt"), b"one\n").expect("write committed.txt");
-    git(repo.path(), &["add", "committed.txt"]);
-    git(
-        repo.path(),
-        &[
-            "-c",
-            "user.name=a",
-            "-c",
-            "user.email=a@b",
-            "commit",
-            "-q",
-            "-m",
-            "one",
-        ],
-    );
-
-    // The `.git` mount first and read-only, the repository second and
-    // writable: a runtime that applied mounts in spec order would let the
-    // parent shadow `.git`, so this checks that both runtimes apply a
-    // nested mount by path.
-    let mut spec = serde_json::json!({
-        "name": name,
-        "image": image,
-        "labels": { "dev.example.test": "caller-git" },
-        "mounts": [
-            { "host": dot_git, "guest": dot_git, "readonly": true },
-            { "host": repo.path(), "guest": repo.path(), "readonly": false },
-        ],
-    });
-    let config = dot_git.join("config");
-    let expected = fs::read(&config).expect("read host config");
-    let extra = TestDir::new(&env, "extra");
-    let root_alias = repo.path().join("config-alias");
-    let extra_alias = extra.path().join("config-alias");
-    fs::hard_link(&config, &root_alias).expect("link config in project");
-    // Guarantee 22 admission. Sabotage: omit the check, or omit additional
-    // writable exports. Neither layout may reach ready. Expected bytes are
-    // the host config before launch; no guest write runs in refused cases.
-    for in_extra in [false, true] {
-        if in_extra {
-            fs::remove_file(&root_alias).unwrap();
-            fs::hard_link(&config, &extra_alias).unwrap();
-            spec["mounts"].as_array_mut().unwrap().reverse();
-            spec["mounts"]
-                .as_array_mut()
-                .unwrap()
-                .push(serde_json::json!({
-                    "host": extra.path(), "guest": "/extra", "readonly": false,
-                }));
-        }
-        let (code, refused) = box_up_refused(&env, &spec, &[]);
-        assert_eq!(code, 1, "wrong refusal exit: {refused}");
-        assert_eq!(refused["event"], "refused", "reached ready: {refused}");
-        assert_eq!(refused["reason"], "mount-alias", "wrong reason: {refused}");
-        let detail = refused["detail"].as_str().unwrap();
-        assert!(detail.contains(config.to_str().unwrap()), "{refused}");
-        let writable = if in_extra {
-            "/extra/config-alias"
-        } else {
-            root_alias.to_str().unwrap()
-        };
-        assert!(detail.contains(writable), "{refused}");
-        assert_left_nothing(&env, &name, "dev.example.test=caller-git", "refused");
-        assert_eq!(fs::read(&config).unwrap(), expected);
-    }
-    fs::remove_file(&extra_alias).unwrap();
-
-    // Sabotage: use nlink as permission. A single-link file still conflicts
-    // when its source directory has a second, writable guest export.
-    let single = dot_git.join("single");
-    fs::create_dir(&single).unwrap();
-    fs::write(single.join("file"), b"protected\n").unwrap();
-    assert_eq!(fs::metadata(single.join("file")).unwrap().nlink(), 1);
-    spec["mounts"]
-        .as_array_mut()
-        .unwrap()
-        .push(serde_json::json!({
-            "host": single, "guest": "/duplicate", "readonly": false,
-        }));
-    let (code, refused) = box_up_refused(&env, &spec, &[]);
-    assert_eq!(code, 1);
-    assert_eq!(refused["event"], "refused");
-    assert_eq!(refused["reason"], "mount-alias");
-    assert_left_nothing(&env, &name, "dev.example.test=caller-git", "refused");
-    assert_eq!(fs::read(single.join("file")).unwrap(), b"protected\n");
-    spec["mounts"].as_array_mut().unwrap().pop();
-
-    // Restore .git before its writable parent for runtime coverage.
-    // Sabotage: apply mounts in input order; the hook write then succeeds.
-    spec["mounts"].as_array_mut().unwrap().swap(0, 1);
-
-    // Sabotage: compare unnormalized guest destinations. This accepted
-    // spelling then leaves the parent's .git occurrence falsely writable.
-    spec["mounts"][0]["guest"] = serde_json::json!(dot_git.join("../.git"));
-
-    // Sabotage: blanket nlink rejection (including Git objects). An object
-    // shared with a local clone outside every writable export is admitted.
-    let outside = TestDir::new(&env, "outside-clone");
-    let commit = git(repo.path(), &["rev-parse", "HEAD"]);
-    let commit = commit.trim();
-    let object = dot_git
-        .join("objects")
-        .join(&commit[..2])
-        .join(&commit[2..]);
-    fs::hard_link(&object, outside.path().join("object")).unwrap();
-    let mut up = box_up(&env, &spec, &name);
-
-    // The box reads history and status, and writes the worktree.
-    let log = box_exec(
-        &env,
-        &name,
-        &["git", "-C", &root, "-c", &safe, "log", "--oneline"],
-    );
-    assert_eq!(log.code, 0, "box git log failed: {}", log.stderr);
-    assert!(
-        log.stdout.contains("one"),
-        "box git log lost the commit: {}",
-        log.stdout
-    );
-    let status = box_exec(
-        &env,
-        &name,
-        &["git", "-C", &root, "-c", &safe, "status", "--porcelain"],
-    );
-    assert_eq!(status.code, 0, "box git status failed: {}", status.stderr);
-    let wrote = box_exec(
-        &env,
-        &name,
-        &["sh", "-c", &format!("echo x > '{root}/new.txt'")],
-    );
-    assert_ok(&wrote, "writing the worktree");
-    assert_eq!(fs::read(repo.path().join("new.txt")).unwrap(), b"x\n");
-
-    // A write into `.git` fails.
-    let hook = dot_git.join("hooks/pre-commit");
-    let denied = box_exec(
-        &env,
-        &name,
-        &[
-            "sh",
-            "-c",
-            &format!("printf '#!/bin/sh\\n' > '{}'", hook.display()),
-        ],
-    );
-    assert_denied(&denied, "Read-only file system", "the hook write");
-
-    up.down(&env);
-    assert!(up.wait().success(), "box up did not exit cleanly");
 }
 
 /// One `/proc/<pid>/status` field's value.

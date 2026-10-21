@@ -956,7 +956,7 @@ int main(void) {
         let spec = serde_json::json!({
             "name": names[index],
             "image": image,
-            "mounts": [{"host": fixture, "guest": "/fixture", "readonly": true}],
+            "mounts": [{"host": fixture, "guest": "/fixture"}],
         });
         box_up_start(
             &env,
