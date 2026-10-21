@@ -368,8 +368,11 @@ fn project_state_persists_and_stays_separate() {
 )]
 fn a_changed_project_file_stops_the_run() {
     let _runtime = crate::shared_runtime();
-    // Sabotage: drop the trust::check call from pi::launch; the fetched and
-    // merged `.pinfold.toml` then runs and both refusal assertions fail.
+    // Sabotage: drop the trust::check call from pi::launch::run; the fetched
+    // and merged `.pinfold.toml` then runs and both refusal assertions fail.
+    // Sabotage: drop it from pi::launch::crossing; the untrusted fetch runs.
+    // Sabotage: drop `untrusted:` from trust::check's refusal; every reason
+    // assertion fails.
     // Sabotage: hash an absent `.pinfold.toml` as the empty file instead of
     // recording its absence; the first run, with no `.pinfold.toml` and no
     // record, refuses as "not trusted" and the bare-run control fails.
@@ -397,6 +400,8 @@ fn a_changed_project_file_stops_the_run() {
             .output()
             .expect("run pinfold pi --version");
         assert!(!refused.status.success(), "the changed project file ran");
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(stderr.contains("untrusted"), "wrong refusal: {stderr}");
     };
 
     // A project with no `.pinfold.toml` has nothing to trust: it runs
@@ -423,8 +428,13 @@ fn a_changed_project_file_stops_the_run() {
     run_ok(&mut pinfold_in(&env, root, &["fetch"]));
     host_git(&["merge", "-q", "--ff-only", "pinfold/main"]);
 
-    // The file that appeared stops the run until `pinfold allow` records it.
+    // The file that appeared stops the run and the next fetch until
+    // `pinfold allow` records it.
     refused_pi();
+    let refused = pinfold_in(&env, root, &["fetch"]).output().unwrap();
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success(), "fetch ran untrusted");
+    assert!(stderr.contains("untrusted"), "wrong refusal: {stderr}");
     allow(&env, root);
     pi_version(&env, root);
 
@@ -483,6 +493,8 @@ fn a_changed_project_file_stops_the_run() {
         .output()
         .expect("run pinfold build");
     assert!(!refused.status.success(), "the changed Containerfile built");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("untrusted"), "wrong refusal: {stderr}");
     allow(&env, root);
     run_ok(&mut pinfold_in(&env, root, &["build"]));
     pi_version(&env, root);

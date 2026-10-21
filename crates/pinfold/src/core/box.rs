@@ -669,8 +669,6 @@ async fn start(
                 disk::send(fill, out)
             })?;
         }
-        // Linux seeds a disk's `$HOME` once its boot request carries seeds
-        // (#141); until then Linux boxes have no disks.
         if let Some(seeding) = seeding
             && let SeedTarget::Disk(guest) = &seeding.target
         {
@@ -1000,6 +998,13 @@ fn home_mount(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
             home.display()
         )));
     };
+    // The Firecracker boot request carries no seeds yet (#141).
+    if cfg!(target_os = "linux") && matches!(target, SeedTarget::Disk(_)) {
+        return Err(refuse(format!(
+            "$HOME={} is on a disk, which Linux cannot seed yet",
+            home.display()
+        )));
+    }
     if readonly {
         return Err(refuse(format!(
             "$HOME={} is on the read-only {}",

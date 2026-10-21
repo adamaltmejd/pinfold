@@ -139,16 +139,22 @@ pub fn attach(args: &[String]) -> io::Result<i32> {
     let cwd = fs::canonicalize(std::env::current_dir()?)?;
     let root = crate::pi::launch::project_root(&cwd)?;
     let [_, project] = crate::pi::state::disk_names(&crate::pi::state::project_id(&root));
-    let runtime = runtime();
-    let (name, _) = disk::attachments(runtime, None)?
-        .remove(&project)
-        .and_then(|boxes| boxes.into_iter().next())
-        .ok_or_else(|| {
-            io::Error::new(
+    let name = match crate::pi::launch::project_box(&project)? {
+        crate::pi::launch::Holder::Ready(name) => name,
+        crate::pi::launch::Holder::Starting(name) => {
+            return Err(io::Error::other(format!(
+                "disk-in-use: {}",
+                crate::pi::launch::starting(&name, &project)
+            )));
+        }
+        crate::pi::launch::Holder::None => {
+            return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 "no running pi box for this project; start one with `pinfold pi`",
-            )
-        })?;
+            ));
+        }
+    };
+    let runtime = runtime();
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
     let init = artifacts::init()?;
     let status = runtime.exec(&name, &init, tty, Some(&cwd), &argv)?;

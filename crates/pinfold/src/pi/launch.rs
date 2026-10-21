@@ -10,10 +10,11 @@ use tokio::runtime::Builder;
 
 use crate::cli;
 use crate::config::Config;
-use crate::core::r#box::{Box, Shutdown, Signals, UpError};
+use crate::core::r#box::{Box, RefusalReason, Shutdown, Signals, UpError};
 use crate::core::clean;
+use crate::core::crossing::CrossingError;
 use crate::core::plan::{Disk, Egress, Env, Plan};
-use crate::core::runs::Terminal;
+use crate::core::runs::{self, Terminal};
 use crate::core::runtime::{ImageInfo, runtime};
 use crate::core::{artifacts, crossing, disk, image, ownership, sha256_hex};
 use crate::pi::state::{self, canonical, project_id};
@@ -84,12 +85,16 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
             crossing::fetch(box_runtime, &init, name, &guest_repo, &repo, remote)
         }
     };
-    if let Some((name, _)) = disk::attachments(box_runtime, None)?
-        .remove(&disk)
-        .and_then(|boxes| boxes.into_iter().next())
-    {
-        let result = cross(&name);
-        return Ok(cli::report_crossing(verb, &name, remote, result));
+    match project_box(&disk)? {
+        Holder::Ready(name) => {
+            let result = cross(&name);
+            return Ok(cli::report_crossing(verb, &name, remote, result));
+        }
+        Holder::Starting(name) => {
+            let refusal = CrossingError::Refused(RefusalReason::DiskInUse, starting(&name, &disk));
+            return Ok(cli::report_crossing(verb, &name, remote, Err(refusal)));
+        }
+        Holder::None => {}
     }
     if !box_runtime
         .list_disks()?
@@ -111,15 +116,26 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
     let runtime = Builder::new_current_thread().enable_all().build()?;
     let result = runtime.block_on(async {
         let mut signals = Signals::new()?;
+        let name = plan.name.clone();
+        // Every start that ends without ready still prints one line.
+        let unstarted = |error| Ok(cli::report_crossing(verb, &name, remote, Err(error)));
         let mut box_ = match Box::up(&plan, &init, &mut signals).await {
             Ok(box_) => box_,
-            Err(UpError::Control) => return Ok(0),
+            Err(UpError::Control) => {
+                return unstarted(CrossingError::Failed(
+                    "the transient box was stopped before ready".to_string(),
+                ));
+            }
             Err(UpError::Signal) => {
                 return Ok(128 + signals.last().unwrap_or(nix::sys::signal::Signal::SIGTERM) as i32);
             }
-            Err(error) => return Err(error.into()),
+            Err(UpError::Refused(refusal)) => {
+                return unstarted(CrossingError::Refused(refusal.reason, refusal.detail));
+            }
+            Err(error) => {
+                return unstarted(CrossingError::Failed(io::Error::from(error).to_string()));
+            }
         };
-        let name = plan.name.clone();
         let crossed = tokio::task::spawn_blocking(move || {
             let result = cross(&name);
             cli::report_crossing(verb, &name, remote, result)
@@ -135,6 +151,39 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
     });
     runtime.shutdown_background();
     result
+}
+
+/// What holds a project disk.
+pub(crate) enum Holder {
+    None,
+    Ready(String),
+    /// Claimed but not ready: a first start's `from` copy may be partial.
+    Starting(String),
+}
+
+/// The box that attaches the project disk `disk`, and whether it is ready.
+pub(crate) fn project_box(disk: &str) -> io::Result<Holder> {
+    let Some((name, _)) = disk::attachments(runtime(), None)?
+        .remove(disk)
+        .and_then(|boxes| boxes.into_iter().next())
+    else {
+        return Ok(Holder::None);
+    };
+    let ready = match ownership::record(&name)? {
+        Some(record) => runs::launched(&record.generation)?,
+        // Listed by the runtime with no claim: a dead owner's box.
+        None => false,
+    };
+    Ok(if ready {
+        Holder::Ready(name)
+    } else {
+        Holder::Starting(name)
+    })
+}
+
+/// The `disk-in-use` detail for a box that is not ready.
+pub(crate) fn starting(name: &str, disk: &str) -> String {
+    format!("box {name:?} attaches disk {disk:?} and is not ready")
 }
 
 /// The canonical project root for `cwd`: the git top level, else `cwd`.

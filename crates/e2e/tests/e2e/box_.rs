@@ -2080,6 +2080,31 @@ chmod 755 .hostile/git"#
     );
     assert!(stderr.contains("project-in-git"), "wrong refusal: {stderr}");
     run_ok(&mut pinfold_in(&env, repo, &["pi", "--version"]));
+
+    // A worktree's `.git` names a git dir the project disk does not hold:
+    // pi, push and fetch refuse it, and run from the main checkout, where
+    // push and fetch start a transient box on the project disk. Sabotage:
+    // drop `refuse_worktree` from pi::launch::crossing; push in the worktree
+    // fails for want of a project disk and the reason assertion fails.
+    let worktree = env.root.join("linked");
+    host_git(&[
+        "worktree",
+        "add",
+        "-q",
+        worktree.to_str().unwrap(),
+        "-b",
+        "wt",
+    ]);
+    for args in [&["pi", "--version"][..], &["push"][..], &["fetch"][..]] {
+        let refused = pinfold_in(&env, &worktree, args).output().unwrap();
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(!refused.status.success(), "{args:?} ran in a worktree");
+        assert!(stderr.contains("worktree:"), "wrong refusal: {stderr}");
+    }
+    for (verb, event) in [("push", "pushed"), ("fetch", "fetched")] {
+        let (code, line) = one_json_line(&mut pinfold_in(&env, repo, &[verb]));
+        assert_eq!((code, &line["event"]), (0, &event.into()), "{line}");
+    }
 }
 
 fn crossing_fetch(env: &TestEnv, name: &str, repo: &Path) -> (i32, serde_json::Value) {

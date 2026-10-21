@@ -62,7 +62,7 @@ pub fn check(root: &Path, config: &Config) -> io::Result<()> {
     };
     Err(io::Error::new(
         io::ErrorKind::PermissionDenied,
-        format!("{changed} is new or changed; run `pinfold allow` to trust it"),
+        format!("untrusted: {changed} is new or changed; run `pinfold allow` to trust it"),
     ))
 }
 
