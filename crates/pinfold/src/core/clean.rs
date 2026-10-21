@@ -18,9 +18,6 @@ pub const PROJECT_LABEL: &str = "dev.pinfold.project";
 /// The two labels naming a profile's or a project's source on an image. A
 /// caller's name lives only in its `pinfold/image-<NAME>` tags.
 pub const FAMILY_LABELS: [&str; 2] = [PROFILE_LABEL, PROJECT_LABEL];
-/// The label podman puts on the intermediate images of a cached build, so
-/// `clean` prunes only pinfold's build cache.
-pub const LAYER_LABEL: &str = "dev.pinfold.layer";
 /// The label recording the digest of the image an image was built from.
 pub const BASE_LABEL: &str = "dev.pinfold.base";
 pub const OWNER_LABEL: &str = "dev.pinfold.owner";
@@ -114,8 +111,8 @@ pub struct Boxes {
 }
 
 /// Whether `box_` is pinfold's: it carries the owner label. Another
-/// container may carry other `dev.pinfold.` labels, since podman copies an
-/// image's labels onto a container a user starts from it.
+/// container may carry other `dev.pinfold.` labels, since a runtime copies
+/// an image's labels onto a container a user starts from it.
 pub fn pinfold_box(box_: &BoxInfo) -> bool {
     box_.labels.contains_key(OWNER_LABEL)
 }

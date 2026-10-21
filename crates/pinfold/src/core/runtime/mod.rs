@@ -1,8 +1,9 @@
-//! Container runtimes: one per OS, behind a trait.
+//! Box runtimes: one per OS, behind a trait.
 
 pub mod apple;
 #[cfg(target_os = "linux")]
 pub mod firecracker;
+#[cfg(target_os = "linux")]
 pub mod podman;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -19,8 +20,9 @@ use std::time::{Duration, Instant};
 
 use nix::poll::{PollFd, PollFlags, poll};
 use serde::de::DeserializeOwned;
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 
+use crate::core::disk::{Fill, Seeding};
 use crate::core::pipe::{nonblocking, remaining};
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
@@ -45,14 +47,76 @@ fn guest_env(command: &mut std::process::Command, name: &str, value: &OsStr) {
     command.args(["--env", &transport]).env(transport, encoded);
 }
 
-/// The container runtime for this OS: Apple `container` on macOS, rootless
-/// podman on Linux, the only targets pinfold builds for.
+/// The box runtime for this OS: Apple `container` on macOS, Firecracker on
+/// Linux, the only targets pinfold builds for.
 pub fn runtime() -> &'static dyn Runtime {
-    if cfg!(target_os = "macos") {
-        &apple::Apple
-    } else {
-        &podman::Podman
+    #[cfg(target_os = "linux")]
+    return &firecracker::Firecracker;
+    #[cfg(not(target_os = "linux"))]
+    return &apple::Apple;
+}
+
+#[cfg(target_os = "linux")]
+pub use firecracker::Prepared;
+
+/// What [`prepare`] made for one start. Apple needs nothing.
+#[cfg(not(target_os = "linux"))]
+pub struct Prepared;
+
+/// The slow, cancellable part of a start, run on a blocking thread before
+/// [`start`]: on Linux the VMM's install, the root and init disks and the
+/// mounts' images. `image_id` is the image `up` resolved; a tag that moved
+/// since fails as `image-changed`.
+pub fn prepare(
+    plan: &Plan,
+    state_dir: &Path,
+    image_id: &str,
+    cancel: &AtomicBool,
+) -> io::Result<Prepared> {
+    #[cfg(target_os = "linux")]
+    return firecracker::prepare(plan, state_dir, image_id, cancel);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (plan, state_dir, image_id, cancel);
+        Ok(Prepared)
     }
+}
+
+/// Start the box. On Linux the boot carries the new disks' `fills` and the
+/// profile's `seeding`; Apple's caller copies them in after ready.
+pub fn start(
+    prepared: Prepared,
+    plan: &Plan,
+    init: &Path,
+    proxy_socket: Option<&Path>,
+    fills: &[Fill],
+    seeding: Option<&Seeding>,
+) -> io::Result<Child> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = init;
+        firecracker::Vm::up(prepared, plan, proxy_socket, fills, seeding)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let (Prepared, _, _) = (prepared, fills, seeding);
+        apple::up(plan, init, proxy_socket)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub use apple::Client as Child;
+/// What `box up` holds for its box: on Linux the VM it runs itself, on
+/// macOS the attached runtime client. Each has `ready`, `wait`, `down` and
+/// `abort`.
+#[cfg(target_os = "linux")]
+pub use firecracker::Vm as Child;
+
+/// A VMM's exit code, or `128+n` for signal `n`, as the exit status a
+/// runtime client would report: `exited` names 137 for a SIGKILLed VMM.
+#[cfg(target_os = "linux")]
+fn exit_status(code: i32) -> ExitStatus {
+    std::os::unix::process::ExitStatusExt::from_raw((code & 0xff) << 8)
 }
 
 pub(crate) fn require_version(program: &str, version: &str, minimum: [u64; 3]) -> io::Result<()> {
@@ -371,27 +435,19 @@ pub struct BuildRequest<'a> {
     pub cache: bool,
 }
 
-/// One OS's container runtime. Command lines are built as data.
+/// One OS's box runtime. Command lines and VM configurations are built as
+/// data.
 pub trait Runtime: Sync {
-    /// Start the attached `container run` process that owns the box. When
-    /// `proxy_socket` is set, carry that host unix socket into the box.
-    /// `seccomp` is the profile [`Runtime::preflight`] returned.
-    /// `state_dir` belongs to this claim until runtime removal.
-    fn up(
-        &self,
-        plan: &Plan,
-        init: &Path,
-        state_dir: &Path,
-        proxy_socket: Option<&Path>,
-        seccomp: Option<&Path>,
-    ) -> io::Result<Child>;
-
     /// Refuse a host the runtime cannot serve, before `up` creates any box
-    /// state, and return the seccomp profile the runtime reports, which
-    /// `up` needs. podman only; Apple returns `None`.
-    fn preflight(&self) -> io::Result<Option<PathBuf>>;
+    /// state.
+    fn preflight(&self) -> io::Result<()>;
 
-    /// Stop and remove the box.
+    /// Where the box's proxy listens, in its claimed `state_dir`.
+    fn proxy_socket(&self, state_dir: &Path) -> io::Result<PathBuf> {
+        Ok(state_dir.join("proxy.sock"))
+    }
+
+    /// Stop and remove the box of an owner that is gone.
     fn down(&self, name: &str) -> io::Result<()>;
 
     /// Run `argv` in a running box with inherited stdio, through the box's
@@ -530,6 +586,31 @@ fn runtime_path(program: &str) -> io::Result<PathBuf> {
     Err(spawn_error(program, io::ErrorKind::NotFound.into()))
 }
 
+/// The box's environment in order, a later entry winning: the spec's, a
+/// `from` entry read from pinfold's own environment under the entry's key,
+/// then the always-applied variables.
+fn guest_vars(plan: &Plan) -> Vec<(String, OsString)> {
+    let mut vars: Vec<(String, OsString)> = plan
+        .env
+        .iter()
+        .filter_map(|(name, value)| {
+            let value = match value {
+                Env::Exact(value) => Some(OsString::from(value)),
+                Env::From { from } => std::env::var_os(from),
+            };
+            Some((name.clone(), value?))
+        })
+        .collect();
+    // Always applied: Node's fetch reads the proxy variables only with this
+    // set. These override any spec entries with the same names.
+    vars.push(("NODE_USE_ENV_PROXY".into(), "1".into()));
+    if plan.egress.is_some() {
+        vars.push(("HTTPS_PROXY".into(), PROXY_URL.into()));
+        vars.push(("http_proxy".into(), PROXY_URL.into()));
+    }
+    vars
+}
+
 /// The attached `<program> run` command that owns a box: stdin and stdout
 /// piped. `program` is resolved on pinfold's own `PATH`. Guest values are
 /// encoded under prefixed names, so they cannot configure the host client.
@@ -540,15 +621,13 @@ fn runtime_path(program: &str) -> io::Result<PathBuf> {
 /// to that guest path, which `extra` carries the proxy socket to.
 ///
 /// Env values go through the child's environment, so argv holds only names
-/// and `ps` cannot read a secret. A `from` entry names a host variable the
-/// box sees under the entry's key; the two need not match.
-fn up<'a>(
+/// and `ps` cannot read a secret.
+fn up(
     program: &str,
     plan: &Plan,
     init: &Path,
     guest_socket: Option<&str>,
     extra: Vec<OsString>,
-    env: impl Iterator<Item = (&'a String, &'a Env)>,
 ) -> io::Result<Command> {
     let program = runtime_path(program)?;
     let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
@@ -571,21 +650,8 @@ fn up<'a>(
     for (key, value) in &plan.labels {
         command.arg("--label").arg(format!("{key}={value}"));
     }
-    for (name, value) in env {
-        let value = match value {
-            Env::Exact(value) => Some(OsString::from(value)),
-            Env::From { from } => std::env::var_os(from),
-        };
-        if let Some(value) = value {
-            guest_env(command.as_std_mut(), name, &value);
-        }
-    }
-    // Always applied: Node's fetch reads the proxy variables only with this
-    // set. These override any spec entries with the same names.
-    guest_env(command.as_std_mut(), "NODE_USE_ENV_PROXY", OsStr::new("1"));
-    if plan.egress.is_some() {
-        guest_env(command.as_std_mut(), "HTTPS_PROXY", OsStr::new(PROXY_URL));
-        guest_env(command.as_std_mut(), "http_proxy", OsStr::new(PROXY_URL));
+    for (name, value) in guest_vars(plan) {
+        guest_env(command.as_std_mut(), &name, &value);
     }
     for mount in &plan.mounts {
         command.arg("--mount").arg(bind(&mount.host, &mount.guest));

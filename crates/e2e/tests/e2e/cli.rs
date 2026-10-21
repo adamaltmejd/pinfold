@@ -215,6 +215,50 @@ fn doctor_reports_without_changing_state() {
             }
         }
     }
+
+    // The box half: the copy's `up` is refused as `runtime` naming the
+    // token, and the profiled executable starts a box. Sabotage: skip the
+    // jail preflight; the copy's `up` fails later, without the token.
+    #[cfg(target_os = "linux")]
+    if apparmor_restricts {
+        use std::io::Write;
+        use std::process::Stdio;
+        let name = crate::box_::box_name("doctor");
+        let spec = serde_json::json!({ "name": name, "image": e2e::default_image(&env) });
+        let mut up = env
+            .command(&unprofiled)
+            .args(["box", "up"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn the copy's box up");
+        up.stdin
+            .take()
+            .unwrap()
+            .write_all(spec.to_string().as_bytes())
+            .unwrap();
+        let output = up.wait_with_output().unwrap();
+        assert!(
+            !output.status.success(),
+            "the unprofiled copy started a box"
+        );
+        let refused: serde_json::Value = serde_json::from_slice(
+            output
+                .stdout
+                .split(|&byte| byte == b'\n')
+                .next()
+                .unwrap_or_default(),
+        )
+        .expect("the copy's refusal is a JSON line");
+        assert_eq!(refused["reason"], "runtime", "{refused}");
+        assert!(
+            refused["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("userns-apparmor")),
+            "the copy's refusal does not name userns-apparmor: {refused}"
+        );
+        crate::box_::box_up(&env, &spec, &name).down(&env);
+    }
 }
 
 /// Make `/dev/kvm` unusable to `command` with a real kernel refusal: a

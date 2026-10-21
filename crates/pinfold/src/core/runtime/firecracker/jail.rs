@@ -3,17 +3,15 @@
 //! The child of `clone` is a copy of a multithreaded process, so between
 //! `clone` and `execve` it makes only system calls: every path, map and
 //! argument is built before it, and the child never allocates.
-#![expect(
-    dead_code,
-    reason = "the Firecracker adapter (#141) spawns the VMM in this jail"
-)]
 
 use std::ffi::{CStr, CString, c_char};
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+
+use tokio::sync::oneshot;
 
 use nix::errno::Errno;
 use nix::fcntl::{OFlag, open};
@@ -32,7 +30,9 @@ pub const KERNEL: &str = "/vmlinux";
 pub const ROOT_DISK: &str = "/root.ext4";
 pub const INIT_DISK: &str = "/init.ext4";
 pub const CONFIG: &str = "/config.json";
-pub const VSOCK: &str = "/vsock";
+const VSOCK: &str = "/vsock";
+/// The VM's vsock socket. Firecracker adds `_<port>` for a host listener.
+pub const VSOCK_PATH: &str = "/vsock/v.sock";
 const KVM: &str = "/dev/kvm";
 
 /// The jail path of the box's disk at `index` in [`Jail::disks`].
@@ -49,8 +49,9 @@ pub struct Jail<'a> {
     pub kernel: &'a Path,
     pub root_disk: &'a Path,
     pub init_disk: &'a Path,
-    /// The box's disks, read and written by the VM.
-    pub disks: &'a [PathBuf],
+    /// The box's drives after the root and init disks, each with whether
+    /// the VM writes it: the box's disks, and its mounts' images.
+    pub disks: &'a [(PathBuf, bool)],
     /// The directory that holds the vsock socket and its host listeners.
     pub vsock: &'a Path,
     /// The VM configuration file, read with `--config-file`.
@@ -61,15 +62,66 @@ pub struct Jail<'a> {
 /// for the VMM's lifetime.
 pub struct Vmm {
     pub pid: Pid,
-    status: mpsc::Receiver<io::Result<i32>>,
+    /// Opened before the owner thread can reap the VMM, so a signal sent
+    /// through it never reaches a reused pid.
+    pidfd: OwnedFd,
+    status: oneshot::Receiver<io::Result<i32>>,
+    /// The outcome once received: the receiver must not be polled again.
+    ended: Option<Result<i32, String>>,
 }
 
 impl Vmm {
-    /// Block until the VMM ends: its exit code, or `128+n` for signal `n`.
-    pub fn wait(&self) -> io::Result<i32> {
-        self.status
-            .recv()
-            .map_err(|_| io::Error::other("the VMM's owner thread ended without a status"))?
+    /// Wait until the VMM ends: its exit code, or `128+n` for signal `n`.
+    /// Cancel-safe, and answers again once it has.
+    pub async fn wait(&mut self) -> io::Result<i32> {
+        if self.ended.is_none() {
+            let outcome = match (&mut self.status).await {
+                Ok(outcome) => outcome.map_err(|error| error.to_string()),
+                Err(_) => Err("the VMM's owner thread ended without a status".to_string()),
+            };
+            self.ended = Some(outcome);
+        }
+        self.ended()
+    }
+
+    fn ended(&self) -> io::Result<i32> {
+        match self.ended.as_ref().expect("an outcome was received") {
+            Ok(code) => Ok(*code),
+            Err(error) => Err(io::Error::other(error.clone())),
+        }
+    }
+
+    /// Whether the VMM still runs.
+    pub fn running(&mut self) -> bool {
+        if self.ended.is_some() {
+            return false;
+        }
+        self.ended = match self.status.try_recv() {
+            Err(oneshot::error::TryRecvError::Empty) => return true,
+            Ok(outcome) => Some(outcome.map_err(|error| error.to_string())),
+            Err(oneshot::error::TryRecvError::Closed) => Some(Err(
+                "the VMM's owner thread ended without a status".to_string(),
+            )),
+        };
+        false
+    }
+
+    /// SIGKILL the VMM through its pidfd. One that has ended is left alone.
+    pub fn kill(&self) -> io::Result<()> {
+        // SAFETY: pidfd_send_signal on an owned pidfd, no siginfo.
+        let sent = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                self.pidfd.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0u32,
+            )
+        };
+        match Errno::result(sent) {
+            Ok(_) | Err(Errno::ESRCH) => Ok(()),
+            Err(error) => Err(io::Error::other(format!("kill the VMM: {error}"))),
+        }
     }
 }
 
@@ -85,7 +137,7 @@ impl Vmm {
 pub fn spawn(jail: &Jail) -> io::Result<Vmm> {
     let plan = Plan::jail(jail)?;
     let (started_tx, started_rx) = mpsc::channel();
-    let (status_tx, status_rx) = mpsc::channel();
+    let (status_tx, status_rx) = oneshot::channel();
     std::thread::Builder::new()
         .name("vmm".into())
         .spawn(move || {
@@ -96,17 +148,28 @@ pub fn spawn(jail: &Jail) -> io::Result<Vmm> {
                     return;
                 }
             };
-            let _ = started_tx.send(Ok(pid));
+            // Before `wait`: the unreaped VMM still holds its pid.
+            let _ = started_tx.send(pidfd_open(pid).map(|pidfd| (pid, pidfd)));
             // `_alive`'s write end stays open until the VMM has ended.
             let _ = status_tx.send(wait(pid));
         })?;
-    let pid = started_rx
+    let (pid, pidfd) = started_rx
         .recv()
         .map_err(|_| io::Error::other("the VMM's owner thread ended before it started"))??;
     Ok(Vmm {
         pid,
+        pidfd,
         status: status_rx,
+        ended: None,
     })
+}
+
+fn pidfd_open(pid: Pid) -> io::Result<OwnedFd> {
+    // SAFETY: pidfd_open returns a new descriptor or -1.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid.as_raw(), 0u32) };
+    let fd = Errno::result(fd).map_err(|error| io::Error::other(format!("pidfd_open: {error}")))?;
+    // SAFETY: a new descriptor, owned here alone.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd as RawFd) })
 }
 
 /// Make the jail's namespaces, maps and tmpfs root in a child that then
@@ -216,10 +279,15 @@ impl Plan {
                     | landlock::READ_DIR,
             ),
         ];
-        for (index, source) in jail.disks.iter().enumerate() {
+        for (index, (source, write)) in jail.disks.iter().enumerate() {
             let name = disk(index);
-            binds.push(writable(source, &name, false)?);
-            rules.push((inside(&name)?, landlock::READ_FILE | landlock::WRITE_FILE));
+            if *write {
+                binds.push(writable(source, &name, false)?);
+                rules.push((inside(&name)?, landlock::READ_FILE | landlock::WRITE_FILE));
+            } else {
+                binds.push(read_only(source, &name)?);
+                rules.push((inside(&name)?, landlock::READ_FILE));
+            }
         }
         let argv = [FIRECRACKER, "--config-file", CONFIG, "--no-api"]
             .into_iter()

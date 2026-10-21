@@ -438,6 +438,11 @@ impl Plan {
                     mount.host.display()
                 )));
             }
+            // A Linux box copies the whole tree at each start.
+            #[cfg(target_os = "linux")]
+            unreadable(&mount.host).map_err(|(path, error)| {
+                invalid(format!("mount host {}: {error}", path.display()))
+            })?;
         }
         let mut names = std::collections::BTreeSet::new();
         for disk in &self.disks {
@@ -630,8 +635,40 @@ impl Plan {
                 )));
             }
         }
+        // A Firecracker VM's drives are vda to vdz; the init and root disks
+        // take the first two.
+        if cfg!(target_os = "linux") && guests.len() > MAX_ATTACHMENTS {
+            return Err(invalid(format!(
+                "a box attaches at most {MAX_ATTACHMENTS} disks and mounts, pinfold's own mounts included; this one has {}",
+                guests.len()
+            )));
+        }
         Ok(())
     }
+}
+
+/// The disks and mounts one Linux box attaches.
+const MAX_ATTACHMENTS: usize = 24;
+
+/// Refuse the first entry under `dir` the user cannot read: a directory
+/// it cannot list or a file it cannot open. Symlinks are copied as links.
+#[cfg(target_os = "linux")]
+fn unreadable(dir: &Path) -> Result<(), (PathBuf, std::io::Error)> {
+    use nix::unistd::{AccessFlags, access};
+    let entries = std::fs::read_dir(dir).map_err(|error| (dir.to_path_buf(), error))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| (dir.to_path_buf(), error))?;
+        let path = entry.path();
+        let kind = entry.file_type().map_err(|error| (path.clone(), error))?;
+        if kind.is_dir() {
+            access(&path, AccessFlags::R_OK | AccessFlags::X_OK)
+                .map_err(|error| (path.clone(), error.into()))?;
+            unreadable(&path)?;
+        } else if kind.is_file() {
+            access(&path, AccessFlags::R_OK).map_err(|error| (path.clone(), error.into()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Guest paths no mount or disk may name, at or below.
@@ -664,9 +701,8 @@ pub fn check_reserved_labels(labels: &BTreeMap<String, String>) -> Result<(), St
     }
 }
 
-/// A POSIX environment name: `[A-Za-z_][A-Za-z0-9_]*`. Podman expands a
-/// trailing `*` in `--env NAME` against its own environment, which is the
-/// caller's, so anything else would leak or fail unpredictably.
+/// A POSIX environment name: `[A-Za-z_][A-Za-z0-9_]*`. Anything else
+/// would leak or fail unpredictably in a runtime CLI's `--env`.
 fn valid_env_name(name: &str) -> bool {
     name.bytes()
         .next()
@@ -727,22 +763,24 @@ fn on_or_above_public_suffix(suffix: &str) -> bool {
 }
 
 /// A memory limit is a whole number of mebibytes or gibibytes, at least
-/// 256M. The value reaches the runtime's `--memory` unparsed, and a
-/// unitless number is bytes on podman and something else on Apple.
+/// 256M.
 fn valid_memory(memory: &str) -> bool {
+    memory_mib(memory).is_some_and(|mebibytes| mebibytes >= 256)
+}
+
+/// A memory value's mebibytes: a whole number, then `M` or `G`.
+pub fn memory_mib(memory: &str) -> Option<u64> {
     let multiplier: u64 = match memory.bytes().last() {
         Some(b'M') => 1,
         Some(b'G') => 1024,
-        _ => return false,
+        _ => return None,
     };
     // `parse` alone would take a leading `+`; `all` alone the empty string.
     let number = &memory[..memory.len() - 1];
-    number.bytes().all(|byte| byte.is_ascii_digit())
-        && number
-            .parse::<u64>()
-            .ok()
-            .and_then(|number| number.checked_mul(multiplier))
-            .is_some_and(|mebibytes| mebibytes >= 256)
+    if !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    number.parse::<u64>().ok()?.checked_mul(multiplier)
 }
 
 pub(crate) fn valid_name(name: &str) -> bool {

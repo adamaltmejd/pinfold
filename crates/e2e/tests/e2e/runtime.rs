@@ -2,10 +2,6 @@
 
 use std::fs;
 use std::io::BufReader;
-#[cfg(target_os = "linux")]
-use std::io::Write;
-#[cfg(target_os = "linux")]
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -19,9 +15,6 @@ use super::box_::{
     ChildOwner, DiskCleanup, HeldBuild, HeldDownload, RuntimeContainer, box_name, box_up,
     built_unique_ref, disk_names, find_box_state_dir, image_build, image_rm, read_bounded,
 };
-
-#[cfg(target_os = "linux")]
-use super::box_::{Starting, box_up_start, status_field};
 
 #[test]
 fn cleanup_removes_only_pinfolds_garbage() {
@@ -306,9 +299,6 @@ fn cleanup_removes_only_pinfolds_garbage() {
     };
     let live_ref = format!("{live_repository}:latest");
     runtime_build(&[&live_ref], &[&live_label]);
-    // On Apple the live box attaches its project's home disk. Linux disks
-    // arrive with the Firecracker runtime.
-    let disks = cfg!(target_os = "macos");
     let live_disk = format!("pi-{live_id}-home");
     let other_disk = format!("pi-{other_id}-home");
     let moved_project = TestDir::new(&env, "moved-project");
@@ -320,10 +310,12 @@ fn cleanup_removes_only_pinfolds_garbage() {
         other_disk.clone(),
         moved_disk.clone(),
     ]);
-    let mut live_spec = serde_json::json!({ "name": live, "image": live_ref });
-    if disks {
-        live_spec["disks"] = serde_json::json!([{ "name": live_disk, "guest": "/home-disk" }]);
-    }
+    // The live box attaches its project's home disk.
+    let live_spec = serde_json::json!({
+        "name": live,
+        "image": live_ref,
+        "disks": [{ "name": live_disk, "guest": "/home-disk" }],
+    });
     let _live = box_up(&env, &live_spec, &live);
 
     let dead_label = "dev.example.test=e2e-cleanup-dead";
@@ -544,18 +536,16 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // assertion fails. Sabotage: drop the `--unused` disk removal from
     // `CleanPlan::remove`; the idle project's disk survives and its
     // assertion fails.
-    if disks {
-        for disk in [&other_disk, &moved_disk] {
-            let creator = box_name("cleanup-disk");
-            let spec = serde_json::json!({
-                "name": creator,
-                "image": default_image(&env),
-                "disks": [{ "name": disk, "guest": "/disk" }],
-            });
-            let mut up = box_up(&env, &spec, &creator);
-            up.down(&env);
-            assert!(up.wait().success(), "the disk's box did not exit cleanly");
-        }
+    for disk in [&other_disk, &moved_disk] {
+        let creator = box_name("cleanup-disk");
+        let spec = serde_json::json!({
+            "name": creator,
+            "image": default_image(&env),
+            "disks": [{ "name": disk, "guest": "/disk" }],
+        });
+        let mut up = box_up(&env, &spec, &creator);
+        up.down(&env);
+        assert!(up.wait().success(), "the disk's box did not exit cleanly");
     }
     fs::rename(moved_project.path(), env.root.join("moved-away")).unwrap();
     run_ok(env.command(pinfold()).arg("clean"));
@@ -563,11 +553,9 @@ fn cleanup_removes_only_pinfolds_garbage() {
         moved_state.is_dir(),
         "clean removed a moved checkout's state"
     );
-    if disks {
-        let listed = disk_names(&env);
-        for disk in [&live_disk, &other_disk, &moved_disk] {
-            assert!(listed.contains(disk), "clean removed disk {disk}");
-        }
+    let listed = disk_names(&env);
+    for disk in [&live_disk, &other_disk, &moved_disk] {
+        assert!(listed.contains(disk), "clean removed disk {disk}");
     }
 
     // `--unused AGE` removes the state and disks of projects not run for
@@ -578,18 +566,16 @@ fn cleanup_removes_only_pinfolds_garbage() {
         !moved_state.exists(),
         "clean --unused kept the moved checkout's state"
     );
-    if disks {
-        let listed = disk_names(&env);
+    let listed = disk_names(&env);
+    assert!(
+        listed.contains(&live_disk),
+        "clean --unused removed a live project's disk"
+    );
+    for disk in [&other_disk, &moved_disk] {
         assert!(
-            listed.contains(&live_disk),
-            "clean --unused removed a live project's disk"
+            !listed.contains(disk),
+            "clean --unused kept idle disk {disk}"
         );
-        for disk in [&other_disk, &moved_disk] {
-            assert!(
-                !listed.contains(disk),
-                "clean --unused kept idle disk {disk}"
-            );
-        }
     }
     assert!(
         !other_state.exists(),
@@ -604,86 +590,83 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // clean deletes the existing state while the cold download holds startup
     // after its claim but before a runtime box can protect the project.
     // The checkout is moved away meanwhile; that alone protects nothing.
-    // Linux pi boxes need disks, which arrive with the Firecracker runtime.
-    if cfg!(target_os = "macos") {
-        let env = TestEnv::with_private_cache("clean-startup");
-        let project = TestDir::new(&env, "starting-project");
-        let missing = format!("{profile}-startup-missing");
-        profile_containerfile(&env, &missing, "FROM scratch\n");
-        let refused = env
-            .command(pinfold())
-            .args(["pi", "--version"])
-            .env("PINFOLD_PROFILE", &missing)
-            .current_dir(project.path())
-            .output()
-            .unwrap();
-        assert!(!refused.status.success(), "the missing image was accepted");
-        let state = project_state_dir(&env, project.path());
-        let id = project_id(&env, project.path());
-        let marker = state.join("marker");
-        fs::write(&marker, b"starting project\n").unwrap();
+    let env = TestEnv::with_private_cache("clean-startup");
+    let project = TestDir::new(&env, "starting-project");
+    let missing = format!("{profile}-startup-missing");
+    profile_containerfile(&env, &missing, "FROM scratch\n");
+    let refused = env
+        .command(pinfold())
+        .args(["pi", "--version"])
+        .env("PINFOLD_PROFILE", &missing)
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    assert!(!refused.status.success(), "the missing image was accepted");
+    let state = project_state_dir(&env, project.path());
+    let id = project_id(&env, project.path());
+    let marker = state.join("marker");
+    fs::write(&marker, b"starting project\n").unwrap();
 
-        let mut proxy = HeldDownload::new();
-        let child = env
-            .command(pinfold())
-            .envs(proxy.vars())
-            .args(["pi", "--version"])
-            .current_dir(project.path())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap();
-        let mut child = ChildOwner::new(child, &env, None);
-        let mut output = BufReader::new(child.stdout.take().unwrap());
-        proxy.event("held");
-        let label = format!("dev.pinfold.project={id}");
-        assert!(
-            box_list(&env, &label).is_empty(),
-            "startup already had a runtime box before the artifact arrived"
-        );
-        struct RestoreProject {
-            root: PathBuf,
-            moved: PathBuf,
-        }
-        impl Drop for RestoreProject {
-            fn drop(&mut self) {
-                if self.moved.exists() {
-                    fs::rename(&self.moved, &self.root).unwrap();
-                }
+    let mut proxy = HeldDownload::new();
+    let child = env
+        .command(pinfold())
+        .envs(proxy.vars())
+        .args(["pi", "--version"])
+        .current_dir(project.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let mut child = ChildOwner::new(child, &env, None);
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    proxy.event("held");
+    let label = format!("dev.pinfold.project={id}");
+    assert!(
+        box_list(&env, &label).is_empty(),
+        "startup already had a runtime box before the artifact arrived"
+    );
+    struct RestoreProject {
+        root: PathBuf,
+        moved: PathBuf,
+    }
+    impl Drop for RestoreProject {
+        fn drop(&mut self) {
+            if self.moved.exists() {
+                fs::rename(&self.moved, &self.root).unwrap();
             }
         }
-        let restore = RestoreProject {
-            root: project.path().to_path_buf(),
-            moved: env.root.join("moved-project"),
-        };
-        fs::rename(&restore.root, &restore.moved).unwrap();
-        run_ok(env.command(pinfold()).args(["clean", "--unused", "0s"]));
-        assert_eq!(
-            fs::read(&marker).unwrap(),
-            b"starting project\n",
-            "clean removed the claimed startup's existing state"
-        );
-        fs::rename(&restore.moved, &restore.root).unwrap();
-        proxy.release();
-        read_bounded(
-            &mut child,
-            &mut output,
-            std::time::Duration::from_secs(90),
-            true,
-        )
-        .expect("pi finishes after the artifact download resumes");
-        assert!(
-            child.wait_bounded().success(),
-            "pi startup failed after clean"
-        );
-
-        // Positive control: the same stale state is removable after the
-        // real pi launch finishes and releases its project locks.
-        fs::rename(&restore.root, &restore.moved).unwrap();
-        run_ok(env.command(pinfold()).args(["clean", "--unused", "0s"]));
-        assert!(!state.exists(), "clean kept the idle project's stale state");
     }
+    let restore = RestoreProject {
+        root: project.path().to_path_buf(),
+        moved: env.root.join("moved-project"),
+    };
+    fs::rename(&restore.root, &restore.moved).unwrap();
+    run_ok(env.command(pinfold()).args(["clean", "--unused", "0s"]));
+    assert_eq!(
+        fs::read(&marker).unwrap(),
+        b"starting project\n",
+        "clean removed the claimed startup's existing state"
+    );
+    fs::rename(&restore.moved, &restore.root).unwrap();
+    proxy.release();
+    read_bounded(
+        &mut child,
+        &mut output,
+        std::time::Duration::from_secs(90),
+        true,
+    )
+    .expect("pi finishes after the artifact download resumes");
+    assert!(
+        child.wait_bounded().success(),
+        "pi startup failed after clean"
+    );
+
+    // Positive control: the same stale state is removable after the
+    // real pi launch finishes and releases its project locks.
+    fs::rename(&restore.root, &restore.moved).unwrap();
+    run_ok(env.command(pinfold()).args(["clean", "--unused", "0s"]));
+    assert!(!state.exists(), "clean kept the idle project's stale state");
 
     // `image rm NAME` retires one caller image name: every tag of the name,
     // whatever its age, and no other name's, except an image's last tag
@@ -858,240 +841,26 @@ fn cleanup_removes_only_pinfolds_garbage() {
         tagged_images(&format!("pinfold/image-{retire_name}")).is_empty(),
         "the second image rm left a tag of the retired name"
     );
+    // A Linux box boots its image's root disk; it goes with the image and
+    // stays while another box's image holds it. Sabotage: drop
+    // `prune_root_disks` from `image rm`; the retired image's disk remains.
+    #[cfg(target_os = "linux")]
+    {
+        let root_disk = |id: &str| env.cache().join(format!("pinfold/root/{id}.ext4"));
+        assert!(
+            !root_disk(&retire_ids[0]).exists(),
+            "the removed image's root disk survived image rm"
+        );
+        assert!(
+            root_disk(&retire_ids[1]).is_file(),
+            "image rm removed the twin box's root disk"
+        );
+    }
     up_twin.down(&env);
     assert!(
         up_twin.wait().success(),
         "the twin box's up did not exit cleanly"
     );
-}
-
-#[test]
-#[cfg(target_os = "linux")]
-fn linux_boxes_apply_their_own_seccomp_profile() {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let _runtime = crate::exclusive_runtime();
-    // Sabotage: write both derived policies to one shared pathname again.
-    // Both Podman consumers are held until the second policy replaces it;
-    // the first box then wrongly refuses getppid.
-    let env = TestEnv::with_private_cache("seccomp-selection");
-    let image = default_image(&env);
-    let info = run_ok(
-        env.command(Path::new("podman"))
-            .args(["info", "--format", "json"]),
-    );
-    let info: serde_json::Value = serde_json::from_slice(&info.stdout).unwrap();
-    let source = info["host"]["security"]["seccompProfilePath"]
-        .as_str()
-        .expect("Podman's host seccomp profile");
-    let normal: serde_json::Value = serde_json::from_slice(&fs::read(source).unwrap()).unwrap();
-    let mut strict = normal.clone();
-    let rules = strict["syscalls"].as_array_mut().unwrap();
-    for rule in rules.iter_mut() {
-        if rule["action"] == "SCMP_ACT_ALLOW" {
-            rule["names"]
-                .as_array_mut()
-                .unwrap()
-                .retain(|name| name != "getppid");
-        }
-    }
-    rules.retain(|rule| !rule["names"].as_array().unwrap().is_empty());
-    rules.push(serde_json::json!({
-        "names": ["getppid"],
-        "action": "SCMP_ACT_ERRNO",
-        "errnoRet": nix::libc::EPERM,
-    }));
-
-    // Observe raw syscalls, including errno, rather than libc's cached IDs.
-    let fixture = env.root.join("fixture");
-    fs::create_dir_all(&fixture).unwrap();
-    let observer = env.root.join("seccomp-observer.c");
-    fs::write(
-        &observer,
-        r#"#define _GNU_SOURCE
-#include <errno.h>
-#include <stdio.h>
-#include <sys/syscall.h>
-#include <unistd.h>
-int main(void) {
-    errno = 0;
-    long parent = syscall(SYS_getppid);
-    int parent_errno = errno;
-    errno = 0;
-    long self = syscall(SYS_getpid);
-    int self_errno = errno;
-    printf("{\"getppid\":%ld,\"getppid_errno\":%d,\"getpid\":%ld,\"getpid_errno\":%d}\n",
-           parent, parent_errno, self, self_errno);
-    return 0;
-}
-"#,
-    )
-    .unwrap();
-    run_ok(
-        Command::new("musl-gcc")
-            .args(["-O2", "-static", "-o"])
-            .arg(fixture.join("seccomp-observer"))
-            .arg(observer),
-    );
-
-    let names = [box_name("seccomp-normal"), box_name("seccomp-strict")];
-    let sources = [env.root.join("normal.fifo"), env.root.join("strict.fifo")];
-    let configs = [env.root.join("normal.conf"), env.root.join("strict.conf")];
-    for (source, config) in sources.iter().zip(&configs) {
-        nix::unistd::mkfifo(
-            source,
-            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
-        )
-        .unwrap();
-        fs::write(
-            config,
-            format!(
-                "[containers]\nseccomp_profile = {}\n",
-                serde_json::to_string(source.to_str().unwrap()).unwrap()
-            ),
-        )
-        .unwrap();
-    }
-    let mut starts = std::array::from_fn::<_, 2, _>(|index| {
-        let spec = serde_json::json!({
-            "name": names[index],
-            "image": image,
-            "mounts": [{"host": fixture, "guest": "/fixture"}],
-        });
-        box_up_start(
-            &env,
-            &spec,
-            &[("CONTAINERS_CONF", configs[index].to_str().unwrap())],
-        )
-    });
-
-    // FIFO writers rendezvous only once both owners have completed their
-    // preflight and preparation. Keep their profile reads open until then.
-    let writers = sources.each_ref().map(|source| {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        loop {
-            match fs::OpenOptions::new()
-                .write(true)
-                .custom_flags(nix::libc::O_NONBLOCK)
-                .open(source)
-            {
-                Ok(writer) => break writer,
-                Err(error) if error.raw_os_error() == Some(nix::libc::ENXIO) => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "box up did not read its host seccomp profile"
-                    );
-                    std::thread::yield_now();
-                }
-                Err(error) => panic!("open host seccomp fixture: {error}"),
-            }
-        }
-    });
-
-    let store = &info["store"];
-    let lock_path = Path::new(store["graphRoot"].as_str().unwrap()).join(format!(
-        "{}-images/images.lock",
-        store["graphDriverName"].as_str().unwrap()
-    ));
-    // Declared after the owners and FIFO writers: panic releases the lock
-    // before owner cleanup needs Podman. No image metadata is changed.
-    let lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(lock_path)
-        .expect("open Podman's image-store lock");
-    let metadata = lock.metadata().unwrap();
-    let lock_identity = format!(
-        "{:02x}:{:02x}:{}",
-        nix::sys::stat::major(metadata.dev()),
-        nix::sys::stat::minor(metadata.dev()),
-        metadata.ino()
-    );
-    let held = nix::libc::flock {
-        l_type: nix::libc::F_WRLCK as i16,
-        l_whence: nix::libc::SEEK_SET as i16,
-        l_start: 0,
-        l_len: 0,
-        l_pid: 0,
-    };
-    crate::hold_image_lock(&lock, &held);
-    for ((mut writer, policy), starting) in writers.into_iter().zip([normal, strict]).zip(&starts) {
-        let policy = serde_json::to_vec(&policy).unwrap();
-        let mut remaining = policy.as_slice();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while !remaining.is_empty() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "box up stopped reading its host seccomp profile"
-            );
-            match writer.write(remaining) {
-                Ok(0) => panic!("host seccomp fixture wrote no bytes"),
-                Ok(written) => remaining = &remaining[written..],
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-                    ) =>
-                {
-                    std::thread::yield_now();
-                }
-                Err(error) => panic!("write host seccomp fixture: {error}"),
-            }
-        }
-        drop(writer);
-        // Podman's image lookup precedes seccomp consumption. Its kernel
-        // lock waiter proves derivation finished while consumption is held.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        loop {
-            let locks = fs::read_to_string("/proc/locks").unwrap();
-            let waiting = locks.lines().any(|line| {
-                let fields: Vec<_> = line.split_whitespace().collect();
-                if !fields.contains(&"->") || !fields.contains(&lock_identity.as_str()) {
-                    return false;
-                }
-                let Some(pid) = fields.get(5) else {
-                    return false;
-                };
-                fs::read_to_string(format!("/proc/{pid}/status")).is_ok_and(|status| {
-                    status_field(&status, "PPid:") == starting.child.id().to_string()
-                })
-            });
-            if waiting {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "box up's Podman consumer did not wait on the image lock"
-            );
-            std::thread::yield_now();
-        }
-    }
-    drop(lock);
-    let ready = starts.each_mut().map(Starting::first_line);
-    let boxes = starts
-        .into_iter()
-        .zip(ready)
-        .zip(&names)
-        .map(|((starting, ready), name)| {
-            assert_eq!(ready["event"], "ready", "box up failed: {ready}");
-            starting.into_up(name, ready)
-        })
-        .collect::<Vec<_>>();
-    let observed = names.each_ref().map(|name| {
-        let output = box_exec(&env, name, &["/fixture/seccomp-observer"]);
-        assert_ok(&output, "the syscall observer");
-        serde_json::from_str::<serde_json::Value>(&output.stdout).unwrap()
-    });
-    assert!(observed[0]["getppid"].as_i64().unwrap() >= 0);
-    assert_eq!(observed[0]["getppid_errno"], 0);
-    assert_eq!(observed[1]["getppid"], -1);
-    assert_eq!(observed[1]["getppid_errno"], nix::libc::EPERM);
-    // Positive control in the stricter box: another raw syscall succeeds.
-    assert!(observed[1]["getpid"].as_i64().unwrap() > 0);
-    assert_eq!(observed[1]["getpid_errno"], 0);
-    for up in boxes {
-        up.down(&env);
-    }
 }
 
 #[test]

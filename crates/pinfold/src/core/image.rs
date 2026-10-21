@@ -286,7 +286,6 @@ pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Op
 /// `~/.cache/pinfold/root/<id>.ext4`, made at the image's first use. It goes
 /// when the image goes ([`clean::prune_root_disks`]).
 #[cfg(target_os = "linux")]
-#[expect(dead_code, reason = "the Firecracker runtime calls it, #141")]
 pub fn root_disk(id: &str) -> io::Result<PathBuf> {
     let dir = dirs::root_disks_dir()?;
     let disk = dir.join(format!("{id}.ext4"));
@@ -295,7 +294,17 @@ pub fn root_disk(id: &str) -> io::Result<PathBuf> {
     }
     let mkfs = mkfs_ext4()?;
     fs::create_dir_all(&dir)?;
-    // A concurrent first use writes its own staging; either rename wins.
+    // One first use writes the disk; a concurrent one waits, then uses it.
+    let lock = fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(".lock"))?;
+    let _lock = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusive)
+        .map_err(|(_, error)| io::Error::from(error))?;
+    if disk.is_file() {
+        return Ok(disk);
+    }
     let staging = dir.join(format!("{}{}", clean::ROOT_STAGING, std::process::id()));
     let file = staging.join("disk");
     // The container is never started; it only gives `export` the image's

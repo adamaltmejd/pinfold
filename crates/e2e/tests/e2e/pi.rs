@@ -2,7 +2,7 @@
 //! docs/ARCHITECTURE.md.
 //!
 //! They run on a macOS host with the Apple `container` CLI, or a Linux host
-//! with rootless podman. The harness isolates the XDG dirs, builds the
+//! with Firecracker and rootless podman for images. The harness isolates the XDG dirs, builds the
 //! default profile image once, and drives `pinfold pi` as a user would. No
 //! model is needed: `pi --mode rpc` answers `get_state` while the box runs,
 //! and `pi --version` exits on its own.
@@ -116,86 +116,178 @@ fn the_documents_profile_reads_documents_locally() {
     );
 }
 
+/// The PINFOLD_ENV_ value `PiRpc` launches with: long enough that no disk
+/// image holds it by chance.
+const SECRET: &str = "pinfold-e2e-secret-4f9c1d7a2be6";
+
+/// Walk `dir`, panic on a regular file whose data holds `needle`, and
+/// list every file read. Only data extents are read, so a sparse disk
+/// costs what it holds.
+#[cfg(target_os = "linux")]
+fn holding(dir: &Path, needle: &[u8], scanned: &mut Vec<std::path::PathBuf>) {
+    use nix::errno::Errno;
+    use nix::unistd::{Whence, lseek};
+    use std::io::{Read, Seek, SeekFrom};
+    use std::os::fd::AsFd;
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => panic!("read {}: {error}", dir.display()),
+    };
+    // A running box's entries, such as a used socket, may vanish during
+    // the walk.
+    for entry in entries {
+        let path = entry.unwrap().path();
+        let kind = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata.file_type(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => panic!("stat {}: {error}", path.display()),
+        };
+        if kind.is_dir() {
+            holding(&path, needle, scanned);
+            continue;
+        }
+        if !kind.is_file() {
+            continue;
+        }
+        let mut file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => panic!("open {}: {error}", path.display()),
+        };
+        let mut offset = 0;
+        loop {
+            let data = match lseek(file.as_fd(), offset, Whence::SeekData) {
+                Ok(data) => data,
+                Err(Errno::ENXIO) => break,
+                Err(error) => panic!("seek {}: {error}", path.display()),
+            };
+            let hole = lseek(file.as_fd(), data, Whence::SeekHole).unwrap();
+            file.seek(SeekFrom::Start(data as u64)).unwrap();
+            let mut extent = Vec::new();
+            (&mut file)
+                .take((hole - data) as u64)
+                .read_to_end(&mut extent)
+                .unwrap();
+            assert!(
+                !extent.windows(needle.len()).any(|window| window == needle),
+                "{} holds the secret",
+                path.display()
+            );
+            offset = hole;
+        }
+        scanned.push(path);
+    }
+}
+
 #[test]
 fn the_environment_is_exactly_the_spec() {
     let _runtime = crate::shared_runtime();
     // Sabotage: pass the PINFOLD_ENV_* value on the command line (for
-    // example `container exec --env SECRET=shhh`) instead of through the
-    // child's environment; `shhh` then appears in host `ps` while the box
+    // example `container exec --env SECRET=...`) instead of through the
+    // child's environment; the value then appears in host `ps` while the box
     // runs and the ps assertion fails. Sabotage: let the box inherit the
     // host environment; the unprefixed proxy variables are then present and
-    // their assertions fail. Sabotage: drop `--http-proxy=false` from podman's
-    // run argv; the box inherits the host's proxy variables and the proxy
+    // their assertions fail. On Linux, seed the VM's environment
+    // from the owner's; the host's proxy variables arrive and the proxy
     // assertions fail.
     let env = TestEnv::new("pi-env");
     default_image(&env);
     let project = TestDir::new(&env, "project");
     git(project.path(), &["init", "-q"]);
 
-    // Linux pi boxes need disks, which arrive with the Firecracker
-    // runtime.
-    if cfg!(target_os = "macos") {
-        // Warm the shared harness cache while no proxy variable is set: pinfold
-        // fetches the harness on the host with curl, which honors https_proxy,
-        // so the recognisable values below would break the fetch.
-        pi_version(&env, project.path());
+    // Warm the shared harness cache while no proxy variable is set: pinfold
+    // fetches the harness on the host with curl, which honors https_proxy,
+    // so the recognisable values below would break the fetch.
+    pi_version(&env, project.path());
 
-        let (run, _, name) = PiRpc::start_with_env(
-            &env,
-            project.path(),
-            &[
-                ("HTTP_PROXY", "http://upper-proxy.invalid:3128"),
-                ("https_proxy", "http://lower-proxy.invalid:3128"),
-                ("NO_PROXY", "proxy-marker.invalid"),
-            ],
+    let (run, _, name) = PiRpc::start_with_env(
+        &env,
+        project.path(),
+        &[
+            ("HTTP_PROXY", "http://upper-proxy.invalid:3128"),
+            ("https_proxy", "http://lower-proxy.invalid:3128"),
+            ("NO_PROXY", "proxy-marker.invalid"),
+        ],
+    );
+
+    // PINFOLD_ENV_SECRET arrives as SECRET.
+    let secret = box_exec(&env, &name, &["sh", "-c", "printf %s \"$SECRET\""]);
+    assert_eq!(secret.code, 0, "reading SECRET failed: {}", secret.stderr);
+    assert_eq!(secret.stdout, SECRET, "SECRET did not arrive");
+
+    // The host's proxy variables are absent: copied in, they would send
+    // every HTTPS request to the host's unreachable proxy, since curl
+    // prefers lowercase https_proxy.
+    let boxed_env = box_exec(&env, &name, &["env"]);
+    assert_eq!(
+        boxed_env.code, 0,
+        "reading the box environment failed: {}",
+        boxed_env.stderr
+    );
+    for value in [
+        "http://upper-proxy.invalid:3128",
+        "http://lower-proxy.invalid:3128",
+        "proxy-marker.invalid",
+    ] {
+        assert!(
+            !boxed_env.stdout.contains(value),
+            "{value} leaked into the box environment:\n{}",
+            boxed_env.stdout
         );
+    }
 
-        // PINFOLD_ENV_SECRET arrives as SECRET.
-        let secret = box_exec(&env, &name, &["sh", "-c", "printf %s \"$SECRET\""]);
-        assert_eq!(secret.code, 0, "reading SECRET failed: {}", secret.stderr);
-        assert_eq!(secret.stdout, "shhh", "SECRET did not arrive");
+    // The secret never shows in host `ps` while the box runs.
+    let ps = Command::new("ps")
+        .args(["-ww", "-A", "-o", "command"])
+        .output()
+        .expect("run ps");
+    // A failed ps prints nothing and would pass the absence check whatever
+    // argv held, hiding the argv sabotage above.
+    assert!(
+        ps.status.success(),
+        "host ps failed: {}",
+        String::from_utf8_lossy(&ps.stderr)
+    );
+    let ps = String::from_utf8_lossy(&ps.stdout);
+    assert!(
+        !ps.contains(SECRET),
+        "the secret is in host ps output:\n{ps}"
+    );
 
-        // The host's proxy variables are absent: podman's run would otherwise
-        // copy them in, and curl prefers lowercase https_proxy, so every HTTPS
-        // request would go to the host's unreachable proxy.
-        let boxed_env = box_exec(&env, &name, &["env"]);
-        assert_eq!(
-            boxed_env.code, 0,
-            "reading the box environment failed: {}",
-            boxed_env.stderr
+    // On Linux the secret reaches the guest only over vsock: not on its
+    // kernel command line, nor in any file pinfold writes for the box (the
+    // VM configuration, the init disk, mount images, disks). Sabotage: put
+    // the environment in BOOT_ARGS (config.json and /proc/cmdline fail) or
+    // write it into the init disk (init.ext4 fails).
+    #[cfg(target_os = "linux")]
+    {
+        let cmdline = box_exec(&env, &name, &["cat", "/proc/cmdline"]);
+        assert_ok(&cmdline, "reading the guest's /proc/cmdline");
+        assert!(
+            !cmdline.stdout.contains(SECRET),
+            "the secret is on the guest's kernel command line"
         );
-        for value in [
-            "http://upper-proxy.invalid:3128",
-            "http://lower-proxy.invalid:3128",
-            "proxy-marker.invalid",
-        ] {
+        let mut scanned = Vec::new();
+        holding(&env.state, SECRET.as_bytes(), &mut scanned);
+        holding(
+            &env.cache().join("pinfold/root"),
+            SECRET.as_bytes(),
+            &mut scanned,
+        );
+        let names: Vec<String> = scanned
+            .iter()
+            .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
+            .collect();
+        for written in ["config.json", "init.ext4", "mount0.ext4"] {
             assert!(
-                !boxed_env.stdout.contains(value),
-                "{value} leaked into the box environment:\n{}",
-                boxed_env.stdout
+                names.iter().any(|name| name == written),
+                "no {written} under the state dir: {names:?}"
             );
         }
-
-        // The secret never shows in host `ps` while the box runs.
-        let ps = Command::new("ps")
-            .args(["-ww", "-A", "-o", "command"])
-            .output()
-            .expect("run ps");
-        // A failed ps prints nothing and would pass the absence check whatever
-        // argv held, hiding the argv sabotage above.
-        assert!(
-            ps.status.success(),
-            "host ps failed: {}",
-            String::from_utf8_lossy(&ps.stderr)
-        );
-        let ps = String::from_utf8_lossy(&ps.stdout);
-        assert!(
-            !ps.contains("shhh"),
-            "the secret is in host ps output:\n{ps}"
-        );
-
-        assert!(run.finish().success(), "pinfold pi did not exit cleanly");
     }
+
+    assert!(run.finish().success(), "pinfold pi did not exit cleanly");
 
     // A caller-owned box whose spec PATH is one directory that does not
     // exist, so the runtime's directory is omitted on both macOS and Linux
@@ -277,10 +369,6 @@ fn the_environment_is_exactly_the_spec() {
 }
 
 #[test]
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "Linux disks arrive with the Firecracker runtime"
-)]
 fn project_state_persists_and_stays_separate() {
     let _runtime = crate::shared_runtime();
     // Sabotage: derive the project id from the directory name alone (drop
@@ -367,10 +455,6 @@ fn project_state_persists_and_stays_separate() {
 }
 
 #[test]
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "Linux disks arrive with the Firecracker runtime"
-)]
 fn a_changed_project_file_stops_the_run() {
     let _runtime = crate::shared_runtime();
     // Sabotage: drop the trust::check call from pi::launch::run; the fetched
@@ -506,10 +590,6 @@ fn a_changed_project_file_stops_the_run() {
 }
 
 #[test]
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "Linux disks arrive with the Firecracker runtime"
-)]
 fn both_pi_config_levels_load_behind_a_route() {
     let _runtime = crate::shared_runtime();
     // Sabotage: drop the route (leave PINFOLD_ROUTES empty, or point it at
@@ -706,10 +786,6 @@ fn both_pi_config_levels_load_behind_a_route() {
 }
 
 #[test]
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "Linux disks arrive with the Firecracker runtime"
-)]
 fn the_highest_layer_sets_the_allowlist() {
     let _runtime = crate::shared_runtime();
     // Sabotage: union DEFAULT_ALLOW under the merged allow in
@@ -750,33 +826,46 @@ fn the_highest_layer_sets_the_allowlist() {
         ],
     );
 
-    // `cpus` and `memory` reach the box: stat reports the memory limit, and
-    // the box's cgroup shows the CPU quota, on both runtimes (the Apple
-    // guest kernel exposes it too).
+    // `cpus` and `memory` reach the box: stat reports the memory limit; the
+    // Apple guest's cgroup shows the CPU quota, and a Firecracker VM has
+    // that many vCPUs.
     let stat = box_stat(&env, &name);
     assert_eq!(
         stat["memory"]["limit"].as_u64(),
         Some(512 * 1024 * 1024),
         "the box's memory limit is not the environment's 512M: {stat}"
     );
-    let cpus = box_exec(&env, &name, &["cat", "/sys/fs/cgroup/cpu.max"]);
-    assert_eq!(cpus.code, 0, "reading cpu.max failed: {}", cpus.stderr);
-    let mut cpu_max = cpus.stdout.split_whitespace();
-    let quota: u64 = cpu_max
-        .next()
-        .expect("cpu quota")
-        .parse()
-        .expect("finite CPU quota");
-    let period: std::num::NonZeroU64 = cpu_max
-        .next()
-        .expect("cpu period")
-        .parse()
-        .expect("nonzero CPU period");
-    assert_eq!(
-        quota,
-        period.get(),
-        "the box's cpu quota is not the environment's 1 cpu"
-    );
+    #[cfg(target_os = "linux")]
+    {
+        let cpus = box_exec(&env, &name, &["nproc"]);
+        assert_ok(&cpus, "nproc in the box");
+        assert_eq!(
+            cpus.stdout.trim(),
+            "1",
+            "the box does not have the environment's 1 cpu"
+        );
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let cpus = box_exec(&env, &name, &["cat", "/sys/fs/cgroup/cpu.max"]);
+        assert_eq!(cpus.code, 0, "reading cpu.max failed: {}", cpus.stderr);
+        let mut cpu_max = cpus.stdout.split_whitespace();
+        let quota: u64 = cpu_max
+            .next()
+            .expect("cpu quota")
+            .parse()
+            .expect("finite CPU quota");
+        let period: std::num::NonZeroU64 = cpu_max
+            .next()
+            .expect("cpu period")
+            .parse()
+            .expect("nonzero CPU period");
+        assert_eq!(
+            quota,
+            period.get(),
+            "the box's cpu quota is not the environment's 1 cpu"
+        );
+    }
 
     // Sabotage: omit resources or routes from Layer::from_env. Host
     // fixture input and the kernel's own observations supply expectations.
@@ -841,10 +930,6 @@ fn the_highest_layer_sets_the_allowlist() {
 }
 
 #[test]
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "Linux disks arrive with the Firecracker runtime"
-)]
 fn the_launch_record_is_the_applied_policy() {
     let _runtime = crate::shared_runtime();
     // Guarantee 39. Sabotage: build `inspect`'s launch section by loading
@@ -1002,10 +1087,7 @@ fn projects_exclude_host_authority() {
         }
     }
     allow(&env, project.path());
-    // Linux pi boxes need disks, which arrive with the Firecracker runtime.
-    if cfg!(target_os = "macos") {
-        pi_version(&env, project.path());
-    }
+    pi_version(&env, project.path());
 }
 
 #[test]
@@ -1057,36 +1139,33 @@ fn a_caller_reads_the_effective_configuration_as_data() {
 
     // The home disk the report names is the one the box attaches, writable,
     // at its $HOME: a file the box writes there is on that disk.
-    // Linux pi boxes need disks, which arrive with the Firecracker runtime.
-    if cfg!(target_os = "macos") {
-        let (run, _, name) = PiRpc::start(&env, project.path());
-        let listed = run_ok(env.command(pinfold()).args(["disk", "list"])).stdout;
-        let listed = json_lines(&String::from_utf8_lossy(&listed));
-        let attached = listed
-            .iter()
-            .find(|disk| disk["name"] == home_disk.as_str())
-            .map(|disk| disk["attached"].clone());
-        assert_eq!(
-            attached,
-            Some(serde_json::json!([{ "box": name, "readonly": false }])),
-            "{listed:?}"
-        );
-        let boxed_home = box_exec(
-            &env,
-            &name,
-            &[
-                "sh",
-                "-c",
-                "printf %s \"$HOME\" && findmnt -no TARGET --target \"$HOME\"",
-            ],
-        );
-        assert_ok(&boxed_home, "reading HOME and its mount");
-        assert_eq!(
-            boxed_home.stdout, "/home/pi/home/pi\n",
-            "the box's HOME is not its disk"
-        );
-        assert!(run.finish().success(), "pinfold pi did not exit cleanly");
-    }
+    let (run, _, name) = PiRpc::start(&env, project.path());
+    let listed = run_ok(env.command(pinfold()).args(["disk", "list"])).stdout;
+    let listed = json_lines(&String::from_utf8_lossy(&listed));
+    let attached = listed
+        .iter()
+        .find(|disk| disk["name"] == home_disk.as_str())
+        .map(|disk| disk["attached"].clone());
+    assert_eq!(
+        attached,
+        Some(serde_json::json!([{ "box": name, "readonly": false }])),
+        "{listed:?}"
+    );
+    let boxed_home = box_exec(
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            "printf %s \"$HOME\" && findmnt -no TARGET --target \"$HOME\"",
+        ],
+    );
+    assert_ok(&boxed_home, "reading HOME and its mount");
+    assert_eq!(
+        boxed_home.stdout, "/home/pi/home/pi\n",
+        "the box's HOME is not its disk"
+    );
+    assert!(run.finish().success(), "pinfold pi did not exit cleanly");
 
     // Sabotage: propagate a missing runtime from config_report, treat it as
     // an absent image, or populate embedded profiles while loading metadata.
@@ -1209,7 +1288,7 @@ impl PiRpc {
             .command(pinfold())
             .args(["pi", "--mode", "rpc"])
             .current_dir(project)
-            .env("PINFOLD_ENV_SECRET", "shhh")
+            .env("PINFOLD_ENV_SECRET", SECRET)
             .envs(vars.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

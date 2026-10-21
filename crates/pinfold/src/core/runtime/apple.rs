@@ -4,11 +4,13 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
 use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::process::ExitStatus;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 
 use crate::core::plan::Plan;
@@ -23,46 +25,95 @@ pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
 /// Apple `container`.
 pub struct Apple;
 
-impl Runtime for Apple {
-    fn up(
-        &self,
-        plan: &Plan,
-        init: &Path,
-        _state_dir: &Path,
-        proxy_socket: Option<&Path>,
-        _seccomp: Option<&Path>,
-    ) -> io::Result<Child> {
-        let mut extra: Vec<OsString> = vec!["--progress".into(), "none".into()];
-        if proxy_socket.is_some() {
-            // Off-label: the runtime treats the socket as an SSH agent and
-            // forwards it to GUEST_PROXY_SOCKET.
-            extra.push("--ssh".into());
+/// Start the attached `container run` process that owns the box. When
+/// `proxy_socket` is set, carry that host unix socket into the box.
+#[cfg_attr(target_os = "linux", expect(dead_code))]
+pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<Client> {
+    let mut extra: Vec<OsString> = vec!["--progress".into(), "none".into()];
+    if proxy_socket.is_some() {
+        // Off-label: the runtime treats the socket as an SSH agent and
+        // forwards it to GUEST_PROXY_SOCKET.
+        extra.push("--ssh".into());
+    }
+    let guest_socket = proxy_socket.map(|_| GUEST_PROXY_SOCKET);
+    let mut command = super::up("container", plan, init, guest_socket, extra)?;
+    if let Some(socket) = proxy_socket {
+        command.env("SSH_AUTH_SOCK", socket);
+    }
+    command
+        .spawn()
+        .map(Client)
+        .map_err(|error| spawn_error("container", error))
+}
+
+/// The attached `container run` process that owns a box.
+#[cfg_attr(target_os = "linux", expect(dead_code))]
+pub struct Client(Child);
+
+#[cfg_attr(target_os = "linux", expect(dead_code))]
+impl Client {
+    /// Wait until init reports ready. The error is why it did not.
+    pub async fn ready(&mut self) -> Result<(), String> {
+        let stdout = self
+            .0
+            .stdout
+            .take()
+            .ok_or("the runtime did not pipe the box's stdout")?;
+        let mut lines = BufReader::new(stdout).lines();
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) if line == "ready" => break,
+                Ok(Some(_)) => {}
+                Ok(None) => return Err("box exited before ready".to_string()),
+                Err(error) => return Err(format!("box output failed: {error}")),
+            }
         }
-        let guest_socket = proxy_socket.map(|_| GUEST_PROXY_SOCKET);
-        let mut command = super::up(
-            "container",
-            plan,
-            init,
-            guest_socket,
-            extra,
-            plan.env.iter(),
-        )?;
-        if let Some(socket) = proxy_socket {
-            command.env("SSH_AUTH_SOCK", socket);
-        }
-        command
-            .spawn()
-            .map_err(|error| spawn_error("container", error))
+        // Keep the pipe drained so a talkative box cannot block on it.
+        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+        Ok(())
     }
 
-    fn preflight(&self) -> io::Result<Option<PathBuf>> {
+    /// Wait until the box ends on its own or is stopped.
+    pub async fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.0.wait().await
+    }
+
+    /// Stop and remove a ready box. True when the stop was one pinfold
+    /// requested of a running box, which syncs its disks.
+    pub async fn down(&mut self, name: &str) -> io::Result<bool> {
+        let requested = matches!(self.0.try_wait(), Ok(None));
+        // Runtime removal waits for attached output to close. Keep its
+        // drain running on the owner while the runtime command blocks.
+        let name = name.to_string();
+        let removed = tokio::task::spawn_blocking(move || Apple.down(&name))
+            .await
+            .map_err(io::Error::other)
+            .and_then(|result| result);
+        let _ = self.0.wait().await;
+        removed.map(|()| requested)
+    }
+
+    /// Stop a start that ended before ready and remove its box, returning
+    /// whether the stop synced its disks and how the box ended.
+    pub async fn abort(mut self, name: &str) -> (io::Result<bool>, io::Result<ExitStatus>) {
+        let requested = matches!(self.0.try_wait(), Ok(None));
+        // The client goes first, so one still creating the box cannot
+        // finish after the removal. The box exists by name even when
+        // readiness failed.
+        let _ = self.0.start_kill();
+        let status = self.0.wait().await;
+        (Apple.down(name).map(|()| requested), status)
+    }
+}
+
+impl Runtime for Apple {
+    fn preflight(&self) -> io::Result<()> {
         let reported = self.version()?;
         let version = reported
             .strip_prefix("container CLI version ")
             .and_then(|value| value.split_whitespace().next())
             .unwrap_or(&reported);
-        super::require_version("container", version, [1, 5, 0])?;
-        Ok(None)
+        super::require_version("container", version, [1, 5, 0])
     }
 
     fn down(&self, name: &str) -> io::Result<()> {
