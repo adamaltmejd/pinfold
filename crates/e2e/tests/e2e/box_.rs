@@ -1515,6 +1515,9 @@ fn disks_persist_and_attach_exclusively() {
     // `up`s create the disk and the loser ends `failed`, not `disk-in-use`.
     // Sabotage: call `disk::detached` on every runtime stop in `Box::down`;
     // after `container kill` the read-only `up` comes ready.
+    // Sabotage: drop `value.push(",readonly")` from `runtime::bind`; the
+    // readers' mount is then writable and the "a write to a mount"
+    // assertion fails.
     let env = TestEnv::new("disks");
     let image = default_image(&env);
     let names = ["work", "sparse", "fresh", "race"].map(|disk| box_name(&format!("disk-{disk}")));
