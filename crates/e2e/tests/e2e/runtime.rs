@@ -40,8 +40,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // the `dev.pinfold.profile` label from the build; no image matches and
     // the count is zero. Sabotage: make `clean` remove every image instead
     // of only pinfold's own; the unlabeled image assertion fails. Sabotage:
-    // drop the live-box check from `clean`; the live project's marker is
-    // deleted and the marker-survives assertion fails. Sabotage: make
+    // drop the live-box check from `clean --unused`; the live project's
+    // state is deleted and its survives assertion fails. Sabotage: make
     // `clean` remove every project state instead of only the stale ones;
     // the other project's state assertion fails. Sabotage: make `clean`
     // remove every box; the live box assertion fails. Sabotage: make
@@ -52,8 +52,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // live-box check (drop `live_projects` from `CleanPlan::measure`'s
     // stale test); the live project's state goes and its assertion fails.
     // Sabotage: in `clean::boxes`, insert into `live_projects` above `if
-    // alive`; the dead box then protects the other project, whose marker
-    // survives, and the removal assertion fails. Sabotage: past the newest
+    // alive`; the dead box then protects the other project, whose state
+    // survives `--unused`, and the removal assertion fails. Sabotage: past the newest
     // two build tags, remove every tag of the tag's image, as retention by
     // image did; `clean` takes the image the newest two builds share and
     // the shared-image assertion fails. Sabotage: skip a tag whose image a
@@ -266,7 +266,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
 
     // A project's state: a refused `pinfold pi` creates it before it names
     // the missing image. The profile is never built, so this part downloads
-    // no pi artifact. Two projects get a cache marker: one runs a live box,
+    // no pi artifact. Two projects get a state marker: one runs a live box,
     // the other does not.
     let missing = format!("{profile}-missing");
     profile_containerfile(&env, &missing, "FROM scratch\n");
@@ -279,11 +279,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
             .output()
             .expect("run pinfold pi");
         assert!(!refused.status.success(), "pi ran a profile with no image");
-        let marker = project_state_dir(&env, project.path())
-            .join("home")
-            .join(".cache")
-            .join("marker");
-        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        let marker = project_state_dir(&env, project.path()).join("marker");
         fs::write(&marker, text).unwrap();
         marker
     };
@@ -383,8 +379,11 @@ fn cleanup_removes_only_pinfolds_garbage() {
     );
 
     // `--dry-run` only lists: the other project's state, which the real
-    // clean below removes, survives it.
-    run_ok(env.command(pinfold()).args(["clean", "--dry-run"]));
+    // `--unused` clean below removes, survives it.
+    run_ok(
+        env.command(pinfold())
+            .args(["clean", "--dry-run", "--unused", "0s"]),
+    );
     assert!(
         other_marker.is_file(),
         "--dry-run removed the other project's state"
@@ -526,11 +525,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     );
     assert!(
         live_marker.is_file(),
-        "clean removed a live box's project cache"
-    );
-    assert!(
-        !other_marker.exists(),
-        "clean kept a project cache with no live box"
+        "clean removed a live box's project state"
     );
     assert!(
         box_list(&env, dead_label).is_empty(),
@@ -606,10 +601,11 @@ fn cleanup_removes_only_pinfolds_garbage() {
     );
 
     // Sabotage: remove the shared project locks from pi startup and box up;
-    // clean deletes the existing home while the cold download holds startup
+    // clean deletes the existing state while the cold download holds startup
     // after its claim but before a runtime box can protect the project.
     // The checkout is moved away meanwhile; that alone protects nothing.
-    {
+    // Linux pi boxes need disks, which arrive with the Firecracker runtime.
+    if cfg!(target_os = "macos") {
         let env = TestEnv::with_private_cache("clean-startup");
         let project = TestDir::new(&env, "starting-project");
         let missing = format!("{profile}-startup-missing");
@@ -624,8 +620,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         assert!(!refused.status.success(), "the missing image was accepted");
         let state = project_state_dir(&env, project.path());
         let id = project_id(&env, project.path());
-        let marker = state.join("home/.cache/marker");
-        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        let marker = state.join("marker");
         fs::write(&marker, b"starting project\n").unwrap();
 
         let mut proxy = HeldDownload::new();
@@ -667,7 +662,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         assert_eq!(
             fs::read(&marker).unwrap(),
             b"starting project\n",
-            "clean removed the claimed startup's existing home"
+            "clean removed the claimed startup's existing state"
         );
         fs::rename(&restore.moved, &restore.root).unwrap();
         proxy.release();

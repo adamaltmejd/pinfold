@@ -17,7 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
     box_stat, build_profile, curl, default_image, egress_log, exit_code, git, image_cli, image_id,
-    json_lines, pinfold, profile_containerfile, run_ok, runtime_images, tagged_images,
+    json_lines, pinfold, pinfold_in, profile_containerfile, run_ok, runtime_images, tagged_images,
     untagged_images,
 };
 
@@ -1820,8 +1820,9 @@ const CLIENT_HOOKS: &[&str] = &[
 )]
 fn work_leaves_the_box_only_by_fetch() {
     let _runtime = crate::shared_runtime();
-    // Guarantee 10's caller parts: disk writes stay in the box, push and
-    // fetch move branches only, and nothing the box plants runs on the host.
+    // Guarantee 10: disk writes stay in the box, push and fetch move
+    // branches only, nothing the box plants runs on the host, and pi does
+    // not start inside `.git`.
     // Sabotage: write fetched branches under `refs/heads/` in crossing.rs;
     // the fetched refs assertion fails. Sabotage: push with
     // `+refs/heads/*:refs/heads/*` and `--update-head-ok` in the box script;
@@ -2061,6 +2062,49 @@ chmod 755 .hostile/git"#
 
     up.down(&env);
     assert!(up.wait().success(), "the box did not exit cleanly");
+
+    // The pi part: `pinfold pi` started inside the checkout's `.git` refuses
+    // before it creates a box or a disk, since the fallback root would be
+    // `.git` itself; from the root it runs. Sabotage: drop the
+    // `--is-inside-git-dir` check from `project_root`; the run starts and
+    // the exit assertion fails. Sabotage: remove `project-in-git` from that
+    // refusal; the reason assertion fails.
+    let dot_git = fs::canonicalize(repo.join(".git")).unwrap();
+    let refused = pinfold_in(&env, &dot_git, &["pi", "--version"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        !refused.status.success(),
+        "pi started inside .git: {stderr}"
+    );
+    assert!(stderr.contains("project-in-git"), "wrong refusal: {stderr}");
+    run_ok(&mut pinfold_in(&env, repo, &["pi", "--version"]));
+
+    // A worktree's `.git` names a git dir the project disk does not hold:
+    // pi, push and fetch refuse it, and run from the main checkout, where
+    // push and fetch start a transient box on the project disk. Sabotage:
+    // drop `refuse_worktree` from pi::launch::crossing; push in the worktree
+    // fails for want of a project disk and the reason assertion fails.
+    let worktree = env.root.join("linked");
+    host_git(&[
+        "worktree",
+        "add",
+        "-q",
+        worktree.to_str().unwrap(),
+        "-b",
+        "wt",
+    ]);
+    for args in [&["pi", "--version"][..], &["push"][..], &["fetch"][..]] {
+        let refused = pinfold_in(&env, &worktree, args).output().unwrap();
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(!refused.status.success(), "{args:?} ran in a worktree");
+        assert!(stderr.contains("worktree:"), "wrong refusal: {stderr}");
+    }
+    for (verb, event) in [("push", "pushed"), ("fetch", "fetched")] {
+        let (code, line) = one_json_line(&mut pinfold_in(&env, repo, &[verb]));
+        assert_eq!((code, &line["event"]), (0, &event.into()), "{line}");
+    }
 }
 
 fn crossing_fetch(env: &TestEnv, name: &str, repo: &Path) -> (i32, serde_json::Value) {

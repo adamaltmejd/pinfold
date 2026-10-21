@@ -176,7 +176,7 @@ fn interactive_update_checks_are_bounded() {
             .lines()
             .count()
     };
-    let attach = ["attach", "--box", "missing"];
+    let attach = ["attach"];
     fixture
         .command(&env, &installed)
         .args(attach)
@@ -250,7 +250,7 @@ fn changed_bundled_profiles_are_reported_once() {
     let installed = env.root.join("pinfold");
     fs::copy(pinfold(), &installed).unwrap();
     let fixture = ReleaseProxy::new(&env);
-    let attach = ["attach", "--box", "missing"];
+    let attach = ["attach"];
     let first = fixture
         .terminal(&env, &installed, &attach)
         .output()

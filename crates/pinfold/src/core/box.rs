@@ -152,8 +152,7 @@ impl Box {
     /// `up` claims the name, and only the claim's owner creates anything.
     /// File aliases are checked after preparation, before runtime startup.
     /// An alias refusal removes claimed state; prepared artifacts and home
-    /// seeds remain. Pi's guard removes its newly created empty protection
-    /// directories when the error returns to Pi.
+    /// seeds remain.
     ///
     /// The caller registered SIGTERM and SIGINT before reading the spec:
     /// before ready they remove what the start made and `up` returns
@@ -595,8 +594,10 @@ async fn start(
     progress.preparing.take();
     *plan = prepared?;
 
-    if let Some(seeding) = seeding {
-        seed_home(seeding)?;
+    if let Some(seeding) = seeding
+        && let SeedTarget::Mount(mount) = &seeding.target
+    {
+        seed_home(seeding, mount)?;
     }
 
     let checked = plan.clone();
@@ -658,13 +659,22 @@ async fn start(
     // Wait even without egress, before the caller can issue its first exec.
     let actual = if cfg!(target_os = "macos") {
         let actual = apple::wait_until_running(&plan.name)?;
-        // Finish the one root exec and the new disks' copies before ready
-        // reaches the caller.
+        // Finish the one root exec, the new disks' copies and the seeds
+        // before ready reaches the caller.
         if socket.is_some() {
             apple::make_proxy_connectable(&plan.name)?;
         }
         for fill in &progress.claimed.fills {
-            apple::copy_in(&plan.name, init, &fill.guest, |out| disk::send(fill, out))?;
+            apple::copy_in(&plan.name, init, &fill.guest, false, |out| {
+                disk::send(fill, out)
+            })?;
+        }
+        if let Some(seeding) = seeding
+            && let SeedTarget::Disk(guest) = &seeding.target
+        {
+            apple::copy_in(&plan.name, init, guest, true, |out| {
+                disk::send_seeds(&seeding.relative, &seeding.seeds, out)
+            })?;
         }
         Some(actual)
     } else {
@@ -898,13 +908,20 @@ fn resolve_harness(
     Ok(())
 }
 
-/// A profile's `home/` seeds and the writable mount behind `$HOME` to copy
-/// them into.
+/// A profile's `home/` seeds and the writable mount or disk behind `$HOME`
+/// to copy them into.
 struct Seeding {
-    mount: Mount,
-    /// The plain path from the mount's guest root to `$HOME`.
+    target: SeedTarget,
+    /// The plain path from the target's guest root to `$HOME`.
     relative: PathBuf,
     seeds: Vec<Seed>,
+}
+
+/// Where seeds go: a mount, written from the host before the box starts,
+/// or a disk's guest root, written in the box before ready.
+enum SeedTarget {
+    Mount(Mount),
+    Disk(PathBuf),
 }
 
 /// Load the spec's profile and fold its image and `share/` mount into the
@@ -937,10 +954,10 @@ fn refused(plan: &Plan, reason: RefusalReason, detail: impl Into<String>) -> UpE
     })
 }
 
-/// The mount behind the spec's exact `$HOME` and the plain path from its
-/// guest root to `$HOME`, for the profile's `seeds`. The mount must be
+/// The mount or disk behind the spec's exact `$HOME` and the plain path
+/// from its guest root to `$HOME`, for the profile's `seeds`. It must be
 /// writable and the path must not step out of it. Called after the
-/// duplicate-guest check, so no two mounts can hold `$HOME`.
+/// duplicate-guest check, so no two mounts or disks can hold `$HOME`.
 fn home_mount(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
     let name = plan.profile.as_deref().unwrap_or_default();
     let refuse = |why: String| {
@@ -953,22 +970,46 @@ fn home_mount(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
         return Err(refuse("the box spec has no exact HOME env entry".into()));
     };
     let home = Path::new(home);
-    let Some((mount, relative)) = plan
+    let targets = plan
         .mounts
         .iter()
-        .filter_map(|mount| Some((mount, home.strip_prefix(&mount.guest).ok()?)))
-        .max_by_key(|(mount, _)| mount.guest.components().count())
+        .map(|mount| {
+            (
+                &mount.guest,
+                mount.readonly,
+                SeedTarget::Mount(mount.clone()),
+            )
+        })
+        .chain(plan.disks.iter().map(|disk| {
+            (
+                &disk.guest,
+                disk.readonly,
+                SeedTarget::Disk(disk.guest.clone()),
+            )
+        }));
+    let Some((guest, readonly, target, relative)) = targets
+        .filter_map(|(guest, readonly, target)| {
+            Some((guest, readonly, target, home.strip_prefix(guest).ok()?))
+        })
+        .max_by_key(|(guest, ..)| guest.components().count())
     else {
         return Err(refuse(format!(
-            "$HOME={} is not on a mount",
+            "$HOME={} is not on a mount or disk",
             home.display()
         )));
     };
-    if mount.readonly {
+    // The Firecracker boot request carries no seeds yet (#141).
+    if cfg!(target_os = "linux") && matches!(target, SeedTarget::Disk(_)) {
         return Err(refuse(format!(
-            "$HOME={} is on the read-only mount {}",
+            "$HOME={} is on a disk, which Linux cannot seed yet",
+            home.display()
+        )));
+    }
+    if readonly {
+        return Err(refuse(format!(
+            "$HOME={} is on the read-only {}",
             home.display(),
-            mount.guest.display()
+            guest.display()
         )));
     }
     // The walk below handles normal components only; `..` would step out of
@@ -978,13 +1019,13 @@ fn home_mount(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
         .any(|component| !matches!(component, Component::Normal(_)))
     {
         return Err(refuse(format!(
-            "$HOME={} is not a plain path under the mount {}",
+            "$HOME={} is not a plain path under {}",
             home.display(),
-            mount.guest.display()
+            guest.display()
         )));
     }
     Ok(Seeding {
-        mount: mount.clone(),
+        target,
         relative: relative.to_path_buf(),
         seeds,
     })
@@ -994,8 +1035,8 @@ fn home_mount(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
 /// walk starts at the mount's host directory and follows no symlink: the box
 /// can write the mount, so a planted symlink must not redirect a seed
 /// outside it.
-fn seed_home(seeding: &Seeding) -> io::Result<()> {
-    let host = &seeding.mount.host;
+fn seed_home(seeding: &Seeding, mount: &Mount) -> io::Result<()> {
+    let host = &mount.host;
     // The spec names the mount's host directory and the runtime mounts it,
     // so it is the seed walk's trust root.
     let root = nix::fcntl::open(host, OFlag::O_DIRECTORY | OFlag::O_CLOEXEC, Mode::empty())

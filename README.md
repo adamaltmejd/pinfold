@@ -100,7 +100,7 @@ In a project:
    Later runs show an `image-outdated` rebuild hint when the Containerfile
    changes. Rebuilding keeps project settings, sessions and logins.
 3. Start pi: `pi`. The first run downloads the pinned pi release and
-   creates the project home and project disks.
+   creates the project's home and project disks.
 4. Run `/login` in pi once per project: state is per project. API keys
    arrive through the environment instead.
 

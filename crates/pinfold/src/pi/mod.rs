@@ -1,5 +1,5 @@
-//! The pi layer: the per-project `$HOME`, its state, and the box launch.
+//! The pi layer: per-project state and disks, the box launch, and the
+//! branch crossing.
 
-pub mod git;
 pub mod launch;
 pub mod state;

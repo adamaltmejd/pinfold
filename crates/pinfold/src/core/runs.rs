@@ -34,6 +34,15 @@ fn dir(run_id: &str) -> io::Result<PathBuf> {
     Ok(dirs::runs_dir()?.join(run_id))
 }
 
+/// Whether the run reached ready: every ready run has a launch record.
+pub fn launched(run_id: &str) -> io::Result<bool> {
+    match fs::symlink_metadata(dir(run_id)?.join(LAUNCH)) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 /// The run's egress log path.
 pub fn egress_log(run_id: &str) -> io::Result<PathBuf> {
     Ok(dir(run_id)?.join(EGRESS_LOG))

@@ -63,6 +63,8 @@ fn main() -> ExitCode {
         "config" => cli::config,
         "profile" => cli::profile,
         "pi" => launch::run,
+        "push" => |args| launch::crossing("push", args),
+        "fetch" => |args| launch::crossing("fetch", args),
         "update" => update::run,
         _ => {
             eprintln!("{}", cli::USAGE);

@@ -15,6 +15,7 @@ use crate::core::r#box::RefusalReason;
 use crate::core::clean;
 use crate::core::ownership::{self, Attachment, Claim};
 use crate::core::plan::{Disk, Plan};
+use crate::core::profile::Seed;
 use crate::core::runtime::{Runtime, apple};
 use crate::dirs;
 use crate::init::{STREAM_DIR, STREAM_END, STREAM_EXECUTABLE, STREAM_FILE, STREAM_SYMLINK};
@@ -319,15 +320,17 @@ fn walk(from: &Path) -> io::Result<(Vec<Entry>, u64)> {
     Ok((entries, bytes))
 }
 
+/// One stream entry's tag and path.
+fn header(out: &mut impl Write, tag: u8, path: &Path) -> io::Result<()> {
+    let bytes = path.as_os_str().as_bytes();
+    out.write_all(&[tag])?;
+    out.write_all(&(bytes.len() as u32).to_be_bytes())?;
+    out.write_all(bytes)
+}
+
 /// Write `fill`'s tree as the stream `init receive` reads.
 pub fn send(fill: &Fill, out: &mut dyn Write) -> io::Result<()> {
     let mut out = io::BufWriter::new(out);
-    let header = |out: &mut io::BufWriter<&mut dyn Write>, tag: u8, path: &Path| {
-        let bytes = path.as_os_str().as_bytes();
-        out.write_all(&[tag])?;
-        out.write_all(&(bytes.len() as u32).to_be_bytes())?;
-        out.write_all(bytes)
-    };
     for entry in &fill.entries {
         match entry {
             Entry::Dir(path) => header(&mut out, STREAM_DIR, path)?,
@@ -360,6 +363,33 @@ pub fn send(fill: &Fill, out: &mut dyn Write) -> io::Result<()> {
                 out.write_all(target)?;
             }
         }
+    }
+    out.write_all(&[STREAM_END])?;
+    out.flush()
+}
+
+/// Write `seeds` below `home`, a path relative to the disk's root, as the
+/// stream `init receive --missing` reads: each seed's directories, then
+/// the seed.
+pub fn send_seeds(home: &Path, seeds: &[Seed], out: &mut dyn Write) -> io::Result<()> {
+    let mut out = io::BufWriter::new(out);
+    let mut dirs = BTreeSet::new();
+    for seed in seeds {
+        let path = home.join(&seed.path);
+        let mut parents: Vec<&Path> = path
+            .ancestors()
+            .skip(1)
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .collect();
+        parents.reverse();
+        for dir in parents {
+            if dirs.insert(dir.to_path_buf()) {
+                header(&mut out, STREAM_DIR, dir)?;
+            }
+        }
+        header(&mut out, STREAM_FILE, &path)?;
+        out.write_all(&(seed.contents.len() as u64).to_be_bytes())?;
+        out.write_all(&seed.contents)?;
     }
     out.write_all(&[STREAM_END])?;
     out.flush()
