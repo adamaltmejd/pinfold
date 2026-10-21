@@ -129,10 +129,20 @@ fn holding(dir: &Path, needle: &[u8], scanned: &mut Vec<std::path::PathBuf>) {
     use nix::unistd::{Whence, lseek};
     use std::io::{Read, Seek, SeekFrom};
     use std::os::fd::AsFd;
-    for entry in fs::read_dir(dir).unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
-    {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => panic!("read {}: {error}", dir.display()),
+    };
+    // A running box's entries, such as a used socket, may vanish during
+    // the walk.
+    for entry in entries {
         let path = entry.unwrap().path();
-        let kind = fs::symlink_metadata(&path).unwrap().file_type();
+        let kind = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata.file_type(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => panic!("stat {}: {error}", path.display()),
+        };
         if kind.is_dir() {
             holding(&path, needle, scanned);
             continue;
@@ -140,8 +150,11 @@ fn holding(dir: &Path, needle: &[u8], scanned: &mut Vec<std::path::PathBuf>) {
         if !kind.is_file() {
             continue;
         }
-        let mut file = fs::File::open(&path)
-            .unwrap_or_else(|error| panic!("open {}: {error}", path.display()));
+        let mut file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => panic!("open {}: {error}", path.display()),
+        };
         let mut offset = 0;
         loop {
             let data = match lseek(file.as_fd(), offset, Whence::SeekData) {
@@ -245,8 +258,8 @@ fn the_environment_is_exactly_the_spec() {
     // On Linux the secret reaches the guest only over vsock: not on its
     // kernel command line, nor in any file pinfold writes for the box (the
     // VM configuration, the init disk, mount images, disks). Sabotage: put
-    // the environment in BOOT or the boot args; the init disk's or
-    // cmdline's assertion fails.
+    // the environment in BOOT_ARGS (config.json and /proc/cmdline fail) or
+    // write it into the init disk (init.ext4 fails).
     #[cfg(target_os = "linux")]
     {
         let cmdline = box_exec(&env, &name, &["cat", "/proc/cmdline"]);
@@ -257,6 +270,11 @@ fn the_environment_is_exactly_the_spec() {
         );
         let mut scanned = Vec::new();
         holding(&env.state, SECRET.as_bytes(), &mut scanned);
+        holding(
+            &env.cache().join("pinfold/root"),
+            SECRET.as_bytes(),
+            &mut scanned,
+        );
         let names: Vec<String> = scanned
             .iter()
             .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))

@@ -1033,6 +1033,38 @@ fn up_refuses_before_it_creates() {
     );
     assert_left_nothing(&env, &name, label, "refused");
 
+    // On Linux a box copies its mount trees at start, so an entry inside
+    // one that the user cannot read is refused as data, naming it, before
+    // anything is created. The same spec comes up once the mode is
+    // restored. Sabotage: drop `unreadable()` from `validate`; the spec
+    // gets past the claim and fails late at mkfs, not as `spec`.
+    #[cfg(target_os = "linux")]
+    {
+        let tree = env.root.join("tree");
+        let locked = tree.join("locked-dir");
+        fs::create_dir_all(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let tree_mount = serde_json::json!({
+            "name": name,
+            "image": default_image(&env),
+            "labels": { "dev.example.test": "refuses" },
+            "mounts": [{ "host": tree, "guest": "/tree" }],
+        });
+        let (code, refused) = box_up_refused(&env, &tree_mount, &[]);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(code, 1, "a refused up exits 1: {refused}");
+        assert_eq!(refused["reason"], "spec", "{refused}");
+        assert!(
+            refused["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("locked-dir"),
+            "the refusal did not name the path: {refused}"
+        );
+        assert_left_nothing(&env, &name, label, "refused");
+        box_up(&env, &tree_mount, &name).down(&env);
+    }
+
     // A spec whose mount names a guest path pinfold's own mount uses is
     // refused as data, naming the path, and leaves no state dir and no box:
     // pinfold adds the profile's `share/` at /opt/pinfold/profile after the
@@ -2623,8 +2655,30 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // A caller's `built` ref is a handle for later, so later builds of the
     // name neither reclaim nor move it: a box started from the first
     // build's ref reads the file that build COPYed.
-    let read = file_from_image(&env, &refs[0], "image", "/marker.txt");
-    assert_eq!(read, "first\n", "the first build's ref names another build");
+    // On Linux the box's labels hold the image's too, the build's
+    // `dev.example.test` among them, which the spec does not set.
+    // Sabotage: record only the plan's labels in the Linux inventory; the
+    // label is missing from `ready`.
+    let first = box_name("image");
+    let up = box_up(
+        &env,
+        &serde_json::json!({ "name": first, "image": refs[0] }),
+        &first,
+    );
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        up.ready()["labels"]["dev.example.test"],
+        "image",
+        "the box lacks its image's label: {}",
+        up.ready()
+    );
+    let read = box_exec(&env, &first, &["cat", "/marker.txt"]);
+    assert_ok(&read, "reading the first build's marker");
+    assert_eq!(
+        read.stdout, "first\n",
+        "the first build's ref names another build"
+    );
+    up.down(&env);
 
     // A failed build carries a bounded tail and makes no image. Sabotage:
     // collect the full build output or cap only its line count; the giant

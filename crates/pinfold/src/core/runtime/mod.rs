@@ -586,15 +586,6 @@ fn runtime_path(program: &str) -> io::Result<PathBuf> {
     Err(spawn_error(program, io::ErrorKind::NotFound.into()))
 }
 
-/// The attached `<program> run` command that owns a box: stdin and stdout
-/// piped. `program` is resolved on pinfold's own `PATH`. Guest values are
-/// encoded under prefixed names, so they cannot configure the host client.
-///
-/// `extra` is what the runtime adds to the controls every box gets. `init`
-/// is a host path; it and its directory are mounted read-only at the same
-/// path, so it is also the path PID 1 runs. With `guest_socket`, init relays
-/// to that guest path, which `extra` carries the proxy socket to.
-///
 /// The box's environment in order, a later entry winning: the spec's, a
 /// `from` entry read from pinfold's own environment under the entry's key,
 /// then the always-applied variables.
@@ -620,6 +611,15 @@ fn guest_vars(plan: &Plan) -> Vec<(String, OsString)> {
     vars
 }
 
+/// The attached `<program> run` command that owns a box: stdin and stdout
+/// piped. `program` is resolved on pinfold's own `PATH`. Guest values are
+/// encoded under prefixed names, so they cannot configure the host client.
+///
+/// `extra` is what the runtime adds to the controls every box gets. `init`
+/// is a host path; it and its directory are mounted read-only at the same
+/// path, so it is also the path PID 1 runs. With `guest_socket`, init relays
+/// to that guest path, which `extra` carries the proxy socket to.
+///
 /// Env values go through the child's environment, so argv holds only names
 /// and `ps` cannot read a secret.
 fn up(

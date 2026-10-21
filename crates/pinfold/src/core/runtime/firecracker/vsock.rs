@@ -27,6 +27,10 @@ pub fn socket(state_dir: &Path) -> PathBuf {
 /// A host-initiated connection to the guest's `port`.
 pub fn connect(state_dir: &Path, port: u32) -> io::Result<UnixStream> {
     let mut stream = UnixStream::connect(socket(state_dir))?;
+    // Box work runs as the exec service's user and can stop it from
+    // answering, so every request has a deadline; `exec` lifts it after
+    // the handshake.
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     stream.write_all(format!("CONNECT {port}\n").as_bytes())?;
     // One byte at a time: what follows the line is the guest's.
     let mut line = Vec::new();
@@ -85,9 +89,6 @@ pub fn set_env(state_dir: &Path, vars: &[(OsString, OsString)]) -> io::Result<()
 /// OOM kills.
 pub fn stat(state_dir: &Path) -> io::Result<[Option<u64>; 5]> {
     let mut stream = connect(state_dir, EXEC_PORT)?;
-    // Box work runs as the exec service's user and can stop it from
-    // answering.
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     write_frame(&mut stream, STAT, &[])?;
     let payload = answer(&mut stream, STAT)?;
     let mut values = [None; 5];
@@ -122,6 +123,8 @@ pub fn exec(
     argv: &[String],
 ) -> io::Result<i32> {
     let mut connection = connect(state_dir, EXEC_PORT)?;
+    // A command runs as long as it runs.
+    connection.set_read_timeout(None)?;
     let (rows, cols) = if tty { window() } else { (0, 0) };
     // Keep the host's terminal identity on a TTY.
     let extra: Vec<(OsString, OsString)> = if tty {
