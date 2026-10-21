@@ -438,6 +438,11 @@ impl Plan {
                     mount.host.display()
                 )));
             }
+            // A Linux box copies the whole tree at each start.
+            #[cfg(target_os = "linux")]
+            unreadable(&mount.host).map_err(|(path, error)| {
+                invalid(format!("mount host {}: {error}", path.display()))
+            })?;
         }
         let mut names = std::collections::BTreeSet::new();
         for disk in &self.disks {
@@ -630,8 +635,40 @@ impl Plan {
                 )));
             }
         }
+        // A Firecracker VM's drives are vda to vdz; the init and root disks
+        // take the first two.
+        if cfg!(target_os = "linux") && guests.len() > MAX_ATTACHMENTS {
+            return Err(invalid(format!(
+                "a box attaches at most {MAX_ATTACHMENTS} disks and mounts, pinfold's own mounts included; this one has {}",
+                guests.len()
+            )));
+        }
         Ok(())
     }
+}
+
+/// The disks and mounts one Linux box attaches.
+const MAX_ATTACHMENTS: usize = 24;
+
+/// Refuse the first entry under `dir` the user cannot read: a directory
+/// it cannot list or a file it cannot open. Symlinks are copied as links.
+#[cfg(target_os = "linux")]
+fn unreadable(dir: &Path) -> Result<(), (PathBuf, std::io::Error)> {
+    use nix::unistd::{AccessFlags, access};
+    let entries = std::fs::read_dir(dir).map_err(|error| (dir.to_path_buf(), error))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| (dir.to_path_buf(), error))?;
+        let path = entry.path();
+        let kind = entry.file_type().map_err(|error| (path.clone(), error))?;
+        if kind.is_dir() {
+            access(&path, AccessFlags::R_OK | AccessFlags::X_OK)
+                .map_err(|error| (path.clone(), error.into()))?;
+            unreadable(&path)?;
+        } else if kind.is_file() {
+            access(&path, AccessFlags::R_OK).map_err(|error| (path.clone(), error.into()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Guest paths no mount or disk may name, at or below.

@@ -101,19 +101,13 @@ fn host_updates_are_verified_and_atomic() {
     let other = TestEnv::new("update-owner");
     // Sabotage: hold the exclusive executable lock only before downloading.
     // A real owner starts after the fixture observes the asset request;
-    // replacement must recheck that owner before its atomic rename.
-    // The owner runs the suite's binary, the one AppArmor profiles, and
-    // the update a hard link to it: one inode under two paths, so the
-    // owner holds the lock the update takes and only the link is
-    // replaced. The target dir keeps both on one filesystem.
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("update-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    let linked = dir.join("pinfold");
-    fs::hard_link(pinfold(), &linked).unwrap();
-    let linked_inode = fs::metadata(&linked).unwrap().ino();
+    // replacement must recheck that owner before its atomic rename. The
+    // owner is a `box exec` of the installed executable under another XDG
+    // root: exec needs no jail, so AppArmor's profile does not apply, and
+    // it holds the executable lock until its command ends.
+    let mut boxed = box_up(&other, &spec, &name);
     fs::write(fixture.root.join("hold-download"), b"").unwrap();
-    let mut downloading = fixture.command(&env, &linked);
+    let mut downloading = fixture.command(&env, &installed);
     let update = downloading
         .arg("update")
         .stdout(Stdio::piped())
@@ -122,27 +116,26 @@ fn host_updates_are_verified_and_atomic() {
         .unwrap();
     fixture.wait_for_download();
     let child = other
-        .command(pinfold())
-        .args(["box", "up"])
+        .command(&installed)
+        .args([
+            "box",
+            "exec",
+            &name,
+            "--",
+            "sh",
+            "-c",
+            "echo ready; exec cat",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
     let mut owner = ChildOwner::new(child, &other, None);
-    owner
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(serde_json::to_string(&spec).unwrap().as_bytes())
-        .unwrap();
     let mut stdout = BufReader::new(owner.stdout.take().unwrap());
     let line = read_bounded(&mut owner, &mut stdout, Duration::from_secs(60), false)
-        .expect("read update owner's readiness");
-    let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
-    owner.observe(&ready);
-    assert_eq!(ready["event"], "ready", "box owner failed: {ready}");
-    let owner = (owner, stdout);
+        .expect("read the exec owner's readiness");
+    assert_eq!(line.trim(), "ready", "the exec owner did not start");
     fixture.release_download();
     let refusal = update.wait_with_output().unwrap();
     assert!(
@@ -153,9 +146,15 @@ fn host_updates_are_verified_and_atomic() {
         String::from_utf8_lossy(&refusal.stderr).contains("update-busy"),
         "wrong race refusal: {refusal:?}"
     );
-    assert_eq!(fs::metadata(&linked).unwrap().ino(), linked_inode);
-    drop(owner);
-    fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(fs::read(&installed).unwrap(), original);
+    assert_eq!(fs::metadata(&installed).unwrap().ino(), original_inode);
+    drop(owner.stdin.take());
+    assert!(owner.wait_bounded().success(), "the exec owner failed");
+    boxed.down(&other);
+    assert!(
+        boxed.wait().success(),
+        "the owner's box did not exit cleanly"
+    );
     fs::remove_file(fixture.root.join("hold-download")).unwrap();
 
     run_ok(fixture.command(&env, &update_alias).arg("update"));

@@ -910,11 +910,6 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         ),
         Err(error) => println!("kernel: unavailable: {error}"),
     }
-    #[cfg(target_os = "linux")]
-    match crate::core::runtime::firecracker::jail::landlock::abi() {
-        Ok(abi) => println!("  landlock: ABI {abi}"),
-        Err(error) => println!("  landlock: unavailable: {error}"),
-    }
 
     let image = crate::pi::launch::resolve_image(&config, &project);
     println!("image: {image}");

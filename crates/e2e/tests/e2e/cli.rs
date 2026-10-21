@@ -162,17 +162,6 @@ fn doctor_reports_without_changing_state() {
         // Sabotage: omit config_report after a failed runtime check. Host
         // configuration must still be readable; the fixture supplies 1G.
         let report = String::from_utf8_lossy(&output.stdout);
-        // The host's kernel and Landlock ABI, into the CI log past the
-        // test harness's capture.
-        if scenario == "ready" {
-            use std::io::Write;
-            let host: String = report
-                .lines()
-                .filter(|line| line.starts_with("kernel:") || line.contains("landlock:"))
-                .map(|line| format!("doctor: {}\n", line.trim()))
-                .collect();
-            let _ = std::io::stderr().write_all(host.as_bytes());
-        }
         let config: serde_json::Value = report
             .lines()
             .find_map(|line| {

@@ -36,14 +36,7 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
         extra.push("--ssh".into());
     }
     let guest_socket = proxy_socket.map(|_| GUEST_PROXY_SOCKET);
-    let mut command = super::up(
-        "container",
-        plan,
-        init,
-        guest_socket,
-        extra,
-        plan.env.iter(),
-    )?;
+    let mut command = super::up("container", plan, init, guest_socket, extra)?;
     if let Some(socket) = proxy_socket {
         command.env("SSH_AUTH_SOCK", socket);
     }

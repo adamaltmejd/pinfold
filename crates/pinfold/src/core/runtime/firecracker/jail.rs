@@ -66,21 +66,29 @@ pub struct Vmm {
     /// through it never reaches a reused pid.
     pidfd: OwnedFd,
     status: oneshot::Receiver<io::Result<i32>>,
-    ended: Option<i32>,
+    /// The outcome once received: the receiver must not be polled again.
+    ended: Option<Result<i32, String>>,
 }
 
 impl Vmm {
     /// Wait until the VMM ends: its exit code, or `128+n` for signal `n`.
     /// Cancel-safe, and answers again once it has.
     pub async fn wait(&mut self) -> io::Result<i32> {
-        if let Some(code) = self.ended {
-            return Ok(code);
+        if self.ended.is_none() {
+            let outcome = match (&mut self.status).await {
+                Ok(outcome) => outcome.map_err(|error| error.to_string()),
+                Err(_) => Err("the VMM's owner thread ended without a status".to_string()),
+            };
+            self.ended = Some(outcome);
         }
-        let code = (&mut self.status)
-            .await
-            .map_err(|_| io::Error::other("the VMM's owner thread ended without a status"))??;
-        self.ended = Some(code);
-        Ok(code)
+        self.ended()
+    }
+
+    fn ended(&self) -> io::Result<i32> {
+        match self.ended.as_ref().expect("an outcome was received") {
+            Ok(code) => Ok(*code),
+            Err(error) => Err(io::Error::other(error.clone())),
+        }
     }
 
     /// Whether the VMM still runs.
@@ -88,14 +96,14 @@ impl Vmm {
         if self.ended.is_some() {
             return false;
         }
-        match self.status.try_recv() {
-            Ok(Ok(code)) => {
-                self.ended = Some(code);
-                false
-            }
-            Err(oneshot::error::TryRecvError::Empty) => true,
-            _ => false,
-        }
+        self.ended = match self.status.try_recv() {
+            Err(oneshot::error::TryRecvError::Empty) => return true,
+            Ok(outcome) => Some(outcome.map_err(|error| error.to_string())),
+            Err(oneshot::error::TryRecvError::Closed) => Some(Err(
+                "the VMM's owner thread ended without a status".to_string(),
+            )),
+        };
+        false
     }
 
     /// SIGKILL the VMM through its pidfd. One that has ended is left alone.

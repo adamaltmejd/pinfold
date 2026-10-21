@@ -2997,10 +2997,13 @@ pub(super) fn built_unique_ref(profile: &str) -> String {
 #[test]
 fn box_has_no_network_but_loopback() {
     let _runtime = crate::shared_runtime();
-    // Sabotage: drop `--network none` from the adapter's `run` argv;
-    // the box gains an interface and reaches `1.1.1.1`, so the
-    // interface and unreachable assertions fail. The route to the fixture is
-    // the positive control that the same box still has its one way out.
+    // Sabotage: on Apple, drop `--network none` from the adapter's `run`
+    // argv; on Linux, give the VM a network interface. The box gains an
+    // interface and reaches `1.1.1.1`, so the interface and unreachable
+    // assertions fail. The route to the fixture is the positive control
+    // that the same box still has its one way out. Sabotage (Linux): leave
+    // the boot listener `v.sock_1000` linked after boot; the guest's
+    // connect to port 1000 is accepted and its reset assertion fails.
     let env = TestEnv::new("network");
     let fixture = HttpFixture::start(None);
     let name = box_name("network");
@@ -3052,6 +3055,56 @@ fn box_has_no_network_but_loopback() {
         "the route answered: {}",
         route.stdout
     );
+
+    // The host's vsock side: only the proxy listens. The exec port is the
+    // guest's own, and the boot port's listener is gone once the box is
+    // ready. A reset is the host refusing; a timeout would be a dropped
+    // packet. perl-base opens the socket by number: AF_VSOCK is 40 and a
+    // sockaddr_vm is family, reserved, port and CID.
+    #[cfg(target_os = "linux")]
+    {
+        let connect = |port: u32| {
+            box_exec(
+                &env,
+                &name,
+                &[
+                    "perl",
+                    "-e",
+                    "socket(my $s, 40, 1, 0) or die \"socket: $!\\n\"; \
+                     print connect($s, pack('SSLLx4', 40, 0, $ARGV[0], 2)) ? \"connected\\n\" : \"$!\\n\"",
+                    &port.to_string(),
+                ],
+            )
+        };
+        for port in [1024, 1000] {
+            let reset = connect(port);
+            assert_ok(&reset, "a vsock connect from the box");
+            assert_eq!(
+                reset.stdout.trim(),
+                "Connection reset by peer",
+                "vsock CID 2 port {port} from the box"
+            );
+        }
+        let proxy = connect(3128);
+        assert_ok(&proxy, "a vsock connect to the proxy");
+        assert_eq!(proxy.stdout.trim(), "connected", "vsock CID 2 port 3128");
+        let config = box_exec(&env, &name, &["sh", "-c", "zcat /proc/config.gz"]);
+        assert_ok(&config, "reading the guest kernel's config");
+        assert!(
+            config
+                .stdout
+                .lines()
+                .any(|line| line == "CONFIG_VIRTIO_VSOCKETS=y"),
+            "the guest config lacks virtio vsock"
+        );
+        assert!(
+            !config
+                .stdout
+                .lines()
+                .any(|line| line.starts_with("CONFIG_VSOCKETS_LOOPBACK=")),
+            "the guest kernel sets vsock loopback"
+        );
+    }
 
     up.down(&env);
 }

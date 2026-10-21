@@ -85,6 +85,9 @@ pub fn set_env(state_dir: &Path, vars: &[(OsString, OsString)]) -> io::Result<()
 /// OOM kills.
 pub fn stat(state_dir: &Path) -> io::Result<[Option<u64>; 5]> {
     let mut stream = connect(state_dir, EXEC_PORT)?;
+    // Box work runs as the exec service's user and can stop it from
+    // answering.
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     write_frame(&mut stream, STAT, &[])?;
     let payload = answer(&mut stream, STAT)?;
     let mut values = [None; 5];

@@ -116,12 +116,63 @@ fn the_documents_profile_reads_documents_locally() {
     );
 }
 
+/// The PINFOLD_ENV_ value `PiRpc` launches with: long enough that no disk
+/// image holds it by chance.
+const SECRET: &str = "pinfold-e2e-secret-4f9c1d7a2be6";
+
+/// Walk `dir`, panic on a regular file whose data holds `needle`, and
+/// list every file read. Only data extents are read, so a sparse disk
+/// costs what it holds.
+#[cfg(target_os = "linux")]
+fn holding(dir: &Path, needle: &[u8], scanned: &mut Vec<std::path::PathBuf>) {
+    use nix::errno::Errno;
+    use nix::unistd::{Whence, lseek};
+    use std::io::{Read, Seek, SeekFrom};
+    use std::os::fd::AsFd;
+    for entry in fs::read_dir(dir).unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
+    {
+        let path = entry.unwrap().path();
+        let kind = fs::symlink_metadata(&path).unwrap().file_type();
+        if kind.is_dir() {
+            holding(&path, needle, scanned);
+            continue;
+        }
+        if !kind.is_file() {
+            continue;
+        }
+        let mut file = fs::File::open(&path)
+            .unwrap_or_else(|error| panic!("open {}: {error}", path.display()));
+        let mut offset = 0;
+        loop {
+            let data = match lseek(file.as_fd(), offset, Whence::SeekData) {
+                Ok(data) => data,
+                Err(Errno::ENXIO) => break,
+                Err(error) => panic!("seek {}: {error}", path.display()),
+            };
+            let hole = lseek(file.as_fd(), data, Whence::SeekHole).unwrap();
+            file.seek(SeekFrom::Start(data as u64)).unwrap();
+            let mut extent = Vec::new();
+            (&mut file)
+                .take((hole - data) as u64)
+                .read_to_end(&mut extent)
+                .unwrap();
+            assert!(
+                !extent.windows(needle.len()).any(|window| window == needle),
+                "{} holds the secret",
+                path.display()
+            );
+            offset = hole;
+        }
+        scanned.push(path);
+    }
+}
+
 #[test]
 fn the_environment_is_exactly_the_spec() {
     let _runtime = crate::shared_runtime();
     // Sabotage: pass the PINFOLD_ENV_* value on the command line (for
-    // example `container exec --env SECRET=shhh`) instead of through the
-    // child's environment; `shhh` then appears in host `ps` while the box
+    // example `container exec --env SECRET=...`) instead of through the
+    // child's environment; the value then appears in host `ps` while the box
     // runs and the ps assertion fails. Sabotage: let the box inherit the
     // host environment; the unprefixed proxy variables are then present and
     // their assertions fail. On Linux, seed the VM's environment
@@ -150,7 +201,7 @@ fn the_environment_is_exactly_the_spec() {
     // PINFOLD_ENV_SECRET arrives as SECRET.
     let secret = box_exec(&env, &name, &["sh", "-c", "printf %s \"$SECRET\""]);
     assert_eq!(secret.code, 0, "reading SECRET failed: {}", secret.stderr);
-    assert_eq!(secret.stdout, "shhh", "SECRET did not arrive");
+    assert_eq!(secret.stdout, SECRET, "SECRET did not arrive");
 
     // The host's proxy variables are absent: copied in, they would send
     // every HTTPS request to the host's unreachable proxy, since curl
@@ -187,9 +238,36 @@ fn the_environment_is_exactly_the_spec() {
     );
     let ps = String::from_utf8_lossy(&ps.stdout);
     assert!(
-        !ps.contains("shhh"),
+        !ps.contains(SECRET),
         "the secret is in host ps output:\n{ps}"
     );
+
+    // On Linux the secret reaches the guest only over vsock: not on its
+    // kernel command line, nor in any file pinfold writes for the box (the
+    // VM configuration, the init disk, mount images, disks). Sabotage: put
+    // the environment in BOOT or the boot args; the init disk's or
+    // cmdline's assertion fails.
+    #[cfg(target_os = "linux")]
+    {
+        let cmdline = box_exec(&env, &name, &["cat", "/proc/cmdline"]);
+        assert_ok(&cmdline, "reading the guest's /proc/cmdline");
+        assert!(
+            !cmdline.stdout.contains(SECRET),
+            "the secret is on the guest's kernel command line"
+        );
+        let mut scanned = Vec::new();
+        holding(&env.state, SECRET.as_bytes(), &mut scanned);
+        let names: Vec<String> = scanned
+            .iter()
+            .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
+            .collect();
+        for written in ["config.json", "init.ext4", "mount0.ext4"] {
+            assert!(
+                names.iter().any(|name| name == written),
+                "no {written} under the state dir: {names:?}"
+            );
+        }
+    }
 
     assert!(run.finish().success(), "pinfold pi did not exit cleanly");
 
@@ -1192,7 +1270,7 @@ impl PiRpc {
             .command(pinfold())
             .args(["pi", "--mode", "rpc"])
             .current_dir(project)
-            .env("PINFOLD_ENV_SECRET", "shhh")
+            .env("PINFOLD_ENV_SECRET", SECRET)
             .envs(vars.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

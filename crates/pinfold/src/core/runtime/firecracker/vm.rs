@@ -1,6 +1,6 @@
 //! One box's VM: what a start prepares, the boot handshake, and `down`.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
@@ -13,8 +13,7 @@ use tokio::net::UnixListener;
 
 use super::{Firecracker, jail, vsock};
 use crate::core::disk::{self, Fill, Seeding};
-use crate::core::plan::{Env, Plan};
-use crate::core::proxy::PROXY_URL;
+use crate::core::plan::Plan;
 use crate::core::runtime::{output, podman::Podman};
 use crate::core::{artifacts, image};
 use crate::init::firecracker::{BOOT, BOOT_PORT, FAILED, READY, read_frame, write_frame};
@@ -211,11 +210,6 @@ impl Vm {
         for (image, guest) in &prepared.mounts {
             drives.push((image.clone(), false));
             attachments.push((guest, false));
-        }
-        if drives.len() > 24 {
-            return Err(io::Error::other(
-                "a box attaches at most 24 disks and mounts",
-            ));
         }
         let device = |index: usize| format!("vd{}", char::from(b'a' + index as u8));
 
@@ -418,21 +412,10 @@ fn env(plan: &Plan, image_env: Vec<(OsString, OsString)>) -> Vec<(OsString, OsSt
     let mut vars: std::collections::BTreeMap<OsString, OsString> = image_env.into_iter().collect();
     vars.entry("PATH".into())
         .or_insert_with(|| DEFAULT_PATH.into());
-    for (name, value) in &plan.env {
-        let value = match value {
-            Env::Exact(value) => Some(OsString::from(value)),
-            Env::From { from } => std::env::var_os(from),
-        };
-        if let Some(value) = value {
-            vars.insert(name.into(), value);
-        }
-    }
-    // Always applied: Node's fetch reads the proxy variables only with this
-    // set. These override any spec entries with the same names.
-    vars.insert("NODE_USE_ENV_PROXY".into(), "1".into());
-    if plan.egress.is_some() {
-        vars.insert("HTTPS_PROXY".into(), OsStr::new(PROXY_URL).into());
-        vars.insert("http_proxy".into(), OsStr::new(PROXY_URL).into());
-    }
+    vars.extend(
+        crate::core::runtime::guest_vars(plan)
+            .into_iter()
+            .map(|(name, value)| (name.into(), value)),
+    );
     vars.into_iter().collect()
 }

@@ -229,7 +229,7 @@ impl Box {
         // families empty, so pinfold's own label (`dev.pinfold.project` for
         // `pinfold pi`) must win over the image's empty one. A caller spec
         // cannot name this namespace, so no other clash can happen.
-        for (key, value) in identity.labels {
+        for (key, value) in identity.labels.clone() {
             if key.starts_with("dev.pinfold.") {
                 plan.labels.entry(key).or_insert(value);
             }
@@ -278,17 +278,23 @@ impl Box {
         let run_id = claim.generation().to_string();
         plan.labels
             .insert(ownership::GENERATION_LABEL.to_string(), run_id.clone());
-        claim.describe(ownership::Described {
-            labels: plan.labels.clone(),
-            image_id: identity.id.clone(),
-            image_ref: image.clone(),
-            created: crate::core::rfc3339(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |since| since.as_secs() as i64),
-            ),
-            memory: plan.memory.clone(),
-        })?;
+        // Linux's inventory is this record. Its labels are the box's and
+        // under them the image's, as a container copies them.
+        if cfg!(target_os = "linux") {
+            let mut labels = identity.labels.clone();
+            labels.extend(plan.labels.clone());
+            claim.describe(ownership::Described {
+                labels,
+                image_id: identity.id.clone(),
+                image_ref: image.clone(),
+                created: crate::core::rfc3339(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |since| since.as_secs() as i64),
+                ),
+                memory: plan.memory.clone(),
+            })?;
+        }
 
         // Dropping a start part-way tears nothing down, so a signal ends it
         // here and `child` says what to remove.

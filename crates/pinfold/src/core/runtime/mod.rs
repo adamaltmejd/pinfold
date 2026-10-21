@@ -595,16 +595,39 @@ fn runtime_path(program: &str) -> io::Result<PathBuf> {
 /// path, so it is also the path PID 1 runs. With `guest_socket`, init relays
 /// to that guest path, which `extra` carries the proxy socket to.
 ///
+/// The box's environment in order, a later entry winning: the spec's, a
+/// `from` entry read from pinfold's own environment under the entry's key,
+/// then the always-applied variables.
+fn guest_vars(plan: &Plan) -> Vec<(String, OsString)> {
+    let mut vars: Vec<(String, OsString)> = plan
+        .env
+        .iter()
+        .filter_map(|(name, value)| {
+            let value = match value {
+                Env::Exact(value) => Some(OsString::from(value)),
+                Env::From { from } => std::env::var_os(from),
+            };
+            Some((name.clone(), value?))
+        })
+        .collect();
+    // Always applied: Node's fetch reads the proxy variables only with this
+    // set. These override any spec entries with the same names.
+    vars.push(("NODE_USE_ENV_PROXY".into(), "1".into()));
+    if plan.egress.is_some() {
+        vars.push(("HTTPS_PROXY".into(), PROXY_URL.into()));
+        vars.push(("http_proxy".into(), PROXY_URL.into()));
+    }
+    vars
+}
+
 /// Env values go through the child's environment, so argv holds only names
-/// and `ps` cannot read a secret. A `from` entry names a host variable the
-/// box sees under the entry's key; the two need not match.
-fn up<'a>(
+/// and `ps` cannot read a secret.
+fn up(
     program: &str,
     plan: &Plan,
     init: &Path,
     guest_socket: Option<&str>,
     extra: Vec<OsString>,
-    env: impl Iterator<Item = (&'a String, &'a Env)>,
 ) -> io::Result<Command> {
     let program = runtime_path(program)?;
     let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
@@ -627,21 +650,8 @@ fn up<'a>(
     for (key, value) in &plan.labels {
         command.arg("--label").arg(format!("{key}={value}"));
     }
-    for (name, value) in env {
-        let value = match value {
-            Env::Exact(value) => Some(OsString::from(value)),
-            Env::From { from } => std::env::var_os(from),
-        };
-        if let Some(value) = value {
-            guest_env(command.as_std_mut(), name, &value);
-        }
-    }
-    // Always applied: Node's fetch reads the proxy variables only with this
-    // set. These override any spec entries with the same names.
-    guest_env(command.as_std_mut(), "NODE_USE_ENV_PROXY", OsStr::new("1"));
-    if plan.egress.is_some() {
-        guest_env(command.as_std_mut(), "HTTPS_PROXY", OsStr::new(PROXY_URL));
-        guest_env(command.as_std_mut(), "http_proxy", OsStr::new(PROXY_URL));
+    for (name, value) in guest_vars(plan) {
+        guest_env(command.as_std_mut(), &name, &value);
     }
     for mount in &plan.mounts {
         command.arg("--mount").arg(bind(&mount.host, &mount.guest));
