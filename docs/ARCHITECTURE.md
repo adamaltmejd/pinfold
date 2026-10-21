@@ -388,6 +388,7 @@ The box spec `up` reads from stdin:
   refused as `spec`, naming it. A mount or disk nested in another applies
   inside it whatever the spec's order; two at one lexical guest path, with
   `.` and `..` resolved, are refused as `spec` before preparation.
+- On Linux a box attaches at most 24 disks and mounts, pinfold's own (the harness, `share/`, codex's config) included; more are refused as `spec`.
 - A disk `name` is validated like a profile name, and named once per
   spec. `size` is a whole number
   followed by `G`, at least `1G`, default `64G`; it caps a disk pinfold
