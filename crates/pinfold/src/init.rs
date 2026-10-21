@@ -24,7 +24,7 @@ use nix::sys::signal::{SigHandler, SigSet, Signal};
 
 #[cfg(target_os = "linux")]
 #[path = "init/firecracker.rs"]
-mod firecracker;
+pub(crate) mod firecracker;
 
 /// Guest values travel under names the host runtime does not interpret.
 /// Hex preserves arbitrary environment bytes through runtime JSON encoding.

@@ -286,7 +286,6 @@ pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Op
 /// `~/.cache/pinfold/root/<id>.ext4`, made at the image's first use. It goes
 /// when the image goes ([`clean::prune_root_disks`]).
 #[cfg(target_os = "linux")]
-#[expect(dead_code, reason = "the Firecracker runtime calls it, #141")]
 pub fn root_disk(id: &str) -> io::Result<PathBuf> {
     let dir = dirs::root_disks_dir()?;
     let disk = dir.join(format!("{id}.ext4"));

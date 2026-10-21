@@ -18,9 +18,6 @@ pub const PROJECT_LABEL: &str = "dev.pinfold.project";
 /// The two labels naming a profile's or a project's source on an image. A
 /// caller's name lives only in its `pinfold/image-<NAME>` tags.
 pub const FAMILY_LABELS: [&str; 2] = [PROFILE_LABEL, PROJECT_LABEL];
-/// The label podman puts on the intermediate images of a cached build, so
-/// `clean` prunes only pinfold's build cache.
-pub const LAYER_LABEL: &str = "dev.pinfold.layer";
 /// The label recording the digest of the image an image was built from.
 pub const BASE_LABEL: &str = "dev.pinfold.base";
 pub const OWNER_LABEL: &str = "dev.pinfold.owner";

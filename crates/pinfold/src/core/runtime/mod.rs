@@ -1,8 +1,9 @@
-//! Container runtimes: one per OS, behind a trait.
+//! Box runtimes: one per OS, behind a trait.
 
 pub mod apple;
 #[cfg(target_os = "linux")]
 pub mod firecracker;
+#[cfg(target_os = "linux")]
 pub mod podman;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -19,8 +20,9 @@ use std::time::{Duration, Instant};
 
 use nix::poll::{PollFd, PollFlags, poll};
 use serde::de::DeserializeOwned;
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 
+use crate::core::disk::{Fill, Seeding};
 use crate::core::pipe::{nonblocking, remaining};
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
@@ -45,14 +47,76 @@ fn guest_env(command: &mut std::process::Command, name: &str, value: &OsStr) {
     command.args(["--env", &transport]).env(transport, encoded);
 }
 
-/// The container runtime for this OS: Apple `container` on macOS, rootless
-/// podman on Linux, the only targets pinfold builds for.
+/// The box runtime for this OS: Apple `container` on macOS, Firecracker on
+/// Linux, the only targets pinfold builds for.
 pub fn runtime() -> &'static dyn Runtime {
-    if cfg!(target_os = "macos") {
-        &apple::Apple
-    } else {
-        &podman::Podman
+    #[cfg(target_os = "linux")]
+    return &firecracker::Firecracker;
+    #[cfg(not(target_os = "linux"))]
+    return &apple::Apple;
+}
+
+#[cfg(target_os = "linux")]
+pub use firecracker::Prepared;
+
+/// What [`prepare`] made for one start. Apple needs nothing.
+#[cfg(not(target_os = "linux"))]
+pub struct Prepared;
+
+/// The slow, cancellable part of a start, run on a blocking thread before
+/// [`start`]: on Linux the VMM's install, the root and init disks and the
+/// mounts' images. `image_id` is the image `up` resolved; a tag that moved
+/// since fails as `image-changed`.
+pub fn prepare(
+    plan: &Plan,
+    state_dir: &Path,
+    image_id: &str,
+    cancel: &AtomicBool,
+) -> io::Result<Prepared> {
+    #[cfg(target_os = "linux")]
+    return firecracker::prepare(plan, state_dir, image_id, cancel);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (plan, state_dir, image_id, cancel);
+        Ok(Prepared)
     }
+}
+
+/// Start the box. On Linux the boot carries the new disks' `fills` and the
+/// profile's `seeding`; Apple's caller copies them in after ready.
+pub fn start(
+    prepared: Prepared,
+    plan: &Plan,
+    init: &Path,
+    proxy_socket: Option<&Path>,
+    fills: &[Fill],
+    seeding: Option<&Seeding>,
+) -> io::Result<Child> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = init;
+        firecracker::Vm::up(prepared, plan, proxy_socket, fills, seeding)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let (Prepared, _, _) = (prepared, fills, seeding);
+        apple::up(plan, init, proxy_socket)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub use apple::Client as Child;
+/// What `box up` holds for its box: on Linux the VM it runs itself, on
+/// macOS the attached runtime client. Each has `ready`, `wait`, `down` and
+/// `abort`.
+#[cfg(target_os = "linux")]
+pub use firecracker::Vm as Child;
+
+/// A VMM's exit code, or `128+n` for signal `n`, as the exit status a
+/// runtime client would report: `exited` names 137 for a SIGKILLed VMM.
+#[cfg(target_os = "linux")]
+fn exit_status(code: i32) -> ExitStatus {
+    std::os::unix::process::ExitStatusExt::from_raw((code & 0xff) << 8)
 }
 
 pub(crate) fn require_version(program: &str, version: &str, minimum: [u64; 3]) -> io::Result<()> {
@@ -371,27 +435,19 @@ pub struct BuildRequest<'a> {
     pub cache: bool,
 }
 
-/// One OS's container runtime. Command lines are built as data.
+/// One OS's box runtime. Command lines and VM configurations are built as
+/// data.
 pub trait Runtime: Sync {
-    /// Start the attached `container run` process that owns the box. When
-    /// `proxy_socket` is set, carry that host unix socket into the box.
-    /// `seccomp` is the profile [`Runtime::preflight`] returned.
-    /// `state_dir` belongs to this claim until runtime removal.
-    fn up(
-        &self,
-        plan: &Plan,
-        init: &Path,
-        state_dir: &Path,
-        proxy_socket: Option<&Path>,
-        seccomp: Option<&Path>,
-    ) -> io::Result<Child>;
-
     /// Refuse a host the runtime cannot serve, before `up` creates any box
-    /// state, and return the seccomp profile the runtime reports, which
-    /// `up` needs. podman only; Apple returns `None`.
-    fn preflight(&self) -> io::Result<Option<PathBuf>>;
+    /// state.
+    fn preflight(&self) -> io::Result<()>;
 
-    /// Stop and remove the box.
+    /// Where the box's proxy listens, in its claimed `state_dir`.
+    fn proxy_socket(&self, state_dir: &Path) -> io::Result<PathBuf> {
+        Ok(state_dir.join("proxy.sock"))
+    }
+
+    /// Stop and remove the box of an owner that is gone.
     fn down(&self, name: &str) -> io::Result<()>;
 
     /// Run `argv` in a running box with inherited stdio, through the box's

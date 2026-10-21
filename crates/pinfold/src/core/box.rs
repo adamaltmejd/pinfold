@@ -1,4 +1,4 @@
-//! The box lifecycle: one attached `container run` process owns one box.
+//! The box lifecycle: one `box up` process owns one box.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -6,15 +6,15 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitStatus;
 
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::process::Child;
+use tokio::io::AsyncReadExt;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::core::clean;
+use crate::core::disk::Seeding;
 use crate::core::plan::{Disk, Env, Mount, Plan, Route, valid_name};
 use crate::core::profile::{Profile, Seed};
 use crate::core::runs::{self, Terminal};
-use crate::core::runtime::{BoxInfo, apple, runtime};
+use crate::core::runtime::{self, BoxInfo, Child, Prepared, apple, runtime};
 use crate::core::{artifacts, disk, login, ownership, proxy};
 use crate::dirs;
 
@@ -47,7 +47,7 @@ pub enum Shutdown {
     StdinEof,
     Signal,
     AuditLog,
-    /// The attached `container run` process exited on its own.
+    /// The box ended on its own: its runtime client or its VM exited.
     BoxExited(ExitStatus),
 }
 
@@ -199,7 +199,7 @@ impl Box {
         plan.validate_guests(&extra)
             .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
         let runtime = runtime();
-        let seccomp = runtime
+        runtime
             .preflight()
             .map_err(|error| refused(&plan, RefusalReason::Runtime, error.to_string()))?;
 
@@ -258,7 +258,9 @@ impl Box {
                 "name remained busy through the claim deadline".to_string(),
             )
         })?;
-        if runtime.list(None)?.iter().any(|box_| box_.id == plan.name) {
+        // Linux inventory is pinfold's own claims, which this one now holds.
+        if cfg!(target_os = "macos") && runtime.list(None)?.iter().any(|box_| box_.id == plan.name)
+        {
             return Err(refused(
                 &plan,
                 RefusalReason::NameInUse,
@@ -276,6 +278,17 @@ impl Box {
         let run_id = claim.generation().to_string();
         plan.labels
             .insert(ownership::GENERATION_LABEL.to_string(), run_id.clone());
+        claim.describe(ownership::Described {
+            labels: plan.labels.clone(),
+            image_id: identity.id.clone(),
+            image_ref: image.clone(),
+            created: crate::core::rfc3339(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| since.as_secs() as i64),
+            ),
+            memory: plan.memory.clone(),
+        })?;
 
         // Dropping a start part-way tears nothing down, so a signal ends it
         // here and `child` says what to remove.
@@ -292,7 +305,7 @@ impl Box {
             let (observed, egress_log) = start(
                 &mut plan,
                 init,
-                seccomp.as_deref(),
+                &identity.id,
                 seeding.as_ref(),
                 &state_dir,
                 codex,
@@ -325,19 +338,24 @@ impl Box {
                     let _ = preparing.await;
                 }
                 let ran = progress.child.is_some();
-                // A box that failed readiness ended, or may have, on its own.
-                let requested = !matches!(stop, Stop::NotReady(_))
-                    && progress.child.as_mut().is_some_and(running);
-                let (removed, status) = abort(&plan.name, progress.child).await;
-                if removed.is_ok() {
+                let (removed, status) = match progress.child.take() {
+                    Some(child) => {
+                        let (removed, status) = child.abort(&plan.name).await;
+                        (removed, Some(status))
+                    }
+                    None => (Ok(false), None),
+                };
+                if let Ok(synced) = removed {
                     // Only a stop pinfold asked of a running box synced its
-                    // disks. Even then, a disk unclean before this `up` stays
-                    // so: an aborted start is no recovery.
-                    if ran && !requested {
+                    // disks; a box that failed readiness ended, or may have,
+                    // on its own. Even then, a disk unclean before this `up`
+                    // stays so: an aborted start is no recovery.
+                    if ran && (matches!(stop, Stop::NotReady(_)) || !synced) {
                         progress.claimed.marked.clear();
                     }
                     progress.claimed.undo(runtime, &plan.name);
                 }
+                let removed = removed.map(drop);
                 if let Err(error) = runs::remove(&run_id) {
                     eprintln!("pinfold: startup cleanup: {error}");
                 }
@@ -403,19 +421,10 @@ impl Box {
     /// record, then delete its state directory and acknowledge `box down`.
     /// `None` writes no terminal record.
     pub async fn down(&mut self, terminal: Option<Terminal>) -> io::Result<()> {
-        // Runtime removal waits for attached output to close. Keep its
-        // drain running on the owner while the runtime command blocks.
-        let requested = running(&mut self.child);
-        let name = self.name.clone();
-        let result = tokio::task::spawn_blocking(move || runtime().down(&name))
-            .await
-            .map_err(io::Error::other)
-            .and_then(|result| result);
-        let _ = self.child.wait().await;
         // Before the acknowledgement, so `inspect` after `box down` returns
         // already sees the end. A box that may still run gets none.
-        let result = result.and_then(|()| {
-            if requested {
+        let result = self.child.down(&self.name).await.and_then(|synced| {
+            if synced {
                 disk::detached(&self.disks)
             } else {
                 Ok(())
@@ -512,38 +521,13 @@ impl From<io::Error> for Stop {
     }
 }
 
-/// Stop a failed start's runtime child and remove its box. The caller
-/// removes the claimed state only after successful runtime removal.
-/// Whether the runtime child still runs, so a stop now is one pinfold
-/// requested rather than the box ending on its own.
-fn running(child: &mut Child) -> bool {
-    matches!(child.try_wait(), Ok(None))
-}
-
-async fn abort(
-    name: &str,
-    child: Option<Child>,
-) -> (io::Result<()>, Option<io::Result<ExitStatus>>) {
-    match child {
-        Some(mut child) => {
-            // The client goes first, so one still creating the box cannot
-            // finish after the removal. The box exists by name even when
-            // readiness failed.
-            let _ = child.start_kill();
-            let status = child.wait().await;
-            (runtime().down(name), Some(status))
-        }
-        None => (Ok(()), None),
-    }
-}
-
 /// Startup resources retained when its future is cancelled.
 #[derive(Default)]
 struct Starting {
     child: Option<Child>,
     audit: Audit,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    preparing: Option<tokio::task::JoinHandle<Result<Plan, Stop>>>,
+    preparing: Option<tokio::task::JoinHandle<Result<(Plan, Prepared), Stop>>>,
     /// The disks claimed for the box, which a failed start releases.
     claimed: disk::Claimed,
 }
@@ -556,7 +540,7 @@ struct Starting {
 async fn start(
     plan: &mut Plan,
     init: &Path,
-    seccomp: Option<&Path>,
+    image_id: &str,
     seeding: Option<&Seeding>,
     state_dir: &Path,
     codex: Option<login::Token>,
@@ -564,27 +548,31 @@ async fn start(
 ) -> Result<(BoxInfo, Option<PathBuf>), Stop> {
     // Fetch the harness after the claim. Early refusals download nothing;
     // alias admission follows preparation. The spec's own env wins.
-    let mut prepared = plan.clone();
+    let mut resolved = plan.clone();
     let preparation_dir = state_dir.to_path_buf();
     let cancel = progress.cancel.clone();
+    let image_id = image_id.to_string();
     let worker = progress
         .preparing
         .insert(tokio::task::spawn_blocking(move || {
-            resolve_harness(&mut prepared, &preparation_dir, &cancel)?;
-            Ok(prepared)
+            resolve_harness(&mut resolved, &preparation_dir, &cancel)?;
+            let prepared = runtime::prepare(&resolved, &preparation_dir, &image_id, &cancel)?;
+            Ok((resolved, prepared))
         }));
     let prepared = worker
         .await
-        .map_err(|error| io::Error::other(format!("harness worker failed: {error}")))?;
+        .map_err(|error| io::Error::other(format!("preparation worker failed: {error}")))?;
     progress.preparing.take();
-    *plan = prepared?;
+    let (resolved, prepared) = prepared?;
+    *plan = resolved;
 
     // The proxy comes up before the box, so the socket is listening when
     // the runtime forwards it.
     let mut egress_log = None;
+    let runtime = runtime();
     let socket = match &plan.egress {
         Some(egress) => {
-            let socket = state_dir.join("proxy.sock");
+            let socket = runtime.proxy_socket(state_dir)?;
             let log = runs::egress_log(&plan.labels[ownership::GENERATION_LABEL])?;
             progress.audit = Audit::Waiting(proxy::start(&socket, egress, codex, log.clone())?);
             egress_log = Some(log);
@@ -596,28 +584,18 @@ async fn start(
     // A signal that arrived during the steps above wins the select here,
     // before the runtime is asked to create anything.
     tokio::task::yield_now().await;
-    let runtime = runtime();
-    let child =
-        progress
-            .child
-            .insert(runtime.up(plan, init, state_dir, socket.as_deref(), seccomp)?);
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("runtime up did not pipe the box's stdout"))?;
-    let mut lines = BufReader::new(stdout).lines();
-    loop {
-        let next = tokio::select! {
-            biased;
-            _ = audit_failure(&mut progress.audit) => return Err(Stop::Failed(io::Error::other("audit-log: egress logging failed"))),
-            next = lines.next_line() => next,
-        };
-        match next {
-            Ok(Some(line)) if line == "ready" => break,
-            Ok(Some(_)) => {}
-            Ok(None) => return Err(Stop::NotReady("box exited before ready".to_string())),
-            Err(error) => return Err(Stop::NotReady(format!("box output failed: {error}"))),
-        }
+    let child = progress.child.insert(runtime::start(
+        prepared,
+        plan,
+        init,
+        socket.as_deref(),
+        &progress.claimed.fills,
+        seeding,
+    )?);
+    tokio::select! {
+        biased;
+        _ = audit_failure(&mut progress.audit) => return Err(Stop::Failed(io::Error::other("audit-log: egress logging failed"))),
+        ready = child.ready() => ready.map_err(Stop::NotReady)?,
     }
     // Apple can forward init's ready before it records the box running.
     // Wait even without egress, before the caller can issue its first exec.
@@ -642,10 +620,7 @@ async fn start(
     } else {
         None
     };
-    // Keep the pipe drained so a talkative box cannot block on it.
-    tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
-    // `ready` reports the labels `list` will: podman adds every image label
-    // to the box, so the plan's set is not the box's.
+    // `ready` reports the labels `list` will.
     let actual = match actual {
         Some(actual) => actual,
         None => runtime
@@ -711,7 +686,7 @@ fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json
         "box": &plan.name,
         "pinfold": env!("CARGO_PKG_VERSION"),
         "runtime": {
-            "name": if cfg!(target_os = "macos") { "apple" } else { "podman" },
+            "name": if cfg!(target_os = "macos") { "apple" } else { "firecracker" },
             "version": runtime.version().ok(),
         },
         "image": { "id": &observed.image_id, "ref": image_ref },
@@ -794,16 +769,6 @@ fn resolve_harness(
     Ok(())
 }
 
-/// A profile's `home/` seeds and the writable disk behind `$HOME` to copy
-/// them into, in the box before ready.
-struct Seeding {
-    /// The disk's guest root.
-    guest: PathBuf,
-    /// The plain path from the disk's guest root to `$HOME`.
-    relative: PathBuf,
-    seeds: Vec<Seed>,
-}
-
 /// Load the spec's profile and fold its image and `share/` mount into the
 /// plan without extracting files. Shared files and `$HOME` seeds wait until
 /// the name is claimed.
@@ -857,13 +822,6 @@ fn home_disk(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
     else {
         return Err(refuse(format!("$HOME={} is not on a disk", home.display())));
     };
-    // The Firecracker boot request carries no seeds yet (#141).
-    if cfg!(target_os = "linux") {
-        return Err(refuse(format!(
-            "$HOME={} is on a disk, which Linux cannot seed yet",
-            home.display()
-        )));
-    }
     if disk.readonly {
         return Err(refuse(format!(
             "$HOME={} is on the read-only disk {}",

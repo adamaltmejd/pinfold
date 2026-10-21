@@ -16,8 +16,10 @@
 //!
 //! - Boot (guest dials host port [`BOOT_PORT`]): host sends BOOT (uid u32,
 //!   gid u32, root device, attachment count u32, then device, guest path,
-//!   writable u8 each; fill count u32, then each fill's guest path), then
-//!   each fill's copy stream. The guest answers READY or FAILED (text).
+//!   writable u8 each; fill count u32, then each fill's guest path and a
+//!   missing u8), then each fill's copy stream: a new disk's `from`, or
+//!   with missing, the profile's seeds, each written only when absent. The
+//!   guest answers READY or FAILED (text).
 //! - Exec (host dials guest [`EXEC_PORT`]): one request per connection.
 //!   ENV (count u32, name and value each) sets the box's environment once,
 //!   answered ENV_SET; an EXEC that arrives first waits for it. EXEC is
@@ -147,7 +149,8 @@ struct Request {
     root: String,
     /// In mount order: a parent before anything nested in it.
     attachments: Vec<Attachment>,
-    fills: Vec<PathBuf>,
+    /// Each fill's guest path and whether it writes only what is missing.
+    fills: Vec<(PathBuf, bool)>,
 }
 
 struct Attachment {
@@ -172,6 +175,7 @@ fn parse_request(payload: &[u8]) -> io::Result<Request> {
     let mut fills = Vec::new();
     for _ in 0..fields.u32()? {
         let fill = guest_path(&mut fields)?;
+        let missing = fields.u8()? != 0;
         if !attachments
             .iter()
             .any(|attachment| attachment.writable && attachment.guest == fill)
@@ -181,7 +185,7 @@ fn parse_request(payload: &[u8]) -> io::Result<Request> {
                 fill.display()
             )));
         }
-        fills.push(fill);
+        fills.push((fill, missing));
     }
     fields.end()?;
     attachments.sort_by_key(|attachment| attachment.guest.components().count());
@@ -295,13 +299,15 @@ fn prepare(host: &mut UnixStream) -> io::Result<(Request, OwnedFd)> {
         } else {
             nodev | MsFlags::MS_RDONLY
         };
+        // pinfold's disks leave their inode tables uninitialized, and a
+        // disk's host image grows only with what the box writes.
         let target = mount_at(
             root,
             attachment.guest.as_os_str(),
             &attachment.device,
             "ext4",
             flags,
-            None,
+            Some("noinit_itable"),
         )?;
         if attachment.writable {
             nix::unistd::chown(
@@ -557,8 +563,8 @@ fn exec_service(request: &Request, host: UnixStream, mut dropped: io::PipeReader
     let mut host = BufReader::new(host);
     let started = (|| -> io::Result<(OwnedFd, TcpListener)> {
         become_box_user(request.uid, request.gid)?;
-        for fill in &request.fills {
-            super::receive_into(fill, &mut host, false).map_err(|error| {
+        for (fill, missing) in &request.fills {
+            super::receive_into(fill, &mut host, *missing).map_err(|error| {
                 io::Error::other(format!("copy into {}: {error}", fill.display()))
             })?;
         }
@@ -1021,7 +1027,7 @@ enum Accepted {
     Failed,
 }
 
-fn write_frame(output: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
+pub(crate) fn write_frame(output: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
     let length = u32::try_from(payload.len())
         .ok()
         .filter(|&length| length as usize <= FRAME_MAX)
@@ -1035,7 +1041,7 @@ fn write_frame(output: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<
 
 /// Read one frame exactly, never past it: the boot connection's next bytes
 /// belong to the exec service.
-fn read_frame(input: &mut impl Read) -> io::Result<(u8, Vec<u8>)> {
+pub(crate) fn read_frame(input: &mut impl Read) -> io::Result<(u8, Vec<u8>)> {
     let mut head = [0; 5];
     input.read_exact(&mut head)?;
     let length = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;

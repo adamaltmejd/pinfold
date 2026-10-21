@@ -727,22 +727,24 @@ fn on_or_above_public_suffix(suffix: &str) -> bool {
 }
 
 /// A memory limit is a whole number of mebibytes or gibibytes, at least
-/// 256M. The value reaches the runtime's `--memory` unparsed, and a
-/// unitless number is bytes on podman and something else on Apple.
+/// 256M.
 fn valid_memory(memory: &str) -> bool {
+    memory_mib(memory).is_some_and(|mebibytes| mebibytes >= 256)
+}
+
+/// A memory value's mebibytes: a whole number, then `M` or `G`.
+pub fn memory_mib(memory: &str) -> Option<u64> {
     let multiplier: u64 = match memory.bytes().last() {
         Some(b'M') => 1,
         Some(b'G') => 1024,
-        _ => return false,
+        _ => return None,
     };
     // `parse` alone would take a leading `+`; `all` alone the empty string.
     let number = &memory[..memory.len() - 1];
-    number.bytes().all(|byte| byte.is_ascii_digit())
-        && number
-            .parse::<u64>()
-            .ok()
-            .and_then(|number| number.checked_mul(multiplier))
-            .is_some_and(|mebibytes| mebibytes >= 256)
+    if !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    number.parse::<u64>().ok()?.checked_mul(multiplier)
 }
 
 pub(crate) fn valid_name(name: &str) -> bool {

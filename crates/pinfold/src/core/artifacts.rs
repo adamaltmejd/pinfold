@@ -174,14 +174,14 @@ impl Harness {
 }
 
 /// The installed VMM: the Firecracker binary and the guest kernel.
-#[expect(dead_code, reason = "the Firecracker runtime reads it, #141")]
+#[cfg(target_os = "linux")]
 pub struct Vmm {
     pub firecracker: PathBuf,
     pub kernel: PathBuf,
 }
 
 /// Install [`VMM`] for this host if the cache lacks it.
-#[expect(dead_code, reason = "the Firecracker runtime calls it, #141")]
+#[cfg(target_os = "linux")]
 pub fn vmm(cancel: Option<&AtomicBool>) -> io::Result<Vmm> {
     let dir = VMM.install_os_arch(OS_ARCH, cancel)?;
     let (firecracker, _) = VMM
@@ -238,7 +238,6 @@ pub fn init() -> io::Result<PathBuf> {
 /// `/pinfold`, and the empty `/dev` and `/mnt` PID 1 mounts on: a Linux
 /// CLI's init for a box, and the guest kernel's root.
 #[cfg(target_os = "linux")]
-#[expect(dead_code, reason = "the Firecracker runtime calls it, #141")]
 pub fn init_disk(disk: &Path) -> io::Result<()> {
     let tree = disk.with_extension("tree");
     let _ = fs::remove_dir_all(&tree);

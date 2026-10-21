@@ -96,6 +96,7 @@ pub fn write_files(
 
 /// One file in a profile's `home/`: a seed for `$HOME`, copied only when
 /// missing.
+#[derive(Clone)]
 pub struct Seed {
     /// The path under `$HOME`.
     pub path: PathBuf,

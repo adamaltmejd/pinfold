@@ -21,6 +21,7 @@ use crate::dirs;
 use crate::init::{STREAM_DIR, STREAM_END, STREAM_EXECUTABLE, STREAM_FILE, STREAM_SYMLINK};
 
 /// One entry of a `from` tree, relative to its root.
+#[derive(Clone)]
 pub enum Entry {
     Dir(PathBuf),
     File { path: PathBuf, executable: bool },
@@ -28,10 +29,22 @@ pub enum Entry {
 }
 
 /// A new disk whose `from` the box copies in before ready.
+#[derive(Clone)]
 pub struct Fill {
     pub guest: PathBuf,
     pub from: PathBuf,
     pub entries: Vec<Entry>,
+}
+
+/// A profile's `home/` seeds and the writable disk behind `$HOME` to copy
+/// them into, in the box before ready.
+#[derive(Clone)]
+pub struct Seeding {
+    /// The disk's guest root.
+    pub guest: PathBuf,
+    /// The plain path from the disk's guest root to `$HOME`.
+    pub relative: PathBuf,
+    pub seeds: Vec<Seed>,
 }
 
 /// What [`claim`] did: the disks it created, the copies they need, and the

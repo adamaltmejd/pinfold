@@ -127,6 +127,20 @@ pub struct Record {
     /// removing the record.
     #[serde(default)]
     pub disks: Vec<Attachment>,
+    /// The box as `list` reports it, once `up` knows it. Linux's inventory.
+    #[serde(default)]
+    pub described: Option<Described>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct Described {
+    pub labels: std::collections::BTreeMap<String, String>,
+    pub image_id: String,
+    pub image_ref: String,
+    /// RFC 3339, UTC.
+    pub created: String,
+    /// The spec's `memory`.
+    pub memory: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -235,6 +249,7 @@ impl Claim {
             pid: std::process::id() as i32,
             state_dir: state_dir.to_path_buf(),
             disks: Vec::new(),
+            described: None,
         };
         self.record = Some(record);
         // Retain the local pid as observable state; it is never signalled.
@@ -252,6 +267,12 @@ impl Claim {
     /// disk's lock.
     pub fn attach(&mut self, disks: Vec<Attachment>) -> io::Result<()> {
         self.record.as_mut().expect("prepared ownership").disks = disks;
+        self.publish()
+    }
+
+    /// Record the box this generation starts.
+    pub fn describe(&mut self, described: Described) -> io::Result<()> {
+        self.record.as_mut().expect("prepared ownership").described = Some(described);
         self.publish()
     }
 
