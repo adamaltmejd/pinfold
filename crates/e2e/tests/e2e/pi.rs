@@ -654,7 +654,15 @@ fn both_pi_config_levels_load_behind_a_route() {
     let _image = ImageCleanup {
         repository: format!("pinfold/profile-{profile}"),
     };
-    build_profile(&env, "full");
+    // `full` is selected only after the first prompt and the settings run;
+    // its image builds meanwhile, off the suite's critical path.
+    let full = env
+        .command(pinfold())
+        .args(["build", "--profile", "full"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run pinfold build --profile full");
     // The pinned Ponytail instruction hook emits this marker for explicit full input.
     let ponytail_rule = "PONYTAIL MODE ACTIVE — level: full";
 
@@ -740,6 +748,12 @@ fn both_pi_config_levels_load_behind_a_route() {
         r#"f=$HOME/.pi/agent/settings.json && sed -i 's/^{/{"e2eSavedSettingsMarker":"keep",/' "$f" && cat "$f""#,
     );
     assert!(saved.contains("e2eSavedSettingsMarker"), "{saved}");
+    let built = full.wait_with_output().expect("wait for the full build");
+    assert!(
+        built.status.success(),
+        "pinfold build --profile full failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
     let selections = [
         ("default", "default-first-allow.invalid"),
         ("full", "full-allow.invalid"),
