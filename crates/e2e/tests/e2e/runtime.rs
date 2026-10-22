@@ -1,20 +1,29 @@
 //! Tests that require exclusive access to the shared host runtime.
+//! They live together so they sort after every shared test: libtest runs in
+//! name order, and a queued writer blocks later readers.
 
-use std::fs;
-use std::io::BufReader;
+use std::fs::{self, File};
+use std::io::{BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, SystemTime};
 
 use e2e::{
-    ImageCleanup, TestDir, TestEnv, assert_ok, box_exec, box_list, build_profile, curl,
-    default_image, egress_log, image_cli, image_id, json_lines, labeled_images, pinfold,
-    profile_containerfile, project_id, project_state_dir, run_ok, tagged_images,
+    HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
+    build_profile, curl, default_image, egress_log, exit_code, image_cli, image_id, inspect,
+    json_lines, labeled_images, pinfold, profile_containerfile, project_id, project_state_dir,
+    run_ok, tagged_images,
 };
 
+#[cfg(target_os = "linux")]
+use super::box_::vmm_pid;
 use super::box_::{
-    ChildOwner, DiskCleanup, HeldBuild, HeldDownload, RuntimeContainer, box_name, box_up,
-    built_unique_ref, disk_names, find_box_state_dir, image_build, image_rm, read_bounded,
+    ChildOwner, DiskCleanup, HeldBuild, HeldDownload, RuntimeContainer, Starting,
+    assert_left_nothing, box_name, box_up, box_up_refused, box_up_start, built_unique_ref,
+    find_box_state_dir, image_build, image_rm, one_json_line, read_bounded,
 };
+use super::runs::run_id;
 
 #[test]
 fn cleanup_removes_only_pinfolds_garbage() {
@@ -977,4 +986,490 @@ fn losing_the_owner_fails_closed() {
     let mut fresh = box_up(&env, &spec, &name);
     fresh.down(&env);
     assert!(fresh.wait().success(), "the fresh up did not exit cleanly");
+}
+
+#[test]
+fn disks_persist_and_attach_exclusively() {
+    let _runtime = crate::exclusive_runtime();
+    // Guarantee 11: disks persist and attach exclusively.
+    // Sabotage: skip the attachment check in `disk::claim`; the read-only
+    // second `up` is refused `disk-unclean` instead, so the `disk-in-use`
+    // assertion fails. Sabotage: skip `mark_unclean`; after the prune the
+    // read-only `up` comes ready and the `disk-unclean` assertion fails.
+    // Sabotage: skip the size check; the sparse `from` reaches the copy,
+    // which fails in the box, and the `limit` assertion fails. Sabotage:
+    // write every copied file 644 in `init receive`; the exec-bit assertion
+    // fails. Sabotage: drop the disk locks in `disk::claim`; both racing
+    // `up`s create the disk and the loser ends `failed`, not `disk-in-use`.
+    // Sabotage: call `disk::detached` on every runtime stop in `Box::down`;
+    // after `container kill` the read-only `up` comes ready.
+    // Sabotage: drop `value.push(",readonly")` from `runtime::bind`; the
+    // readers' mount is then writable and the "a write to a mount"
+    // assertion fails.
+    let env = TestEnv::new("disks");
+    let image = default_image(&env);
+    let names = ["work", "sparse", "fresh", "race"].map(|disk| box_name(&format!("disk-{disk}")));
+    let [work, sparse, fresh, race] = &names;
+    let _disks = DiskCleanup(names.to_vec());
+    let boxes =
+        ["writer", "second", "reader-a", "reader-b"].map(|b| box_name(&format!("disks-{b}")));
+    let [writer, second, reader_a, reader_b] = &boxes;
+    let label = "dev.example.test=disks";
+    let spec = |name: &str, disk: serde_json::Value| {
+        serde_json::json!({
+            "name": name,
+            "image": image,
+            "labels": { "dev.example.test": "disks" },
+            "disks": [disk],
+        })
+    };
+
+    // The host tree: a plain file, an executable, a symlink and a FIFO.
+    let from = TestDir::new(&env, "from");
+    fs::write(from.path().join("plain.txt"), b"plain\n").unwrap();
+    fs::write(from.path().join("run.sh"), b"#!/bin/sh\necho ran\n").unwrap();
+    fs::set_permissions(
+        from.path().join("run.sh"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    fs::create_dir(from.path().join("sub")).unwrap();
+    fs::write(from.path().join("sub/deep.txt"), b"deep\n").unwrap();
+    std::os::unix::fs::symlink("plain.txt", from.path().join("link")).unwrap();
+    nix::unistd::mkfifo(&from.path().join("fifo"), nix::sys::stat::Mode::S_IRWXU).unwrap();
+    let work_disk =
+        serde_json::json!({ "name": work, "guest": "/work", "size": "1G", "from": from.path() });
+    // `from` is read only when the disk is created; a reader names none.
+    let reader = serde_json::json!({ "name": work, "guest": "/work", "readonly": true });
+    let mut up = box_up(&env, &spec(writer, work_disk.clone()), writer);
+    fs::write(from.path().join("later.txt"), b"later\n").unwrap();
+    let tree = box_exec(
+        &env,
+        writer,
+        &[
+            "sh",
+            "-c",
+            "test -x /work/run.sh && /work/run.sh && test ! -x /work/plain.txt \
+             && cat /work/sub/deep.txt && test -L /work/link && readlink /work/link \
+             && test ! -e /work/fifo && test ! -e /work/later.txt",
+        ],
+    );
+    assert_ok(&tree, "the copied tree");
+    assert_eq!(tree.stdout, "ran\ndeep\nplain.txt\n");
+    let full = box_exec(
+        &env,
+        writer,
+        &["dd", "if=/dev/zero", "of=/work/big", "bs=1M", "count=1100"],
+    );
+    assert_denied(&full, "No space left on device", "a write past the 1G disk");
+    assert_ok(
+        &box_exec(
+            &env,
+            writer,
+            &["sh", "-c", "rm /work/big && echo kept > /work/written"],
+        ),
+        "writing the disk",
+    );
+
+    // While the writer attaches it, another `up` naming the disk, read-only
+    // or writable, is refused and creates nothing, and `disk rm` refuses.
+    for disk in [&reader, &work_disk] {
+        let (code, refused) = box_up_refused(&env, &spec(second, disk.clone()), &[]);
+        assert_eq!(code, 1, "a refused up exits 1: {refused}");
+        assert_eq!(refused["reason"], "disk-in-use", "{refused}");
+        let states = fs::read_dir(env.state.join("pinfold/boxes"))
+            .unwrap()
+            .count();
+        assert_eq!(states, 1, "the refused up left a state dir");
+        assert_eq!(box_list(&env, label).len(), 1, "the refused up left a box");
+    }
+    let (code, refused) = disk_rm(&env, work);
+    assert_eq!(
+        (code, &refused["reason"]),
+        (1, &"disk-in-use".into()),
+        "{refused}"
+    );
+
+    up.down(&env);
+    assert!(up.wait().success(), "the writer did not exit cleanly");
+
+    // A `from` whose file sizes pass the disk's size is refused as `limit`
+    // and leaves no disk.
+    let big = TestDir::new(&env, "big");
+    File::create(big.path().join("sparse"))
+        .unwrap()
+        .set_len(2 << 30)
+        .unwrap();
+    let sparse_disk =
+        serde_json::json!({ "name": sparse, "guest": "/big", "size": "1G", "from": big.path() });
+    let (code, refused) = box_up_refused(&env, &spec(second, sparse_disk), &[]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["reason"], "limit", "{refused}");
+    assert_left_nothing(&env, second, label, "limit");
+    assert!(
+        disk_names(&env).iter().all(|name| name != sparse),
+        "the limit refusal left a disk"
+    );
+
+    // Two writable `up`s racing for one new disk: exactly one runs. Both
+    // are spawned before either's first line is read.
+    let racer = serde_json::json!({ "name": race, "guest": "/race" });
+    let mut starts = [
+        box_up_start(&env, &spec(reader_a, racer.clone()), &[]),
+        box_up_start(&env, &spec(reader_b, racer), &[]),
+    ];
+    let lines = starts.each_mut().map(Starting::first_line);
+    let [first, second_start] = starts;
+    let [first_line, second_line] = lines;
+    let (winner, ready, mut loser, refused) = if first_line["event"] == "ready" {
+        (first, first_line, second_start, second_line)
+    } else {
+        (second_start, second_line, first, first_line)
+    };
+    assert_eq!(ready["event"], "ready", "neither racer came ready: {ready}");
+    assert_eq!(
+        refused["reason"], "disk-in-use",
+        "the losing racer: {refused}"
+    );
+    let loser_name = refused["box"].as_str().unwrap();
+    assert!(
+        !env.state.join("pinfold/boxes").join(loser_name).exists(),
+        "the losing racer left a state dir"
+    );
+    let winner_name = ready["box"].as_str().unwrap().to_string();
+    let mut winner = winner.into_up(&winner_name, ready);
+    drop(loser.stdin);
+    assert_eq!(exit_code(loser.child.wait_bounded()), 1, "the loser's exit");
+    winner.down(&env);
+    assert!(
+        winner.wait().success(),
+        "the racing winner did not exit cleanly"
+    );
+
+    // After `down`, two boxes attach it read-only at once, read the writer's
+    // file and can write neither it nor their mount.
+    let mount = TestDir::new(&env, "mount");
+    let with_mount = |name: &str| {
+        let mut spec = spec(name, reader.clone());
+        spec["mounts"] = serde_json::json!([{ "host": mount.path(), "guest": "/mount" }]);
+        spec
+    };
+    let mut starts = [
+        box_up_start(&env, &with_mount(reader_a), &[]),
+        box_up_start(&env, &with_mount(reader_b), &[]),
+    ];
+    let lines = starts.each_mut().map(Starting::first_line);
+    let [a, b] = starts;
+    let [a_line, b_line] = lines;
+    let mut readers = [a.into_up(reader_a, a_line), b.into_up(reader_b, b_line)];
+    for name in [reader_a, reader_b] {
+        let read = box_exec(
+            &env,
+            name,
+            &["sh", "-c", "cat /work/written; test ! -e /work/later.txt"],
+        );
+        assert_ok(&read, "reading the disk read-only");
+        assert_eq!(read.stdout, "kept\n");
+        let write = box_exec(&env, name, &["touch", "/work/new"]);
+        assert_denied(
+            &write,
+            "Read-only file system",
+            "a write to a read-only disk",
+        );
+        let write = box_exec(&env, name, &["touch", "/mount/new"]);
+        assert_denied(&write, "Read-only file system", "a write to a mount");
+    }
+    for reader in &mut readers {
+        reader.down(&env);
+        assert!(reader.wait().success(), "a reader did not exit cleanly");
+    }
+
+    // A writer whose box is killed under it leaves the disk unclean: its
+    // owner tears the box down, but nobody asked it to stop.
+    let mut ended = box_up(&env, &spec(writer, work_disk.clone()), writer);
+    #[cfg(target_os = "macos")]
+    run_ok(Command::new(image_cli()).args(["kill", writer.as_str()]));
+    #[cfg(target_os = "linux")]
+    run_ok(Command::new("kill").args(["-KILL", &vmm_pid(ended.pid()).to_string()]));
+    let _ = ended.wait();
+    let (code, refused) = box_up_refused(&env, &spec(reader_a, reader.clone()), &[]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["reason"], "disk-unclean", "{refused}");
+    let mut recovery = box_up(&env, &spec(writer, work_disk.clone()), writer);
+    recovery.down(&env);
+    assert!(recovery.wait().success());
+
+    // A writer whose owner dies leaves the disk unclean once its box is
+    // pruned: read-only is refused, writable recovers it.
+    let mut killed = box_up(&env, &spec(writer, work_disk.clone()), writer);
+    killed.kill();
+    let _ = killed.wait();
+    run_ok(env.command(pinfold()).args(["box", "prune"]));
+    let (code, refused) = box_up_refused(&env, &spec(reader_a, reader.clone()), &[]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["reason"], "disk-unclean", "{refused}");
+    assert_left_nothing(&env, reader_a, label, "unclean");
+    let mut recovery = box_up(&env, &spec(writer, work_disk.clone()), writer);
+    recovery.down(&env);
+    assert!(
+        recovery.wait().success(),
+        "the recovering writer did not exit cleanly"
+    );
+    let mut after = box_up(&env, &spec(reader_a, reader), reader_a);
+    assert_ok(
+        &box_exec(&env, reader_a, &["cat", "/work/written"]),
+        "reading after recovery",
+    );
+    after.down(&env);
+    assert!(after.wait().success());
+
+    // After `down`, `disk rm` removes it, and an absent disk exits 0. A
+    // name that is no disk name is refused as `spec`.
+    let (code, refused) = disk_rm(&env, "../escape");
+    assert_eq!((code, &refused["reason"]), (1, &"spec".into()), "{refused}");
+    let (code, removed) = disk_rm(&env, work);
+    assert_eq!((code, &removed["existed"]), (0, &true.into()), "{removed}");
+    let (code, removed) = disk_rm(&env, work);
+    assert_eq!((code, &removed["existed"]), (0, &false.into()), "{removed}");
+
+    // A fresh default-size disk is sparse.
+    let mut new = box_up(
+        &env,
+        &spec(
+            writer,
+            serde_json::json!({ "name": fresh, "guest": "/fresh" }),
+        ),
+        writer,
+    );
+    new.down(&env);
+    assert!(new.wait().success());
+    let listed = disk_list(&env)
+        .into_iter()
+        .find(|disk| disk["name"] == fresh.as_str())
+        .expect("the fresh disk is listed");
+    assert_eq!(listed["size"], 64u64 << 30, "{listed}");
+    assert!(listed["allocated"].as_u64().unwrap() < 1 << 30, "{listed}");
+}
+
+/// Every disk `disk list` prints.
+fn disk_list(env: &TestEnv) -> Vec<serde_json::Value> {
+    let output = run_ok(env.command(pinfold()).args(["disk", "list"]));
+    json_lines(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn disk_names(env: &TestEnv) -> Vec<String> {
+    disk_list(env)
+        .iter()
+        .filter_map(|disk| disk["name"].as_str().map(String::from))
+        .collect()
+}
+
+fn disk_rm(env: &TestEnv, name: &str) -> (i32, serde_json::Value) {
+    one_json_line(env.command(pinfold()).args(["disk", "rm", name]))
+}
+
+#[test]
+fn a_runs_end_is_recorded_apart_from_its_start() {
+    // `box prune` removes every dead box on the host.
+    let _runtime = crate::exclusive_runtime();
+    // Guarantee 40. Sabotage: drop `detail` from the terminal record; the
+    // 137 assertion fails. Sabotage: write a `signal` record from `prune`
+    // (or from orphan removal); the killed owner's terminal is then
+    // available after prune. Sabotage: skip the terminal record in
+    // `Box::down` for a requested stop; the first inspect reports terminal
+    // `not-observed`. Writing it after `finish`'s ack is caught only when
+    // `inspect` wins the race: the owner waits on nothing after the ack, so
+    // no outside observer can hold it there.
+    let env = TestEnv::new("run-end");
+    let image = default_image(&env);
+    let spec = |name: &str| serde_json::json!({ "name": name, "image": image });
+
+    // `box down` returns only after the owner acknowledged teardown, so the
+    // terminal record is already there.
+    let name = box_name("run-end-down");
+    let mut up = box_up(&env, &spec(&name), &name);
+    let run = run_id(&up);
+    up.down(&env);
+    let (code, record) = inspect(&env, &run);
+    assert_eq!(code, 0, "inspect after down failed");
+    assert_eq!(record["launch"]["state"], "available", "{record}");
+    assert_eq!(record["launch"]["record"]["run_id"], run.as_str());
+    assert_eq!(record["terminal"]["state"], "available", "{record}");
+    assert_eq!(record["terminal"]["record"]["reason"], "signal", "{record}");
+    assert_eq!(
+        record["terminal"]["record"]["detail"],
+        serde_json::Value::Null
+    );
+    let down = up.close_stdin();
+    assert_eq!(down.last().expect("down line")["reason"], "signal");
+
+    // SIGKILL of the box from the host: of its init through Apple's runtime,
+    // of its VMM on Linux. The box exits 137.
+    let name = box_name("run-end-killed");
+    let mut up = box_up(&env, &spec(&name), &name);
+    let run = run_id(&up);
+    #[cfg(target_os = "linux")]
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(super::box_::vmm_pid(up.pid()) as i32),
+        nix::sys::signal::Signal::SIGKILL,
+    )
+    .expect("SIGKILL the box's VMM");
+    #[cfg(not(target_os = "linux"))]
+    run_ok(std::process::Command::new(e2e::image_cli()).args(["kill", "--signal", "KILL", &name]));
+    assert_eq!(up.wait().code(), Some(1), "an exited box's up exit code");
+    let down = up.close_stdin();
+    let down = down.last().expect("down line");
+    assert_eq!(down["reason"], "exited", "{down}");
+    let (code, record) = inspect(&env, &run);
+    assert_eq!(code, 0, "inspect after an init kill failed");
+    let terminal = &record["terminal"]["record"];
+    assert_eq!(terminal["reason"], "exited", "{record}");
+    assert!(
+        terminal["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("137")),
+        "the terminal detail names no exit status 137: {record}"
+    );
+    assert_eq!(terminal["detail"], down["detail"], "{record}");
+
+    // An owner that dies without teardown leaves no end, and nothing infers
+    // one later.
+    let name = box_name("run-end-owner");
+    let mut up = box_up(&env, &spec(&name), &name);
+    let run = run_id(&up);
+    up.kill();
+    up.wait();
+    for when in ["after the owner's SIGKILL", "after prune"] {
+        let (code, record) = inspect(&env, &run);
+        assert_eq!(code, 0, "inspect {when} failed");
+        assert_eq!(record["launch"]["state"], "available", "{when}: {record}");
+        assert_eq!(
+            record["terminal"]["state"], "not-observed",
+            "{when}: {record}"
+        );
+        assert_eq!(record["terminal"]["record"], serde_json::Value::Null);
+        if when == "after the owner's SIGKILL" {
+            let pruned = run_ok(env.command(pinfold()).args(["box", "prune"]));
+            assert!(
+                String::from_utf8_lossy(&pruned.stdout).contains(&name),
+                "prune did not remove the dead owner's box"
+            );
+        }
+    }
+}
+
+/// The run's directory, at the path the spec names.
+fn run_dir(env: &TestEnv, run_id: &str) -> PathBuf {
+    env.state.join("pinfold/runs").join(run_id)
+}
+
+/// Set the modification time of the run's directory and every file in it.
+fn age(dir: &Path, age: Duration) {
+    let time = SystemTime::now() - age;
+    for entry in fs::read_dir(dir).expect("read the run dir") {
+        let path = entry.expect("run dir entry").path();
+        File::open(&path).unwrap().set_modified(time).unwrap();
+    }
+    File::open(dir).unwrap().set_modified(time).unwrap();
+}
+
+/// Append `bytes` of valid decision lines to the run's egress log.
+fn pad(dir: &Path, bytes: usize) {
+    let line = b"{\"time\":\"2026-10-01T00:00:00Z\",\"host\":\"pad.invalid\",\"decision\":\"refused\",\"reason\":\"not allowlisted\"}\n";
+    let padding = line.repeat(bytes.div_ceil(line.len()));
+    fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join("egress.jsonl"))
+        .expect("open the run's egress log")
+        .write_all(&padding)
+        .expect("pad the run's egress log");
+}
+
+fn log_bytes(env: &TestEnv, run_id: &str) -> u64 {
+    let (code, record) = inspect(env, run_id);
+    assert_eq!(code, 0, "inspect {run_id} failed");
+    record["egress_log"]["bytes"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("no log bytes: {record}"))
+}
+
+#[test]
+fn run_records_are_retained_within_bounds() {
+    // `clean` prunes dead boxes host-wide.
+    let _runtime = crate::exclusive_runtime();
+    // Guarantee 42. Sabotage: age out runs without checking the lifetime
+    // lock; the live run is removed. Sabotage: drop the 14-day rule; the
+    // aged run survives the first clean, which is under the quota.
+    // Sabotage: evict the newest inactive run first; the newer padded run
+    // goes and the older stays. Sabotage:
+    // truncate the live run's log to meet the quota; its bytes shrink.
+    // Sabotage: count live runs toward the quota; the newer padded run goes
+    // too. The 128 MiB pad and the backdated mtimes act on host paths the
+    // spec names, as a user's disk and clock would.
+    let env = TestEnv::new("run-retention");
+    let fixture = HttpFixture::start(None);
+    let image = default_image(&env);
+    let spec = |name: &str| {
+        serde_json::json!({
+            "name": name,
+            "image": image,
+            "egress": { "routes": { "fixture.internal": fixture.route() } },
+        })
+    };
+    let finished = |test: &str| {
+        let name = box_name(test);
+        let mut up = box_up(&env, &spec(&name), &name);
+        let run = run_id(&up);
+        up.close_stdin();
+        run
+    };
+    let aged = finished("run-retention-aged");
+    let older = finished("run-retention-older");
+    let newer = finished("run-retention-newer");
+    let name = box_name("run-retention-live");
+    let mut live_up = box_up(&env, &spec(&name), &name);
+    let live = run_id(&live_up);
+
+    // Under the quota, only age retires: the aged run goes, the live one
+    // stays however old.
+    let day = Duration::from_secs(24 * 60 * 60);
+    age(&run_dir(&env, &aged), 15 * day);
+    age(&run_dir(&env, &live), 15 * day);
+    run_ok(env.command(pinfold()).arg("clean"));
+    assert_eq!(inspect(&env, &aged).0, 3, "the aged inactive run was kept");
+    let (code, record) = inspect(&env, &live);
+    assert_eq!(code, 0, "the aged live run was removed");
+    assert_eq!(record["launch"]["state"], "available", "{record}");
+
+    // Inactive runs together hold just over 128 MiB; the live one would
+    // tip the newer over the quota if it counted.
+    pad(&run_dir(&env, &older), (64 << 20) + (256 << 10));
+    pad(&run_dir(&env, &newer), (64 << 20) + (256 << 10));
+    pad(&run_dir(&env, &live), 64 << 20);
+    age(&run_dir(&env, &live), 15 * day);
+    age(&run_dir(&env, &older), 3 * day);
+    age(&run_dir(&env, &newer), 2 * day);
+    let live_bytes = log_bytes(&env, &live);
+
+    run_ok(env.command(pinfold()).arg("clean"));
+
+    assert_eq!(inspect(&env, &older).0, 3, "the older padded run was kept");
+    let (code, record) = inspect(&env, &newer);
+    assert_eq!(code, 0, "the newer padded run was removed");
+    assert_eq!(record["launch"]["state"], "available", "{record}");
+    let (code, record) = inspect(&env, &live);
+    assert_eq!(code, 0, "the live run was removed");
+    assert_eq!(record["launch"]["state"], "available", "{record}");
+    assert_eq!(
+        log_bytes(&env, &live),
+        live_bytes,
+        "the live run's log changed"
+    );
+    let request = curl(&env, &name, "5", &["http://fixture.internal/after-clean"]);
+    assert_ok(&request, "the live run's request after clean");
+    assert!(
+        log_bytes(&env, &live) > live_bytes,
+        "the live run's log did not keep appending"
+    );
+    live_up.close_stdin();
 }
