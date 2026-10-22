@@ -25,6 +25,16 @@ pub fn pinfold() -> &'static Path {
             "--message-format",
             "json-render-diagnostics",
         ]);
+        // Cargo gives tests their own package's CARGO_PKG_* and
+        // CARGO_MANIFEST_*; ring's build script reruns when those change,
+        // which rebuilt ring and pinfold at the start of every suite run.
+        for (name, _) in std::env::vars_os() {
+            if name.to_str().is_some_and(|name| {
+                name.starts_with("CARGO_PKG_") || name.starts_with("CARGO_MANIFEST_")
+            }) {
+                command.env_remove(name);
+            }
+        }
         if cfg!(target_os = "linux") {
             let triple = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
             command.args(["--target", &triple]);
