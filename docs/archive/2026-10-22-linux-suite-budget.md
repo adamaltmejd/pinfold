@@ -5,9 +5,11 @@ Issue #159, PR #165. Since #141 the Linux CI suite ran over CLAUDE.md's
 `scripts/e2e-budget.py`'s `e2e_elapsed_ns`, from `cargo test` start to
 exit, on `ubuntu-26.04` runners (4 vCPU).
 
-**Result:** base b8bf5e9 took 339.8 s. With the changes, 5c95aea took
-213.1 s and e546f8d, whose Linux code is the same, 211.4 s: about 110 s
-less, 87 s under the budget. Every test passed in every run listed.
+**Result:** base b8bf5e9 took 339.8 s. With the changes the suite took
+211 to 297 s on identical Linux code, across 5c95aea, e546f8d and
+1dfb215. The slowest run's runner was slow throughout: its pre-suite
+compile took 23.5 s, against 15.6 s in the 211.4 s run. Every test
+passed in every run listed. The final head's runs are in PR #165.
 
 ## Before
 
@@ -73,6 +75,8 @@ cleanup's write span to start at its first host-wide hazard saves about
 | 39751480274 | 7a861e2 + phase marks | 301.4 |
 | 39752812679 | 5c95aea | 213.1 |
 | 39753227123 | e546f8d | 211.4 |
+| 39754250963 attempt 1 | 1dfb215 (docs only) | 296.6 |
+| 39754250963 attempt 2 | 1dfb215 (docs only) | 245.6 |
 
 ## Other gates
 
