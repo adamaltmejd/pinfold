@@ -57,14 +57,16 @@ async function hostBoundary(project: string, state: string, binary: string) {
     roots.push([variable!, resolve(configured && isAbsolute(configured) ? configured : resolve(home, fallback!), "pinfold")]);
   }
   if (process.platform === "linux") roots.push(["runtime authority", process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid!()}`]);
-  // Pinfold resolves its runtime and host helpers on PATH. Guest-writable
-  // PATH entries would let boxed edits select a host executable later.
+  // Pinfold resolves its runtime and host helpers on PATH. `from` copies the
+  // project into the box and fetch writes into its `.git`, so a PATH entry
+  // in the project would expose or alter a host executable.
   for (const path of (process.env.PATH ?? "").split(delimiter)) roots.push(["host PATH", resolve(path || ".")]);
   for (const [name, path] of roots) {
     const lexical = resolve(path);
     const canonical = await canonicalDestination(lexical);
-    // A symlink located in the project can be replaced by the guest even
-    // when its current target is outside the project.
+    // `from` copies the project into the box and fetch writes into its `.git`, so
+    // overlap would expose or alter host state. Both the lexical and the
+    // canonical path are checked.
     if ([lexical, canonical].some((root) => within(project, root) || within(root, project))) throw new Error(`host-boundary: project overlaps ${name}`);
   }
 }
@@ -103,6 +105,11 @@ class Box {
   async listed() {
     const text = await cli(this.job.pinfold, ["box", "list", "--label", "dev.pinfold.owner"]);
     return text.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)).find((box) => box.name === this.name);
+  }
+
+  async diskExists() {
+    const text = await cli(this.job.pinfold, ["disk", "list"]);
+    return text.trim().split("\n").filter(Boolean).some((line) => JSON.parse(line).name === this.name);
   }
 
   async reclaim() {
@@ -226,10 +233,12 @@ async function main() {
     if (mode === "start") {
       try { await readFile(resolve(state, "job.json")); throw new Error("job already exists; use resume"); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      // An existing disk would be attached instead of filled from the checkout.
+      if (await box.diskExists()) throw new Error(`project disk ${box.name} already exists; remove it with pinfold disk rm ${box.name}`);
       const temporary = resolve(state, "job.json.tmp");
       await writeFile(temporary, `${JSON.stringify(job)}\n`, { mode: 0o600 });
       await rename(temporary, resolve(state, "job.json"));
-    }
+    } else if (!(await box.diskExists())) throw new Error(`project disk ${box.name} is missing; refusing recovery`);
     await box.reclaim();
     if (cancelling) throw new Error("cancelled before startup");
     await box.start();
@@ -255,8 +264,8 @@ async function main() {
     const settled = await submission.wait(context);
     if (settled.status === "done" && settled.type === "input") {
       const answer = await root.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
-      event("completed", { answer: answer?.model });
       await box.fetch();
+      event("completed", { answer: answer?.model });
     } else { event("unanswered", { status: settled.status }); process.exitCode = 1; }
     if (cancelling) process.exitCode = 130;
   } finally {

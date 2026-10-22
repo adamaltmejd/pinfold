@@ -34,13 +34,14 @@ disables `.env` loading and automatic dependency installation.
 
 The project must be a git checkout with a `.git` directory. The box works on
 a project disk, `durable-<id>` at `/workspace`, filled from the checkout when
-the job first starts and kept across recovery. The host checkout is never
-written. After a completed job, the example fetches the box repository's
-branches into the checkout as `refs/remotes/durable-<id>/*`; only committed
-work crosses. Remove the disk with `pinfold disk rm durable-<id>` once the job
-is done with it. The example supplies no box egress, since the host makes model
-requests. Choose an image that has a shell
-and the project tools you need.
+the job first starts and kept across recovery. `start` refuses when that disk
+already exists, and `resume` refuses when it is missing. The checkout's working
+tree is never written. After a completed job, the example fetches the box
+repository's branches into the checkout's `.git`, adding objects and
+`refs/remotes/durable-<id>/*`; only committed work crosses. Remove the disk
+with `pinfold disk rm durable-<id>` once the job is done with it. The example
+supplies no box egress, since the host makes model requests. Choose an image
+that has a shell, `git` and the project tools you need.
 
 The checkpoint directory, Pinfold and Bun executables, controller and dependencies,
 Pinfold's effective state/config/cache and ownership directories, and host PATH
@@ -48,9 +49,10 @@ entries must be disjoint from the project. Linux runtime authority is
 also checked. Paths and existing symlink ancestors are canonicalized before any
 box work, including absent directories under a symlink alias. A replaceable
 symlink inside the project is rejected even if its target is outside. This
-includes the script entrypoint used to launch the controller. The box has
-no mount, so neither checkpoint database nor writer database is exposed to
-the guest. Keep the state directory private on the host. Do not copy a live
+includes the script entrypoint used to launch the controller. `from` copies
+the project into the box and the fetch writes into its `.git`, so overlap would
+expose or alter host state. The box has no mount, so neither checkpoint
+database nor writer database is exposed to the guest. Keep the state directory private on the host. Do not copy a live
 checkpoint to another path or run it on another host: the namespace is derived
 from its canonical path, and recovery refuses a moved namespace. The executable,
 project, image, endpoint, model and original prompt are immutable in `job.json`.
@@ -73,9 +75,9 @@ read-only replay tool or general host filesystem tool.
 
 The prototype contract and pin-maintenance rule are in
 [ARCHITECTURE.md](../../docs/ARCHITECTURE.md#experimental-durable-caller).
-The standalone regression is guarantee 35, validated on macOS and Linux x64
-and arm64. The command needs exclusive ownership of the runtime and
-an existing image with `sh`, `tail`, `grep` and `tr`:
+The standalone regression is guarantee 35, validated on macOS and Linux x64.
+The command needs exclusive ownership of the runtime and
+an existing image with `sh`, `tail`, `grep`, `tr`, `mkfifo` and `git`:
 
 ```sh
 bun durable_recovery_preserves_boxed_execution.ts --pinfold /absolute/path/to/pinfold --image your-existing-image

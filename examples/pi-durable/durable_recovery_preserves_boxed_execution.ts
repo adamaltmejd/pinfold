@@ -1,7 +1,6 @@
 // Guarantee 35: durable recovery preserves boxed execution.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, access, copyFile, realpath, symlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -23,10 +22,10 @@ const ownedJobs = new Set<string>();
 const childReady = new Map<string, { promise: Promise<void>; done: () => void; fail: (error: unknown) => void }>();
 let fixtureFailure: unknown;
 
-// The prototype names its box and project disk after its checkpoint path;
-// `scratch` is already canonical.
-function boxName(kind: string) {
-  return `durable-${createHash("sha256").update(resolve(scratch, `checkpoint-${kind}`)).digest("hex").slice(0, 24)}`;
+// The prototype names its box and project disk after the job id in its
+// manifest, which it writes before any box work.
+async function boxName(kind: string) {
+  return `durable-${JSON.parse(await readFile(resolve(scratch, `checkpoint-${kind}`, "job.json"), "utf8")).id}`;
 }
 
 // Resolved once the fixture's background child has written into the box's
@@ -63,8 +62,9 @@ async function guest(box: string, command: string) {
   return result.stdout;
 }
 
+// The developer's git config, such as an init template's hooks, stays out.
 async function git(project: string, args: string[]) {
-  const result = await run("git", ["-C", project, ...args]);
+  const result = await run("git", ["-C", project, ...args], { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" });
   assert.equal(result.code, 0, result.stderr);
   return result.stdout;
 }
@@ -72,22 +72,25 @@ async function git(project: string, args: string[]) {
 // Read a file from a job's project disk through a read-only box. A disk left
 // unclean by a teardown that did not sync is refused here as `disk-unclean`.
 async function diskFile(kind: string, path: string) {
-  const name = `${boxName(kind)}-reader`;
-  const job = boxName(kind).slice("durable-".length);
+  const disk = await boxName(kind);
+  const name = `${disk}-reader`;
+  const job = disk.slice("durable-".length);
   const owner = spawn(binary, ["box", "up"], { env, stdio: ["pipe", "pipe", "pipe"] });
   children.add(owner);
   const closed = new Promise<void>((done) => owner.once("close", () => { children.delete(owner); done(); }));
   const lines = createInterface({ input: owner.stdout });
-  owner.stdin.write(`${JSON.stringify({ name, image: values.image, labels: { "dev.example.pi-durable.job": job }, disks: [{ name: boxName(kind), guest: "/workspace", readonly: true }], env: { HOME: "/tmp" } })}\n`);
+  owner.stdin.write(`${JSON.stringify({ name, image: values.image, labels: { "dev.example.pi-durable.job": job }, disks: [{ name: disk, guest: "/workspace", readonly: true }], env: { HOME: "/tmp" } })}\n`);
+  const timer = setTimeout(() => owner.kill("SIGKILL"), 90_000);
   try {
     const first = JSON.parse((await lines[Symbol.asyncIterator]().next()).value ?? "{}");
     assert.equal(first.event, "ready", JSON.stringify(first));
     return await guest(name, `cat ${path}`);
   } finally {
     lines.close();
+    // Stdin EOF tears the box down.
     owner.stdin.end();
-    await run(binary, ["box", "down", name]);
     await closed;
+    clearTimeout(timer);
   }
 }
 
@@ -108,8 +111,9 @@ const server = createServer(async (request, response) => {
         // The FIFO exists before the tool call goes out, so the child's write
         // blocks until this reader takes it.
         const ready = childReady.get(kind)!;
-        await guest(boxName(kind), "mkfifo child-ready");
-        guest(boxName(kind), "cat child-ready").then(() => ready.done(), ready.fail);
+        const box = await boxName(kind);
+        await guest(box, "mkfifo child-ready");
+        guest(box, "cat child-ready").then(() => ready.done(), ready.fail);
       }
       const command = kind === "control"
         ? "printf control-ok > control && git add control && git -c user.name=fixture -c user.email=fixture@example.com commit -qm control && cat control"
@@ -213,7 +217,7 @@ try {
   const control = launch("start", "control");
   const completed = await control.closed;
   assert.equal(completed.code, 0, completed.stderr);
-  assert.equal(await git(resolve(scratch, "project-control"), ["show", `refs/remotes/${boxName("control")}/main:control`]), "control-ok");
+  assert.equal(await git(resolve(scratch, "project-control"), ["show", `refs/remotes/${await boxName("control")}/main:control`]), "control-ok");
   assert.equal((await boxes()).length, 0, "successful command removes its box");
 
   // Sabotage: declare boxed_bash replay safe. The recovery tool runs the
@@ -261,7 +265,7 @@ try {
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
   for (const box of await boxes()) await run(binary, ["box", "down", box.name]);
-  for (const kind of ["control", "crash", "cancel"]) await run(binary, ["disk", "rm", boxName(kind)]);
+  for (const job of ownedJobs) await run(binary, ["disk", "rm", `durable-${job}`]);
   server.closeAllConnections();
   await new Promise<void>((done, fail) => server.close((error) => error ? fail(error) : done()));
   await rm(scratch, { recursive: true, force: true });
