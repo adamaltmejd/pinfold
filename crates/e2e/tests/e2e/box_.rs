@@ -1751,13 +1751,18 @@ fn work_leaves_the_box_only_by_fetch() {
     // The box merges the host's work, tracks hooks in .githooks/ and
     // .husky/, tags, and only then plants hooks under every client-side
     // name, core.hooksPath and core.fsmonitor, each touching a host marker.
+    // The hooks commit's subject runs past 4096 bytes; it is the second
+    // fetch's bundle prerequisite, whose header line carries the subject.
+    // Sabotage: cap each header line at 4096 bytes in crossing::header;
+    // the second fetch fails as a malformed header.
     let hooks: String = CLIENT_HOOKS.iter().map(|hook| format!("{hook} ")).collect();
     in_box(&format!(
         "cd /work && git merge -q --no-edit refs/remotes/host/main \
          && for dir in .githooks .husky; do mkdir -p $dir; for hook in {hooks}; do \
               printf '#!/bin/sh\\ntouch {markers}/%s-%s\\n' $dir $hook > $dir/$hook; \
               chmod 755 $dir/$hook; done; done \
-         && git add .githooks .husky && git commit -q -m hooks && git tag box-tag \
+         && git add .githooks .husky && git commit -q -m \"hooks $(printf %05000d 0)\" \
+         && git tag box-tag \
          && for hook in {hooks}; do \
               printf '#!/bin/sh\\ntouch {markers}/git-%s\\n' $hook > .git/hooks/$hook; \
               chmod 755 .git/hooks/$hook; done \
