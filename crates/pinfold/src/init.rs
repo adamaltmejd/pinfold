@@ -295,18 +295,25 @@ impl Write for Deadline<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let began = Instant::now();
         let mut ready = [PollFd::new(self.0, PollFlags::POLLOUT)];
+        // Polling only after a refused send keeps Linux at a blocking
+        // send's throughput. Darwin ignores MSG_DONTWAIT on a blocking
+        // socket, so there every send waits for POLLOUT first.
+        let mut wait = cfg!(target_os = "macos");
         loop {
-            let remaining = self
-                .1
-                .checked_sub(began.elapsed())
-                .ok_or(io::ErrorKind::TimedOut)?;
-            let timeout = PollTimeout::try_from(remaining.max(Duration::from_millis(1)))
-                .expect("five-minute timeout fits poll");
-            match poll(&mut ready, timeout) {
-                Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
-                Err(error) => return Err(error.into()),
-                Ok(_) => {}
+            if wait {
+                let remaining = self
+                    .1
+                    .checked_sub(began.elapsed())
+                    .ok_or(io::ErrorKind::TimedOut)?;
+                let timeout = PollTimeout::try_from(remaining.max(Duration::from_millis(1)))
+                    .expect("five-minute timeout fits poll");
+                match poll(&mut ready, timeout) {
+                    Ok(0) => return Err(io::ErrorKind::TimedOut.into()),
+                    Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+                    Err(error) => return Err(error.into()),
+                }
             }
+            wait = true;
             // Safety: the fd stays borrowed, and buf is readable for its length.
             let sent = unsafe {
                 nix::libc::send(
