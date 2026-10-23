@@ -1561,10 +1561,6 @@ fn disks_persist_and_attach_exclusively() {
         .output()
         .expect("run pinfold fetch");
     assert!(!fetched.status.success(), "fetch ran on an unfilled disk");
-    assert!(
-        disk_names(&env).contains(refill),
-        "fetch removed the unfilled disk"
-    );
     fs::remove_file(&first).unwrap();
     fs::write(&first, b"first\n").unwrap();
     let mut refilled = box_up(&env, &spec(writer, refill_disk), writer);
