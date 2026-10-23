@@ -100,6 +100,9 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
         .list_disks()?
         .iter()
         .any(|listed| listed.name == disk)
+        // The transient box names no `from`: claiming an unfilled disk
+        // would empty it and mark it filled.
+        || disk::unfilled(&disk)?
     {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,

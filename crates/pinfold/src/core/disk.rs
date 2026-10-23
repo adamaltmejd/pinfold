@@ -160,7 +160,7 @@ pub fn claim(
                 ),
             )));
         }
-        if existing.contains(&disk.name) && !marked(&disk.name, UNFILLED).map_err(Err)? {
+        if existing.contains(&disk.name) && !unfilled(&disk.name).map_err(Err)? {
             continue;
         }
         if let Some(from) = &disk.from {
@@ -297,6 +297,12 @@ fn marked(name: &str, kind: &str) -> io::Result<bool> {
 /// Whether a writable attachment of the disk ended without `down`.
 pub fn unclean(name: &str) -> io::Result<bool> {
     marked(name, UNCLEAN)
+}
+
+/// Whether pinfold created the disk and its box never came ready: such a
+/// disk counts as absent.
+pub fn unfilled(name: &str) -> io::Result<bool> {
+    marked(name, UNFILLED)
 }
 
 /// Durably: a lost mark would let a dead box's disk pass as clean or filled.
