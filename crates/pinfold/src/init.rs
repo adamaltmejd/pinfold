@@ -309,7 +309,8 @@ impl Write for Deadline<'_> {
                     .expect("five-minute timeout fits poll");
                 match poll(&mut ready, timeout) {
                     Ok(0) => return Err(io::ErrorKind::TimedOut.into()),
-                    Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+                    Err(nix::errno::Errno::EINTR) => continue,
+                    Ok(_) => {}
                     Err(error) => return Err(error.into()),
                 }
             }
