@@ -103,7 +103,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // cannot share the source.
     let profile = format!("e2e-maintenance-{}", std::process::id());
     let _images = ImageCleanup {
-        repository: format!("pinfold/profile-{profile}"),
+        repository: format!("localhost/pinfold/profile-{profile}"),
     };
     // `FROM scratch` keeps the test off the network and fast.
     let containerfile = profile_containerfile(&env, &profile, "FROM scratch\n");
@@ -141,9 +141,9 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // labels it would count as the profile's image in build 4's retention.
     let x_name = format!("{profile}-x");
     let _x_images = ImageCleanup {
-        repository: format!("pinfold/image-{x_name}"),
+        repository: format!("localhost/pinfold/image-{x_name}"),
     };
-    let profile_ref = format!("pinfold/profile-{profile}:latest");
+    let profile_ref = format!("localhost/pinfold/profile-{profile}:latest");
     let x_context = env.root.join("x-context");
     fs::create_dir_all(&x_context).unwrap();
     let x_containerfile = x_context.join("Containerfile");
@@ -236,7 +236,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
 
     // An unlabeled image: no `dev.pinfold` label, so `clean` must leave it.
     // Its tag shares the profile prefix, so the guard above deletes it.
-    let unlabeled = format!("pinfold/profile-{profile}:unlabeled");
+    let unlabeled = format!("localhost/pinfold/profile-{profile}:unlabeled");
     runtime_build(&[&unlabeled], &[]);
     assert!(
         image_id(&unlabeled).is_some(),
@@ -249,7 +249,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // own. `clean` finds the name by its tags and removes only the oldest
     // tag; the image stays under the newest two.
     let shared = format!("{profile}-shared");
-    let shared_repository = format!("pinfold/image-{shared}");
+    let shared_repository = format!("localhost/pinfold/image-{shared}");
     let _shared_images = ImageCleanup {
         repository: shared_repository.clone(),
     };
@@ -380,7 +380,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         let other = build_env.as_ref().unwrap();
         let name = format!("{profile}-active");
         let _active_images = ImageCleanup {
-            repository: format!("pinfold/image-{name}"),
+            repository: format!("localhost/pinfold/image-{name}"),
         };
         let build = HeldBuild::start(other, &name, default_image(other), &[]);
         let inspected = run_ok(Command::new("container").args(["inspect", "buildkit"]));
@@ -413,7 +413,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         let before_fixture = allocated_kib();
         let cache_name = format!("{profile}-cache");
         let _cache_images = ImageCleanup {
-            repository: format!("pinfold/image-{cache_name}"),
+            repository: format!("localhost/pinfold/image-{cache_name}"),
         };
         let context = other.root.join("cache-context");
         fs::create_dir_all(&context).unwrap();
@@ -643,7 +643,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     .unwrap();
     let retire_name = format!("{profile}-retire");
     let _retire_images = ImageCleanup {
-        repository: format!("pinfold/image-{retire_name}"),
+        repository: format!("localhost/pinfold/image-{retire_name}"),
     };
     let mut retire_refs: Vec<String> = Vec::new();
     for marker in ["retire-1", "retire-2", "retire-3"] {
@@ -671,7 +671,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "the changed retire builds do not name three images: {retire_refs:?}"
     );
     assert_eq!(
-        tagged_images(&format!("pinfold/image-{retire_name}")),
+        tagged_images(&format!("localhost/pinfold/image-{retire_name}")),
         distinct_ids,
         "the runtime does not list the three retire images before image rm"
     );
@@ -679,7 +679,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // `retire` must not touch it.
     let similar_name = format!("{retire_name}-x");
     let _similar_images = ImageCleanup {
-        repository: format!("pinfold/image-{similar_name}"),
+        repository: format!("localhost/pinfold/image-{similar_name}"),
     };
     fs::write(rm_context.join("marker.txt"), "similar\n").unwrap();
     let (code, similar) = image_build(&env, &similar_name, &rm_containerfile, &rm_context);
@@ -694,7 +694,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // its build returns that image and tags it under the third name.
     let twin_name = format!("{retire_name}-twin");
     let _twin_images = ImageCleanup {
-        repository: format!("pinfold/image-{twin_name}"),
+        repository: format!("localhost/pinfold/image-{twin_name}"),
     };
     fs::write(rm_context.join("marker.txt"), "retire-2\n").unwrap();
     let (code, twin) = image_build(&env, &twin_name, &rm_containerfile, &rm_context);
@@ -736,7 +736,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "image rm left the retired name's tag on the removed image: {retire_refs:?}"
     );
     assert!(
-        image_id(&format!("pinfold/image-{retire_name}:latest")).is_none(),
+        image_id(&format!("localhost/pinfold/image-{retire_name}:latest")).is_none(),
         "image rm left the retire name's latest tag"
     );
     // The retire box pins an image only `retire` tags, so its last tag
@@ -794,7 +794,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let (code, removed) = image_rm(&env, &retire_name);
     assert_eq!(code, 0, "the second image rm exited {code}: {removed}");
     assert!(
-        tagged_images(&format!("pinfold/image-{retire_name}")).is_empty(),
+        tagged_images(&format!("localhost/pinfold/image-{retire_name}")).is_empty(),
         "the second image rm left a tag of the retired name"
     );
     up_twin.down(&env);

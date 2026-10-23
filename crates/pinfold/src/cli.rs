@@ -870,17 +870,8 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
     let project = crate::pi::state::project_id(root);
     let home = crate::pi::state::project_home(root)?;
     let image = crate::pi::launch::resolve_image(config, &project);
-    let (image_built, image_error) = match runtime().list_images() {
-        Ok(images) => (
-            Some(images.iter().any(|listed| {
-                listed
-                    .reference
-                    .strip_prefix("localhost/")
-                    .unwrap_or(&listed.reference)
-                    == image
-            })),
-            None,
-        ),
+    let (image_built, image_error) = match runtime().resolve_image(&image) {
+        Ok(resolved) => (Some(resolved.is_ok()), None),
         Err(error) => (None, Some(error.to_string())),
     };
     let trust = match trust::check(root, config) {

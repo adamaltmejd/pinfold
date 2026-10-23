@@ -61,7 +61,7 @@ impl Runtime for Apple {
             .strip_prefix("container CLI version ")
             .and_then(|value| value.split_whitespace().next())
             .unwrap_or(&reported);
-        super::require_version("container", version, [1, 5, 0])?;
+        super::require_version("container", version, [1, 6, 0])?;
         Ok(None)
     }
 

@@ -73,7 +73,7 @@ pub(crate) fn project_root(cwd: &Path) -> io::Result<PathBuf> {
 /// image; otherwise the profile's. `doctor` reports it.
 pub(crate) fn resolve_image(config: &Config, project: &str) -> String {
     if config.containerfile.is_some() {
-        format!("pinfold/project-{project}:latest")
+        format!("localhost/pinfold/project-{project}:latest")
     } else {
         config.profile.image_ref()
     }

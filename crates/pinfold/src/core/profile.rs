@@ -165,7 +165,7 @@ impl Profile {
 
     /// The stable ref of this profile's image.
     pub fn image_ref(&self) -> String {
-        format!("pinfold/profile-{}:latest", self.name)
+        format!("localhost/pinfold/profile-{}:latest", self.name)
     }
 }
 

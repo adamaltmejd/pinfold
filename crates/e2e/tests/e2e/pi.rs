@@ -53,7 +53,7 @@ fn the_documents_profile_reads_documents_locally() {
     ]));
     build_profile(&env, profile);
     let _image = ImageCleanup {
-        repository: format!("pinfold/profile-{profile}"),
+        repository: format!("localhost/pinfold/profile-{profile}"),
     };
     let name = box_name("pdf");
     let spec = serde_json::json!({
@@ -513,7 +513,7 @@ fn a_changed_project_file_stops_the_run() {
     // unchanged file builds and runs, and a change to it stops both the run
     // and the build until `pinfold allow` records the new bytes.
     let _images = ImageCleanup {
-        repository: format!("pinfold/project-{id}"),
+        repository: format!("localhost/pinfold/project-{id}"),
     };
     let containerfile = project.path().join("Containerfile.pinfold");
     fs::write(
@@ -521,8 +521,11 @@ fn a_changed_project_file_stops_the_run() {
         "containerfile = \"Containerfile.pinfold\"\nallow = [\"example.com\"]\n",
     )
     .expect("point .pinfold.toml at the project Containerfile");
-    fs::write(&containerfile, "FROM pinfold/profile-default:latest\n")
-        .expect("write the project Containerfile");
+    fs::write(
+        &containerfile,
+        "FROM localhost/pinfold/profile-default:latest\n",
+    )
+    .expect("write the project Containerfile");
     allow(&env, project.path());
     run_ok(&mut pinfold_in(&env, project.path(), &["build"]));
     // Control: with the Containerfile unchanged, the project image runs.
@@ -537,7 +540,7 @@ fn a_changed_project_file_stops_the_run() {
             "sh",
             "-c",
             &format!(
-                "printf 'FROM pinfold/profile-default:latest\\n# changed\\n' > '{}'",
+                "printf 'FROM localhost/pinfold/profile-default:latest\\n# changed\\n' > '{}'",
                 containerfile.display()
             ),
         ],
@@ -1039,7 +1042,7 @@ fn both_pi_config_levels_load_behind_a_route() {
         .expect("write the fixture's Containerfile");
     build_profile(&env, profile);
     let _image = ImageCleanup {
-        repository: format!("pinfold/profile-{profile}"),
+        repository: format!("localhost/pinfold/profile-{profile}"),
     };
     build_profile(&env, "full");
     // The pinned Ponytail instruction hook emits this marker for explicit full input.
@@ -1506,7 +1509,9 @@ fn a_caller_reads_the_effective_configuration_as_data() {
     let _runtime = crate::shared_runtime();
     // Sabotage: report DEFAULT_ALLOW instead of the merged allow in
     // `run_config`; `egress.allow` then names the built-in hosts and the
-    // exact-list assertion fails.
+    // exact-list assertion fails. Sabotage: resolve `config_report`'s
+    // image with `localhost/` stripped; the built profile image reads as
+    // not built.
     let env = TestEnv::new("pi-config");
     default_image(&env);
     let project = TestDir::new(&env, "project");
@@ -1529,6 +1534,11 @@ fn a_caller_reads_the_effective_configuration_as_data() {
         report["trust"]["ok"].as_bool(),
         Some(false),
         "the untrusted config was reported trusted"
+    );
+    assert_eq!(
+        report["image_built"].as_bool(),
+        Some(true),
+        "the profile image default_image built was reported not built: {report}"
     );
     let home = report["project"]["home"]
         .as_str()
