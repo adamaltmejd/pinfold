@@ -1,6 +1,7 @@
 //! Disks: named images that outlive boxes. Attachments are recorded under
 //! each box's claim; a writable attachment marks the disk unclean until
-//! `down` confirms it.
+//! `down` confirms it. A disk pinfold creates is marked unfilled until its
+//! box comes ready; an unfilled disk counts as absent.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -90,7 +91,8 @@ impl Claimed {
         {
             let result = runtime
                 .remove_disk(&disk.name)
-                .and_then(|()| mark_clean(&disk.name));
+                .and_then(|()| mark_clean(&disk.name))
+                .and_then(|()| unmark(&disk.name, UNFILLED));
             if let Err(error) = result {
                 eprintln!("pinfold: startup cleanup: disk {:?}: {error}", disk.name);
             }
@@ -158,7 +160,7 @@ pub fn claim(
                 ),
             )));
         }
-        if existing.contains(&disk.name) {
+        if existing.contains(&disk.name) && !marked(&disk.name, UNFILLED).map_err(Err)? {
             continue;
         }
         if let Some(from) = &disk.from {
@@ -185,6 +187,11 @@ pub fn claim(
     let mut created = Vec::new();
     let result = (|| {
         for disk in &claimed.created {
+            // Marked first, so a crash anywhere in the fill leaves the mark.
+            mark(&disk.name, UNFILLED)?;
+            if existing.contains(&disk.name) {
+                runtime.remove_disk(&disk.name)?;
+            }
             runtime.create_disk(&disk.name, disk.bytes())?;
             created.push(disk.clone());
         }
@@ -205,7 +212,7 @@ pub fn claim(
         }
         for disk in disks.iter().filter(|disk| !disk.readonly) {
             if !unclean(&disk.name)? {
-                mark_unclean(&disk.name)?;
+                mark(&disk.name, UNCLEAN)?;
                 claimed.marked.push(disk.name.clone());
             }
         }
@@ -268,36 +275,61 @@ pub fn attachments(
     Ok(attached)
 }
 
-fn marker(name: &str) -> io::Result<PathBuf> {
+/// Written before a writable attachment; only a confirmed `down` removes it.
+const UNCLEAN: &str = "unclean";
+/// Written before pinfold creates a disk; removed once its box is ready.
+const UNFILLED: &str = "unfilled";
+
+fn marker(name: &str, kind: &str) -> io::Result<PathBuf> {
     Ok(dirs::state_dir()?
         .join("disks")
-        .join(format!("{name}.unclean")))
+        .join(format!("{name}.{kind}")))
 }
 
-/// Whether a writable attachment of the disk ended without `down`.
-pub fn unclean(name: &str) -> io::Result<bool> {
-    match fs::symlink_metadata(marker(name)?) {
+fn marked(name: &str, kind: &str) -> io::Result<bool> {
+    match fs::symlink_metadata(marker(name, kind)?) {
         Ok(_) => Ok(true),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error),
     }
 }
 
-/// Written durably before a writable attachment; only a confirmed `down`
-/// removes it.
-fn mark_unclean(name: &str) -> io::Result<()> {
-    let path = marker(name)?;
+/// Whether a writable attachment of the disk ended without `down`.
+pub fn unclean(name: &str) -> io::Result<bool> {
+    marked(name, UNCLEAN)
+}
+
+/// Durably: a lost mark would let a dead box's disk pass as clean or filled.
+fn mark(name: &str, kind: &str) -> io::Result<()> {
+    let path = marker(name, kind)?;
     let dir = path.parent().expect("a marker has a directory");
     fs::create_dir_all(dir)?;
     File::create(&path)?.sync_all()?;
     File::open(dir)?.sync_all()
 }
 
-fn mark_clean(name: &str) -> io::Result<()> {
-    match fs::remove_file(marker(name)?) {
+fn unmark(name: &str, kind: &str) -> io::Result<()> {
+    match fs::remove_file(marker(name, kind)?) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
         _ => Ok(()),
     }
+}
+
+fn mark_clean(name: &str) -> io::Result<()> {
+    unmark(name, UNCLEAN)
+}
+
+/// Once the box is ready, its new disks hold their `from`. Durably: a mark
+/// that came back after a crash would have the next `up` replace a disk
+/// that holds work.
+pub fn filled(created: &[Disk]) -> io::Result<()> {
+    for disk in created {
+        unmark(&disk.name, UNFILLED)?;
+    }
+    if !created.is_empty() {
+        File::open(dirs::state_dir()?.join("disks"))?.sync_all()?;
+    }
+    Ok(())
 }
 
 /// `from`'s tree without following symlinks, parents first, and the sum of
@@ -428,5 +460,6 @@ pub fn remove(runtime: &dyn Runtime, name: &str) -> io::Result<Removal> {
         runtime.remove_disk(name)?;
     }
     mark_clean(name)?;
+    unmark(name, UNFILLED)?;
     Ok(Removal::Removed { existed })
 }
