@@ -319,11 +319,13 @@ fn mark_clean(name: &str) -> io::Result<()> {
     unmark(name, UNCLEAN)
 }
 
-/// Once the box is ready, its new disks hold their `from`. Durably: a mark
-/// that came back after a crash would have the next `up` replace a disk
-/// that holds work.
-pub fn filled(created: &[Disk]) -> io::Result<()> {
+/// Once the box is ready, its new disks hold their `from`, synced in the
+/// guest. Each is made durable before its mark goes, and the removal is
+/// durable too: a mark that came back after a crash would have the next
+/// `up` replace a disk that holds work.
+pub fn filled(runtime: &dyn Runtime, created: &[Disk]) -> io::Result<()> {
     for disk in created {
+        runtime.sync_disk(&disk.name)?;
         unmark(&disk.name, UNFILLED)?;
     }
     if !created.is_empty() {

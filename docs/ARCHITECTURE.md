@@ -867,9 +867,12 @@ On Linux a disk is a sparse ext4 image at
 `~/.local/state/pinfold/disks/<name>.ext4`, mode 0600, created by
 pinfold; on macOS it is an Apple `container` volume of that name. The host
 never mounts, reads or parses a disk's content; only boxes do. A disk's
-`from` copy is written by the box that creates it, before `ready`. A disk
-pinfold created whose box never came ready counts as absent: the next
-`up` naming it removes it and creates it again. In a box, a
+`from` copy is written by the box that creates it, before `ready`. The
+next `up` naming a disk pinfold created whose box never came ready treats
+it as absent: it removes it and creates it again. Before `ready` the guest
+syncs each new disk's copy. On Linux pinfold then fsyncs the disk's image,
+so a disk whose box came ready holds its whole `from` after a host power
+loss; on macOS what a volume keeps through one is the runtime's. In a box, a
 disk's root belongs to the box user. A disk has no labels and no owner
 beyond its attachments.
 

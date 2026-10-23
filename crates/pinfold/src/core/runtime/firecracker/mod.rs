@@ -230,6 +230,12 @@ impl Runtime for Firecracker {
         }
     }
 
+    /// Firecracker's default cache ignores guest flushes, but each guest
+    /// write it completed is already in the image file.
+    fn sync_disk(&self, name: &str) -> io::Result<()> {
+        fs::File::open(disk_path(name)?)?.sync_all()
+    }
+
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
         Podman.build(request)
     }

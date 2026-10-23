@@ -323,7 +323,7 @@ impl Box {
                     "image-changed: box started a different image",
                 )));
             }
-            disk::filled(&progress.claimed.created)?;
+            disk::filled(runtime, &progress.claimed.created)?;
             // Last before ready: every ready run has a launch record, and a
             // run that fails to start leaves none.
             runs::write_launch(&run_id, launch_record(&plan, &observed, &image))?;
