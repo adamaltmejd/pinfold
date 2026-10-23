@@ -1509,9 +1509,9 @@ fn a_caller_reads_the_effective_configuration_as_data() {
     let _runtime = crate::shared_runtime();
     // Sabotage: report DEFAULT_ALLOW instead of the merged allow in
     // `run_config`; `egress.allow` then names the built-in hosts and the
-    // exact-list assertion fails. Sabotage: strip `localhost/` from
-    // `config_report`'s image before comparing; the built profile image
-    // reads as not built.
+    // exact-list assertion fails. Sabotage: resolve `config_report`'s
+    // image with `localhost/` stripped; the built profile image reads as
+    // not built.
     let env = TestEnv::new("pi-config");
     default_image(&env);
     let project = TestDir::new(&env, "project");

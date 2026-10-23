@@ -24,3 +24,6 @@ A missing `localhost/` image is pulled only from localhost, which is refused
 already lists local builds under `localhost/`, so both runtimes report
 the name pinfold tags. No migration: old short-named images were removed by
 hand.
+
+The Apple floor rises to 1.6.0, the only version `localhost/` was
+verified on.
