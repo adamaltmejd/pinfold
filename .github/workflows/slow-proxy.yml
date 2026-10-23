@@ -38,5 +38,13 @@ jobs:
       - name: Build the real binary
         run: cargo build -p pinfold --locked --target "$(uname -m)-unknown-linux-musl"
 
+      # The executable the gate runs, profiled with the restriction on.
+      - name: AppArmor profile
+        run: |
+          target/"$(uname -m)"-unknown-linux-musl/debug/pinfold apparmor-profile >"$RUNNER_TEMP/pinfold"
+          sudo install -m 0644 "$RUNNER_TEMP/pinfold" /etc/apparmor.d/pinfold
+          sudo apparmor_parser -r /etc/apparmor.d/pinfold
+          test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 1
+
       - name: CONNECT tunnels share activity
         run: bash scripts/slow-proxy.sh "$PWD/target/$(uname -m)-unknown-linux-musl/debug/pinfold"

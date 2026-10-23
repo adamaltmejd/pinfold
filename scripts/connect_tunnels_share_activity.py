@@ -55,23 +55,21 @@ def markers(stream, stopped):
 
 
 def observe_markers(stream, report):
-    last = None
     for expected in range(MARKERS):
         sequence = struct.unpack("!Q", receive(stream, 8))[0]
         if sequence != expected:
             raise RuntimeError(f"marker {sequence}, expected fixture marker {expected}")
-        last = time.monotonic()
-        report("marker", sequence=sequence, seconds=last)
-    return last
+        report("marker", sequence=sequence)
 
 
 def guest(direction):
     if direction not in TUNNELS:
         raise RuntimeError("unknown fixture direction")
     emit("waiting", direction=direction)
-    connect_at = float(sys.stdin.readline())
-    # This is the timed input to the idle scenario, not a readiness delay.
-    threading.Event().wait(max(0, connect_at - time.monotonic()))
+    # The guest's monotonic clock is its own VM's, so the host sends a
+    # delay. This is the timed input to the idle scenario, not a readiness
+    # delay.
+    threading.Event().wait(float(sys.stdin.readline()))
     raw = socket.create_connection(("127.0.0.1", 3128), timeout=15)
     raw.sendall(f"CONNECT {HOST}:443 HTTP/1.1\r\nHost: {HOST}:443\r\n\r\n".encode())
     head = bytearray()
@@ -90,7 +88,7 @@ def guest(direction):
         stream.sendall(token)
         if receive(stream, 1) != b"R":
             raise RuntimeError("fixture did not acknowledge the TLS handshake")
-        emit("ready", direction=direction, seconds=time.monotonic())
+        emit("ready", direction=direction)
         if sys.stdin.readline() != "start\n":
             raise RuntimeError("controller did not start traffic")
         if direction == "upload":
@@ -99,7 +97,7 @@ def guest(direction):
             observe_markers(stream, emit)
         if stream.recv(1):
             raise RuntimeError("fixture sent unexpected data after its last marker")
-        emit("closed", direction=direction, seconds=time.monotonic())
+        emit("closed", direction=direction)
         # Keep the guest and its socket alive until the outside observer
         # has checked the closure; guest exit cannot be its cause.
         if sys.stdin.readline() != "release\n":
@@ -130,7 +128,9 @@ def host(binary, root, image):
     name = f"connect-proof-{os.getpid()}"
 
     def report(source, event, **fields):
-        events.put((source, {"event": event, **fields}))
+        # Every event is timed on the host's clock when observed; a guest
+        # VM's monotonic clock is its own.
+        events.put((source, {"event": event, **fields, "seconds": time.monotonic()}))
 
     def watch(source, process):
         try:
@@ -210,7 +210,7 @@ def host(binary, root, image):
                     raise RuntimeError(
                         "client sent unexpected data after its last marker"
                     )
-                report(f"fixture-{direction}", "closed", seconds=time.monotonic())
+                report(f"fixture-{direction}", "closed")
         except Exception as error:
             report(f"fixture-{direction}", "error", detail=str(error))
 
@@ -229,7 +229,7 @@ def host(binary, root, image):
         "name": name,
         "image": image,
         "mounts": [
-            {"host": str(root / "guest"), "guest": "/fixture", "readonly": True}
+            {"host": str(root / "guest"), "guest": "/fixture"}
         ],
         "egress": {"allow": [HOST]},
         "cpus": 1,
@@ -281,12 +281,11 @@ def host(binary, root, image):
                 raise RuntimeError(f"unexpected pre-connect event: {source}: {item}")
             waiting_guests.remove(source)
         acceptor.start()
-        phases_begin = time.monotonic()
         for direction in TUNNELS:
-            connect_at = phases_begin
+            delay = 0
             if direction.startswith("idle-"):
-                connect_at += int(direction.removeprefix("idle-")) * IDLE_PHASE_INTERVAL
-            processes[direction].stdin.write(f"{connect_at}\n")
+                delay = int(direction.removeprefix("idle-")) * IDLE_PHASE_INTERVAL
+            processes[direction].stdin.write(f"{delay}\n")
             processes[direction].stdin.flush()
         waiting = {*TUNNELS, *(f"fixture-{name}" for name in TUNNELS)}
         deadline = time.monotonic() + 45
@@ -391,7 +390,7 @@ def host(binary, root, image):
                 processes["owner"].stdin.close()
             except BrokenPipeError:
                 pass
-        # Box teardown cancels every guest before reaping its runtime client.
+        # Box teardown ends every guest exec before its client exits.
         for source in ("owner", *TUNNELS):
             if source not in processes:
                 continue
