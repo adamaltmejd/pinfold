@@ -34,7 +34,8 @@ keep their tests.
   background `full` build and the saved-settings check went.
 
 The features stay in the spec; only their tests went. CI now builds
-neither the `documents` nor the `full` bundled image.
+neither the `documents` nor the `full` bundled image, so a nightly pin
+bump to either Containerfile reaches no e2e build.
 
 The estimate was 170 or more thread-seconds, about 45 s fast and 55–60 s
 slow. The PR's CI runs give the measured result.
