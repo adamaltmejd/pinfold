@@ -1797,12 +1797,16 @@ fn work_leaves_the_box_only_by_fetch() {
         .collect();
     assert_eq!(commits, [commit.trim()], "the second fetch's commits");
 
-    // A box that writes its own bundle: a `git` ahead of the real one on
-    // PATH stands in for a box that controls its processes' output. Its
-    // bundle carries a real commit under a `refs/heads/x` head, a
-    // `refs/heads/x:refs/heads/injected` head and a
-    // `refs/heads/x:refs/replace/<host main>` head. The fetch fails and no
-    // host ref changes.
+    // A box that writes its own bundles: a `git` ahead of the real one on
+    // PATH stands in for a box that controls its processes' output. Each
+    // bundle fails on its own, so refusing one can't mask another: a real
+    // commit under a `refs/heads/x` head plus a
+    // `refs/heads/x:refs/heads/injected` head; the same plus a
+    // `refs/heads/x:refs/replace/<host main>` head; and a commit whose tree
+    // holds a `.git` entry under a plain `refs/heads/x`. Each fetch fails
+    // and no host ref changes. Sabotage: drop `--fsck-objects` from
+    // crossing::fetch's index-pack; the `.git` bundle then lands on any host
+    // git, and its assertions fail.
     let host_main = host_git(&["rev-parse", "main"]);
     let host_refs = host_git(&["for-each-ref"]);
     in_box(&format!(
@@ -1810,12 +1814,22 @@ fn work_leaves_the_box_only_by_fetch() {
 cd /work
 mkdir .hostile
 g() {{ git -c core.hooksPath=/nonexistent -c core.fsmonitor=false "$@"; }}
+# mk NAME COMMIT HEAD...: a bundle of COMMIT under the given head lines.
+mk() {{
+  name=$1 commit=$2; shift 2
+  g update-ref refs/evil/x "$commit"
+  g bundle create -q .hostile/real refs/evil/x
+  header=$(sed -n '1,/^$/p' .hostile/real | wc -c)
+  {{ printf '# v2 git bundle\n'; for head; do printf '%s %s\n' "$commit" "$head"; done; printf '\n'
+    tail -c +$((header + 1)) .hostile/real; }} > .hostile/$name
+}}
 evil=$(g commit-tree -m evil 'HEAD^{{tree}}')
-g update-ref refs/evil/x "$evil"
-g bundle create -q .hostile/real refs/evil/x
-header=$(sed -n '1,/^$/p' .hostile/real | wc -c)
-{{ printf '# v2 git bundle\n%s refs/heads/x\n%s refs/heads/x:refs/heads/injected\n%s refs/heads/x:refs/replace/{host_main}\n\n' "$evil" "$evil" "$evil"
-  tail -c +$((header + 1)) .hostile/real; }} > .hostile/bundle
+blob=$(echo evil | g hash-object -w --stdin)
+inner=$(printf '100644 blob %s\tconfig\n' "$blob" | g mktree)
+dotgit=$(g commit-tree -m dotgit "$(printf '040000 tree %s\t.git\n' "$inner" | g mktree)")
+mk injected "$evil" refs/heads/x refs/heads/x:refs/heads/injected
+mk replace "$evil" refs/heads/x refs/heads/x:refs/replace/{host_main}
+mk dotgit "$dotgit" refs/heads/x
 cat > .hostile/git <<'END'
 #!/bin/sh
 case " $* " in
@@ -1826,13 +1840,28 @@ exec /usr/bin/git "$@"
 END
 chmod 755 .hostile/git"#
     ));
-    let (code, failed) = crossing_fetch(&env, &name, repo);
-    assert_eq!((code, &failed["event"]), (1, &"failed".into()), "{failed}");
-    assert_eq!(
-        host_git(&["for-each-ref"]),
-        host_refs,
-        "the hostile bundle changed a host ref"
-    );
+    for case in ["injected", "replace", "dotgit"] {
+        in_box(&format!("cp /work/.hostile/{case} /work/.hostile/bundle"));
+        let (code, failed) = crossing_fetch(&env, &name, repo);
+        assert_eq!(
+            (code, &failed["event"]),
+            (1, &"failed".into()),
+            "{case}: {failed}"
+        );
+        assert_eq!(
+            host_git(&["for-each-ref"]),
+            host_refs,
+            "the {case} bundle changed a host ref"
+        );
+        // git's fsck names the entry: the fetch failed for it, not for a
+        // malformed bundle.
+        if case == "dotgit" {
+            assert!(
+                failed["detail"].as_str().unwrap().contains("hasDotgit"),
+                "{failed}"
+            );
+        }
+    }
 
     up.down(&env);
     assert!(up.wait().success(), "the box did not exit cleanly");
