@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
@@ -167,7 +167,7 @@ pub fn fetch(
     // The box's listing and bundle are untrusted. Every branch name passes
     // check-ref-format under the namespace before git sees it in a refspec
     // or a ref update. A bundled head lands at a commit the bundle carries,
-    // which fetch checks with fsck, or one the host already holds
+    // which index-pack checks with fsck, or one the host already holds
     // connected: fetch's own connectivity check covers a head whose
     // objects are already here. A listed branch the bundle leaves out lands
     // only at a commit this remote's refs already reach.
@@ -177,7 +177,8 @@ pub fn fetch(
         .to_str()
         .ok_or_else(|| io::Error::other(format!("{} is not UTF-8", bundle.path.display())))?;
     if fs::metadata(&bundle.path)?.len() > 0 {
-        if filtered(&bundle.path)? {
+        let (filtered, pack_start) = header(&bundle.path)?;
+        if filtered {
             return Err(CrossingError::Failed(
                 "the box sent a filtered bundle".into(),
             ));
@@ -194,13 +195,24 @@ pub fn fetch(
             .keys()
             .map(|branch| format!("refs/heads/{branch}\n"))
             .collect();
+        // Older host git (Ubuntu 24.04's 2.43) ignores fetch.fsckObjects
+        // when it fetches from a bundle, so pinfold indexes the bundle's
+        // pack with fsck itself. The fetch then finds every object here and
+        // only checks connectivity. Revisit when every supported host's git
+        // fscks a bundle fetch.
+        let mut pack = File::open(&bundle.path)?;
+        pack.seek(SeekFrom::Start(pack_start))?;
+        succeeded(
+            Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(["index-pack", "--stdin", "--fix-thin", "--fsck-objects"])
+                .stdin(pack)
+                .output()?,
+        )?;
         succeeded(git_input(
             repo,
             &[
-                "-c",
-                "transfer.fsckObjects=true",
-                "-c",
-                "fetch.fsckObjects=true",
                 "fetch",
                 "-q",
                 "--no-tags",
@@ -361,21 +373,27 @@ fn receive(child: &mut Child, bundle: &Path) -> Result<Vec<(String, String)>, Cr
     Ok(listed)
 }
 
-/// Whether a bundle's header names a filter. Fetching a filtered bundle
-/// fails its connectivity check but leaves a promisor pack in REPO first.
-fn filtered(bundle: &Path) -> io::Result<bool> {
+/// Whether a bundle's header names a filter, and the header's length,
+/// where the pack starts. Fetching a filtered bundle fails its
+/// connectivity check but leaves a promisor pack in REPO first.
+fn header(bundle: &Path) -> Result<(bool, u64), CrossingError> {
     let mut reader = BufReader::new(File::open(bundle)?);
+    let (mut filtered, mut len) = (false, 0);
     let mut line = Vec::new();
-    // The signature line, then capability lines, each starting with `@`.
-    (&mut reader).take(4096).read_until(b'\n', &mut line)?;
+    // The signature line, capabilities (`@…`), prerequisites and heads,
+    // then an empty line. Each is far below 4096 bytes, as in the listing.
     loop {
         line.clear();
         (&mut reader).take(4096).read_until(b'\n', &mut line)?;
-        if !line.starts_with(b"@") {
-            return Ok(false);
+        if !line.ends_with(b"\n") {
+            return Err(CrossingError::Failed(
+                "the bundle's header is malformed".into(),
+            ));
         }
-        if line.starts_with(b"@filter") {
-            return Ok(true);
+        len += line.len() as u64;
+        filtered |= line.starts_with(b"@filter");
+        if line == b"\n" {
+            return Ok((filtered, len));
         }
     }
 }

@@ -12,14 +12,16 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::signal::{SigHandler, SigSet, Signal};
 
 #[cfg(target_os = "linux")]
@@ -283,22 +285,79 @@ fn receive_into(root: &Path, mut input: &mut impl io::Read, missing: bool) -> io
     }
 }
 
+/// A blocking socket's writes, each failing with `TimedOut` after `timeout`
+/// without progress. `SO_SNDTIMEO` is not enough: Linux's timer wheel
+/// rounds a five-minute timeout up by up to half a minute, and a partial
+/// write returns only at the timeout, restarting it for the rest.
+pub(crate) struct Deadline<'a>(pub BorrowedFd<'a>, pub Duration);
+
+impl Write for Deadline<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let began = Instant::now();
+        let mut ready = [PollFd::new(self.0, PollFlags::POLLOUT)];
+        // Polling only after a refused send keeps Linux at a blocking
+        // send's throughput. Darwin ignores MSG_DONTWAIT on a blocking
+        // socket, so there every send waits for POLLOUT first.
+        let mut wait = cfg!(target_os = "macos");
+        loop {
+            if wait {
+                let remaining = self
+                    .1
+                    .checked_sub(began.elapsed())
+                    .ok_or(io::ErrorKind::TimedOut)?;
+                let timeout = PollTimeout::try_from(remaining.max(Duration::from_millis(1)))
+                    .expect("five-minute timeout fits poll");
+                match poll(&mut ready, timeout) {
+                    Ok(0) => return Err(io::ErrorKind::TimedOut.into()),
+                    Err(nix::errno::Errno::EINTR) => continue,
+                    Ok(_) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            wait = true;
+            // Safety: the fd stays borrowed, and buf is readable for its length.
+            let sent = unsafe {
+                nix::libc::send(
+                    self.0.as_raw_fd(),
+                    buf.as_ptr().cast(),
+                    buf.len(),
+                    nix::libc::MSG_DONTWAIT | nix::libc::MSG_NOSIGNAL,
+                )
+            };
+            if sent >= 0 {
+                return Ok(sent as usize);
+            }
+            let error = io::Error::last_os_error();
+            if !matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            ) {
+                return Err(error);
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Guest upload EOF preserves the response path. Proxy EOF completes the
 /// exchange and interrupts a guest that kept its upload half open.
-fn relay(mut client: TcpStream, mut server: UnixStream) -> io::Result<()> {
-    client.set_write_timeout(Some(Duration::from_secs(300)))?;
-    server.set_write_timeout(Some(Duration::from_secs(300)))?;
+fn relay(client: TcpStream, mut server: UnixStream) -> io::Result<()> {
+    const WRITE_TIMEOUT: Duration = Duration::from_secs(300);
     let mut client_reader = client.try_clone()?;
-    let mut server_writer = server.try_clone()?;
+    let server_writer = server.try_clone()?;
     let up = thread::spawn(move || {
-        if io::copy(&mut client_reader, &mut server_writer).is_err() {
+        let mut writer = Deadline(server_writer.as_fd(), WRITE_TIMEOUT);
+        if io::copy(&mut client_reader, &mut writer).is_err() {
             let _ = client_reader.shutdown(Shutdown::Both);
             let _ = server_writer.shutdown(Shutdown::Both);
         } else {
             let _ = server_writer.shutdown(Shutdown::Write);
         }
     });
-    let _ = io::copy(&mut server, &mut client);
+    let _ = io::copy(&mut server, &mut Deadline(client.as_fd(), WRITE_TIMEOUT));
     let _ = client.shutdown(Shutdown::Both);
     let _ = server.shutdown(Shutdown::Both);
     let _ = up.join();
