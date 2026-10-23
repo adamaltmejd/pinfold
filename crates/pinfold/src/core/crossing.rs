@@ -381,19 +381,25 @@ fn header(bundle: &Path) -> Result<(bool, u64), CrossingError> {
     let (mut filtered, mut len) = (false, 0);
     let mut line = Vec::new();
     // The signature line, capabilities (`@…`), prerequisites and heads,
-    // then an empty line. Each is far below 4096 bytes, as in the listing.
+    // then an empty line. A prerequisite line carries its commit's subject,
+    // which has no length limit, so only each line's first 8 bytes are kept,
+    // enough to see `@filter` or the empty line, and the rest is skipped.
+    // The bundle itself is already under LIMIT.
     loop {
         line.clear();
-        (&mut reader).take(4096).read_until(b'\n', &mut line)?;
-        if !line.ends_with(b"\n") {
+        (&mut reader).take(8).read_until(b'\n', &mut line)?;
+        if line.is_empty() {
             return Err(CrossingError::Failed(
                 "the bundle's header is malformed".into(),
             ));
         }
-        len += line.len() as u64;
         filtered |= line.starts_with(b"@filter");
+        len += line.len() as u64;
         if line == b"\n" {
             return Ok((filtered, len));
+        }
+        if !line.ends_with(b"\n") {
+            len += reader.skip_until(b'\n')? as u64;
         }
     }
 }
