@@ -290,8 +290,6 @@ A tag resolving to a different image during startup fails with
 `down` skips daily maintenance. It uses a host-only control socket and addresses
 the observed generation. The owner acknowledges after teardown. A timed-out request
 fails without releasing ownership or removing a live owner's state.
-Completed teardown acknowledged by the owner succeeds without another
-runtime inventory.
 Orphan removal and `prune` acquire the lifetime lock and recheck the
 generation before removing anything; an old observation cannot remove a
 replacement. Control sockets never enter boxes. The checked per-user lock
@@ -301,12 +299,7 @@ directory is `/private/tmp/pinfold-<uid>` on macOS and
 `list` prints one JSON line per pinfold box whose labels match every `--label`.
 It skips daily maintenance. On Linux a box is a claim whose VMM has started; `list`
 reads pinfold's own claims and whether each VMM still runs, and asks no
-runtime. On Apple each
-runtime box inventory has a 20-second deadline. Expiry kills the listing client's process group and reaps the client;
-`box list` exits 1 with `runtime-timeout` on stderr and no inventory lines.
-SIGINT or SIGTERM while waiting for inventory kills and reaps the listing
-client before `box list` exits with 128 plus the signal number and no inventory lines.
-It leaves box ownership and state intact.
+runtime. On Apple it reads `container list`.
 `--label KEY=VALUE` matches that value; `--label KEY` matches any value of
 `KEY`; every box carries `dev.pinfold.owner`, so `--label dev.pinfold.owner`
 lists them all. A container without it is no box: `exec` and `stat` exit 3
@@ -521,9 +514,10 @@ before it execs Firecracker:
 - new user, mount, PID, network, IPC and UTS namespaces; only the host uid
   and gid map, each to itself;
 - `pivot_root` into an empty tmpfs holding only the Firecracker binary,
-  the guest kernel, the root and init disks (read-only binds), the box's
-  disks, the mounts' images (read-only binds), `/dev/kvm`, the vsock socket directory and the VM configuration
-  file (Firecracker runs with `--no-api`); the old root is detached;
+  the guest kernel, the root and init disks, the box's disks and the
+  mounts' images (read-only binds, but for the box's writable disks),
+  `/dev/kvm`, the vsock socket directory and the VM configuration file
+  (Firecracker runs with `--no-api`); the old root is detached;
 - a capability bounding set of zero, `no_new_privs`, and the user's
   supplementary groups, which reach nothing in the jail (dropping them
   needs privilege);

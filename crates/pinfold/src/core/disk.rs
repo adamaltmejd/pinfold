@@ -253,7 +253,7 @@ pub fn attachments(
     if records.is_empty() {
         return Ok(attached);
     }
-    let listed: BTreeSet<String> = runtime.list(None)?.into_iter().map(|b| b.id).collect();
+    let listed: BTreeSet<String> = runtime.list()?.into_iter().map(|b| b.id).collect();
     for record in records {
         if !listed.contains(&record.name) && !ownership::name_alive(&record.name)? {
             continue;

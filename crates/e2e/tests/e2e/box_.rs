@@ -4411,7 +4411,7 @@ pub(super) fn vmm_pid(up: u32) -> u32 {
 /// any other size the VM could get (the 1 GiB default, half or twice the
 /// spec's) falls outside the 64 MiB below `limit`.
 #[cfg(target_os = "linux")]
-pub(super) fn assert_guest_memory(env: &TestEnv, name: &str, limit: u64) {
+fn assert_guest_memory(env: &TestEnv, name: &str, limit: u64) {
     let meminfo = box_exec(env, name, &["cat", "/proc/meminfo"]);
     assert_ok(&meminfo, "cat /proc/meminfo");
     let total = meminfo

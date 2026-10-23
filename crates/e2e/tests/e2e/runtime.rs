@@ -532,13 +532,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
     );
     dead_up.wait();
     #[cfg(target_os = "macos")]
-    {
-        assert!(
-            user_container.listed(),
-            "clean removed a container pinfold did not start"
-        );
-        drop(user_container);
-    }
+    assert!(
+        user_container.listed(),
+        "clean removed a container pinfold did not start"
+    );
 
     // Plain `clean` keeps every project's disks, and a moved checkout's
     // state too. Sabotage: make `CleanPlan::idle` select every project
@@ -595,6 +592,14 @@ fn cleanup_removes_only_pinfolds_garbage() {
         live_state.is_dir(),
         "clean --unused removed the state of a project with a live box"
     );
+    #[cfg(target_os = "macos")]
+    {
+        assert!(
+            user_container.listed(),
+            "clean --unused removed a container pinfold did not start"
+        );
+        drop(user_container);
+    }
 
     // Sabotage: remove the shared project locks from pi startup and box up;
     // clean deletes the existing state while the cold download holds startup

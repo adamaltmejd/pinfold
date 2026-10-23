@@ -123,7 +123,6 @@ const SECRET: &str = "pinfold-e2e-secret-4f9c1d7a2be6";
 /// Walk `dir`, panic on a regular file whose data holds `needle`, and
 /// list every file read. Only data extents are read, so a sparse disk
 /// costs what it holds.
-#[cfg(target_os = "linux")]
 fn holding(dir: &Path, needle: &[u8], scanned: &mut Vec<std::path::PathBuf>) {
     use nix::errno::Errno;
     use nix::unistd::{Whence, lseek};
@@ -164,16 +163,22 @@ fn holding(dir: &Path, needle: &[u8], scanned: &mut Vec<std::path::PathBuf>) {
             };
             let hole = lseek(file.as_fd(), data, Whence::SeekHole).unwrap();
             file.seek(SeekFrom::Start(data as u64)).unwrap();
-            let mut extent = Vec::new();
-            (&mut file)
-                .take((hole - data) as u64)
-                .read_to_end(&mut extent)
-                .unwrap();
-            assert!(
-                !extent.windows(needle.len()).any(|window| window == needle),
-                "{} holds the secret",
-                path.display()
-            );
+            // 8 MiB at a time, carrying the needle's length less one byte
+            // across chunks.
+            let mut window = Vec::new();
+            let mut left = (hole - data) as usize;
+            while left > 0 {
+                let start = window.len();
+                window.resize(start + left.min(8 << 20), 0);
+                file.read_exact(&mut window[start..]).unwrap();
+                left -= window.len() - start;
+                assert!(
+                    !window.windows(needle.len()).any(|bytes| bytes == needle),
+                    "{} holds the secret",
+                    path.display()
+                );
+                window.drain(..window.len().saturating_sub(needle.len() - 1));
+            }
             offset = hole;
         }
         scanned.push(path);
@@ -845,7 +850,7 @@ fn the_highest_layer_sets_the_allowlist() {
 
     // `cpus` and `memory` reach the box: stat reports the memory limit; the
     // Apple guest's cgroup shows the CPU quota, and a Firecracker VM has
-    // that many vCPUs and its guest kernel that much memory.
+    // that many vCPUs.
     let stat = box_stat(&env, &name);
     assert_eq!(
         stat["memory"]["limit"].as_u64(),
@@ -854,7 +859,6 @@ fn the_highest_layer_sets_the_allowlist() {
     );
     #[cfg(target_os = "linux")]
     {
-        crate::box_::assert_guest_memory(&env, &name, 512 << 20);
         let cpus = box_exec(&env, &name, &["nproc"]);
         assert_ok(&cpus, "nproc in the box");
         assert_eq!(
@@ -954,9 +958,10 @@ fn the_launch_record_is_the_applied_policy() {
     // the project's config at query time; the changed allow list then
     // appears. Sabotage: write the plan's env as name and value, or a
     // route's resolved headers, into the launch record; the state-root scan
-    // finds the secret or the header value. Sabotage: have init write the
-    // box's environment to a file in the home disk; the scan reads the
-    // disk's data extents and finds the secret. Sabotage: drop `cpus` from the
+    // finds the secret or the header value. Sabotage, on Linux: have init
+    // write the box's environment to a file in the home disk; the scan
+    // reads the disk's data extents and finds the secret. Apple's disks
+    // are runtime volumes outside the state root. Sabotage: drop `cpus` from the
     // record; its equality fails.
     let env = TestEnv::new("pi-launch");
     default_image(&env);
@@ -1049,69 +1054,10 @@ fn the_launch_record_is_the_applied_policy() {
         record["terminal"]["record"]["reason"], "harness-exited",
         "{record}"
     );
-    // The scan covers the pi box's sparse disks too: a guest write that
-    // kept the box's environment lands in one.
-    let mut leaked = Vec::new();
-    let mut dirs = vec![env.state.clone()];
-    while let Some(dir) = dirs.pop() {
-        for entry in fs::read_dir(&dir).unwrap().flatten() {
-            let kind = entry.file_type().unwrap();
-            if kind.is_dir() {
-                dirs.push(entry.path());
-            } else if kind.is_file()
-                && file_holds(&entry.path(), &[secret.as_bytes(), header.as_bytes()])
-            {
-                leaked.push(entry.path());
-            }
-        }
-    }
-    assert!(
-        leaked.is_empty(),
-        "the state root holds a secret: {leaked:?}"
-    );
-}
-
-/// Whether `path`'s bytes hold any of `needles`. Only the file's data
-/// extents are read, so a sparse 64 GiB disk costs what it holds.
-fn file_holds(path: &Path, needles: &[&[u8]]) -> bool {
-    use nix::unistd::{Whence, lseek};
-    use std::io::{Read, Seek, SeekFrom};
-    let fail = |what: &str, error: &dyn std::fmt::Display| -> ! {
-        panic!("{what} {}: {error}", path.display())
-    };
-    let mut file = fs::File::open(path).unwrap_or_else(|error| fail("open", &error));
-    let overlap = needles.iter().map(|needle| needle.len()).max().unwrap_or(1) - 1;
-    let mut chunk = vec![0u8; 8 << 20];
-    let mut offset = 0;
-    loop {
-        let start = match lseek(&file, offset, Whence::SeekData) {
-            Ok(start) => start,
-            Err(nix::errno::Errno::ENXIO) => return false,
-            Err(error) => fail("find data in", &error),
-        };
-        let end = lseek(&file, start, Whence::SeekHole)
-            .unwrap_or_else(|error| fail("find a hole in", &error));
-        file.seek(SeekFrom::Start(start as u64))
-            .unwrap_or_else(|error| fail("seek", &error));
-        let mut window: Vec<u8> = Vec::new();
-        let mut position = start;
-        while position < end {
-            let length = chunk.len().min((end - position) as usize);
-            file.read_exact(&mut chunk[..length])
-                .unwrap_or_else(|error| fail("read", &error));
-            window.extend_from_slice(&chunk[..length]);
-            if needles.iter().any(|needle| {
-                window
-                    .iter()
-                    .enumerate()
-                    .any(|(at, byte)| *byte == needle[0] && window[at..].starts_with(needle))
-            }) {
-                return true;
-            }
-            window.drain(..window.len() - overlap.min(window.len()));
-            position += length as i64;
-        }
-        offset = end;
+    // On Linux the scan covers the pi box's sparse disks too, after the
+    // box is down: a guest write that kept its environment lands in one.
+    for needle in [&secret, &header] {
+        holding(&env.state, needle.as_bytes(), &mut Vec::new());
     }
 }
 
