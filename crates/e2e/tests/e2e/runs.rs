@@ -116,8 +116,9 @@ fn each_runs_history_is_its_own() {
 #[test]
 fn run_queries_are_bounded_and_need_no_runtime() {
     let _runtime = crate::shared_runtime();
-    // Guarantee 41. Sabotage: list the runtime's boxes (or take the name
-    // lock) in `inspect`; with no runtime on PATH it exits 1.
+    // Guarantee 41. Sabotage: list the runtime's images in `inspect`; with
+    // no `podman` or `container` on PATH it exits 1. (Listing boxes runs no
+    // program on Linux, so it would pass there.)
     // Sabotage: resume after the cursor's line rather than at it; each
     // page boundary skips a line and the order assertion fails. Counting
     // an incomplete final line into `next` is not caught every run: the

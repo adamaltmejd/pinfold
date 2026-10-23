@@ -12,7 +12,6 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
-use std::sync::atomic::AtomicBool;
 
 use nix::unistd::Pid;
 
@@ -130,7 +129,7 @@ impl Runtime for Firecracker {
 
     /// pinfold's own claims whose VMM started, running while it lives. No
     /// runtime is asked, so nothing can stall it.
-    fn list(&self, _cancel: Option<&AtomicBool>) -> io::Result<Vec<BoxInfo>> {
+    fn list(&self) -> io::Result<Vec<BoxInfo>> {
         Ok(ownership::records()?
             .into_iter()
             .filter_map(|record| {

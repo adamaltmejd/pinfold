@@ -3,8 +3,6 @@ use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::config::Config;
@@ -436,7 +434,7 @@ fn parse_crossing(
 /// exit 3.
 fn present(runtime: &dyn Runtime, verb: &str, name: &str) -> io::Result<bool> {
     let found = runtime
-        .list(None)?
+        .list()?
         .iter()
         .any(|box_| box_.id == name && clean::pinfold_box(box_));
     if !found {
@@ -447,51 +445,32 @@ fn present(runtime: &dyn Runtime, verb: &str, name: &str) -> io::Result<bool> {
 
 fn list(args: &[String]) -> io::Result<i32> {
     let filters = parse_labels(args)?;
-    let executor = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    executor.block_on(async {
-        let mut signals = Signals::new()?;
-        let cancel = Arc::new(AtomicBool::new(false));
-        let worker_cancel = Arc::clone(&cancel);
-        let mut inventory =
-            tokio::task::spawn_blocking(move || runtime().list(Some(&worker_cancel)));
-        let boxes = tokio::select! {
-            biased;
-            received = signals.recv() => {
-                cancel.store(true, Ordering::Release);
-                let _ = inventory.await.map_err(io::Error::other)?;
-                return Ok(128 + received as i32);
-            }
-            result = &mut inventory => result.map_err(io::Error::other)??,
-        };
-        for box_ in boxes {
-            if !clean::pinfold_box(&box_) {
-                continue;
-            }
-            let matches = filters.iter().all(|(key, value)| match value {
-                Some(value) => box_.labels.get(key) == Some(value),
-                None => box_.labels.contains_key(key),
-            });
-            if !matches {
-                continue;
-            }
-            let (owner, owner_alive) = clean::owner(&box_)?;
-            println!(
-                "{}",
-                serde_json::json!({
-                    "name": box_.id,
-                    "labels": box_.labels,
-                    "image": { "id": box_.image_id, "ref": box_.image_ref },
-                    "owner": owner,
-                    "owner_alive": owner_alive,
-                    "created": box_.created,
-                    "state": if box_.running { "running" } else { "stopped" },
-                })
-            );
+    for box_ in runtime().list()? {
+        if !clean::pinfold_box(&box_) {
+            continue;
         }
-        Ok(0)
-    })
+        let matches = filters.iter().all(|(key, value)| match value {
+            Some(value) => box_.labels.get(key) == Some(value),
+            None => box_.labels.contains_key(key),
+        });
+        if !matches {
+            continue;
+        }
+        let (owner, owner_alive) = clean::owner(&box_)?;
+        println!(
+            "{}",
+            serde_json::json!({
+                "name": box_.id,
+                "labels": box_.labels,
+                "image": { "id": box_.image_id, "ref": box_.image_ref },
+                "owner": owner,
+                "owner_alive": owner_alive,
+                "created": box_.created,
+                "state": if box_.running { "running" } else { "stopped" },
+            })
+        );
+    }
+    Ok(0)
 }
 
 fn prune(args: &[String]) -> io::Result<i32> {

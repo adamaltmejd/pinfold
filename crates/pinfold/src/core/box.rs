@@ -259,8 +259,7 @@ impl Box {
             )
         })?;
         // Linux inventory is pinfold's own claims, which this one now holds.
-        if cfg!(target_os = "macos") && runtime.list(None)?.iter().any(|box_| box_.id == plan.name)
-        {
+        if cfg!(target_os = "macos") && runtime.list()?.iter().any(|box_| box_.id == plan.name) {
             return Err(refused(
                 &plan,
                 RefusalReason::NameInUse,
@@ -631,7 +630,7 @@ async fn start(
     let actual = match actual {
         Some(actual) => actual,
         None => runtime
-            .list(None)?
+            .list()?
             .into_iter()
             .find(|box_| box_.id == plan.name)
             .ok_or_else(|| {

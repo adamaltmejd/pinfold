@@ -9,21 +9,16 @@ pub mod podman;
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read};
-use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::{Duration, Instant};
 
-use nix::poll::{PollFd, PollFlags, poll};
 use serde::de::DeserializeOwned;
 use tokio::process::Command;
 
 use crate::core::disk::{Fill, Seeding};
-use crate::core::pipe::{nonblocking, remaining};
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
 use crate::init::BOX_ENV_PREFIX;
@@ -172,159 +167,6 @@ fn captured(argv: &[&str]) -> io::Result<Result<Vec<u8>, String>> {
 /// names the command and carries its stderr; a failed spawn keeps its kind.
 pub(crate) fn output(argv: &[&str]) -> io::Result<Vec<u8>> {
     captured(argv)?.map_err(|stderr| io::Error::other(format!("{}: {stderr}", argv.join(" "))))
-}
-
-/// Listing must fail without claiming an empty inventory when the runtime
-/// waits on storage (GitHub #89). Never use this deadline for mutations.
-pub(crate) fn list_output(argv: &[&str], cancel: Option<&AtomicBool>) -> io::Result<Vec<u8>> {
-    const LIMIT: Duration = Duration::from_secs(20);
-    let deadline = Instant::now() + LIMIT;
-    let (program, arguments) = argv.split_first().expect("argv is never empty");
-    let mut child = std::process::Command::new(program)
-        .args(arguments)
-        .process_group(0)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| spawn_error(program, error))?;
-    let mut reaped = false;
-    let mut exit_observer = None;
-    let result = (|| {
-        let mut stdout = child.stdout.take().expect("piped stdout");
-        let mut stderr = child.stderr.take().expect("piped stderr");
-        nonblocking(&stdout, "runtime listing")?;
-        nonblocking(&stderr, "runtime listing")?;
-        let (mut out, mut err) = (Vec::new(), Vec::new());
-        let (mut out_done, mut err_done) = (false, false);
-        loop {
-            remaining(deadline, cancel, "runtime listing")?;
-            if !out_done {
-                out_done = listing_bytes(&mut stdout, &mut out, deadline, cancel)?;
-            }
-            if !err_done {
-                err_done = listing_bytes(&mut stderr, &mut err, deadline, cancel)?;
-            }
-            if out_done && err_done {
-                // Keep the group leader unreaped until descendants close
-                // both pipes, so failure cleanup cannot target a reused PID.
-                let status = match child.try_wait()? {
-                    Some(status) => status,
-                    None => {
-                        let pid = child.id();
-                        let (send, receive) = mpsc::channel();
-                        exit_observer = Some(std::thread::Builder::new().spawn(move || {
-                            loop {
-                                let mut info = std::mem::MaybeUninit::uninit();
-                                // Observe without reaping, so timeout cleanup still owns the PID.
-                                let waited = unsafe {
-                                    nix::libc::waitid(
-                                        nix::libc::P_PID,
-                                        pid,
-                                        info.as_mut_ptr(),
-                                        nix::libc::WEXITED | nix::libc::WNOWAIT,
-                                    )
-                                };
-                                match nix::errno::Errno::result(waited) {
-                                    Err(nix::errno::Errno::EINTR) => continue,
-                                    result => {
-                                        let _ = send.send(result.map(|_| ()));
-                                        break;
-                                    }
-                                }
-                            }
-                        })?);
-                        loop {
-                            let timeout = remaining(deadline, cancel, "runtime listing")?
-                                .min(Duration::from_millis(100));
-                            match receive.recv_timeout(timeout) {
-                                Ok(result) => {
-                                    result?;
-                                    break;
-                                }
-                                Err(RecvTimeoutError::Timeout) => continue,
-                                Err(error) => return Err(io::Error::other(error)),
-                            }
-                        }
-                        child.wait()?
-                    }
-                };
-                reaped = true;
-                return if status.success() {
-                    Ok(out)
-                } else {
-                    Err(io::Error::other(format!(
-                        "{}: {}",
-                        argv.join(" "),
-                        String::from_utf8_lossy(&err).trim()
-                    )))
-                };
-            }
-            let mut fds = Vec::new();
-            if !out_done {
-                fds.push(PollFd::new(stdout.as_fd(), PollFlags::POLLIN));
-            }
-            if !err_done {
-                fds.push(PollFd::new(stderr.as_fd(), PollFlags::POLLIN));
-            }
-            let timeout =
-                remaining(deadline, cancel, "runtime listing")?.min(Duration::from_millis(100));
-            let millis = timeout.as_millis().clamp(1, u16::MAX as u128) as u16;
-            match poll(&mut fds, millis) {
-                Ok(_) | Err(nix::errno::Errno::EINTR) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-    })();
-    if !reaped {
-        let _ = nix::sys::signal::killpg(
-            nix::unistd::Pid::from_raw(child.id() as i32),
-            nix::sys::signal::Signal::SIGKILL,
-        );
-        let _ = child.kill();
-    }
-    let observer_result = exit_observer.map_or(Ok(()), |observer| {
-        observer
-            .join()
-            .map_err(|_| io::Error::other("runtime listing exit observer panicked"))
-    });
-    if !reaped {
-        child.wait()?;
-    }
-    observer_result?;
-    result.map_err(|error| {
-        if error.kind() == io::ErrorKind::TimedOut {
-            io::Error::new(
-                error.kind(),
-                format!(
-                    "runtime-timeout: {} exceeded {} seconds",
-                    argv.join(" "),
-                    LIMIT.as_secs()
-                ),
-            )
-        } else {
-            error
-        }
-    })
-}
-
-fn listing_bytes(
-    reader: &mut impl Read,
-    bytes: &mut Vec<u8>,
-    deadline: Instant,
-    cancel: Option<&AtomicBool>,
-) -> io::Result<bool> {
-    let mut buffer = [0u8; 8192];
-    loop {
-        remaining(deadline, cancel, "runtime listing")?;
-        match reader.read(&mut buffer) {
-            Ok(0) => return Ok(true),
-            Ok(size) => bytes.extend_from_slice(&buffer[..size]),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error),
-        }
-    }
 }
 
 /// Run `<program> image inspect <reference>` and return its first entry. The
@@ -511,7 +353,7 @@ pub trait Runtime: Sync {
     fn stat(&self, name: &str) -> io::Result<BoxStat>;
 
     /// List every box, running or not.
-    fn list(&self, cancel: Option<&AtomicBool>) -> io::Result<Vec<BoxInfo>>;
+    fn list(&self) -> io::Result<Vec<BoxInfo>>;
 
     /// List every image, with the labels recorded on it.
     fn list_images(&self) -> io::Result<Vec<ImageInfo>>;

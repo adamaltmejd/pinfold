@@ -6,7 +6,6 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::process::ExitStatus;
-use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -16,7 +15,7 @@ use tokio::process::Child;
 use crate::core::plan::Plan;
 use crate::core::runtime::{
     BoxInfo, BoxStat, BuildRequest, DiskInfo, ImageInfo, MemoryStat, PidsStat, Runtime, inspect,
-    list_output, output, parse_json, spawn_error,
+    output, parse_json, spawn_error,
 };
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
@@ -129,7 +128,7 @@ impl Runtime for Apple {
         };
         // Another process may have removed the box between the list and this
         // call; a box the runtime no longer lists counts as removed.
-        if self.list(None)?.iter().all(|box_| box_.id != name) {
+        if self.list()?.iter().all(|box_| box_.id != name) {
             return Ok(());
         }
         Err(error)
@@ -155,8 +154,8 @@ impl Runtime for Apple {
         })
     }
 
-    fn list(&self, cancel: Option<&AtomicBool>) -> io::Result<Vec<BoxInfo>> {
-        Ok(containers(cancel)?
+    fn list(&self) -> io::Result<Vec<BoxInfo>> {
+        Ok(containers()?
             .into_iter()
             .map(|container| {
                 let configuration = container.configuration;
@@ -244,7 +243,7 @@ impl Runtime for Apple {
     }
 
     fn list_disks(&self) -> io::Result<Vec<DiskInfo>> {
-        let json = list_output(&["container", "volume", "list", "--format", "json"], None)?;
+        let json = output(&["container", "volume", "list", "--format", "json"])?;
         let volumes: Vec<ListedVolume> = parse_json("container volume list", &json)?;
         volumes
             .into_iter()
@@ -298,7 +297,7 @@ impl Runtime for Apple {
 pub fn wait_until_running(name: &str) -> io::Result<BoxInfo> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let state = Apple.list(None)?.into_iter().find(|box_| box_.id == name);
+        let state = Apple.list()?.into_iter().find(|box_| box_.id == name);
         match state {
             Some(box_) if box_.running => return Ok(box_),
             _ if Instant::now() >= deadline => {
@@ -500,14 +499,14 @@ struct ListedStatus {
 }
 
 /// Every box `container list` reports, running or not.
-fn containers(cancel: Option<&AtomicBool>) -> io::Result<Vec<ListedContainer>> {
-    let json = list_output(&["container", "list", "--all", "--format", "json"], cancel)?;
+fn containers() -> io::Result<Vec<ListedContainer>> {
+    let json = output(&["container", "list", "--all", "--format", "json"])?;
     parse_json("container list", &json)
 }
 
 /// The listed container with this id, if the runtime has one.
 fn container(name: &str) -> io::Result<Option<ListedContainer>> {
-    Ok(containers(None)?.into_iter().find(|entry| entry.id == name))
+    Ok(containers()?.into_iter().find(|entry| entry.id == name))
 }
 
 /// The shared BuildKit builder, if the runtime has one.

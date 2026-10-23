@@ -121,7 +121,7 @@ pub fn pinfold_box(box_: &BoxInfo) -> bool {
 pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
     let mut dead = Vec::new();
     let mut live_projects = BTreeSet::new();
-    for box_ in runtime.list(None)? {
+    for box_ in runtime.list()? {
         if !pinfold_box(&box_) {
             continue;
         }
@@ -170,7 +170,7 @@ pub fn remove_orphan(
     _lock: &Flock<File>,
 ) -> io::Result<bool> {
     let mut removed = false;
-    if let Some(current) = runtime.list(None)?.into_iter().find(|box_| box_.id == name) {
+    if let Some(current) = runtime.list()?.into_iter().find(|box_| box_.id == name) {
         if !pinfold_box(&current)
             || current
                 .labels
@@ -223,11 +223,7 @@ pub fn prune_leftover_states(runtime: &dyn Runtime) -> io::Result<()> {
         let Some(_lock) = ownership::try_name_lock(&record.name)? else {
             continue;
         };
-        if runtime
-            .list(None)?
-            .iter()
-            .all(|box_| box_.id != record.name)
-        {
+        if runtime.list()?.iter().all(|box_| box_.id != record.name) {
             ownership::remove_record(&record.name, &record.generation)?;
         }
     }
@@ -301,7 +297,7 @@ pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
 /// listed box counts.
 fn in_use_images(runtime: &dyn Runtime) -> io::Result<BTreeSet<String>> {
     Ok(runtime
-        .list(None)?
+        .list()?
         .into_iter()
         .map(|box_| box_.image_id)
         .collect())
