@@ -89,6 +89,11 @@ image=$(
     --containerfile "$script_dir/connect-tls.Containerfile" --context "$script_dir" |
     python3 -c 'import json,sys; print(json.load(sys.stdin)["ref"])'
 )
+# The first box downloads the pinned VMM and kernel. Start one here, with
+# the gate's state roots, so nothing inside the namespace needs a route.
+# Closed stdin takes it down after ready.
+printf '{"name":"%s","image":"%s"}\n' "$image_name" "$image" |
+  "$binary" box up | grep '"event":"ready"' >/dev/null
 sudo --preserve-env=PATH,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS \
   unshare --net --mount --fork --kill-child \
   bash "$script_dir/slow-proxy.sh" --namespace \
