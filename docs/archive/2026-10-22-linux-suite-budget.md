@@ -77,6 +77,8 @@ cleanup's write span to start at its first host-wide hazard saves about
 | 39753227123 | e546f8d | 211.4 |
 | 39754250963 attempt 1 | 1dfb215 (docs only) | 296.6 |
 | 39754250963 attempt 2 | 1dfb215 (docs only) | 245.6 |
+| 39756794890 attempt 1 | 893e78d (docs only) | 295.3 |
+| 39756794890 attempt 2 | 893e78d (docs only) | 291.8 |
 
 ## Other gates
 

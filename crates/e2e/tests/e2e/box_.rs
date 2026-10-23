@@ -1276,7 +1276,7 @@ fn up_refuses_before_it_creates() {
 
 #[test]
 fn disks_persist_and_attach_exclusively() {
-    // Exclusive on macOS only: run beside the shared tests there, the
+    // Exclusive on macOS until #167: run beside the shared tests there, the
     // writer `container kill` ended still held its disk after its owner
     // exited, so the `disk-unclean` assertion saw `disk-in-use`.
     #[cfg(target_os = "macos")]
