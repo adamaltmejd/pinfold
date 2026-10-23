@@ -902,9 +902,8 @@ no ref on the receiving side.
 - **`fetch --repo GUEST_REPO --into REPO [--remote NAME]`** has the box
   bundle GUEST_REPO's branches, less what REPO's `refs/remotes/NAME/*`
   already hold. On the host, pinfold runs `git bundle verify`, then
-  `git index-pack --fsck-objects` of the bundle's pack, whatever the
-  host git's version, then `git fetch` of the bundle, then
-  force-updates `refs/remotes/NAME/*` from the box's `refs/heads/*` in
+  `git index-pack --fsck-objects` of the bundle's pack, then `git fetch`
+  of the bundle, then force-updates `refs/remotes/NAME/*` from the box's `refs/heads/*` in
   one `update-ref` transaction. A branch the bundle leaves out lands only
   at a commit `refs/remotes/NAME/*` already reaches. Every branch name,
   listed or in the bundle, must pass `git check-ref-format` under
