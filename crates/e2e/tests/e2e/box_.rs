@@ -1293,13 +1293,24 @@ fn disks_persist_and_attach_exclusively() {
     // readers' mount is then writable and the "a write to a mount"
     // assertion fails. Sabotage: skip the unfilled check in `disk::claim`;
     // the `up` after an owner killed mid-copy keeps the half-filled disk and
-    // the refilled tree assertion fails.
+    // the refilled tree assertion fails. Sabotage: check the project disk
+    // with a bare `list_disks` in `pi::launch::crossing`; `fetch` recreates
+    // the unfilled disk empty in its transient box and marks it filled, so
+    // the next `up` skips the copy and the refilled tree assertion fails.
     let env = TestEnv::new("disks");
     let image = default_image(&env);
-    let names =
-        ["work", "sparse", "fresh", "race", "refill"].map(|disk| box_name(&format!("disk-{disk}")));
-    let [work, sparse, fresh, race, refill] = &names;
-    let _disks = DiskCleanup(names.to_vec());
+    let names = ["work", "sparse", "fresh", "race"].map(|disk| box_name(&format!("disk-{disk}")));
+    let [work, sparse, fresh, race] = &names;
+    // The refilled disk is a project's disk, so `pinfold fetch` there sees it.
+    let project = TestDir::new(&env, "project");
+    git(project.path(), &["init", "-q"]);
+    let config = run_ok(&mut pinfold_in(&env, project.path(), &["config"]));
+    let config: serde_json::Value = serde_json::from_slice(&config.stdout).unwrap();
+    let refill = &config["project"]["disks"]["project"]
+        .as_str()
+        .expect("project.disks.project is a string")
+        .to_string();
+    let _disks = DiskCleanup([names.as_slice(), std::slice::from_ref(refill)].concat());
     let boxes =
         ["writer", "second", "reader-a", "reader-b"].map(|b| box_name(&format!("disks-{b}")));
     let [writer, second, reader_a, reader_b] = &boxes;
@@ -1544,6 +1555,12 @@ fn disks_persist_and_attach_exclusively() {
         disk_names(&env).contains(refill),
         "the interrupted up's disk is gone"
     );
+    // The unfilled disk is no project disk to `fetch` either: it refuses and
+    // leaves the disk for the next `up` to refill.
+    let fetched = pinfold_in(&env, project.path(), &["fetch"])
+        .output()
+        .expect("run pinfold fetch");
+    assert!(!fetched.status.success(), "fetch ran on an unfilled disk");
     fs::remove_file(&first).unwrap();
     fs::write(&first, b"first\n").unwrap();
     let mut refilled = box_up(&env, &spec(writer, refill_disk), writer);
