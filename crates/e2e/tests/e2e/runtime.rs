@@ -14,9 +14,11 @@ use e2e::{
     pinfold, profile_containerfile, project_id, project_state_dir, run_ok, tagged_images,
 };
 
+#[cfg(target_os = "macos")]
+use super::box_::RuntimeContainer;
 use super::box_::{
-    ChildOwner, DiskCleanup, HeldBuild, HeldDownload, RuntimeContainer, box_name, box_up,
-    built_unique_ref, disk_names, find_box_state_dir, image_build, image_rm, read_bounded,
+    ChildOwner, DiskCleanup, HeldBuild, HeldDownload, box_name, box_up, built_unique_ref,
+    disk_names, find_box_state_dir, image_build, image_rm, read_bounded,
 };
 use super::runs::run_id;
 
@@ -82,10 +84,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // report; its byte count falls below the backing filesystem's du.
     // Sabotage: omit Apple's online trim after pruning; the real RUN's
     // deleted 64 MiB file remains allocated on the host across clean.
-    // Sabotage: in `clean::boxes`, take any box with a `dev.pinfold.` label
-    // instead of the owner label; on podman the user's container, which
-    // carries the image's labels and no owner, is removed as a dead box and
-    // its survival assertion fails.
+    // Sabotage: drop the `pinfold_box` check from `clean::boxes`; on Apple
+    // the user's container, which has no owner label, is removed as a dead
+    // box and its survival assertion fails. Linux lists only pinfold's own
+    // claims, so no runtime container can reach `clean` there.
     let env = TestEnv::new("cleanup");
     let build_env = cfg!(target_os = "macos").then(|| {
         let other = TestEnv::new("clean-build");
@@ -339,9 +341,9 @@ fn cleanup_removes_only_pinfolds_garbage() {
     dead_up.kill();
     dead_up.close_stdin();
 
-    // A container the user started with the runtime's own CLI from a
-    // pinfold-built image is not a box: podman copies the image's
-    // `dev.pinfold.` labels onto it, but pinfold never owned it.
+    // A container the user started with Apple's CLI from a pinfold-built
+    // image is not a box: pinfold never owned it.
+    #[cfg(target_os = "macos")]
     let user_container =
         RuntimeContainer::run(&box_name("cleanup-user"), default_image(&env), None);
 
@@ -361,6 +363,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         !box_list(&env, dead_label).is_empty(),
         "the dead box is missing before clean"
     );
+    #[cfg(target_os = "macos")]
     assert!(
         user_container.listed(),
         "the user's container is missing before clean"
@@ -528,11 +531,14 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "clean left a box whose owner is gone"
     );
     dead_up.wait();
-    assert!(
-        user_container.listed(),
-        "clean removed a container pinfold did not start"
-    );
-    drop(user_container);
+    #[cfg(target_os = "macos")]
+    {
+        assert!(
+            user_container.listed(),
+            "clean removed a container pinfold did not start"
+        );
+        drop(user_container);
+    }
 
     // Plain `clean` keeps every project's disks, and a moved checkout's
     // state too. Sabotage: make `CleanPlan::idle` select every project

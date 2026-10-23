@@ -78,9 +78,11 @@ fn box_lifecycle_works_for_a_caller() {
     });
     // Sabotage: return or panic after successful startup without awaiting
     // teardown when readiness output fails. The real pipe reader is gone
-    // before the spec is sent; runtime inventory and host state must be empty.
+    // before the spec is sent; Apple's inventory and host state must be
+    // empty. A Linux VM ends with its owner, which guarantee 43 proves.
     // The normal run below reuses the same name and spec with consumed output.
     {
+        #[cfg(target_os = "macos")]
         let runtime_box = RuntimeContainer { name: name.clone() };
         let errors = env.root.join("closed-output.stderr");
         let child = env
@@ -103,6 +105,7 @@ fn box_lifecycle_works_for_a_caller() {
             "readiness output failure did not exit 1: {}",
             fs::read_to_string(&errors).expect("read closed-output stderr")
         );
+        #[cfg(target_os = "macos")]
         assert!(
             !runtime_box.listed(),
             "readiness output failure left a runtime box"
@@ -3259,9 +3262,13 @@ fn a_route_reaches_exactly_one_host_service() {
         "audit-log"
     );
     assert_eq!(status.code(), Some(1), "audit failure's exit status");
-    // This guard queries the runtime directly and also cleans up on failure.
-    let runtime_box = RuntimeContainer { name: name.clone() };
-    assert!(!runtime_box.listed(), "audit failure left a runtime box");
+    // This guard queries Apple directly and also cleans up on failure. A
+    // Linux VM ends with its owner, which guarantee 43 proves.
+    #[cfg(target_os = "macos")]
+    {
+        let runtime_box = RuntimeContainer { name: name.clone() };
+        assert!(!runtime_box.listed(), "audit failure left a runtime box");
+    }
 }
 
 #[test]
@@ -4217,6 +4224,12 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
         score.stdout
     );
 
+    // On Linux the limit in force is the VM's size, which the guest kernel
+    // reports. Sabotage: size every VM at the default in `vm::config`; stat
+    // still reports 256 MiB and this assertion fails.
+    #[cfg(target_os = "linux")]
+    assert_guest_memory(&env, &name, 256 << 20);
+
     if cfg!(target_os = "linux") {
         // A fresh box's cgroup has killed nothing; the caller's baseline.
         assert_eq!(before["oom_kills"].as_u64(), Some(0), "stat: {before}");
@@ -4362,6 +4375,28 @@ pub(super) fn vmm_pid(up: u32) -> u32 {
         [vmm] => *vmm,
         _ => panic!("box up {up} has children {children:?}, not one VMM"),
     }
+}
+
+/// Assert that the guest kernel of a Firecracker box has `limit` bytes of
+/// memory: its `MemTotal` is the VM's size less what the kernel keeps, and
+/// any other size the VM could get (the 1 GiB default, half or twice the
+/// spec's) falls outside the 64 MiB below `limit`.
+#[cfg(target_os = "linux")]
+pub(super) fn assert_guest_memory(env: &TestEnv, name: &str, limit: u64) {
+    let meminfo = box_exec(env, name, &["cat", "/proc/meminfo"]);
+    assert_ok(&meminfo, "cat /proc/meminfo");
+    let total = meminfo
+        .stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("MemTotal:"))
+        .and_then(|kib| kib.trim().strip_suffix("kB"))
+        .and_then(|kib| kib.trim().parse::<u64>().ok())
+        .unwrap_or_else(|| panic!("no MemTotal in the guest: {}", meminfo.stdout))
+        * 1024;
+    assert!(
+        total <= limit && total > limit - (64 << 20),
+        "the guest's MemTotal {total} is not a {limit}-byte VM's"
+    );
 }
 
 /// One `/proc/<pid>/status` field's value.
@@ -4907,15 +4942,17 @@ pub(crate) fn assert_left_nothing(env: &TestEnv, name: &str, label: &str, what: 
     assert!(box_list(env, label).is_empty(), "the {what} up left a box");
 }
 
-/// A container started with the runtime's own CLI, not pinfold, and
-/// removed with it on drop.
+/// An Apple container started with the `container` CLI, not pinfold, and
+/// removed with it on drop. Linux has no runtime that holds boxes.
+#[cfg(target_os = "macos")]
 pub(super) struct RuntimeContainer {
     name: String,
 }
 
+#[cfg(target_os = "macos")]
 impl RuntimeContainer {
     pub(super) fn run(name: &str, image: &str, label: Option<&str>) -> RuntimeContainer {
-        let mut command = Command::new(image_cli());
+        let mut command = Command::new("container");
         command.args(["run", "-d", "--name", name]);
         if let Some(label) = label {
             command.args(["--label", label]);
@@ -4926,36 +4963,24 @@ impl RuntimeContainer {
         }
     }
 
-    /// Whether the runtime's own container list names it: podman's `Names`,
-    /// Apple's `id`.
+    /// Whether Apple's own container list names it.
     pub(super) fn listed(&self) -> bool {
-        let list = if cfg!(target_os = "linux") {
-            "ps"
-        } else {
-            "list"
-        };
-        let output = run_ok(Command::new(image_cli()).args([list, "--all", "--format", "json"]));
+        let output = run_ok(Command::new("container").args(["list", "--all", "--format", "json"]));
         let containers: Vec<serde_json::Value> =
             serde_json::from_slice(&output.stdout).expect("the runtime's container list is JSON");
-        containers.iter().any(|container| {
-            container["id"] == self.name.as_str()
-                || container["Names"]
-                    .as_array()
-                    .is_some_and(|names| names.iter().any(|name| name == self.name.as_str()))
-        })
+        containers
+            .iter()
+            .any(|container| container["id"] == self.name.as_str())
     }
 }
 
+#[cfg(target_os = "macos")]
 impl Drop for RuntimeContainer {
     fn drop(&mut self) {
-        // Best effort: a Drop during unwinding must not panic. `sleep`
-        // ignores podman's SIGTERM, so skip its grace period.
-        let mut command = Command::new(image_cli());
-        command.args(["rm", "--force"]);
-        if cfg!(target_os = "linux") {
-            command.args(["--time", "0"]);
-        }
-        let _ = command.arg(&self.name).output();
+        // Best effort: a Drop during unwinding must not panic.
+        let _ = Command::new("container")
+            .args(["rm", "--force", &self.name])
+            .output();
     }
 }
 
