@@ -59,7 +59,7 @@ fn the_documents_profile_reads_documents_locally() {
     .expect("remove the profile's home seeds");
     build_profile(&env, profile);
     let _image = ImageCleanup {
-        repository: format!("pinfold/profile-{profile}"),
+        repository: format!("localhost/pinfold/profile-{profile}"),
     };
     let name = box_name("pdf");
     let spec = serde_json::json!({
@@ -557,7 +557,7 @@ fn a_changed_project_file_stops_the_run() {
     // unchanged file builds and runs, and a change to it stops both the run
     // and the build until `pinfold allow` records the new bytes.
     let _images = ImageCleanup {
-        repository: format!("pinfold/project-{}", project_id(&env, root)),
+        repository: format!("localhost/pinfold/project-{}", project_id(&env, root)),
     };
     let containerfile = root.join("Containerfile.pinfold");
     fs::write(
@@ -565,8 +565,11 @@ fn a_changed_project_file_stops_the_run() {
         "containerfile = \"Containerfile.pinfold\"\nallow = [\"example.com\"]\n",
     )
     .expect("point .pinfold.toml at the project Containerfile");
-    fs::write(&containerfile, "FROM pinfold/profile-default:latest\n")
-        .expect("write the project Containerfile");
+    fs::write(
+        &containerfile,
+        "FROM localhost/pinfold/profile-default:latest\n",
+    )
+    .expect("write the project Containerfile");
     allow(&env, root);
     run_ok(&mut pinfold_in(&env, root, &["build"]));
     // Control: with the Containerfile unchanged, the project image runs.
@@ -574,7 +577,7 @@ fn a_changed_project_file_stops_the_run() {
 
     fs::write(
         &containerfile,
-        "FROM pinfold/profile-default:latest\n# changed\n",
+        "FROM localhost/pinfold/profile-default:latest\n# changed\n",
     )
     .expect("change the project Containerfile");
     refused_pi();
@@ -652,7 +655,7 @@ fn both_pi_config_levels_load_behind_a_route() {
         .expect("write the fixture's Containerfile");
     build_profile(&env, profile);
     let _image = ImageCleanup {
-        repository: format!("pinfold/profile-{profile}"),
+        repository: format!("localhost/pinfold/profile-{profile}"),
     };
     // `full` is selected only after the first prompt and the settings run;
     // its image builds meanwhile, off the suite's critical path.
@@ -1112,7 +1115,9 @@ fn a_caller_reads_the_effective_configuration_as_data() {
     // exact-list assertion fails. Sabotage: swap the two names
     // `state::disk_names` returns; `disk list` shows the reported home disk
     // attached at the project, not as $HOME, and the attachment assertion
-    // fails.
+    // fails. Sabotage: resolve `config_report`'s image with
+    // `:latest` replaced by another tag; on both runtimes the built profile
+    // image reads as not built.
     let env = TestEnv::new("pi-config");
     default_image(&env);
     let project = TestDir::new(&env, "project");
@@ -1135,6 +1140,11 @@ fn a_caller_reads_the_effective_configuration_as_data() {
         report["trust"]["ok"].as_bool(),
         Some(false),
         "the untrusted config was reported trusted"
+    );
+    assert_eq!(
+        report["image_built"].as_bool(),
+        Some(true),
+        "the profile image default_image built was reported not built: {report}"
     );
     assert_eq!(report["project"]["home"], "/home/pi", "{report}");
     let home_disk = report["project"]["disks"]["home"]

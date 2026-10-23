@@ -624,7 +624,7 @@ sys.exit(result.returncode)
 
         let image_name = box_name("startup-image");
         let _images = ImageCleanup {
-            repository: format!("pinfold/image-{image_name}"),
+            repository: format!("localhost/pinfold/image-{image_name}"),
         };
         let context = TestDir::new(&env, "startup-image");
         let containerfile = context.path().join("Containerfile");
@@ -633,16 +633,7 @@ sys.exit(result.returncode)
         let (code, built) = image_build(&env, &image_name, &containerfile, context.path());
         assert_eq!(code, 0, "first race image build: {built}");
         let first_ref = built["ref"].as_str().unwrap().to_string();
-        // Apple's tag command normalizes an unqualified target to docker.io.
-        let prefix = if cfg!(target_os = "macos") {
-            "docker.io/"
-        } else {
-            ""
-        };
-        let latest = format!("{prefix}pinfold/image-{image_name}:latest");
-        let _tagged_images = cfg!(target_os = "macos").then(|| ImageCleanup {
-            repository: format!("{prefix}pinfold/image-{image_name}"),
-        });
+        let latest = format!("localhost/pinfold/image-{image_name}:latest");
         fs::write(context.path().join("stamp"), "second\n").unwrap();
         let (code, built) = image_build(&env, &image_name, &containerfile, context.path());
         assert_eq!(code, 0, "second race image build: {built}");
@@ -2539,7 +2530,7 @@ fn every_build_reruns_its_steps() {
     let profile = format!("e2e-rerun-{}", std::process::id());
     let layer_label = format!("dev.example.rerun={profile}");
     let _images = ImageCleanup {
-        repository: format!("pinfold/profile-{profile}"),
+        repository: format!("localhost/pinfold/profile-{profile}"),
     };
     // Random bytes at build time: a cached `RUN` layer replays the first
     // build's file, so the two builds agree only when the cache is reused.
@@ -2610,7 +2601,7 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     let base = default_image(&env);
 
     let name = format!("pinfold-e2e-{}", std::process::id());
-    let repository = format!("pinfold/image-{name}");
+    let repository = format!("localhost/pinfold/image-{name}");
     let latest = format!("{repository}:latest");
     let _images = ImageCleanup {
         repository: repository.clone(),
@@ -2783,7 +2774,7 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     if let Some(other) = other.as_ref() {
         let held_name = format!("{name}-held");
         let _held_images = ImageCleanup {
-            repository: format!("pinfold/image-{held_name}"),
+            repository: format!("localhost/pinfold/image-{held_name}"),
         };
         let held = HeldBuild::start(
             other,
@@ -3037,13 +3028,13 @@ fn file_from_image(env: &TestEnv, reference: &str, name: &str, path: &str) -> St
     output.stdout
 }
 
-/// The unique tag of the image that `pinfold/profile-<profile>:latest` names
+/// The unique tag of the image that `localhost/pinfold/profile-<profile>:latest` names
 /// now. Each build tags its image `:latest` and one unique tag; the stable
 /// tag moves to every new build, so a box pins an image by the unique tag. The unique tag is collected from
 /// every runtime image entry sharing the `:latest` image's id, because a
 /// runtime may list one entry per tag.
 pub(super) fn built_unique_ref(profile: &str) -> String {
-    let latest = format!("pinfold/profile-{profile}:latest");
+    let latest = format!("localhost/pinfold/profile-{profile}:latest");
     let id = image_id(&latest).unwrap_or_else(|| panic!("no image names {latest}"));
     runtime_images()
         .expect("list the runtime's images")

@@ -16,7 +16,7 @@ pub const PROFILE_LABEL: &str = "dev.pinfold.profile";
 /// The label naming a project source on an image, and the project on a box.
 pub const PROJECT_LABEL: &str = "dev.pinfold.project";
 /// The two labels naming a profile's or a project's source on an image. A
-/// caller's name lives only in its `pinfold/image-<NAME>` tags.
+/// caller's name lives only in its `localhost/pinfold/image-<NAME>` tags.
 pub const FAMILY_LABELS: [&str; 2] = [PROFILE_LABEL, PROJECT_LABEL];
 /// The label recording the digest of the image an image was built from.
 pub const BASE_LABEL: &str = "dev.pinfold.base";
@@ -266,7 +266,7 @@ pub fn path_bytes(path: &Path) -> u64 {
 }
 
 /// Apply [`keep_two_images`] to every source any image names: each
-/// non-empty family label, and every caller name a `pinfold/image-<NAME>`
+/// non-empty family label, and every caller name a `localhost/pinfold/image-<NAME>`
 /// tag names. One image listing and one box listing serve every source, so
 /// a pass costs two runtime listings however many sources it has. Call it
 /// after dead boxes are pruned: its box listing is retention's one in-use
@@ -307,18 +307,17 @@ fn in_use_images(runtime: &dyn Runtime) -> io::Result<BTreeSet<String>> {
         .collect())
 }
 
-/// The caller image name a reference tags, `[localhost/]pinfold/image-<NAME>:<tag>`,
-/// in either spelling the runtime lists. `None` for any other reference.
+/// The caller image name a reference tags, `localhost/pinfold/image-<NAME>:<tag>`.
+/// `None` for any other reference.
 fn caller_source(reference: &str) -> Option<&str> {
-    let reference = reference.strip_prefix("localhost/").unwrap_or(reference);
     let (repository, _) = reference.rsplit_once(':')?;
-    repository.strip_prefix("pinfold/image-")
+    repository.strip_prefix("localhost/pinfold/image-")
 }
 
 /// The entries in `images` for a source, one per reference. `label` is
 /// `Some` for a profile or a project, which carry `label = source`; it is
 /// `None` for a caller name, which lives only in its
-/// `pinfold/image-<NAME>` tags. The filter [`keep_two_images`] and
+/// `localhost/pinfold/image-<NAME>` tags. The filter [`keep_two_images`] and
 /// [`remove_images`] share.
 fn source_images<'a>(
     images: &'a [ImageInfo],
