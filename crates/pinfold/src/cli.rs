@@ -872,13 +872,7 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
     let image = crate::pi::launch::resolve_image(config, &project);
     let (image_built, image_error) = match runtime().list_images() {
         Ok(images) => (
-            Some(images.iter().any(|listed| {
-                listed
-                    .reference
-                    .strip_prefix("localhost/")
-                    .unwrap_or(&listed.reference)
-                    == image
-            })),
+            Some(images.iter().any(|listed| listed.reference == image)),
             None,
         ),
         Err(error) => (None, Some(error.to_string())),

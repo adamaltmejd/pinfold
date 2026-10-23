@@ -1,4 +1,4 @@
-FROM pinfold/profile-default:latest
+FROM localhost/pinfold/profile-default:latest
 
 # The slow CONNECT fixture needs a real TLS client inside the box.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 \

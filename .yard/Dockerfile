@@ -4,7 +4,7 @@
 FROM docker.io/library/rust:1.99.1-slim-trixie AS rust
 RUN rustup component add rustfmt clippy && cp -a "$(rustc --print sysroot)" /toolchain
 
-FROM pinfold/profile-default:latest
+FROM localhost/pinfold/profile-default:latest
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc libc6-dev curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*

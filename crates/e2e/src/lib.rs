@@ -157,8 +157,6 @@ pub fn runtime_images() -> Result<Vec<RuntimeImage>, String> {
 /// One image list entry, whatever the runtime's schema.
 fn normalize_image(image: &serde_json::Value) -> RuntimeImage {
     // podman: `Id`, `Names` and `Labels`, the last two null when empty.
-    // Names drop podman's `localhost/` prefix so they compare to the
-    // unqualified references pinfold prints.
     let labels = |value: &serde_json::Value| -> BTreeMap<String, String> {
         serde_json::from_value(value.clone()).unwrap_or_default()
     };
@@ -166,13 +164,7 @@ fn normalize_image(image: &serde_json::Value) -> RuntimeImage {
         return RuntimeImage {
             id: id.to_string(),
             names: serde_json::from_value::<Vec<String>>(image["Names"].clone())
-                .unwrap_or_default()
-                .into_iter()
-                .map(|name| match name.strip_prefix("localhost/") {
-                    Some(short) => short.to_string(),
-                    None => name,
-                })
-                .collect(),
+                .unwrap_or_default(),
             labels: labels(&image["Labels"]),
         };
     }
@@ -275,7 +267,7 @@ pub fn untagged_images(label: &str) -> std::collections::BTreeSet<String> {
 /// Build the candidate's default profile once for this suite.
 pub fn default_image(env: &TestEnv) -> &'static str {
     static IMAGE: OnceLock<()> = OnceLock::new();
-    const STABLE: &str = "pinfold/profile-default:latest";
+    const STABLE: &str = "localhost/pinfold/profile-default:latest";
     IMAGE.get_or_init(|| {
         build_profile(env, "default");
     });

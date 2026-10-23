@@ -173,7 +173,7 @@ pinfold image rm NAME             # one JSON line
 stdout; the build's progress never reaches stdout. On success, exit 0:
 
 ```json
-{"event":"built","image":NAME,"ref":"pinfold/image-<NAME>:<build>","latest":"pinfold/image-<NAME>:latest","id":ID,"labels":{…},"base":DIGEST|null}
+{"event":"built","image":NAME,"ref":"localhost/pinfold/image-<NAME>:<build>","latest":"localhost/pinfold/image-<NAME>:latest","id":ID,"labels":{…},"base":DIGEST|null}
 ```
 
 `id` is the image's runtime id, the same value a box's `ready` and `list`
@@ -229,8 +229,8 @@ label: 64 lowercase hex characters, new at every `up`. It names the run's
 records (Run records). `owner` is the `box up` process; `labels` is the box's full label set, as
 the runtime reports them, image labels included. `image.id` is the image the
 runtime resolved `image` to; `image.ref` is the reference as the spec (or its
-profile) gave it. `list` spells `ref` as the runtime records it (podman adds
-`localhost/`), so a caller compares images by `id`. At `up`, the image's
+profile) gave it. `list` spells `ref` as the runtime records it (a runtime may
+qualify a short name), so a caller compares images by `id`. At `up`, the image's
 `dev.pinfold.*` identity labels are copied onto the box, unless pinfold set
 that label itself (a pi box's `dev.pinfold.project`). `egress_log` is the
 absolute path of the box's egress log (see Egress proxy), null without
@@ -663,7 +663,7 @@ profile image.
   `dev.pinfold.project`, and `dev.pinfold.base`, the other family empty.
   Every build is tagged uniquely `<repo>:<build>` and moves the stable
   `<repo>:latest` to it.
-- A profile build uses `pinfold/profile-<name>`. The stable ref is
+- A profile build uses `localhost/pinfold/profile-<name>`. The stable ref is
   what a project Containerfile `FROM`s and what `doctor` compares against.
   Images carry `dev.pinfold.profile=<name>` and `dev.pinfold.base=<digest>`
   (the resolved base) so Maintenance can find them.
@@ -671,7 +671,7 @@ profile image.
   directory the caller vouches for, as it vouches for its mounts: no trust
   record, no project, no `.pinfold.toml`. The Containerfile may lie outside
   the context. NAME is validated like a profile name. The repo is
-  `pinfold/image-<NAME>`; a box spec's `image` names either tag.
+  `localhost/pinfold/image-<NAME>`; a box spec's `image` names either tag.
   Identical inputs under two names build one image. It carries
   `dev.pinfold.base` (the first `FROM`'s digest when it resolves to one,
   else empty; a base pinfold built is read from local storage, never
@@ -679,7 +679,7 @@ profile image.
   which may start with `dev.pinfold.`. It uses
   the runtime's layer cache unless the caller passes `--no-cache`; podman
   labels the cache's intermediate images `dev.pinfold.layer`.
-- A project build uses `pinfold/project-<id>`, where `<id>` is the
+- A project build uses `localhost/pinfold/project-<id>`, where `<id>` is the
   project's state id. A project image carries `dev.pinfold.project=<id>`,
   and records the digest of the profile image it was built from as
   `dev.pinfold.base`.
@@ -1206,7 +1206,7 @@ The two slow gates run separately.
 | 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds and pins only itself; an image built on a profile's is its own family; a source a build left above two drops to two on a later `pinfold clean` with no build after. `--dry-run --unused 0s` leaves a project state the real one removes. A project whose checkout was moved keeps its state and disks under plain `clean`. Two names built from identical inputs share one image id; `image rm` of one removes its tags while a box of the other name runs the image, and leaves the other name's tags, the image and the box; an image's last tag stays while a box uses it. An unlabeled image, a container started with the runtime's CLI from a pinfold-built image, a live box, its project's state and disks survive `pinfold clean`, also with `--unused 0s`, which removes an idle project's state and disks; a dead box is removed and protects nothing. On Apple, a build in another state directory held active in RUN succeeds across clean; a real build writes and deletes 64 MiB, dry-run preserves its allocated host blocks and reports at least the builder backing filesystem's allocation, and clean reclaims freed blocks. A claimed pi startup awaiting its real harness download preserves project state across clean while its checkout is temporarily absent; restoring the checkout lets the launch succeed, and the same stale state is removable afterward. |
 | 16 | The highest layer sets the allowlist | The environment replaces project allow, CPU, memory and route settings. Kernel observations and a host HTTP fixture prove the result. Invalid UTF-8 overrides fail without disclosing their bytes. |
 | 17 | up refuses before it creates | A missing image, a misspelled spec or nested env key, a bad env name, a `dev.pinfold.` label, a memory below 256M or without a unit, a malformed string route, a login route naming another harness, a suffix allow entry on or above a public suffix, a mount or disk path with a comma, a file mount, a `readonly` key on a mount, a missing mount host (including a dangling symlink), duplicate caller mount or disk destinations (including normalized-equivalent spellings), a mount at a path pinfold mounts, a malformed disk `size` or name and a live name are refused as data, naming the cause; a misspelled key's refusal also names the box; each leaves no box and no state dir. The box whose name was reused still answers exec, and of two `up`s racing for one name exactly one wins. |
-| 18 | A caller reads the effective configuration as data | config reports project policy, trust and the home disk actually attached. Without a runtime it still reports host policy, image_built null and image_error without creating state/cache/config files. Unknown project/profile TOML keys and a profile's containerfile are refused with the source and key; correcting the same file restores the fixture policy. |
+| 18 | A caller reads the effective configuration as data | config reports project policy, trust, a built image as built, and the home disk actually attached. Without a runtime it still reports host policy, image_built null and image_error without creating state/cache/config files. Unknown project/profile TOML keys and a profile's containerfile are refused with the source and key; correcting the same file restores the fixture policy. |
 | 19 | A caller-owned box launches the pinned harness | A spec with each harness (pi, claude, codex) runs `/opt/pinfold/<name>/<name> --version` at the version `pinfold artifacts` pins, and the box's PINFOLD_ALLOW is the spec's allow list. After the host deletes the cached pi executable, a new pi box repairs it and runs the pinned pi. |
 | 20 | A caller can tell an OOM kill from a failure | On Linux, a command that exceeds the box's memory limit is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, every field is present, and `exec`'d processes carry `oom_score_adj` 1000, so init is never the victim. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
