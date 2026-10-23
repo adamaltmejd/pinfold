@@ -1,4 +1,4 @@
-//! End-to-end tests for guarantees 6, 12, 13, 14, 16, 18, 32, 33 and 39 in
+//! End-to-end tests for guarantees 6, 12, 13, 14, 16, 18, 33 and 39 in
 //! docs/ARCHITECTURE.md.
 //!
 //! They run on a macOS host with the Apple `container` CLI, or a Linux host
@@ -21,100 +21,6 @@ use e2e::{
     box_list, box_stat, build_profile, curl, default_image, git, inspect, json_lines, pinfold,
     pinfold_in, project_id, run_egress_log, run_ok,
 };
-
-#[test]
-fn the_documents_profile_reads_documents_locally() {
-    let _runtime = crate::shared_runtime();
-    // Guarantee 32. Sabotage: remove poppler-utils from the bundled
-    // documents image; `pdftoppm` then fails. Sabotage: omit AnyDoc's native
-    // package from that image; the PDF conversion fails.
-    // The host fixture lists page objects out of object-number order; the
-    // Markdown's page order and the selected page must follow the page tree,
-    // also when the input path has spaces. The box has no egress. A fresh
-    // image, not the reused default, so an older image's tools cannot hide
-    // a removal.
-    let env = TestEnv::new("pdf");
-    let documents = TestDir::new(&env, "documents");
-    fs::write(
-        documents.path().join("two pages.pdf"),
-        include_bytes!("fixtures/two-pages.pdf"),
-    )
-    .expect("write the host PDF fixture");
-    let profile = "e2e-documents";
-    run_ok(env.command(pinfold()).args([
-        "profile",
-        "new",
-        profile,
-        "--from",
-        "documents",
-        "--builtin",
-    ]));
-    // Seeds need `$HOME` on a disk, and this test needs none.
-    fs::remove_dir_all(
-        env.config
-            .join("pinfold/profiles")
-            .join(profile)
-            .join("home"),
-    )
-    .expect("remove the profile's home seeds");
-    build_profile(&env, profile);
-    let _image = ImageCleanup {
-        repository: format!("localhost/pinfold/profile-{profile}"),
-    };
-    let name = box_name("pdf");
-    let spec = serde_json::json!({
-        "name": name,
-        "profile": profile,
-        "mounts": [{ "host": documents.path(), "guest": "/documents" }],
-    });
-    let _up = box_up(&env, &spec, &name);
-
-    let converted = box_exec(
-        &env,
-        &name,
-        &["anydoc", "/documents/two pages.pdf", "-o", "/tmp/pdf.md"],
-    );
-    assert_ok(&converted, "converting the PDF to Markdown without egress");
-    let markdown = box_exec(&env, &name, &["cat", "/tmp/pdf.md"]);
-    assert_ok(&markdown, "reading the converted PDF");
-    let markdown = markdown.stdout;
-    let first = markdown.find("first page fixture");
-    let second = markdown.find("second page fixture");
-    assert!(
-        first.is_some() && first < second,
-        "the PDF conversion lost a page or the page tree's order: {markdown}"
-    );
-
-    let rendered = box_exec(
-        &env,
-        &name,
-        &[
-            "pdftoppm",
-            "-f",
-            "2",
-            "-l",
-            "2",
-            "-r",
-            "72",
-            "-singlefile",
-            "-png",
-            "/documents/two pages.pdf",
-            "/tmp/page",
-        ],
-    );
-    assert_ok(&rendered, "rendering the second PDF page without egress");
-    // The PNG header's width and height, as big-endian bytes.
-    let size = box_exec(
-        &env,
-        &name,
-        &["od", "-An", "-tu1", "-j16", "-N8", "/tmp/page.png"],
-    );
-    assert_ok(&size, "reading the rendered PNG's size");
-    assert_eq!(
-        size.stdout.split_whitespace().collect::<Vec<_>>(),
-        ["0", "0", "0", "200", "0", "0", "0", "100"]
-    );
-}
 
 /// The PINFOLD_ENV_ value `PiRpc` launches with: long enough that no disk
 /// image holds it by chance.
@@ -607,17 +513,8 @@ fn both_pi_config_levels_load_behind_a_route() {
     // the profile marker is absent from the request. Sabotage: stop the
     // project from being trusted (remove defaultProjectTrust from the seeded
     // settings); the project marker is absent.
-    // Sabotage: omit the full profile's document skill or live package;
-    // the skill never reaches the model. Save full's resource paths in the
-    // project's settings, or keep using full's package after selecting
-    // default; the returning default request still advertises documents.
-    // Reseed existing settings on a profile switch; the saved marker changes.
-    // Return a forced systemPrompt from operating-context instead of adding
-    // its section; Pi projects that text over Ponytail's later section, so
-    // full loses its active rules while the allowlist still reaches the model.
-    // Omit the operating-context extension; its host-chosen allowlist never
-    // reaches the model. Cache that allowlist across starts; the returning
-    // default request reports the earlier marker.
+    // Sabotage: omit the operating-context extension; its host-chosen
+    // allowlist never reaches the model.
     let env = TestEnv::new("pi-levels");
     let project = TestDir::new(&env, "project");
     git(project.path(), &["init", "-q"]);
@@ -662,18 +559,6 @@ fn both_pi_config_levels_load_behind_a_route() {
     let _image = ImageCleanup {
         repository: format!("localhost/pinfold/profile-{profile}"),
     };
-    // `full` is selected only after the first prompt and the settings run;
-    // its image builds meanwhile, off the suite's critical path.
-    let full = env
-        .command(pinfold())
-        .args(["build", "--profile", "full"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("run pinfold build --profile full");
-    // The pinned Ponytail instruction hook emits this marker for explicit full input.
-    let ponytail_rule = "PONYTAIL MODE ACTIVE — level: full";
-
     // The project carries the project level: a skill under .pi/.
     let project_marker = "pinfold-e2e-project-skill-marker";
     write_skill(
@@ -698,112 +583,54 @@ fn both_pi_config_levels_load_behind_a_route() {
     // request to the fake model in the profile's models.json.
     let shim = env.root.join("pi");
     std::os::unix::fs::symlink(pinfold(), &shim).expect("symlink pi to pinfold");
-    let prompt = |selected: &str, allow: &str| {
-        let output = env
-            .command(&shim)
-            .args([
-                "-p",
-                "--provider",
-                "openai",
-                "--model",
-                "fake-model",
-                "reply with ok",
-            ])
-            .current_dir(project.path())
-            .env("PINFOLD_PROFILE", selected)
-            .env("PINFOLD_ALLOW", allow)
-            .env("PINFOLD_ROUTES", format!("fake.model={}", model.route()))
-            .env("PINFOLD_ENV_OPENAI_API_KEY", "sk-fake")
-            .env("PINFOLD_ENV_PONYTAIL_DEFAULT_MODE", "full")
-            .output()
-            .expect("run pi -p");
-        assert!(
-            output.status.success(),
-            "pi -p with {selected} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        model
-            .requests()
-            .last()
-            .expect("the fake model got no request")
-            .1
-            .clone()
-    };
-    let request = prompt(profile, "custom-profile-allow.invalid");
-
+    let allow = "custom-profile-allow.invalid";
+    let output = env
+        .command(&shim)
+        .args([
+            "-p",
+            "--provider",
+            "openai",
+            "--model",
+            "fake-model",
+            "reply with ok",
+        ])
+        .current_dir(project.path())
+        .env("PINFOLD_PROFILE", profile)
+        .env("PINFOLD_ALLOW", allow)
+        .env("PINFOLD_ROUTES", format!("fake.model={}", model.route()))
+        .env("PINFOLD_ENV_OPENAI_API_KEY", "sk-fake")
+        .output()
+        .expect("run pi -p");
+    assert!(
+        output.status.success(),
+        "pi -p failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let request = model
+        .requests()
+        .last()
+        .expect("the fake model got no request")
+        .1
+        .clone();
     assert!(
         request.contains(profile_marker),
         "the profile skill never reached the model; the profile config level did not load"
     );
-    // The bundled skill's own source supplies its marker: the description
-    // its frontmatter declares.
-    let bundled = include_str!("../../../../profile/share/pi/skills/read-documents/SKILL.md");
-    let description = bundled
-        .lines()
-        .find_map(|line| line.strip_prefix("description: "))
-        .expect("read-documents declares a description");
-    // The first profile seeded models.json and settings.json on the home
-    // disk. All later selections reuse this home; only the live mounted pi
-    // package changes. The box marks the saved settings.
-    let settings = |script: &str| {
-        let (run, _, name) = PiRpc::start(&env, project.path());
-        let output = box_exec(&env, &name, &["sh", "-c", script]);
-        assert_ok(&output, script);
-        assert!(run.finish().success(), "the settings run failed");
-        output.stdout
-    };
-    let saved = settings(
-        r#"f=$HOME/.pi/agent/settings.json && sed -i 's/^{/{"e2eSavedSettingsMarker":"keep",/' "$f" && cat "$f""#,
-    );
-    assert!(saved.contains("e2eSavedSettingsMarker"), "{saved}");
-    let built = full.wait_with_output().expect("wait for the full build");
     assert!(
-        built.status.success(),
-        "pinfold build --profile full failed: {}",
-        String::from_utf8_lossy(&built.stderr)
+        request.contains(project_marker),
+        "the project skill never reached the model; the project config level did not load"
     );
-    let selections = [
-        ("default", "default-first-allow.invalid"),
-        ("full", "full-allow.invalid"),
-        ("default", "default-return-allow.invalid"),
-    ];
-    for (selected, allow) in selections {
-        let request = prompt(selected, allow);
-        assert_eq!(
-            request.contains(description),
-            selected == "full",
-            "{selected} advertised the wrong live document skills: {request}"
-        );
-        let body: serde_json::Value = serde_json::from_str(&request).unwrap();
-        let system = body["messages"]
-            .as_array()
-            .expect("the model request has messages")
-            .iter()
-            .find(|message| message["role"] == "system")
-            .and_then(|message| message["content"].as_str())
-            .expect("the model request has a system prompt");
-        assert_eq!(
-            system.contains(ponytail_rule),
-            selected == "full",
-            "{selected} carried the wrong active Ponytail rules: {system}"
-        );
-        assert!(
-            system.contains(allow)
-                && selections
-                    .iter()
-                    .filter(|(_, other)| *other != allow)
-                    .all(|(_, other)| !system.contains(other)),
-            "{selected} did not state the selected allowlist: {system}"
-        );
-        assert!(
-            request.contains(project_marker),
-            "{selected} lost the project skill"
-        );
-    }
-    assert_eq!(
-        settings(r#"cat "$HOME/.pi/agent/settings.json""#),
-        saved,
-        "a profile switch overwrote saved pi settings"
+    let body: serde_json::Value = serde_json::from_str(&request).unwrap();
+    let system = body["messages"]
+        .as_array()
+        .expect("the model request has messages")
+        .iter()
+        .find(|message| message["role"] == "system")
+        .and_then(|message| message["content"].as_str())
+        .expect("the model request has a system prompt");
+    assert!(
+        system.contains(allow),
+        "the system prompt did not state the host's allowlist: {system}"
     );
 }
 

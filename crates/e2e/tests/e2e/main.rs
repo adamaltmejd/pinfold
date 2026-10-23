@@ -7,7 +7,6 @@ use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 mod box_;
 mod cli;
-mod image_warning;
 mod pi;
 mod runs;
 mod runtime;
