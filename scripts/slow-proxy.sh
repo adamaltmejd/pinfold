@@ -94,7 +94,7 @@ image=$(
 # Closed stdin takes it down after ready.
 printf '{"name":"%s","image":"%s"}\n' "$image_name" "$image" |
   "$binary" box up | grep '"event":"ready"' >/dev/null
-sudo --preserve-env=PATH,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS \
+sudo --preserve-env=PATH \
   unshare --net --mount --fork --kill-child \
   bash "$script_dir/slow-proxy.sh" --namespace \
   "$fixture_user" "$fixture_root" "$binary" "$image"

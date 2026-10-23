@@ -55,14 +55,11 @@ def markers(stream, stopped):
 
 
 def observe_markers(stream, report):
-    last = None
     for expected in range(MARKERS):
         sequence = struct.unpack("!Q", receive(stream, 8))[0]
         if sequence != expected:
             raise RuntimeError(f"marker {sequence}, expected fixture marker {expected}")
-        last = time.monotonic()
-        report("marker", sequence=sequence, seconds=last)
-    return last
+        report("marker", sequence=sequence)
 
 
 def guest(direction):
@@ -131,13 +128,14 @@ def host(binary, root, image):
     name = f"connect-proof-{os.getpid()}"
 
     def report(source, event, **fields):
-        events.put((source, {"event": event, **fields}))
+        # Every event is timed on the host's clock when observed; a guest
+        # VM's monotonic clock is its own.
+        events.put((source, {"event": event, **fields, "seconds": time.monotonic()}))
 
     def watch(source, process):
         try:
             for line in process.stdout:
-                # Guest times are on the guest VM's clock; time on receipt.
-                report(source, **{**json.loads(line), "seconds": time.monotonic()})
+                report(source, **json.loads(line))
         except Exception as error:
             report(source, "error", detail=str(error))
         report(source, "exit", code=process.wait())
@@ -212,7 +210,7 @@ def host(binary, root, image):
                     raise RuntimeError(
                         "client sent unexpected data after its last marker"
                     )
-                report(f"fixture-{direction}", "closed", seconds=time.monotonic())
+                report(f"fixture-{direction}", "closed")
         except Exception as error:
             report(f"fixture-{direction}", "error", detail=str(error))
 
@@ -392,7 +390,7 @@ def host(binary, root, image):
                 processes["owner"].stdin.close()
             except BrokenPipeError:
                 pass
-        # Box teardown cancels every guest before reaping its runtime client.
+        # Box teardown ends every guest exec before its client exits.
         for source in ("owner", *TUNNELS):
             if source not in processes:
                 continue
