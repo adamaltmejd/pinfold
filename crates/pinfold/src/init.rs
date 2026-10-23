@@ -227,6 +227,9 @@ fn receive_into(root: &Path, mut input: &mut impl io::Read, missing: bool) -> io
     loop {
         let tag = read_bytes(&mut input, 1)?[0];
         if tag == STREAM_END {
+            // Before ready, so the host can make a finished fill durable.
+            #[cfg(target_os = "linux")]
+            nix::unistd::syncfs(fs::File::open(root)?)?;
             return Ok(());
         }
         let length = u32::from_be_bytes(read_bytes(&mut input, 4)?.try_into().unwrap()) as usize;

@@ -1288,11 +1288,14 @@ fn disks_persist_and_attach_exclusively() {
     // after `container kill` the read-only `up` comes ready.
     // Sabotage: drop `value.push(",readonly")` from `runtime::bind`; the
     // readers' mount is then writable and the "a write to a mount"
-    // assertion fails.
+    // assertion fails. Sabotage: skip the unfilled check in `disk::claim`;
+    // the `up` after an owner killed mid-copy keeps the half-filled disk and
+    // the refilled tree assertion fails.
     let env = TestEnv::new("disks");
     let image = default_image(&env);
-    let names = ["work", "sparse", "fresh", "race"].map(|disk| box_name(&format!("disk-{disk}")));
-    let [work, sparse, fresh, race] = &names;
+    let names =
+        ["work", "sparse", "fresh", "race", "refill"].map(|disk| box_name(&format!("disk-{disk}")));
+    let [work, sparse, fresh, race, refill] = &names;
     let _disks = DiskCleanup(names.to_vec());
     let boxes =
         ["writer", "second", "reader-a", "reader-b"].map(|b| box_name(&format!("disks-{b}")));
@@ -1505,6 +1508,56 @@ fn disks_persist_and_attach_exclusively() {
     );
     after.down(&env);
     assert!(after.wait().success());
+
+    // An owner killed while it copies `from` leaves no filled disk: the next
+    // `up` naming it copies the whole tree. Once the disk exists, the first
+    // file the copy opens is renamed over by a FIFO, so the copy can neither
+    // finish nor fail. The disk surviving and no `ready` show the kill
+    // landed mid-copy, not after it or in a cleaned-up failure.
+    let first = from.path().join("0first.txt");
+    fs::write(&first, b"first\n").unwrap();
+    let refill_disk =
+        serde_json::json!({ "name": refill, "guest": "/work", "size": "1G", "from": from.path() });
+    let mut interrupted = box_up_start(&env, &spec(writer, refill_disk.clone()), &[]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while !disk_names(&env).contains(refill) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the interrupted up created no disk"
+        );
+    }
+    let fifo = from.path().join("fifo-swap");
+    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).unwrap();
+    fs::rename(&fifo, &first).unwrap();
+    interrupted.child.kill().expect("kill box up");
+    let _ = interrupted.child.wait_bounded();
+    run_ok(env.command(pinfold()).args(["box", "prune"]));
+    let printed = interrupted.rest();
+    assert!(
+        printed.iter().all(|line| line["event"] != "ready"),
+        "the interrupted up came ready: {printed:?}"
+    );
+    assert!(
+        disk_names(&env).contains(refill),
+        "the interrupted up's disk is gone"
+    );
+    fs::remove_file(&first).unwrap();
+    fs::write(&first, b"first\n").unwrap();
+    let mut refilled = box_up(&env, &spec(writer, refill_disk), writer);
+    let tree = box_exec(
+        &env,
+        writer,
+        &[
+            "sh",
+            "-c",
+            "cat /work/0first.txt && /work/run.sh && cat /work/sub/deep.txt \
+             && readlink /work/link && cat /work/later.txt",
+        ],
+    );
+    assert_ok(&tree, "the refilled tree");
+    assert_eq!(tree.stdout, "first\nran\ndeep\nplain.txt\nlater\n");
+    refilled.down(&env);
+    assert!(refilled.wait().success());
 
     // After `down`, `disk rm` removes it, and an absent disk exits 0. A
     // name that is no disk name is refused as `spec`.

@@ -548,6 +548,9 @@ pub trait Runtime: Sync {
     /// Remove a disk no box attaches.
     fn remove_disk(&self, name: &str) -> io::Result<()>;
 
+    /// Make the writes a box finished on the disk durable on the host.
+    fn sync_disk(&self, name: &str) -> io::Result<()>;
+
     /// Build an image from [`BuildRequest`]. The inner `Err` is the build's
     /// output, stdout and stderr in order, when the build ran and failed.
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>>;

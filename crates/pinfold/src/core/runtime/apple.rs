@@ -268,6 +268,12 @@ impl Runtime for Apple {
         output(&["container", "volume", "rm", name]).map(drop)
     }
 
+    /// The guest synced; what the volume keeps through a host crash is
+    /// the runtime's.
+    fn sync_disk(&self, _name: &str) -> io::Result<()> {
+        Ok(())
+    }
+
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
         let cache_flags: &[&str] = if request.cache { &[] } else { &["--no-cache"] };
         super::build("container", cache_flags, request)
