@@ -177,6 +177,12 @@ fn serve(listener: UnixListener, rules: Arc<Rules>, log: Arc<AuditLog>) {
         if log.failed() {
             return;
         }
+        // Darwin ignores MSG_DONTWAIT on a blocking socket, so on macOS a
+        // `Deadline` send can block past its poll. This bounds each such
+        // send; Linux never reaches it.
+        if client.set_write_timeout(Some(IDLE_TIMEOUT)).is_err() {
+            continue;
+        }
         if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
             active.fetch_sub(1, Ordering::SeqCst);
             refuse(&mut client, &log, "", 503, "connection cap");
