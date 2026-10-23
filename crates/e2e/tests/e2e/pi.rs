@@ -1115,8 +1115,8 @@ fn a_caller_reads_the_effective_configuration_as_data() {
     // exact-list assertion fails. Sabotage: swap the two names
     // `state::disk_names` returns; `disk list` shows the reported home disk
     // attached at the project, not as $HOME, and the attachment assertion
-    // fails. Sabotage: strip `localhost/` from `config_report`'s image
-    // before comparing; the built profile image reads as not built.
+    // fails. Sabotage: resolve `config_report`'s image with
+    // `localhost/` stripped; the built profile image reads as not built.
     let env = TestEnv::new("pi-config");
     default_image(&env);
     let project = TestDir::new(&env, "project");

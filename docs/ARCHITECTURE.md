@@ -77,7 +77,7 @@ One runtime per OS, not configurable:
 
 | Host | Runtime | Kernel |
 |---|---|---|
-| macOS 26+ | Apple `container` 1.5.0+ (stable) | one VM per box |
+| macOS 26+ | Apple `container` 1.6.0+ (stable) | one VM per box |
 | Linux | Firecracker, pinned (Pinned artifacts), run as the user in pinfold's VMM jail | one VM per box, pinned guest kernel |
 
 Anything else is refused: podman or docker as a box runtime, Firecracker
