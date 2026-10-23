@@ -1511,7 +1511,9 @@ fn disks_persist_and_attach_exclusively() {
 
     // An owner killed while it copies `from` leaves no filled disk: the next
     // `up` naming it copies the whole tree. Once the disk exists, the first
-    // file the copy opens becomes a FIFO, so the copy cannot finish.
+    // file the copy opens is renamed over by a FIFO, so the copy can neither
+    // finish nor fail. The disk surviving and no `ready` show the kill
+    // landed mid-copy, not after it or in a cleaned-up failure.
     let first = from.path().join("0first.txt");
     fs::write(&first, b"first\n").unwrap();
     let refill_disk =
@@ -1524,11 +1526,21 @@ fn disks_persist_and_attach_exclusively() {
             "the interrupted up created no disk"
         );
     }
-    fs::remove_file(&first).unwrap();
-    nix::unistd::mkfifo(&first, nix::sys::stat::Mode::S_IRWXU).unwrap();
+    let fifo = from.path().join("fifo-swap");
+    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).unwrap();
+    fs::rename(&fifo, &first).unwrap();
     interrupted.child.kill().expect("kill box up");
     let _ = interrupted.child.wait_bounded();
     run_ok(env.command(pinfold()).args(["box", "prune"]));
+    let printed = interrupted.rest();
+    assert!(
+        printed.iter().all(|line| line["event"] != "ready"),
+        "the interrupted up came ready: {printed:?}"
+    );
+    assert!(
+        disk_names(&env).contains(refill),
+        "the interrupted up's disk is gone"
+    );
     fs::remove_file(&first).unwrap();
     fs::write(&first, b"first\n").unwrap();
     let mut refilled = box_up(&env, &spec(writer, refill_disk), writer);
