@@ -199,7 +199,7 @@ jobs:
           bun run check
           bun durable_recovery_preserves_boxed_execution.ts \
             --pinfold "$GITHUB_WORKSPACE/target/debug/pinfold" \
-            --image pinfold/profile-default:latest
+            --image localhost/pinfold/profile-default:latest
       - name: Reclaim caches after success or failure
         if: always()
         run: sh scripts/clean-mac-runner.sh

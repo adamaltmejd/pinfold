@@ -102,7 +102,7 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
         Some(label) => label.trim_start_matches("dev.pinfold."),
         None => "image",
     };
-    let repository = format!("pinfold/{stem}-{}", build.source);
+    let repository = format!("localhost/pinfold/{stem}-{}", build.source);
     let latest = format!("{repository}:latest");
     let reference = format!("{repository}:{id}");
     let tags = [latest.clone(), reference.clone()];
@@ -171,7 +171,7 @@ pub enum ImageError {
     Failed(String),
 }
 
-/// Build a caller's image `pinfold/image-<name>` from its own context.
+/// Build a caller's image `localhost/pinfold/image-<name>` from its own context.
 pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
     let spec = |detail: String| ImageError::Refused(RefusalReason::Spec, detail);
     profile::check_name("image", &request.name).map_err(|error| spec(error.to_string()))?;

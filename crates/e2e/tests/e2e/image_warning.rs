@@ -22,7 +22,7 @@ fn changed_image_inputs_prompt_a_rebuild() {
     let default = default_image(&env);
     let profile = format!("image-warning-{}", std::process::id());
     let _profile_images = ImageCleanup {
-        repository: format!("pinfold/profile-{profile}"),
+        repository: format!("localhost/pinfold/profile-{profile}"),
     };
     let profile_file = profile_containerfile(
         &env,
@@ -48,7 +48,7 @@ fn changed_image_inputs_prompt_a_rebuild() {
     // A project's own Containerfile adds a second input. Trust must be renewed
     // after changing it, so the trust refusal cannot stand in for this hint.
     let project_file = project.path().join("Containerfile.pinfold");
-    let project_contents = format!("FROM pinfold/profile-{profile}:latest\n");
+    let project_contents = format!("FROM localhost/pinfold/profile-{profile}:latest\n");
     fs::write(&project_file, &project_contents).unwrap();
     fs::write(
         &config,
@@ -58,7 +58,10 @@ fn changed_image_inputs_prompt_a_rebuild() {
     allow(&env, project.path());
     build(&env, project.path());
     let _project_images = ImageCleanup {
-        repository: format!("pinfold/project-{}", project_id(&env, project.path())),
+        repository: format!(
+            "localhost/pinfold/project-{}",
+            project_id(&env, project.path())
+        ),
     };
     fs::write(
         &project_file,
