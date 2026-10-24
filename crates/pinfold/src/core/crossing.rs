@@ -28,6 +28,9 @@ const BRANCHES: usize = 4096;
 /// which the host reports as `spec`.
 const NOT_A_REPO: i32 = 64;
 
+/// The prefix of a fetch's quarantine under REPO's objects dir.
+const QUARANTINE: &str = "pinfold-incoming-";
+
 /// The bytes of a box command's stderr kept for a `failed` detail.
 const STDERR_KEPT: u64 = 16 << 10;
 
@@ -257,7 +260,6 @@ pub fn fetch(
         }
         refs.insert(branch, oid);
     }
-    quarantine.migrate()?;
 
     // One transaction: every ref lands or none does. `-z` keeps each value
     // a single field, never a revision expression read from a name.
@@ -270,14 +272,45 @@ pub fn fetch(
         .map(|(name, oid)| format!("update {name}\0{oid}\0\0"))
         .collect();
     if !refs.is_empty() {
-        succeeded(git_input(
-            repo,
-            &["update-ref", "-z", "--stdin"],
-            updates.as_bytes(),
-            &[],
-        )?)?;
+        update_refs(repo, &quarantine, &updates)?;
     }
     Ok(refs)
+}
+
+/// Prepare the ref transaction against the quarantine, so a ref git
+/// refuses, such as `x` beside `x/y`, fails it before any pack moves into
+/// REPO; then migrate and commit. Closing stdin before `commit` aborts it.
+fn update_refs(repo: &Path, quarantine: &Quarantine, updates: &str) -> Result<(), CrossingError> {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["update-ref", "-z", "--stdin"])
+        .envs(quarantine.env())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
+    // A git that exits early is read as not prepared, with its stderr.
+    let _ = stdin.write_all(format!("start\0{updates}prepare\0").as_bytes());
+    let mut replies = String::new();
+    for _ in 0..2 {
+        stdout.read_line(&mut replies)?;
+    }
+    if replies != "start: ok\nprepare: ok\n" {
+        drop(stdin);
+        return Err(host_failed(&child.wait_with_output()?));
+    }
+    let migrated = quarantine.migrate();
+    if migrated.is_ok() {
+        let _ = stdin.write_all(b"commit\0");
+    }
+    drop(stdin);
+    let output = child.wait_with_output()?;
+    migrated?;
+    succeeded(output)?;
+    Ok(())
 }
 
 fn check_args(repo: &Path, guest_repo: &str, remote: &str) -> Result<(), CrossingError> {
@@ -501,11 +534,15 @@ fn succeeded(output: Output) -> Result<Output, CrossingError> {
     if output.status.success() {
         Ok(output)
     } else {
-        Err(CrossingError::Failed(format!(
-            "git on the host failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )))
+        Err(host_failed(&output))
     }
+}
+
+fn host_failed(output: &Output) -> CrossingError {
+    CrossingError::Failed(format!(
+        "git on the host failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
 }
 
 /// A bundle file under pinfold's state dir, removed on drop.
@@ -544,6 +581,7 @@ impl Drop for Bundle {
 /// through an alternate, as receive-pack's own quarantine does.
 struct Quarantine {
     objects: PathBuf,
+    /// `QUARANTINE` + `PID-N`.
     dir: PathBuf,
     alternates: OsString,
 }
@@ -573,8 +611,27 @@ impl Quarantine {
         }
         alternates.push(b'"');
         let objects = PathBuf::from(OsString::from_vec(objects));
+        // A killed fetch's quarantine outlives it, and git never prunes
+        // one; remove those whose process is gone.
+        for entry in fs::read_dir(&objects)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(pid) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix(QUARANTINE))
+                .and_then(|rest| rest.split_once('-'))
+                .and_then(|(pid, _)| pid.parse().ok())
+            else {
+                continue;
+            };
+            let gone = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None)
+                == Err(nix::errno::Errno::ESRCH);
+            if gone {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
         for attempt in 0u32.. {
-            let dir = objects.join(format!("pinfold-incoming-{}-{attempt}", std::process::id()));
+            let dir = objects.join(format!("{QUARANTINE}{}-{attempt}", std::process::id()));
             match fs::create_dir(&dir) {
                 Ok(()) => {
                     return Ok(Quarantine {
@@ -614,13 +671,22 @@ impl Quarantine {
             }
         }
         names.sort_by_key(|name| name.as_bytes().ends_with(b".idx"));
+        let mut moved = Vec::new();
         for name in names {
             let to = self.objects.join("pack").join(&name);
             // A pack's name is its content's hash, so one already there is
             // this one, and another git may have it open.
-            if !to.exists() {
-                fs::rename(from.join(&name), to)?;
+            if to.exists() {
+                continue;
             }
+            if let Err(error) = fs::rename(from.join(&name), &to) {
+                // An index after its pack: undo in reverse.
+                for path in moved.iter().rev() {
+                    let _ = fs::remove_file(path);
+                }
+                return Err(error);
+            }
+            moved.push(to);
         }
         Ok(())
     }

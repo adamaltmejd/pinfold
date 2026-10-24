@@ -1886,13 +1886,17 @@ fn work_leaves_the_box_only_by_fetch() {
     // `refs/heads/x:refs/replace/<host main>` head; and a commit whose tree
     // holds a `.git` entry under a plain `refs/heads/x`; and a sound pack
     // under a `refs/heads/x` naming a commit it lacks, which fetch unbundles
-    // before its connectivity check fails. Each fetch fails, no host ref
-    // changes, and the host's object store keeps its paths and sizes.
+    // before its connectivity check fails; and a sound bundle with both
+    // `refs/heads/x` and `refs/heads/x/y`, which only the ref transaction
+    // refuses. Each fetch fails, no host ref changes, and the host's object
+    // store keeps its paths and sizes.
     // Sabotage: drop `--fsck-objects` from crossing::fetch's index-pack; the
     // `.git` bundle then lands on any host git, and its assertions fail.
     // Sabotage: drop the quarantine env from that index-pack; the `.git`
     // bundle leaves a `tmp_pack_*`. Sabotage: drop it from the fetch; the
-    // missing commit's bundle leaves its pack.
+    // missing commit's bundle leaves its pack. Sabotage: migrate in
+    // crossing::update_refs before `prepare`; the `x/y` bundle leaves its
+    // pack.
     let host_main = host_git(&["rev-parse", "main"]);
     let host_refs = host_git(&["for-each-ref"]);
     let host_objects = object_store(repo);
@@ -1920,6 +1924,7 @@ mk injected "$evil" "$evil" refs/heads/x refs/heads/x:refs/heads/injected
 mk replace "$evil" "$evil" refs/heads/x refs/heads/x:refs/replace/{host_main}
 mk dotgit "$dotgit" "$dotgit" refs/heads/x
 mk missing "$evil" "$absent" refs/heads/x
+mk conflict "$evil" "$evil" refs/heads/x refs/heads/x/y
 cat > .hostile/git <<'END'
 #!/bin/sh
 case " $* " in
@@ -1931,7 +1936,8 @@ END
 chmod 755 .hostile/git
 echo "$absent""#
     ));
-    for case in ["injected", "replace", "dotgit", "missing"] {
+    let conflict = format!("refs/remotes/{name}/x/y");
+    for case in ["injected", "replace", "dotgit", "missing", "conflict"] {
         in_box(&format!("cp /work/.hostile/{case} /work/.hostile/bundle"));
         let (code, failed) = crossing_fetch(&env, &name, repo);
         assert_eq!(
@@ -1949,11 +1955,13 @@ echo "$absent""#
             host_objects,
             "the {case} bundle left bytes in the host's objects"
         );
-        // git names the fsck entry, and the commit the pack lacks: each
-        // fetch failed for it, not for a malformed bundle.
+        // git names the fsck entry, the commit the pack lacks, and the ref
+        // it can't update beside `x`: each fetch failed for it, not for a
+        // malformed bundle.
         let reason = match case {
             "dotgit" => "hasDotgit",
             "missing" => absent.trim(),
+            "conflict" => conflict.as_str(),
             _ => continue,
         };
         assert!(
