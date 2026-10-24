@@ -1896,7 +1896,7 @@ fn work_leaves_the_box_only_by_fetch() {
     let host_main = host_git(&["rev-parse", "main"]);
     let host_refs = host_git(&["for-each-ref"]);
     let host_objects = object_store(repo);
-    in_box(&format!(
+    let absent = in_box(&format!(
         r#"set -e
 cd /work
 mkdir .hostile
@@ -1928,7 +1928,8 @@ case " $* " in
 esac
 exec /usr/bin/git "$@"
 END
-chmod 755 .hostile/git"#
+chmod 755 .hostile/git
+echo "$absent""#
     ));
     for case in ["injected", "replace", "dotgit", "missing"] {
         in_box(&format!("cp /work/.hostile/{case} /work/.hostile/bundle"));
@@ -1948,14 +1949,17 @@ chmod 755 .hostile/git"#
             host_objects,
             "the {case} bundle left bytes in the host's objects"
         );
-        // git's fsck names the entry: the fetch failed for it, not for a
-        // malformed bundle.
-        if case == "dotgit" {
-            assert!(
-                failed["detail"].as_str().unwrap().contains("hasDotgit"),
-                "{failed}"
-            );
-        }
+        // git names the fsck entry, and the commit the pack lacks: each
+        // fetch failed for it, not for a malformed bundle.
+        let reason = match case {
+            "dotgit" => "hasDotgit",
+            "missing" => absent.trim(),
+            _ => continue,
+        };
+        assert!(
+            failed["detail"].as_str().unwrap().contains(reason),
+            "{failed}"
+        );
     }
 
     up.down(&env);
