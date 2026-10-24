@@ -660,7 +660,11 @@ impl Quarantine {
         let from = self.dir.join("pack");
         let entries = match fs::read_dir(&from) {
             Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            // A quarantine another fetch swept away lost its packs; committing
+            // would name objects REPO lacks.
+            Err(error) if error.kind() == io::ErrorKind::NotFound && self.dir.is_dir() => {
+                return Ok(());
+            }
             Err(error) => return Err(error),
         };
         let mut names = Vec::new();
