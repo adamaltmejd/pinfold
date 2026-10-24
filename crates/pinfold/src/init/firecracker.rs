@@ -224,9 +224,13 @@ fn guest_path(fields: &mut Fields) -> io::Result<PathBuf> {
         || ["/proc", "/sys", "/dev"]
             .iter()
             .any(|kernel| path.starts_with(kernel))
+        // Mirrors HIDING_PATHS in core/plan.rs, which this crate cannot import.
+        || ["/", "/tmp", "/etc", "/etc/resolv.conf"]
+            .iter()
+            .any(|hidden| path == Path::new(hidden))
     {
         return Err(io::Error::other(format!(
-            "guest path {} is not plain, absolute, below / and outside /proc, /sys and /dev",
+            "guest path {} must be plain, absolute and below /, outside /proc, /sys and /dev, and none of /tmp, /etc and /etc/resolv.conf",
             path.display()
         )));
     }

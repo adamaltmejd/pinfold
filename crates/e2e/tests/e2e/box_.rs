@@ -1161,6 +1161,15 @@ fn up_refuses_before_it_creates() {
     for guest in ["/proc/sys/user", "/work/../sys/fs/cgroup", "/dev"] {
         cases.push((serde_json::json!({ "name": disk, "guest": guest }), guest));
     }
+    // A disk at /, /tmp, /etc or /etc/resolv.conf would hide the tmpfs /tmp
+    // or the empty resolv.conf (Always applied); three reach theirs only
+    // after normalization. The positive control is again the winner's mount at
+    // /devices. Sabotage: drop the HIDING_PATHS check from
+    // `validate_guests`; the `/tmp` disk then reaches the runtime, which
+    // creates the disk, and the `refused` and no-disk assertions fail.
+    for guest in ["/work/..", "/tmp", "/work/../etc", "/etc/./resolv.conf"] {
+        cases.push((serde_json::json!({ "name": disk, "guest": guest }), guest));
+    }
     for (case, named) in cases {
         let (code, refused) = box_up_refused(&env, &disk_spec(case), &[]);
         assert_eq!(code, 1, "a refused up exits 1: {refused}");
