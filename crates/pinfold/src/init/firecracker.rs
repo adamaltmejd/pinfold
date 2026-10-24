@@ -671,6 +671,9 @@ fn become_box_user(uid: u32, gid: u32) -> io::Result<()> {
     nix::unistd::setgroups(&[])?;
     let (uid, gid) = (Uid::from_raw(uid), Gid::from_raw(gid));
     nix::unistd::setresgid(gid, gid, gid)?;
+    // Leaving root also clears dumpable, so the service's /proc entries stay
+    // root's and box work cannot take its descriptors with pidfd_getfd.
+    // Nothing may set it again (#158).
     nix::unistd::setresuid(uid, uid, uid)?;
     set_capabilities(None)?;
     nix::sys::prctl::set_no_new_privs()?;
@@ -734,9 +737,10 @@ fn pairs(fields: &mut Fields) -> io::Result<Vec<(OsString, OsString)>> {
         .collect()
 }
 
-/// Run one EXEC request in its own session, with `oom_score_adj` 1000, and
-/// relay its stdio until it exits and its output ends. A host that goes
-/// away only closes stdin: pinfold never signals box work through exec.
+/// Run one EXEC request in its own session through `init exec`, which sets
+/// `oom_score_adj` 1000, and relay its stdio until it exits and its output
+/// ends. A host that goes away only closes stdin: pinfold never signals box
+/// work through exec.
 fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>) -> io::Result<()> {
     let mut fields = Fields(payload);
     let argv: Vec<OsString> = (0..fields.u32()?)
@@ -751,12 +755,27 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
         return Err(io::Error::other("an exec without argv"));
     };
 
-    let mut command = Command::new(program);
+    // `init exec` restores the environment from Apple's transport names, so
+    // a name that itself carries the prefix arrives exactly.
+    let transport = vars.into_iter().chain(extra).map(|(name, value)| {
+        let mut key = OsString::from(super::BOX_ENV_PREFIX);
+        key.push(name);
+        let hex: String = value
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        (key, hex)
+    });
+    // The child is a copy of the service, which holds the exec listener,
+    // until its first execve; it stays non-dumpable until then (#158). The
+    // init disk holding `/pinfold` is detached, but its magic link execs.
+    let mut command = Command::new("/proc/self/exe");
     command
-        .args(&argv[1..])
+        .args(["init", "exec", "--"])
+        .args(&argv)
         .env_clear()
-        .envs(vars)
-        .envs(extra)
+        .envs(transport)
         .current_dir(if workdir.is_empty() {
             OsStr::new("/")
         } else {
@@ -779,10 +798,7 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
     // Safety: the closure makes only async-signal-safe calls.
     unsafe {
         command.pre_exec(move || {
-            if libc::setsid() < 0
-                || (tty && libc::ioctl(0, libc::TIOCSCTTY, 0) < 0)
-                || !raise_oom_score()
-            {
+            if libc::setsid() < 0 || (tty && libc::ioctl(0, libc::TIOCSCTTY, 0) < 0) {
                 return Err(io::Error::last_os_error());
             }
             Ok(())
@@ -845,37 +861,6 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
     // Ends the input relay's read; the host has the exit code.
     let _ = connection.shutdown(std::net::Shutdown::Both);
     Ok(())
-}
-
-/// Raise this process's own `oom_score_adj` to 1000, so the kernel's OOM
-/// killer takes box work before the service. Async-signal-safe.
-fn raise_oom_score() -> bool {
-    // Safety: prctl, open, write and close on constants.
-    unsafe {
-        // The service dropped from root, so it is not dumpable and its
-        // /proc files belong to root. The child, about to exec as the box
-        // user, would be dumpable after execve anyway.
-        if libc::prctl(
-            libc::PR_SET_DUMPABLE,
-            1 as libc::c_ulong,
-            0 as libc::c_ulong,
-            0 as libc::c_ulong,
-            0 as libc::c_ulong,
-        ) < 0
-        {
-            return false;
-        }
-        let fd = libc::open(
-            c"/proc/self/oom_score_adj".as_ptr(),
-            libc::O_WRONLY | libc::O_CLOEXEC,
-        );
-        if fd < 0 {
-            return false;
-        }
-        let written = libc::write(fd, b"1000".as_ptr().cast(), 4);
-        libc::close(fd);
-        written == 4
-    }
 }
 
 /// Copy `from` into STDOUT or STDERR frames until it ends. After the host

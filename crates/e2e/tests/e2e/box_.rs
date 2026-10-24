@@ -2233,6 +2233,15 @@ fn nothing_can_gain_privileges() {
                 "the exec service's {set}"
             );
         }
+        // The service is not dumpable, so box work cannot reach its
+        // descriptors, the exec listener among them. Sabotage:
+        // `prctl(PR_SET_DUMPABLE, 1)` after `setresuid` in
+        // `become_box_user`; the listing then succeeds.
+        let fds = box_exec(&env, &name, &["sh", "-c", "ls /proc/$PPID/fd"]);
+        assert_denied(&fds, "Permission denied", "listing the exec service's fds");
+        // Positive control: box work lists its own.
+        let own = box_exec(&env, &name, &["ls", "/proc/self/fd"]);
+        assert_ok(&own, "listing its own fds");
     } else {
         assert_process_ids(&init.stdout, "PID 1");
     }
@@ -4399,8 +4408,9 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
     // Sabotage: read `memory.events` but report `high` instead of `oom_kill`;
     // with no memory.high set the count stays 0 and the post-exec assertion
     // fails.
-    // Sabotage: skip the oom_score_adj write in init's exec wrapper; `cat`
-    // then prints 0 and the oom_score_adj assertion fails. (The original
+    // Sabotage: skip the oom_score_adj write in `init exec`, the exec
+    // wrapper on both runtimes; `cat` then prints 0 on Apple or the exec
+    // service's -1000 on Linux and the oom_score_adj assertion fails. (The original
     // flake is not usable: it needs a kernel that picks init, which the
     // macOS host and Debian do not.)
     let env = TestEnv::new("oom");
