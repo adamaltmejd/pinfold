@@ -1530,11 +1530,14 @@ fn disks_persist_and_attach_exclusively() {
                 &[
                     "sh",
                     "-c",
-                    "test -L /work/x && test ! -e /work/other/sub \
-                     && touch /work/plain/sub/written",
+                    "test -L /work/x && touch /work/plain/sub/written",
                 ],
             ),
-            "nothing made through the planted link; the plain nesting writable",
+            "the link kept and the plain nesting writable",
+        );
+        assert_ok(
+            &box_exec(&env, writer, &["test", "!", "-e", "/work/other/sub"]),
+            "nothing made at the planted link's target",
         );
         plain.down(&env);
         assert!(
