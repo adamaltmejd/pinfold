@@ -1884,33 +1884,42 @@ fn work_leaves_the_box_only_by_fetch() {
     // commit under a `refs/heads/x` head plus a
     // `refs/heads/x:refs/heads/injected` head; the same plus a
     // `refs/heads/x:refs/replace/<host main>` head; and a commit whose tree
-    // holds a `.git` entry under a plain `refs/heads/x`. Each fetch fails
-    // and no host ref changes. Sabotage: drop `--fsck-objects` from
-    // crossing::fetch's index-pack; the `.git` bundle then lands on any host
-    // git, and its assertions fail.
+    // holds a `.git` entry under a plain `refs/heads/x`; and a sound pack
+    // under a `refs/heads/x` naming a commit it lacks, which fetch unbundles
+    // before its connectivity check fails. Each fetch fails, no host ref
+    // changes, and the host's object store keeps its paths and sizes.
+    // Sabotage: drop `--fsck-objects` from crossing::fetch's index-pack; the
+    // `.git` bundle then lands on any host git, and its assertions fail.
+    // Sabotage: drop the quarantine env from that index-pack; the `.git`
+    // bundle leaves a `tmp_pack_*`. Sabotage: drop it from the fetch; the
+    // missing commit's bundle leaves its pack.
     let host_main = host_git(&["rev-parse", "main"]);
     let host_refs = host_git(&["for-each-ref"]);
+    let host_objects = object_store(repo);
     in_box(&format!(
         r#"set -e
 cd /work
 mkdir .hostile
 g() {{ git -c core.hooksPath=/nonexistent -c core.fsmonitor=false "$@"; }}
-# mk NAME COMMIT HEAD...: a bundle of COMMIT under the given head lines.
+# mk NAME COMMIT TIP HEAD...: a bundle of COMMIT with TIP under the given
+# head lines.
 mk() {{
-  name=$1 commit=$2; shift 2
+  name=$1 commit=$2 tip=$3; shift 3
   g update-ref refs/evil/x "$commit"
   g bundle create -q .hostile/real refs/evil/x
   header=$(sed -n '1,/^$/p' .hostile/real | wc -c)
-  {{ printf '# v2 git bundle\n'; for head; do printf '%s %s\n' "$commit" "$head"; done; printf '\n'
+  {{ printf '# v2 git bundle\n'; for head; do printf '%s %s\n' "$tip" "$head"; done; printf '\n'
     tail -c +$((header + 1)) .hostile/real; }} > .hostile/$name
 }}
 evil=$(g commit-tree -m evil 'HEAD^{{tree}}')
+absent=$(g commit-tree -m absent 'HEAD^{{tree}}')
 blob=$(echo evil | g hash-object -w --stdin)
 inner=$(printf '100644 blob %s\tconfig\n' "$blob" | g mktree)
 dotgit=$(g commit-tree -m dotgit "$(printf '040000 tree %s\t.git\n' "$inner" | g mktree)")
-mk injected "$evil" refs/heads/x refs/heads/x:refs/heads/injected
-mk replace "$evil" refs/heads/x refs/heads/x:refs/replace/{host_main}
-mk dotgit "$dotgit" refs/heads/x
+mk injected "$evil" "$evil" refs/heads/x refs/heads/x:refs/heads/injected
+mk replace "$evil" "$evil" refs/heads/x refs/heads/x:refs/replace/{host_main}
+mk dotgit "$dotgit" "$dotgit" refs/heads/x
+mk missing "$evil" "$absent" refs/heads/x
 cat > .hostile/git <<'END'
 #!/bin/sh
 case " $* " in
@@ -1921,7 +1930,7 @@ exec /usr/bin/git "$@"
 END
 chmod 755 .hostile/git"#
     ));
-    for case in ["injected", "replace", "dotgit"] {
+    for case in ["injected", "replace", "dotgit", "missing"] {
         in_box(&format!("cp /work/.hostile/{case} /work/.hostile/bundle"));
         let (code, failed) = crossing_fetch(&env, &name, repo);
         assert_eq!(
@@ -1933,6 +1942,11 @@ chmod 755 .hostile/git"#
             host_git(&["for-each-ref"]),
             host_refs,
             "the {case} bundle changed a host ref"
+        );
+        assert_eq!(
+            object_store(repo),
+            host_objects,
+            "the {case} bundle left bytes in the host's objects"
         );
         // git's fsck names the entry: the fetch failed for it, not for a
         // malformed bundle.
@@ -2026,6 +2040,27 @@ fn packs(repo: &Path) -> std::collections::BTreeSet<PathBuf> {
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "idx"))
         .collect()
+}
+
+/// Every path under the repository's `.git/objects` with its size, a
+/// directory's as 0 since filesystems size those differently.
+fn object_store(repo: &Path) -> std::collections::BTreeMap<PathBuf, u64> {
+    let mut store = std::collections::BTreeMap::new();
+    let mut pending = vec![repo.join(".git/objects")];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let metadata = fs::symlink_metadata(&path).unwrap();
+            let size = if metadata.is_dir() {
+                pending.push(path.clone());
+                0
+            } else {
+                metadata.len()
+            };
+            store.insert(path, size);
+        }
+    }
+    store
 }
 
 /// Every path under `dir` with its bytes (files only), mode and mtime.
