@@ -1161,6 +1161,15 @@ fn up_refuses_before_it_creates() {
     for guest in ["/proc/sys/user", "/work/../sys/fs/cgroup", "/dev"] {
         cases.push((serde_json::json!({ "name": disk, "guest": guest }), guest));
     }
+    // A disk at /, /tmp, /etc or /etc/resolv.conf would hide the tmpfs /tmp
+    // or the empty resolv.conf (Always applied); three reach theirs only
+    // after normalization. The positive control is again the winner's mount at
+    // /devices. Sabotage: drop the HIDING_PATHS check from
+    // `validate_guests`; the `/tmp` disk then reaches the runtime, which
+    // creates the disk, and the `refused` and no-disk assertions fail.
+    for guest in ["/work/..", "/tmp", "/work/../etc", "/etc/./resolv.conf"] {
+        cases.push((serde_json::json!({ "name": disk, "guest": guest }), guest));
+    }
     for (case, named) in cases {
         let (code, refused) = box_up_refused(&env, &disk_spec(case), &[]);
         assert_eq!(code, 1, "a refused up exits 1: {refused}");
@@ -1299,8 +1308,9 @@ fn disks_persist_and_attach_exclusively() {
     // the next `up` skips the copy and the refilled tree assertion fails.
     let env = TestEnv::new("disks");
     let image = default_image(&env);
-    let names = ["work", "sparse", "fresh", "race"].map(|disk| box_name(&format!("disk-{disk}")));
-    let [work, sparse, fresh, race] = &names;
+    let names =
+        ["work", "sparse", "fresh", "race", "nested"].map(|disk| box_name(&format!("disk-{disk}")));
+    let [work, sparse, fresh, race, nested] = &names;
     // The refilled disk is a project's disk, so `pinfold fetch` there sees it.
     let project = TestDir::new(&env, "project");
     git(project.path(), &["init", "-q"]);
@@ -1370,6 +1380,19 @@ fn disks_persist_and_attach_exclusively() {
         ),
         "writing the disk",
     );
+    // On Linux the box plants a symlink where a later nested disk's mount
+    // point goes; see below.
+    #[cfg(target_os = "linux")]
+    assert_ok(
+        &box_exec(
+            &env,
+            writer,
+            &["sh", "-c", "mkdir /work/other && ln -s other /work/x"],
+        ),
+        "planting a symlink on the disk",
+    );
+    #[cfg(not(target_os = "linux"))]
+    let _ = nested;
 
     // While the writer attaches it, another `up` naming the disk, read-only
     // or writable, is refused and creates nothing, and `disk rm` refuses.
@@ -1482,6 +1505,54 @@ fn disks_persist_and_attach_exclusively() {
     for reader in &mut readers {
         reader.down(&env);
         assert!(reader.wait().success(), "a reader did not exit cleanly");
+    }
+
+    // On Linux PID 1 makes a nested disk's mount point. One reached through
+    // the symlink the writer planted ends the start `failed`, naming it, and
+    // PID 1 creates nothing through the link; the same nesting at a plain
+    // path mounts and takes a write. The failed start leaves the disk
+    // unclean, which the writable `up` below clears. Sabotage: make the
+    // mount point with `fs::create_dir_all` in `mount_at`, keeping a
+    // canonicalize check; the start still fails, but PID 1 first makes
+    // /work/other/sub through the link and the absence assertion fails.
+    #[cfg(target_os = "linux")]
+    {
+        let with_nested = |guest: &str| {
+            let mut spec = spec(writer, work_disk.clone());
+            spec["disks"] = serde_json::json!([work_disk, { "name": nested, "guest": guest }]);
+            spec
+        };
+        let (code, failed) = box_up_refused(&env, &with_nested("/work/x/sub"), &[]);
+        assert_eq!(code, 1, "a failed up exits 1: {failed}");
+        assert_eq!(failed["event"], "failed", "{failed}");
+        assert!(
+            failed["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("/work/x/sub")),
+            "the failure did not name the mount point: {failed}"
+        );
+        let mut plain = box_up(&env, &with_nested("/work/plain/sub"), writer);
+        assert_ok(
+            &box_exec(
+                &env,
+                writer,
+                &[
+                    "sh",
+                    "-c",
+                    "test -L /work/x && touch /work/plain/sub/written",
+                ],
+            ),
+            "the link kept and the plain nesting writable",
+        );
+        assert_ok(
+            &box_exec(&env, writer, &["test", "!", "-e", "/work/other/sub"]),
+            "nothing made at the planted link's target",
+        );
+        plain.down(&env);
+        assert!(
+            plain.wait().success(),
+            "the nested writer did not exit cleanly"
+        );
     }
 
     // A writer whose box is killed under it leaves the disk unclean: its
@@ -1884,33 +1955,47 @@ fn work_leaves_the_box_only_by_fetch() {
     // commit under a `refs/heads/x` head plus a
     // `refs/heads/x:refs/heads/injected` head; the same plus a
     // `refs/heads/x:refs/replace/<host main>` head; and a commit whose tree
-    // holds a `.git` entry under a plain `refs/heads/x`. Each fetch fails
-    // and no host ref changes. Sabotage: drop `--fsck-objects` from
-    // crossing::fetch's index-pack; the `.git` bundle then lands on any host
-    // git, and its assertions fail.
+    // holds a `.git` entry under a plain `refs/heads/x`; and a sound pack
+    // under a `refs/heads/x` naming a commit it lacks, which fetch unbundles
+    // before its connectivity check fails; and a sound bundle with both
+    // `refs/heads/x` and `refs/heads/x/y`, which only the ref transaction
+    // refuses. Each fetch fails, no host ref changes, and the host's object
+    // store keeps its paths and sizes.
+    // Sabotage: drop `--fsck-objects` from crossing::fetch's index-pack; the
+    // `.git` bundle then lands on any host git, and its assertions fail.
+    // Sabotage: drop the quarantine env from that index-pack; the `.git`
+    // bundle leaves a `tmp_pack_*`. Sabotage: drop it from the fetch; the
+    // missing commit's bundle leaves its pack. Sabotage: migrate in
+    // crossing::update_refs before `prepare`; the `x/y` bundle leaves its
+    // pack.
     let host_main = host_git(&["rev-parse", "main"]);
     let host_refs = host_git(&["for-each-ref"]);
-    in_box(&format!(
+    let host_objects = object_store(repo);
+    let absent = in_box(&format!(
         r#"set -e
 cd /work
 mkdir .hostile
 g() {{ git -c core.hooksPath=/nonexistent -c core.fsmonitor=false "$@"; }}
-# mk NAME COMMIT HEAD...: a bundle of COMMIT under the given head lines.
+# mk NAME COMMIT TIP HEAD...: a bundle of COMMIT with TIP under the given
+# head lines.
 mk() {{
-  name=$1 commit=$2; shift 2
+  name=$1 commit=$2 tip=$3; shift 3
   g update-ref refs/evil/x "$commit"
   g bundle create -q .hostile/real refs/evil/x
   header=$(sed -n '1,/^$/p' .hostile/real | wc -c)
-  {{ printf '# v2 git bundle\n'; for head; do printf '%s %s\n' "$commit" "$head"; done; printf '\n'
+  {{ printf '# v2 git bundle\n'; for head; do printf '%s %s\n' "$tip" "$head"; done; printf '\n'
     tail -c +$((header + 1)) .hostile/real; }} > .hostile/$name
 }}
 evil=$(g commit-tree -m evil 'HEAD^{{tree}}')
+absent=$(g commit-tree -m absent 'HEAD^{{tree}}')
 blob=$(echo evil | g hash-object -w --stdin)
 inner=$(printf '100644 blob %s\tconfig\n' "$blob" | g mktree)
 dotgit=$(g commit-tree -m dotgit "$(printf '040000 tree %s\t.git\n' "$inner" | g mktree)")
-mk injected "$evil" refs/heads/x refs/heads/x:refs/heads/injected
-mk replace "$evil" refs/heads/x refs/heads/x:refs/replace/{host_main}
-mk dotgit "$dotgit" refs/heads/x
+mk injected "$evil" "$evil" refs/heads/x refs/heads/x:refs/heads/injected
+mk replace "$evil" "$evil" refs/heads/x refs/heads/x:refs/replace/{host_main}
+mk dotgit "$dotgit" "$dotgit" refs/heads/x
+mk missing "$evil" "$absent" refs/heads/x
+mk conflict "$evil" "$evil" refs/heads/x refs/heads/x/y
 cat > .hostile/git <<'END'
 #!/bin/sh
 case " $* " in
@@ -1919,9 +2004,11 @@ case " $* " in
 esac
 exec /usr/bin/git "$@"
 END
-chmod 755 .hostile/git"#
+chmod 755 .hostile/git
+echo "$absent""#
     ));
-    for case in ["injected", "replace", "dotgit"] {
+    let conflict = format!("refs/remotes/{name}/x/y");
+    for case in ["injected", "replace", "dotgit", "missing", "conflict"] {
         in_box(&format!("cp /work/.hostile/{case} /work/.hostile/bundle"));
         let (code, failed) = crossing_fetch(&env, &name, repo);
         assert_eq!(
@@ -1934,14 +2021,24 @@ chmod 755 .hostile/git"#
             host_refs,
             "the {case} bundle changed a host ref"
         );
-        // git's fsck names the entry: the fetch failed for it, not for a
+        assert_eq!(
+            object_store(repo),
+            host_objects,
+            "the {case} bundle left bytes in the host's objects"
+        );
+        // git names the fsck entry, the commit the pack lacks, and the ref
+        // it can't update beside `x`: each fetch failed for it, not for a
         // malformed bundle.
-        if case == "dotgit" {
-            assert!(
-                failed["detail"].as_str().unwrap().contains("hasDotgit"),
-                "{failed}"
-            );
-        }
+        let reason = match case {
+            "dotgit" => "hasDotgit",
+            "missing" => absent.trim(),
+            "conflict" => conflict.as_str(),
+            _ => continue,
+        };
+        assert!(
+            failed["detail"].as_str().unwrap().contains(reason),
+            "{failed}"
+        );
     }
 
     up.down(&env);
@@ -2026,6 +2123,27 @@ fn packs(repo: &Path) -> std::collections::BTreeSet<PathBuf> {
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "idx"))
         .collect()
+}
+
+/// Every path under the repository's `.git/objects` with its size, a
+/// directory's as 0 since filesystems size those differently.
+fn object_store(repo: &Path) -> std::collections::BTreeMap<PathBuf, u64> {
+    let mut store = std::collections::BTreeMap::new();
+    let mut pending = vec![repo.join(".git/objects")];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let metadata = fs::symlink_metadata(&path).unwrap();
+            let size = if metadata.is_dir() {
+                pending.push(path.clone());
+                0
+            } else {
+                metadata.len()
+            };
+            store.insert(path, size);
+        }
+    }
+    store
 }
 
 /// Every path under `dir` with its bytes (files only), mode and mtime.
