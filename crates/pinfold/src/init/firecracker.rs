@@ -220,9 +220,12 @@ fn guest_path(fields: &mut Fields) -> io::Result<PathBuf> {
         || ["/proc", "/sys", "/dev"]
             .iter()
             .any(|kernel| path.starts_with(kernel))
+        || ["/tmp", "/etc", "/etc/resolv.conf"]
+            .iter()
+            .any(|hidden| path == Path::new(hidden))
     {
         return Err(io::Error::other(format!(
-            "guest path {} is not plain, absolute, below / and outside /proc, /sys and /dev",
+            "guest path {} is not plain, absolute, below / and outside /proc, /sys and /dev, or is /tmp, /etc or /etc/resolv.conf",
             path.display()
         )));
     }

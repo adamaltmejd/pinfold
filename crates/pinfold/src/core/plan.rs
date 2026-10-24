@@ -628,6 +628,15 @@ impl Plan {
                     guest.display()
                 )));
             }
+            if HIDING_PATHS
+                .iter()
+                .any(|path| normalized == Path::new(path))
+            {
+                return Err(invalid(format!(
+                    "guest path {} would hide the box's tmpfs /tmp or empty /etc/resolv.conf",
+                    guest.display()
+                )));
+            }
             if !guests.insert(normalized) {
                 return Err(invalid(format!(
                     "two mounts or disks name the same guest path {}",
@@ -673,6 +682,10 @@ fn unreadable(dir: &Path) -> Result<(), (PathBuf, std::io::Error)> {
 
 /// Guest paths no mount or disk may name, at or below.
 const KERNEL_PATHS: [&str; 3] = ["/proc", "/sys", "/dev"];
+
+/// Guest paths no mount or disk may name exactly: one there would cover
+/// an Always applied tmpfs `/tmp` or empty `/etc/resolv.conf`.
+const HIDING_PATHS: [&str; 3] = ["/tmp", "/etc", "/etc/resolv.conf"];
 
 /// Resolve guest components lexically, without consulting the host filesystem.
 pub(crate) fn guest_path(path: &Path) -> PathBuf {
