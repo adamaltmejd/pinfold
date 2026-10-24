@@ -4,16 +4,17 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
 use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::path::Path;
+use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 
 use crate::core::plan::Plan;
 use crate::core::runtime::{
-    BoxInfo, BoxStat, BuildRequest, ImageInfo, MemoryStat, PidsStat, Runtime, inspect, list_output,
+    BoxInfo, BoxStat, BuildRequest, DiskInfo, ImageInfo, MemoryStat, PidsStat, Runtime, inspect,
     output, parse_json, spawn_error,
 };
 
@@ -23,46 +24,95 @@ pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
 /// Apple `container`.
 pub struct Apple;
 
-impl Runtime for Apple {
-    fn up(
-        &self,
-        plan: &Plan,
-        init: &Path,
-        _state_dir: &Path,
-        proxy_socket: Option<&Path>,
-        _seccomp: Option<&Path>,
-    ) -> io::Result<Child> {
-        let mut extra: Vec<OsString> = vec!["--progress".into(), "none".into()];
-        if proxy_socket.is_some() {
-            // Off-label: the runtime treats the socket as an SSH agent and
-            // forwards it to GUEST_PROXY_SOCKET.
-            extra.push("--ssh".into());
+/// Start the attached `container run` process that owns the box. When
+/// `proxy_socket` is set, carry that host unix socket into the box.
+#[cfg_attr(target_os = "linux", expect(dead_code))]
+pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<Client> {
+    let mut extra: Vec<OsString> = vec!["--progress".into(), "none".into()];
+    if proxy_socket.is_some() {
+        // Off-label: the runtime treats the socket as an SSH agent and
+        // forwards it to GUEST_PROXY_SOCKET.
+        extra.push("--ssh".into());
+    }
+    let guest_socket = proxy_socket.map(|_| GUEST_PROXY_SOCKET);
+    let mut command = super::up("container", plan, init, guest_socket, extra)?;
+    if let Some(socket) = proxy_socket {
+        command.env("SSH_AUTH_SOCK", socket);
+    }
+    command
+        .spawn()
+        .map(Client)
+        .map_err(|error| spawn_error("container", error))
+}
+
+/// The attached `container run` process that owns a box.
+#[cfg_attr(target_os = "linux", expect(dead_code))]
+pub struct Client(Child);
+
+#[cfg_attr(target_os = "linux", expect(dead_code))]
+impl Client {
+    /// Wait until init reports ready. The error is why it did not.
+    pub async fn ready(&mut self) -> Result<(), String> {
+        let stdout = self
+            .0
+            .stdout
+            .take()
+            .ok_or("the runtime did not pipe the box's stdout")?;
+        let mut lines = BufReader::new(stdout).lines();
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) if line == "ready" => break,
+                Ok(Some(_)) => {}
+                Ok(None) => return Err("box exited before ready".to_string()),
+                Err(error) => return Err(format!("box output failed: {error}")),
+            }
         }
-        let guest_socket = proxy_socket.map(|_| GUEST_PROXY_SOCKET);
-        let mut command = super::up(
-            "container",
-            plan,
-            init,
-            guest_socket,
-            extra,
-            plan.env.iter(),
-        )?;
-        if let Some(socket) = proxy_socket {
-            command.env("SSH_AUTH_SOCK", socket);
-        }
-        command
-            .spawn()
-            .map_err(|error| spawn_error("container", error))
+        // Keep the pipe drained so a talkative box cannot block on it.
+        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+        Ok(())
     }
 
-    fn preflight(&self) -> io::Result<Option<PathBuf>> {
+    /// Wait until the box ends on its own or is stopped.
+    pub async fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.0.wait().await
+    }
+
+    /// Stop and remove a ready box. True when the stop was one pinfold
+    /// requested of a running box, which syncs its disks.
+    pub async fn down(&mut self, name: &str) -> io::Result<bool> {
+        let requested = matches!(self.0.try_wait(), Ok(None));
+        // Runtime removal waits for attached output to close. Keep its
+        // drain running on the owner while the runtime command blocks.
+        let name = name.to_string();
+        let removed = tokio::task::spawn_blocking(move || Apple.down(&name))
+            .await
+            .map_err(io::Error::other)
+            .and_then(|result| result);
+        let _ = self.0.wait().await;
+        removed.map(|()| requested)
+    }
+
+    /// Stop a start that ended before ready and remove its box, returning
+    /// whether the stop synced its disks and how the box ended.
+    pub async fn abort(mut self, name: &str) -> (io::Result<bool>, io::Result<ExitStatus>) {
+        let requested = matches!(self.0.try_wait(), Ok(None));
+        // The client goes first, so one still creating the box cannot
+        // finish after the removal. The box exists by name even when
+        // readiness failed.
+        let _ = self.0.start_kill();
+        let status = self.0.wait().await;
+        (Apple.down(name).map(|()| requested), status)
+    }
+}
+
+impl Runtime for Apple {
+    fn preflight(&self) -> io::Result<()> {
         let reported = self.version()?;
         let version = reported
             .strip_prefix("container CLI version ")
             .and_then(|value| value.split_whitespace().next())
             .unwrap_or(&reported);
-        super::require_version("container", version, [1, 6, 0])?;
-        Ok(None)
+        super::require_version("container", version, [1, 6, 0])
     }
 
     fn down(&self, name: &str) -> io::Result<()> {
@@ -78,7 +128,7 @@ impl Runtime for Apple {
         };
         // Another process may have removed the box between the list and this
         // call; a box the runtime no longer lists counts as removed.
-        if self.list(None)?.iter().all(|box_| box_.id != name) {
+        if self.list()?.iter().all(|box_| box_.id != name) {
             return Ok(());
         }
         Err(error)
@@ -104,8 +154,8 @@ impl Runtime for Apple {
         })
     }
 
-    fn list(&self, cancel: Option<&AtomicBool>) -> io::Result<Vec<BoxInfo>> {
-        Ok(containers(cancel)?
+    fn list(&self) -> io::Result<Vec<BoxInfo>> {
+        Ok(containers()?
             .into_iter()
             .map(|container| {
                 let configuration = container.configuration;
@@ -192,6 +242,37 @@ impl Runtime for Apple {
         allocated_bytes(&root.join("containers/buildkit")).map(Some)
     }
 
+    fn list_disks(&self) -> io::Result<Vec<DiskInfo>> {
+        let json = output(&["container", "volume", "list", "--format", "json"])?;
+        let volumes: Vec<ListedVolume> = parse_json("container volume list", &json)?;
+        volumes
+            .into_iter()
+            .map(|volume| {
+                let configuration = volume.configuration;
+                Ok(DiskInfo {
+                    allocated: allocated_bytes(Path::new(&configuration.source))?,
+                    name: configuration.name,
+                    size: configuration.size,
+                })
+            })
+            .collect()
+    }
+
+    fn create_disk(&self, name: &str, bytes: u64) -> io::Result<()> {
+        let size = format!("{}G", bytes >> 30);
+        output(&["container", "volume", "create", "-s", &size, name]).map(drop)
+    }
+
+    fn remove_disk(&self, name: &str) -> io::Result<()> {
+        output(&["container", "volume", "rm", name]).map(drop)
+    }
+
+    /// The guest synced; what the volume keeps through a host crash is
+    /// the runtime's.
+    fn sync_disk(&self, _name: &str) -> io::Result<()> {
+        Ok(())
+    }
+
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
         let cache_flags: &[&str] = if request.cache { &[] } else { &["--no-cache"] };
         super::build("container", cache_flags, request)
@@ -216,7 +297,7 @@ impl Runtime for Apple {
 pub fn wait_until_running(name: &str) -> io::Result<BoxInfo> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let state = Apple.list(None)?.into_iter().find(|box_| box_.id == name);
+        let state = Apple.list()?.into_iter().find(|box_| box_.id == name);
         match state {
             Some(box_) if box_.running => return Ok(box_),
             _ if Instant::now() >= deadline => {
@@ -244,6 +325,110 @@ pub fn make_proxy_connectable(name: &str) -> io::Result<()> {
         GUEST_PROXY_SOCKET,
     ])
     .map(drop)
+}
+
+/// Give new volumes' roots, which arrive `0:0 755`, to the box user. A box's
+/// root exec cannot: the box drops every capability. So a transient
+/// container of the box's image runs init as root with only `CAP_CHOWN`
+/// and no network. It takes the box's name, still held by its claim, and
+/// its owner and generation labels, so `clean` sees a leftover as a dead
+/// box and removes it.
+pub fn own_disks(
+    names: &[&str],
+    image: &str,
+    init: &Path,
+    name: &str,
+    labels: &BTreeMap<String, String>,
+) -> io::Result<()> {
+    let init_dir = init
+        .parent()
+        .expect("box::up refuses an init without a directory");
+    let owner = format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid());
+    let mut command = std::process::Command::new("container");
+    command
+        .args(["run", "--progress", "none", "--network", "none"])
+        .args(["--read-only", "--cap-drop", "ALL", "--cap-add", "CAP_CHOWN"])
+        .args(["--name", name])
+        .args(["--user", "0:0", "--mount"])
+        .arg(super::bind(init_dir, init_dir));
+    for (key, value) in labels {
+        command.arg("--label").arg(format!("{key}={value}"));
+    }
+    let mut setup: Vec<OsString> = vec!["init".into(), "setup".into()];
+    for (index, name) in names.iter().enumerate() {
+        let guest = format!("/pinfold-disk/{index}");
+        command
+            .arg("--mount")
+            .arg(format!("type=volume,source={name},target={guest}"));
+        setup.extend(["--own".into(), owner.clone().into(), guest.into()]);
+    }
+    let result = command
+        .arg("--entrypoint")
+        .arg(init)
+        .arg(image)
+        .args(setup)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| spawn_error("container", error));
+    // The box reuses the helper's name, so the helper must be gone first.
+    // Apple reports a container `running` for a moment after `run` returns,
+    // and `rm` refuses it then; `run --rm` removes it just as late. `stop`
+    // returns once it has stopped, after which `rm` succeeds.
+    let stopped = output(&["container", "stop", name]);
+    let removed = output(&["container", "rm", name]);
+    let result = result?;
+    if !result.status.success() {
+        // Name a failed stop or removal too, so a leftover helper shows.
+        let leftover = match (&stopped, &removed) {
+            (Ok(_), Ok(_)) => String::new(),
+            _ => format!(
+                "; removing helper {name}: {:?}, {:?}",
+                stopped.err(),
+                removed.err()
+            ),
+        };
+        return Err(io::Error::other(format!(
+            "give new disks to the box user: {}{leftover}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        )));
+    }
+    stopped?;
+    removed.map(drop)
+}
+
+/// Run `init receive GUEST` in box `name` as the box user with `stream`
+/// written to its stdin: a new disk's `from` copy, or with `missing`, the
+/// profile's seeds, each written only when absent.
+pub fn copy_in(
+    name: &str,
+    init: &Path,
+    guest: &Path,
+    missing: bool,
+    stream: impl FnOnce(&mut dyn io::Write) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut child = std::process::Command::new("container")
+        .args(["exec", "-i", name])
+        .arg(init)
+        .args(["init", "receive"])
+        .args(missing.then_some("--missing"))
+        .arg(guest)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| spawn_error("container", error))?;
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let sent = stream(&mut stdin);
+    drop(stdin);
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "copy into {}: {}",
+            guest.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    sent
 }
 
 /// One `container list --format json` entry, as much as pinfold needs.
@@ -314,19 +499,34 @@ struct ListedStatus {
 }
 
 /// Every box `container list` reports, running or not.
-fn containers(cancel: Option<&AtomicBool>) -> io::Result<Vec<ListedContainer>> {
-    let json = list_output(&["container", "list", "--all", "--format", "json"], cancel)?;
+fn containers() -> io::Result<Vec<ListedContainer>> {
+    let json = output(&["container", "list", "--all", "--format", "json"])?;
     parse_json("container list", &json)
 }
 
 /// The listed container with this id, if the runtime has one.
 fn container(name: &str) -> io::Result<Option<ListedContainer>> {
-    Ok(containers(None)?.into_iter().find(|entry| entry.id == name))
+    Ok(containers()?.into_iter().find(|entry| entry.id == name))
 }
 
 /// The shared BuildKit builder, if the runtime has one.
 fn builder() -> io::Result<Option<ListedContainer>> {
     container("buildkit")
+}
+
+/// One `container volume list --format json` entry, as much as pinfold needs.
+#[derive(Deserialize)]
+struct ListedVolume {
+    configuration: ListedVolumeConfiguration,
+}
+
+#[derive(Deserialize)]
+struct ListedVolumeConfiguration {
+    name: String,
+    #[serde(rename = "sizeInBytes")]
+    size: u64,
+    /// The volume's image on the host.
+    source: String,
 }
 
 /// One `container image list --format json` entry, as much as pinfold needs.

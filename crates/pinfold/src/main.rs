@@ -56,12 +56,15 @@ fn main() -> ExitCode {
         "build" => cli::build,
         "image" => cli::image,
         "clean" => cli::clean,
+        "disk" => cli::disk,
         "doctor" => cli::doctor,
         "artifacts" => cli::artifacts,
         "apparmor-profile" => cli::apparmor_profile,
         "config" => cli::config,
         "profile" => cli::profile,
         "pi" => launch::run,
+        "push" => |args| launch::crossing("push", args),
+        "fetch" => |args| launch::crossing("fetch", args),
         "update" => update::run,
         _ => {
             eprintln!("{}", cli::USAGE);

@@ -1,0 +1,164 @@
+up one: ready
+== row 1: interfaces
+lo
+[exit 0]
+== row 1: vsock to CID 2 from inside (1024 exec, 1025 control, 4444 unused, 3128 proxy)
+1024 ConnectionResetError errno 104 0.3 ms
+1025 ConnectionResetError errno 104 0.2 ms
+4444 ConnectionResetError errno 104 0.2 ms
+3128 connected: proxy-standin 0.4 ms
+[exit 0]
+== row 1: relay 127.0.0.1:3128
+proxy-standin
+[exit 0]
+== row 1: guest kernel config
+# CONFIG_VSOCKETS_LOOPBACK is not set
+CONFIG_VIRTIO_VSOCKETS=y
+[exit 0]
+== row 5: PID 1
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+CapInh:	0000000000000000
+CapPrm:	000001ffffffffff
+CapEff:	000001ffffffffff
+CapBnd:	000001ffffffffff
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+[exit 0]
+== row 5: exec service (parent of the exec'd shell)
+Name:	pinfold
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+Groups:	 
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+0::/work
+[exit 0]
+== row 5: exec'd process
+Uid:	1000	1000	1000	1000
+Groups:	 
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+[exit 0]
+== row 5: unshare -U
+unshare: unshare failed: No space left on device
+[exit 1]
+== row 5: control: unshare -m without privilege also fails, for another reason
+unshare: unshare failed: Operation not permitted
+[exit 1]
+== row 5: max_user_namespaces
+0
+[exit 0]
+== row 5: rootfs
+touch: cannot touch '/x': Read-only file system
+[exit 1]
+== row 5: setuid or setgid files
+find: '/lost+found': Permission denied
+find: '/root': Permission denied
+find: '/var/cache/ldconfig': Permission denied
+0
+[exit 0]
+== resolv.conf bytes
+0 /etc/resolv.conf
+[exit 0]
+== row 6: env in the box
+marker-c926543acae8be46
+[exit 0]
+== row 6: guest cmdline
+console=ttyS0 reboot=k panic=1 pci=off init=/pinfold pci=off root=/dev/vda ro virtio_mmio.device=4K@0xc0001000:5 virtio_mmio.device=4K@0xc0002000:6 virtio_mmio.device=4K@0xc0003000:7 virtio_mmio.device=4K@0xc0004000:8 virtio_mmio.device=4K@0xc0005000:9 -- init boot
+[exit 0]
+== row 6: host files holding the value (none expected)
+[grep exit 1 (1 = none)]
+== row 6: control: the same grep finds a value written to the work disk later
+== exec: exit code, signal, stdin, stderr, workdir, missing program
+[exit 7]
+[exit 137]
+hello-stdin
+[exit 0]
+out
+[exit 0]
+stderr: err
+/work
+[exit 0]
+pinfold init exec: no-such-program: No such file or directory (os error 2)
+[exit 127]
+== exec: tty and resize
+/dev/pts/0
+40 100
+xterm
+[exit 0]
+== exec: orphan reaped
+[exit 0]
+zombies: 0
+[exit 0]
+== row 11: from copy
+.:
+total 15
+-rw-r--r-- 1 1000 1000     2 Oct 20 14:26 a
+lrwxrwxrwx 1 1000 1000     1 Oct 20 14:26 link -> a
+drwx------ 2    0    0 12288 Oct 20 14:26 lost+found
+-rwxr-xr-x 1 1000 1000    19 Oct 20 14:26 run.sh
+drwxr-xr-x 2 1000 1000  1024 Oct 20 14:26 sub
+
+sub:
+total 1
+-rw-r--r-- 1 1000 1000 2 Oct 20 14:26 b
+a
+b
+run
+a
+[exit 0]
+== row 11: read-only disk
+corpus
+touch: cannot touch '/corpus/y': Read-only file system
+[exit 1]
+== row 11: ownership of the disk roots
+/work 1000:1000 755
+/corpus 0:0 755
+[exit 0]
+== row 20: oom_score_adj of exec'd work
+1000
+[exit 0]
+== row 20: stat before
+{"memory.current": 31752192, "memory.peak": 32583680, "pids.current": 3, "pids.max": 2048, "oom_kills": 0}
+== row 20: memory hog
+[exit 137]
+== row 20: stat after
+{"memory.current": 2506752, "memory.peak": 480903168, "pids.current": 3, "pids.max": 2048, "oom_kills": 1}
+== row 20: box still answers
+alive
+[exit 0]
+== row 11: hardest case: 64 MiB unsynced and a busy cwd at down
+written
+[exit 0]
+started
+[exit 0]
+[exit 0]
+down one: clean
+== row 11: needs_recovery after down (absent expected)
+Filesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype extent 64bit flex_bg metadata_csum_seed sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+Filesystem state:         clean
+== row 6: control: the grep finds the value the box wrote
+/home/agent/st/work.ext4
+[grep exit 0]
+up two: ready
+== row 11: read-only reattach
+/work/big: OK
+touch: cannot touch '/work/z': Read-only file system
+[exit 1]
+down two: clean
+== exec before ENV waits for it
+up three: ready
+after 1 s without ENV: still waiting
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+[exit 0]
+down three: clean
+== done

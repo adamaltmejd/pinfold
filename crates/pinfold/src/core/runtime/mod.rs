@@ -1,25 +1,24 @@
-//! Container runtimes: one per OS, behind a trait.
+//! Box runtimes: one per OS, behind a trait.
 
 pub mod apple;
+#[cfg(target_os = "linux")]
+pub mod firecracker;
+#[cfg(target_os = "linux")]
 pub mod podman;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read};
-use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::{Duration, Instant};
 
-use nix::poll::{PollFd, PollFlags, poll};
 use serde::de::DeserializeOwned;
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 
-use crate::core::pipe::{nonblocking, remaining};
+use crate::core::disk::{Fill, Seeding};
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
 use crate::init::BOX_ENV_PREFIX;
@@ -43,14 +42,76 @@ fn guest_env(command: &mut std::process::Command, name: &str, value: &OsStr) {
     command.args(["--env", &transport]).env(transport, encoded);
 }
 
-/// The container runtime for this OS: Apple `container` on macOS, rootless
-/// podman on Linux, the only targets pinfold builds for.
+/// The box runtime for this OS: Apple `container` on macOS, Firecracker on
+/// Linux, the only targets pinfold builds for.
 pub fn runtime() -> &'static dyn Runtime {
-    if cfg!(target_os = "macos") {
-        &apple::Apple
-    } else {
-        &podman::Podman
+    #[cfg(target_os = "linux")]
+    return &firecracker::Firecracker;
+    #[cfg(not(target_os = "linux"))]
+    return &apple::Apple;
+}
+
+#[cfg(target_os = "linux")]
+pub use firecracker::Prepared;
+
+/// What [`prepare`] made for one start. Apple needs nothing.
+#[cfg(not(target_os = "linux"))]
+pub struct Prepared;
+
+/// The slow, cancellable part of a start, run on a blocking thread before
+/// [`start`]: on Linux the VMM's install, the root and init disks and the
+/// mounts' images. `image_id` is the image `up` resolved; a tag that moved
+/// since fails as `image-changed`.
+pub fn prepare(
+    plan: &Plan,
+    state_dir: &Path,
+    image_id: &str,
+    cancel: &AtomicBool,
+) -> io::Result<Prepared> {
+    #[cfg(target_os = "linux")]
+    return firecracker::prepare(plan, state_dir, image_id, cancel);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (plan, state_dir, image_id, cancel);
+        Ok(Prepared)
     }
+}
+
+/// Start the box. On Linux the boot carries the new disks' `fills` and the
+/// profile's `seeding`; Apple's caller copies them in after ready.
+pub fn start(
+    prepared: Prepared,
+    plan: &Plan,
+    init: &Path,
+    proxy_socket: Option<&Path>,
+    fills: &[Fill],
+    seeding: Option<&Seeding>,
+) -> io::Result<Child> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = init;
+        firecracker::Vm::up(prepared, plan, proxy_socket, fills, seeding)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let (Prepared, _, _) = (prepared, fills, seeding);
+        apple::up(plan, init, proxy_socket)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub use apple::Client as Child;
+/// What `box up` holds for its box: on Linux the VM it runs itself, on
+/// macOS the attached runtime client. Each has `ready`, `wait`, `down` and
+/// `abort`.
+#[cfg(target_os = "linux")]
+pub use firecracker::Vm as Child;
+
+/// A VMM's exit code, or `128+n` for signal `n`, as the exit status a
+/// runtime client would report: `exited` names 137 for a SIGKILLed VMM.
+#[cfg(target_os = "linux")]
+fn exit_status(code: i32) -> ExitStatus {
+    std::os::unix::process::ExitStatusExt::from_raw((code & 0xff) << 8)
 }
 
 pub(crate) fn require_version(program: &str, version: &str, minimum: [u64; 3]) -> io::Result<()> {
@@ -106,159 +167,6 @@ fn captured(argv: &[&str]) -> io::Result<Result<Vec<u8>, String>> {
 /// names the command and carries its stderr; a failed spawn keeps its kind.
 pub(crate) fn output(argv: &[&str]) -> io::Result<Vec<u8>> {
     captured(argv)?.map_err(|stderr| io::Error::other(format!("{}: {stderr}", argv.join(" "))))
-}
-
-/// Listing must fail without claiming an empty inventory when the runtime
-/// waits on storage (GitHub #89). Never use this deadline for mutations.
-pub(crate) fn list_output(argv: &[&str], cancel: Option<&AtomicBool>) -> io::Result<Vec<u8>> {
-    const LIMIT: Duration = Duration::from_secs(20);
-    let deadline = Instant::now() + LIMIT;
-    let (program, arguments) = argv.split_first().expect("argv is never empty");
-    let mut child = std::process::Command::new(program)
-        .args(arguments)
-        .process_group(0)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| spawn_error(program, error))?;
-    let mut reaped = false;
-    let mut exit_observer = None;
-    let result = (|| {
-        let mut stdout = child.stdout.take().expect("piped stdout");
-        let mut stderr = child.stderr.take().expect("piped stderr");
-        nonblocking(&stdout, "runtime listing")?;
-        nonblocking(&stderr, "runtime listing")?;
-        let (mut out, mut err) = (Vec::new(), Vec::new());
-        let (mut out_done, mut err_done) = (false, false);
-        loop {
-            remaining(deadline, cancel, "runtime listing")?;
-            if !out_done {
-                out_done = listing_bytes(&mut stdout, &mut out, deadline, cancel)?;
-            }
-            if !err_done {
-                err_done = listing_bytes(&mut stderr, &mut err, deadline, cancel)?;
-            }
-            if out_done && err_done {
-                // Keep the group leader unreaped until descendants close
-                // both pipes, so failure cleanup cannot target a reused PID.
-                let status = match child.try_wait()? {
-                    Some(status) => status,
-                    None => {
-                        let pid = child.id();
-                        let (send, receive) = mpsc::channel();
-                        exit_observer = Some(std::thread::Builder::new().spawn(move || {
-                            loop {
-                                let mut info = std::mem::MaybeUninit::uninit();
-                                // Observe without reaping, so timeout cleanup still owns the PID.
-                                let waited = unsafe {
-                                    nix::libc::waitid(
-                                        nix::libc::P_PID,
-                                        pid,
-                                        info.as_mut_ptr(),
-                                        nix::libc::WEXITED | nix::libc::WNOWAIT,
-                                    )
-                                };
-                                match nix::errno::Errno::result(waited) {
-                                    Err(nix::errno::Errno::EINTR) => continue,
-                                    result => {
-                                        let _ = send.send(result.map(|_| ()));
-                                        break;
-                                    }
-                                }
-                            }
-                        })?);
-                        loop {
-                            let timeout = remaining(deadline, cancel, "runtime listing")?
-                                .min(Duration::from_millis(100));
-                            match receive.recv_timeout(timeout) {
-                                Ok(result) => {
-                                    result?;
-                                    break;
-                                }
-                                Err(RecvTimeoutError::Timeout) => continue,
-                                Err(error) => return Err(io::Error::other(error)),
-                            }
-                        }
-                        child.wait()?
-                    }
-                };
-                reaped = true;
-                return if status.success() {
-                    Ok(out)
-                } else {
-                    Err(io::Error::other(format!(
-                        "{}: {}",
-                        argv.join(" "),
-                        String::from_utf8_lossy(&err).trim()
-                    )))
-                };
-            }
-            let mut fds = Vec::new();
-            if !out_done {
-                fds.push(PollFd::new(stdout.as_fd(), PollFlags::POLLIN));
-            }
-            if !err_done {
-                fds.push(PollFd::new(stderr.as_fd(), PollFlags::POLLIN));
-            }
-            let timeout =
-                remaining(deadline, cancel, "runtime listing")?.min(Duration::from_millis(100));
-            let millis = timeout.as_millis().clamp(1, u16::MAX as u128) as u16;
-            match poll(&mut fds, millis) {
-                Ok(_) | Err(nix::errno::Errno::EINTR) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-    })();
-    if !reaped {
-        let _ = nix::sys::signal::killpg(
-            nix::unistd::Pid::from_raw(child.id() as i32),
-            nix::sys::signal::Signal::SIGKILL,
-        );
-        let _ = child.kill();
-    }
-    let observer_result = exit_observer.map_or(Ok(()), |observer| {
-        observer
-            .join()
-            .map_err(|_| io::Error::other("runtime listing exit observer panicked"))
-    });
-    if !reaped {
-        child.wait()?;
-    }
-    observer_result?;
-    result.map_err(|error| {
-        if error.kind() == io::ErrorKind::TimedOut {
-            io::Error::new(
-                error.kind(),
-                format!(
-                    "runtime-timeout: {} exceeded {} seconds",
-                    argv.join(" "),
-                    LIMIT.as_secs()
-                ),
-            )
-        } else {
-            error
-        }
-    })
-}
-
-fn listing_bytes(
-    reader: &mut impl Read,
-    bytes: &mut Vec<u8>,
-    deadline: Instant,
-    cancel: Option<&AtomicBool>,
-) -> io::Result<bool> {
-    let mut buffer = [0u8; 8192];
-    loop {
-        remaining(deadline, cancel, "runtime listing")?;
-        match reader.read(&mut buffer) {
-            Ok(0) => return Ok(true),
-            Ok(size) => bytes.extend_from_slice(&buffer[..size]),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error),
-        }
-    }
 }
 
 /// Run `<program> image inspect <reference>` and return its first entry. The
@@ -343,6 +251,16 @@ pub struct ImageInfo {
     pub digest: Option<String>,
 }
 
+/// One disk the runtime stores.
+#[derive(Debug, Clone)]
+pub struct DiskInfo {
+    pub name: String,
+    /// The disk's size in bytes.
+    pub size: u64,
+    /// The host blocks its image holds, in bytes.
+    pub allocated: u64,
+}
+
 /// One image build: a context, a Containerfile, the names to tag the result
 /// with, and the labels to record on it.
 pub struct BuildRequest<'a> {
@@ -359,27 +277,19 @@ pub struct BuildRequest<'a> {
     pub cache: bool,
 }
 
-/// One OS's container runtime. Command lines are built as data.
+/// One OS's box runtime. Command lines and VM configurations are built as
+/// data.
 pub trait Runtime: Sync {
-    /// Start the attached `container run` process that owns the box. When
-    /// `proxy_socket` is set, carry that host unix socket into the box.
-    /// `seccomp` is the profile [`Runtime::preflight`] returned.
-    /// `state_dir` belongs to this claim until runtime removal.
-    fn up(
-        &self,
-        plan: &Plan,
-        init: &Path,
-        state_dir: &Path,
-        proxy_socket: Option<&Path>,
-        seccomp: Option<&Path>,
-    ) -> io::Result<Child>;
-
     /// Refuse a host the runtime cannot serve, before `up` creates any box
-    /// state, and return the seccomp profile the runtime reports, which
-    /// `up` needs. podman only; Apple returns `None`.
-    fn preflight(&self) -> io::Result<Option<PathBuf>>;
+    /// state.
+    fn preflight(&self) -> io::Result<()>;
 
-    /// Stop and remove the box.
+    /// Where the box's proxy listens, in its claimed `state_dir`.
+    fn proxy_socket(&self, state_dir: &Path) -> io::Result<PathBuf> {
+        Ok(state_dir.join("proxy.sock"))
+    }
+
+    /// Stop and remove the box of an owner that is gone.
     fn down(&self, name: &str) -> io::Result<()>;
 
     /// Run `argv` in a running box with inherited stdio, through the box's
@@ -396,6 +306,20 @@ pub trait Runtime: Sync {
         workdir: Option<&Path>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
+        self.exec_command(name, init, tty, workdir, argv)
+            .status()
+            .map_err(|error| spawn_error(self.program(), error))
+    }
+
+    /// The command [`Runtime::exec`] runs, for a caller that pipes its stdio.
+    fn exec_command(
+        &self,
+        name: &str,
+        init: &Path,
+        tty: bool,
+        workdir: Option<&Path>,
+        argv: &[String],
+    ) -> std::process::Command {
         let program = self.program();
         let mut command = std::process::Command::new(program);
         command.args(["exec", "-i"]);
@@ -420,9 +344,8 @@ pub trait Runtime: Sync {
             .arg(name)
             .arg(init)
             .args(["init", "exec", "--"])
-            .args(argv)
-            .status()
-            .map_err(|error| spawn_error(program, error))
+            .args(argv);
+        command
     }
 
     /// One box's OOM kills, memory and pids facts. `name` is the box
@@ -430,7 +353,7 @@ pub trait Runtime: Sync {
     fn stat(&self, name: &str) -> io::Result<BoxStat>;
 
     /// List every box, running or not.
-    fn list(&self, cancel: Option<&AtomicBool>) -> io::Result<Vec<BoxInfo>>;
+    fn list(&self) -> io::Result<Vec<BoxInfo>>;
 
     /// List every image, with the labels recorded on it.
     fn list_images(&self) -> io::Result<Vec<ImageInfo>>;
@@ -457,6 +380,18 @@ pub trait Runtime: Sync {
     fn build_cache_bytes(&self) -> io::Result<Option<u64>> {
         Ok(None)
     }
+
+    /// Every disk the runtime stores.
+    fn list_disks(&self) -> io::Result<Vec<DiskInfo>>;
+
+    /// Create an empty disk of `bytes`.
+    fn create_disk(&self, name: &str, bytes: u64) -> io::Result<()>;
+
+    /// Remove a disk no box attaches.
+    fn remove_disk(&self, name: &str) -> io::Result<()>;
+
+    /// Make the writes a box finished on the disk durable on the host.
+    fn sync_disk(&self, name: &str) -> io::Result<()>;
 
     /// Build an image from [`BuildRequest`]. The inner `Err` is the build's
     /// output, stdout and stderr in order, when the build ran and failed.
@@ -496,6 +431,31 @@ fn runtime_path(program: &str) -> io::Result<PathBuf> {
     Err(spawn_error(program, io::ErrorKind::NotFound.into()))
 }
 
+/// The box's environment in order, a later entry winning: the spec's, a
+/// `from` entry read from pinfold's own environment under the entry's key,
+/// then the always-applied variables.
+fn guest_vars(plan: &Plan) -> Vec<(String, OsString)> {
+    let mut vars: Vec<(String, OsString)> = plan
+        .env
+        .iter()
+        .filter_map(|(name, value)| {
+            let value = match value {
+                Env::Exact(value) => Some(OsString::from(value)),
+                Env::From { from } => std::env::var_os(from),
+            };
+            Some((name.clone(), value?))
+        })
+        .collect();
+    // Always applied: Node's fetch reads the proxy variables only with this
+    // set. These override any spec entries with the same names.
+    vars.push(("NODE_USE_ENV_PROXY".into(), "1".into()));
+    if plan.egress.is_some() {
+        vars.push(("HTTPS_PROXY".into(), PROXY_URL.into()));
+        vars.push(("http_proxy".into(), PROXY_URL.into()));
+    }
+    vars
+}
+
 /// The attached `<program> run` command that owns a box: stdin and stdout
 /// piped. `program` is resolved on pinfold's own `PATH`. Guest values are
 /// encoded under prefixed names, so they cannot configure the host client.
@@ -506,15 +466,13 @@ fn runtime_path(program: &str) -> io::Result<PathBuf> {
 /// to that guest path, which `extra` carries the proxy socket to.
 ///
 /// Env values go through the child's environment, so argv holds only names
-/// and `ps` cannot read a secret. A `from` entry names a host variable the
-/// box sees under the entry's key; the two need not match.
-fn up<'a>(
+/// and `ps` cannot read a secret.
+fn up(
     program: &str,
     plan: &Plan,
     init: &Path,
     guest_socket: Option<&str>,
     extra: Vec<OsString>,
-    env: impl Iterator<Item = (&'a String, &'a Env)>,
 ) -> io::Result<Command> {
     let program = runtime_path(program)?;
     let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
@@ -537,33 +495,26 @@ fn up<'a>(
     for (key, value) in &plan.labels {
         command.arg("--label").arg(format!("{key}={value}"));
     }
-    for (name, value) in env {
-        let value = match value {
-            Env::Exact(value) => Some(OsString::from(value)),
-            Env::From { from } => std::env::var_os(from),
-        };
-        if let Some(value) = value {
-            guest_env(command.as_std_mut(), name, &value);
-        }
-    }
-    // Always applied: Node's fetch reads the proxy variables only with this
-    // set. These override any spec entries with the same names.
-    guest_env(command.as_std_mut(), "NODE_USE_ENV_PROXY", OsStr::new("1"));
-    if plan.egress.is_some() {
-        guest_env(command.as_std_mut(), "HTTPS_PROXY", OsStr::new(PROXY_URL));
-        guest_env(command.as_std_mut(), "http_proxy", OsStr::new(PROXY_URL));
+    for (name, value) in guest_vars(plan) {
+        guest_env(command.as_std_mut(), &name, &value);
     }
     for mount in &plan.mounts {
-        command
-            .arg("--mount")
-            .arg(bind(&mount.host, &mount.guest, mount.readonly));
+        command.arg("--mount").arg(bind(&mount.host, &mount.guest));
+    }
+    for disk in &plan.disks {
+        let mut value = OsString::from(format!("type=volume,source={},target=", disk.name));
+        value.push(&disk.guest);
+        if disk.readonly {
+            value.push(",readonly");
+        }
+        command.arg("--mount").arg(value);
     }
     let init_dir = init
         .parent()
         .expect("box::up refuses an init without a directory");
     command
         .arg("--mount")
-        .arg(bind(init_dir, init_dir, true))
+        .arg(bind(init_dir, init_dir))
         .arg("--entrypoint")
         .arg(init)
         .arg(
@@ -650,14 +601,12 @@ fn build(
     }
 }
 
-/// A `type=bind` mount value, as both runtimes spell it.
-pub(crate) fn bind(host: &Path, guest: &Path, readonly: bool) -> OsString {
+/// A read-only `type=bind` mount value, as both runtimes spell it.
+pub(crate) fn bind(host: &Path, guest: &Path) -> OsString {
     let mut value = OsString::from("type=bind,source=");
     value.push(host);
     value.push(",target=");
     value.push(guest);
-    if readonly {
-        value.push(",readonly");
-    }
+    value.push(",readonly");
     value
 }

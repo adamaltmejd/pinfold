@@ -41,7 +41,6 @@ pub struct Config {
     pub project_toml: Option<Vec<u8>>,
     pub allow: Vec<String>,
     pub routes: BTreeMap<String, Route>,
-    pub protect: Vec<String>,
     pub cpus: f64,
     pub memory: String,
     /// The `<NAME>`s of the host's `PINFOLD_ENV_<NAME>` variables. Their
@@ -102,7 +101,6 @@ impl Config {
                 .allow
                 .unwrap_or_else(|| DEFAULT_ALLOW.iter().map(|host| host.to_string()).collect()),
             routes: merged.routes.unwrap_or_default(),
-            protect: merged.protect.unwrap_or_default(),
             cpus: merged.cpus.unwrap_or(DEFAULT_CPUS),
             memory: merged.memory.unwrap_or_else(|| DEFAULT_MEMORY.to_string()),
             env: env::vars_os()
@@ -128,7 +126,6 @@ struct Layer {
     containerfile: Option<String>,
     allow: Option<Vec<String>>,
     routes: Option<BTreeMap<String, Route>>,
-    protect: Option<Vec<String>>,
     cpus: Option<f64>,
     memory: Option<String>,
 }
@@ -165,9 +162,6 @@ impl Layer {
                 .as_deref()
                 .map(parse_routes)
                 .transpose()?,
-            protect: override_value("PINFOLD_PROTECT")?
-                .as_deref()
-                .map(split_list),
             cpus: override_value("PINFOLD_CPUS")?
                 .map(|value| {
                     value
@@ -187,7 +181,6 @@ impl Layer {
         self.memory = higher.memory.or(self.memory);
         self.allow = higher.allow.or(self.allow);
         self.routes = higher.routes.or(self.routes);
-        self.protect = higher.protect.or(self.protect);
         self
     }
 }

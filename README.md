@@ -17,8 +17,11 @@ Its only way out is its own allowlisting proxy.
 | macOS 26+ | Apple `container` 1.6.0+ (stable) |
 | Linux x64, kernel 6.10+ | `/dev/kvm` for the user (the `kvm` group), unprivileged user namespaces and Landlock, e2fsprogs, and rootless podman 6.1.4+ (stable) for image builds; pinfold fetches its pinned Firecracker |
 
-On Ubuntu 24.04+, AppArmor restricts user namespaces. Load pinfold's
-profile once instead of turning the restriction off:
+On Ubuntu 24.04+, AppArmor restricts user namespaces, and `box up` is
+refused as `runtime` naming `userns-apparmor`. Load pinfold's profile
+once, as root, instead of turning the restriction off. It attaches to the
+path of the executable that prints it, so run these with the installed
+binary, and again after moving it:
 
 ```sh
 pinfold apparmor-profile | sudo tee /etc/apparmor.d/pinfold >/dev/null
@@ -97,7 +100,7 @@ In a project:
    Later runs show an `image-outdated` rebuild hint when the Containerfile
    changes. Rebuilding keeps project settings, sessions and logins.
 3. Start pi: `pi`. The first run downloads the pinned pi release and
-   creates the project home and project disks.
+   creates the project's home and project disks.
 4. Run `/login` in pi once per project: state is per project. API keys
    arrive through the environment instead.
 

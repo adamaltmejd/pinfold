@@ -1,7 +1,6 @@
 //! Profile lookup: the user's copy under the config dir, else the embedded
 //! profiles.
 
-use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -97,6 +96,7 @@ pub fn write_files(
 
 /// One file in a profile's `home/`: a seed for `$HOME`, copied only when
 /// missing.
+#[derive(Clone)]
 pub struct Seed {
     /// The path under `$HOME`.
     pub path: PathBuf,
@@ -269,24 +269,21 @@ pub fn write_profile(source: &Profile, target: &Path) -> io::Result<()> {
     write_files(seeds, &target.join("home"))?;
     if let Some(share) = &source.share {
         match share {
-            Share::Directory(path) => copy_tree(path, &target.join("share"), |_| false)?,
+            Share::Directory(path) => copy_tree(path, &target.join("share"))?,
             Share::Embedded(files) => write_files(files.iter().copied(), &target.join("share"))?,
         }
     }
     Ok(())
 }
 
-pub fn copy_tree(from: &Path, to: &Path, skip: fn(&OsStr) -> bool) -> io::Result<()> {
+pub fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
         let entry = entry?;
-        if skip(&entry.file_name()) {
-            continue;
-        }
         let target = to.join(entry.file_name());
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
-            copy_tree(&entry.path(), &target, skip)?;
+            copy_tree(&entry.path(), &target)?;
         } else if file_type.is_file() {
             fs::copy(entry.path(), &target)?;
         }

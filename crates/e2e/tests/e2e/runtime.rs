@@ -1,27 +1,26 @@
 //! Tests that require exclusive access to the shared host runtime.
+//! They live together so they start after every shared test: libtest starts
+//! tests in name order, and a queued writer blocks later readers.
 
-use std::fs;
-use std::io::BufReader;
-#[cfg(target_os = "linux")]
-use std::io::Write;
-#[cfg(target_os = "linux")]
-use std::os::unix::fs::MetadataExt;
+use std::fs::{self, File};
+use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, SystemTime};
 
 use e2e::{
-    ImageCleanup, TestDir, TestEnv, assert_ok, box_exec, box_list, build_profile, curl,
-    default_image, egress_log, image_cli, image_id, json_lines, labeled_images, pinfold,
-    profile_containerfile, project_id, project_state_dir, run_ok, tagged_images,
+    HttpFixture, ImageCleanup, TestDir, TestEnv, assert_ok, box_exec, box_list, build_profile,
+    curl, default_image, egress_log, image_cli, image_id, inspect, json_lines, labeled_images,
+    pinfold, profile_containerfile, project_id, project_state_dir, run_ok, tagged_images,
 };
 
+#[cfg(target_os = "macos")]
+use super::box_::RuntimeContainer;
 use super::box_::{
-    ChildOwner, HeldBuild, HeldDownload, RuntimeContainer, box_name, box_up, built_unique_ref,
-    find_box_state_dir, image_build, image_rm, read_bounded,
+    ChildOwner, DiskCleanup, HeldBuild, HeldDownload, box_name, box_up, built_unique_ref,
+    disk_names, find_box_state_dir, image_build, image_rm, read_bounded,
 };
-
-#[cfg(target_os = "linux")]
-use super::box_::{Starting, box_up_start, status_field};
+use super::runs::run_id;
 
 #[test]
 fn cleanup_removes_only_pinfolds_garbage() {
@@ -40,8 +39,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // the `dev.pinfold.profile` label from the build; no image matches and
     // the count is zero. Sabotage: make `clean` remove every image instead
     // of only pinfold's own; the unlabeled image assertion fails. Sabotage:
-    // drop the live-box check from `clean`; the live project's marker is
-    // deleted and the marker-survives assertion fails. Sabotage: make
+    // drop the live-box check from `clean --unused`; the live project's
+    // state is deleted and its survives assertion fails. Sabotage: make
     // `clean` remove every project state instead of only the stale ones;
     // the other project's state assertion fails. Sabotage: make `clean`
     // remove every box; the live box assertion fails. Sabotage: make
@@ -52,8 +51,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // live-box check (drop `live_projects` from `CleanPlan::measure`'s
     // stale test); the live project's state goes and its assertion fails.
     // Sabotage: in `clean::boxes`, insert into `live_projects` above `if
-    // alive`; the dead box then protects the other project, whose marker
-    // survives, and the removal assertion fails. Sabotage: past the newest
+    // alive`; the dead box then protects the other project, whose state
+    // survives `--unused`, and the removal assertion fails. Sabotage: past the newest
     // two build tags, remove every tag of the tag's image, as retention by
     // image did; `clean` takes the image the newest two builds share and
     // the shared-image assertion fails. Sabotage: skip a tag whose image a
@@ -85,10 +84,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // report; its byte count falls below the backing filesystem's du.
     // Sabotage: omit Apple's online trim after pruning; the real RUN's
     // deleted 64 MiB file remains allocated on the host across clean.
-    // Sabotage: in `clean::boxes`, take any box with a `dev.pinfold.` label
-    // instead of the owner label; on podman the user's container, which
-    // carries the image's labels and no owner, is removed as a dead box and
-    // its survival assertion fails.
+    // Sabotage: drop the `pinfold_box` check from `clean::boxes`; on Apple
+    // the user's container, which has no owner label, is removed as a dead
+    // box and its survival assertion fails. Linux lists only pinfold's own
+    // claims, so no runtime container can reach `clean` there.
     let env = TestEnv::new("cleanup");
     let build_env = cfg!(target_os = "macos").then(|| {
         let other = TestEnv::new("clean-build");
@@ -266,7 +265,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
 
     // A project's state: a refused `pinfold pi` creates it before it names
     // the missing image. The profile is never built, so this part downloads
-    // no pi artifact. Two projects get a cache marker: one runs a live box,
+    // no pi artifact. Two projects get a state marker: one runs a live box,
     // the other does not.
     let missing = format!("{profile}-missing");
     profile_containerfile(&env, &missing, "FROM scratch\n");
@@ -279,11 +278,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
             .output()
             .expect("run pinfold pi");
         assert!(!refused.status.success(), "pi ran a profile with no image");
-        let marker = project_state_dir(&env, project.path())
-            .join("home")
-            .join(".cache")
-            .join("marker");
-        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        let marker = project_state_dir(&env, project.path()).join("marker");
         fs::write(&marker, text).unwrap();
         marker
     };
@@ -310,7 +305,23 @@ fn cleanup_removes_only_pinfolds_garbage() {
     };
     let live_ref = format!("{live_repository}:latest");
     runtime_build(&[&live_ref], &[&live_label]);
-    let live_spec = serde_json::json!({ "name": live, "image": live_ref });
+    let live_disk = format!("pi-{live_id}-home");
+    let other_disk = format!("pi-{other_id}-home");
+    let moved_project = TestDir::new(&env, "moved-project");
+    seed_project(&moved_project, b"moved\n");
+    let moved_state = project_state_dir(&env, moved_project.path());
+    let moved_disk = format!("pi-{}-project", project_id(&env, moved_project.path()));
+    let _disks = DiskCleanup(vec![
+        live_disk.clone(),
+        other_disk.clone(),
+        moved_disk.clone(),
+    ]);
+    // The live box attaches its project's home disk.
+    let live_spec = serde_json::json!({
+        "name": live,
+        "image": live_ref,
+        "disks": [{ "name": live_disk, "guest": "/home-disk" }],
+    });
     let _live = box_up(&env, &live_spec, &live);
 
     let dead_label = "dev.example.test=e2e-cleanup-dead";
@@ -330,9 +341,9 @@ fn cleanup_removes_only_pinfolds_garbage() {
     dead_up.kill();
     dead_up.close_stdin();
 
-    // A container the user started with the runtime's own CLI from a
-    // pinfold-built image is not a box: podman copies the image's
-    // `dev.pinfold.` labels onto it, but pinfold never owned it.
+    // A container the user started with Apple's CLI from a pinfold-built
+    // image is not a box: pinfold never owned it.
+    #[cfg(target_os = "macos")]
     let user_container =
         RuntimeContainer::run(&box_name("cleanup-user"), default_image(&env), None);
 
@@ -352,6 +363,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         !box_list(&env, dead_label).is_empty(),
         "the dead box is missing before clean"
     );
+    #[cfg(target_os = "macos")]
     assert!(
         user_container.listed(),
         "the user's container is missing before clean"
@@ -366,8 +378,11 @@ fn cleanup_removes_only_pinfolds_garbage() {
     );
 
     // `--dry-run` only lists: the other project's state, which the real
-    // clean below removes, survives it.
-    run_ok(env.command(pinfold()).args(["clean", "--dry-run"]));
+    // `--unused` clean below removes, survives it.
+    run_ok(
+        env.command(pinfold())
+            .args(["clean", "--dry-run", "--unused", "0s"]),
+    );
     assert!(
         other_marker.is_file(),
         "--dry-run removed the other project's state"
@@ -509,27 +524,66 @@ fn cleanup_removes_only_pinfolds_garbage() {
     );
     assert!(
         live_marker.is_file(),
-        "clean removed a live box's project cache"
-    );
-    assert!(
-        !other_marker.exists(),
-        "clean kept a project cache with no live box"
+        "clean removed a live box's project state"
     );
     assert!(
         box_list(&env, dead_label).is_empty(),
         "clean left a box whose owner is gone"
     );
     dead_up.wait();
+    #[cfg(target_os = "macos")]
     assert!(
         user_container.listed(),
         "clean removed a container pinfold did not start"
     );
-    drop(user_container);
 
-    // `--unused AGE` removes the state of projects not run for that long,
-    // except one with a live box. Both projects last ran seconds ago, so
-    // `0s` ages them out and only the live one survives.
+    // Plain `clean` keeps every project's disks, and a moved checkout's
+    // state too. Sabotage: make `CleanPlan::idle` select every project
+    // under plain `clean`; the moved checkout's state goes and its
+    // assertion fails. Sabotage: drop the `--unused` disk removal from
+    // `CleanPlan::remove`; the idle project's disk survives and its
+    // assertion fails.
+    for disk in [&other_disk, &moved_disk] {
+        let creator = box_name("cleanup-disk");
+        let spec = serde_json::json!({
+            "name": creator,
+            "image": default_image(&env),
+            "disks": [{ "name": disk, "guest": "/disk" }],
+        });
+        let mut up = box_up(&env, &spec, &creator);
+        up.down(&env);
+        assert!(up.wait().success(), "the disk's box did not exit cleanly");
+    }
+    fs::rename(moved_project.path(), env.root.join("moved-away")).unwrap();
+    run_ok(env.command(pinfold()).arg("clean"));
+    assert!(
+        moved_state.is_dir(),
+        "clean removed a moved checkout's state"
+    );
+    let listed = disk_names(&env);
+    for disk in [&live_disk, &other_disk, &moved_disk] {
+        assert!(listed.contains(disk), "clean removed disk {disk}");
+    }
+
+    // `--unused AGE` removes the state and disks of projects not run for
+    // that long, except one with a live box. Every project last ran seconds
+    // ago, so `0s` ages them out and only the live one survives.
     run_ok(env.command(pinfold()).args(["clean", "--unused", "0s"]));
+    assert!(
+        !moved_state.exists(),
+        "clean --unused kept the moved checkout's state"
+    );
+    let listed = disk_names(&env);
+    assert!(
+        listed.contains(&live_disk),
+        "clean --unused removed a live project's disk"
+    );
+    for disk in [&other_disk, &moved_disk] {
+        assert!(
+            !listed.contains(disk),
+            "clean --unused kept idle disk {disk}"
+        );
+    }
     assert!(
         !other_state.exists(),
         "clean --unused kept the state of a project that has not run"
@@ -538,91 +592,96 @@ fn cleanup_removes_only_pinfolds_garbage() {
         live_state.is_dir(),
         "clean --unused removed the state of a project with a live box"
     );
+    #[cfg(target_os = "macos")]
+    {
+        assert!(
+            user_container.listed(),
+            "clean --unused removed a container pinfold did not start"
+        );
+        drop(user_container);
+    }
 
     // Sabotage: remove the shared project locks from pi startup and box up;
-    // clean deletes the existing home while the cold download holds startup
+    // clean deletes the existing state while the cold download holds startup
     // after its claim but before a runtime box can protect the project.
-    // Moving the checkout makes its state stale without a clock wait.
-    {
-        let env = TestEnv::with_private_cache("clean-startup");
-        let project = TestDir::new(&env, "starting-project");
-        let missing = format!("{profile}-startup-missing");
-        profile_containerfile(&env, &missing, "FROM scratch\n");
-        let refused = env
-            .command(pinfold())
-            .args(["pi", "--version"])
-            .env("PINFOLD_PROFILE", &missing)
-            .current_dir(project.path())
-            .output()
-            .unwrap();
-        assert!(!refused.status.success(), "the missing image was accepted");
-        let state = project_state_dir(&env, project.path());
-        let id = project_id(&env, project.path());
-        let marker = state.join("home/.cache/marker");
-        fs::create_dir_all(marker.parent().unwrap()).unwrap();
-        fs::write(&marker, b"starting project\n").unwrap();
+    // The checkout is moved away meanwhile; that alone protects nothing.
+    let env = TestEnv::with_private_cache("clean-startup");
+    let project = TestDir::new(&env, "starting-project");
+    let missing = format!("{profile}-startup-missing");
+    profile_containerfile(&env, &missing, "FROM scratch\n");
+    let refused = env
+        .command(pinfold())
+        .args(["pi", "--version"])
+        .env("PINFOLD_PROFILE", &missing)
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    assert!(!refused.status.success(), "the missing image was accepted");
+    let state = project_state_dir(&env, project.path());
+    let id = project_id(&env, project.path());
+    let marker = state.join("marker");
+    fs::write(&marker, b"starting project\n").unwrap();
 
-        let mut proxy = HeldDownload::new();
-        let child = env
-            .command(pinfold())
-            .envs(proxy.vars())
-            .args(["pi", "--version"])
-            .current_dir(project.path())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap();
-        let mut child = ChildOwner::new(child, &env, None);
-        let mut output = BufReader::new(child.stdout.take().unwrap());
-        proxy.event("held");
-        let label = format!("dev.pinfold.project={id}");
-        assert!(
-            box_list(&env, &label).is_empty(),
-            "startup already had a runtime box before the artifact arrived"
-        );
-        struct RestoreProject {
-            root: PathBuf,
-            moved: PathBuf,
-        }
-        impl Drop for RestoreProject {
-            fn drop(&mut self) {
-                if self.moved.exists() {
-                    fs::rename(&self.moved, &self.root).unwrap();
-                }
+    let mut proxy = HeldDownload::new();
+    let child = env
+        .command(pinfold())
+        .envs(proxy.vars())
+        .args(["pi", "--version"])
+        .current_dir(project.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let mut child = ChildOwner::new(child, &env, None);
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    proxy.event("held");
+    let label = format!("dev.pinfold.project={id}");
+    assert!(
+        box_list(&env, &label).is_empty(),
+        "startup already had a runtime box before the artifact arrived"
+    );
+    struct RestoreProject {
+        root: PathBuf,
+        moved: PathBuf,
+    }
+    impl Drop for RestoreProject {
+        fn drop(&mut self) {
+            if self.moved.exists() {
+                fs::rename(&self.moved, &self.root).unwrap();
             }
         }
-        let restore = RestoreProject {
-            root: project.path().to_path_buf(),
-            moved: env.root.join("moved-project"),
-        };
-        fs::rename(&restore.root, &restore.moved).unwrap();
-        run_ok(env.command(pinfold()).args(["clean", "--unused", "0s"]));
-        assert_eq!(
-            fs::read(&marker).unwrap(),
-            b"starting project\n",
-            "clean removed the claimed startup's existing home"
-        );
-        fs::rename(&restore.moved, &restore.root).unwrap();
-        proxy.release();
-        read_bounded(
-            &mut child,
-            &mut output,
-            std::time::Duration::from_secs(90),
-            true,
-        )
-        .expect("pi finishes after the artifact download resumes");
-        assert!(
-            child.wait_bounded().success(),
-            "pi startup failed after clean"
-        );
-
-        // Positive control: the same stale state is removable after the
-        // real pi launch finishes and releases its project locks.
-        fs::rename(&restore.root, &restore.moved).unwrap();
-        run_ok(env.command(pinfold()).args(["clean", "--unused", "0s"]));
-        assert!(!state.exists(), "clean kept the idle project's stale state");
     }
+    let restore = RestoreProject {
+        root: project.path().to_path_buf(),
+        moved: env.root.join("moved-project"),
+    };
+    fs::rename(&restore.root, &restore.moved).unwrap();
+    run_ok(env.command(pinfold()).args(["clean", "--unused", "0s"]));
+    assert_eq!(
+        fs::read(&marker).unwrap(),
+        b"starting project\n",
+        "clean removed the claimed startup's existing state"
+    );
+    fs::rename(&restore.moved, &restore.root).unwrap();
+    proxy.release();
+    read_bounded(
+        &mut child,
+        &mut output,
+        std::time::Duration::from_secs(90),
+        true,
+    )
+    .expect("pi finishes after the artifact download resumes");
+    assert!(
+        child.wait_bounded().success(),
+        "pi startup failed after clean"
+    );
+
+    // Positive control: the same stale state is removable after the
+    // real pi launch finishes and releases its project locks.
+    fs::rename(&restore.root, &restore.moved).unwrap();
+    run_ok(env.command(pinfold()).args(["clean", "--unused", "0s"]));
+    assert!(!state.exists(), "clean kept the idle project's stale state");
 
     // `image rm NAME` retires one caller image name: every tag of the name,
     // whatever its age, and no other name's, except an image's last tag
@@ -797,240 +856,26 @@ fn cleanup_removes_only_pinfolds_garbage() {
         tagged_images(&format!("localhost/pinfold/image-{retire_name}")).is_empty(),
         "the second image rm left a tag of the retired name"
     );
+    // A Linux box boots its image's root disk; it goes with the image and
+    // stays while another box's image holds it. Sabotage: drop
+    // `prune_root_disks` from `image rm`; the retired image's disk remains.
+    #[cfg(target_os = "linux")]
+    {
+        let root_disk = |id: &str| env.cache().join(format!("pinfold/root/{id}.ext4"));
+        assert!(
+            !root_disk(&retire_ids[0]).exists(),
+            "the removed image's root disk survived image rm"
+        );
+        assert!(
+            root_disk(&retire_ids[1]).is_file(),
+            "image rm removed the twin box's root disk"
+        );
+    }
     up_twin.down(&env);
     assert!(
         up_twin.wait().success(),
         "the twin box's up did not exit cleanly"
     );
-}
-
-#[test]
-#[cfg(target_os = "linux")]
-fn linux_boxes_apply_their_own_seccomp_profile() {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let _runtime = crate::exclusive_runtime();
-    // Sabotage: write both derived policies to one shared pathname again.
-    // Both Podman consumers are held until the second policy replaces it;
-    // the first box then wrongly refuses getppid.
-    let env = TestEnv::with_private_cache("seccomp-selection");
-    let image = default_image(&env);
-    let info = run_ok(
-        env.command(Path::new("podman"))
-            .args(["info", "--format", "json"]),
-    );
-    let info: serde_json::Value = serde_json::from_slice(&info.stdout).unwrap();
-    let source = info["host"]["security"]["seccompProfilePath"]
-        .as_str()
-        .expect("Podman's host seccomp profile");
-    let normal: serde_json::Value = serde_json::from_slice(&fs::read(source).unwrap()).unwrap();
-    let mut strict = normal.clone();
-    let rules = strict["syscalls"].as_array_mut().unwrap();
-    for rule in rules.iter_mut() {
-        if rule["action"] == "SCMP_ACT_ALLOW" {
-            rule["names"]
-                .as_array_mut()
-                .unwrap()
-                .retain(|name| name != "getppid");
-        }
-    }
-    rules.retain(|rule| !rule["names"].as_array().unwrap().is_empty());
-    rules.push(serde_json::json!({
-        "names": ["getppid"],
-        "action": "SCMP_ACT_ERRNO",
-        "errnoRet": nix::libc::EPERM,
-    }));
-
-    // Observe raw syscalls, including errno, rather than libc's cached IDs.
-    let fixture = env.root.join("fixture");
-    fs::create_dir_all(&fixture).unwrap();
-    let observer = env.root.join("seccomp-observer.c");
-    fs::write(
-        &observer,
-        r#"#define _GNU_SOURCE
-#include <errno.h>
-#include <stdio.h>
-#include <sys/syscall.h>
-#include <unistd.h>
-int main(void) {
-    errno = 0;
-    long parent = syscall(SYS_getppid);
-    int parent_errno = errno;
-    errno = 0;
-    long self = syscall(SYS_getpid);
-    int self_errno = errno;
-    printf("{\"getppid\":%ld,\"getppid_errno\":%d,\"getpid\":%ld,\"getpid_errno\":%d}\n",
-           parent, parent_errno, self, self_errno);
-    return 0;
-}
-"#,
-    )
-    .unwrap();
-    run_ok(
-        Command::new("musl-gcc")
-            .args(["-O2", "-static", "-o"])
-            .arg(fixture.join("seccomp-observer"))
-            .arg(observer),
-    );
-
-    let names = [box_name("seccomp-normal"), box_name("seccomp-strict")];
-    let sources = [env.root.join("normal.fifo"), env.root.join("strict.fifo")];
-    let configs = [env.root.join("normal.conf"), env.root.join("strict.conf")];
-    for (source, config) in sources.iter().zip(&configs) {
-        nix::unistd::mkfifo(
-            source,
-            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
-        )
-        .unwrap();
-        fs::write(
-            config,
-            format!(
-                "[containers]\nseccomp_profile = {}\n",
-                serde_json::to_string(source.to_str().unwrap()).unwrap()
-            ),
-        )
-        .unwrap();
-    }
-    let mut starts = std::array::from_fn::<_, 2, _>(|index| {
-        let spec = serde_json::json!({
-            "name": names[index],
-            "image": image,
-            "mounts": [{"host": fixture, "guest": "/fixture", "readonly": true}],
-        });
-        box_up_start(
-            &env,
-            &spec,
-            &[("CONTAINERS_CONF", configs[index].to_str().unwrap())],
-        )
-    });
-
-    // FIFO writers rendezvous only once both owners have completed their
-    // preflight and preparation. Keep their profile reads open until then.
-    let writers = sources.each_ref().map(|source| {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        loop {
-            match fs::OpenOptions::new()
-                .write(true)
-                .custom_flags(nix::libc::O_NONBLOCK)
-                .open(source)
-            {
-                Ok(writer) => break writer,
-                Err(error) if error.raw_os_error() == Some(nix::libc::ENXIO) => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "box up did not read its host seccomp profile"
-                    );
-                    std::thread::yield_now();
-                }
-                Err(error) => panic!("open host seccomp fixture: {error}"),
-            }
-        }
-    });
-
-    let store = &info["store"];
-    let lock_path = Path::new(store["graphRoot"].as_str().unwrap()).join(format!(
-        "{}-images/images.lock",
-        store["graphDriverName"].as_str().unwrap()
-    ));
-    // Declared after the owners and FIFO writers: panic releases the lock
-    // before owner cleanup needs Podman. No image metadata is changed.
-    let lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(lock_path)
-        .expect("open Podman's image-store lock");
-    let metadata = lock.metadata().unwrap();
-    let lock_identity = format!(
-        "{:02x}:{:02x}:{}",
-        nix::sys::stat::major(metadata.dev()),
-        nix::sys::stat::minor(metadata.dev()),
-        metadata.ino()
-    );
-    let held = nix::libc::flock {
-        l_type: nix::libc::F_WRLCK as i16,
-        l_whence: nix::libc::SEEK_SET as i16,
-        l_start: 0,
-        l_len: 0,
-        l_pid: 0,
-    };
-    crate::hold_image_lock(&lock, &held);
-    for ((mut writer, policy), starting) in writers.into_iter().zip([normal, strict]).zip(&starts) {
-        let policy = serde_json::to_vec(&policy).unwrap();
-        let mut remaining = policy.as_slice();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while !remaining.is_empty() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "box up stopped reading its host seccomp profile"
-            );
-            match writer.write(remaining) {
-                Ok(0) => panic!("host seccomp fixture wrote no bytes"),
-                Ok(written) => remaining = &remaining[written..],
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-                    ) =>
-                {
-                    std::thread::yield_now();
-                }
-                Err(error) => panic!("write host seccomp fixture: {error}"),
-            }
-        }
-        drop(writer);
-        // Podman's image lookup precedes seccomp consumption. Its kernel
-        // lock waiter proves derivation finished while consumption is held.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        loop {
-            let locks = fs::read_to_string("/proc/locks").unwrap();
-            let waiting = locks.lines().any(|line| {
-                let fields: Vec<_> = line.split_whitespace().collect();
-                if !fields.contains(&"->") || !fields.contains(&lock_identity.as_str()) {
-                    return false;
-                }
-                let Some(pid) = fields.get(5) else {
-                    return false;
-                };
-                fs::read_to_string(format!("/proc/{pid}/status")).is_ok_and(|status| {
-                    status_field(&status, "PPid:") == starting.child.id().to_string()
-                })
-            });
-            if waiting {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "box up's Podman consumer did not wait on the image lock"
-            );
-            std::thread::yield_now();
-        }
-    }
-    drop(lock);
-    let ready = starts.each_mut().map(Starting::first_line);
-    let boxes = starts
-        .into_iter()
-        .zip(ready)
-        .zip(&names)
-        .map(|((starting, ready), name)| {
-            assert_eq!(ready["event"], "ready", "box up failed: {ready}");
-            starting.into_up(name, ready)
-        })
-        .collect::<Vec<_>>();
-    let observed = names.each_ref().map(|name| {
-        let output = box_exec(&env, name, &["/fixture/seccomp-observer"]);
-        assert_ok(&output, "the syscall observer");
-        serde_json::from_str::<serde_json::Value>(&output.stdout).unwrap()
-    });
-    assert!(observed[0]["getppid"].as_i64().unwrap() >= 0);
-    assert_eq!(observed[0]["getppid_errno"], 0);
-    assert_eq!(observed[1]["getppid"], -1);
-    assert_eq!(observed[1]["getppid_errno"], nix::libc::EPERM);
-    // Positive control in the stricter box: another raw syscall succeeds.
-    assert!(observed[1]["getpid"].as_i64().unwrap() > 0);
-    assert_eq!(observed[1]["getpid_errno"], 0);
-    for up in boxes {
-        up.down(&env);
-    }
 }
 
 #[test]
@@ -1147,4 +992,210 @@ fn losing_the_owner_fails_closed() {
     let mut fresh = box_up(&env, &spec, &name);
     fresh.down(&env);
     assert!(fresh.wait().success(), "the fresh up did not exit cleanly");
+}
+
+#[test]
+fn a_runs_end_is_recorded_apart_from_its_start() {
+    // `box prune` removes every dead box on the host.
+    let _runtime = crate::exclusive_runtime();
+    // Guarantee 40. Sabotage: drop `detail` from the terminal record; the
+    // 137 assertion fails. Sabotage: write a `signal` record from `prune`
+    // (or from orphan removal); the killed owner's terminal is then
+    // available after prune. Sabotage: skip the terminal record in
+    // `Box::down` for a requested stop; the first inspect reports terminal
+    // `not-observed`. Writing it after `finish`'s ack is caught only when
+    // `inspect` wins the race: the owner waits on nothing after the ack, so
+    // no outside observer can hold it there.
+    let env = TestEnv::new("run-end");
+    let image = default_image(&env);
+    let spec = |name: &str| serde_json::json!({ "name": name, "image": image });
+
+    // `box down` returns only after the owner acknowledged teardown, so the
+    // terminal record is already there.
+    let name = box_name("run-end-down");
+    let mut up = box_up(&env, &spec(&name), &name);
+    let run = run_id(&up);
+    up.down(&env);
+    let (code, record) = inspect(&env, &run);
+    assert_eq!(code, 0, "inspect after down failed");
+    assert_eq!(record["launch"]["state"], "available", "{record}");
+    assert_eq!(record["launch"]["record"]["run_id"], run.as_str());
+    assert_eq!(record["terminal"]["state"], "available", "{record}");
+    assert_eq!(record["terminal"]["record"]["reason"], "signal", "{record}");
+    assert_eq!(
+        record["terminal"]["record"]["detail"],
+        serde_json::Value::Null
+    );
+    let down = up.close_stdin();
+    assert_eq!(down.last().expect("down line")["reason"], "signal");
+
+    // SIGKILL of the box from the host: of its init through Apple's runtime,
+    // of its VMM on Linux. The box exits 137.
+    let name = box_name("run-end-killed");
+    let mut up = box_up(&env, &spec(&name), &name);
+    let run = run_id(&up);
+    #[cfg(target_os = "linux")]
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(super::box_::vmm_pid(up.pid()) as i32),
+        nix::sys::signal::Signal::SIGKILL,
+    )
+    .expect("SIGKILL the box's VMM");
+    #[cfg(not(target_os = "linux"))]
+    run_ok(std::process::Command::new(e2e::image_cli()).args(["kill", "--signal", "KILL", &name]));
+    assert_eq!(up.wait().code(), Some(1), "an exited box's up exit code");
+    let down = up.close_stdin();
+    let down = down.last().expect("down line");
+    assert_eq!(down["reason"], "exited", "{down}");
+    let (code, record) = inspect(&env, &run);
+    assert_eq!(code, 0, "inspect after an init kill failed");
+    let terminal = &record["terminal"]["record"];
+    assert_eq!(terminal["reason"], "exited", "{record}");
+    assert!(
+        terminal["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("137")),
+        "the terminal detail names no exit status 137: {record}"
+    );
+    assert_eq!(terminal["detail"], down["detail"], "{record}");
+
+    // An owner that dies without teardown leaves no end, and nothing infers
+    // one later.
+    let name = box_name("run-end-owner");
+    let mut up = box_up(&env, &spec(&name), &name);
+    let run = run_id(&up);
+    up.kill();
+    up.wait();
+    for when in ["after the owner's SIGKILL", "after prune"] {
+        let (code, record) = inspect(&env, &run);
+        assert_eq!(code, 0, "inspect {when} failed");
+        assert_eq!(record["launch"]["state"], "available", "{when}: {record}");
+        assert_eq!(
+            record["terminal"]["state"], "not-observed",
+            "{when}: {record}"
+        );
+        assert_eq!(record["terminal"]["record"], serde_json::Value::Null);
+        if when == "after the owner's SIGKILL" {
+            let pruned = run_ok(env.command(pinfold()).args(["box", "prune"]));
+            assert!(
+                String::from_utf8_lossy(&pruned.stdout).contains(&name),
+                "prune did not remove the dead owner's box"
+            );
+        }
+    }
+}
+
+/// The run's directory, at the path the spec names.
+fn run_dir(env: &TestEnv, run_id: &str) -> PathBuf {
+    env.state.join("pinfold/runs").join(run_id)
+}
+
+/// Set the modification time of the run's directory and every file in it.
+fn age(dir: &Path, age: Duration) {
+    let time = SystemTime::now() - age;
+    for entry in fs::read_dir(dir).expect("read the run dir") {
+        let path = entry.expect("run dir entry").path();
+        File::open(&path).unwrap().set_modified(time).unwrap();
+    }
+    File::open(dir).unwrap().set_modified(time).unwrap();
+}
+
+/// Append `bytes` of valid decision lines to the run's egress log.
+fn pad(dir: &Path, bytes: usize) {
+    let line = b"{\"time\":\"2026-10-01T00:00:00Z\",\"host\":\"pad.invalid\",\"decision\":\"refused\",\"reason\":\"not allowlisted\"}\n";
+    let padding = line.repeat(bytes.div_ceil(line.len()));
+    fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join("egress.jsonl"))
+        .expect("open the run's egress log")
+        .write_all(&padding)
+        .expect("pad the run's egress log");
+}
+
+fn log_bytes(env: &TestEnv, run_id: &str) -> u64 {
+    let (code, record) = inspect(env, run_id);
+    assert_eq!(code, 0, "inspect {run_id} failed");
+    record["egress_log"]["bytes"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("no log bytes: {record}"))
+}
+
+#[test]
+fn run_records_are_retained_within_bounds() {
+    // `clean` prunes dead boxes host-wide.
+    let _runtime = crate::exclusive_runtime();
+    // Guarantee 42. Sabotage: age out runs without checking the lifetime
+    // lock; the live run is removed. Sabotage: drop the 14-day rule; the
+    // aged run survives the first clean, which is under the quota.
+    // Sabotage: evict the newest inactive run first; the newer padded run
+    // goes and the older stays. Sabotage:
+    // truncate the live run's log to meet the quota; its bytes shrink.
+    // Sabotage: count live runs toward the quota; the newer padded run goes
+    // too. The 128 MiB pad and the backdated mtimes act on host paths the
+    // spec names, as a user's disk and clock would.
+    let env = TestEnv::new("run-retention");
+    let fixture = HttpFixture::start(None);
+    let image = default_image(&env);
+    let spec = |name: &str| {
+        serde_json::json!({
+            "name": name,
+            "image": image,
+            "egress": { "routes": { "fixture.internal": fixture.route() } },
+        })
+    };
+    let finished = |test: &str| {
+        let name = box_name(test);
+        let mut up = box_up(&env, &spec(&name), &name);
+        let run = run_id(&up);
+        up.close_stdin();
+        run
+    };
+    let aged = finished("run-retention-aged");
+    let older = finished("run-retention-older");
+    let newer = finished("run-retention-newer");
+    let name = box_name("run-retention-live");
+    let mut live_up = box_up(&env, &spec(&name), &name);
+    let live = run_id(&live_up);
+
+    // Under the quota, only age retires: the aged run goes, the live one
+    // stays however old.
+    let day = Duration::from_secs(24 * 60 * 60);
+    age(&run_dir(&env, &aged), 15 * day);
+    age(&run_dir(&env, &live), 15 * day);
+    run_ok(env.command(pinfold()).arg("clean"));
+    assert_eq!(inspect(&env, &aged).0, 3, "the aged inactive run was kept");
+    let (code, record) = inspect(&env, &live);
+    assert_eq!(code, 0, "the aged live run was removed");
+    assert_eq!(record["launch"]["state"], "available", "{record}");
+
+    // Inactive runs together hold just over 128 MiB; the live one would
+    // tip the newer over the quota if it counted.
+    pad(&run_dir(&env, &older), (64 << 20) + (256 << 10));
+    pad(&run_dir(&env, &newer), (64 << 20) + (256 << 10));
+    pad(&run_dir(&env, &live), 64 << 20);
+    age(&run_dir(&env, &live), 15 * day);
+    age(&run_dir(&env, &older), 3 * day);
+    age(&run_dir(&env, &newer), 2 * day);
+    let live_bytes = log_bytes(&env, &live);
+
+    run_ok(env.command(pinfold()).arg("clean"));
+
+    assert_eq!(inspect(&env, &older).0, 3, "the older padded run was kept");
+    let (code, record) = inspect(&env, &newer);
+    assert_eq!(code, 0, "the newer padded run was removed");
+    assert_eq!(record["launch"]["state"], "available", "{record}");
+    let (code, record) = inspect(&env, &live);
+    assert_eq!(code, 0, "the live run was removed");
+    assert_eq!(record["launch"]["state"], "available", "{record}");
+    assert_eq!(
+        log_bytes(&env, &live),
+        live_bytes,
+        "the live run's log changed"
+    );
+    let request = curl(&env, &name, "5", &["http://fixture.internal/after-clean"]);
+    assert_ok(&request, "the live run's request after clean");
+    assert!(
+        log_bytes(&env, &live) > live_bytes,
+        "the live run's log did not keep appending"
+    );
+    live_up.close_stdin();
 }

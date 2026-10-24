@@ -27,6 +27,8 @@ pub struct Plan {
     pub labels: BTreeMap<String, String>,
     #[serde(default)]
     pub mounts: Vec<Mount>,
+    #[serde(default)]
+    pub disks: Vec<Disk>,
     /// Exact environment. `{ "from": "NAME" }` takes the caller's value.
     #[serde(default)]
     pub env: BTreeMap<String, Env>,
@@ -269,8 +271,45 @@ fn valid_header_name(name: &str) -> bool {
 pub struct Mount {
     pub host: PathBuf,
     pub guest: PathBuf,
+}
+
+/// One named disk and where it appears in the box.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Disk {
+    pub name: String,
+    pub guest: PathBuf,
+    /// `<n>G`; caps a disk pinfold creates.
+    pub size: Option<String>,
+    /// A host directory copied in when pinfold creates the disk.
+    pub from: Option<PathBuf>,
     #[serde(default)]
     pub readonly: bool,
+}
+
+impl Disk {
+    /// The size in bytes; `validate` has checked the spelling.
+    pub fn bytes(&self) -> u64 {
+        self.size
+            .as_deref()
+            .and_then(disk_gibibytes)
+            .unwrap_or(DEFAULT_DISK_GIB)
+            << 30
+    }
+}
+
+const DEFAULT_DISK_GIB: u64 = 64;
+
+/// A disk size: a whole number of gibibytes, at least 1, then `G`.
+fn disk_gibibytes(size: &str) -> Option<u64> {
+    let number = size.strip_suffix('G')?;
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    number
+        .parse::<u64>()
+        .ok()
+        .filter(|gib| (1..=u64::MAX >> 30).contains(gib))
 }
 
 /// One environment entry.
@@ -399,6 +438,70 @@ impl Plan {
                     mount.host.display()
                 )));
             }
+            // A Linux box copies the whole tree at each start.
+            #[cfg(target_os = "linux")]
+            unreadable(&mount.host).map_err(|(path, error)| {
+                invalid(format!("mount host {}: {error}", path.display()))
+            })?;
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for disk in &self.disks {
+            if !names.insert(&disk.name) {
+                return Err(invalid(format!("disk {:?} is named twice", disk.name)));
+            }
+            if !valid_name(&disk.name) {
+                return Err(invalid(format!(
+                    "disk name {:?} must start alphanumeric and hold only [A-Za-z0-9._-]",
+                    disk.name
+                )));
+            }
+            if let Some(size) = &disk.size
+                && disk_gibibytes(size).is_none()
+            {
+                return Err(invalid(format!(
+                    "disk {:?} size {size:?} must be a whole number of G, at least 1G",
+                    disk.name
+                )));
+            }
+            if !disk.guest.is_absolute() {
+                return Err(invalid(format!(
+                    "disk {:?} guest {} must be absolute",
+                    disk.name,
+                    disk.guest.display()
+                )));
+            }
+            for path in std::iter::once(&disk.guest).chain(&disk.from) {
+                if !valid_mount_path(path) {
+                    return Err(invalid(format!(
+                        "disk path {:?} must not hold ',' or an ASCII control character",
+                        path
+                    )));
+                }
+            }
+            if let Some(from) = &disk.from {
+                // A read-only attachment cannot receive the copy.
+                if disk.readonly {
+                    return Err(invalid(format!(
+                        "disk {:?} cannot be readonly with from",
+                        disk.name
+                    )));
+                }
+                if !from.is_absolute() {
+                    return Err(invalid(format!(
+                        "disk {:?} from {} must be absolute",
+                        disk.name,
+                        from.display()
+                    )));
+                }
+                let metadata = std::fs::metadata(from)
+                    .map_err(|error| invalid(format!("disk from {}: {error}", from.display())))?;
+                if !metadata.is_dir() {
+                    return Err(invalid(format!(
+                        "disk from {} is not a directory",
+                        from.display()
+                    )));
+                }
+            }
         }
         self.validate_guests(&[])?;
         for (name, value) in &self.env {
@@ -500,7 +603,7 @@ impl Plan {
         resolved.map_err(|error| format!("{} login route {route:?}: {error}", login.login))
     }
 
-    /// Refuse two mounts at one lexical guest path. `extra` holds the paths
+    /// Refuse two mounts or disks at one lexical guest path. `extra` holds the paths
     /// pinfold mounts after `validate` has run, so `Box::up` checks the
     /// final list too.
     pub fn validate_guests(&self, extra: &[&Path]) -> Result<(), String> {
@@ -509,18 +612,67 @@ impl Plan {
             .mounts
             .iter()
             .map(|m| m.guest.as_path())
+            .chain(self.disks.iter().map(|disk| disk.guest.as_path()))
             .chain(extra.iter().copied())
         {
-            if !guests.insert(guest_path(guest)) {
+            let normalized = guest_path(guest);
+            // The guest kernel's filesystems carry the box's controls (the
+            // userns sysctl, the work cgroup); a disk or mount there would
+            // replace them.
+            if KERNEL_PATHS
+                .iter()
+                .any(|kernel| normalized.starts_with(kernel))
+            {
                 return Err(invalid(format!(
-                    "two mounts name the same guest path {}",
+                    "guest path {} is at or below /proc, /sys or /dev",
+                    guest.display()
+                )));
+            }
+            if !guests.insert(normalized) {
+                return Err(invalid(format!(
+                    "two mounts or disks name the same guest path {}",
                     guest.display()
                 )));
             }
         }
+        // A Firecracker VM's drives are vda to vdz; the init and root disks
+        // take the first two.
+        if cfg!(target_os = "linux") && guests.len() > MAX_ATTACHMENTS {
+            return Err(invalid(format!(
+                "a box attaches at most {MAX_ATTACHMENTS} disks and mounts, pinfold's own mounts included; this one has {}",
+                guests.len()
+            )));
+        }
         Ok(())
     }
 }
+
+/// The disks and mounts one Linux box attaches.
+const MAX_ATTACHMENTS: usize = 24;
+
+/// Refuse the first entry under `dir` the user cannot read: a directory
+/// it cannot list or a file it cannot open. Symlinks are copied as links.
+#[cfg(target_os = "linux")]
+fn unreadable(dir: &Path) -> Result<(), (PathBuf, std::io::Error)> {
+    use nix::unistd::{AccessFlags, access};
+    let entries = std::fs::read_dir(dir).map_err(|error| (dir.to_path_buf(), error))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| (dir.to_path_buf(), error))?;
+        let path = entry.path();
+        let kind = entry.file_type().map_err(|error| (path.clone(), error))?;
+        if kind.is_dir() {
+            access(&path, AccessFlags::R_OK | AccessFlags::X_OK)
+                .map_err(|error| (path.clone(), error.into()))?;
+            unreadable(&path)?;
+        } else if kind.is_file() {
+            access(&path, AccessFlags::R_OK).map_err(|error| (path.clone(), error.into()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Guest paths no mount or disk may name, at or below.
+const KERNEL_PATHS: [&str; 3] = ["/proc", "/sys", "/dev"];
 
 /// Resolve guest components lexically, without consulting the host filesystem.
 pub(crate) fn guest_path(path: &Path) -> PathBuf {
@@ -549,9 +701,8 @@ pub fn check_reserved_labels(labels: &BTreeMap<String, String>) -> Result<(), St
     }
 }
 
-/// A POSIX environment name: `[A-Za-z_][A-Za-z0-9_]*`. Podman expands a
-/// trailing `*` in `--env NAME` against its own environment, which is the
-/// caller's, so anything else would leak or fail unpredictably.
+/// A POSIX environment name: `[A-Za-z_][A-Za-z0-9_]*`. Anything else
+/// would leak or fail unpredictably in a runtime CLI's `--env`.
 fn valid_env_name(name: &str) -> bool {
     name.bytes()
         .next()
@@ -612,22 +763,24 @@ fn on_or_above_public_suffix(suffix: &str) -> bool {
 }
 
 /// A memory limit is a whole number of mebibytes or gibibytes, at least
-/// 256M. The value reaches the runtime's `--memory` unparsed, and a
-/// unitless number is bytes on podman and something else on Apple.
+/// 256M.
 fn valid_memory(memory: &str) -> bool {
+    memory_mib(memory).is_some_and(|mebibytes| mebibytes >= 256)
+}
+
+/// A memory value's mebibytes: a whole number, then `M` or `G`.
+pub fn memory_mib(memory: &str) -> Option<u64> {
     let multiplier: u64 = match memory.bytes().last() {
         Some(b'M') => 1,
         Some(b'G') => 1024,
-        _ => return false,
+        _ => return None,
     };
     // `parse` alone would take a leading `+`; `all` alone the empty string.
     let number = &memory[..memory.len() - 1];
-    number.bytes().all(|byte| byte.is_ascii_digit())
-        && number
-            .parse::<u64>()
-            .ok()
-            .and_then(|number| number.checked_mul(multiplier))
-            .is_some_and(|mebibytes| mebibytes >= 256)
+    if !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    number.parse::<u64>().ok()?.checked_mul(multiplier)
 }
 
 pub(crate) fn valid_name(name: &str) -> bool {

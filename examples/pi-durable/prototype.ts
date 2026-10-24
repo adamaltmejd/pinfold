@@ -57,15 +57,17 @@ async function hostBoundary(project: string, state: string, binary: string) {
     roots.push([variable!, resolve(configured && isAbsolute(configured) ? configured : resolve(home, fallback!), "pinfold")]);
   }
   if (process.platform === "linux") roots.push(["runtime authority", process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid!()}`]);
-  // Pinfold resolves its runtime and host helpers on PATH. Guest-writable
-  // PATH entries would let boxed edits select a host executable later.
+  // Pinfold resolves its runtime and host helpers on PATH. `from` copies the
+  // project into the box and fetch writes into its `.git`, so a PATH entry
+  // in the project would expose or alter a host executable.
   for (const path of (process.env.PATH ?? "").split(delimiter)) roots.push(["host PATH", resolve(path || ".")]);
   for (const [name, path] of roots) {
     const lexical = resolve(path);
     const canonical = await canonicalDestination(lexical);
-    // A symlink located in the project can be replaced by the guest even
-    // when its current target is outside the project.
-    if ([lexical, canonical].some((root) => within(project, root) || within(root, project))) throw new Error(`host-boundary: writable project overlaps ${name}`);
+    // `from` copies the project into the box and fetch writes into its `.git`, so
+    // overlap would expose or alter host state. Both the lexical and the
+    // canonical path are checked.
+    if ([lexical, canonical].some((root) => within(project, root) || within(root, project))) throw new Error(`host-boundary: project overlaps ${name}`);
   }
 }
 
@@ -105,6 +107,11 @@ class Box {
     return text.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)).find((box) => box.name === this.name);
   }
 
+  async diskExists() {
+    const text = await cli(this.job.pinfold, ["disk", "list"]);
+    return text.trim().split("\n").filter(Boolean).some((line) => JSON.parse(line).name === this.name);
+  }
+
   async reclaim() {
     const old = await this.listed();
     if (old && old.labels?.["dev.example.pi-durable.job"] !== this.job.id) throw new Error("box name belongs to another caller");
@@ -114,15 +121,9 @@ class Box {
   }
 
   async start() {
-    const mounts = [{ host: this.job.project, guest: "/workspace", readonly: false }];
-    // Existing editor/git directories are protected. This prototype requires
-    // absent protected directories to be prepared explicitly by the caller.
-    for (const name of [".git", ".vscode", ".claude", ".idea"]) {
-      const path = resolve(this.job.project, name);
-      const real = await realpath(path);
-      if (real !== path || !(await stat(real)).isDirectory()) throw new Error(`${name} must be a real prepared directory`);
-      mounts.push({ host: real, guest: `/workspace/${name}`, readonly: true });
-    }
+    // The project disk outlives box generations. `from` copies the checkout
+    // only when the disk is created.
+    const disks = [{ name: this.name, guest: "/workspace", from: this.job.project }];
     if (this.#cancelled) throw new Error("cancelled before box startup");
     const owner = spawn(this.job.pinfold, ["box", "up"], { stdio: ["pipe", "pipe", "inherit"] });
     this.#owner = owner;
@@ -132,7 +133,7 @@ class Box {
     const lines = createInterface({ input: owner.stdout! });
     let timer: ReturnType<typeof setTimeout>;
     owner.stdin!.on("error", () => {});
-    owner.stdin!.write(`${JSON.stringify({ name: this.name, image: this.job.image, labels: { "dev.example.pi-durable.job": this.job.id }, mounts, env: { HOME: "/tmp" }, cpus: 2, memory: "1G" })}\n`);
+    owner.stdin!.write(`${JSON.stringify({ name: this.name, image: this.job.image, labels: { "dev.example.pi-durable.job": this.job.id }, disks, env: { HOME: "/tmp" }, cpus: 2, memory: "1G" })}\n`);
     try {
       await Promise.race([
         (async () => {
@@ -147,6 +148,12 @@ class Box {
       ]);
       event("box-ready", { box: this.name });
     } finally { clearTimeout(timer!); lines.close(); }
+  }
+
+  // Results cross back only as the box repository's branches.
+  async fetch() {
+    const line = await cli(this.job.pinfold, ["box", "fetch", this.name, "--repo", "/workspace", "--into", this.job.project], 120_000);
+    event("fetched", { refs: JSON.parse(line).refs });
   }
 
   stop(): Promise<void> {
@@ -204,6 +211,8 @@ async function main() {
     job = { version: 1, id: createHash("sha256").update(state).digest("hex").slice(0, 24), pinfold: await realpath(values.pinfold!), project: await realpath(values.project!), image: values.image!, baseUrl: url.toString(), model: values.model!, prompt: values.prompt! };
   }
   await hostBoundary(job.project, state, job.pinfold);
+  const git = resolve(job.project, ".git");
+  if (await realpath(git).catch(() => "") !== git || !(await stat(git)).isDirectory()) throw new Error("the project must be a git checkout with a .git directory");
   if (await realpath(job.project) !== job.project || await realpath(job.pinfold) !== job.pinfold) throw new Error("job paths changed; refusing recovery");
   if (createHash("sha256").update(state).digest("hex").slice(0, 24) !== job.id) throw new Error("checkpoint namespace moved; refusing recovery");
   await mkdir(state, { recursive: true, mode: 0o700 });
@@ -224,10 +233,12 @@ async function main() {
     if (mode === "start") {
       try { await readFile(resolve(state, "job.json")); throw new Error("job already exists; use resume"); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      // An existing disk would be attached instead of filled from the checkout.
+      if (await box.diskExists()) throw new Error(`project disk ${box.name} already exists; remove it with pinfold disk rm ${box.name}`);
       const temporary = resolve(state, "job.json.tmp");
       await writeFile(temporary, `${JSON.stringify(job)}\n`, { mode: 0o600 });
       await rename(temporary, resolve(state, "job.json"));
-    }
+    } else if (!(await box.diskExists())) throw new Error(`project disk ${box.name} is missing; refusing recovery`);
     await box.reclaim();
     if (cancelling) throw new Error("cancelled before startup");
     await box.start();
@@ -246,13 +257,14 @@ async function main() {
     const models = createModels();
     models.setProvider(createProvider({ id: "endpoint", baseUrl: job.baseUrl, auth: { apiKey: { name: "Endpoint API key", resolve: async () => ({ auth: { apiKey: process.env.PINFOLD_DURABLE_API_KEY ?? "local-fixture" }, source: "PINFOLD_DURABLE_API_KEY" }) } }, models: [{ id: job.model, name: job.model, api: "openai-completions", provider: "endpoint", baseUrl: job.baseUrl, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 4096 }], api: openAICompletionsApi() }));
     harness = await Harness.open(await openNodeSqliteStorage(resolve(state, "checkpoint.sqlite")), { models, registry, settings: { toolExecution: "sequential", retry: { enabled: false }, stream: { timeoutMs: 30_000, maxRetries: 0 }, compaction: { enabled: false } } }, context);
-    root = await harness.root(context, { agent: { model: { provider: "endpoint", modelId: job.model }, instructions: "All filesystem and process operations use boxed_bash. The checkpoint is host-only. Do not automatically repeat an interrupted command: it may already have changed the project. Report uncertainty to the caller." } });
+    root = await harness.root(context, { agent: { model: { provider: "endpoint", modelId: job.model }, instructions: "All filesystem and process operations use boxed_bash. The checkpoint is host-only. Only committed branches of the /workspace repository reach the caller. Do not automatically repeat an interrupted command: it may already have changed the project. Report uncertainty to the caller." } });
     event("resuming", { box: box.name });
     harness.resume();
     const submission = await root.submit({ type: "input", content: job.prompt, requestId: job.id }, context);
     const settled = await submission.wait(context);
     if (settled.status === "done" && settled.type === "input") {
       const answer = await root.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
+      await box.fetch();
       event("completed", { answer: answer?.model });
     } else { event("unanswered", { status: settled.status }); process.exitCode = 1; }
     if (cancelling) process.exitCode = 130;

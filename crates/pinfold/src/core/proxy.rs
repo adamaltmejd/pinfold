@@ -21,6 +21,7 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use crate::core::login;
 use crate::core::plan::{Egress, Route, Target};
 use crate::core::{network, now, rfc3339, runs, tls};
+use crate::init::Deadline;
 
 /// The loopback URL clients reach through `pinfold init`'s relay.
 pub const PROXY_URL: &str = "http://127.0.0.1:3128";
@@ -176,6 +177,9 @@ fn serve(listener: UnixListener, rules: Arc<Rules>, log: Arc<AuditLog>) {
         if log.failed() {
             return;
         }
+        // Darwin ignores MSG_DONTWAIT on a blocking socket, so on macOS a
+        // `Deadline` send can block past its poll. This bounds each such
+        // send; Linux never reaches it.
         if client.set_write_timeout(Some(IDLE_TIMEOUT)).is_err() {
             continue;
         }
@@ -266,8 +270,11 @@ fn connect(client: &mut UnixStream, rules: &Rules, log: &AuditLog, target: &str)
     if record(log, host, "allowed", "allowlisted", None).is_err() {
         return;
     }
-    if let Some(mut server) = dial(address) {
-        if server.write_all(&hello).is_err() {
+    if let Some(server) = dial(address) {
+        if Deadline(server.as_fd(), IDLE_TIMEOUT)
+            .write_all(&hello)
+            .is_err()
+        {
             return;
         }
         tunnel(client, server, log, host);
@@ -511,8 +518,9 @@ fn forward(
         }
     };
     report(status)?;
-    client.write_all(&line)?;
-    io::copy(&mut server, client)?;
+    let mut writer = Deadline(client.as_fd(), IDLE_TIMEOUT);
+    writer.write_all(&line)?;
+    io::copy(&mut server, &mut writer)?;
     let _ = client.shutdown(Shutdown::Write);
     Ok(())
 }
@@ -609,7 +617,8 @@ enum CopyEnd {
 }
 
 /// Reads share their activity clock, so a one-way active tunnel stays open.
-fn copy_direction(reader: impl AsFd, mut writer: impl Write, activity: &Mutex<Instant>) -> CopyEnd {
+fn copy_direction(reader: impl AsFd, writer: impl AsFd, activity: &Mutex<Instant>) -> CopyEnd {
+    let mut writer = Deadline(writer.as_fd(), IDLE_TIMEOUT);
     let mut buffer = [0u8; 8 * 1024];
     let fd = reader.as_fd();
     let mut ready = [PollFd::new(fd, PollFlags::POLLIN)];
@@ -708,7 +717,8 @@ fn respond(client: &mut UnixStream, code: u16) -> io::Result<()> {
     } else {
         "Content-Length: 0\r\nConnection: close\r\n"
     };
-    client.write_all(format!("HTTP/1.1 {code} {reason}\r\n{framing}\r\n").as_bytes())
+    Deadline(client.as_fd(), IDLE_TIMEOUT)
+        .write_all(format!("HTTP/1.1 {code} {reason}\r\n{framing}\r\n").as_bytes())
 }
 
 fn refuse(client: &mut UnixStream, log: &AuditLog, host: &str, code: u16, reason: &str) {

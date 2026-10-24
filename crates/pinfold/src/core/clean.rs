@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nix::fcntl::Flock;
 
-use crate::core::runtime::{BoxInfo, ImageInfo, Runtime, runtime};
+use crate::core::runtime::{BoxInfo, ImageInfo, Runtime, output, runtime};
 use crate::core::{artifacts, ownership, runs};
 use crate::dirs;
 
@@ -18,12 +18,11 @@ pub const PROJECT_LABEL: &str = "dev.pinfold.project";
 /// The two labels naming a profile's or a project's source on an image. A
 /// caller's name lives only in its `localhost/pinfold/image-<NAME>` tags.
 pub const FAMILY_LABELS: [&str; 2] = [PROFILE_LABEL, PROJECT_LABEL];
-/// The label podman puts on the intermediate images of a cached build, so
-/// `clean` prunes only pinfold's build cache.
-pub const LAYER_LABEL: &str = "dev.pinfold.layer";
 /// The label recording the digest of the image an image was built from.
 pub const BASE_LABEL: &str = "dev.pinfold.base";
 pub const OWNER_LABEL: &str = "dev.pinfold.owner";
+/// The prefix of a root disk's staging directory, then the writer's pid.
+pub const ROOT_STAGING: &str = ".tmp-root-";
 
 const PASS_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// A caller build tag made within this window is never removed: the ref its
@@ -112,8 +111,8 @@ pub struct Boxes {
 }
 
 /// Whether `box_` is pinfold's: it carries the owner label. Another
-/// container may carry other `dev.pinfold.` labels, since podman copies an
-/// image's labels onto a container a user starts from it.
+/// container may carry other `dev.pinfold.` labels, since a runtime copies
+/// an image's labels onto a container a user starts from it.
 pub fn pinfold_box(box_: &BoxInfo) -> bool {
     box_.labels.contains_key(OWNER_LABEL)
 }
@@ -122,7 +121,7 @@ pub fn pinfold_box(box_: &BoxInfo) -> bool {
 pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
     let mut dead = Vec::new();
     let mut live_projects = BTreeSet::new();
-    for box_ in runtime.list(None)? {
+    for box_ in runtime.list()? {
         if !pinfold_box(&box_) {
             continue;
         }
@@ -171,7 +170,7 @@ pub fn remove_orphan(
     _lock: &Flock<File>,
 ) -> io::Result<bool> {
     let mut removed = false;
-    if let Some(current) = runtime.list(None)?.into_iter().find(|box_| box_.id == name) {
+    if let Some(current) = runtime.list()?.into_iter().find(|box_| box_.id == name) {
         if !pinfold_box(&current)
             || current
                 .labels
@@ -224,11 +223,7 @@ pub fn prune_leftover_states(runtime: &dyn Runtime) -> io::Result<()> {
         let Some(_lock) = ownership::try_name_lock(&record.name)? else {
             continue;
         };
-        if runtime
-            .list(None)?
-            .iter()
-            .all(|box_| box_.id != record.name)
-        {
+        if runtime.list()?.iter().all(|box_| box_.id != record.name) {
             ownership::remove_record(&record.name, &record.generation)?;
         }
     }
@@ -294,7 +289,7 @@ pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
             eprintln!("pinfold: maintenance: images: {source}: {error}");
         }
     }
-    Ok(())
+    prune_root_disks(runtime)
 }
 
 /// The ids of the images every listed box runs: the one in-use rule [`keep_two_images_per_source`],
@@ -302,7 +297,7 @@ pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
 /// listed box counts.
 fn in_use_images(runtime: &dyn Runtime) -> io::Result<BTreeSet<String>> {
     Ok(runtime
-        .list(None)?
+        .list()?
         .into_iter()
         .map(|box_| box_.image_id)
         .collect())
@@ -356,7 +351,8 @@ pub fn keep_two_images(runtime: &dyn Runtime, label: Option<&str>, source: &str)
     let images = runtime.list_images()?;
     let in_use = in_use_images(runtime)?;
     let mut references = reference_counts(&images);
-    keep_two_images_from(runtime, &images, &in_use, &mut references, label, source)
+    let kept = keep_two_images_from(runtime, &images, &in_use, &mut references, label, source);
+    kept.and(prune_root_disks(runtime))
 }
 
 /// Apply [`keep_two_images`]'s rule to one source from a pass's listings:
@@ -448,7 +444,53 @@ pub fn remove_images(runtime: &dyn Runtime, source: &str) -> io::Result<Removed>
         }
         removed.ids.push(id);
     }
+    // The images are gone already; a failed prune is the next one's.
+    if let Err(error) = prune_root_disks(runtime) {
+        eprintln!("pinfold: maintenance: root disks: {error}");
+    }
     Ok(removed)
+}
+
+/// Remove the root disks of images the runtime no longer lists, and the
+/// staging a killed [`crate::core::image::root_disk`] left. Every path that
+/// removes images ends here, so a root disk goes with its image.
+pub fn prune_root_disks(runtime: &dyn Runtime) -> io::Result<()> {
+    let entries = dirs::entries(&dirs::root_disks_dir()?)?;
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let ids: BTreeSet<String> = runtime
+        .list_images()?
+        .into_iter()
+        .map(|image| image.id)
+        .collect();
+    for entry in entries {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if let Some(pid) = name.strip_prefix(ROOT_STAGING) {
+            let alive = pid.parse().is_ok_and(|pid| {
+                nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
+            });
+            if !alive {
+                remove_root_staging(&entry.path());
+            }
+        } else if name
+            .strip_suffix(".ext4")
+            .is_some_and(|id| !ids.contains(id))
+        {
+            remove_paths(vec![entry.path()])?;
+        }
+    }
+    Ok(())
+}
+
+/// Remove a root disk's staging. Its tree holds files podman's user
+/// namespace owns, so the removal runs there.
+pub fn remove_root_staging(staging: &Path) {
+    let staging = staging.to_string_lossy();
+    if let Err(error) = output(&["podman", "unshare", "rm", "-rf", &staging]) {
+        eprintln!("pinfold: root disk staging: {error}");
+    }
 }
 
 /// A build tag's time: its `<build>` starts with the build's nanoseconds

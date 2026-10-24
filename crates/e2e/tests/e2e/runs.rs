@@ -1,20 +1,17 @@
-//! Run records: guarantees 38, 40, 41 and 42. Guarantee 39 needs a pi box
-//! and lives in `pi.rs`.
+//! Run records: guarantees 38 and 41. Guarantee 39 needs a pi box and lives
+//! in `pi.rs`; 40 and 42 need the runtime exclusively and live in
+//! `runtime.rs`.
 
-use std::fs::{self, File};
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime};
+use std::process::Stdio;
 
 use crate::box_::{Up, box_name, box_up};
 use e2e::{
     HttpFixture, TestDir, TestEnv, assert_denied, assert_ok, curl, default_image, egress_log,
-    image_cli, inspect, pinfold, run_ok, run_query,
+    pinfold, run_query,
 };
 
 /// `ready`'s run id, checked against the generation label it must equal.
-fn run_id(up: &Up) -> String {
+pub(super) fn run_id(up: &Up) -> String {
     let ready = up.ready();
     let id = ready["run_id"]
         .as_str()
@@ -34,11 +31,6 @@ fn events(env: &TestEnv, run_id: &str, after: Option<&str>) -> (i32, serde_json:
         command.args(["--after", after]);
     }
     run_query(&mut command)
-}
-
-/// The run's directory, at the path the spec names.
-fn run_dir(env: &TestEnv, run_id: &str) -> PathBuf {
-    env.state.join("pinfold/runs").join(run_id)
 }
 
 #[test]
@@ -122,127 +114,11 @@ fn each_runs_history_is_its_own() {
 }
 
 #[test]
-fn a_runs_end_is_recorded_apart_from_its_start() {
-    // `box prune` removes every dead box on the host.
-    let _runtime = crate::exclusive_runtime();
-    // Guarantee 40. Sabotage: drop `detail` from the terminal record; the
-    // 137 assertion fails. Sabotage: write a `signal` record from `prune`
-    // (or from orphan removal); the killed owner's terminal is then
-    // available after prune. Sabotage: skip the terminal record in
-    // `Box::down` for a requested stop; the first inspect reports terminal
-    // `not-observed`. Writing it after `finish`'s ack is caught only when
-    // `inspect` wins the race: the owner waits on nothing after the ack, so
-    // no outside observer can hold it there.
-    let env = TestEnv::new("run-end");
-    let image = default_image(&env);
-    let spec = |name: &str| serde_json::json!({ "name": name, "image": image });
-
-    // `box down` returns only after the owner acknowledged teardown, so the
-    // terminal record is already there.
-    let name = box_name("run-end-down");
-    let mut up = box_up(&env, &spec(&name), &name);
-    let run = run_id(&up);
-    up.down(&env);
-    let (code, record) = inspect(&env, &run);
-    assert_eq!(code, 0, "inspect after down failed");
-    assert_eq!(record["launch"]["state"], "available", "{record}");
-    assert_eq!(record["launch"]["record"]["run_id"], run.as_str());
-    assert_eq!(record["terminal"]["state"], "available", "{record}");
-    assert_eq!(record["terminal"]["record"]["reason"], "signal", "{record}");
-    assert_eq!(
-        record["terminal"]["record"]["detail"],
-        serde_json::Value::Null
-    );
-    let down = up.close_stdin();
-    assert_eq!(down.last().expect("down line")["reason"], "signal");
-
-    // SIGKILL of the box's init from the host runtime: the box exits 137.
-    let name = box_name("run-end-killed");
-    let mut up = box_up(&env, &spec(&name), &name);
-    let run = run_id(&up);
-    run_ok(Command::new(image_cli()).args(["kill", "--signal", "KILL", &name]));
-    assert_eq!(up.wait().code(), Some(1), "an exited box's up exit code");
-    let down = up.close_stdin();
-    let down = down.last().expect("down line");
-    assert_eq!(down["reason"], "exited", "{down}");
-    let (code, record) = inspect(&env, &run);
-    assert_eq!(code, 0, "inspect after an init kill failed");
-    let terminal = &record["terminal"]["record"];
-    assert_eq!(terminal["reason"], "exited", "{record}");
-    assert!(
-        terminal["detail"]
-            .as_str()
-            .is_some_and(|detail| detail.contains("137")),
-        "the terminal detail names no exit status 137: {record}"
-    );
-    assert_eq!(terminal["detail"], down["detail"], "{record}");
-
-    // An owner that dies without teardown leaves no end, and nothing infers
-    // one later.
-    let name = box_name("run-end-owner");
-    let mut up = box_up(&env, &spec(&name), &name);
-    let run = run_id(&up);
-    up.kill();
-    up.wait();
-    for when in ["after the owner's SIGKILL", "after prune"] {
-        let (code, record) = inspect(&env, &run);
-        assert_eq!(code, 0, "inspect {when} failed");
-        assert_eq!(record["launch"]["state"], "available", "{when}: {record}");
-        assert_eq!(
-            record["terminal"]["state"], "not-observed",
-            "{when}: {record}"
-        );
-        assert_eq!(record["terminal"]["record"], serde_json::Value::Null);
-        if when == "after the owner's SIGKILL" {
-            let pruned = run_ok(env.command(pinfold()).args(["box", "prune"]));
-            assert!(
-                String::from_utf8_lossy(&pruned.stdout).contains(&name),
-                "prune did not remove the dead owner's box"
-            );
-        }
-    }
-}
-
-/// Hold Podman's real image-store lock, so its clients stall before they
-/// return inventory. The lock is released when the file closes.
-#[cfg(target_os = "linux")]
-fn hold_image_store_lock(env: &TestEnv) -> File {
-    let info = run_ok(
-        env.command(Path::new("podman"))
-            .args(["info", "--format", "json"]),
-    );
-    let info: serde_json::Value = serde_json::from_slice(&info.stdout).unwrap();
-    let store = &info["store"];
-    let path = Path::new(store["graphRoot"].as_str().unwrap()).join(format!(
-        "{}-images/images.lock",
-        store["graphDriverName"].as_str().unwrap()
-    ));
-    let lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .expect("open Podman's image-store lock");
-    let held = nix::libc::flock {
-        l_type: nix::libc::F_WRLCK as i16,
-        l_whence: nix::libc::SEEK_SET as i16,
-        l_start: 0,
-        l_len: 0,
-        l_pid: 0,
-    };
-    crate::hold_image_lock(&lock, &held);
-    lock
-}
-
-#[test]
 fn run_queries_are_bounded_and_need_no_runtime() {
-    // The held image-store lock stalls every podman client.
-    #[cfg(target_os = "linux")]
-    let _runtime = crate::exclusive_runtime();
-    #[cfg(not(target_os = "linux"))]
     let _runtime = crate::shared_runtime();
-    // Guarantee 41. Sabotage: list the runtime's boxes (or take the name
-    // lock) in `inspect`; with no runtime on PATH it exits 1, and on Linux
-    // it stalls behind the image-store lock past the list it should beat.
+    // Guarantee 41. Sabotage: list the runtime's images in `inspect`; with
+    // no `podman` or `container` on PATH it exits 1. (Listing boxes runs no
+    // program on Linux, so it would pass there.)
     // Sabotage: resume after the cursor's line rather than at it; each
     // page boundary skips a line and the order assertion fails. Counting
     // an incomplete final line into `next` is not caught every run: the
@@ -351,28 +227,6 @@ fn run_queries_are_bounded_and_need_no_runtime() {
     assert_eq!(code, 0, "events of the no-egress run failed");
     assert_eq!(page["state"], "not-applicable", "{page}");
 
-    #[cfg(target_os = "linux")]
-    {
-        let lock = hold_image_store_lock(&env);
-        let mut list = env
-            .command(pinfold())
-            .args(["box", "list", "--label", "dev.pinfold.owner"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn the stalled list");
-        let (code, _) = inspect(&env, &run);
-        assert_eq!(code, 0, "inspect behind the image-store lock failed");
-        let (code, _) = events(&env, &run, None);
-        assert_eq!(code, 0, "events behind the image-store lock failed");
-        assert!(
-            list.try_wait().unwrap().is_none(),
-            "the concurrent list was not blocked by the image-store lock"
-        );
-        drop(lock);
-        list.wait().expect("wait for the list");
-    }
-
     // Malformed arguments exit 1 and an unknown run exits 3.
     let upper = run.to_ascii_uppercase();
     for (args, want) in [
@@ -399,115 +253,4 @@ fn run_queries_are_bounded_and_need_no_runtime() {
         let (code, _) = run_query(env.command(pinfold()).arg("box").args(&args));
         assert_eq!(code, want, "box {args:?}");
     }
-}
-
-/// Set the modification time of the run's directory and every file in it.
-fn age(dir: &Path, age: Duration) {
-    let time = SystemTime::now() - age;
-    for entry in fs::read_dir(dir).expect("read the run dir") {
-        let path = entry.expect("run dir entry").path();
-        File::open(&path).unwrap().set_modified(time).unwrap();
-    }
-    File::open(dir).unwrap().set_modified(time).unwrap();
-}
-
-/// Append `bytes` of valid decision lines to the run's egress log.
-fn pad(dir: &Path, bytes: usize) {
-    let line = b"{\"time\":\"2026-10-01T00:00:00Z\",\"host\":\"pad.invalid\",\"decision\":\"refused\",\"reason\":\"not allowlisted\"}\n";
-    let padding = line.repeat(bytes.div_ceil(line.len()));
-    fs::OpenOptions::new()
-        .append(true)
-        .open(dir.join("egress.jsonl"))
-        .expect("open the run's egress log")
-        .write_all(&padding)
-        .expect("pad the run's egress log");
-}
-
-fn log_bytes(env: &TestEnv, run_id: &str) -> u64 {
-    let (code, record) = inspect(env, run_id);
-    assert_eq!(code, 0, "inspect {run_id} failed");
-    record["egress_log"]["bytes"]
-        .as_u64()
-        .unwrap_or_else(|| panic!("no log bytes: {record}"))
-}
-
-#[test]
-fn run_records_are_retained_within_bounds() {
-    // `clean` prunes dead boxes host-wide.
-    let _runtime = crate::exclusive_runtime();
-    // Guarantee 42. Sabotage: age out runs without checking the lifetime
-    // lock; the live run is removed. Sabotage: drop the 14-day rule; the
-    // aged run survives the first clean, which is under the quota.
-    // Sabotage: evict the newest inactive run first; the newer padded run
-    // goes and the older stays. Sabotage:
-    // truncate the live run's log to meet the quota; its bytes shrink.
-    // Sabotage: count live runs toward the quota; the newer padded run goes
-    // too. The 128 MiB pad and the backdated mtimes act on host paths the
-    // spec names, as a user's disk and clock would.
-    let env = TestEnv::new("run-retention");
-    let fixture = HttpFixture::start(None);
-    let image = default_image(&env);
-    let spec = |name: &str| {
-        serde_json::json!({
-            "name": name,
-            "image": image,
-            "egress": { "routes": { "fixture.internal": fixture.route() } },
-        })
-    };
-    let finished = |test: &str| {
-        let name = box_name(test);
-        let mut up = box_up(&env, &spec(&name), &name);
-        let run = run_id(&up);
-        up.close_stdin();
-        run
-    };
-    let aged = finished("run-retention-aged");
-    let older = finished("run-retention-older");
-    let newer = finished("run-retention-newer");
-    let name = box_name("run-retention-live");
-    let mut live_up = box_up(&env, &spec(&name), &name);
-    let live = run_id(&live_up);
-
-    // Under the quota, only age retires: the aged run goes, the live one
-    // stays however old.
-    let day = Duration::from_secs(24 * 60 * 60);
-    age(&run_dir(&env, &aged), 15 * day);
-    age(&run_dir(&env, &live), 15 * day);
-    run_ok(env.command(pinfold()).arg("clean"));
-    assert_eq!(inspect(&env, &aged).0, 3, "the aged inactive run was kept");
-    let (code, record) = inspect(&env, &live);
-    assert_eq!(code, 0, "the aged live run was removed");
-    assert_eq!(record["launch"]["state"], "available", "{record}");
-
-    // Inactive runs together hold just over 128 MiB; the live one would
-    // tip the newer over the quota if it counted.
-    pad(&run_dir(&env, &older), (64 << 20) + (256 << 10));
-    pad(&run_dir(&env, &newer), (64 << 20) + (256 << 10));
-    pad(&run_dir(&env, &live), 64 << 20);
-    age(&run_dir(&env, &live), 15 * day);
-    age(&run_dir(&env, &older), 3 * day);
-    age(&run_dir(&env, &newer), 2 * day);
-    let live_bytes = log_bytes(&env, &live);
-
-    run_ok(env.command(pinfold()).arg("clean"));
-
-    assert_eq!(inspect(&env, &older).0, 3, "the older padded run was kept");
-    let (code, record) = inspect(&env, &newer);
-    assert_eq!(code, 0, "the newer padded run was removed");
-    assert_eq!(record["launch"]["state"], "available", "{record}");
-    let (code, record) = inspect(&env, &live);
-    assert_eq!(code, 0, "the live run was removed");
-    assert_eq!(record["launch"]["state"], "available", "{record}");
-    assert_eq!(
-        log_bytes(&env, &live),
-        live_bytes,
-        "the live run's log changed"
-    );
-    let request = curl(&env, &name, "5", &["http://fixture.internal/after-clean"]);
-    assert_ok(&request, "the live run's request after clean");
-    assert!(
-        log_bytes(&env, &live) > live_bytes,
-        "the live run's log did not keep appending"
-    );
-    live_up.close_stdin();
 }

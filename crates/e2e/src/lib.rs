@@ -25,6 +25,16 @@ pub fn pinfold() -> &'static Path {
             "--message-format",
             "json-render-diagnostics",
         ]);
+        // Cargo gives tests their own package's CARGO_PKG_* and
+        // CARGO_MANIFEST_*; ring's build script reruns when those change,
+        // which rebuilt ring and pinfold at the start of every suite run.
+        for (name, _) in std::env::vars_os() {
+            if name.to_str().is_some_and(|name| {
+                name.starts_with("CARGO_PKG_") || name.starts_with("CARGO_MANIFEST_")
+            }) {
+                command.env_remove(name);
+            }
+        }
         if cfg!(target_os = "linux") {
             let triple = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
             command.args(["--target", &triple]);
@@ -95,6 +105,11 @@ impl TestEnv {
         env
     }
 
+    /// The `XDG_CACHE_HOME` this env's commands run with.
+    pub fn cache(&self) -> &Path {
+        &self.cache
+    }
+
     pub fn command(&self, binary: &Path) -> Command {
         let mut command = Command::new(binary);
         for (name, _) in std::env::vars_os() {
@@ -114,6 +129,21 @@ impl TestEnv {
 
 impl Drop for TestEnv {
     fn drop(&mut self) {
+        // Apple's disks outlive XDG roots: remove each recorded project's
+        // two (Pi layer), named `pi-<id>-home` and `pi-<id>-project`. Linux
+        // disks live in the state root and go with it.
+        if cfg!(target_os = "macos")
+            && let Ok(projects) = fs::read_dir(self.state.join("pinfold/projects"))
+        {
+            for project in projects.flatten() {
+                let id = project.file_name().to_string_lossy().into_owned();
+                for disk in ["home", "project"] {
+                    let _ = Command::new(image_cli())
+                        .args(["volume", "rm", &format!("pi-{id}-{disk}")])
+                        .output();
+                }
+            }
+        }
         let _ = fs::remove_dir_all(&self.root);
         let _ = fs::remove_dir_all(&self.state);
     }

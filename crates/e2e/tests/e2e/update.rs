@@ -37,11 +37,11 @@ fn host_updates_are_verified_and_atomic() {
     let mut fixture = ReleaseProxy::new(&env);
     let original = fs::read(&installed).unwrap();
     let original_inode = fs::metadata(&installed).unwrap().ino();
-    let replacement = changed_profiles_binary(&env);
+    let replacement = changed_binary(&env);
     let replacement_bytes = fs::read(&replacement).unwrap();
     assert_ne!(
         replacement_bytes, original,
-        "release fixture must be a distinct real build"
+        "the release fixture must differ from the installed bytes"
     );
     fs::copy(replacement, fixture.root.join("release")).unwrap();
 
@@ -101,7 +101,11 @@ fn host_updates_are_verified_and_atomic() {
     let other = TestEnv::new("update-owner");
     // Sabotage: hold the exclusive executable lock only before downloading.
     // A real owner starts after the fixture observes the asset request;
-    // replacement must recheck that owner before its atomic rename.
+    // replacement must recheck that owner before its atomic rename. The
+    // owner is a `box exec` of the installed executable under another XDG
+    // root: exec needs no jail, so AppArmor's profile does not apply, and
+    // it holds the executable lock until its command ends.
+    let mut boxed = box_up(&other, &spec, &name);
     fs::write(fixture.root.join("hold-download"), b"").unwrap();
     let mut downloading = fixture.command(&env, &installed);
     let update = downloading
@@ -113,26 +117,25 @@ fn host_updates_are_verified_and_atomic() {
     fixture.wait_for_download();
     let child = other
         .command(&installed)
-        .args(["box", "up"])
+        .args([
+            "box",
+            "exec",
+            &name,
+            "--",
+            "sh",
+            "-c",
+            "echo ready; exec cat",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
     let mut owner = ChildOwner::new(child, &other, None);
-    owner
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(serde_json::to_string(&spec).unwrap().as_bytes())
-        .unwrap();
     let mut stdout = BufReader::new(owner.stdout.take().unwrap());
     let line = read_bounded(&mut owner, &mut stdout, Duration::from_secs(60), false)
-        .expect("read update owner's readiness");
-    let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
-    owner.observe(&ready);
-    assert_eq!(ready["event"], "ready", "box owner failed: {ready}");
-    let owner = (owner, stdout);
+        .expect("read the exec owner's readiness");
+    assert_eq!(line.trim(), "ready", "the exec owner did not start");
     fixture.release_download();
     let refusal = update.wait_with_output().unwrap();
     assert!(
@@ -145,7 +148,13 @@ fn host_updates_are_verified_and_atomic() {
     );
     assert_eq!(fs::read(&installed).unwrap(), original);
     assert_eq!(fs::metadata(&installed).unwrap().ino(), original_inode);
-    drop(owner);
+    drop(owner.stdin.take());
+    assert!(owner.wait_bounded().success(), "the exec owner failed");
+    boxed.down(&other);
+    assert!(
+        boxed.wait().success(),
+        "the owner's box did not exit cleanly"
+    );
     fs::remove_file(fixture.root.join("hold-download")).unwrap();
 
     run_ok(fixture.command(&env, &update_alias).arg("update"));
@@ -176,7 +185,7 @@ fn interactive_update_checks_are_bounded() {
             .lines()
             .count()
     };
-    let attach = ["attach", "--box", "missing"];
+    let attach = ["attach"];
     fixture
         .command(&env, &installed)
         .args(attach)
@@ -233,148 +242,15 @@ fn interactive_update_checks_are_bounded() {
     assert_eq!(checks(), 2, "offline launch retried within the same day");
 }
 
-#[test]
-fn changed_bundled_profiles_are_reported_once() {
-    let _runtime = crate::shared_runtime();
-    // Guarantee 31. Sabotage: omit the embedded-profile comparison, or gate
-    // it behind the daily network interval; the changed binary stays silent.
-    // Do not save the new fingerprint; the next launch warns again. Reset
-    // checked_at while saving it; the next launch queries again. Warn on
-    // the first launch without history; the initial control fails. Resolve
-    // --builtin through user profile lookup; the copied package misses the
-    // changed full-profile package. Hash only the default profile; the full-
-    // only change is missed. Fixture source bytes and the spec's
-    // bundled-profiles-changed token give the
-    // expectations. Both executables are built from production source.
-    let env = TestEnv::with_private_cache("profile-notice");
-    let installed = env.root.join("pinfold");
-    fs::copy(pinfold(), &installed).unwrap();
-    let fixture = ReleaseProxy::new(&env);
-    let attach = ["attach", "--box", "missing"];
-    let first = fixture
-        .terminal(&env, &installed, &attach)
-        .output()
-        .unwrap();
-    assert!(
-        !String::from_utf8_lossy(&first.stdout).contains("bundled-profiles-changed"),
-        "first launch claimed a change without history: {first:?}"
-    );
-
-    let changed = changed_profiles_binary(&env);
-    let second = fixture.terminal(&env, &changed, &attach).output().unwrap();
-    assert!(
-        String::from_utf8_lossy(&second.stdout).contains("bundled-profiles-changed"),
-        "changed profiles were not reported: {second:?}"
-    );
-    let third = fixture.terminal(&env, &changed, &attach).output().unwrap();
-    assert!(
-        !String::from_utf8_lossy(&third.stdout).contains("bundled-profiles-changed"),
-        "unchanged profiles were reported again: {third:?}"
-    );
-    assert_eq!(
-        fs::read_to_string(fixture.root.join("checks"))
-            .unwrap()
-            .lines()
-            .count(),
-        1,
-        "profile notice should not require another daily network check"
-    );
-
-    // The notice's suggested copy must expose the updated built-in defaults
-    // even when a user profile shadows full, without replacing that copy.
-    let override_dir = env.config.join("pinfold/profiles/full");
-    let override_settings = override_dir.join("home/.pi/agent/settings.json");
-    fs::create_dir_all(override_settings.parent().unwrap()).unwrap();
-    fs::write(override_dir.join("Containerfile"), "FROM scratch\n").unwrap();
-    let marker = b"{\"userOverride\":true}\n";
-    fs::write(&override_settings, marker).unwrap();
-    run_ok(env.command(&changed).args([
-        "profile",
-        "new",
-        "updated-defaults",
-        "--from",
-        "full",
-        "--builtin",
-    ]));
-    let copied: serde_json::Value = serde_json::from_slice(
-        &fs::read(
-            env.config
-                .join("pinfold/profiles/updated-defaults/share/pi/package.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(copied["fixtureFullChanged"], true);
-    assert_eq!(fs::read(override_settings).unwrap(), marker);
-}
-
-fn changed_profiles_binary(env: &TestEnv) -> PathBuf {
-    // Both update guarantees need the same different production executable.
-    // Retain bytes, not a path in another test's removable scratch tree.
-    static BINARY: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-    let bytes = BINARY.get_or_init(|| build_changed_profiles_binary(env));
+fn changed_binary(env: &TestEnv) -> PathBuf {
+    // A different valid executable: the suite's binary with bytes appended
+    // past its end, which the loader never maps.
+    let mut bytes = fs::read(pinfold()).unwrap();
+    bytes.extend_from_slice(b"pinfold update fixture\n");
     let installed = env.root.join("changed-pinfold");
     fs::write(&installed, bytes).unwrap();
     fs::set_permissions(&installed, fs::Permissions::from_mode(0o755)).unwrap();
     installed
-}
-
-fn build_changed_profiles_binary(env: &TestEnv) -> Vec<u8> {
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap();
-    let source = env.root.join("changed-source");
-    fs::create_dir_all(source.join("crates")).unwrap();
-    for file in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"] {
-        fs::copy(workspace.join(file), source.join(file)).unwrap();
-    }
-    copy_tree(
-        &workspace.join("crates/pinfold"),
-        &source.join("crates/pinfold"),
-    );
-    copy_tree(
-        &workspace.join("crates/pinfold-init"),
-        &source.join("crates/pinfold-init"),
-    );
-    copy_tree(&workspace.join("profile"), &source.join("profile"));
-    let package_path = source.join("profile/full/package.json");
-    let mut package: serde_json::Value =
-        serde_json::from_slice(&fs::read(&package_path).unwrap()).unwrap();
-    package["fixtureFullChanged"] = serde_json::json!(true);
-    fs::write(package_path, serde_json::to_vec(&package).unwrap()).unwrap();
-    // A private target prevents replacing the suite's executable while other
-    // tests run. Linux uses the same production musl target as e2e::pinfold.
-    let target = env.root.join("changed-target");
-    let mut build = Command::new(env!("CARGO"));
-    build
-        .args(["build", "-p", "pinfold", "--locked"])
-        .current_dir(&source)
-        .env("CARGO_TARGET_DIR", &target)
-        .env("CARGO_PROFILE_DEV_DEBUG", "0");
-    let binary = if cfg!(target_os = "linux") {
-        let triple = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
-        build.args(["--target", &triple]);
-        target.join(triple).join("debug/pinfold")
-    } else {
-        target.join("debug/pinfold")
-    };
-    run_ok(&mut build);
-    fs::read(binary).unwrap()
-}
-
-fn copy_tree(from: &Path, to: &Path) {
-    fs::create_dir_all(to).unwrap();
-    for entry in fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        let destination = to.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_tree(&entry.path(), &destination);
-        } else {
-            fs::copy(entry.path(), destination).unwrap();
-        }
-    }
 }
 
 struct ReleaseProxy {

@@ -76,8 +76,14 @@ fn doctor_reports_without_changing_state() {
     // Guarantee 27. Sabotage: run maintenance before doctor; the fresh
     // state directory gains a maintenance stamp and the old artifact goes.
     // Sabotage: omit host_requirements after a failed preflight; the Linux
-    // refusal no longer names the missing runtime directory. Remove its
-    // tun check; the isolated namespace with no device loses its named reason.
+    // refusal no longer names the missing runtime directory. Drop the
+    // ioctl from the kvm check; the device the Landlock domain leaves
+    // unusable loses its `kvm` line. Check membership of the kvm group
+    // instead of access; CI's user is outside it, its 0666 device is
+    // usable, and the profiled binary reports `kvm`. Choose the
+    // user-namespace token from the probe's error; with AppArmor's
+    // restriction on, the unprofiled copy reports `userns`. Skip the
+    // probe; the copy reports no user-namespace token.
     // Materialize an embedded profile during inspection; the fresh cache
     // gains files. Expected trees are the host's own pre-inspection snapshot.
     // Podman's image lookup may create its own short-name alias lock outside
@@ -110,31 +116,40 @@ fn doctor_reports_without_changing_state() {
     fs::create_dir(&empty).unwrap();
     let missing = env.root.join("missing-runtime");
 
+    // An executable outside the AppArmor profile's path. CI profiles only
+    // the built binary.
+    let unprofiled = env.root.join("unprofiled/pinfold");
+    fs::create_dir_all(unprofiled.parent().unwrap()).unwrap();
+    fs::copy(pinfold(), &unprofiled).unwrap();
+    // From the host, not from pinfold: the kernel knob AppArmor's
+    // restriction is.
+    let apparmor_restricts =
+        fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+            .is_ok_and(|value| value.trim() == "1");
+
     // The real Podman also fails before reporting its host settings when
-    // XDG_RUNTIME_DIR is absent. All reports leave the same fixtures alone.
-    for scenario in ["ready", "no-runtime", "missing-runtime-dir", "no-tun"] {
-        if matches!(scenario, "missing-runtime-dir" | "no-tun") && !cfg!(target_os = "linux") {
+    // XDG_RUNTIME_DIR is absent, so every scenario but `ready` lists the
+    // host requirements. All reports leave the same fixtures alone.
+    for scenario in [
+        "ready",
+        "no-runtime",
+        "missing-runtime-dir",
+        "no-kvm",
+        "unprofiled",
+    ] {
+        let linux_only = matches!(scenario, "missing-runtime-dir" | "no-kvm" | "unprofiled");
+        if linux_only && !cfg!(target_os = "linux") {
             continue;
         }
-        let mut command = if scenario == "no-tun" {
-            // Mount only inside a private user/mount namespace. The real
-            // runtime stays on PATH; the host's devices remain untouched.
-            let mut command = env.command(Path::new("unshare"));
-            command
-                .args([
-                    "--user",
-                    "--map-root-user",
-                    "--mount",
-                    "sh",
-                    "-c",
-                    "if [ -d /dev/net ]; then mount -t tmpfs tmpfs /dev/net || exit; fi; exec \"$@\"",
-                    "--",
-                ])
-                .arg(pinfold());
-            command
+        let mut command = env.command(if scenario == "unprofiled" {
+            &unprofiled
         } else {
-            env.command(pinfold())
-        };
+            pinfold()
+        });
+        #[cfg(target_os = "linux")]
+        if scenario == "no-kvm" {
+            ioctl_dev_denied(&mut command);
+        }
         command.arg("doctor").current_dir(&env.root);
         if scenario != "ready" {
             command.env("XDG_RUNTIME_DIR", &missing);
@@ -174,13 +189,117 @@ fn doctor_reports_without_changing_state() {
                 report.contains("runtime-dir") && report.contains(missing.to_str().unwrap()),
                 "doctor did not identify the missing runtime directory: {report}"
             );
-            if scenario == "no-tun" {
-                assert!(
-                    report.contains("tun") && report.contains("/dev/net/tun"),
-                    "doctor did not identify the unavailable tun device: {report}"
-                );
+            let tokens: Vec<&str> = report
+                .lines()
+                .filter_map(|line| line.trim_start().split_once(':').map(|(token, _)| token))
+                .collect();
+            let has = |token: &str| tokens.contains(&token);
+            match scenario {
+                "missing-runtime-dir" => assert!(
+                    !has("kvm") && !has("userns") && !has("userns-apparmor"),
+                    "the profiled binary on a usable host reported a jail requirement: {report}"
+                ),
+                "no-kvm" => assert!(
+                    has("kvm"),
+                    "doctor did not identify the unusable /dev/kvm: {report}"
+                ),
+                "unprofiled" if apparmor_restricts => assert!(
+                    has("userns-apparmor") && !has("userns"),
+                    "the unprofiled copy did not report userns-apparmor: {report}"
+                ),
+                "unprofiled" => assert!(
+                    !has("userns") && !has("userns-apparmor"),
+                    "without AppArmor's restriction the copy reported a user-namespace token: {report}"
+                ),
+                _ => {}
             }
         }
+    }
+
+    // The box half: the copy's `up` is refused as `runtime` naming the
+    // token, and the profiled executable starts a box. Sabotage: skip the
+    // jail preflight; the copy's `up` fails later, without the token.
+    #[cfg(target_os = "linux")]
+    if apparmor_restricts {
+        use std::io::Write;
+        use std::process::Stdio;
+        let name = crate::box_::box_name("doctor");
+        let spec = serde_json::json!({ "name": name, "image": e2e::default_image(&env) });
+        let mut up = env
+            .command(&unprofiled)
+            .args(["box", "up"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn the copy's box up");
+        up.stdin
+            .take()
+            .unwrap()
+            .write_all(spec.to_string().as_bytes())
+            .unwrap();
+        let output = up.wait_with_output().unwrap();
+        assert!(
+            !output.status.success(),
+            "the unprofiled copy started a box"
+        );
+        let refused: serde_json::Value = serde_json::from_slice(
+            output
+                .stdout
+                .split(|&byte| byte == b'\n')
+                .next()
+                .unwrap_or_default(),
+        )
+        .expect("the copy's refusal is a JSON line");
+        assert_eq!(refused["reason"], "runtime", "{refused}");
+        assert!(
+            refused["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("userns-apparmor")),
+            "the copy's refusal does not name userns-apparmor: {refused}"
+        );
+        crate::box_::box_up(&env, &spec, &name).down(&env);
+    }
+}
+
+/// Make `/dev/kvm` unusable to `command` with a real kernel refusal: a
+/// Landlock domain that handles only device ioctls and allows none.
+/// Opening the device still works; `KVM_GET_API_VERSION` gets EACCES.
+#[cfg(target_os = "linux")]
+fn ioctl_dev_denied(command: &mut std::process::Command) {
+    use nix::libc;
+    use std::os::unix::process::CommandExt;
+    #[repr(C)]
+    struct RulesetAttr {
+        handled_access_fs: u64,
+    }
+    const LANDLOCK_ACCESS_FS_IOCTL_DEV: u64 = 1 << 15;
+    // SAFETY: the hook makes only system calls on stack values.
+    unsafe {
+        command.pre_exec(|| {
+            let attr = RulesetAttr {
+                handled_access_fs: LANDLOCK_ACCESS_FS_IOCTL_DEV,
+            };
+            let ruleset = libc::syscall(
+                libc::SYS_landlock_create_ruleset,
+                &attr as *const RulesetAttr,
+                std::mem::size_of::<RulesetAttr>(),
+                0u32,
+            );
+            if ruleset < 0
+                || libc::prctl(
+                    libc::PR_SET_NO_NEW_PRIVS,
+                    1 as libc::c_ulong,
+                    0 as libc::c_ulong,
+                    0 as libc::c_ulong,
+                    0 as libc::c_ulong,
+                ) != 0
+                || libc::syscall(libc::SYS_landlock_restrict_self, ruleset, 0u32) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            libc::close(ruleset as i32);
+            Ok(())
+        });
     }
 }
 

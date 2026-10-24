@@ -1,0 +1,26 @@
+# Firecracker and pinfold's guest kernel for Linux boxes, embedded at build
+# time. Assets are pinned as in harnesses.toml.
+#
+# `version` is Firecracker's, then the guest kernel's, so a change to either
+# installs into a new directory. It is the one source of Firecracker's
+# version: guest-kernel/build.sh and the guest-kernel workflow read it here.
+# scripts/bump-pins.py moves Firecracker and the kernel release together.
+
+name = "vmm"
+version = "1.17.0+6.18.57"
+
+# The release archive's one directory holds firecracker-v<version>-x86_64.
+[[asset]]
+os-arch = "linux-x64"
+url = "https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz"
+sha256 = "06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558"
+install = "tar.gz"
+as = "firecracker"
+
+# guest-kernel/'s build, published by the guest-kernel workflow.
+[[asset]]
+os-arch = "linux-x64"
+url = "https://github.com/adamaltmejd/pinfold/releases/download/guest-kernel-6.18.57-firecracker-v1.17.0/vmlinux-6.18.57"
+sha256 = "1a1b28b34f89a8e49d90c72997f1b89bfd236ff44669dda9e91486c89adafc99"
+install = "executable"
+as = "vmlinux"

@@ -30,6 +30,12 @@ pub fn artifacts_dir() -> io::Result<PathBuf> {
     Ok(cache_dir()?.join("artifacts"))
 }
 
+/// `$XDG_CACHE_HOME/pinfold/root`: Linux boxes' read-only root disks, one
+/// per image id.
+pub fn root_disks_dir() -> io::Result<PathBuf> {
+    Ok(cache_dir()?.join("root"))
+}
+
 /// `$XDG_STATE_HOME/pinfold/runs`: one directory of run records per run,
 /// kept past the box's teardown for Maintenance to retire.
 pub fn runs_dir() -> io::Result<PathBuf> {

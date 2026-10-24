@@ -3,18 +3,17 @@ use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::config::Config;
 use crate::core::artifacts;
 use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, Signals, UpError};
+use crate::core::crossing::{self, CrossingError};
 use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
-use crate::core::plan::Plan;
+use crate::core::plan::{Plan, valid_name};
 use crate::core::profile::{self, Profile};
-use crate::core::runtime::{BoxInfo, Runtime, podman, runtime};
-use crate::core::{clean, runs};
+use crate::core::runtime::{Runtime, runtime};
+use crate::core::{clean, disk, runs};
 use crate::dirs;
 use crate::pi::launch::utf8;
 use crate::trust;
@@ -25,12 +24,14 @@ use crate::trust;
 /// malformed invocation, and one line at a time by [`syntax`].
 pub const USAGE: &str = "\
 pinfold pi [pi args…]            pi in a box for this project; `pi` is a symlink to this
-pinfold attach [--box NAME] [cmd…]   bash (or cmd) in this project's running pi box
+pinfold attach [cmd…]            bash (or cmd) in this project's running pi box
+pinfold push                     this checkout's branches into its pi box as refs/remotes/host/*
+pinfold fetch                    its pi box's branches into refs/remotes/pinfold/*
 pinfold build [--profile NAME]   build this project's image, or a profile's; prints the ref
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache]   a caller's image from its own context; one JSON line
 pinfold image rm NAME            retire a caller image name; one JSON line
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
-pinfold profile new NAME [--from PROFILE] [--builtin] [--from-project [PATH]]   copy a profile to edit as files
+pinfold profile new NAME [--from PROFILE] [--builtin]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim unused disk space
 pinfold doctor                   runtime, kernel, image, artifacts, trust, config, disk use
 pinfold artifacts                pinned harnesses as JSON
@@ -41,7 +42,7 @@ pinfold box …                    the process interface
 pinfold --version                print the version
 pinfold --help                   print this usage";
 
-/// The box verbs, which the table above does not spell out.
+/// The process interface's verbs, which the table above does not spell out.
 const BOX_USAGE: &str = "\
 pinfold box up
 pinfold box exec BOX [--tty] [--workdir DIR] -- argv
@@ -50,7 +51,11 @@ pinfold box down BOX
 pinfold box list --label KEY[=VALUE]…
 pinfold box prune
 pinfold box inspect RUN
-pinfold box events RUN [--limit N] [--after CURSOR]";
+pinfold box events RUN [--limit N] [--after CURSOR]
+pinfold box push BOX --repo REPO --into GUEST_REPO [--remote NAME]
+pinfold box fetch BOX --repo GUEST_REPO --into REPO [--remote NAME]
+pinfold disk list
+pinfold disk rm NAME";
 
 pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
     result.unwrap_or_else(|error| {
@@ -93,9 +98,7 @@ fn syntax(verb: &str) -> String {
 pub fn help(verb: &str, args: &[String]) -> bool {
     let asks = match verb {
         "pi" => false,
-        "attach" => {
-            matches!(parse_attach(args), Ok((_, [first, ..])) if first == "--help" || first == "-h")
-        }
+        "attach" => matches!(args.first(), Some(first) if first == "--help" || first == "-h"),
         _ => args
             .iter()
             .take_while(|arg| arg.as_str() != "--")
@@ -121,69 +124,39 @@ pub fn allow(args: &[String]) -> io::Result<i32> {
 }
 
 /// `pinfold attach`: bash, or the given command, in this project's running
-/// pi box. The box's owner keeps its lifetime; attach streams one exec and
-/// adds none of its own.
+/// pi box, the box that attaches its project disk. The box's owner keeps
+/// its lifetime; attach streams one exec and adds none of its own.
 pub fn attach(args: &[String]) -> io::Result<i32> {
-    let (box_name, command) = parse_attach(args)?;
-    let mut argv = match command {
+    let mut argv = match args {
         [dashes, rest @ ..] if dashes == "--" => rest.to_vec(),
-        _ => command.to_vec(),
+        _ => args.to_vec(),
     };
     if argv.is_empty() {
         argv.push("bash".to_string());
     }
     let cwd = fs::canonicalize(std::env::current_dir()?)?;
     let root = crate::pi::launch::project_root(&cwd)?;
-    let id = crate::pi::state::project_id(&root);
+    let [_, project] = crate::pi::state::disk_names(&crate::pi::state::project_id(&root));
+    let name = match crate::pi::launch::project_box(&project)? {
+        crate::pi::launch::Holder::Ready(name) => name,
+        crate::pi::launch::Holder::Starting(name) => {
+            return Err(io::Error::other(format!(
+                "disk-in-use: {}",
+                crate::pi::launch::starting(&name, &project)
+            )));
+        }
+        crate::pi::launch::Holder::None => {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "no running pi box for this project; start one with `pinfold pi`",
+            ));
+        }
+    };
     let runtime = runtime();
-    let boxes: Vec<BoxInfo> = runtime
-        .list(None)?
-        .into_iter()
-        .filter(|box_| box_.labels.get(crate::core::clean::PROJECT_LABEL) == Some(&id))
-        .collect();
-    let name = select_box(&boxes, box_name)?;
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
     let init = artifacts::init()?;
     let status = runtime.exec(&name, &init, tty, Some(&cwd), &argv)?;
     Ok(exit_code(status))
-}
-
-fn select_box(boxes: &[BoxInfo], requested: Option<&str>) -> io::Result<String> {
-    let mut names: Vec<&str> = boxes
-        .iter()
-        .map(|box_| box_.id.as_str())
-        .filter(|id| requested.is_none_or(|name| name == *id))
-        .collect();
-    names.sort_unstable();
-    match (names.as_slice(), requested) {
-        ([only], _) => Ok(only.to_string()),
-        ([], Some(name)) => Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("no running pi box named {name:?} for this project"),
-        )),
-        ([], None) => Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "no running pi box for this project; start one with `pinfold pi`",
-        )),
-        (several, _) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "several pi boxes are running for this project; select one with `--box NAME`: {}",
-                several.join(", ")
-            ),
-        )),
-    }
-}
-
-/// `attach`'s `--box NAME` and the command after it, which keeps every
-/// argument. A leading `--` stays, so [`help`] can tell `attach -- --help`
-/// from `attach --help`.
-fn parse_attach(args: &[String]) -> io::Result<(Option<&str>, &[String])> {
-    match args {
-        [flag, name, command @ ..] if flag == "--box" => Ok((Some(name), command)),
-        [flag] if flag == "--box" => Err(usage("attach", "--box needs a box name")),
-        command => Ok((None, command)),
-    }
 }
 
 pub fn run(args: &[String]) -> io::Result<i32> {
@@ -199,6 +172,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
         Some("prune") => prune(&args[1..]),
         Some("inspect") => inspect(&args[1..]),
         Some("events") => events(&args[1..]),
+        Some(verb @ ("push" | "fetch")) => crossing(verb, &args[1..]),
         Some(verb) => Err(usage("box", &format!("unknown box verb {verb:?}"))),
         None => Err(usage("box", "a box verb is required")),
     }
@@ -366,12 +340,101 @@ fn stat(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
+/// `push` and `fetch`: one JSON line, exit 0, 1 on a refusal or a broken
+/// transfer, 3 on an absent box.
+fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
+    let (name, repo, into, remote) = parse_crossing(verb, args)?;
+    let runtime = runtime();
+    if !present(runtime, verb, &name)? {
+        return Ok(3);
+    }
+    let remote = remote.unwrap_or_else(|| {
+        if verb == "push" {
+            "host".into()
+        } else {
+            name.clone()
+        }
+    });
+    let init = artifacts::init()?;
+    let result = if verb == "push" {
+        crossing::push(runtime, &init, &name, Path::new(&repo), &into, &remote)
+    } else {
+        crossing::fetch(runtime, &init, &name, &repo, Path::new(&into), &remote)
+    };
+    Ok(report_crossing(verb, &name, &remote, result))
+}
+
+/// Print a crossing's one JSON line and return its exit code. `pinfold
+/// push` and `fetch` print the same lines as `box push` and `box fetch`.
+pub(crate) fn report_crossing(
+    verb: &str,
+    name: &str,
+    remote: &str,
+    result: Result<crossing::Refs, CrossingError>,
+) -> i32 {
+    match result {
+        Ok(refs) => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "event": if verb == "push" { "pushed" } else { "fetched" },
+                    "box": name,
+                    "remote": remote,
+                    "refs": refs,
+                })
+            );
+            0
+        }
+        Err(CrossingError::Refused(reason, detail)) => refused("box", Some(name), reason, &detail),
+        Err(CrossingError::Failed(detail)) => {
+            println!(
+                "{}",
+                serde_json::json!({ "event": "failed", "box": name, "detail": detail })
+            );
+            1
+        }
+    }
+}
+
+fn parse_crossing(
+    verb: &str,
+    args: &[String],
+) -> io::Result<(String, String, String, Option<String>)> {
+    let (name, mut rest) = match args {
+        [name, rest @ ..] if !name.starts_with('-') => (name.clone(), rest),
+        _ => return Err(usage("box", &format!("{verb} needs a box name"))),
+    };
+    let (mut repo, mut into, mut remote) = (None, None, None);
+    while let [option, value, tail @ ..] = rest {
+        let slot = match option.as_str() {
+            "--repo" => &mut repo,
+            "--into" => &mut into,
+            "--remote" => &mut remote,
+            _ => return Err(usage("box", &format!("unknown {verb} option {option:?}"))),
+        };
+        if slot.replace(value.clone()).is_some() {
+            return Err(usage("box", &format!("{verb} takes {option} once")));
+        }
+        rest = tail;
+    }
+    if let [option] = rest {
+        return Err(usage(
+            "box",
+            &format!("{verb} option {option:?} needs a value"),
+        ));
+    }
+    match (repo, into) {
+        (Some(repo), Some(into)) => Ok((name, repo, into, remote)),
+        _ => Err(usage("box", &format!("{verb} needs --repo and --into"))),
+    }
+}
+
 /// Whether the runtime lists pinfold box `name`. An absent box is pinfold's
 /// own failure, which `exec` and `stat` tell apart from the command's by
 /// exit 3.
 fn present(runtime: &dyn Runtime, verb: &str, name: &str) -> io::Result<bool> {
     let found = runtime
-        .list(None)?
+        .list()?
         .iter()
         .any(|box_| box_.id == name && clean::pinfold_box(box_));
     if !found {
@@ -382,51 +445,32 @@ fn present(runtime: &dyn Runtime, verb: &str, name: &str) -> io::Result<bool> {
 
 fn list(args: &[String]) -> io::Result<i32> {
     let filters = parse_labels(args)?;
-    let executor = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    executor.block_on(async {
-        let mut signals = Signals::new()?;
-        let cancel = Arc::new(AtomicBool::new(false));
-        let worker_cancel = Arc::clone(&cancel);
-        let mut inventory =
-            tokio::task::spawn_blocking(move || runtime().list(Some(&worker_cancel)));
-        let boxes = tokio::select! {
-            biased;
-            received = signals.recv() => {
-                cancel.store(true, Ordering::Release);
-                let _ = inventory.await.map_err(io::Error::other)?;
-                return Ok(128 + received as i32);
-            }
-            result = &mut inventory => result.map_err(io::Error::other)??,
-        };
-        for box_ in boxes {
-            if !clean::pinfold_box(&box_) {
-                continue;
-            }
-            let matches = filters.iter().all(|(key, value)| match value {
-                Some(value) => box_.labels.get(key) == Some(value),
-                None => box_.labels.contains_key(key),
-            });
-            if !matches {
-                continue;
-            }
-            let (owner, owner_alive) = clean::owner(&box_)?;
-            println!(
-                "{}",
-                serde_json::json!({
-                    "name": box_.id,
-                    "labels": box_.labels,
-                    "image": { "id": box_.image_id, "ref": box_.image_ref },
-                    "owner": owner,
-                    "owner_alive": owner_alive,
-                    "created": box_.created,
-                    "state": if box_.running { "running" } else { "stopped" },
-                })
-            );
+    for box_ in runtime().list()? {
+        if !clean::pinfold_box(&box_) {
+            continue;
         }
-        Ok(0)
-    })
+        let matches = filters.iter().all(|(key, value)| match value {
+            Some(value) => box_.labels.get(key) == Some(value),
+            None => box_.labels.contains_key(key),
+        });
+        if !matches {
+            continue;
+        }
+        let (owner, owner_alive) = clean::owner(&box_)?;
+        println!(
+            "{}",
+            serde_json::json!({
+                "name": box_.id,
+                "labels": box_.labels,
+                "image": { "id": box_.image_id, "ref": box_.image_ref },
+                "owner": owner,
+                "owner_alive": owner_alive,
+                "created": box_.created,
+                "state": if box_.running { "running" } else { "stopped" },
+            })
+        );
+    }
+    Ok(0)
 }
 
 fn prune(args: &[String]) -> io::Result<i32> {
@@ -518,6 +562,67 @@ fn answer(verb: &str, run_id: &str, answer: Option<serde_json::Value>) -> io::Re
     }
 }
 
+pub fn disk(args: &[String]) -> io::Result<i32> {
+    let runtime = runtime();
+    match args {
+        [verb] if verb == "list" => {
+            let attached = disk::attachments(runtime, None)?;
+            for found in runtime.list_disks()? {
+                let boxes: Vec<_> = attached
+                    .get(&found.name)
+                    .into_iter()
+                    .flatten()
+                    .map(
+                        |(name, readonly)| serde_json::json!({ "box": name, "readonly": readonly }),
+                    )
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "name": found.name,
+                        "size": found.size,
+                        "allocated": found.allocated,
+                        "attached": boxes,
+                        "clean": !disk::unclean(&found.name)?,
+                    })
+                );
+            }
+            Ok(0)
+        }
+        [verb, name] if verb == "rm" => {
+            let refused = |reason: &str, detail: String| {
+                println!(
+                    "{}",
+                    serde_json::json!({ "event": "refused", "disk": name, "reason": reason, "detail": detail })
+                );
+                Ok(1)
+            };
+            if !valid_name(name) {
+                return refused(
+                    "spec",
+                    format!(
+                        "disk name {name:?} must start alphanumeric and hold only [A-Za-z0-9._-]"
+                    ),
+                );
+            }
+            match disk::remove(runtime, name)? {
+                disk::Removal::InUse(holder) => refused(
+                    "disk-in-use",
+                    format!("box {holder:?} attaches disk {name:?}"),
+                ),
+                disk::Removal::Removed { existed } => {
+                    println!(
+                        "{}",
+                        serde_json::json!({ "event": "removed", "disk": name, "existed": existed })
+                    );
+                    Ok(0)
+                }
+            }
+        }
+        _ => Err(usage("disk", "disk takes list, or rm and one name")),
+    }
+}
+
 pub fn clean(args: &[String]) -> io::Result<i32> {
     let (dry_run, unused) = parse_clean(args)?;
     let runtime = runtime();
@@ -548,9 +653,16 @@ struct CleanPlan {
     /// Retired runs' directories, and the old name-keyed egress logs.
     runs: Vec<PathBuf>,
     run_bytes: u64,
-    project_paths: BTreeMap<String, PathBuf>,
+    /// Projects `--unused` selected: their state dirs go with their disks.
+    idle_projects: BTreeSet<String>,
+    /// The disks of idle projects `--unused` removes, by project id.
+    project_disks: BTreeMap<String, Vec<String>>,
+    /// Every disk's allocated bytes, a category of its own.
+    disk_bytes: u64,
+    /// Recorded checkouts that are gone or moved; their state and disks
+    /// stay until `--unused` or `disk rm`.
+    moved: Vec<PathBuf>,
     automatic_bytes: u64,
-    project_caches: u64,
     project_state: u64,
     build_cache_bytes: Option<u64>,
     unused: Option<Duration>,
@@ -569,17 +681,27 @@ impl CleanPlan {
         automatic.extend(artifacts::unpinned_versions()?);
         let runs = runs::retired()?;
 
-        let mut project_paths = BTreeMap::new();
-        let mut project_caches = 0;
+        let disks = runtime.list_disks()?;
+        let mut idle_projects = BTreeSet::new();
+        let mut project_disks = BTreeMap::new();
         let mut project_state = 0;
+        let mut moved = Vec::new();
         for project in crate::pi::state::state_dirs()? {
-            if let Some(path) = Self::project_path(&project, &boxes.live_projects, unused) {
-                if path == project.dir {
-                    project_state += clean::path_bytes(&path);
-                } else {
-                    project_caches += clean::path_bytes(&path);
+            if !project.root.exists() {
+                moved.push(project.root.clone());
+            }
+            if Self::idle(&project, &boxes.live_projects, unused) {
+                let names: Vec<String> = crate::pi::state::disk_names(&project.id)
+                    .into_iter()
+                    .filter(|name| disks.iter().any(|disk| &disk.name == name))
+                    .collect();
+                if !names.is_empty() {
+                    project_disks.insert(project.id.clone(), names);
                 }
-                project_paths.insert(project.id, path);
+            }
+            if Self::idle(&project, &boxes.live_projects, unused) {
+                project_state += clean::path_bytes(&project.dir);
+                idle_projects.insert(project.id);
             }
         }
 
@@ -591,12 +713,14 @@ impl CleanPlan {
                 .chain(&box_paths)
                 .map(|path| clean::path_bytes(path))
                 .sum(),
-            project_caches,
             project_state,
             automatic,
             run_bytes: runs.iter().map(|path| clean::path_bytes(path)).sum(),
             runs,
-            project_paths,
+            idle_projects,
+            project_disks,
+            disk_bytes: disks.iter().map(|disk| disk.allocated).sum(),
+            moved,
             unused,
         })
     }
@@ -606,8 +730,8 @@ impl CleanPlan {
     fn total(&self) -> u64 {
         self.automatic_bytes
             + self.run_bytes
-            + self.project_caches
             + self.project_state
+            + self.disk_bytes
             + self.build_cache_bytes.unwrap_or(0)
     }
 
@@ -618,8 +742,11 @@ impl CleanPlan {
             Some(bytes) => println!("  build cache: {bytes} B; {}", runtime.build_cache()),
             None => println!("  build cache: unmeasured; {}", runtime.build_cache()),
         }
-        println!("  project caches: {} B", self.project_caches);
         println!("  project state: {} B", self.project_state);
+        println!("  disks: {} B", self.disk_bytes);
+        for root in &self.moved {
+            println!("  checkout gone, state and disks kept: {}", root.display());
+        }
     }
 
     /// Remove everything the plan measured, then the builds past each
@@ -632,7 +759,7 @@ impl CleanPlan {
         clean::remove_paths(self.automatic.into_iter().collect())?;
         clean::remove_paths(self.runs)?;
         let mut locks = BTreeMap::new();
-        for id in self.project_paths.keys() {
+        for id in &self.idle_projects {
             if let Some(lock) = crate::core::ownership::try_project_lock(id)? {
                 locks.insert(id.as_str(), lock);
             }
@@ -644,10 +771,14 @@ impl CleanPlan {
                 if !locks.contains_key(project.id.as_str()) {
                     continue;
                 }
-                if let Some(path) = Self::project_path(&project, &live, self.unused)
-                    && self.project_paths.get(&project.id) == Some(&path)
-                {
-                    clean::remove_paths(vec![path])?;
+                if Self::idle(&project, &live, self.unused) {
+                    if self.idle_projects.contains(&project.id) {
+                        clean::remove_paths(vec![project.dir.clone()])?;
+                    }
+                    // A disk a box attaches stays; `disk::remove` checks.
+                    for name in self.project_disks.get(&project.id).into_iter().flatten() {
+                        disk::remove(runtime, name)?;
+                    }
                 }
             }
         }
@@ -655,21 +786,15 @@ impl CleanPlan {
         clean::keep_two_images_per_source(runtime)
     }
 
-    fn project_path(
+    /// Whether `--unused` selects the project: not run for that long and no
+    /// live box. A moved checkout alone keeps its state and disks.
+    fn idle(
         project: &crate::pi::state::StateDir,
         live: &BTreeSet<String>,
         unused: Option<Duration>,
-    ) -> Option<PathBuf> {
-        if live.contains(&project.id) {
-            return None;
-        }
+    ) -> bool {
         let idle = crate::core::now().saturating_sub(project.last_run);
-        if !project.root.exists() || unused.is_some_and(|unused| idle > unused.as_secs()) {
-            Some(project.dir.clone())
-        } else {
-            let cache = project.dir.join("home/.cache");
-            cache.exists().then_some(cache)
-        }
+        !live.contains(&project.id) && unused.is_some_and(|unused| idle >= unused.as_secs())
     }
 }
 
@@ -745,23 +870,16 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         }
         Err(error) => {
             println!("  preflight: {error}");
-            if !cfg!(target_os = "macos") {
-                for requirement in podman::host_requirements() {
-                    println!("  {requirement}");
-                }
+            #[cfg(target_os = "linux")]
+            for requirement in crate::core::runtime::firecracker::preflight::host_requirements()
+                .into_iter()
+                .chain(crate::core::runtime::podman::host_requirements())
+            {
+                println!("  {requirement}");
             }
             false
         }
     };
-    if !cfg!(target_os = "macos") && runtime_ready {
-        match podman::linger() {
-            Ok(true) => println!("  linger: enabled"),
-            Ok(false) => println!(
-                "  linger: disabled; long-lived boxes stop at logout; run `loginctl enable-linger`"
-            ),
-            Err(error) => println!("  linger: unavailable: {error}"),
-        }
-    }
 
     match nix::sys::utsname::uname() {
         Ok(uname) => println!(
@@ -868,7 +986,7 @@ pub fn config(args: &[String]) -> io::Result<i32> {
 
 fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> {
     let project = crate::pi::state::project_id(root);
-    let home = crate::pi::state::project_home(root)?;
+    let [home_disk, project_disk] = crate::pi::state::disk_names(&project);
     let image = crate::pi::launch::resolve_image(config, &project);
     let (image_built, image_error) = match runtime().resolve_image(&image) {
         Ok(resolved) => (Some(resolved.is_ok()), None),
@@ -886,11 +1004,14 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
         "image_error": image_error,
         "containerfile": config.containerfile.as_ref().map_or("profile", |(path, _)| path.as_str()),
         "egress": { "allow": &config.allow, "routes": &config.routes },
-        "protect": &config.protect,
         "cpus": config.cpus,
         "memory": &config.memory,
         "env": &config.env,
-        "project": { "id": project, "home": utf8(&home, "project home")? },
+        "project": {
+            "id": project,
+            "home": crate::pi::state::HOME,
+            "disks": { "home": home_disk, "project": project_disk },
+        },
         "trust": trust,
     }))
 }
@@ -1150,9 +1271,8 @@ pub fn profile(args: &[String]) -> io::Result<i32> {
 }
 
 fn profile_new(args: &[String]) -> io::Result<()> {
-    let (name, from, from_project, builtin) = parse_profile_new(args)?;
+    let (name, from, builtin) = parse_profile_new(args)?;
     profile::check_name("profile", &name)?;
-    let project_agent = from_project.as_deref().map(project_agent_dir).transpose()?;
     let source = if builtin {
         Profile::builtin(&from)
     } else {
@@ -1167,20 +1287,7 @@ fn profile_new(args: &[String]) -> io::Result<()> {
             format!("profile {name:?} at {}: {error}", target.display()),
         )
     })?;
-    let result = source
-        .and_then(|source| profile::write_profile(&source, &target))
-        .and_then(|()| match &project_agent {
-            // The project's `home/.pi/agent/` replaces the seeds of the same
-            // path; pi's login, session history, npm install and caches stay
-            // behind, and nothing else from the project home is copied.
-            Some(agent) => profile::copy_tree(agent, &target.join("home/.pi/agent"), |name| {
-                matches!(
-                    name.to_str(),
-                    Some("auth.json" | "sessions" | "npm" | "cache" | ".cache")
-                )
-            }),
-            None => Ok(()),
-        });
+    let result = source.and_then(|source| profile::write_profile(&source, &target));
     if result.is_err() {
         // Do not leave a half-written profile behind to load or block a retry.
         let _ = fs::remove_dir_all(&target);
@@ -1188,28 +1295,11 @@ fn profile_new(args: &[String]) -> io::Result<()> {
     result
 }
 
-fn project_agent_dir(path: &Path) -> io::Result<PathBuf> {
-    let root = crate::pi::launch::project_root(path)?;
-    let agent = crate::pi::state::project_home(&root)?.join(".pi/agent");
-    if !agent.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "project {} has no state at {}",
-                root.display(),
-                agent.display()
-            ),
-        ));
-    }
-    Ok(agent)
-}
-
-fn parse_profile_new(args: &[String]) -> io::Result<(String, String, Option<PathBuf>, bool)> {
+fn parse_profile_new(args: &[String]) -> io::Result<(String, String, bool)> {
     let mut name = None;
     let mut from = None;
-    let mut from_project = None;
     let mut builtin = false;
-    let mut args = args.iter().peekable();
+    let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--builtin" => builtin = true,
@@ -1219,10 +1309,6 @@ fn parse_profile_new(args: &[String]) -> io::Result<(String, String, Option<Path
                         .ok_or_else(|| usage("profile", "--from needs a profile name"))?
                         .clone(),
                 );
-            }
-            "--from-project" => {
-                let path = args.next_if(|value| !value.starts_with("--"));
-                from_project = Some(PathBuf::from(path.map_or(".", String::as_str)));
             }
             option if option.starts_with("--") => {
                 return Err(usage(
@@ -1235,10 +1321,5 @@ fn parse_profile_new(args: &[String]) -> io::Result<(String, String, Option<Path
         }
     }
     let name = name.ok_or_else(|| usage("profile", "profile new needs a name"))?;
-    Ok((
-        name,
-        from.unwrap_or_else(|| "default".to_string()),
-        from_project,
-        builtin,
-    ))
+    Ok((name, from.unwrap_or_else(|| "default".to_string()), builtin))
 }

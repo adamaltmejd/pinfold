@@ -4,18 +4,19 @@ use std::collections::BTreeMap;
 use std::env;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use tokio::runtime::Builder;
 
 use crate::cli;
 use crate::config::Config;
-use crate::core::r#box::{Box, Shutdown, Signals, UpError};
+use crate::core::r#box::{Box, RefusalReason, Shutdown, Signals, UpError};
 use crate::core::clean;
-use crate::core::plan::{Egress, Env, Mount, Plan};
-use crate::core::runs::Terminal;
+use crate::core::crossing::CrossingError;
+use crate::core::plan::{Disk, Egress, Env, Plan};
+use crate::core::runs::{self, Terminal};
 use crate::core::runtime::{ImageInfo, runtime};
-use crate::core::{artifacts, image, ownership, sha256_hex};
-use crate::pi::git::{Git, git};
+use crate::core::{artifacts, crossing, disk, image, ownership, sha256_hex};
 use crate::pi::state::{self, canonical, project_id};
 use crate::trust;
 
@@ -25,26 +26,175 @@ const HARNESS: &str = "pi";
 pub fn run(args: &[String]) -> io::Result<i32> {
     let cwd = canonical(&env::current_dir()?)?;
     let root = project_root(&cwd)?;
+    refuse_worktree(&root)?;
     let config = Config::load(&root)?;
     trust::check(&root, &config)?;
     let id = project_id(&root);
     let _project = ownership::project_lock(&id)?;
-    let home = state::record_run(&root)?;
+    state::record_run(&root)?;
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
-    // Prepare read-only mounts after trust. The Git guard removes newly
-    // created empty protection directories even on a late core refusal.
-    let git = Git::prepare(&root, &config.protect)?;
-    let plan = build_plan(&config, &id, &home, &root, &image, &git)?;
+    let plan = build_plan(&config, &id, &root, &image)?;
     run_box(&plan, &cwd, args)
+}
+
+/// Refuse a checkout whose `.git` is not a directory: a worktree's (or a
+/// submodule's) `.git` file names a git dir outside the project, which
+/// the project disk does not hold.
+pub(crate) fn refuse_worktree(root: &Path) -> io::Result<()> {
+    let dot_git = root.join(".git");
+    match std::fs::symlink_metadata(&dot_git) {
+        Ok(metadata) if !metadata.is_dir() => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "worktree: {} is not a directory; run pinfold from the main checkout",
+                dot_git.display()
+            ),
+        )),
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
+
+/// `pinfold push` and `pinfold fetch`: cross this checkout's branches with
+/// the box that attaches its project disk, or with a transient box on that
+/// disk, without egress, when none does.
+pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
+    if !args.is_empty() {
+        return Err(cli::usage(verb, &format!("{verb} takes no arguments")));
+    }
+    let root = project_root(&env::current_dir()?)?;
+    refuse_worktree(&root)?;
+    let config = Config::load(&root)?;
+    trust::check(&root, &config)?;
+    let id = project_id(&root);
+    let [_, disk] = state::disk_names(&id);
+    let guest = utf8(&root, "project root")?.to_string();
+    let (verb, remote) = if verb == "push" {
+        ("push", "host")
+    } else {
+        ("fetch", "pinfold")
+    };
+    let box_runtime = runtime();
+    let init = artifacts::init()?;
+    let (repo, guest_repo) = (root.clone(), guest.clone());
+    let cross = move |name: &str| {
+        if verb == "push" {
+            crossing::push(box_runtime, &init, name, &repo, &guest_repo, remote)
+        } else {
+            crossing::fetch(box_runtime, &init, name, &guest_repo, &repo, remote)
+        }
+    };
+    match project_box(&disk)? {
+        Holder::Ready(name) => {
+            let result = cross(&name);
+            return Ok(cli::report_crossing(verb, &name, remote, result));
+        }
+        Holder::Starting(name) => {
+            let refusal = CrossingError::Refused(RefusalReason::DiskInUse, starting(&name, &disk));
+            return Ok(cli::report_crossing(verb, &name, remote, Err(refusal)));
+        }
+        Holder::None => {}
+    }
+    if !box_runtime
+        .list_disks()?
+        .iter()
+        .any(|listed| listed.name == disk)
+        // The transient box names no `from`: claiming an unfilled disk
+        // would empty it and mark it filled.
+        || disk::unfilled(&disk)?
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "this project has no project disk yet; start it with `pinfold pi`",
+        ));
+    }
+    let image = resolve_image(&config, &id);
+    ensure_image(&config, &image)?;
+    let plan = Plan {
+        disks: vec![project_disk(disk, &root, None)?],
+        ..box_plan(&config, &id, &image)
+    };
+    let init = artifacts::init()?;
+    let runtime = Builder::new_current_thread().enable_all().build()?;
+    let result = runtime.block_on(async {
+        let mut signals = Signals::new()?;
+        let name = plan.name.clone();
+        // Every start that ends without ready still prints one line.
+        let unstarted = |error| Ok(cli::report_crossing(verb, &name, remote, Err(error)));
+        let mut box_ = match Box::up(&plan, &init, &mut signals).await {
+            Ok(box_) => box_,
+            Err(UpError::Control) => {
+                return unstarted(CrossingError::Failed(
+                    "the transient box was stopped before ready".to_string(),
+                ));
+            }
+            Err(UpError::Signal) => {
+                return Ok(128 + signals.last().unwrap_or(nix::sys::signal::Signal::SIGTERM) as i32);
+            }
+            Err(UpError::Refused(refusal)) => {
+                return unstarted(CrossingError::Refused(refusal.reason, refusal.detail));
+            }
+            Err(error) => {
+                return unstarted(CrossingError::Failed(io::Error::from(error).to_string()));
+            }
+        };
+        let crossed = tokio::task::spawn_blocking(move || {
+            let result = cross(&name);
+            cli::report_crossing(verb, &name, remote, result)
+        });
+        let code = tokio::select! {
+            code = crossed => code.map_err(|error| io::Error::other(format!("{verb} failed: {error}"))),
+            signal = signals.recv() => Ok(128 + signal as i32),
+        };
+        let down = box_.down(Some(Shutdown::Signal.terminal())).await;
+        let code = code?;
+        down?;
+        Ok(code)
+    });
+    runtime.shutdown_background();
+    result
+}
+
+/// What holds a project disk.
+pub(crate) enum Holder {
+    None,
+    Ready(String),
+    /// Claimed but not ready: a first start's `from` copy may be partial.
+    Starting(String),
+}
+
+/// The box that attaches the project disk `disk`, and whether it is ready.
+pub(crate) fn project_box(disk: &str) -> io::Result<Holder> {
+    let Some((name, _)) = disk::attachments(runtime(), None)?
+        .remove(disk)
+        .and_then(|boxes| boxes.into_iter().next())
+    else {
+        return Ok(Holder::None);
+    };
+    let ready = match ownership::record(&name)? {
+        Some(record) => runs::launched(&record.generation)?,
+        // Listed by the runtime with no claim: a dead owner's box.
+        None => false,
+    };
+    Ok(if ready {
+        Holder::Ready(name)
+    } else {
+        Holder::Starting(name)
+    })
+}
+
+/// The `disk-in-use` detail for a box that is not ready.
+pub(crate) fn starting(name: &str, disk: &str) -> String {
+    format!("box {name:?} attaches disk {disk:?} and is not ready")
 }
 
 /// The canonical project root for `cwd`: the git top level, else `cwd`.
 /// Refuses a `cwd` inside a git directory, and one outside the root.
 pub(crate) fn project_root(cwd: &Path) -> io::Result<PathBuf> {
     let cwd = canonical(cwd)?;
-    // `--show-toplevel` fails inside `.git`, and the fallback would mount
-    // `.git` writable as the project, so refuse before anything is created.
+    // `--show-toplevel` fails inside `.git`, and the fallback would take
+    // `.git` as the project, so refuse before anything is created.
     if git(&cwd, &["rev-parse", "--is-inside-git-dir"]).is_ok_and(|inside| inside == "true") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -134,79 +284,66 @@ fn warn_containerfile(image: &ImageInfo, bytes: &[u8], build: &str) {
     }
 }
 
-fn build_plan(
-    config: &Config,
-    id: &str,
-    home: &Path,
-    root: &Path,
-    image: &str,
-    git: &Git,
-) -> io::Result<Plan> {
-    let labels = BTreeMap::from([(clean::PROJECT_LABEL.to_string(), id.to_string())]);
+fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> io::Result<Plan> {
     let mut env = BTreeMap::from([
-        (
-            "HOME".to_string(),
-            Env::Exact(utf8(home, "project home")?.to_string()),
-        ),
+        ("HOME".to_string(), Env::Exact(state::HOME.to_string())),
         ("HERDR_AGENT".to_string(), Env::Exact("pi".to_string())),
     ]);
     env.extend(config.env.iter().map(|name| {
         let from = format!("PINFOLD_ENV_{name}");
         (name.clone(), Env::From { from })
     }));
-
-    // safe.directory for the project root (Shared files), after any
-    // passed-through GIT_CONFIG_* entries.
-    let count = match env.get("GIT_CONFIG_COUNT") {
-        Some(Env::From { from }) => env::var(from).ok().and_then(|value| value.parse().ok()),
-        _ => None,
-    }
-    .unwrap_or(0);
-    env.extend([
-        (
-            "GIT_CONFIG_COUNT".to_string(),
-            Env::Exact((count + 1).to_string()),
-        ),
-        (
-            format!("GIT_CONFIG_KEY_{count}"),
-            Env::Exact("safe.directory".to_string()),
-        ),
-        (
-            format!("GIT_CONFIG_VALUE_{count}"),
-            Env::Exact(utf8(root, "project root")?.to_string()),
-        ),
-    ]);
-
-    let mut mounts = vec![
-        Mount {
-            host: root.to_path_buf(),
-            guest: root.to_path_buf(),
-            readonly: false,
-        },
-        Mount {
-            host: home.to_path_buf(),
-            guest: home.to_path_buf(),
-            readonly: false,
-        },
-    ];
-    // Nested after the writable project mount, so the read-only `.git` and
-    // protected editor config shadow it.
-    mounts.extend(git.readonly.iter().cloned());
-
+    let [home, project] = state::disk_names(id);
     Ok(Plan {
-        name: format!("pi-{id}-{}", std::process::id()),
-        image: Some(image.to_string()),
         profile: Some(config.profile.name.clone()),
         harness: Some(HARNESS.to_string()),
-        labels,
-        mounts,
+        disks: vec![
+            Disk {
+                name: home,
+                guest: PathBuf::from(state::HOME),
+                size: None,
+                from: None,
+                readonly: false,
+            },
+            project_disk(project, root, Some(root))?,
+        ],
         env,
         egress: Some(Egress {
             allow: config.allow.clone(),
             routes: config.routes.clone(),
         }),
+        ..box_plan(config, id, image)
+    })
+}
+
+/// The plan both a pi box and a transient crossing box start from: the
+/// image, the project label and resources, and nothing else.
+fn box_plan(config: &Config, id: &str, image: &str) -> Plan {
+    Plan {
+        name: format!("pi-{id}-{}", std::process::id()),
+        image: Some(image.to_string()),
+        profile: None,
+        harness: None,
+        labels: BTreeMap::from([(clean::PROJECT_LABEL.to_string(), id.to_string())]),
+        mounts: Vec::new(),
+        disks: Vec::new(),
+        env: BTreeMap::new(),
+        egress: None,
         cpus: Some(config.cpus),
         memory: Some(config.memory.clone()),
+    }
+}
+
+/// The project disk, writable at the project's own path. `from` copies the
+/// checkout in when the disk is new.
+fn project_disk(name: String, root: &Path, from: Option<&Path>) -> io::Result<Disk> {
+    utf8(root, "project root")?;
+    Ok(Disk {
+        name,
+        guest: root.to_path_buf(),
+        size: None,
+        from: from.map(Path::to_path_buf),
+        readonly: false,
     })
 }
 
@@ -286,4 +423,31 @@ fn run_box(plan: &Plan, cwd: &Path, args: &[String]) -> io::Result<i32> {
     // a hung exec must not hold the process after teardown.
     runtime.shutdown_background();
     result
+}
+
+/// Run git in `dir` and return its stdout less one trailing newline.
+fn git(dir: &Path, args: &[&str]) -> io::Result<String> {
+    let command = format!("git -C {} {}", dir.display(), args.join(" "));
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|error| io::Error::new(error.kind(), format!("run {command}: {error}")))?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "{command} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let mut stdout = String::from_utf8(output.stdout).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{command} printed non-UTF-8 output: {error}"),
+        )
+    })?;
+    if stdout.ends_with('\n') {
+        stdout.pop();
+    }
+    Ok(stdout)
 }

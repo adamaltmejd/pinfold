@@ -5,21 +5,28 @@
 //! actions, so waiting for the blocked signal is what makes a stop possible.
 //! When the transport carries the proxy socket in, it also relays
 //! `127.0.0.1:3128` to that socket, because clients only know how to reach a
-//! proxy over TCP.
+//! proxy over TCP. On Linux, `init boot` is PID 1 of a Firecracker box
+//! instead (`init/firecracker.rs`).
 
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::signal::{SigHandler, SigSet, Signal};
+
+#[cfg(target_os = "linux")]
+#[path = "init/firecracker.rs"]
+pub(crate) mod firecracker;
 
 /// Guest values travel under names the host runtime does not interpret.
 /// Hex preserves arbitrary environment bytes through runtime JSON encoding.
@@ -30,8 +37,13 @@ const RELAY_LISTEN: &str = "127.0.0.1:3128";
 /// Run as PID 1 until SIGTERM. `args` is the optional guest path of the
 /// carried proxy socket; without it the box has no egress and no relay.
 pub fn run(args: &[String]) -> ! {
-    if args.first().map(String::as_str) == Some("exec") {
-        exec(&args[1..]);
+    match args.first().map(String::as_str) {
+        Some("exec") => exec(&args[1..]),
+        Some("setup") => exit_with("setup", setup(&args[1..])),
+        Some("receive") => exit_with("receive", receive(&args[1..])),
+        #[cfg(target_os = "linux")]
+        Some("boot") => firecracker::boot(),
+        _ => {}
     }
 
     // Blocked before the relay thread exists, which inherits the mask, so
@@ -59,7 +71,7 @@ pub fn run(args: &[String]) -> ! {
         thread::spawn(move || {
             for client in listener.incoming().flatten() {
                 let target = target.clone();
-                thread::spawn(move || relay(client, &target));
+                thread::spawn(move || relay(client, UnixStream::connect(&target)?));
             }
         });
     }
@@ -129,23 +141,226 @@ fn exec(args: &[String]) -> ! {
     });
 }
 
+fn exit_with(verb: &str, result: io::Result<()>) -> ! {
+    match result {
+        Ok(()) => process::exit(0),
+        Err(error) => {
+            eprintln!("pinfold init {verb}: {error}");
+            process::exit(1)
+        }
+    }
+}
+
+/// `init setup [--own UID:GID DIR]…`, run as root with only `CAP_CHOWN` on
+/// Apple: give each new disk's root to the box user.
+fn setup(args: &[String]) -> io::Result<()> {
+    let mut args = args.iter();
+    while let Some(option) = args.next() {
+        let (Some(owner), Some(dir)) = (args.next(), args.next()) else {
+            return Err(io::Error::other(
+                "usage: pinfold init setup [--own UID:GID DIR]...",
+            ));
+        };
+        let owner = (option == "--own")
+            .then(|| owner.split_once(':'))
+            .flatten()
+            .and_then(|(uid, gid)| Some((uid.parse().ok()?, gid.parse().ok()?)));
+        let Some((uid, gid)) = owner else {
+            return Err(io::Error::other(
+                "usage: pinfold init setup [--own UID:GID DIR]...",
+            ));
+        };
+        nix::unistd::chown(
+            dir.as_str(),
+            Some(nix::unistd::Uid::from_raw(uid)),
+            Some(nix::unistd::Gid::from_raw(gid)),
+        )?;
+    }
+    Ok(())
+}
+
+/// One entry of a `from` copy stream: a tag byte, the relative path as a
+/// u32 length and bytes, then the payload: nothing for a directory, a u64
+/// length and the bytes for a file, a u32 length and the target for a
+/// symlink. [`STREAM_END`] ends the stream.
+pub const STREAM_DIR: u8 = b'd';
+pub const STREAM_FILE: u8 = b'f';
+pub const STREAM_EXECUTABLE: u8 = b'x';
+pub const STREAM_SYMLINK: u8 = b'l';
+pub const STREAM_END: u8 = 0;
+
+/// `init receive [--missing] DIR`: write the copy stream on stdin below
+/// DIR, as the box user. With `--missing`, an entry already present is
+/// left as it is: a profile's seeds.
+fn receive(args: &[String]) -> io::Result<()> {
+    let (missing, root) = match args {
+        [flag, root] if flag == "--missing" => (true, root),
+        [root] => (false, root),
+        _ => {
+            return Err(io::Error::other(
+                "usage: pinfold init receive [--missing] DIR",
+            ));
+        }
+    };
+    receive_into(
+        Path::new(root),
+        &mut io::BufReader::new(io::stdin().lock()),
+        missing,
+    )
+}
+
+/// Write one copy stream from `input` below `root`, up to its
+/// [`STREAM_END`]. Directories and executables get 755, other files 644.
+/// With `missing`, an existing entry is skipped and keeps its mode.
+fn receive_into(root: &Path, mut input: &mut impl io::Read, missing: bool) -> io::Result<()> {
+    use std::io::Read;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+    fn read_bytes(input: &mut impl Read, length: usize) -> io::Result<Vec<u8>> {
+        let mut bytes = vec![0; length];
+        input.read_exact(&mut bytes)?;
+        Ok(bytes)
+    }
+    let present = |result: io::Result<()>| match result {
+        Err(error) if missing && error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        result => result.map(|()| true),
+    };
+    loop {
+        let tag = read_bytes(&mut input, 1)?[0];
+        if tag == STREAM_END {
+            // Before ready, so the host can make a finished fill durable.
+            #[cfg(target_os = "linux")]
+            nix::unistd::syncfs(fs::File::open(root)?)?;
+            return Ok(());
+        }
+        let length = u32::from_be_bytes(read_bytes(&mut input, 4)?.try_into().unwrap()) as usize;
+        let relative = PathBuf::from(OsString::from_vec(read_bytes(&mut input, length)?));
+        if !relative
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(io::Error::other(format!(
+                "stream path {} is not plain",
+                relative.display()
+            )));
+        }
+        let path = root.join(&relative);
+        match tag {
+            STREAM_DIR => {
+                if present(fs::DirBuilder::new().mode(0o755).create(&path))? {
+                    fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+                }
+            }
+            STREAM_FILE | STREAM_EXECUTABLE => {
+                let mode = if tag == STREAM_EXECUTABLE {
+                    0o755
+                } else {
+                    0o644
+                };
+                let size = u64::from_be_bytes(read_bytes(&mut input, 8)?.try_into().unwrap());
+                let mut payload = (&mut input).take(size);
+                let file = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(mode)
+                    .open(&path);
+                let mut file = match file {
+                    Err(error) if missing && error.kind() == io::ErrorKind::AlreadyExists => {
+                        // Present, whatever it is; drain its payload.
+                        io::copy(&mut payload, &mut io::sink())?;
+                        continue;
+                    }
+                    file => file?,
+                };
+                let copied = io::copy(&mut payload, &mut file)?;
+                if copied != size {
+                    return Err(io::ErrorKind::UnexpectedEof.into());
+                }
+                file.set_permissions(fs::Permissions::from_mode(mode))?;
+            }
+            STREAM_SYMLINK => {
+                let length =
+                    u32::from_be_bytes(read_bytes(&mut input, 4)?.try_into().unwrap()) as usize;
+                let target = OsString::from_vec(read_bytes(&mut input, length)?);
+                present(std::os::unix::fs::symlink(target, &path))?;
+            }
+            _ => return Err(io::Error::other(format!("unknown stream tag {tag}"))),
+        }
+    }
+}
+
+/// A blocking socket's writes, each failing with `TimedOut` after `timeout`
+/// without progress. `SO_SNDTIMEO` is not enough: Linux's timer wheel
+/// rounds a five-minute timeout up by up to half a minute, and a partial
+/// write returns only at the timeout, restarting it for the rest.
+pub(crate) struct Deadline<'a>(pub BorrowedFd<'a>, pub Duration);
+
+impl Write for Deadline<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let began = Instant::now();
+        let mut ready = [PollFd::new(self.0, PollFlags::POLLOUT)];
+        // Polling only after a refused send keeps Linux at a blocking
+        // send's throughput. Darwin ignores MSG_DONTWAIT on a blocking
+        // socket, so there every send waits for POLLOUT first.
+        let mut wait = cfg!(target_os = "macos");
+        loop {
+            if wait {
+                let remaining = self
+                    .1
+                    .checked_sub(began.elapsed())
+                    .ok_or(io::ErrorKind::TimedOut)?;
+                let timeout = PollTimeout::try_from(remaining.max(Duration::from_millis(1)))
+                    .expect("five-minute timeout fits poll");
+                match poll(&mut ready, timeout) {
+                    Ok(0) => return Err(io::ErrorKind::TimedOut.into()),
+                    Err(nix::errno::Errno::EINTR) => continue,
+                    Ok(_) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            wait = true;
+            // Safety: the fd stays borrowed, and buf is readable for its length.
+            let sent = unsafe {
+                nix::libc::send(
+                    self.0.as_raw_fd(),
+                    buf.as_ptr().cast(),
+                    buf.len(),
+                    nix::libc::MSG_DONTWAIT | nix::libc::MSG_NOSIGNAL,
+                )
+            };
+            if sent >= 0 {
+                return Ok(sent as usize);
+            }
+            let error = io::Error::last_os_error();
+            if !matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            ) {
+                return Err(error);
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Guest upload EOF preserves the response path. Proxy EOF completes the
 /// exchange and interrupts a guest that kept its upload half open.
-fn relay(mut client: TcpStream, target: &Path) -> io::Result<()> {
-    let mut server = UnixStream::connect(target)?;
-    client.set_write_timeout(Some(Duration::from_secs(300)))?;
-    server.set_write_timeout(Some(Duration::from_secs(300)))?;
+fn relay(client: TcpStream, mut server: UnixStream) -> io::Result<()> {
+    const WRITE_TIMEOUT: Duration = Duration::from_secs(300);
     let mut client_reader = client.try_clone()?;
-    let mut server_writer = server.try_clone()?;
+    let server_writer = server.try_clone()?;
     let up = thread::spawn(move || {
-        if io::copy(&mut client_reader, &mut server_writer).is_err() {
+        let mut writer = Deadline(server_writer.as_fd(), WRITE_TIMEOUT);
+        if io::copy(&mut client_reader, &mut writer).is_err() {
             let _ = client_reader.shutdown(Shutdown::Both);
             let _ = server_writer.shutdown(Shutdown::Both);
         } else {
             let _ = server_writer.shutdown(Shutdown::Write);
         }
     });
-    let _ = io::copy(&mut server, &mut client);
+    let _ = io::copy(&mut server, &mut Deadline(client.as_fd(), WRITE_TIMEOUT));
     let _ = client.shutdown(Shutdown::Both);
     let _ = server.shutdown(Shutdown::Both);
     let _ = up.join();

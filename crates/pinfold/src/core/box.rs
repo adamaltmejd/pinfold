@@ -1,30 +1,21 @@
-//! The box lifecycle: one attached `container run` process owns one box.
+//! The box lifecycle: one `box up` process owns one box.
 
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::fs;
-use std::fs::File;
 use std::io;
-use std::io::Write;
-use std::os::fd::OwnedFd;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitStatus;
 
-use nix::errno::Errno;
-use nix::fcntl::{OFlag, openat};
-use nix::sys::stat::{Mode, mkdirat};
-use nix::unistd::{UnlinkatFlags, unlinkat};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::process::Child;
+use tokio::io::AsyncReadExt;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::core::clean;
-use crate::core::plan::{Env, Mount, Plan, Route, guest_path, valid_name};
+use crate::core::disk::Seeding;
+use crate::core::plan::{Disk, Env, Mount, Plan, Route, valid_name};
 use crate::core::profile::{Profile, Seed};
 use crate::core::runs::{self, Terminal};
-use crate::core::runtime::{BoxInfo, apple, runtime};
-use crate::core::{artifacts, login, ownership, proxy};
+use crate::core::runtime::{self, BoxInfo, Child, Prepared, apple, runtime};
+use crate::core::{artifacts, disk, login, ownership, proxy};
 use crate::dirs;
 
 /// A started box, owned by this process.
@@ -43,6 +34,8 @@ pub struct Box {
     /// The box's generation, which names its run records.
     pub run_id: String,
     ownership: ownership::Claim,
+    /// The spec's disks, recorded clean once `down` removes the box.
+    disks: Vec<Disk>,
     _project: Option<nix::fcntl::Flock<std::fs::File>>,
     audit: Audit,
     child: Child,
@@ -54,7 +47,7 @@ pub enum Shutdown {
     StdinEof,
     Signal,
     AuditLog,
-    /// The attached `container run` process exited on its own.
+    /// The box ended on its own: its runtime client or its VM exited.
     BoxExited(ExitStatus),
 }
 
@@ -87,8 +80,6 @@ impl Shutdown {
 
 /// Why `up` refused, serialized as the reason string of the process
 /// interface's `refused` line. Early refusals precede preparation.
-/// `MountAlias` follows preparation but precedes runtime spawn and ready;
-/// claimed state is removed, while fetched artifacts and home seeds remain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RefusalReason {
@@ -98,7 +89,9 @@ pub enum RefusalReason {
     ImageMissing,
     NameInUse,
     Login,
-    MountAlias,
+    DiskInUse,
+    DiskUnclean,
+    Limit,
 }
 
 /// A refused `up`: why, and the detail the runtime or host gave. `box_name`
@@ -147,8 +140,7 @@ impl Box {
     /// `up` claims the name, and only the claim's owner creates anything.
     /// File aliases are checked after preparation, before runtime startup.
     /// An alias refusal removes claimed state; prepared artifacts and home
-    /// seeds remain. Pi's guard removes its newly created empty protection
-    /// directories when the error returns to Pi.
+    /// seeds remain.
     ///
     /// The caller registered SIGTERM and SIGINT before reading the spec:
     /// before ready they remove what the start made and `up` returns
@@ -199,20 +191,15 @@ impl Box {
 
         // Pinfold adds the profile's `share/` above, and the harness mount
         // and a codex login's config dir in `start`. Check the spec's mounts
-        // against them before `home_mount` picks the mount behind `$HOME`, so
+        // against them before `home_disk` picks the disk behind `$HOME`, so
         // a clash is refused as spec and no tie can hide it.
         let harness = plan.harness.as_deref().map(artifacts::guest);
         let codex_config = codex.as_ref().map(|_| Path::new(login::CODEX_CONFIG_DIR));
         let extra: Vec<&Path> = harness.as_deref().into_iter().chain(codex_config).collect();
         plan.validate_guests(&extra)
             .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
-        let seeding = seeds
-            .map(|seeds| home_mount(&plan, seeds))
-            .transpose()
-            .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
-
         let runtime = runtime();
-        let seccomp = runtime
+        runtime
             .preflight()
             .map_err(|error| refused(&plan, RefusalReason::Runtime, error.to_string()))?;
 
@@ -233,12 +220,16 @@ impl Box {
                 ),
             )
         })?;
+        let seeding = seeds
+            .map(|seeds| home_disk(&plan, seeds))
+            .transpose()
+            .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
         // The image's identity labels are the box's too: Apple copies no
         // image label onto a box. Every image also carries the other
         // families empty, so pinfold's own label (`dev.pinfold.project` for
         // `pinfold pi`) must win over the image's empty one. A caller spec
         // cannot name this namespace, so no other clash can happen.
-        for (key, value) in identity.labels {
+        for (key, value) in identity.labels.clone() {
             if key.starts_with("dev.pinfold.") {
                 plan.labels.entry(key).or_insert(value);
             }
@@ -267,7 +258,8 @@ impl Box {
                 "name remained busy through the claim deadline".to_string(),
             )
         })?;
-        if runtime.list(None)?.iter().any(|box_| box_.id == plan.name) {
+        // Linux inventory is pinfold's own claims, which this one now holds.
+        if cfg!(target_os = "macos") && runtime.list()?.iter().any(|box_| box_.id == plan.name) {
             return Err(refused(
                 &plan,
                 RefusalReason::NameInUse,
@@ -275,14 +267,41 @@ impl Box {
             ));
         }
         claim.prepare(&state_dir)?;
+        // Disk refusals come after the name claim; returning drops the
+        // claim, which removes its record and state.
+        let claimed = match disk::claim(runtime, &mut claim, &plan, init) {
+            Ok(claimed) => claimed,
+            Err(Ok((reason, detail))) => return Err(refused(&plan, reason, detail)),
+            Err(Err(error)) => return Err(error.into()),
+        };
         let run_id = claim.generation().to_string();
         plan.labels
             .insert(ownership::GENERATION_LABEL.to_string(), run_id.clone());
+        // Linux's inventory is this record. Its labels are the box's and
+        // under them the image's, as a container copies them.
+        if cfg!(target_os = "linux") {
+            let mut labels = identity.labels.clone();
+            labels.extend(plan.labels.clone());
+            claim.describe(ownership::Described {
+                labels,
+                image_id: identity.id.clone(),
+                image_ref: image.clone(),
+                created: crate::core::rfc3339(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |since| since.as_secs() as i64),
+                ),
+                memory: plan.memory.clone(),
+            })?;
+        }
 
         // Dropping a start part-way tears nothing down, so a signal ends it
         // here and `child` says what to remove.
         claim.starting();
-        let mut progress = Starting::default();
+        let mut progress = Starting {
+            claimed,
+            ..Starting::default()
+        };
         let starting = async {
             if let Some(share) = profile.as_ref().and_then(|profile| profile.share.as_ref()) {
                 share.materialize()?;
@@ -291,7 +310,7 @@ impl Box {
             let (observed, egress_log) = start(
                 &mut plan,
                 init,
-                seccomp.as_deref(),
+                &identity.id,
                 seeding.as_ref(),
                 &state_dir,
                 codex,
@@ -303,6 +322,7 @@ impl Box {
                     "image-changed: box started a different image",
                 )));
             }
+            disk::filled(runtime, &progress.claimed.created)?;
             // Last before ready: every ready run has a launch record, and a
             // run that fails to start leaves none.
             runs::write_launch(&run_id, launch_record(&plan, &observed, &image))?;
@@ -323,7 +343,25 @@ impl Box {
                 if let Some(preparing) = progress.preparing.take() {
                     let _ = preparing.await;
                 }
-                let (removed, status) = abort(&plan.name, progress.child).await;
+                let ran = progress.child.is_some();
+                let (removed, status) = match progress.child.take() {
+                    Some(child) => {
+                        let (removed, status) = child.abort(&plan.name).await;
+                        (removed, Some(status))
+                    }
+                    None => (Ok(false), None),
+                };
+                if let Ok(synced) = removed {
+                    // Only a stop pinfold asked of a running box synced its
+                    // disks; a box that failed readiness ended, or may have,
+                    // on its own. Even then, a disk unclean before this `up`
+                    // stays so: an aborted start is no recovery.
+                    if ran && (matches!(stop, Stop::NotReady(_)) || !synced) {
+                        progress.claimed.marked.clear();
+                    }
+                    progress.claimed.undo(runtime, &plan.name);
+                }
+                let removed = removed.map(drop);
                 if let Err(error) = runs::remove(&run_id) {
                     eprintln!("pinfold: startup cleanup: {error}");
                 }
@@ -335,7 +373,6 @@ impl Box {
                     Stop::Signal => UpError::Signal,
                     Stop::Control => UpError::Control,
                     Stop::Failed(error) => UpError::Other(error),
-                    Stop::Refused(refusal) => UpError::Refused(refusal),
                     Stop::NotReady(failure) => UpError::Other(io::Error::other(match status {
                         Some(Ok(status)) => format!("{failure}: {status}"),
                         Some(Err(error)) => format!("{failure}: {error}"),
@@ -353,6 +390,7 @@ impl Box {
             egress_log,
             run_id,
             ownership: claim,
+            disks: plan.disks.clone(),
             _project: project,
             audit: progress.audit,
             child: progress.child.expect("a started box has a runtime child"),
@@ -389,16 +427,15 @@ impl Box {
     /// record, then delete its state directory and acknowledge `box down`.
     /// `None` writes no terminal record.
     pub async fn down(&mut self, terminal: Option<Terminal>) -> io::Result<()> {
-        // Runtime removal waits for attached output to close. Keep its
-        // drain running on the owner while the runtime command blocks.
-        let name = self.name.clone();
-        let result = tokio::task::spawn_blocking(move || runtime().down(&name))
-            .await
-            .map_err(io::Error::other)
-            .and_then(|result| result);
-        let _ = self.child.wait().await;
         // Before the acknowledgement, so `inspect` after `box down` returns
         // already sees the end. A box that may still run gets none.
+        let result = self.child.down(&self.name).await.and_then(|synced| {
+            if synced {
+                disk::detached(&self.disks)
+            } else {
+                Ok(())
+            }
+        });
         if let Some(terminal) = terminal.filter(|_| result.is_ok()) {
             runs::write_terminal(&self.run_id, &terminal);
         }
@@ -482,31 +519,11 @@ enum Stop {
     /// Readiness failed; the runtime child's exit status completes the text.
     NotReady(String),
     Failed(io::Error),
-    Refused(Refusal),
 }
 
 impl From<io::Error> for Stop {
     fn from(error: io::Error) -> Stop {
         Stop::Failed(error)
-    }
-}
-
-/// Stop a failed start's runtime child and remove its box. The caller
-/// removes the claimed state only after successful runtime removal.
-async fn abort(
-    name: &str,
-    child: Option<Child>,
-) -> (io::Result<()>, Option<io::Result<ExitStatus>>) {
-    match child {
-        Some(mut child) => {
-            // The client goes first, so one still creating the box cannot
-            // finish after the removal. The box exists by name even when
-            // readiness failed.
-            let _ = child.start_kill();
-            let status = child.wait().await;
-            (runtime().down(name), Some(status))
-        }
-        None => (Ok(()), None),
     }
 }
 
@@ -516,7 +533,9 @@ struct Starting {
     child: Option<Child>,
     audit: Audit,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    preparing: Option<tokio::task::JoinHandle<Result<Plan, Stop>>>,
+    preparing: Option<tokio::task::JoinHandle<Result<(Plan, Prepared), Stop>>>,
+    /// The disks claimed for the box, which a failed start releases.
+    claimed: disk::Claimed,
 }
 
 /// The start after the claim: harness, seeds, proxy, runtime, readiness.
@@ -527,7 +546,7 @@ struct Starting {
 async fn start(
     plan: &mut Plan,
     init: &Path,
-    seccomp: Option<&Path>,
+    image_id: &str,
     seeding: Option<&Seeding>,
     state_dir: &Path,
     codex: Option<login::Token>,
@@ -535,46 +554,31 @@ async fn start(
 ) -> Result<(BoxInfo, Option<PathBuf>), Stop> {
     // Fetch the harness after the claim. Early refusals download nothing;
     // alias admission follows preparation. The spec's own env wins.
-    let mut prepared = plan.clone();
+    let mut resolved = plan.clone();
     let preparation_dir = state_dir.to_path_buf();
     let cancel = progress.cancel.clone();
+    let image_id = image_id.to_string();
     let worker = progress
         .preparing
         .insert(tokio::task::spawn_blocking(move || {
-            resolve_harness(&mut prepared, &preparation_dir, &cancel)?;
-            Ok(prepared)
+            resolve_harness(&mut resolved, &preparation_dir, &cancel)?;
+            let prepared = runtime::prepare(&resolved, &preparation_dir, &image_id, &cancel)?;
+            Ok((resolved, prepared))
         }));
     let prepared = worker
         .await
-        .map_err(|error| io::Error::other(format!("harness worker failed: {error}")))?;
+        .map_err(|error| io::Error::other(format!("preparation worker failed: {error}")))?;
     progress.preparing.take();
-    *plan = prepared?;
-
-    if let Some(seeding) = seeding {
-        seed_home(seeding)?;
-    }
-
-    let checked = plan.clone();
-    let scan_init = init.to_path_buf();
-    let cancel = progress.cancel.clone();
-    let worker = progress
-        .preparing
-        .insert(tokio::task::spawn_blocking(move || {
-            check_mount_aliases(&checked, &scan_init, &cancel)?;
-            Ok(checked)
-        }));
-    let checked = worker
-        .await
-        .map_err(|error| io::Error::other(format!("mount scan worker failed: {error}")))?;
-    progress.preparing.take();
-    checked?;
+    let (resolved, prepared) = prepared?;
+    *plan = resolved;
 
     // The proxy comes up before the box, so the socket is listening when
     // the runtime forwards it.
     let mut egress_log = None;
+    let runtime = runtime();
     let socket = match &plan.egress {
         Some(egress) => {
-            let socket = state_dir.join("proxy.sock");
+            let socket = runtime.proxy_socket(state_dir)?;
             let log = runs::egress_log(&plan.labels[ownership::GENERATION_LABEL])?;
             progress.audit = Audit::Waiting(proxy::start(&socket, egress, codex, log.clone())?);
             egress_log = Some(log);
@@ -586,49 +590,47 @@ async fn start(
     // A signal that arrived during the steps above wins the select here,
     // before the runtime is asked to create anything.
     tokio::task::yield_now().await;
-    let runtime = runtime();
-    let child =
-        progress
-            .child
-            .insert(runtime.up(plan, init, state_dir, socket.as_deref(), seccomp)?);
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("runtime up did not pipe the box's stdout"))?;
-    let mut lines = BufReader::new(stdout).lines();
-    loop {
-        let next = tokio::select! {
-            biased;
-            _ = audit_failure(&mut progress.audit) => return Err(Stop::Failed(io::Error::other("audit-log: egress logging failed"))),
-            next = lines.next_line() => next,
-        };
-        match next {
-            Ok(Some(line)) if line == "ready" => break,
-            Ok(Some(_)) => {}
-            Ok(None) => return Err(Stop::NotReady("box exited before ready".to_string())),
-            Err(error) => return Err(Stop::NotReady(format!("box output failed: {error}"))),
-        }
+    let child = progress.child.insert(runtime::start(
+        prepared,
+        plan,
+        init,
+        socket.as_deref(),
+        &progress.claimed.fills,
+        seeding,
+    )?);
+    tokio::select! {
+        biased;
+        _ = audit_failure(&mut progress.audit) => return Err(Stop::Failed(io::Error::other("audit-log: egress logging failed"))),
+        ready = child.ready() => ready.map_err(Stop::NotReady)?,
     }
     // Apple can forward init's ready before it records the box running.
     // Wait even without egress, before the caller can issue its first exec.
     let actual = if cfg!(target_os = "macos") {
         let actual = apple::wait_until_running(&plan.name)?;
-        // Finish the one root exec before ready reaches the caller.
+        // Finish the one root exec, the new disks' copies and the seeds
+        // before ready reaches the caller.
         if socket.is_some() {
             apple::make_proxy_connectable(&plan.name)?;
+        }
+        for fill in &progress.claimed.fills {
+            apple::copy_in(&plan.name, init, &fill.guest, false, |out| {
+                disk::send(fill, out)
+            })?;
+        }
+        if let Some(seeding) = seeding {
+            apple::copy_in(&plan.name, init, &seeding.guest, true, |out| {
+                disk::send_seeds(&seeding.relative, &seeding.seeds, out)
+            })?;
         }
         Some(actual)
     } else {
         None
     };
-    // Keep the pipe drained so a talkative box cannot block on it.
-    tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
-    // `ready` reports the labels `list` will: podman adds every image label
-    // to the box, so the plan's set is not the box's.
+    // `ready` reports the labels `list` will.
     let actual = match actual {
         Some(actual) => actual,
         None => runtime
-            .list(None)?
+            .list()?
             .into_iter()
             .find(|box_| box_.id == plan.name)
             .ok_or_else(|| {
@@ -672,7 +674,17 @@ fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json
             serde_json::json!({
                 "host": mount.host.to_string_lossy(),
                 "guest": mount.guest.to_string_lossy(),
-                "readonly": mount.readonly,
+            })
+        })
+        .collect();
+    let disks: Vec<serde_json::Value> = plan
+        .disks
+        .iter()
+        .map(|disk| {
+            serde_json::json!({
+                "name": &disk.name,
+                "guest": disk.guest.to_string_lossy(),
+                "readonly": disk.readonly,
             })
         })
         .collect();
@@ -680,7 +692,7 @@ fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json
         "box": &plan.name,
         "pinfold": env!("CARGO_PKG_VERSION"),
         "runtime": {
-            "name": if cfg!(target_os = "macos") { "apple" } else { "podman" },
+            "name": if cfg!(target_os = "macos") { "apple" } else { "firecracker" },
             "version": runtime.version().ok(),
         },
         "image": { "id": &observed.image_id, "ref": image_ref },
@@ -688,84 +700,12 @@ fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json
         "harness": harness,
         "labels": &observed.labels,
         "mounts": mounts,
+        "disks": disks,
         "env": plan.env.keys().collect::<Vec<_>>(),
         "egress": egress,
         "cpus": plan.cpus,
         "memory": &plan.memory,
     })
-}
-
-/// Check observed regular-file identities in effective directory exports.
-/// This is admission only: the host can change the layout after the scan.
-fn check_mount_aliases(
-    plan: &Plan,
-    init: &Path,
-    cancel: &std::sync::atomic::AtomicBool,
-) -> Result<(), Stop> {
-    let init_dir = init.parent().expect("up checked the init directory");
-    let mut mounts = plan.mounts.clone();
-    for mount in &mut mounts {
-        mount.guest = guest_path(&mount.guest);
-    }
-    // Only the runtime-added init export masks an exact plan destination.
-    // Duplicate plan destinations were refused before preparation.
-    let init_guest = guest_path(init_dir);
-    mounts.retain(|mount| mount.guest != init_guest);
-    mounts.push(Mount {
-        host: init_dir.to_path_buf(),
-        guest: init_guest,
-        readonly: true,
-    });
-    // Index read-only identities before checking writable exports.
-    mounts.sort_by_key(|mount| !mount.readonly);
-    let mut readonly_files: BTreeMap<(u64, u64), PathBuf> = BTreeMap::new();
-    let interrupted = || -> Result<(), Stop> {
-        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(io::Error::from(io::ErrorKind::Interrupted).into());
-        }
-        Ok(())
-    };
-    for mount in &mounts {
-        interrupted()?;
-        let root = fs::canonicalize(&mount.host)?;
-        let mut directories = vec![(root, mount.guest.clone())];
-        while let Some((host, guest)) = directories.pop() {
-            interrupted()?;
-            for entry in fs::read_dir(host)? {
-                interrupted()?;
-                let entry = entry?;
-                let guest = guest.join(entry.file_name());
-                // Nested exports mask this occurrence, regardless of order.
-                if mounts.iter().any(|other| {
-                    other.guest != mount.guest
-                        && other.guest.starts_with(&mount.guest)
-                        && guest.starts_with(&other.guest)
-                }) {
-                    continue;
-                }
-                let metadata = fs::symlink_metadata(entry.path())?;
-                if metadata.is_dir() {
-                    directories.push((entry.path(), guest));
-                } else if metadata.is_file() {
-                    let identity = (metadata.dev(), metadata.ino());
-                    if mount.readonly {
-                        readonly_files.entry(identity).or_insert(guest);
-                    } else if let Some(previous) = readonly_files.get(&identity) {
-                        return Err(Stop::Refused(Refusal {
-                            box_name: Some(plan.name.clone()),
-                            reason: RefusalReason::MountAlias,
-                            detail: format!(
-                                "regular file exposed read-only and writable at {} and {}",
-                                previous.display(),
-                                guest.display(),
-                            ),
-                        }));
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
@@ -798,7 +738,6 @@ fn resolve_harness(
     plan.mounts.push(Mount {
         host: harness.install(Some(cancel))?,
         guest: artifacts::guest(&harness.name),
-        readonly: true,
     });
     let login = plan
         .login()
@@ -831,19 +770,9 @@ fn resolve_harness(
         plan.mounts.push(Mount {
             host: dir,
             guest: PathBuf::from(login::CODEX_CONFIG_DIR),
-            readonly: true,
         });
     }
     Ok(())
-}
-
-/// A profile's `home/` seeds and the writable mount behind `$HOME` to copy
-/// them into.
-struct Seeding {
-    mount: Mount,
-    /// The plain path from the mount's guest root to `$HOME`.
-    relative: PathBuf,
-    seeds: Vec<Seed>,
 }
 
 /// Load the spec's profile and fold its image and `share/` mount into the
@@ -861,7 +790,6 @@ fn resolve_profile(plan: &mut Plan) -> io::Result<Option<Profile>> {
         plan.mounts.push(Mount {
             host: share.path()?,
             guest: PathBuf::from("/opt/pinfold/profile"),
-            readonly: true,
         });
     }
     Ok(Some(profile))
@@ -876,11 +804,11 @@ fn refused(plan: &Plan, reason: RefusalReason, detail: impl Into<String>) -> UpE
     })
 }
 
-/// The mount behind the spec's exact `$HOME` and the plain path from its
-/// guest root to `$HOME`, for the profile's `seeds`. The mount must be
-/// writable and the path must not step out of it. Called after the
-/// duplicate-guest check, so no two mounts can hold `$HOME`.
-fn home_mount(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
+/// The disk behind the spec's exact `$HOME` and the plain path from its
+/// guest root to `$HOME`, for the profile's `seeds`. It must be writable
+/// and the path must not step out of it. Called after the duplicate-guest
+/// check, so no two disks can hold `$HOME`.
+fn home_disk(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
     let name = plan.profile.as_deref().unwrap_or_default();
     let refuse = |why: String| {
         io::Error::new(
@@ -892,139 +820,37 @@ fn home_mount(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
         return Err(refuse("the box spec has no exact HOME env entry".into()));
     };
     let home = Path::new(home);
-    let Some((mount, relative)) = plan
-        .mounts
+    let Some((disk, relative)) = plan
+        .disks
         .iter()
-        .filter_map(|mount| Some((mount, home.strip_prefix(&mount.guest).ok()?)))
-        .max_by_key(|(mount, _)| mount.guest.components().count())
+        .filter_map(|disk| Some((disk, home.strip_prefix(&disk.guest).ok()?)))
+        .max_by_key(|(disk, _)| disk.guest.components().count())
     else {
-        return Err(refuse(format!(
-            "$HOME={} is not on a mount",
-            home.display()
-        )));
+        return Err(refuse(format!("$HOME={} is not on a disk", home.display())));
     };
-    if mount.readonly {
+    if disk.readonly {
         return Err(refuse(format!(
-            "$HOME={} is on the read-only mount {}",
+            "$HOME={} is on the read-only disk {}",
             home.display(),
-            mount.guest.display()
+            disk.guest.display()
         )));
     }
-    // The walk below handles normal components only; `..` would step out of
-    // the mount and `.` is noise.
+    // `..` would step out of the disk and `.` is noise.
     if relative
         .components()
         .any(|component| !matches!(component, Component::Normal(_)))
     {
         return Err(refuse(format!(
-            "$HOME={} is not a plain path under the mount {}",
+            "$HOME={} is not a plain path under {}",
             home.display(),
-            mount.guest.display()
+            disk.guest.display()
         )));
     }
     Ok(Seeding {
-        mount: mount.clone(),
+        guest: disk.guest.clone(),
         relative: relative.to_path_buf(),
         seeds,
     })
-}
-
-/// Copy seeds into the host `$HOME`, skipping anything already there. The
-/// walk starts at the mount's host directory and follows no symlink: the box
-/// can write the mount, so a planted symlink must not redirect a seed
-/// outside it.
-fn seed_home(seeding: &Seeding) -> io::Result<()> {
-    let host = &seeding.mount.host;
-    // The spec names the mount's host directory and the runtime mounts it,
-    // so it is the seed walk's trust root.
-    let root = nix::fcntl::open(host, OFlag::O_DIRECTORY | OFlag::O_CLOEXEC, Mode::empty())
-        .map_err(|error| seed_error(error, &format!("open mount {}", host.display())))?;
-    for seed in &seeding.seeds {
-        seed_file(
-            &root,
-            host,
-            &seeding.relative.join(&seed.path),
-            &seed.contents,
-        )?;
-    }
-    Ok(())
-}
-
-/// Write one seed at `relative` below `root`, walking it with `openat` and
-/// `mkdirat` and following no symlink. Anything already at the destination,
-/// a dangling symlink included, is left alone. `display` names `root`.
-fn seed_file(root: &OwnedFd, display: &Path, relative: &Path, contents: &[u8]) -> io::Result<()> {
-    let mut dir = root.try_clone()?;
-    let mut current = display.to_path_buf();
-    let mut components = relative.components().peekable();
-    while let Some(component) = components.next() {
-        let Component::Normal(name) = component else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("seed path {} is not a plain file path", relative.display()),
-            ));
-        };
-        current.push(name);
-        if components.peek().is_some() {
-            dir = open_seed_dir(&dir, name, &current)?;
-            continue;
-        }
-        let fd = match openat(
-            &dir,
-            name,
-            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-            Mode::from_bits_truncate(0o666),
-        ) {
-            Ok(fd) => fd,
-            // Present, whatever it is; a seed is copied only when missing.
-            Err(Errno::EEXIST | Errno::ELOOP) => return Ok(()),
-            Err(error) => return Err(seed_error(error, &format!("create {}", current.display()))),
-        };
-        let mut file = File::from(fd);
-        if let Err(error) = file.write_all(contents) {
-            // A partial seed must not look present to the next start.
-            drop(file);
-            let _ = unlinkat(&dir, name, UnlinkatFlags::NoRemoveDir);
-            return Err(io::Error::new(
-                error.kind(),
-                format!("write {}: {error}", current.display()),
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Open a seed's parent directory, creating it when missing. `O_NOFOLLOW`
-/// refuses a symlink planted at any component below `$HOME`.
-fn open_seed_dir(dir: &OwnedFd, name: &OsStr, path: &Path) -> io::Result<OwnedFd> {
-    let flags = OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-    match openat(dir, name, flags, Mode::empty()) {
-        Ok(fd) => Ok(fd),
-        Err(Errno::ENOENT) => {
-            match mkdirat(dir, name, Mode::from_bits_truncate(0o777)) {
-                Ok(()) | Err(Errno::EEXIST) => {}
-                Err(error) => {
-                    return Err(seed_error(
-                        error,
-                        &format!("create directory {}", path.display()),
-                    ));
-                }
-            }
-            // Open the directory just made; a symlink swapped in meanwhile
-            // is refused here.
-            openat(dir, name, flags, Mode::empty())
-                .map_err(|error| seed_error(error, &format!("open directory {}", path.display())))
-        }
-        Err(error) => Err(seed_error(
-            error,
-            &format!("open directory {}", path.display()),
-        )),
-    }
-}
-
-fn seed_error(error: Errno, context: &str) -> io::Error {
-    let kind = io::Error::from(error).kind();
-    io::Error::new(kind, format!("{context}: {error}"))
 }
 
 #[derive(Default)]
