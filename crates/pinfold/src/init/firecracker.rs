@@ -656,6 +656,7 @@ fn become_box_user(uid: u32, gid: u32) -> io::Result<()> {
     // root's and box work cannot take its descriptors with pidfd_getfd.
     // Nothing may set it again (#158).
     nix::unistd::setresuid(uid, uid, uid)?;
+    nix::sys::prctl::set_dumpable(true)?;
     set_capabilities(None)?;
     nix::sys::prctl::set_no_new_privs()?;
     Ok(())
