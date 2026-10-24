@@ -1625,15 +1625,18 @@ fn disk_rm(env: &TestEnv, name: &str) -> (i32, serde_json::Value) {
 }
 
 /// Disks a test names, removed through the runtime on drop: Apple's volume
-/// store is shared by every state root.
+/// store is shared by every state root. Linux disks live in the state root
+/// and go with it.
 pub(super) struct DiskCleanup(pub(super) Vec<String>);
 
 impl Drop for DiskCleanup {
     fn drop(&mut self) {
-        for name in &self.0 {
-            let _ = Command::new(image_cli())
-                .args(["volume", "rm", name])
-                .output();
+        if cfg!(target_os = "macos") {
+            for name in &self.0 {
+                let _ = Command::new("container")
+                    .args(["volume", "rm", name])
+                    .output();
+            }
         }
     }
 }

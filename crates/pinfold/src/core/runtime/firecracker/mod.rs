@@ -19,7 +19,7 @@ pub use vm::{Prepared, Vm, prepare};
 
 use crate::core::artifacts::VMM;
 use crate::core::ownership;
-use crate::core::runtime::podman::{self, Podman};
+use crate::core::runtime::podman::Podman;
 use crate::core::runtime::{
     BoxInfo, BoxStat, BuildRequest, DiskInfo, ImageInfo, MemoryStat, PidsStat, Runtime, output,
 };
@@ -49,10 +49,7 @@ impl Firecracker {
 
 impl Runtime for Firecracker {
     fn preflight(&self) -> io::Result<()> {
-        let missing: Vec<String> = preflight::host_requirements()
-            .into_iter()
-            .chain(podman::host_requirements())
-            .collect();
+        let missing = preflight::host_requirements();
         if !missing.is_empty() {
             return Err(io::Error::other(missing.join("; ")));
         }

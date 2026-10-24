@@ -211,8 +211,7 @@ fn the_environment_is_exactly_the_spec() {
     let name = box_name("env-path");
     // Sabotage: export guest values under their original names to the
     // runtime client again. Guest HOME and XDG_RUNTIME_DIR then change the
-    // client's state/storage, CONTAINER_HOST selects an absent Podman
-    // service, and LD_PRELOAD reaches the host loader. Encoding is also
+    // client's state/storage, and LD_PRELOAD reaches the host loader. Encoding is also
     // needed for a multiline value and a guest name that uses the transport
     // prefix. Expectations are the caller's literal spec values, observed
     // through the real guest's env output. Sabotage: stop removing transport

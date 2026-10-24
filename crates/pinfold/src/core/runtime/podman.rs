@@ -1,7 +1,6 @@
 //! Rootless podman, which builds Linux images and runs no box.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::io;
 
 use serde::Deserialize;
@@ -100,36 +99,6 @@ impl Podman {
         };
         super::build("podman", cache_flags, request)
     }
-}
-
-/// The runtime-dir check, which does not depend on `podman info`
-/// succeeding. Doctor calls it after a failed preflight; it changes nothing.
-pub fn host_requirements() -> Vec<String> {
-    let mut missing = Vec::new();
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from(format!("/run/user/{}", nix::unistd::getuid()))
-        });
-    let runtime_dir = fs::metadata(&dir).and_then(|metadata| {
-        if !metadata.is_dir() {
-            return Err(io::Error::other("not a directory"));
-        }
-        nix::unistd::access(
-            &dir,
-            nix::unistd::AccessFlags::R_OK
-                | nix::unistd::AccessFlags::W_OK
-                | nix::unistd::AccessFlags::X_OK,
-        )
-        .map_err(io::Error::from)
-    });
-    if let Err(error) = runtime_dir {
-        missing.push(format!(
-            "runtime-dir: {}: {error}; rootless podman needs an accessible user runtime directory (XDG_RUNTIME_DIR or /run/user/<uid>)",
-            dir.display()
-        ));
-    }
-    missing
 }
 
 /// What preflight reads from `podman info`.

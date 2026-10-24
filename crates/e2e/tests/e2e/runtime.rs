@@ -32,10 +32,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // the images step from the shared automatic pass; b3 survives `clean`
     // and the post-clean two-image assertion fails. Sabotage: drop
     // the in-use skip from `keep_two_images` and restore the `?` on
-    // `remove_image`; on Apple build 4 deletes b2 under box A and the "b2 is
-    // still listed" assertion fails, and on podman build 5 returns at the
-    // refused b3 before reaching the freed b2, so the "b2 is gone" assertion
-    // fails. Sabotage: drop
+    // `remove_image`; build 4 deletes b2 under box A and the "b2 is still
+    // listed" assertion fails. Sabotage: drop
     // the `dev.pinfold.profile` label from the build; no image matches and
     // the count is zero. Sabotage: make `clean` remove every image instead
     // of only pinfold's own; the unlabeled image assertion fails. Sabotage:
@@ -58,9 +56,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // the shared-image assertion fails. Sabotage: skip a tag whose image a
     // newer tag names; the oldest-tag assertion fails. Sabotage: drop the
     // in-use check from `remove_images`; the live box's last tag is offered
-    // to the runtime: podman refuses the removal and `image rm` exits
-    // non-zero, Apple deletes the image under the box and the live-box
-    // image assertion fails. Sabotage: restore the per-id skip in
+    // to the runtime, which deletes the image under the box, and the
+    // live-box image assertion fails. Sabotage: restore the per-id skip in
     // `remove_images`; the twin box's shared image is reported in use, the
     // retired name's tag on it survives, and the assertion that
     // `retire_refs[1]` is gone fails. Sabotage: apply the newest-two rule or

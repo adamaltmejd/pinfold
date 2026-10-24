@@ -9,11 +9,8 @@ sudo udevadm trigger --name-match=kvm
 sudo udevadm settle
 test -r /dev/kvm && test -w /dev/kvm
 
-# podman needs an active systemd user session to enforce --cpus and
-# --memory; under cgroupfs it silently ignores both and pinfold's preflight
-# refuses every box. The image enables linger, but not the session D-Bus.
 sudo apt-get update -qq
-sudo apt-get install -y -qq dbus-user-session build-essential pkg-config \
+sudo apt-get install -y -qq build-essential pkg-config \
   libapparmor-dev libbtrfs-dev libgpgme-dev libseccomp-dev libsqlite3-dev \
   libsubid-dev libsystemd-dev
 
@@ -80,14 +77,12 @@ PY_PREPARE
 fi
 test "$(podman --version)" = "podman version 6.1.4"
 
+# Rootless podman builds need the user runtime directory linger keeps.
 sudo loginctl enable-linger "$(id -un)"
 sudo systemctl start "user@$(id -u).service"
 
 XDG_RUNTIME_DIR="/run/user/$(id -u)"
-DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
-export XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
-systemctl --user daemon-reload
-systemctl --user enable --now dbus.socket
+export XDG_RUNTIME_DIR
 podman system migrate
 
 if [ "$pinfold_ci_tmpfs" = true ]; then
@@ -111,7 +106,4 @@ assert store["graphRootAllocated"] == 6 * 1024**3, "store cap differs"
 PY_VERIFY
 fi
 
-{
-  echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
-  echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
-} >>"$GITHUB_ENV"
+echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >>"$GITHUB_ENV"

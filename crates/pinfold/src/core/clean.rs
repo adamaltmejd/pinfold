@@ -263,8 +263,9 @@ pub fn path_bytes(path: &Path) -> u64 {
 
 /// Apply [`keep_two_images`] to every source any image names: each
 /// non-empty family label, and every caller name a `localhost/pinfold/image-<NAME>`
-/// tag names. One image listing and one box listing serve every source, so
-/// a pass costs two runtime listings however many sources it has. Call it
+/// tag names. One image listing and one box listing serve every source;
+/// [`prune_root_disks`] adds a second image listing when root disks exist,
+/// however many sources the pass has. Call it
 /// after dead boxes are pruned: its box listing is retention's one in-use
 /// rule. A failing source is reported and the rest continue.
 pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
