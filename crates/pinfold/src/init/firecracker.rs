@@ -378,6 +378,13 @@ fn mount_at(
 ) -> io::Result<PathBuf> {
     let guest = Path::new(guest.as_ref());
     let target = root.join(guest.strip_prefix("/").unwrap_or(guest));
+    fs::create_dir_all(&target)?;
+    if fs::canonicalize(&target)? != target {
+        return Err(io::Error::other(format!(
+            "{} passes through a symlink",
+            guest.display()
+        )));
+    }
     let walk = |error: nix::errno::Errno| match error {
         nix::errno::Errno::ELOOP => {
             io::Error::other(format!("{} passes through a symlink", guest.display()))
