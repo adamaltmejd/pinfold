@@ -470,10 +470,13 @@ pub fn records() -> io::Result<Vec<Record>> {
             {
                 return None;
             }
-            Some(
-                fs::read(entry.path())
-                    .and_then(|bytes| serde_json::from_slice(&bytes).map_err(io::Error::other)),
-            )
+            // A record removed since the listing belongs to a box that ended.
+            match fs::read(entry.path()) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                read => Some(
+                    read.and_then(|bytes| serde_json::from_slice(&bytes).map_err(io::Error::other)),
+                ),
+            }
         })
         .collect()
 }
