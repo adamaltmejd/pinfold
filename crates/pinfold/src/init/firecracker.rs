@@ -48,11 +48,13 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use nix::fcntl::OFlag;
 use nix::libc;
 use nix::mount::{MntFlags, MsFlags};
 use nix::poll::{PollFd, PollFlags, PollTimeout};
 use nix::sys::signal::{SigHandler, Signal};
 use nix::sys::socket::{AddressFamily, Backlog, SockFlag, SockType, VsockAddr};
+use nix::sys::stat::Mode;
 use nix::unistd::{ForkResult, Gid, Uid};
 
 /// The host port PID 1 dials for its boot request.
@@ -359,9 +361,11 @@ fn mount(
     })
 }
 
-/// Mount `source` at `guest` inside `root`, making the mount point. A
-/// mount point reached through a symlink, which a box may have left on a
-/// disk, is refused.
+/// Mount `source` at `guest` inside `root`, making the mount point. Each
+/// component is made and opened without following a symlink, which a box
+/// may have left on a disk, so PID 1 creates nothing through one and
+/// refuses the mount. Mounting by path afterwards is safe: box work has
+/// not started, so nothing can swap a component in between.
 fn mount_at(
     root: &Path,
     guest: impl AsRef<OsStr>,
@@ -372,12 +376,21 @@ fn mount_at(
 ) -> io::Result<PathBuf> {
     let guest = Path::new(guest.as_ref());
     let target = root.join(guest.strip_prefix("/").unwrap_or(guest));
-    fs::create_dir_all(&target)?;
-    if fs::canonicalize(&target)? != target {
-        return Err(io::Error::other(format!(
-            "{} passes through a symlink",
-            guest.display()
-        )));
+    let walk = |error: nix::errno::Errno| match error {
+        nix::errno::Errno::ELOOP => {
+            io::Error::other(format!("{} passes through a symlink", guest.display()))
+        }
+        error => io::Error::other(format!("make {}: {error}", guest.display())),
+    };
+    let directory = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let mut dir = nix::fcntl::open(root, directory, Mode::empty()).map_err(walk)?;
+    for component in guest.components().skip(1) {
+        let name = component.as_os_str();
+        match nix::sys::stat::mkdirat(&dir, name, Mode::from_bits_truncate(0o755)) {
+            Ok(()) | Err(nix::errno::Errno::EEXIST) => {}
+            Err(error) => return Err(walk(error)),
+        }
+        dir = nix::fcntl::openat(&dir, name, directory, Mode::empty()).map_err(walk)?;
     }
     mount(source, &target, fstype, flags, data)?;
     Ok(target)

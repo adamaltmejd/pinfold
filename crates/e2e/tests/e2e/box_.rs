@@ -1299,8 +1299,9 @@ fn disks_persist_and_attach_exclusively() {
     // the next `up` skips the copy and the refilled tree assertion fails.
     let env = TestEnv::new("disks");
     let image = default_image(&env);
-    let names = ["work", "sparse", "fresh", "race"].map(|disk| box_name(&format!("disk-{disk}")));
-    let [work, sparse, fresh, race] = &names;
+    let names =
+        ["work", "sparse", "fresh", "race", "nested"].map(|disk| box_name(&format!("disk-{disk}")));
+    let [work, sparse, fresh, race, nested] = &names;
     // The refilled disk is a project's disk, so `pinfold fetch` there sees it.
     let project = TestDir::new(&env, "project");
     git(project.path(), &["init", "-q"]);
@@ -1370,6 +1371,19 @@ fn disks_persist_and_attach_exclusively() {
         ),
         "writing the disk",
     );
+    // On Linux the box plants a symlink where a later nested disk's mount
+    // point goes; see below.
+    #[cfg(target_os = "linux")]
+    assert_ok(
+        &box_exec(
+            &env,
+            writer,
+            &["sh", "-c", "mkdir /work/other && ln -s other /work/x"],
+        ),
+        "planting a symlink on the disk",
+    );
+    #[cfg(not(target_os = "linux"))]
+    let _ = nested;
 
     // While the writer attaches it, another `up` naming the disk, read-only
     // or writable, is refused and creates nothing, and `disk rm` refuses.
@@ -1482,6 +1496,51 @@ fn disks_persist_and_attach_exclusively() {
     for reader in &mut readers {
         reader.down(&env);
         assert!(reader.wait().success(), "a reader did not exit cleanly");
+    }
+
+    // On Linux PID 1 makes a nested disk's mount point. One reached through
+    // the symlink the writer planted ends the start `failed`, naming it, and
+    // PID 1 creates nothing through the link; the same nesting at a plain
+    // path mounts and takes a write. The failed start leaves the disk
+    // unclean, which the writable `up` below clears. Sabotage: make the
+    // mount point with `fs::create_dir_all` in `mount_at`, keeping a
+    // canonicalize check; the start still fails, but PID 1 first makes
+    // /work/other/sub through the link and the absence assertion fails.
+    #[cfg(target_os = "linux")]
+    {
+        let with_nested = |guest: &str| {
+            let mut spec = spec(writer, work_disk.clone());
+            spec["disks"] = serde_json::json!([work_disk, { "name": nested, "guest": guest }]);
+            spec
+        };
+        let (code, failed) = box_up_refused(&env, &with_nested("/work/x/sub"), &[]);
+        assert_eq!(code, 1, "a failed up exits 1: {failed}");
+        assert_eq!(failed["event"], "failed", "{failed}");
+        assert!(
+            failed["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("/work/x/sub")),
+            "the failure did not name the mount point: {failed}"
+        );
+        let mut plain = box_up(&env, &with_nested("/work/plain/sub"), writer);
+        assert_ok(
+            &box_exec(
+                &env,
+                writer,
+                &[
+                    "sh",
+                    "-c",
+                    "test -L /work/x && test ! -e /work/other/sub \
+                     && touch /work/plain/sub/written",
+                ],
+            ),
+            "nothing made through the planted link; the plain nesting writable",
+        );
+        plain.down(&env);
+        assert!(
+            plain.wait().success(),
+            "the nested writer did not exit cleanly"
+        );
     }
 
     // A writer whose box is killed under it leaves the disk unclean: its
