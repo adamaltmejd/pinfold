@@ -871,10 +871,7 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         Err(error) => {
             println!("  preflight: {error}");
             #[cfg(target_os = "linux")]
-            for requirement in crate::core::runtime::firecracker::preflight::host_requirements()
-                .into_iter()
-                .chain(crate::core::runtime::podman::host_requirements())
-            {
+            for requirement in crate::core::runtime::firecracker::preflight::host_requirements() {
                 println!("  {requirement}");
             }
             false

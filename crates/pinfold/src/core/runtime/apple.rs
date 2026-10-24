@@ -1,22 +1,25 @@
 //! The Apple `container` runtime adapter.
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::ExitStatus;
+use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Child;
+use tokio::process::{Child, Command};
 
 use crate::core::plan::Plan;
 use crate::core::runtime::{
     BoxInfo, BoxStat, BuildRequest, DiskInfo, ImageInfo, MemoryStat, PidsStat, Runtime, inspect,
     output, parse_json, spawn_error,
 };
+use crate::init::BOX_ENV_PREFIX;
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
 pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
@@ -24,25 +27,110 @@ pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
 /// Apple `container`.
 pub struct Apple;
 
-/// Start the attached `container run` process that owns the box. When
-/// `proxy_socket` is set, carry that host unix socket into the box.
+/// Start the attached `container run` process that owns the box: stdin and
+/// stdout piped. When `proxy_socket` is set, carry that host unix socket
+/// into the box, where init relays to it.
+///
+/// `container` is resolved on pinfold's own `PATH` before the spec's `env`
+/// reaches the child, so a spec `PATH` cannot choose the runtime (GitHub
+/// #70). Guest values are encoded under prefixed names in the child's
+/// environment, so they cannot configure the host client, argv holds only
+/// names, and `ps` cannot read a secret.
+///
+/// `init` is a host path; it and its directory are mounted read-only at the
+/// same path, so it is also the path PID 1 runs.
 #[cfg_attr(target_os = "linux", expect(dead_code))]
 pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<Client> {
-    let mut extra: Vec<OsString> = vec!["--progress".into(), "none".into()];
-    if proxy_socket.is_some() {
+    let program = std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join("container"))
+                .find(|candidate| {
+                    candidate.is_file()
+                        && nix::unistd::access(candidate, nix::unistd::AccessFlags::X_OK).is_ok()
+                })
+        })
+        .ok_or_else(|| spawn_error("container", io::ErrorKind::NotFound.into()))?;
+    let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
+    let mut command = Command::new(program);
+    command
+        .args(["run", "-i", "--name", &plan.name])
+        .args(["--network", "none", "--cap-drop", "ALL"])
+        .args(["--read-only", "--tmpfs", "/tmp"])
+        .arg("--user")
+        .arg(format!("{uid}:{gid}"))
+        .args(["--progress", "none"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    if let Some(socket) = proxy_socket {
         // Off-label: the runtime treats the socket as an SSH agent and
         // forwards it to GUEST_PROXY_SOCKET.
-        extra.push("--ssh".into());
+        command.arg("--ssh").env("SSH_AUTH_SOCK", socket);
     }
-    let guest_socket = proxy_socket.map(|_| GUEST_PROXY_SOCKET);
-    let mut command = super::up("container", plan, init, guest_socket, extra)?;
-    if let Some(socket) = proxy_socket {
-        command.env("SSH_AUTH_SOCK", socket);
+    if let Some(cpus) = plan.cpus {
+        command.arg("--cpus").arg(cpus.to_string());
     }
+    if let Some(memory) = &plan.memory {
+        command.args(["--memory", memory]);
+    }
+    for (key, value) in &plan.labels {
+        command.arg("--label").arg(format!("{key}={value}"));
+    }
+    for (name, value) in super::guest_vars(plan) {
+        guest_env(command.as_std_mut(), &name, &value);
+    }
+    for mount in &plan.mounts {
+        command.arg("--mount").arg(bind(&mount.host, &mount.guest));
+    }
+    for disk in &plan.disks {
+        let mut value = OsString::from(format!("type=volume,source={},target=", disk.name));
+        value.push(&disk.guest);
+        if disk.readonly {
+            value.push(",readonly");
+        }
+        command.arg("--mount").arg(value);
+    }
+    let init_dir = init
+        .parent()
+        .expect("box::up refuses an init without a directory");
+    command
+        .arg("--mount")
+        .arg(bind(init_dir, init_dir))
+        .arg("--entrypoint")
+        .arg(init)
+        .arg(
+            plan.image
+                .as_deref()
+                .expect("box up resolves the profile's image before the runtime runs"),
+        )
+        .arg("init")
+        .args(proxy_socket.map(|_| GUEST_PROXY_SOCKET));
     command
         .spawn()
         .map(Client)
         .map_err(|error| spawn_error("container", error))
+}
+
+/// Pass guest variable `name` through the child's environment, hex-encoded
+/// under a prefixed name, so argv holds only the name.
+fn guest_env(command: &mut std::process::Command, name: &str, value: &OsStr) {
+    let transport = format!("{BOX_ENV_PREFIX}{name}");
+    let encoded: String = value
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    command.args(["--env", &transport]).env(transport, encoded);
+}
+
+/// A read-only `type=bind` mount value.
+fn bind(host: &Path, guest: &Path) -> OsString {
+    let mut value = OsString::from("type=bind,source=");
+    value.push(host);
+    value.push(",target=");
+    value.push(guest);
+    value.push(",readonly");
+    value
 }
 
 /// The attached `container run` process that owns a box.
@@ -278,6 +366,54 @@ impl Runtime for Apple {
         super::build("container", cache_flags, request)
     }
 
+    fn exec(
+        &self,
+        name: &str,
+        init: &Path,
+        tty: bool,
+        workdir: Option<&Path>,
+        argv: &[String],
+    ) -> io::Result<ExitStatus> {
+        self.exec_command(name, init, tty, workdir, argv)
+            .status()
+            .map_err(|error| spawn_error("container", error))
+    }
+
+    fn exec_command(
+        &self,
+        name: &str,
+        init: &Path,
+        tty: bool,
+        workdir: Option<&Path>,
+        argv: &[String],
+    ) -> std::process::Command {
+        let mut command = std::process::Command::new("container");
+        command.args(["exec", "-i"]);
+        if tty {
+            // Keep the host's terminal identity: the runtime otherwise
+            // reports its own `TERM`.
+            command.arg("-t");
+            for variable in ["TERM", "COLORTERM"] {
+                if let Some(value) = std::env::var_os(variable) {
+                    guest_env(&mut command, variable, &value);
+                }
+            }
+        } else {
+            // Without a TTY the runtime's exec gets its own process group, so
+            // a terminal signal reaches pinfold and not the exec.
+            command.process_group(0);
+        }
+        if let Some(dir) = workdir {
+            command.arg("--workdir").arg(dir);
+        }
+        command
+            .arg(name)
+            .arg(init)
+            .args(["init", "exec", "--"])
+            .args(argv);
+        command
+    }
+
     fn program(&self) -> &'static str {
         "container"
     }
@@ -288,6 +424,12 @@ impl Runtime for Apple {
 
     fn isolation(&self) -> &'static str {
         "one VM per box"
+    }
+
+    /// The CLI's version, as the CLI reports it.
+    fn version(&self) -> io::Result<String> {
+        let stdout = output(&["container", "--version"])?;
+        Ok(String::from_utf8_lossy(&stdout).trim().to_string())
     }
 }
 
@@ -350,7 +492,7 @@ pub fn own_disks(
         .args(["--read-only", "--cap-drop", "ALL", "--cap-add", "CAP_CHOWN"])
         .args(["--name", name])
         .args(["--user", "0:0", "--mount"])
-        .arg(super::bind(init_dir, init_dir));
+        .arg(bind(init_dir, init_dir));
     for (key, value) in labels {
         command.arg("--label").arg(format!("{key}={value}"));
     }

@@ -7,21 +7,17 @@ pub mod firecracker;
 pub mod podman;
 
 use std::collections::{BTreeMap, VecDeque};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io::{self, Read};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::AtomicBool;
 
 use serde::de::DeserializeOwned;
-use tokio::process::Command;
 
 use crate::core::disk::{Fill, Seeding};
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
-use crate::init::BOX_ENV_PREFIX;
 
 const BUILD_LOG_BYTES: usize = 64 * 1024;
 
@@ -31,16 +27,6 @@ pub const TARGET_ARCH: &str = if cfg!(target_arch = "aarch64") {
 } else {
     "amd64"
 };
-
-fn guest_env(command: &mut std::process::Command, name: &str, value: &OsStr) {
-    let transport = format!("{BOX_ENV_PREFIX}{name}");
-    let encoded: String = value
-        .as_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    command.args(["--env", &transport]).env(transport, encoded);
-}
 
 /// The box runtime for this OS: Apple `container` on macOS, Firecracker on
 /// Linux, the only targets pinfold builds for.
@@ -295,9 +281,9 @@ pub trait Runtime: Sync {
     /// Run `argv` in a running box with inherited stdio, through the box's
     /// init: init raises its own `oom_score_adj` to 1000 and then becomes
     /// `argv`, so the kernel's OOM killer takes a box process before init.
-    /// `init` is the host path `up` mounts at the same guest path. The
-    /// process inherits the run's user, so box-created files stay the host
-    /// user's.
+    /// `init` is the host path Apple's `up` mounts at the same guest path;
+    /// Firecracker's guest has its own. The process inherits the run's
+    /// user, so box-created files stay the host user's.
     fn exec(
         &self,
         name: &str,
@@ -305,11 +291,7 @@ pub trait Runtime: Sync {
         tty: bool,
         workdir: Option<&Path>,
         argv: &[String],
-    ) -> io::Result<ExitStatus> {
-        self.exec_command(name, init, tty, workdir, argv)
-            .status()
-            .map_err(|error| spawn_error(self.program(), error))
-    }
+    ) -> io::Result<ExitStatus>;
 
     /// The command [`Runtime::exec`] runs, for a caller that pipes its stdio.
     fn exec_command(
@@ -319,34 +301,7 @@ pub trait Runtime: Sync {
         tty: bool,
         workdir: Option<&Path>,
         argv: &[String],
-    ) -> std::process::Command {
-        let program = self.program();
-        let mut command = std::process::Command::new(program);
-        command.args(["exec", "-i"]);
-        if tty {
-            // Keep the host's terminal identity: the runtime otherwise
-            // reports its own `TERM`.
-            command.arg("-t");
-            for variable in ["TERM", "COLORTERM"] {
-                if let Some(value) = std::env::var_os(variable) {
-                    guest_env(&mut command, variable, &value);
-                }
-            }
-        } else {
-            // Without a TTY the runtime's exec gets its own process group, so
-            // a terminal signal reaches pinfold and not the exec.
-            command.process_group(0);
-        }
-        if let Some(dir) = workdir {
-            command.arg("--workdir").arg(dir);
-        }
-        command
-            .arg(name)
-            .arg(init)
-            .args(["init", "exec", "--"])
-            .args(argv);
-        command
-    }
+    ) -> std::process::Command;
 
     /// One box's OOM kills, memory and pids facts. `name` is the box
     /// `list` names. Fields the runtime cannot answer are `None`.
@@ -397,7 +352,8 @@ pub trait Runtime: Sync {
     /// output, stdout and stderr in order, when the build ran and failed.
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>>;
 
-    /// The runtime CLI's program name.
+    /// The image CLI's program name: `container` on macOS, `podman` on
+    /// Linux.
     fn program(&self) -> &'static str;
 
     /// The runtime's name, for `doctor`.
@@ -406,29 +362,8 @@ pub trait Runtime: Sync {
     /// The isolation the runtime gives each box, for `doctor`.
     fn isolation(&self) -> &'static str;
 
-    /// The runtime CLI's version, as the CLI reports it.
-    fn version(&self) -> io::Result<String> {
-        let stdout = output(&[self.program(), "--version"])?;
-        Ok(String::from_utf8_lossy(&stdout).trim().to_string())
-    }
-}
-
-/// The runtime CLI's absolute path: the first executable named `program`
-/// on pinfold's own `PATH`. The spec's `env` reaches the child only after
-/// this, so a spec `PATH` cannot choose the runtime (GitHub #70). A missing
-/// runtime keeps the not-found error that names it.
-fn runtime_path(program: &str) -> io::Result<PathBuf> {
-    if let Some(path) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&path) {
-            let candidate = dir.join(program);
-            if candidate.is_file()
-                && nix::unistd::access(&candidate, nix::unistd::AccessFlags::X_OK).is_ok()
-            {
-                return Ok(candidate);
-            }
-        }
-    }
-    Err(spawn_error(program, io::ErrorKind::NotFound.into()))
+    /// The box runtime's version.
+    fn version(&self) -> io::Result<String>;
 }
 
 /// The box's environment in order, a later entry winning: the spec's, a
@@ -454,77 +389,6 @@ fn guest_vars(plan: &Plan) -> Vec<(String, OsString)> {
         vars.push(("http_proxy".into(), PROXY_URL.into()));
     }
     vars
-}
-
-/// The attached `<program> run` command that owns a box: stdin and stdout
-/// piped. `program` is resolved on pinfold's own `PATH`. Guest values are
-/// encoded under prefixed names, so they cannot configure the host client.
-///
-/// `extra` is what the runtime adds to the controls every box gets. `init`
-/// is a host path; it and its directory are mounted read-only at the same
-/// path, so it is also the path PID 1 runs. With `guest_socket`, init relays
-/// to that guest path, which `extra` carries the proxy socket to.
-///
-/// Env values go through the child's environment, so argv holds only names
-/// and `ps` cannot read a secret.
-fn up(
-    program: &str,
-    plan: &Plan,
-    init: &Path,
-    guest_socket: Option<&str>,
-    extra: Vec<OsString>,
-) -> io::Result<Command> {
-    let program = runtime_path(program)?;
-    let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
-    let mut command = Command::new(program);
-    command
-        .args(["run", "-i", "--name", &plan.name])
-        .args(["--network", "none", "--cap-drop", "ALL"])
-        .args(["--read-only", "--tmpfs", "/tmp"])
-        .arg("--user")
-        .arg(format!("{uid}:{gid}"))
-        .args(extra)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped());
-    if let Some(cpus) = plan.cpus {
-        command.arg("--cpus").arg(cpus.to_string());
-    }
-    if let Some(memory) = &plan.memory {
-        command.args(["--memory", memory]);
-    }
-    for (key, value) in &plan.labels {
-        command.arg("--label").arg(format!("{key}={value}"));
-    }
-    for (name, value) in guest_vars(plan) {
-        guest_env(command.as_std_mut(), &name, &value);
-    }
-    for mount in &plan.mounts {
-        command.arg("--mount").arg(bind(&mount.host, &mount.guest));
-    }
-    for disk in &plan.disks {
-        let mut value = OsString::from(format!("type=volume,source={},target=", disk.name));
-        value.push(&disk.guest);
-        if disk.readonly {
-            value.push(",readonly");
-        }
-        command.arg("--mount").arg(value);
-    }
-    let init_dir = init
-        .parent()
-        .expect("box::up refuses an init without a directory");
-    command
-        .arg("--mount")
-        .arg(bind(init_dir, init_dir))
-        .arg("--entrypoint")
-        .arg(init)
-        .arg(
-            plan.image
-                .as_deref()
-                .expect("box up resolves the profile's image before the runtime runs"),
-        )
-        .arg("init")
-        .args(guest_socket);
-    Ok(command)
 }
 
 /// Build `request` with `program`; `cache_flags` is how that runtime spells
@@ -599,14 +463,4 @@ fn build(
         output.drain(..start);
         Ok(Err(output))
     }
-}
-
-/// A read-only `type=bind` mount value, as both runtimes spell it.
-pub(crate) fn bind(host: &Path, guest: &Path) -> OsString {
-    let mut value = OsString::from("type=bind,source=");
-    value.push(host);
-    value.push(",target=");
-    value.push(guest);
-    value.push(",readonly");
-    value
 }

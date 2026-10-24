@@ -88,10 +88,10 @@ box.
 Preflight refuses box startup on older, prerelease or unrecognized runtime
 versions. Inventory and cleanup remain available on older versions.
 
-Linux is x64 only. Preflight requires `/dev/kvm` readable and writable by
-the user (the `kvm` group), unprivileged user namespaces, Landlock ABI 5
-or later (Linux 6.10+), `mkfs.ext4` (e2fsprogs), and podman with
-`rootless=true` for builds. Without user namespaces or Landlock ABI 5,
+Linux is x64 only. Preflight requires a user other than root, `/dev/kvm`
+readable and writable by the user (the `kvm` group), unprivileged user
+namespaces, Landlock ABI 5 or later (Linux 6.10+), `mkfs.ext4`
+(e2fsprogs), and podman with `rootless=true` for builds. Without user namespaces or Landlock ABI 5,
 `up` is refused as `runtime`, naming the missing requirement's token
 (below); there is no unjailed fallback.
 
@@ -1022,8 +1022,8 @@ storage, including a stopped builder; cleanup may reclaim less. Podman's
 build cache is unmeasured.
 When runtime checks fail, it skips runtime-dependent image and disk
 probes. On Linux, failed preflight also reports missing host requirements
-independently of each other: `kvm` names an inaccessible `/dev/kvm`,
-`mkfs` a missing `mkfs.ext4`, `userns` unprivileged user namespaces
+independently of each other: `root` names a run as uid 0, `kvm` an
+inaccessible `/dev/kvm`, `mkfs` a missing `mkfs.ext4`, `userns` unprivileged user namespaces
 turned off, `userns-apparmor` them restricted by AppArmor without
 pinfold's profile, `landlock` no Landlock or an ABI below 5, and
 `runtime-dir` the selected
