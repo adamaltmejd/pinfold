@@ -633,7 +633,7 @@ impl Plan {
                 .any(|path| normalized == Path::new(path))
             {
                 return Err(invalid(format!(
-                    "guest path {} would hide the box's tmpfs /tmp or empty /etc/resolv.conf",
+                    "guest path {} is /, /tmp, /etc or /etc/resolv.conf, which would hide the box's tmpfs /tmp or empty /etc/resolv.conf",
                     guest.display()
                 )));
             }
@@ -685,7 +685,7 @@ const KERNEL_PATHS: [&str; 3] = ["/proc", "/sys", "/dev"];
 
 /// Guest paths no mount or disk may name exactly: one there would cover
 /// an Always applied tmpfs `/tmp` or empty `/etc/resolv.conf`.
-const HIDING_PATHS: [&str; 3] = ["/tmp", "/etc", "/etc/resolv.conf"];
+const HIDING_PATHS: [&str; 4] = ["/", "/tmp", "/etc", "/etc/resolv.conf"];
 
 /// Resolve guest components lexically, without consulting the host filesystem.
 pub(crate) fn guest_path(path: &Path) -> PathBuf {
