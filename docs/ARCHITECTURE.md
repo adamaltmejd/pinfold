@@ -131,9 +131,9 @@ sysctl rather than the failing call.
    the host uid, reaps children, and reports ready (on Linux its exec
    service does the relay, exec and ready report). On Linux it mounts the
    disks first; on Apple the runtime does. On Linux PID 1 makes each mount
-   point without following a symlink: one a box left on a disk in the way
-   fails the start, and PID 1 creates nothing through it. Disks attach only here, at
-   boot; nothing attaches or detaches one later. On Linux PID 1 then
+   point without following a symlink: a symlink a box left on a disk
+   fails the start, and PID 1 creates nothing through it. Disks attach
+   only here, at boot; nothing attaches or detaches one later. On Linux PID 1 then
    sets `user.max_user_namespaces` to 0 and forks the exec service as
    the host uid with every capability set
    empty, in a root-owned work cgroup that holds the pids cap and that

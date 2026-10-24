@@ -141,6 +141,8 @@ fn die(detail: &str) -> ! {
 }
 
 fn fail(host: &mut UnixStream, error: &io::Error) -> ! {
+    // A failed start leaves its disks consistent, like the syncfs at STREAM_END.
+    nix::unistd::sync();
     let _ = write_frame(host, FAILED, error.to_string().as_bytes());
     die(&error.to_string())
 }
