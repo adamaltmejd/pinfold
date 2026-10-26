@@ -1277,8 +1277,9 @@ fn up_refuses_before_it_creates() {
 
 #[test]
 fn disks_persist_and_attach_exclusively() {
-    // Shared, so the kills and the `up`s after them run under load (#167).
-    let _runtime = crate::shared_runtime();
+    // Exclusive: name locks are host-wide, so another test's maintenance
+    // pruning the dead writer holds its name and the disk counts as attached.
+    let _runtime = crate::exclusive_runtime();
     // Guarantee 11: disks persist and attach exclusively.
     // Sabotage: skip the attachment check in `disk::claim`; the read-only
     // second `up` is refused `disk-unclean` instead, so the `disk-in-use`
@@ -1596,19 +1597,17 @@ fn disks_persist_and_attach_exclusively() {
     // refused, writable recovers it. On macOS the box outlives its owner
     // until the runtime ends it; on Linux the VMM dies soon after its owner.
     // Once the box has stopped, the dead writer releases the disk before any
-    // `prune`. Another test's maintenance may prune the orphan first, so its
-    // stop is not asserted.
+    // `prune`.
     // Sabotage: count a claim in `disk::attachments` while the runtime lists
     // its box, running or not; the read-only `up` is refused `disk-in-use`
     // and the `disk-unclean` assertion fails.
     let mut killed = box_up(&env, &spec(writer, work_disk.clone()), writer);
     killed.kill();
     let _ = killed.wait();
-    // `stop` returns once the box has stopped.
+    // `stop` returns once the box has stopped. On Linux the VMM can outlive
+    // its owner briefly, so the wait reads `box list`.
     #[cfg(target_os = "macos")]
-    let _ = Command::new(image_cli())
-        .args(["stop", "--signal", "KILL", writer.as_str()])
-        .output();
+    run_ok(Command::new(image_cli()).args(["stop", "--signal", "KILL", writer.as_str()]));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while box_list(&env, label)
         .iter()
@@ -1642,8 +1641,7 @@ fn disks_persist_and_attach_exclusively() {
     }
     // A dead owner's box the runtime has created but not started may still
     // boot, so it holds its disk. Apple lists such a box `stopped`, as an
-    // orphaned `container run` leaves it; `container create` makes one. The
-    // box carries no pinfold label, so no other test's maintenance prunes it.
+    // orphaned `container run` leaves it; `container create` makes one.
     // Sabotage: drop the `started_date` condition from `stopped` in
     // `Apple::list`; the writable `up` runs and the `disk-in-use` assertion
     // fails.
