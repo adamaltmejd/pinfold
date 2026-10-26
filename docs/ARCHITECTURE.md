@@ -1008,8 +1008,7 @@ owns no lifetime lock. An inactive run's directory goes when its newest
 file is older than 14 days; then, while inactive runs together exceed
 128 MiB, the oldest inactive run goes first. The quota can remove an
 inactive run's egress log before 14 days. A live run's records are never
-removed or truncated; its egress log can grow without bound. The first
-pass removes the old name-keyed `egress/` directory.
+removed or truncated; its egress log can grow without bound.
 
 `pinfold image rm NAME` retires a caller image name: it removes every tag
 of NAME, whatever its age, and no other name's. The last-tag rule above

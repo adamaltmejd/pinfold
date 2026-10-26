@@ -647,7 +647,7 @@ struct CleanPlan {
     /// Unpinned artifact versions. Dead boxes' state dirs and leftover
     /// socket dirs count in `automatic_bytes` only.
     automatic: Vec<PathBuf>,
-    /// Retired runs' directories, and the old name-keyed egress logs.
+    /// Retired runs' directories.
     runs: Vec<PathBuf>,
     run_bytes: u64,
     /// Projects `--unused` selected: their state dirs go with their disks.

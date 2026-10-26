@@ -349,14 +349,10 @@ struct Stored {
 
 /// The run directories maintenance removes: inactive runs whose newest file
 /// is older than 14 days, then the oldest inactive runs while the inactive
-/// rest exceed 128 MiB. The old name-keyed `egress/` directory goes too. A
-/// run is live while its generation owns its name's lifetime lock.
+/// rest exceed 128 MiB. A run is live while its generation owns its name's
+/// lifetime lock.
 pub fn retired() -> io::Result<Vec<PathBuf>> {
     let mut retired = Vec::new();
-    let legacy = dirs::state_dir()?.join("egress");
-    if fs::symlink_metadata(&legacy).is_ok() {
-        retired.push(legacy);
-    }
     let records = ownership::records()?;
     let live: BTreeSet<&str> = records
         .iter()
