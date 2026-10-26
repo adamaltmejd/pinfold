@@ -6,8 +6,8 @@ its only way out is its own allowlisting proxy. `pinfold fetch` brings its
 commits back as branches.
 
 - **Interactive:** `pi` on the host is a shim for `pinfold pi`.
-- **Programmatic:** drive boxes through `pinfold box` (JSON on stdio),
-  and read project settings with `pinfold config`.
+- **Programmatic:** drive boxes through `pinfold box` (JSON on stdio, the
+  [box spec](docs/ARCHITECTURE.md#process-interface)), and read project settings with `pinfold config`.
 - Spec: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ## Requirements
@@ -19,9 +19,8 @@ commits back as branches.
 
 On Ubuntu 24.04+, AppArmor restricts user namespaces, and `box up` is
 refused as `runtime` naming `userns-apparmor`. Load pinfold's profile
-once, as root, instead of turning the restriction off. It attaches to the
-path of the executable that prints it, so run these with the installed
-binary, and again after moving it:
+once, as root. It attaches to the path of the executable that prints it,
+so run these with the installed binary, and again after moving it:
 
 ```sh
 pinfold apparmor-profile | sudo tee /etc/apparmor.d/pinfold >/dev/null
@@ -44,8 +43,7 @@ install -m 0755 pinfold-*-aarch64-apple-darwin ~/.local/bin/pinfold
 `pinfold update` installs the latest stable release, verified; `--check`
 only reports it. Close boxes and other pinfold commands first; the install
 directory must be writable. Interactive `pi` and `attach` show at most one
-update notice a day; `PINFOLD_NO_UPDATE_CHECK=1`
-turns it off.
+update notice a day; `PINFOLD_NO_UPDATE_CHECK=1` turns it off.
 
 The macOS binary is not notarized. Clear a browser download's quarantine
 with `xattr -d com.apple.quarantine pinfold-*`.
@@ -80,8 +78,7 @@ Then make `pi` a symlink to the binary, in a directory on `PATH`:
 ln -s pinfold ~/.local/bin/pi
 ```
 
-Put the `pi` symlink before other `pi` executables on `PATH`. Every tool
-that invokes it runs boxed pi with the invoked project's state and logins.
+Put the `pi` symlink before other `pi` executables on `PATH`.
 
 ## First run
 
@@ -93,8 +90,7 @@ In a project:
    builds the selected profile's image; with one it builds the project's.
    Building needs network. Rebuild when a run shows `image-outdated`;
    it keeps project settings, sessions and logins.
-3. Start pi: `pi`. The first run downloads the pinned pi release and
-   creates the project's home and project disks.
+3. Start pi: `pi`.
 4. Run `/login` in pi once per project: state is per project. An API key
    or a Claude or Codex subscription can instead stay on the host behind
    a pi login route in `routes` (ARCHITECTURE.md, Egress proxy); an API
@@ -108,10 +104,8 @@ you to merge; `pinfold push` sends your branches in as `host/*`. Each
 `pi` start pushes too, and fast-forwards the box's branch when it is
 clean and strictly behind.
 
-To edit a built-in profile, copy it:
-`pinfold profile new NAME --from full --builtin`.
-
-Optional profiles add tools to the default; only `full` adds egress:
+Optional profiles add tools to the default; only `full` adds egress. To
+edit one, copy it with `pinfold profile new NAME --from full`:
 
 | Profile | Adds |
 |---|---|
@@ -133,7 +127,6 @@ selection, then run `pinfold allow`.
 See [Configuration](docs/ARCHITECTURE.md#configuration) for layers, keys and defaults.
 
 For `pinfold pi`, forward host variables with `PINFOLD_ENV_<NAME>`.
-Programmatic callers use the [box spec](docs/ARCHITECTURE.md#process-interface).
 
 For disposable Rust build outputs in guest memory:
 
@@ -146,8 +139,4 @@ the project first.
 
 ## Limits
 
-Read the [threat model](docs/ARCHITECTURE.md#threat-model) and
-[disks](docs/ARCHITECTURE.md#disks) before using pinfold with a repository.
-
-The experimental [Pi Durable example](examples/pi-durable/README.md)
-provides a host adapter for boxed execution and recovery.
+Read the [threat model](docs/ARCHITECTURE.md#threat-model) and [disks](docs/ARCHITECTURE.md#disks) before use.
