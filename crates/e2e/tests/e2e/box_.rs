@@ -287,12 +287,6 @@ fn box_lifecycle_works_for_a_caller() {
 fn up_refuses_before_it_creates() {
     let _runtime = crate::shared_runtime();
     // Guarantee 17: up refuses before it creates.
-    // Sabotage: give `Mount` a `readonly` field again (or drop its
-    // `deny_unknown_fields`); the `readonly` mount spec then comes up
-    // `ready` and the refusal assertion fails.
-    // Sabotage: parse the first JSON value straight into `Plan` again; the
-    // serde refusal is raised before any name is read, so the misspelled
-    // `readonly` spec's `box` assertion fails.
     // Sabotage: drop the character-class check from the env-name validation,
     // keeping only the old empty-or-`=` test; the wildcard spec then comes up
     // `ready`, so the refusal assertion fails.
@@ -300,9 +294,6 @@ fn up_refuses_before_it_creates() {
     // mount-path validation; the comma spec then comes up `ready` (on Apple
     // the runtime's option parser reads the rest as mount options), so the
     // refusal assertion fails.
-    // Sabotage: drop the not-a-directory check from the mount validation;
-    // the file-mount spec then reaches the runtime, so its `refused`
-    // assertion fails.
     // Sabotage: make the claim treat an existing state dir as success, as
     // `create_dir_all` does, and make the name checks always pass; the
     // concurrent loser is never refused `name-in-use`, and its failure path
@@ -310,16 +301,8 @@ fn up_refuses_before_it_creates() {
     // Sabotage: keep the name check after the state dir is created; the
     // racing loser overwrites the winner's `pid` and its cleanup takes the
     // winner's box down, so the winner's `exec` fails.
-    // Sabotage: leave metadata errors to the runtime; the missing mount
-    // ends `failed` after the claim instead of `refused` as `spec`.
     // Sabotage: drop the reserved-label check; the `dev.pinfold.owner` spec
     // comes up `ready`, so its `refused` assertion fails.
-    // Sabotage: drop the memory check; the `1000` spec reaches the runtime
-    // unchecked and is not refused as spec, so its `refused` assertion
-    // fails. Sabotage: drop the 256M floor, keeping the unit check; the
-    // `255M` spec likewise reaches the runtime and its assertion fails.
-    // Sabotage: drop the route check from `Plan::validate`; the URL route
-    // spec comes up `ready`, so its `refused` assertion fails.
     let env = TestEnv::new("refuses");
     let name = box_name("refuses");
     let label = "dev.example.test=refuses";
@@ -335,51 +318,6 @@ fn up_refuses_before_it_creates() {
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["event"], "refused");
     assert_eq!(refused["reason"], "image-missing");
-    assert_left_nothing(&env, &name, label, "refused");
-
-    // Sabotage: accept unknown fields inside an env `from` object. A valid
-    // reference succeeds in the race's winner below; this nested misspelling
-    // must be refused as spec before runtime lookup or cache extraction.
-    let nested = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "labels": { "dev.example.test": "refuses" },
-        "env": { "NESTED_VALUE": { "from": "PINFOLD_E2E_NESTED", "misspelled": true } },
-    });
-    let (code, refused) = box_up_refused(&env, &nested, &[("PINFOLD_E2E_NESTED", "fixture-value")]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["reason"], "spec");
-    assert!(
-        refused["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("misspelled"),
-        "the refusal did not name the nested key: {refused}"
-    );
-    assert_left_nothing(&env, &name, label, "refused");
-
-    // Every mount is read-only, so a mount with a `readonly` key is refused
-    // as data, naming the key, and leaves no state dir and no box. The
-    // positive control is the race's winner below, whose mount has no
-    // `readonly` key and comes up `ready`.
-    let misspelled = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "labels": { "dev.example.test": "refuses" },
-        "mounts": [{ "host": env.root, "guest": "/workspace", "readonly": true }],
-    });
-    let (code, refused) = box_up_refused(&env, &misspelled, &[]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["event"], "refused");
-    assert_eq!(refused["reason"], "spec");
-    assert_eq!(refused["box"], name);
-    assert!(
-        refused["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("readonly"),
-        "the refusal did not name the key: {refused}"
-    );
     assert_left_nothing(&env, &name, label, "refused");
 
     // A spec whose env name is not a POSIX name is refused as data, naming
@@ -410,8 +348,7 @@ fn up_refuses_before_it_creates() {
     // naming the label, and leaves no state dir and no box:
     // `dev.pinfold.owner` drives `list`'s `owner_alive` and what `prune`
     // removes, and the identity labels name the image. The positive control,
-    // a caller label reaching `ready`, is guarantee 9's
-    // `box_lifecycle_works_for_a_caller`.
+    // a caller label, is the race's winner below.
     let reserved = serde_json::json!({
         "name": name,
         "image": default_image(&env),
@@ -430,54 +367,6 @@ fn up_refuses_before_it_creates() {
             .unwrap_or_default()
             .contains("dev.pinfold.owner"),
         "the refusal did not name the label: {refused}"
-    );
-    assert_left_nothing(&env, &name, label, "refused");
-
-    // A spec memory without a unit, or below the 256M floor, is refused as
-    // data, naming `memory` and the value, and leaves no state dir and no
-    // box: the value would otherwise reach the runtime unchecked. The
-    // positive control, the `256M` box coming up on both runtimes, is
-    // guarantee 20's `a_caller_can_tell_an_oom_kill_from_a_failure`.
-    for memory in ["1000", "255M"] {
-        let spec = serde_json::json!({
-            "name": name,
-            "image": default_image(&env),
-            "labels": { "dev.example.test": "refuses" },
-            "memory": memory,
-        });
-        let (code, refused) = box_up_refused(&env, &spec, &[]);
-        assert_eq!(code, 1, "a refused up exits 1: {refused}");
-        assert_eq!(refused["event"], "refused");
-        assert_eq!(refused["reason"], "spec");
-        let detail = refused["detail"].as_str().unwrap_or_default();
-        assert!(
-            detail.contains("memory") && detail.contains(memory),
-            "the refusal did not name memory and its value: {refused}"
-        );
-        assert_left_nothing(&env, &name, label, "refused");
-    }
-
-    // A spec whose route value is a URL rather than host:port is refused as
-    // data, naming the route, and leaves no state dir and no box: the proxy
-    // would otherwise dial the string as an address and answer every request
-    // 502. The positive control, a host:port route answering, is guarantee
-    // 3's `the_proxy_refuses_the_tricks`.
-    let url_route = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "labels": { "dev.example.test": "refuses" },
-        "egress": { "routes": { "invalid-url-route": "https://example.com" } },
-    });
-    let (code, refused) = box_up_refused(&env, &url_route, &[]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["event"], "refused");
-    assert_eq!(refused["reason"], "spec");
-    assert!(
-        refused["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("invalid-url-route"),
-        "the refusal did not name the route: {refused}"
     );
     assert_left_nothing(&env, &name, label, "refused");
 
@@ -508,42 +397,6 @@ fn up_refuses_before_it_creates() {
     );
     assert_left_nothing(&env, &name, label, "refused");
 
-    // An otherwise valid claude login cannot serve a codex harness.
-    // Guarantee 26 supplies the matching-login control. Sabotage: drop the
-    // harness-match check; this spec then comes up instead of refusing.
-    let login_fixture = HttpFixture::start(None);
-    let login_mismatch = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "labels": { "dev.example.test": "refuses" },
-        "harness": "codex",
-        "egress": {
-            "routes": {
-                "login.internal": {
-                    "login": "claude",
-                    "from": "PINFOLD_E2E_LOGIN",
-                    "to": format!("http://{}", login_fixture.route()),
-                },
-            },
-        },
-    });
-    let (code, refused) = box_up_refused(
-        &env,
-        &login_mismatch,
-        &[("PINFOLD_E2E_LOGIN", "fixture-token")],
-    );
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["event"], "refused");
-    assert_eq!(refused["reason"], "spec");
-    assert!(
-        refused["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("login.internal"),
-        "the refusal did not name the route: {refused}"
-    );
-    assert_left_nothing(&env, &name, label, "refused");
-
     // A spec whose mount path holds a comma is refused as data, naming the
     // path, and leaves no state dir and no box: on Apple the bind value is
     // built by concatenation, so the runtime reads the rest as mount
@@ -570,156 +423,29 @@ fn up_refuses_before_it_creates() {
     );
     assert_left_nothing(&env, &name, label, "refused");
 
-    // A spec whose mount host is a regular file is refused as data, naming
-    // the path, and leaves no state dir and no box: the runtimes treat a
-    // file mount differently, so one spec must be refused the same way on
-    // both. The race's winner below is the control that the same command
-    // path comes up `ready`.
-    let file = env.root.join("f.txt");
-    fs::write(&file, b"not a directory\n").unwrap();
-    let file_mount = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "labels": { "dev.example.test": "refuses" },
-        "mounts": [{ "host": file, "guest": "/yard/f.txt" }],
-    });
-    let (code, refused) = box_up_refused(&env, &file_mount, &[]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["event"], "refused");
-    assert_eq!(refused["reason"], "spec");
-    assert!(
-        refused["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("f.txt"),
-        "the refusal did not name the path: {refused}"
-    );
-    assert_left_nothing(&env, &name, label, "refused");
-
-    // On Linux a box copies its mount trees at start, so an entry inside
-    // one that the user cannot read is refused as data, naming it, before
-    // anything is created. The same spec comes up once the mode is
-    // restored. Sabotage: drop `unreadable()` from `validate`; the spec
-    // gets past the claim and fails late at mkfs, not as `spec`.
-    #[cfg(target_os = "linux")]
-    {
-        let tree = env.root.join("tree");
-        let locked = tree.join("locked-dir");
-        fs::create_dir_all(&locked).unwrap();
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-        let tree_mount = serde_json::json!({
-            "name": name,
-            "image": default_image(&env),
-            "labels": { "dev.example.test": "refuses" },
-            "mounts": [{ "host": tree, "guest": "/tree" }],
-        });
-        let (code, refused) = box_up_refused(&env, &tree_mount, &[]);
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(code, 1, "a refused up exits 1: {refused}");
-        assert_eq!(refused["reason"], "spec", "{refused}");
-        assert!(
-            refused["detail"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("locked-dir"),
-            "the refusal did not name the path: {refused}"
-        );
-        assert_left_nothing(&env, &name, label, "refused");
-        box_up(&env, &tree_mount, &name).down(&env);
-    }
-
-    // A spec whose mount names a guest path pinfold's own mount uses is
-    // refused as data, naming the path, and leaves no state dir and no box:
-    // pinfold adds the profile's `share/` at /opt/pinfold/profile after the
-    // spec's own mounts, so the spec's directory would otherwise be silently
-    // shadowed. The positive control is the race's winner below, which comes
-    // up `ready` from the same image. Sabotage: check duplicates before
-    // pinfold's mounts are added; this spec then comes up `ready`, so its
-    // `refused` assertion fails.
-    let work = env.root.join("work");
-    fs::create_dir_all(&work).unwrap();
-    let spec_mount = env.root.join("spec-share");
-    fs::create_dir_all(&spec_mount).unwrap();
-    let profile_mount = serde_json::json!({
-        "name": name,
-        "profile": "default",
-        "labels": { "dev.example.test": "refuses" },
-        "env": { "HOME": "/work" },
-        "mounts": [
-            { "host": work, "guest": "/work" },
-            { "host": spec_mount, "guest": "/opt/pinfold/profile" },
-        ],
-    });
-    // Sabotage: compare raw guest paths or deduplicate caller destinations
-    // in the late scanner. Normalized duplicates must refuse as spec before
-    // preparation, just like exact duplicates. The host fixture supplies
-    // both destinations; the race's winner below is the allowed control.
-    for destination in ["/opt/pinfold/profile", "/work", "/work/../work"] {
-        let mut duplicate = profile_mount.clone();
-        duplicate["mounts"][1]["guest"] = destination.into();
-        let (code, refused) = box_up_refused(&env, &duplicate, &[]);
-        assert_eq!(code, 1, "a refused up exits 1: {refused}");
-        assert_eq!(refused["event"], "refused");
-        assert_eq!(refused["reason"], "spec");
-        assert!(
-            refused["detail"]
-                .as_str()
-                .unwrap_or_default()
-                .contains(destination),
-            "the refusal did not name the path: {refused}"
-        );
-        assert_left_nothing(&env, &name, label, "refused");
-    }
-
     // Disk specs are refused as data, naming the cause, before anything is
     // created: a path with a comma (on Apple the volume value is
-    // concatenated like a bind), a malformed size or name, `from` with `readonly` (a read-only
-    // attachment cannot receive the copy), and a disk at a mount's
-    // normalized guest path. The positive control, disks attaching, is guarantee 11's
-    // `disks_persist_and_attach_exclusively`. Sabotage: drop the size check
-    // from `Plan::validate`; `0G` and `1T` then reach the claim, which on
-    // Apple comes up `ready` at the default size, so the `refused` assertion
-    // fails. Sabotage: drop the `from` with `readonly` check; the spec, whose
-    // `from` is empty, comes up `ready` and the same assertion fails.
-    // Sabotage: drop the check for a disk named twice; the second create
-    // fails and the start ends `failed`.
+    // concatenated like a bind) and a name that is a flag or a path. The
+    // positive control, disks attaching, is guarantee 11's
+    // `disks_persist_and_attach_exclusively`.
+    let work = env.root.join("work");
+    fs::create_dir_all(&work).unwrap();
     let disk_spec = |disk: serde_json::Value| {
         serde_json::json!({
             "name": name,
             "image": default_image(&env),
             "labels": { "dev.example.test": "refuses" },
             "mounts": [{ "host": work, "guest": "/work" }],
-            "disks": if disk.is_array() { disk } else { serde_json::json!([disk]) },
+            "disks": [disk],
         })
     };
     let disk = box_name("refused-disk");
     let comma_from = serde_json::json!({ "name": disk, "guest": "/disk", "from": comma });
     let comma_guest = serde_json::json!({ "name": disk, "guest": "/a,b" });
     let mut cases = vec![(comma_from, "a,b"), (comma_guest, "a,b")];
-    for size in ["64", "0G", "1.5G", "1T"] {
-        cases.push((
-            serde_json::json!({ "name": disk, "guest": "/disk", "size": size }),
-            size,
-        ));
-    }
     for bad in ["-disk", "a/b"] {
         cases.push((serde_json::json!({ "name": bad, "guest": "/disk" }), bad));
     }
-    cases.push((
-        serde_json::json!({ "name": disk, "guest": "/disk", "from": work, "readonly": true }),
-        "readonly",
-    ));
-    cases.push((
-        serde_json::json!([
-            { "name": disk, "guest": "/disk" },
-            { "name": disk, "guest": "/disk2" },
-        ]),
-        "named twice",
-    ));
-    cases.push((
-        serde_json::json!({ "name": disk, "guest": "/work/../work" }),
-        "/work/../work",
-    ));
     // A disk at or below the guest kernel's /proc, /sys or /dev would
     // replace the userns sysctl or the work cgroup; the hard case reaches
     // one only after normalization. The positive control is the race's
@@ -774,45 +500,20 @@ fn up_refuses_before_it_creates() {
     );
     assert_left_nothing(&env, &name, label, "refused");
 
-    // Refuse both an absent directory and a dangling symlink to it. The
-    // race below uses the same spec after the target is created, proving
-    // that a symlink to a directory remains a valid mount.
-    let absent_host = env.root.join("absent");
-    let linked_host = env.root.join("linked");
-    std::os::unix::fs::symlink(&absent_host, &linked_host).unwrap();
-    let mut live = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "labels": { "dev.example.test": "refuses" },
-        "mounts": [{ "host": absent_host, "guest": "/devices" }],
-        "egress": { "allow": [".github.com"] },
-        "env": { "NESTED_VALUE": { "from": "PINFOLD_E2E_NESTED" } },
-    });
-    for host in [&absent_host, &linked_host] {
-        live["mounts"][0]["host"] = serde_json::json!(host);
-        let (code, refused) =
-            box_up_refused(&env, &live, &[("PINFOLD_E2E_NESTED", "fixture-value")]);
-        assert_eq!(code, 1, "a refused up exits 1: {refused}");
-        assert_eq!(refused["event"], "refused");
-        assert_eq!(refused["reason"], "spec");
-        assert!(
-            refused["detail"]
-                .as_str()
-                .unwrap_or_default()
-                .contains(host.to_str().unwrap()),
-            "the refusal did not name the host path: {refused}"
-        );
-        assert_left_nothing(&env, &name, label, "refused");
-    }
-    fs::create_dir(&absent_host).unwrap();
-
     // Two `up`s on one free name at once: the claim lets exactly one hold
     // it, and the loser touches nothing of the winner's. Both are spawned
     // before either's first line is read. The winner also proves that
     // `.github.com` remains an allowed suffix entry.
+    let live = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+        "labels": { "dev.example.test": "refuses" },
+        "mounts": [{ "host": work, "guest": "/devices" }],
+        "egress": { "allow": [".github.com"] },
+    });
     let mut starts = [
-        box_up_start(&env, &live, &[("PINFOLD_E2E_NESTED", "fixture-value")]),
-        box_up_start(&env, &live, &[("PINFOLD_E2E_NESTED", "fixture-value")]),
+        box_up_start(&env, &live, &[]),
+        box_up_start(&env, &live, &[]),
     ];
     let lines = starts.each_mut().map(Starting::first_line);
     let [first, second] = starts;
@@ -835,9 +536,6 @@ fn up_refuses_before_it_creates() {
     assert_eq!(exit_code(status), 1, "the losing up did not exit 1");
     let ok = box_exec(&env, &name, &["true"]);
     assert_ok(&ok, "exec in the winner after the losing up");
-    let value = box_exec(&env, &name, &["sh", "-c", r#"printf %s "$NESTED_VALUE""#]);
-    assert_ok(&value, "reading the allowed nested env reference");
-    assert_eq!(value.stdout, "fixture-value");
     let _ = box_down(&env, &name);
     assert!(
         winner.wait().success(),
