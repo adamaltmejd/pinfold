@@ -100,7 +100,9 @@ In a project:
 
 The first start copies the checkout into the box, which keeps that copy.
 `pinfold fetch` brings the box's commits back as `pinfold/*` branches for
-you to merge; `pinfold push` sends your branches in as `host/*`.
+you to merge; `pinfold push` sends your branches in as `host/*`. Each
+`pi` start pushes too, and fast-forwards the box's branch when it is
+clean and strictly behind.
 
 To edit a built-in profile, copy it:
 `pinfold profile new NAME --from full --builtin`.

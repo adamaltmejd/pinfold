@@ -392,6 +392,13 @@ fn a_changed_project_file_stops_the_run() {
     // the box's merge of host/main fails. Sabotage: check trust in `build`
     // only when the project names a Containerfile; the build after the
     // domain change runs and its refusal assertion fails.
+    // Sabotage: drop the crossing::push call from pi::launch::sync; the
+    // behind box never sees its host commit and stays. Sabotage: drop the
+    // diff-index line from FAST_FORWARD_SCRIPT; the dirty box is
+    // fast-forwarded. Sabotage: drop the merge-base check and replace
+    // `merge -q --ff-only` with `reset -q --hard`; the diverged box loses its
+    // commit. Sabotage: drop `sync-failed:` from sync's report; the failure
+    // assertion fails.
     let env = TestEnv::new("pi-trust");
     default_image(&env);
     let project = TestDir::new(&env, "project");
@@ -402,6 +409,7 @@ fn a_changed_project_file_stops_the_run() {
     // project disk copies: the box commits under its image's identity.
     let id = ["-c", "user.name=e2e", "-c", "user.email=e2e@example.test"];
     host_git(&[&id[..], &["commit", "-q", "--allow-empty", "-m", "start"]].concat());
+    let root_str = root.to_str().unwrap().to_string();
     let config = root.join(".pinfold.toml");
     let in_box = |name: &str, script: &str| {
         let output = box_exec(&env, name, &["sh", "-c", script]);
@@ -473,6 +481,66 @@ fn a_changed_project_file_stops_the_run() {
     }
     allow(&env, root);
     pi_version(&env, root);
+
+    // Each start pushes the host's branches, then fast-forwards the box's
+    // branch only when it is clean and strictly behind. Each host commit
+    // adds a new file, so git itself would let every fast-forward through.
+    let host_commit = |file: &str| {
+        fs::write(root.join(file), file).unwrap();
+        host_git(&["add", file]);
+        host_git(&[&id[..], &["commit", "-q", "-m", file]].concat());
+        host_git(&["rev-parse", "main"]).trim().to_string()
+    };
+    let box_rev = |name: &str, rev: &str| {
+        let output = box_exec(&env, name, &["git", "-C", &root_str, "rev-parse", rev]);
+        assert_ok(&output, rev);
+        output.stdout.trim().to_string()
+    };
+    let behind = host_commit("behind.txt");
+    let (run, _, name) = PiRpc::start(&env, root);
+    assert_eq!(
+        box_rev(&name, "HEAD"),
+        behind,
+        "a clean box behind host stayed"
+    );
+    // A tracked file the agent edits and leaves uncommitted.
+    in_box(
+        &name,
+        &format!("cd {root_str} && test -f behind.txt && printf box >> host.txt"),
+    );
+    assert!(run.finish().success(), "the behind run failed");
+
+    let dirty = host_commit("dirty.txt");
+    let (run, _, name) = PiRpc::start(&env, root);
+    assert_eq!(
+        box_rev(&name, "HEAD"),
+        behind,
+        "a dirty box was fast-forwarded"
+    );
+    assert_eq!(box_rev(&name, "refs/remotes/host/main"), dirty);
+    in_box(
+        &name,
+        &format!(
+            "cd {root_str} && git checkout -q -- host.txt && git commit -q --allow-empty -m local"
+        ),
+    );
+    let local = box_rev(&name, "HEAD");
+    assert!(run.finish().success(), "the dirty run failed");
+
+    let diverged = host_commit("diverged.txt");
+    let (run, _, name) = PiRpc::start(&env, root);
+    assert_eq!(box_rev(&name, "HEAD"), local, "a diverged box moved");
+    assert_eq!(box_rev(&name, "refs/remotes/host/main"), diverged);
+    // An untracked file that the next fast-forward would overwrite.
+    in_box(
+        &name,
+        &format!("cd {root_str} && git reset -q --hard host/main && printf box > late.txt"),
+    );
+    assert!(run.finish().success(), "the diverged run failed");
+    host_commit("late.txt");
+    let started = run_ok(&mut pinfold_in(&env, root, &["pi", "--version"]));
+    let stderr = String::from_utf8_lossy(&started.stderr);
+    assert!(stderr.contains("sync-failed"), "no sync failure: {stderr}");
 
     // The project's own Containerfile is trusted the same way: the
     // unchanged file builds and runs, and a change to it stops both the run

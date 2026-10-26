@@ -471,7 +471,7 @@ fn object_id(oid: &str) -> bool {
 
 /// The first [`STDERR_KEPT`] bytes of a child's piped stderr, read on a
 /// thread that drains the rest so the child never blocks on it.
-fn kept_stderr(child: &mut Child) -> impl FnOnce() -> String + use<> {
+pub(crate) fn kept_stderr(child: &mut Child) -> impl FnOnce() -> String + use<> {
     let mut stderr = child.stderr.take().expect("stderr is piped");
     let thread = std::thread::spawn(move || {
         let mut kept = Vec::new();
