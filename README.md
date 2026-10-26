@@ -6,6 +6,7 @@ its only way out is its own allowlisting proxy. `pinfold fetch` brings its
 commits back as branches.
 
 - **Interactive:** `pi` on the host is a shim for `pinfold pi`.
+- **From another agent:** `pinfold pi -p` (see below).
 - **Programmatic:** drive boxes through `pinfold box` (JSON on stdio, the
   [box spec](docs/ARCHITECTURE.md#process-interface)), and read project settings with `pinfold config`.
 - Spec: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
@@ -121,6 +122,21 @@ PINFOLD_PROFILE=documents pi
 
 Set `profile = "documents"` in the project's `.pinfold.toml` to keep the
 selection, then run `pinfold allow`.
+
+## From another agent
+
+A coding agent on the host can delegate to pi in a box:
+
+```sh
+pinfold pi -p "TASK" </dev/null              # answer on stdout, pi's exit code
+pinfold pi -p --continue "FOLLOW-UP" </dev/null
+pinfold fetch                                 # box branches as pinfold/*
+```
+
+One box runs per project; a second start is refused as `disk-in-use`.
+Treat the box's output and branches as untrusted. The
+[pinfold-delegate](skills/pinfold-delegate/SKILL.md) skill teaches an
+agent this; copy its directory into the agent's skills directory.
 
 ## Configuration
 
