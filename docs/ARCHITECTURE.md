@@ -915,8 +915,10 @@ no ref on the receiving side.
   move into REPO and committed after, so a rejected bundle leaves REPO's
   object store as it was. pinfold removes the quarantine as the fetch
   returns; the next fetch into REPO removes one whose process is gone.
-  Fetch has no deadline: a box can stall it, with a bundle that is slow
-  to write or to index, until the caller kills it, which changes no ref. A branch the bundle leaves out lands only
+  Fetch has no deadline or memory bound: a box can stall it, or load the
+  host, with a bundle slow to write or costly to index, until the caller
+  kills it; a kill before the ref transaction commits changes no ref.
+  A branch the bundle leaves out lands only
   at a commit `refs/remotes/NAME/*` already reaches. Every branch name,
   listed or in the bundle, must pass `git check-ref-format` under
   `refs/remotes/NAME/` before git sees it; a box with more than 4096
