@@ -74,10 +74,8 @@ fn main() -> ExitCode {
     if cli::help(verb, args) {
         return ExitCode::SUCCESS;
     }
-    if verb == "update" {
-        return ExitCode::from(cli::report(verb, run(args)) as u8);
-    }
-    let _executable = if verb == "init" {
+    // `update` takes the executable lock itself, exclusively.
+    let _executable = if matches!(verb, "init" | "update") {
         None
     } else {
         match update::working() {
@@ -92,7 +90,7 @@ fn main() -> ExitCode {
     // unrelated maintenance before its bounded owner request. `box up`
     // installs its signal handlers before running the pass itself.
     match (verb, args.first().map(String::as_str)) {
-        ("init" | "doctor" | "config" | "artifacts" | "apparmor-profile", _)
+        ("init" | "update" | "doctor" | "config" | "artifacts" | "apparmor-profile", _)
         | ("box", Some("up" | "list" | "down" | "inspect" | "events")) => {}
         _ => crate::core::clean::maintain(),
     }

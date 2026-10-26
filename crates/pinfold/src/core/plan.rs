@@ -11,7 +11,7 @@ use crate::core::r#box::{Refusal, RefusalReason};
 use crate::core::{artifacts, login, network, proxy};
 
 /// A parsed box spec.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
     pub name: String,
@@ -303,7 +303,8 @@ const DEFAULT_DISK_GIB: u64 = 64;
 /// A disk size: a whole number of gibibytes, at least 1, then `G`.
 fn disk_gibibytes(size: &str) -> Option<u64> {
     let number = size.strip_suffix('G')?;
-    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+    // `parse` alone would take a leading `+`.
+    if !number.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
     number
@@ -407,7 +408,7 @@ impl Plan {
             )));
         }
         if let Some(memory) = &self.memory
-            && !valid_memory(memory)
+            && !memory_mib(memory).is_some_and(|mebibytes| mebibytes >= 256)
         {
             return Err(invalid(format!(
                 "memory {memory:?} must be a whole number of M or G, at least 256M"
@@ -429,15 +430,7 @@ impl Plan {
                     )));
                 }
             }
-            let metadata = std::fs::metadata(&mount.host).map_err(|error| {
-                invalid(format!("mount host {}: {error}", mount.host.display()))
-            })?;
-            if !metadata.is_dir() {
-                return Err(invalid(format!(
-                    "mount host {} is not a directory",
-                    mount.host.display()
-                )));
-            }
+            host_directory("mount host", &mount.host)?;
             // A Linux box copies the whole tree at each start.
             #[cfg(target_os = "linux")]
             unreadable(&mount.host).map_err(|(path, error)| {
@@ -493,14 +486,7 @@ impl Plan {
                         from.display()
                     )));
                 }
-                let metadata = std::fs::metadata(from)
-                    .map_err(|error| invalid(format!("disk from {}: {error}", from.display())))?;
-                if !metadata.is_dir() {
-                    return Err(invalid(format!(
-                        "disk from {} is not a directory",
-                        from.display()
-                    )));
-                }
+                host_directory("disk from", from)?;
             }
         }
         self.validate_guests(&[])?;
@@ -680,6 +666,18 @@ fn unreadable(dir: &Path) -> Result<(), (PathBuf, std::io::Error)> {
     Ok(())
 }
 
+/// Refuse `path` unless it is a host directory.
+fn host_directory(what: &str, path: &Path) -> Result<(), String> {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(_) => Err(invalid(format!(
+            "{what} {} is not a directory",
+            path.display()
+        ))),
+        Err(error) => Err(invalid(format!("{what} {}: {error}", path.display()))),
+    }
+}
+
 /// Guest paths no mount or disk may name, at or below.
 const KERNEL_PATHS: [&str; 3] = ["/proc", "/sys", "/dev"];
 
@@ -773,12 +771,6 @@ fn on_or_above_public_suffix(suffix: &str) -> bool {
             .to_lowercase();
         rule == name || rule.ends_with(&below)
     })
-}
-
-/// A memory limit is a whole number of mebibytes or gibibytes, at least
-/// 256M.
-fn valid_memory(memory: &str) -> bool {
-    memory_mib(memory).is_some_and(|mebibytes| mebibytes >= 256)
 }
 
 /// A memory value's mebibytes: a whole number, then `M` or `G`.

@@ -1008,8 +1008,7 @@ owns no lifetime lock. An inactive run's directory goes when its newest
 file is older than 14 days; then, while inactive runs together exceed
 128 MiB, the oldest inactive run goes first. The quota can remove an
 inactive run's egress log before 14 days. A live run's records are never
-removed or truncated; its egress log can grow without bound. The first
-pass removes the old name-keyed `egress/` directory.
+removed or truncated; its egress log can grow without bound.
 
 `pinfold image rm NAME` retires a caller image name: it removes every tag
 of NAME, whatever its age, and no other name's. The last-tag rule above
@@ -1122,8 +1121,8 @@ a scheduler and a complete `ExecutionEnv` are outside this prototype.
 Its project is a disk filled from the host checkout by `from`, with
 results fetched back. The host project must be disjoint from checkpoints, controller and
 dependencies, Bun and Pinfold executables, PATH entries, Pinfold's host
-state and ownership paths, and runtime authority. Check both lexical and
-canonical paths, including nonexistent paths under symlinked ancestors.
+state and ownership paths, and runtime authority. Check canonical paths,
+including nonexistent paths under symlinked ancestors.
 Refuse overlap as `host-boundary` before box or model work. Checkpoints
 remain private on the host; a moved checkpoint namespace is refused.
 
@@ -1132,11 +1131,9 @@ Prototype-only dependencies are `@earendil-works/pi-durable`, `pi-ai` and
 `@types/node` for Bun's compatible APIs; execution requires Bun 1.4.3+.
 Launch from the controller directory, outside the project. Bun
 loads no `.env` files and auto-installs no dependencies under its supplied
-configuration. Package `start` and `resume` commands import the controller
-through Bun's eval loader to retain its lexical launch path. Direct script
-launches are refused as `host-boundary`. Exact versions live in
-`examples/pi-durable/package.json` and `bun.lock` and advance with nightly
-pins, including incompatible versions. Any prototype or dependency change
+configuration. Exact versions live in `examples/pi-durable/package.json`
+and `bun.lock` and advance with nightly pins, including incompatible
+versions. Any prototype or dependency change
 requires the typecheck
 and guarantee 35's standalone gate. The gate is validated on macOS and
 Linux x64.
@@ -1245,7 +1242,7 @@ The two slow gates run separately.
 | 5 | Nothing can gain privileges | `CapBnd` 0 and the host uid in exec'd processes; no setuid or setgid files; rootfs not writable; init's credentials are the host uid on Apple; on Linux PID 1 is root with `CapBnd` exactly `CAP_SYS_ADMIN`, the exec service is the host uid with every capability set empty and box work cannot list its `/proc/<pid>/fd`, and `unshare -U` fails. |
 | 6 | The environment is exactly the spec | Unprefixed host proxy variables stay out; PINFOLD_ENV_SECRET arrives without entering host argv; on Linux it is in neither `/proc/cmdline`, the VM configuration, the init disk nor any disk image. Guest PATH, HOME, runtime-selection variables, multiline values and a transport-prefixed name arrive exactly while local list/exec/down still manage the box. Always-applied values win. |
 | 7 | No egress means no way out | Without `egress`, nothing gets out, not even through a route. On Linux a vsock connection to the host proxy's port is reset; control: with a route it connects. |
-| 8 | Losing the owner fails closed | After SIGKILL, egress fails closed; another XDG root sees the owner dead even with a misleading live pid file, prunes the box and reuses its name. An abandoned partial claim is reclaimable. |
+| 8 | Losing the owner fails closed | After SIGKILL, egress fails closed; another XDG root sees the owner dead, prunes the box and reuses its name. An abandoned partial claim is reclaimable. |
 | 9 | The lifecycle works for a caller | Without egress, `exec` immediately after `ready` streams and returns the exit code, honors explicit workdir and tty, and exits 3 on an absent box; an orphan in the box is reaped; `list` finds by label; `down` removes the box, on Apple even while attached output is active; closing `up`'s stdin tears the box down with reason `stdin-closed`. A closed readiness output pipe returns exit 1 after removing its state and, on Apple, the runtime box; the same name can start again. `ready`'s labels equal `list`'s and its `egress_log` is null without `egress`; `down` on an absent box, an empty name or a flag-like name (`--filter=…`) exits 0, prints nothing and leaves live boxes alone; on Apple, a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. A SIGSTOP owner keeps its claim after down times out; a second XDG root waits the ten-second claim deadline before name-in-use and cannot replace it until acknowledged teardown. `ready` and `list` name the image's id; an image named by ID or without its tag comes up. A 60-character name comes up. A cold harness download holds startup while its image tag moves; startup fails as `image-changed`, and the stable replacement then starts. Pre-ready cancellation with a host bookkeeping permission failure still yields `down`/`signal`, with recoverable state and successful name reuse. |
 | 10 | Work leaves the box only by fetch | A box writes, chmods and deletes on its disk; the host project's bytes, modes and mtimes are unchanged. `push` lands host branches under `refs/remotes/host/*` and leaves the box's working tree and branches unchanged. Before `fetch`, the box plants an executable hook under every client-side hook name, `core.hooksPath` and `core.fsmonitor` in its config, and tracked `.githooks/` and `.husky/` files, each touching a host marker path. `fetch` lands its branches under `refs/remotes/<box>/*` and no tag; after a fast-forward merge and two checkouts on the host, no marker exists. Control: the same hook placed in the host's `.git/hooks` creates the marker. A second `fetch` after one more box commit carries only that commit. A box that emits its own bundle fails the fetch and changes no host ref and no path or size under the host's `.git/objects`, for each of five bundles: one with a `refs/heads/x:refs/heads/injected` head, one with a `refs/heads/x:refs/replace/*` head, one whose `refs/heads/x` commit holds a `.git` tree entry, which fails fsck as `hasDotgit` on any host git, one whose `refs/heads/x` names a commit its pack lacks, and one with both `refs/heads/x` and `refs/heads/x/y`. Starting inside `.git` is refused as `project-in-git`; starting from the project root runs. A worktree of that checkout is refused as `worktree` by `pi`, `push` and `fetch`; the main checkout runs them. |
 | 11 | Disks persist and attach exclusively | A disk created with `from` holds the host tree's files with their exec bits and a symlink as a link, and no FIFO; files the host adds after that never appear; after its owner is SIGKILLed during the copy and its box pruned, `pinfold fetch` in the project whose disk it is exits nonzero, and the next `up` naming the disk holds the whole tree. A `from` whose sizes (one sparse file) pass the disk's `size` is refused as `limit` with no disk left. A file one box writes to a disk is read by the next box that attaches it. On Linux, a nested disk whose mount point is a symlink the box planted on its disk ends the start `failed`, naming it, and leaves nothing at the link's target; the same nesting at a plain path mounts writable. While a box attaches a disk writable, a second `up` naming it is refused as `disk-in-use` and creates nothing, and of two writable `up`s racing for one new disk exactly one runs and the other is refused as `disk-in-use`; after `down`, two boxes attach it read-only at once and neither can write it, nor any mount. After the runtime kills a writer's box and its owner exits, and after a writer's owner is SIGKILLed and its box has stopped, before any `prune`, a read-only attachment is refused as `disk-unclean`; a writable one runs, and after its `down` a read-only one runs. On macOS, while the runtime lists a box whose owner is dead as created but never started, a writable `up` naming its disk is refused as `disk-in-use`. While one state root attaches a disk writable, a second root's writable `up` naming it runs, does not see the first root's files, and its `disk list` names only its own box. `disk rm` of an attached disk is refused as `disk-in-use`; after `down` it removes the disk, an absent disk exits 0, and a malformed name is refused as `spec`. A fresh `64G` disk's `allocated` is under 1 GiB, and a write past a `1G` disk's size fails in the box with ENOSPC. |

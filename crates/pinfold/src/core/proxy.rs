@@ -102,9 +102,8 @@ impl Rules {
         for (name, route) in &egress.routes {
             let upstream = match route {
                 Route::Address(address) => {
-                    let (host, port) = network::authority_host(address, 0).ok_or_else(|| {
-                        io::Error::other(format!("route target {address:?} must be host:port"))
-                    })?;
+                    let (host, port) = network::authority_host(address, 0)
+                        .expect("validate refuses a route target that is not host:port");
                     Upstream::Address(Target {
                         https: false,
                         host: host.to_string(),

@@ -18,7 +18,35 @@ pub mod runs;
 pub mod runtime;
 pub mod tls;
 
+use std::fs;
+use std::io::{self, Write};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
+
 use sha2::{Digest, Sha256};
+
+/// Write `bytes` at `path` atomically: a 0600 file beside it, following no
+/// symlink, synced and renamed into place.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let staging = path.with_extension(format!("tmp-{}", std::process::id()));
+    // A crashed process with our pid may have left one; never reuse its mode.
+    let _ = fs::remove_file(&staging);
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(nix::libc::O_NOFOLLOW)
+        .open(&staging)
+        .and_then(|mut file| {
+            file.write_all(bytes)?;
+            file.sync_all()
+        })
+        .and_then(|()| fs::rename(&staging, path));
+    if written.is_err() {
+        let _ = fs::remove_file(&staging);
+    }
+    written
+}
 
 /// The sha256 of `bytes` as lowercase hex. Ids and cache paths on disk are
 /// made of it.

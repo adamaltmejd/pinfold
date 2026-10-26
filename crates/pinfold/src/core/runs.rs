@@ -4,12 +4,12 @@
 
 use std::collections::BTreeSet;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use crate::core::{now, ownership, rfc3339};
+use crate::core::{now, ownership, rfc3339, write_atomic};
 use crate::dirs;
 
 pub const EGRESS_LOG: &str = "egress.jsonl";
@@ -91,26 +91,8 @@ pub fn remove(run_id: &str) -> io::Result<()> {
     }
 }
 
-/// Write `record` as the run's `name`, atomically: a fresh 0600 file,
-/// renamed into place.
 fn write(run_id: &str, name: &str, record: &serde_json::Value) -> io::Result<()> {
-    let dir = dir(run_id)?;
-    let staging = dir.join(format!(".{name}.tmp"));
-    let written = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(nix::libc::O_NOFOLLOW)
-        .open(&staging)
-        .and_then(|mut file| {
-            file.write_all(record.to_string().as_bytes())?;
-            file.sync_all()
-        })
-        .and_then(|()| fs::rename(&staging, dir.join(name)));
-    if written.is_err() {
-        let _ = fs::remove_file(&staging);
-    }
-    written
+    write_atomic(&dir(run_id)?.join(name), record.to_string().as_bytes())
 }
 
 /// Write the launch record. `record` holds every field but `run_id` and
@@ -367,14 +349,10 @@ struct Stored {
 
 /// The run directories maintenance removes: inactive runs whose newest file
 /// is older than 14 days, then the oldest inactive runs while the inactive
-/// rest exceed 128 MiB. The old name-keyed `egress/` directory goes too. A
-/// run is live while its generation owns its name's lifetime lock.
+/// rest exceed 128 MiB. A run is live while its generation owns its name's
+/// lifetime lock.
 pub fn retired() -> io::Result<Vec<PathBuf>> {
     let mut retired = Vec::new();
-    let legacy = dirs::state_dir()?.join("egress");
-    if fs::symlink_metadata(&legacy).is_ok() {
-        retired.push(legacy);
-    }
     let records = ownership::records()?;
     let live: BTreeSet<&str> = records
         .iter()

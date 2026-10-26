@@ -126,10 +126,8 @@ pub struct Record {
     /// The disks this generation attaches. They are released once the
     /// owner is dead and the runtime lists the box stopped or not at all,
     /// and `prune` removes the record.
-    #[serde(default)]
     pub disks: Vec<Attachment>,
     /// The box as `list` reports it, once `up` knows it. Linux's inventory.
-    #[serde(default)]
     pub described: Option<Described>,
 }
 
@@ -203,7 +201,6 @@ pub struct Claim {
     record: Option<Record>,
     listener: Option<UnixListener>,
     request: Option<UnixStream>,
-    state_dir: Option<PathBuf>,
     running: bool,
 }
 
@@ -227,7 +224,6 @@ impl Claim {
             record: None,
             listener: None,
             request: None,
-            state_dir: None,
             running: false,
         }))
     }
@@ -241,24 +237,17 @@ impl Claim {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
-        fs::create_dir_all(state_dir)?;
-        self.state_dir = Some(state_dir.to_path_buf());
         let mut random = [0; 16];
         File::open("/dev/urandom")?.read_exact(&mut random)?;
-        let record = Record {
+        self.record = Some(Record {
             name: self.name.clone(),
             generation: sha256_hex(random),
             pid: std::process::id() as i32,
             state_dir: state_dir.to_path_buf(),
             disks: Vec::new(),
             described: None,
-        };
-        self.record = Some(record);
-        // Retain the local pid as observable state; it is never signalled.
-        fs::write(
-            state_dir.join("pid"),
-            self.record.as_ref().unwrap().pid.to_string(),
-        )?;
+        });
+        fs::create_dir_all(state_dir)?;
         let endpoint = socket(&self.name)?;
         remove_file(&endpoint)?;
         self.listener = Some(UnixListener::bind(endpoint)?);
@@ -279,14 +268,10 @@ impl Claim {
     }
 
     fn publish(&self) -> io::Result<()> {
-        let destination = path(&format!("box:{}", self.name), "owner")?;
-        let staging = destination.with_extension(format!("tmp-{}", std::process::id()));
-        let published = fs::write(&staging, serde_json::to_vec(self.record.as_ref().unwrap())?)
-            .and_then(|()| fs::rename(&staging, destination));
-        if published.is_err() {
-            let _ = fs::remove_file(staging);
-        }
-        published
+        crate::core::write_atomic(
+            &path(&format!("box:{}", self.name), "owner")?,
+            &serde_json::to_vec(self.record.as_ref().unwrap())?,
+        )
     }
 
     pub fn generation(&self) -> &str {
@@ -329,7 +314,6 @@ impl Claim {
         let completed = success && cleanup.is_ok();
         if completed {
             self.record = None;
-            self.state_dir = None;
         }
         self.listener.take();
         if let Some(mut request) = self.request.take() {
@@ -342,13 +326,11 @@ impl Claim {
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        if !self.running {
-            if let Some(record) = self.record.as_ref() {
-                let _ = remove_record(&self.name, &record.generation);
-            }
-            if let Some(state) = self.state_dir.as_ref() {
-                let _ = fs::remove_dir_all(state);
-            }
+        if !self.running
+            && let Some(record) = self.record.as_ref()
+        {
+            let _ = remove_record(&self.name, &record.generation);
+            let _ = fs::remove_dir_all(&record.state_dir);
         }
         if self.record.is_some() {
             let _ = socket(&self.name).and_then(|socket| remove_file(&socket));
@@ -376,39 +358,21 @@ pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<bool> {
         }
         match BlockingStream::connect(socket(name)?) {
             Ok(mut stream) => {
-                let exchange: io::Result<([u8; 7], usize)> = (|| {
-                    let mut pending = observed.generation.as_bytes();
-                    while !pending.is_empty() {
-                        let timeout = remaining(deadline, None, "box teardown")?;
-                        stream.set_write_timeout(Some(timeout))?;
-                        match stream.write(pending) {
-                            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-                            Ok(written) => pending = &pending[written..],
-                            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                            Err(error) => return Err(error),
-                        }
+                let exchange: io::Result<Vec<u8>> = (|| {
+                    stream.set_write_timeout(Some(remaining(deadline, None, "box teardown")?))?;
+                    stream.write_all(observed.generation.as_bytes())?;
+                    // The owner closes after one reply line, at most "failed\n".
+                    stream.set_read_timeout(Some(remaining(deadline, None, "box teardown")?))?;
+                    let mut answer = Vec::new();
+                    (&mut stream).take(7).read_to_end(&mut answer)?;
+                    if !answer.ends_with(b"\n") {
+                        return Err(io::ErrorKind::UnexpectedEof.into());
                     }
-                    // Every reply is a complete line, at most "failed\n".
-                    let mut answer = [0; 7];
-                    let mut length = 0;
-                    while length < answer.len() {
-                        let timeout = remaining(deadline, None, "box teardown")?;
-                        stream.set_read_timeout(Some(timeout))?;
-                        match stream.read(&mut answer[length..]) {
-                            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
-                            Ok(read) => length += read,
-                            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                            Err(error) => return Err(error),
-                        }
-                        if answer[..length].contains(&b'\n') {
-                            break;
-                        }
-                    }
-                    Ok((answer, length))
+                    Ok(answer)
                 })();
                 match exchange {
-                    Ok((answer, length)) => {
-                        return match &answer[..length] {
+                    Ok(answer) => {
+                        return match &answer[..] {
                             b"done\n" => Ok(true),
                             b"gone\n" => Ok(false),
                             b"failed\n" => Err(io::Error::other("box teardown failed")),

@@ -94,10 +94,7 @@ pub fn push(
         return Err(spec(format!("{} has no branches", repo.display())));
     }
     let bundle = Bundle::new()?;
-    let path = bundle
-        .path
-        .to_str()
-        .ok_or_else(|| io::Error::other(format!("{} is not UTF-8", bundle.path.display())))?;
+    let path = bundle.path.as_str();
     succeeded(git(repo, &["bundle", "create", "-q", path, "--branches"])?)?;
     let heads = bundle_heads(repo, path)?;
     let mut command = runtime.exec_command(
@@ -114,7 +111,7 @@ pub fn push(
     let mut child = command.spawn()?;
     let stderr = kept_stderr(&mut child);
     let status = child.wait()?;
-    box_status(status.code(), &stderr.join(), guest_repo)?;
+    box_status(status.code(), &stderr(), guest_repo)?;
     Ok(heads
         .into_iter()
         .map(|(branch, oid)| (format!("refs/remotes/{remote}/{branch}"), oid))
@@ -163,7 +160,7 @@ pub fn fetch(
     let status = child.wait()?;
     // The exit code says why a box command failed, even when it left its
     // listing short.
-    box_status(status.code(), &stderr.join(), guest_repo)?;
+    box_status(status.code(), &stderr(), guest_repo)?;
     let listed = received?;
     for (branch, _) in &listed {
         check_branch(repo, &namespace, branch)?;
@@ -180,12 +177,9 @@ pub fn fetch(
     // none of its bytes in REPO.
     let quarantine = Quarantine::new(repo)?;
     let mut refs = BTreeMap::new();
-    let path = bundle
-        .path
-        .to_str()
-        .ok_or_else(|| io::Error::other(format!("{} is not UTF-8", bundle.path.display())))?;
-    if fs::metadata(&bundle.path)?.len() > 0 {
-        let (filtered, pack_start) = header(&bundle.path)?;
+    let path = bundle.path.as_str();
+    if fs::metadata(path)?.len() > 0 {
+        let (filtered, pack_start) = header(path)?;
         if filtered {
             return Err(CrossingError::Failed(
                 "the box sent a filtered bundle".into(),
@@ -208,12 +202,10 @@ pub fn fetch(
         // pack with fsck itself. The fetch then finds every object here and
         // only checks connectivity. Revisit when every supported host's git
         // fscks a bundle fetch.
-        let mut pack = File::open(&bundle.path)?;
+        let mut pack = File::open(path)?;
         pack.seek(SeekFrom::Start(pack_start))?;
         succeeded(
-            Command::new("git")
-                .arg("-C")
-                .arg(repo)
+            git_command(repo)
                 .args(["index-pack", "--stdin", "--fix-thin", "--fsck-objects"])
                 .envs(quarantine.env())
                 .stdin(pack)
@@ -384,7 +376,7 @@ fn box_status(code: Option<i32>, stderr: &str, guest_repo: &str) -> Result<(), C
 
 /// Read the fetch script's branch listing, then copy the bundle after it to
 /// `bundle`, refusing one past [`LIMIT`].
-fn receive(child: &mut Child, bundle: &Path) -> Result<Vec<(String, String)>, CrossingError> {
+fn receive(child: &mut Child, bundle: &str) -> Result<Vec<(String, String)>, CrossingError> {
     let mut stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
     let mut listed = Vec::new();
     loop {
@@ -422,7 +414,7 @@ fn receive(child: &mut Child, bundle: &Path) -> Result<Vec<(String, String)>, Cr
 /// Whether a bundle's header names a filter, and the header's length,
 /// where the pack starts. Fetching a filtered bundle fails its
 /// connectivity check but leaves a promisor pack in REPO first.
-fn header(bundle: &Path) -> Result<(bool, u64), CrossingError> {
+fn header(bundle: &str) -> Result<(bool, u64), CrossingError> {
     let mut reader = BufReader::new(File::open(bundle)?);
     let (mut filtered, mut len) = (false, 0);
     let mut line = Vec::new();
@@ -477,29 +469,17 @@ fn object_id(oid: &str) -> bool {
     matches!(oid.len(), 40 | 64) && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// The first [`STDERR_KEPT`] bytes of a child's stderr, read on a thread
-/// that drains the rest so the child never blocks on it.
-struct KeptStderr(Option<std::thread::JoinHandle<Vec<u8>>>);
-
-fn kept_stderr(child: &mut Child) -> KeptStderr {
-    KeptStderr(child.stderr.take().map(|mut stderr| {
-        std::thread::spawn(move || {
-            let mut kept = Vec::new();
-            let _ = (&mut stderr).take(STDERR_KEPT).read_to_end(&mut kept);
-            let _ = io::copy(&mut stderr, &mut io::sink());
-            kept
-        })
-    }))
-}
-
-impl KeptStderr {
-    fn join(self) -> String {
-        let bytes = self
-            .0
-            .and_then(|thread| thread.join().ok())
-            .unwrap_or_default();
-        String::from_utf8_lossy(&bytes).into_owned()
-    }
+/// The first [`STDERR_KEPT`] bytes of a child's piped stderr, read on a
+/// thread that drains the rest so the child never blocks on it.
+fn kept_stderr(child: &mut Child) -> impl FnOnce() -> String + use<> {
+    let mut stderr = child.stderr.take().expect("stderr is piped");
+    let thread = std::thread::spawn(move || {
+        let mut kept = Vec::new();
+        let _ = (&mut stderr).take(STDERR_KEPT).read_to_end(&mut kept);
+        let _ = io::copy(&mut stderr, &mut io::sink());
+        String::from_utf8_lossy(&kept).into_owned()
+    });
+    move || thread.join().unwrap_or_default()
 }
 
 fn git(repo: &Path, args: &[&str]) -> io::Result<Output> {
@@ -512,9 +492,7 @@ fn git_input(
     input: &[u8],
     env: &[(&str, &OsStr)],
 ) -> io::Result<Output> {
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    let mut child = git_command(repo)
         .args(args)
         .envs(env.iter().copied())
         .stdin(Stdio::piped())
@@ -528,6 +506,12 @@ fn git_input(
     let output = child.wait_with_output()?;
     written?;
     Ok(output)
+}
+
+fn git_command(repo: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repo);
+    command
 }
 
 fn succeeded(output: Output) -> Result<Output, CrossingError> {
@@ -545,28 +529,27 @@ fn host_failed(output: &Output) -> CrossingError {
     ))
 }
 
-/// A bundle file under pinfold's state dir, removed on drop.
+/// A bundle file under pinfold's state dir, removed on drop. A process
+/// runs one crossing, so one under its pid is a dead process's.
 struct Bundle {
-    path: PathBuf,
+    path: String,
 }
 
 impl Bundle {
     fn new() -> io::Result<Bundle> {
         let dir = dirs::state_dir()?.join("crossing");
         fs::create_dir_all(&dir)?;
-        for attempt in 0u32.. {
-            let path = dir.join(format!("{}-{attempt}.bundle", std::process::id()));
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(_) => return Ok(Bundle { path }),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
-        }
-        unreachable!("u32 attempts exhausted")
+        let path = dir.join(format!("{}.bundle", std::process::id()));
+        let path = path
+            .to_str()
+            .ok_or_else(|| io::Error::other(format!("{} is not UTF-8", path.display())))?
+            .to_string();
+        let _ = fs::remove_file(&path);
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        Ok(Bundle { path })
     }
 }
 
@@ -581,7 +564,7 @@ impl Drop for Bundle {
 /// through an alternate, as receive-pack's own quarantine does.
 struct Quarantine {
     objects: PathBuf,
-    /// `QUARANTINE` + `PID-N`.
+    /// `QUARANTINE` + `PID`.
     dir: PathBuf,
     alternates: OsString,
 }
@@ -612,39 +595,33 @@ impl Quarantine {
         alternates.push(b'"');
         let objects = PathBuf::from(OsString::from_vec(objects));
         // A killed fetch's quarantine outlives it, and git never prunes
-        // one; remove those whose process is gone.
+        // one; remove those whose process is gone. A process runs one
+        // crossing, so one under its own pid is a dead process's too.
+        let own = std::process::id();
         for entry in fs::read_dir(&objects)? {
             let entry = entry?;
             let name = entry.file_name();
             let Some(pid) = name
                 .to_str()
                 .and_then(|name| name.strip_prefix(QUARANTINE))
-                .and_then(|rest| rest.split_once('-'))
-                .and_then(|(pid, _)| pid.parse().ok())
+                .and_then(|pid| pid.parse::<u32>().ok())
             else {
                 continue;
             };
-            let gone = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None)
-                == Err(nix::errno::Errno::ESRCH);
+            let gone = pid == own
+                || nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None)
+                    == Err(nix::errno::Errno::ESRCH);
             if gone {
                 let _ = fs::remove_dir_all(entry.path());
             }
         }
-        for attempt in 0u32.. {
-            let dir = objects.join(format!("{QUARANTINE}{}-{attempt}", std::process::id()));
-            match fs::create_dir(&dir) {
-                Ok(()) => {
-                    return Ok(Quarantine {
-                        objects,
-                        dir,
-                        alternates: OsString::from_vec(alternates),
-                    });
-                }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error.into()),
-            }
-        }
-        unreachable!("u32 attempts exhausted")
+        let dir = objects.join(format!("{QUARANTINE}{own}"));
+        fs::create_dir(&dir)?;
+        Ok(Quarantine {
+            objects,
+            dir,
+            alternates: OsString::from_vec(alternates),
+        })
     }
 
     fn env(&self) -> [(&'static str, &OsStr); 2] {
