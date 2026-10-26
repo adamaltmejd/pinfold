@@ -170,48 +170,103 @@ impl Inject {
 /// real header, so the box never needs the value.
 const LOGIN_PLACEHOLDER: &str = "pinfold-placeholder";
 
-/// A pi login route's provider: its origin, the base path of its built-in
-/// URL in the pinned pi, its key variable, the header the key goes in, and
-/// the box-sent headers removed besides.
+/// A pi login route's provider `P`: pi's own provider id, its origin, the
+/// base path of its built-in URL in the pinned pi, and its credential.
 pub struct PiProvider {
     pub name: &'static str,
+    /// pi's provider id; `anthropic` and `anthropic-subscription` share one.
+    pub pi: &'static str,
     origin: &'static str,
     pub base_path: &'static str,
-    key: &'static str,
-    header: &'static str,
-    prefix: &'static str,
-    strip: &'static [&'static str],
+    pub credential: PiCredential,
 }
 
-pub const PI_PROVIDERS: [PiProvider; 3] = [
+pub enum PiCredential {
+    /// The proxy sets `header` to `prefix` and `$VAR`, and removes the
+    /// box-sent `strip` headers besides. The box's `key` holds
+    /// `placeholder`.
+    Key {
+        key: &'static str,
+        placeholder: &'static str,
+        header: &'static str,
+        prefix: &'static str,
+        strip: &'static [&'static str],
+    },
+    /// The host's Codex login sets the headers, as for a codex login route.
+    /// pinfold's extension gives pi `placeholder` as the provider's `apiKey`.
+    HostCodex { placeholder: &'static str },
+}
+
+pub const PI_PROVIDERS: [PiProvider; 5] = [
     PiProvider {
         name: "openrouter",
+        pi: "openrouter",
         origin: "https://openrouter.ai",
         base_path: "/api/v1",
-        key: "OPENROUTER_API_KEY",
-        header: "Authorization",
-        prefix: "Bearer ",
-        strip: &[],
+        credential: PiCredential::Key {
+            key: "OPENROUTER_API_KEY",
+            placeholder: LOGIN_PLACEHOLDER,
+            header: "Authorization",
+            prefix: "Bearer ",
+            strip: &[],
+        },
     },
     PiProvider {
         name: "openai",
+        pi: "openai",
         origin: "https://api.openai.com",
         base_path: "/v1",
-        key: "OPENAI_API_KEY",
-        header: "Authorization",
-        prefix: "Bearer ",
-        strip: &[],
+        credential: PiCredential::Key {
+            key: "OPENAI_API_KEY",
+            placeholder: LOGIN_PLACEHOLDER,
+            header: "Authorization",
+            prefix: "Bearer ",
+            strip: &[],
+        },
     },
     PiProvider {
         name: "anthropic",
+        pi: "anthropic",
         origin: "https://api.anthropic.com",
         base_path: "",
-        key: "ANTHROPIC_API_KEY",
-        header: "x-api-key",
-        prefix: "",
-        // Anthropic also reads a bearer token, which must not travel
-        // beside the key.
-        strip: &["Authorization"],
+        credential: PiCredential::Key {
+            key: "ANTHROPIC_API_KEY",
+            placeholder: LOGIN_PLACEHOLDER,
+            header: "x-api-key",
+            prefix: "",
+            // Anthropic also reads a bearer token, which must not travel
+            // beside the key.
+            strip: &["Authorization"],
+        },
+    },
+    PiProvider {
+        name: "anthropic-subscription",
+        pi: "anthropic",
+        origin: "https://api.anthropic.com",
+        base_path: "",
+        credential: PiCredential::Key {
+            // pi sends a subscription's headers only for a key holding
+            // `sk-ant-oat`, read from this variable.
+            key: "ANTHROPIC_OAUTH_TOKEN",
+            placeholder: "sk-ant-oat-pinfold-placeholder",
+            header: "Authorization",
+            prefix: "Bearer ",
+            strip: &["x-api-key"],
+        },
+    },
+    PiProvider {
+        name: "openai-codex",
+        pi: "openai-codex",
+        origin: "https://chatgpt.com",
+        base_path: "/backend-api",
+        credential: PiCredential::HostCodex {
+            // pi reads the account id from this JWT's payload with `atob`,
+            // so it is plain base64 without `-` or `_`, and unsigned. The
+            // payload is {"https://api.openai.com/auth":{"chatgpt_account_id":
+            // "pinfold-placeholder"}} padded with spaces. pi takes it
+            // literally: no `$`, no leading `!`.
+            placeholder: "eyJhbGciOiJub25lIiB9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoicGluZm9sZC1wbGFjZWhvbGRlciJ9ICB9.cGluZm9sZA",
+        },
     },
 ];
 
@@ -238,6 +293,16 @@ impl Login {
         self.login == "pi"
     }
 
+    /// Whether the proxy takes this login's headers from the host's Codex
+    /// login: codex's, and pi's `openai-codex`.
+    pub fn uses_host_codex(&self) -> bool {
+        self.is_codex()
+            || (self.is_pi()
+                && self.pi_provider().is_ok_and(|provider| {
+                    matches!(provider.credential, PiCredential::HostCodex { .. })
+                }))
+    }
+
     /// A pi login's provider.
     pub fn pi_provider(&self) -> Result<&'static PiProvider, String> {
         let provider = self.provider.as_deref().unwrap_or_default();
@@ -253,9 +318,9 @@ impl Login {
     }
 
     /// Check a login route without reading the environment: this build
-    /// serves the login, only pi names a provider, `from` is present for
-    /// claude and pi and absent for codex, and `to` parses like an
-    /// injecting route's.
+    /// serves the login, only pi names a provider, `from` is absent for a
+    /// login on the host's Codex login and present otherwise, and `to`
+    /// parses like an injecting route's.
     fn check(&self, route: &str) -> Result<(), String> {
         self.target()?;
         if !self.is_pi() && self.provider.is_some() {
@@ -263,10 +328,10 @@ impl Login {
                 "login route {route:?} takes no provider: only pi's does"
             )));
         }
-        if self.is_codex() {
+        if self.uses_host_codex() {
             if self.from.is_some() {
                 return Err(invalid(format!(
-                    "login route {route:?} takes no from variable: codex's token comes from the host's Codex login"
+                    "login route {route:?} takes no from variable: its token comes from the host's Codex login"
                 )));
             }
         } else if self.from.as_deref().is_none_or(str::is_empty) {
@@ -293,8 +358,17 @@ impl Login {
     /// [`Inject::resolve`]'s.
     pub fn resolve(&self) -> Result<Resolved, String> {
         let (header, prefix, strip) = if self.is_pi() {
-            let provider = self.pi_provider()?;
-            (provider.header, provider.prefix, provider.strip)
+            match self.pi_provider()?.credential {
+                PiCredential::Key {
+                    header,
+                    prefix,
+                    strip,
+                    ..
+                } => (header, prefix, strip),
+                PiCredential::HostCodex { .. } => {
+                    return Err("its token comes from the host's Codex login".to_string());
+                }
+            }
         } else {
             ("Authorization", "Bearer ", &[][..])
         };
@@ -319,16 +393,19 @@ impl Login {
     /// The box environment a login route adds beside the harness defaults;
     /// the spec's own `env` still wins. `route` is the route's name. codex
     /// adds none: its box gets [`login::codex_config`]. pi gets only its
-    /// key's placeholder: [`login::pi_extension`] points pi at the route.
+    /// key's placeholder, or none for `openai-codex`:
+    /// [`login::pi_extension`] points pi at the route.
     pub fn env(&self, route: &str) -> Vec<(&'static str, String)> {
         if self.is_codex() {
             return Vec::new();
         }
         if self.is_pi() {
-            return self
-                .pi_provider()
-                .map(|provider| vec![(provider.key, LOGIN_PLACEHOLDER.to_string())])
-                .unwrap_or_default();
+            return match self.pi_provider().map(|provider| &provider.credential) {
+                Ok(PiCredential::Key {
+                    key, placeholder, ..
+                }) => vec![(*key, placeholder.to_string())],
+                _ => Vec::new(),
+            };
         }
         vec![
             ("ANTHROPIC_BASE_URL", format!("http://{route}")),
@@ -643,10 +720,10 @@ impl Plan {
                             return Err(invalid(detail));
                         }
                         login.check(name)?;
-                        // pi takes one login route per provider, the other
-                        // harnesses one per spec.
+                        // pi takes one login route per pi provider, the
+                        // other harnesses one per spec.
                         if login.is_pi() {
-                            let provider = login.pi_provider()?.name;
+                            let provider = login.pi_provider()?.pi;
                             if !pi_providers.insert(provider) {
                                 return Err(invalid(format!(
                                     "login route {name:?} is a second pi login route for {provider:?}"
@@ -677,17 +754,17 @@ impl Plan {
     }
 
     /// Resolve each login route's credential before the claim, so a login
-    /// that cannot be used refuses as `login` rather than `spec`: claude's
-    /// and pi's from this process's environment, codex's from the host
-    /// helper. The value never enters the plan; codex's token is returned
-    /// for the proxy.
+    /// that cannot be used refuses as `login` rather than `spec`: from this
+    /// process's environment, or from the host helper for a login on the
+    /// host's Codex login. The value never enters the plan; the Codex token
+    /// is returned for the proxy.
     pub fn resolve_login(
         &self,
         cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<Option<login::Token>, String> {
         let mut token = None;
         for (route, login) in self.logins() {
-            let resolved = if login.is_codex() {
+            let resolved = if login.uses_host_codex() {
                 login::token_from_helper(cancel).map(|codex| token = Some(codex))
             } else {
                 login.resolve().map(|_| ())
