@@ -444,7 +444,9 @@ fn a_changed_project_file_stops_the_run() {
     fs::write(root.join("host.txt"), "host\n").unwrap();
     host_git(&["add", "host.txt"]);
     host_git(&["commit", "-q", "-m", "host"]);
-    run_ok(&mut pinfold_in(&env, root, &["push"]));
+    let pushed = run_ok(&mut pinfold_in(&env, root, &["push"]));
+    let pushed = json_lines(&String::from_utf8_lossy(&pushed.stdout));
+    assert_eq!(pushed[0]["event"], "pushed", "{pushed:?}");
     in_box(
         &name,
         &format!(

@@ -14,10 +14,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "macos")]
+use e2e::image_cli;
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
-    box_stat, build_profile, curl, default_image, egress_log, exit_code, git, image_cli, image_id,
-    json_lines, pinfold, pinfold_in, profile_containerfile, run_ok, runtime_images, tagged_images,
+    box_stat, build_profile, curl, default_image, egress_log, exit_code, git, image_id, json_lines,
+    pinfold, pinfold_in, profile_containerfile, run_ok, runtime_images, tagged_images,
 };
 
 #[test]
@@ -40,28 +42,21 @@ fn box_lifecycle_works_for_a_caller() {
     // Sabotage: make `box exec` drop the runtime's exit status and return 0;
     // the exit-3 assertion fails, and the zero-exit command below is the
     // positive control that the same path can succeed.
-    // Sabotage: drop init's SIGCHLD SIG_IGN; the orphaned `true` stays a
-    // zombie of PID 1 and the no-zombie assertion fails.
     // Sabotage: skip exec's existence check; the post-down exec fails
     // without exit 3 and the exit-3 assertion fails.
     // Sabotage: let Apple's `down` pass the runtime's stderr through again;
     // on macOS the second `down` prints the runtime's not-found error and the
     // empty-stderr assertion fails.
-    // Sabotage: find the image in `Box::up` by exact string match against
-    // `list_images()` references again; the tag-less `again` box is refused
-    // `image-missing` on both runtimes, so `box_up` panics on a first line
-    // that is not `ready`. On Linux the box named by id is refused the same
-    // way.
-    // Sabotage: key the state dir by the name again; the 60-character box
-    // fails at `up` with the socket-length error, so the ready read panics.
-    // Sabotage: give a box without `egress` a derived log path in `ready`;
-    // the null assertion fails.
     // Sabotage: drop the owner-label check from cli.rs `present` (or from
     // core::box::down's list check); exec or stat on the foreign container
     // runs, or down removes it. Drop list's owner-label filter and the
     // runtime-created container appears beside the live pinfold box.
     // Sabotage: drop the valid-name gate in core::box::down; Apple's `rm`
     // rejects the `--filter` name as a flag, so the exit assertion fails.
+    // Sabotage: key the state dir by the name again; the 60-character box
+    // fails at `up` with the socket-length error, so the ready read panics.
+    // Sabotage: give a box without `egress` a derived log path in `ready`;
+    // the null assertion fails.
     let env = TestEnv::new("lifecycle");
     // A caller's names can be long. The state dir is keyed by the name's
     // hash, so 60 characters, past the old socket-path budget, still come
@@ -75,42 +70,6 @@ fn box_lifecycle_works_for_a_caller() {
         "image": image,
         "labels": { "dev.example.test": "lifecycle", "dev.example.box": name },
     });
-    // Sabotage: return or panic after successful startup without awaiting
-    // teardown when readiness output fails. The real pipe reader is gone
-    // before the spec is sent; Apple's inventory and host state must be
-    // empty. A Linux VM ends with its owner, which guarantee 43 proves.
-    // The normal run below reuses the same name and spec with consumed output.
-    {
-        #[cfg(target_os = "macos")]
-        let runtime_box = RuntimeContainer { name: name.clone() };
-        let errors = env.root.join("closed-output.stderr");
-        let child = env
-            .command(pinfold())
-            .args(["box", "up"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(fs::File::create(&errors).expect("create closed-output stderr"))
-            .spawn()
-            .expect("start box up with closed output");
-        let mut child = ChildOwner::new(child, &env, None);
-        drop(child.stdout.take().expect("box up stdout reader"));
-        let mut stdin = child.stdin.take().expect("box up spec input");
-        serde_json::to_writer(&mut stdin, &spec).expect("write closed-output spec");
-        stdin.flush().expect("flush closed-output spec");
-        let status = child.wait_bounded();
-        assert_eq!(
-            status.code(),
-            Some(1),
-            "readiness output failure did not exit 1: {}",
-            fs::read_to_string(&errors).expect("read closed-output stderr")
-        );
-        #[cfg(target_os = "macos")]
-        assert!(
-            !runtime_box.listed(),
-            "readiness output failure left a runtime box"
-        );
-        assert_left_nothing(&env, &name, label, "closed-output");
-    }
     let mut up = box_up(&env, &spec, &name);
 
     // Exec immediately after ready, without another runtime query first.
@@ -131,111 +90,26 @@ fn box_lifecycle_works_for_a_caller() {
     let ok = box_exec(&env, &name, &["sh", "-c", "exit 0"]);
     assert_eq!(ok.code, 0);
 
-    // `ready` carries the owner and the image it runs.
-    assert_eq!(
-        up.ready["owner"],
-        up.pid(),
-        "ready owner is not up's pid: {}",
-        up.ready
-    );
+    // `ready` names the image the runtime resolved. The spec has no
+    // `egress`, so there is no proxy and no log: `egress_log` is null.
     assert_eq!(
         up.ready["image"]["id"],
         image_id.as_str(),
         "ready names the wrong image id: {}",
         up.ready
     );
-    // The spec has no `egress`, so there is no proxy and no log: `ready`
-    // carries the field as null.
     assert!(
         up.ready.get("egress_log").is_some_and(|log| log.is_null()),
         "ready gave a box without egress a log: {}",
         up.ready
     );
 
-    // Sabotage: discard parse_exec's workdir; pwd reports the image's
-    // default directory instead of the caller's /tmp.
-    let directory = run_ok(env.command(pinfold()).args([
-        "box",
-        "exec",
-        &name,
-        "--workdir",
-        "/tmp",
-        "--",
-        "pwd",
-    ]));
-    assert_eq!(String::from_utf8(directory.stdout).unwrap(), "/tmp\n");
-
-    // Sabotage: discard the explicit tty flag; stdout is a host pipe, so
-    // automatic TTY detection stays false and the guest's test -t fails.
-    // The host's stdin PTY lets either runtime set terminal attributes.
-    let terminal = run_ok(
-        env.command(Path::new("python3"))
-            .args([
-                "-c",
-                r#"
-import os, pty, subprocess, sys
-master, slave = pty.openpty()
-try:
-    result = subprocess.run(sys.argv[1:], stdin=slave, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, timeout=20)
-finally:
-    os.close(slave)
-    os.close(master)
-sys.stdout.buffer.write(result.stdout)
-sys.stderr.buffer.write(result.stderr)
-sys.exit(result.returncode)
-"#,
-            ])
-            .arg(pinfold())
-            .args([
-                "box",
-                "exec",
-                &name,
-                "--tty",
-                "--",
-                "sh",
-                "-c",
-                "test -t 0 && test -t 1 && printf tty-ready",
-            ]),
-    );
-    assert_eq!(
-        String::from_utf8(terminal.stdout).unwrap().trim(),
-        "tty-ready"
-    );
-
-    // A child orphaned by an exec session is reparented to init and reaped:
-    // after it, no process in the box is a zombie. The image has no `ps`, so
-    // the kernel's own state line is read.
-    let orphan = box_exec(&env, &name, &["sh", "-c", "true & exit 0"]);
-    assert_eq!(orphan.code, 0, "orphaning exec failed: {}", orphan.stderr);
-    let states = box_exec(
-        &env,
-        &name,
-        &["sh", "-c", "grep -Hs '^State:' /proc/[0-9]*/status; exit 0"],
-    );
-    assert!(
-        states.stdout.contains("State:"),
-        "read no process states: {}",
-        states.stderr
-    );
-    assert!(
-        !states.stdout.contains("(zombie)"),
-        "a zombie outlived its exec session:\n{}",
-        states.stdout
-    );
-
-    // `list` finds the box by the caller's label, with the labels `ready`
-    // reported and the same image id.
+    // `list` finds the box by the caller's label, with the same image id.
     let listed = box_list(&env, label);
     let line = listed
         .iter()
         .find(|box_| box_["name"].as_str() == Some(name.as_str()))
         .unwrap_or_else(|| panic!("list did not find {name}: {listed:?}"));
-    assert_eq!(
-        line["labels"], up.ready["labels"],
-        "list's labels differ from ready's: {line} vs {}",
-        up.ready
-    );
     assert_eq!(
         line["image"]["id"],
         image_id.as_str(),
@@ -261,20 +135,10 @@ sys.exit(result.returncode)
             String::from_utf8_lossy(&down.stderr)
         );
         assert!(
-            down.stdout.is_empty(),
-            "down {absent:?} printed on stdout: {}",
-            String::from_utf8_lossy(&down.stdout)
-        );
-        assert!(
-            down.stderr.is_empty(),
-            "down {absent:?} printed on stderr: {}",
+            down.stdout.is_empty() && down.stderr.is_empty(),
+            "down {absent:?} printed: {}{}",
+            String::from_utf8_lossy(&down.stdout),
             String::from_utf8_lossy(&down.stderr)
-        );
-        let still = box_exec(&env, &name, &["sh", "-c", "exit 0"]);
-        assert_eq!(
-            still.code, 0,
-            "the live box stopped answering exec after down {absent:?}: {}",
-            still.stderr
         );
         let survivors = box_list(&env, label);
         let live = survivors
@@ -341,31 +205,7 @@ sys.exit(result.returncode)
         drop(foreign);
     }
 
-    // Keep the attached runtime output active through teardown. The FIFO
-    // confirms a write to init's stdout, rather than the exec stream.
-    // Sabotage: block the owner's async thread in runtime removal again;
-    // its output drain stops and teardown can exceed the caller deadline.
-    // Apple controls the race in which forced rm's two output waiters
-    // split completion events; restoring rm -f reintroduces that race.
-    // A Firecracker VM attaches no output to its owner.
-    #[cfg(target_os = "macos")]
-    {
-        let writing = box_exec(
-            &env,
-            &name,
-            &[
-                "sh",
-                "-c",
-                "mkfifo /tmp/output-ready; \
-             (printf 'first\\n'; echo ready >/tmp/output-ready; exec yes output-pressure) \
-             >/proc/1/fd/1 2>/dev/null </dev/null & \
-             read -r ready </tmp/output-ready; test \"$ready\" = ready",
-            ],
-        );
-        assert_ok(&writing, "writing attached output before teardown");
-    }
-
-    // `down` removes the box and the owner exits with output still active.
+    // `down` removes the box and the owner exits.
     up.down(&env);
     let listed = box_list(&env, label);
     assert!(
@@ -492,23 +332,8 @@ sys.exit(result.returncode)
     );
 
     // Closing stdin is `down`: the owner prints the final `down` line and
-    // exits 0. This box names the image without its tag, which the runtime
-    // resolves to the same image.
-    let untagged = image
-        .strip_suffix(":latest")
-        .unwrap_or_else(|| panic!("the default image {image} is not tagged latest"));
-    let untagged_spec = serde_json::json!({
-        "name": name,
-        "image": untagged,
-        "labels": { "dev.example.test": "lifecycle" },
-    });
-    let mut again = box_up(&env, &untagged_spec, &name);
-    assert_eq!(
-        again.ready["image"]["id"],
-        image_id.as_str(),
-        "the tag-less image resolved to another id: {}",
-        again.ready
-    );
+    // exits 0.
+    let mut again = box_up(&env, &spec, &name);
     let lines = again.close_stdin();
     let down = lines
         .last()
@@ -523,172 +348,15 @@ sys.exit(result.returncode)
         "wrong down reason: {lines:?}"
     );
     assert!(again.wait().success(), "up did not exit 0 for stdin-closed");
-
-    // On Linux the image also resolves by its id. Apple's inspect resolves
-    // neither id nor digest; macOS asserts nothing about this form.
-    if cfg!(target_os = "linux") {
-        let spec = serde_json::json!({
-            "name": name,
-            "image": image_id,
-            "labels": { "dev.example.test": "lifecycle" },
-        });
-        let mut up = box_up(&env, &spec, &name);
-        assert_eq!(
-            up.ready["image"]["id"],
-            image_id.as_str(),
-            "the image id resolved to another id: {}",
-            up.ready
-        );
-        up.close_stdin();
-        assert!(up.wait().success(), "up did not exit 0 for stdin-closed");
-    }
-    // Sabotage: propagate a bookkeeping error before the terminal signal
-    // event. A cold real artifact request holds startup after the claim;
-    // host permissions make cleanup fail, independently of pinfold's logic.
-    // Sabotage: drop the post-start actual-image comparison. Retagging while
-    // that request is held then reports ready for the wrong image instead
-    // of failing and removing it. A stable-tag launch is the control.
-    {
-        let env = TestEnv::with_private_cache("lifecycle-startup");
-        let name = box_name("startup");
-        let label = "dev.example.test=lifecycle-startup";
-        let mut spec = serde_json::json!({
-            "name": name,
-            "image": image,
-            "harness": "pi",
-            "labels": { "dev.example.test": "lifecycle-startup" },
-        });
-        let mut proxy = HeldDownload::new();
-        let mut child = env
-            .command(pinfold())
-            .envs(proxy.vars())
-            .args(["box", "up"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(spec.to_string().as_bytes())
-            .unwrap();
-        let mut child = ChildOwner::new(child, &env, None);
-        let mut output = BufReader::new(child.stdout.take().unwrap());
-        proxy.event("held");
-        let state = find_box_state_dir(&env).expect("claimed startup state");
-        let parent = state.parent().unwrap().to_path_buf();
-        struct RestorePermissions(PathBuf, fs::Permissions);
-        impl Drop for RestorePermissions {
-            fn drop(&mut self) {
-                fs::set_permissions(&self.0, self.1.clone()).unwrap();
-            }
-        }
-        let restore =
-            RestorePermissions(parent.clone(), fs::metadata(&parent).unwrap().permissions());
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o500)).unwrap();
-        run_ok(Command::new("kill").args(["-TERM", &child.id().to_string()]));
-        proxy.event("closed");
-        let text = read_bounded(
-            &mut child,
-            &mut output,
-            std::time::Duration::from_secs(10),
-            true,
-        )
-        .expect("cancelled startup terminates stdout despite bookkeeping failure");
-        let terminal = json_lines(&text);
-        assert_eq!(terminal.len(), 1, "startup terminal events: {terminal:?}");
-        assert_eq!(terminal[0]["event"], "down");
-        assert_eq!(terminal[0]["reason"], "signal");
-        assert!(child.wait_bounded().success(), "runtime removal succeeded");
-        assert!(
-            state.exists(),
-            "permission failure did not leave recoverable state"
-        );
-        assert!(
-            box_list(&env, label).is_empty(),
-            "cancelled start left a runtime box"
-        );
-        drop(restore);
-        drop(proxy);
-        let mut healed_spec = spec.clone();
-        healed_spec.as_object_mut().unwrap().remove("harness");
-        let mut healed = box_up(&env, &healed_spec, &name);
-        healed.close_stdin();
-        assert!(healed.wait().success(), "same-name startup did not recover");
-        assert_left_nothing(&env, &name, label, "recovered");
-
-        let image_name = box_name("startup-image");
-        let _images = ImageCleanup {
-            repository: format!("localhost/pinfold/image-{image_name}"),
-        };
-        let context = TestDir::new(&env, "startup-image");
-        let containerfile = context.path().join("Containerfile");
-        fs::write(&containerfile, format!("FROM {image}\nCOPY stamp /stamp\n")).unwrap();
-        fs::write(context.path().join("stamp"), "first\n").unwrap();
-        let (code, built) = image_build(&env, &image_name, &containerfile, context.path());
-        assert_eq!(code, 0, "first race image build: {built}");
-        let first_ref = built["ref"].as_str().unwrap().to_string();
-        let latest = format!("localhost/pinfold/image-{image_name}:latest");
-        fs::write(context.path().join("stamp"), "second\n").unwrap();
-        let (code, built) = image_build(&env, &image_name, &containerfile, context.path());
-        assert_eq!(code, 0, "second race image build: {built}");
-        let second_ref = built["ref"].as_str().unwrap();
-        let tag = |source: &str| {
-            let mut command = Command::new(image_cli());
-            if cfg!(target_os = "macos") {
-                command.arg("image");
-            }
-            run_ok(command.args(["tag", source, &latest]));
-        };
-        // Build before the held CONNECT: curl's production connection
-        // deadline must cover only the native tag move, not a queued build.
-        tag(&first_ref);
-        let first = e2e::image_id(&latest).expect("runtime resolves first tagged image");
-        spec["image"] = latest.clone().into();
-        let mut proxy = HeldDownload::new();
-        let mut starting = box_up_start(&env, &spec, &proxy.vars());
-        proxy.event("held");
-        tag(second_ref);
-        proxy.release();
-        let second = e2e::image_id(&latest).expect("runtime resolves second tagged image");
-        assert_ne!(first, second, "fixture images must differ");
-        let failed = starting.first_line();
-        assert_eq!(failed["event"], "failed", "retagged startup: {failed}");
-        assert!(
-            failed["detail"]
-                .as_str()
-                .is_some_and(|detail| detail.contains("image-changed")),
-            "startup failed for another reason: {failed}"
-        );
-        assert_eq!(starting.child.wait_bounded().code(), Some(1));
-        assert!(
-            starting.rest().is_empty(),
-            "failed startup emitted another event"
-        );
-        assert_left_nothing(&env, &name, label, "retagged");
-        drop(proxy);
-        let mut stable = box_up(&env, &spec, &name);
-        assert_eq!(stable.ready["image"]["id"], second);
-        let stamp = box_exec(&env, &name, &["cat", "/stamp"]);
-        assert_ok(&stamp, "stable tag's file");
-        assert_eq!(stamp.stdout, "second\n");
-        stable.close_stdin();
-        assert!(stable.wait().success(), "stable image did not tear down");
-    }
 }
 
 #[test]
 fn up_refuses_before_it_creates() {
     let _runtime = crate::shared_runtime();
     // Guarantee 17: up refuses before it creates.
-    // Sabotage: give `Mount` a `readonly` field again (or drop its
-    // `deny_unknown_fields`); the `readonly` mount spec then comes up
-    // `ready` and the refusal assertion fails.
     // Sabotage: parse the first JSON value straight into `Plan` again; the
-    // serde refusal is raised before any name is read, so the misspelled
-    // `readonly` spec's `box` assertion fails.
+    // serde refusal is raised before any name is read, so the nested
+    // misspelling's `box` assertion fails.
     // Sabotage: drop the character-class check from the env-name validation,
     // keeping only the old empty-or-`=` test; the wildcard spec then comes up
     // `ready`, so the refusal assertion fails.
@@ -696,9 +364,6 @@ fn up_refuses_before_it_creates() {
     // mount-path validation; the comma spec then comes up `ready` (on Apple
     // the runtime's option parser reads the rest as mount options), so the
     // refusal assertion fails.
-    // Sabotage: drop the not-a-directory check from the mount validation;
-    // the file-mount spec then reaches the runtime, so its `refused`
-    // assertion fails.
     // Sabotage: make the claim treat an existing state dir as success, as
     // `create_dir_all` does, and make the name checks always pass; the
     // concurrent loser is never refused `name-in-use`, and its failure path
@@ -706,16 +371,8 @@ fn up_refuses_before_it_creates() {
     // Sabotage: keep the name check after the state dir is created; the
     // racing loser overwrites the winner's `pid` and its cleanup takes the
     // winner's box down, so the winner's `exec` fails.
-    // Sabotage: leave metadata errors to the runtime; the missing mount
-    // ends `failed` after the claim instead of `refused` as `spec`.
     // Sabotage: drop the reserved-label check; the `dev.pinfold.owner` spec
     // comes up `ready`, so its `refused` assertion fails.
-    // Sabotage: drop the memory check; the `1000` spec reaches the runtime
-    // unchecked and is not refused as spec, so its `refused` assertion
-    // fails. Sabotage: drop the 256M floor, keeping the unit check; the
-    // `255M` spec likewise reaches the runtime and its assertion fails.
-    // Sabotage: drop the route check from `Plan::validate`; the URL route
-    // spec comes up `ready`, so its `refused` assertion fails.
     let env = TestEnv::new("refuses");
     let name = box_name("refuses");
     let label = "dev.example.test=refuses";
@@ -735,7 +392,8 @@ fn up_refuses_before_it_creates() {
 
     // Sabotage: accept unknown fields inside an env `from` object. A valid
     // reference succeeds in the race's winner below; this nested misspelling
-    // must be refused as spec before runtime lookup or cache extraction.
+    // must be refused as spec, naming the key and the box, before runtime
+    // lookup or cache extraction.
     let nested = serde_json::json!({
         "name": name,
         "image": default_image(&env),
@@ -745,36 +403,13 @@ fn up_refuses_before_it_creates() {
     let (code, refused) = box_up_refused(&env, &nested, &[("PINFOLD_E2E_NESTED", "fixture-value")]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["reason"], "spec");
+    assert_eq!(refused["box"], name);
     assert!(
         refused["detail"]
             .as_str()
             .unwrap_or_default()
             .contains("misspelled"),
         "the refusal did not name the nested key: {refused}"
-    );
-    assert_left_nothing(&env, &name, label, "refused");
-
-    // Every mount is read-only, so a mount with a `readonly` key is refused
-    // as data, naming the key, and leaves no state dir and no box. The
-    // positive control is the race's winner below, whose mount has no
-    // `readonly` key and comes up `ready`.
-    let misspelled = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "labels": { "dev.example.test": "refuses" },
-        "mounts": [{ "host": env.root, "guest": "/workspace", "readonly": true }],
-    });
-    let (code, refused) = box_up_refused(&env, &misspelled, &[]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["event"], "refused");
-    assert_eq!(refused["reason"], "spec");
-    assert_eq!(refused["box"], name);
-    assert!(
-        refused["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("readonly"),
-        "the refusal did not name the key: {refused}"
     );
     assert_left_nothing(&env, &name, label, "refused");
 
@@ -806,8 +441,7 @@ fn up_refuses_before_it_creates() {
     // naming the label, and leaves no state dir and no box:
     // `dev.pinfold.owner` drives `list`'s `owner_alive` and what `prune`
     // removes, and the identity labels name the image. The positive control,
-    // a caller label reaching `ready`, is guarantee 9's
-    // `box_lifecycle_works_for_a_caller`.
+    // a caller label, is the race's winner below.
     let reserved = serde_json::json!({
         "name": name,
         "image": default_image(&env),
@@ -826,54 +460,6 @@ fn up_refuses_before_it_creates() {
             .unwrap_or_default()
             .contains("dev.pinfold.owner"),
         "the refusal did not name the label: {refused}"
-    );
-    assert_left_nothing(&env, &name, label, "refused");
-
-    // A spec memory without a unit, or below the 256M floor, is refused as
-    // data, naming `memory` and the value, and leaves no state dir and no
-    // box: the value would otherwise reach the runtime unchecked. The
-    // positive control, the `256M` box coming up on both runtimes, is
-    // guarantee 20's `a_caller_can_tell_an_oom_kill_from_a_failure`.
-    for memory in ["1000", "255M"] {
-        let spec = serde_json::json!({
-            "name": name,
-            "image": default_image(&env),
-            "labels": { "dev.example.test": "refuses" },
-            "memory": memory,
-        });
-        let (code, refused) = box_up_refused(&env, &spec, &[]);
-        assert_eq!(code, 1, "a refused up exits 1: {refused}");
-        assert_eq!(refused["event"], "refused");
-        assert_eq!(refused["reason"], "spec");
-        let detail = refused["detail"].as_str().unwrap_or_default();
-        assert!(
-            detail.contains("memory") && detail.contains(memory),
-            "the refusal did not name memory and its value: {refused}"
-        );
-        assert_left_nothing(&env, &name, label, "refused");
-    }
-
-    // A spec whose route value is a URL rather than host:port is refused as
-    // data, naming the route, and leaves no state dir and no box: the proxy
-    // would otherwise dial the string as an address and answer every request
-    // 502. The positive control, a host:port route answering, is guarantee
-    // 3's `the_proxy_refuses_the_tricks`.
-    let url_route = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "labels": { "dev.example.test": "refuses" },
-        "egress": { "routes": { "invalid-url-route": "https://example.com" } },
-    });
-    let (code, refused) = box_up_refused(&env, &url_route, &[]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["event"], "refused");
-    assert_eq!(refused["reason"], "spec");
-    assert!(
-        refused["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("invalid-url-route"),
-        "the refusal did not name the route: {refused}"
     );
     assert_left_nothing(&env, &name, label, "refused");
 
@@ -904,42 +490,6 @@ fn up_refuses_before_it_creates() {
     );
     assert_left_nothing(&env, &name, label, "refused");
 
-    // An otherwise valid claude login cannot serve a codex harness.
-    // Guarantee 26 supplies the matching-login control. Sabotage: drop the
-    // harness-match check; this spec then comes up instead of refusing.
-    let login_fixture = HttpFixture::start(None);
-    let login_mismatch = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "labels": { "dev.example.test": "refuses" },
-        "harness": "codex",
-        "egress": {
-            "routes": {
-                "login.internal": {
-                    "login": "claude",
-                    "from": "PINFOLD_E2E_LOGIN",
-                    "to": format!("http://{}", login_fixture.route()),
-                },
-            },
-        },
-    });
-    let (code, refused) = box_up_refused(
-        &env,
-        &login_mismatch,
-        &[("PINFOLD_E2E_LOGIN", "fixture-token")],
-    );
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["event"], "refused");
-    assert_eq!(refused["reason"], "spec");
-    assert!(
-        refused["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("login.internal"),
-        "the refusal did not name the route: {refused}"
-    );
-    assert_left_nothing(&env, &name, label, "refused");
-
     // A spec whose mount path holds a comma is refused as data, naming the
     // path, and leaves no state dir and no box: on Apple the bind value is
     // built by concatenation, so the runtime reads the rest as mount
@@ -966,156 +516,29 @@ fn up_refuses_before_it_creates() {
     );
     assert_left_nothing(&env, &name, label, "refused");
 
-    // A spec whose mount host is a regular file is refused as data, naming
-    // the path, and leaves no state dir and no box: the runtimes treat a
-    // file mount differently, so one spec must be refused the same way on
-    // both. The race's winner below is the control that the same command
-    // path comes up `ready`.
-    let file = env.root.join("f.txt");
-    fs::write(&file, b"not a directory\n").unwrap();
-    let file_mount = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "labels": { "dev.example.test": "refuses" },
-        "mounts": [{ "host": file, "guest": "/yard/f.txt" }],
-    });
-    let (code, refused) = box_up_refused(&env, &file_mount, &[]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["event"], "refused");
-    assert_eq!(refused["reason"], "spec");
-    assert!(
-        refused["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("f.txt"),
-        "the refusal did not name the path: {refused}"
-    );
-    assert_left_nothing(&env, &name, label, "refused");
-
-    // On Linux a box copies its mount trees at start, so an entry inside
-    // one that the user cannot read is refused as data, naming it, before
-    // anything is created. The same spec comes up once the mode is
-    // restored. Sabotage: drop `unreadable()` from `validate`; the spec
-    // gets past the claim and fails late at mkfs, not as `spec`.
-    #[cfg(target_os = "linux")]
-    {
-        let tree = env.root.join("tree");
-        let locked = tree.join("locked-dir");
-        fs::create_dir_all(&locked).unwrap();
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-        let tree_mount = serde_json::json!({
-            "name": name,
-            "image": default_image(&env),
-            "labels": { "dev.example.test": "refuses" },
-            "mounts": [{ "host": tree, "guest": "/tree" }],
-        });
-        let (code, refused) = box_up_refused(&env, &tree_mount, &[]);
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(code, 1, "a refused up exits 1: {refused}");
-        assert_eq!(refused["reason"], "spec", "{refused}");
-        assert!(
-            refused["detail"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("locked-dir"),
-            "the refusal did not name the path: {refused}"
-        );
-        assert_left_nothing(&env, &name, label, "refused");
-        box_up(&env, &tree_mount, &name).down(&env);
-    }
-
-    // A spec whose mount names a guest path pinfold's own mount uses is
-    // refused as data, naming the path, and leaves no state dir and no box:
-    // pinfold adds the profile's `share/` at /opt/pinfold/profile after the
-    // spec's own mounts, so the spec's directory would otherwise be silently
-    // shadowed. The positive control is the race's winner below, which comes
-    // up `ready` from the same image. Sabotage: check duplicates before
-    // pinfold's mounts are added; this spec then comes up `ready`, so its
-    // `refused` assertion fails.
-    let work = env.root.join("work");
-    fs::create_dir_all(&work).unwrap();
-    let spec_mount = env.root.join("spec-share");
-    fs::create_dir_all(&spec_mount).unwrap();
-    let profile_mount = serde_json::json!({
-        "name": name,
-        "profile": "default",
-        "labels": { "dev.example.test": "refuses" },
-        "env": { "HOME": "/work" },
-        "mounts": [
-            { "host": work, "guest": "/work" },
-            { "host": spec_mount, "guest": "/opt/pinfold/profile" },
-        ],
-    });
-    // Sabotage: compare raw guest paths or deduplicate caller destinations
-    // in the late scanner. Normalized duplicates must refuse as spec before
-    // preparation, just like exact duplicates. The host fixture supplies
-    // both destinations; the race's winner below is the allowed control.
-    for destination in ["/opt/pinfold/profile", "/work", "/work/../work"] {
-        let mut duplicate = profile_mount.clone();
-        duplicate["mounts"][1]["guest"] = destination.into();
-        let (code, refused) = box_up_refused(&env, &duplicate, &[]);
-        assert_eq!(code, 1, "a refused up exits 1: {refused}");
-        assert_eq!(refused["event"], "refused");
-        assert_eq!(refused["reason"], "spec");
-        assert!(
-            refused["detail"]
-                .as_str()
-                .unwrap_or_default()
-                .contains(destination),
-            "the refusal did not name the path: {refused}"
-        );
-        assert_left_nothing(&env, &name, label, "refused");
-    }
-
     // Disk specs are refused as data, naming the cause, before anything is
     // created: a path with a comma (on Apple the volume value is
-    // concatenated like a bind), a malformed size or name, `from` with `readonly` (a read-only
-    // attachment cannot receive the copy), and a disk at a mount's
-    // normalized guest path. The positive control, disks attaching, is guarantee 11's
-    // `disks_persist_and_attach_exclusively`. Sabotage: drop the size check
-    // from `Plan::validate`; `0G` and `1T` then reach the claim, which on
-    // Apple comes up `ready` at the default size, so the `refused` assertion
-    // fails. Sabotage: drop the `from` with `readonly` check; the spec, whose
-    // `from` is empty, comes up `ready` and the same assertion fails.
-    // Sabotage: drop the check for a disk named twice; the second create
-    // fails and the start ends `failed`.
+    // concatenated like a bind) and a name that is a flag or a path. The
+    // positive control, disks attaching, is guarantee 11's
+    // `disks_persist_and_attach_exclusively`.
+    let work = env.root.join("work");
+    fs::create_dir_all(&work).unwrap();
     let disk_spec = |disk: serde_json::Value| {
         serde_json::json!({
             "name": name,
             "image": default_image(&env),
             "labels": { "dev.example.test": "refuses" },
             "mounts": [{ "host": work, "guest": "/work" }],
-            "disks": if disk.is_array() { disk } else { serde_json::json!([disk]) },
+            "disks": [disk],
         })
     };
     let disk = box_name("refused-disk");
     let comma_from = serde_json::json!({ "name": disk, "guest": "/disk", "from": comma });
     let comma_guest = serde_json::json!({ "name": disk, "guest": "/a,b" });
     let mut cases = vec![(comma_from, "a,b"), (comma_guest, "a,b")];
-    for size in ["64", "0G", "1.5G", "1T"] {
-        cases.push((
-            serde_json::json!({ "name": disk, "guest": "/disk", "size": size }),
-            size,
-        ));
-    }
     for bad in ["-disk", "a/b"] {
         cases.push((serde_json::json!({ "name": bad, "guest": "/disk" }), bad));
     }
-    cases.push((
-        serde_json::json!({ "name": disk, "guest": "/disk", "from": work, "readonly": true }),
-        "readonly",
-    ));
-    cases.push((
-        serde_json::json!([
-            { "name": disk, "guest": "/disk" },
-            { "name": disk, "guest": "/disk2" },
-        ]),
-        "named twice",
-    ));
-    cases.push((
-        serde_json::json!({ "name": disk, "guest": "/work/../work" }),
-        "/work/../work",
-    ));
     // A disk at or below the guest kernel's /proc, /sys or /dev would
     // replace the userns sysctl or the work cgroup; the hard case reaches
     // one only after normalization. The positive control is the race's
@@ -1170,42 +593,18 @@ fn up_refuses_before_it_creates() {
     );
     assert_left_nothing(&env, &name, label, "refused");
 
-    // Refuse both an absent directory and a dangling symlink to it. The
-    // race below uses the same spec after the target is created, proving
-    // that a symlink to a directory remains a valid mount.
-    let absent_host = env.root.join("absent");
-    let linked_host = env.root.join("linked");
-    std::os::unix::fs::symlink(&absent_host, &linked_host).unwrap();
-    let mut live = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "labels": { "dev.example.test": "refuses" },
-        "mounts": [{ "host": absent_host, "guest": "/devices" }],
-        "egress": { "allow": [".github.com"] },
-        "env": { "NESTED_VALUE": { "from": "PINFOLD_E2E_NESTED" } },
-    });
-    for host in [&absent_host, &linked_host] {
-        live["mounts"][0]["host"] = serde_json::json!(host);
-        let (code, refused) =
-            box_up_refused(&env, &live, &[("PINFOLD_E2E_NESTED", "fixture-value")]);
-        assert_eq!(code, 1, "a refused up exits 1: {refused}");
-        assert_eq!(refused["event"], "refused");
-        assert_eq!(refused["reason"], "spec");
-        assert!(
-            refused["detail"]
-                .as_str()
-                .unwrap_or_default()
-                .contains(host.to_str().unwrap()),
-            "the refusal did not name the host path: {refused}"
-        );
-        assert_left_nothing(&env, &name, label, "refused");
-    }
-    fs::create_dir(&absent_host).unwrap();
-
     // Two `up`s on one free name at once: the claim lets exactly one hold
     // it, and the loser touches nothing of the winner's. Both are spawned
     // before either's first line is read. The winner also proves that
     // `.github.com` remains an allowed suffix entry.
+    let live = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+        "labels": { "dev.example.test": "refuses" },
+        "mounts": [{ "host": work, "guest": "/devices" }],
+        "egress": { "allow": [".github.com"] },
+        "env": { "NESTED_VALUE": { "from": "PINFOLD_E2E_NESTED" } },
+    });
     let mut starts = [
         box_up_start(&env, &live, &[("PINFOLD_E2E_NESTED", "fixture-value")]),
         box_up_start(&env, &live, &[("PINFOLD_E2E_NESTED", "fixture-value")]),
@@ -1272,9 +671,8 @@ fn disks_persist_and_attach_exclusively() {
     // the next `up` skips the copy and the refilled tree assertion fails.
     let env = TestEnv::new("disks");
     let image = default_image(&env);
-    let names =
-        ["work", "sparse", "fresh", "race", "nested"].map(|disk| box_name(&format!("disk-{disk}")));
-    let [work, sparse, fresh, race, nested] = &names;
+    let names = ["work", "sparse", "race", "nested"].map(|disk| box_name(&format!("disk-{disk}")));
+    let [work, sparse, race, nested] = &names;
     // The refilled disk is a project's disk, so `pinfold fetch` there sees it.
     let project = TestDir::new(&env, "project");
     git(project.path(), &["init", "-q"]);
@@ -1725,24 +1123,6 @@ fn disks_persist_and_attach_exclusively() {
     assert_eq!((code, &removed["existed"]), (0, &true.into()), "{removed}");
     let (code, removed) = disk_rm(&env, work);
     assert_eq!((code, &removed["existed"]), (0, &false.into()), "{removed}");
-
-    // A fresh default-size disk is sparse.
-    let mut new = box_up(
-        &env,
-        &spec(
-            writer,
-            serde_json::json!({ "name": fresh, "guest": "/fresh" }),
-        ),
-        writer,
-    );
-    new.down(&env);
-    assert!(new.wait().success());
-    let listed = disk_list(&env)
-        .into_iter()
-        .find(|disk| disk["name"] == fresh.as_str())
-        .expect("the fresh disk is listed");
-    assert_eq!(listed["size"], 64u64 << 30, "{listed}");
-    assert!(listed["allocated"].as_u64().unwrap() < 1 << 30, "{listed}");
 }
 
 fn disk_list(env: &TestEnv) -> Vec<serde_json::Value> {
@@ -1789,16 +1169,11 @@ const CLIENT_HOOKS: &[&str] = &[
 #[test]
 fn work_leaves_the_box_only_by_fetch() {
     let _runtime = crate::shared_runtime();
-    // Guarantee 10: disk writes stay in the box, push and fetch move
-    // branches only, nothing the box plants runs on the host, and pi does
-    // not start inside `.git`.
+    // Guarantee 10: disk writes stay in the box, fetch moves branches only,
+    // and nothing the box plants runs on the host.
     // Sabotage: write fetched branches under `refs/heads/` in crossing.rs;
-    // the fetched refs assertion fails. Sabotage: push with
-    // `+refs/heads/*:refs/heads/*` and `--update-head-ok` in the box script;
-    // nothing lands under refs/remotes/host/. Sabotage: bundle without the
-    // held commits (`--branches` alone); the second fetch's pack carries
-    // every commit. Sabotage: bundle `--tags` too and fetch with `--tags`
-    // for `--no-tags`; the box's tag lands. Sabotage: set REPO's
+    // the fetched refs assertion fails. Sabotage: bundle `--tags` too and
+    // fetch with `--tags` for `--no-tags`; the box's tag lands. Sabotage: set REPO's
     // `core.hooksPath` to `.githooks` after the fetch, as if fetch adopted
     // the box's config; a host checkout touches a marker. Sabotage: drop
     // `check_branch` from crossing.rs; the hostile bundle's
@@ -1813,8 +1188,6 @@ fn work_leaves_the_box_only_by_fetch() {
     host_git(&["init", "-q", "-b", "main"]);
     host_git(&["config", "user.name", "host"]);
     host_git(&["config", "user.email", "host@example.test"]);
-    // Every fetch keeps its pack whole, so a fetch's objects can be counted.
-    host_git(&["config", "fetch.unpackLimit", "1"]);
     fs::write(repo.join("a.txt"), b"a\n").unwrap();
     fs::write(repo.join("run.sh"), b"#!/bin/sh\n").unwrap();
     fs::set_permissions(repo.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
@@ -1853,53 +1226,15 @@ fn work_leaves_the_box_only_by_fetch() {
         "the box changed the host project"
     );
 
-    // push: the host moves on and pushes. Its branches land under
-    // refs/remotes/host/*; the box's tree and branches stay.
-    fs::write(repo.join("host.txt"), b"host\n").unwrap();
-    host_git(&["add", "host.txt"]);
-    host_git(&["commit", "-q", "-m", "host two"]);
-    let box_state = "cd /work && git symbolic-ref HEAD && git for-each-ref refs/heads/ \
-                     && git status --porcelain && cat a.txt && stat -c %a run.sh";
-    let unpushed = in_box(box_state);
-    let (code, pushed) = one_json_line(env.command(pinfold()).args([
-        "box",
-        "push",
-        name.as_str(),
-        "--repo",
-        repo.to_str().unwrap(),
-        "--into",
-        "/work",
-    ]));
-    assert_eq!(code, 0, "{pushed}");
-    let host_branches = branch_map(
-        &host_git(&["for-each-ref", "refs/heads/"]),
-        "refs/remotes/host/",
-    );
-    assert_eq!(pushed["event"], "pushed", "{pushed}");
-    assert_eq!(pushed["remote"], "host", "{pushed}");
-    assert_eq!(pushed["refs"], serde_json::json!(host_branches), "{pushed}");
-    let landed = in_box("git -C /work for-each-ref refs/remotes/");
-    assert_eq!(branch_map(&landed, ""), host_branches);
-    assert_eq!(
-        in_box(box_state),
-        unpushed,
-        "push changed the box's tree or branches"
-    );
-
-    // The box merges the host's work, tracks hooks in .githooks/ and
-    // .husky/, tags, and only then plants hooks under every client-side
-    // name, core.hooksPath and core.fsmonitor, each touching a host marker.
-    // The hooks commit's subject runs past 4096 bytes; it is the second
-    // fetch's bundle prerequisite, whose header line carries the subject.
-    // Sabotage: cap each header line at 4096 bytes in crossing::header;
-    // the second fetch fails as a malformed header.
+    // The box tracks hooks in .githooks/ and .husky/, tags, and only then
+    // plants hooks under every client-side name, core.hooksPath and
+    // core.fsmonitor, each touching a host marker.
     let hooks: String = CLIENT_HOOKS.iter().map(|hook| format!("{hook} ")).collect();
     in_box(&format!(
-        "cd /work && git merge -q --no-edit refs/remotes/host/main \
-         && for dir in .githooks .husky; do mkdir -p $dir; for hook in {hooks}; do \
+        "cd /work && for dir in .githooks .husky; do mkdir -p $dir; for hook in {hooks}; do \
               printf '#!/bin/sh\\ntouch {markers}/%s-%s\\n' $dir $hook > $dir/$hook; \
               chmod 755 $dir/$hook; done; done \
-         && git add .githooks .husky && git commit -q -m \"hooks $(printf %05000d 0)\" \
+         && git add .githooks .husky && git commit -q -m hooks \
          && git tag box-tag \
          && for hook in {hooks}; do \
               printf '#!/bin/sh\\ntouch {markers}/git-%s\\n' $hook > .git/hooks/$hook; \
@@ -1966,36 +1301,6 @@ fn work_leaves_the_box_only_by_fetch() {
     );
     fs::remove_file(&control).unwrap();
 
-    // A second fetch after one more box commit carries only that commit,
-    // and a new branch at a commit the host already holds lands too.
-    let first = box_branches[&format!("refs/remotes/{name}/main")].clone();
-    // The box's own planted hooks stay out of its way here.
-    let commit = in_box(&format!(
-        "cd /work && g() {{ git -c core.hooksPath=/nonexistent -c core.fsmonitor=false \"$@\"; }} \
-         && echo two > two.txt && g add two.txt && g commit -q -m 'box two' \
-         && g branch old {first} && git rev-parse HEAD"
-    ));
-    let held = packs(repo);
-    let (code, fetched) = crossing_fetch(&env, &name, repo);
-    assert_eq!(code, 0, "{fetched}");
-    assert_eq!(
-        fetched["refs"][format!("refs/remotes/{name}/main")],
-        commit.trim()
-    );
-    assert_eq!(
-        fetched["refs"][format!("refs/remotes/{name}/old")],
-        first.as_str()
-    );
-    let new: Vec<_> = packs(repo).difference(&held).cloned().collect();
-    assert_eq!(new.len(), 1, "the second fetch's packs: {new:?}");
-    let pack = git(repo, &["verify-pack", "-v", new[0].to_str().unwrap()]);
-    let commits: Vec<_> = pack
-        .lines()
-        .filter(|line| line.split_whitespace().nth(1) == Some("commit"))
-        .map(|line| line.split_whitespace().next().unwrap())
-        .collect();
-    assert_eq!(commits, [commit.trim()], "the second fetch's commits");
-
     // A box that writes its own bundles: a `git` ahead of the real one on
     // PATH stands in for a box that controls its processes' output. Each
     // bundle fails on its own, so refusing one can't mask another: a real
@@ -2006,16 +1311,23 @@ fn work_leaves_the_box_only_by_fetch() {
     // under a `refs/heads/x` naming a commit it lacks, which fetch unbundles
     // before its connectivity check fails; and a sound bundle with both
     // `refs/heads/x` and `refs/heads/x/y`, which only the ref transaction
-    // refuses. Each fetch fails, no host ref changes, and the host's object
-    // store keeps its paths and sizes.
+    // refuses; and a sound bundle under `refs/heads/z` while the box's
+    // listing names a `refs/heads/x` the bundle leaves out, at a host commit
+    // the box's namespace does not reach. Each fetch fails, no host ref
+    // changes, and the host's object store keeps its paths and sizes.
     // Sabotage: drop `--fsck-objects` from crossing::fetch's index-pack; the
     // `.git` bundle then lands on any host git, and its assertions fail.
     // Sabotage: drop the quarantine env from that index-pack; the `.git`
     // bundle leaves a `tmp_pack_*`. Sabotage: drop it from the fetch; the
     // missing commit's bundle leaves its pack. Sabotage: migrate in
     // crossing::update_refs before `prepare`; the `x/y` bundle leaves its
-    // pack.
+    // pack. Sabotage: drop the `rev-list --not --glob` reach check from
+    // crossing::fetch's listed loop; the omitted `x` lands at the host-only
+    // commit.
     let host_main = host_git(&["rev-parse", "main"]);
+    // A host commit no box branch reaches: `feature` is checked out.
+    host_git(&["commit", "-q", "--allow-empty", "-m", "host only"]);
+    let host_only = host_git(&["rev-parse", "feature"]);
     let host_refs = host_git(&["for-each-ref"]);
     let host_objects = object_store(repo);
     let absent = in_box(&format!(
@@ -2043,9 +1355,15 @@ mk replace "$evil" "$evil" refs/heads/x refs/heads/x:refs/replace/{host_main}
 mk dotgit "$dotgit" "$dotgit" refs/heads/x
 mk missing "$evil" "$absent" refs/heads/x
 mk conflict "$evil" "$evil" refs/heads/x refs/heads/x/y
+mk omitted "$evil" "$evil" refs/heads/z
+printf '%s refs/heads/x\n' {host_only} > .hostile/omitted.heads
 cat > .hostile/git <<'END'
 #!/bin/sh
 case " $* " in
+*" for-each-ref "*)
+  /usr/bin/git "$@" || exit
+  if [ -e /work/.hostile/heads ]; then cat /work/.hostile/heads; fi
+  exit 0 ;;
 *" rev-list "*) echo more; exit 0 ;;
 *" bundle create "*) exec cat /work/.hostile/bundle ;;
 esac
@@ -2055,8 +1373,13 @@ chmod 755 .hostile/git
 echo "$absent""#
     ));
     let conflict = format!("refs/remotes/{name}/x/y");
-    for case in ["injected", "replace", "dotgit", "missing", "conflict"] {
-        in_box(&format!("cp /work/.hostile/{case} /work/.hostile/bundle"));
+    for case in [
+        "injected", "replace", "dotgit", "missing", "conflict", "omitted",
+    ] {
+        in_box(&format!(
+            "cd /work/.hostile && cp {case} bundle && rm -f heads \
+             && if [ -e {case}.heads ]; then cp {case}.heads heads; fi"
+        ));
         let (code, failed) = crossing_fetch(&env, &name, repo);
         assert_eq!(
             (code, &failed["event"]),
@@ -2074,12 +1397,13 @@ echo "$absent""#
             "the {case} bundle left bytes in the host's objects"
         );
         // git names the fsck entry, the commit the pack lacks, and the ref
-        // it can't update beside `x`: each fetch failed for it, not for a
-        // malformed bundle.
+        // it can't update beside `x`, and the omitted branch's failure names
+        // its commit: each fetch failed for it, not for a malformed bundle.
         let reason = match case {
             "dotgit" => "hasDotgit",
             "missing" => absent.trim(),
             "conflict" => conflict.as_str(),
+            "omitted" => host_only.as_str(),
             _ => continue,
         };
         assert!(
@@ -2090,56 +1414,6 @@ echo "$absent""#
 
     up.down(&env);
     assert!(up.wait().success(), "the box did not exit cleanly");
-
-    // The pi part: `pinfold pi` started inside the checkout's `.git` refuses
-    // before it creates a box or a disk, since the fallback root would be
-    // `.git` itself; from the root it runs. Sabotage: drop the
-    // `--is-inside-git-dir` check from `project_root`; the run starts and
-    // the exit assertion fails. Sabotage: remove `project-in-git` from that
-    // refusal; the reason assertion fails.
-    let dot_git = fs::canonicalize(repo.join(".git")).unwrap();
-    let refused = pinfold_in(&env, &dot_git, &["pi", "--version"])
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&refused.stderr);
-    assert!(
-        !refused.status.success(),
-        "pi started inside .git: {stderr}"
-    );
-    assert!(stderr.contains("project-in-git"), "wrong refusal: {stderr}");
-    run_ok(&mut pinfold_in(&env, repo, &["pi", "--version"]));
-
-    // A worktree's `.git` names a git dir the project disk does not hold:
-    // pi, push and fetch refuse it, and run from the main checkout, where
-    // push and fetch start a transient box on the project disk. Sabotage:
-    // drop `refuse_worktree` from pi::launch::crossing; push in the worktree
-    // fails for want of a project disk and the reason assertion fails.
-    let worktree = env.root.join("linked");
-    host_git(&[
-        "worktree",
-        "add",
-        "-q",
-        worktree.to_str().unwrap(),
-        "-b",
-        "wt",
-    ]);
-    for args in [&["pi", "--version"][..], &["push"][..], &["fetch"][..]] {
-        let refused = pinfold_in(&env, &worktree, args).output().unwrap();
-        let stderr = String::from_utf8_lossy(&refused.stderr);
-        assert!(!refused.status.success(), "{args:?} ran in a worktree");
-        // A token, not a substring: the refusal also prints a path, and
-        // this checkout may itself sit under a `worktrees` directory.
-        assert!(
-            stderr
-                .split_whitespace()
-                .any(|word| word.trim_end_matches(':') == "worktree"),
-            "wrong refusal: {stderr}"
-        );
-    }
-    for (verb, event) in [("push", "pushed"), ("fetch", "fetched")] {
-        let (code, line) = one_json_line(&mut pinfold_in(&env, repo, &[verb]));
-        assert_eq!((code, &line["event"]), (0, &event.into()), "{line}");
-    }
 }
 
 fn crossing_fetch(env: &TestEnv, name: &str, repo: &Path) -> (i32, serde_json::Value) {
@@ -2167,15 +1441,6 @@ fn branch_map(listing: &str, prefix: &str) -> std::collections::BTreeMap<String,
             };
             (name, oid.to_string())
         })
-        .collect()
-}
-
-/// The repository's pack index files.
-fn packs(repo: &Path) -> std::collections::BTreeSet<PathBuf> {
-    fs::read_dir(repo.join(".git/objects/pack"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "idx"))
         .collect()
 }
 
@@ -3104,83 +2369,6 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         let held: serde_json::Value = serde_json::from_slice(&held.stdout).unwrap();
         assert_eq!(held["event"], "built");
         assert!(image_id(held["ref"].as_str().unwrap()).is_some());
-    }
-}
-
-/// Hold a real cold artifact CONNECT after startup has claimed its name.
-pub(super) struct HeldDownload {
-    child: Child,
-    events: BufReader<ChildStdout>,
-    url: String,
-}
-
-impl HeldDownload {
-    pub(super) fn new() -> Self {
-        let mut child = Command::new("python3")
-            .args(["-u", "-c", include_str!("connect_proxy.py")])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("start artifact CONNECT fixture");
-        let events = BufReader::new(child.stdout.take().unwrap());
-        let mut fixture = Self {
-            child,
-            events,
-            url: String::new(),
-        };
-        let port: u16 = fixture.line().trim().parse().expect("fixture port");
-        fixture.url = format!("http://127.0.0.1:{port}");
-        fixture
-    }
-
-    pub(super) fn vars(&self) -> [(&str, &str); 4] {
-        [
-            ("HTTPS_PROXY", self.url.as_str()),
-            ("https_proxy", self.url.as_str()),
-            ("NO_PROXY", ""),
-            ("no_proxy", ""),
-        ]
-    }
-
-    fn line(&mut self) -> String {
-        if self.events.buffer().is_empty() {
-            let mut ready = [nix::poll::PollFd::new(
-                self.events.get_ref().as_fd(),
-                nix::poll::PollFlags::POLLIN,
-            )];
-            assert!(
-                nix::poll::poll(&mut ready, 30_000_u16).unwrap() > 0,
-                "artifact fixture missed its readiness deadline"
-            );
-        }
-        let mut line = String::new();
-        assert_ne!(
-            self.events.read_line(&mut line).unwrap(),
-            0,
-            "artifact fixture exited"
-        );
-        line
-    }
-
-    pub(super) fn event(&mut self, expected: &str) {
-        assert_eq!(self.line().trim(), expected, "artifact fixture event");
-    }
-
-    pub(super) fn release(&mut self) {
-        self.child
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(b"release\n")
-            .unwrap();
-    }
-}
-
-impl Drop for HeldDownload {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 

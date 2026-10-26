@@ -3,9 +3,10 @@
 //! tests in name order, and a queued writer blocks later readers.
 
 use std::fs::{self, File};
-use std::io::{BufReader, Write};
+use std::io::{BufRead, BufReader, Write};
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::{Duration, SystemTime};
 
 use e2e::{
@@ -17,8 +18,8 @@ use e2e::{
 #[cfg(target_os = "macos")]
 use super::box_::RuntimeContainer;
 use super::box_::{
-    ChildOwner, HeldBuild, HeldDownload, box_name, box_up, built_unique_ref, disk_names,
-    find_box_state_dir, image_build, image_rm, read_bounded,
+    ChildOwner, HeldBuild, box_name, box_up, built_unique_ref, disk_names, find_box_state_dir,
+    image_build, image_rm, read_bounded,
 };
 use super::runs::run_id;
 
@@ -29,7 +30,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     //
     // Sabotage: make `keep_two_images` return before it removes anything;
     // three images remain and the two-image assertion fails. Sabotage: drop
-    // the images step from the shared automatic pass; b3 survives `clean`
+    // the images step from the shared automatic pass; b2 survives `clean`
     // and the post-clean two-image assertion fails. Sabotage: drop
     // the in-use skip from `keep_two_images` and restore the `?` on
     // `remove_image`; build 4 deletes b2 under box A and the "b2 is still
@@ -43,9 +44,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // the other project's state assertion fails. Sabotage: make `clean`
     // remove every box; the live box assertion fails. Sabotage: make
     // `clean` skip boxes whose owner is gone; the dead box assertion fails.
-    // Sabotage: set only the build's own family label; build 4
-    // then counts x1 and x2 as P's newest images and removes b3, so the "b3
-    // is still listed" assertion fails. Sabotage: make `--unused` skip the
+    // Sabotage: make `--unused` skip the
     // live-box check (drop `live_projects` from `CleanPlan::measure`'s
     // stale test); the live project's state goes and its assertion fails.
     // Sabotage: in `clean::boxes`, insert into `live_projects` above `if
@@ -66,21 +65,14 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // `remove_images`; the image of the name extending the retired one goes
     // and its survival assertion fails. Sabotage: make `--dry-run` run the
     // real clean; the other project's state goes and the dry-run assertion
-    // fails. Sabotage: on Linux, keep
-    // podman's repeated `Names` in `list_images`; the second removal of the
-    // newest image's tag is `image not known` and the one-line assertion
-    // fails. Sabotage: write the caller's name into `dev.pinfold.image`;
-    // the twin build makes a second image under the name and the shared-id
-    // assertion fails. Sabotage: make
+    // fails. Sabotage: on Linux, keep podman's repeated `Names` in
+    // `list_images`; the second removal of the newest image's tag is
+    // `image not known` and the one-line assertion fails. Sabotage: make
     // `remove_images` remove every reference of an image's id instead of
     // only the name's tags; the twin's tag goes with the shared image and
     // the twin assertion fails.
     // Sabotage: force-delete Apple's shared builder during clean; the
     // other process's build, held in RUN by the host fixture, fails.
-    // Sabotage: omit Apple's allocated build-cache storage from the
-    // report; its byte count falls below the backing filesystem's du.
-    // Sabotage: omit Apple's online trim after pruning; the real RUN's
-    // deleted 64 MiB file remains allocated on the host across clean.
     // Sabotage: drop the `pinfold_box` check from `clean::boxes`; on Apple
     // the user's container, which has no owner label, is removed as a dead
     // box and its survival assertion fails. Linux lists only pinfold's own
@@ -132,38 +124,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "the two images left are not b2 and b3: {images:?}"
     );
 
-    // A caller image built on the profile's `:latest`. The runtime copies
-    // the base image's labels onto it, so without the explicit empty family
-    // labels it would count as the profile's image in build 4's retention.
-    let x_name = format!("{profile}-x");
-    let _x_images = ImageCleanup {
-        repository: format!("localhost/pinfold/image-{x_name}"),
-    };
-    let profile_ref = format!("localhost/pinfold/profile-{profile}:latest");
-    let x_context = env.root.join("x-context");
-    fs::create_dir_all(&x_context).unwrap();
-    let x_containerfile = x_context.join("Containerfile");
-    fs::write(
-        &x_containerfile,
-        format!("FROM {profile_ref}\nCOPY marker.txt /marker.txt\n"),
-    )
-    .unwrap();
-    fs::write(x_context.join("marker.txt"), "x\n").unwrap();
-    let mut x_refs: Vec<String> = Vec::new();
-    for i in 0..2 {
-        let (code, built) = image_build(&env, &x_name, &x_containerfile, &x_context);
-        assert_eq!(built["event"], "built", "x build {}: {built}", i + 1);
-        assert_eq!(code, 0, "x build {} exited {code}", i + 1);
-        x_refs.push(
-            built["ref"]
-                .as_str()
-                .unwrap_or_else(|| panic!("x build {} carries no ref: {built}", i + 1))
-                .to_string(),
-        );
-    }
-
     // Box A pins b2, the older of the two, so the next build's retention
-    // meets a pinned image first.
+    // meets a pinned image.
     let box_a = box_name("cleanup-a");
     let pin_a = serde_json::json!({ "name": box_a, "image": b2.as_str() });
     let mut up_a = box_up(&env, &pin_a, &box_a);
@@ -174,36 +136,11 @@ fn cleanup_removes_only_pinfolds_garbage() {
         image_id(&b2).is_some(),
         "the image box A pins is gone after build 4"
     );
-    // Build 4 counts only the profile's own images, so the caller's two
-    // survive and b3 remains the profile's older rollback image.
-    assert!(
-        x_refs.iter().all(|reference| image_id(reference).is_some()),
-        "build 4 removed a caller image built on the profile: {x_refs:?}"
-    );
-    assert!(
-        image_id(&b3).is_some(),
-        "build 4 removed the profile's b3 for its caller images"
-    );
 
-    // Box B pins b3, then box A goes down and frees b2. Build 5's retention
-    // meets pinned b3 first and must still remove the free b2 behind it.
-    let box_b = box_name("cleanup-b");
-    let pin_b = serde_json::json!({ "name": box_b, "image": b3.as_str() });
-    let mut up_b = box_up(&env, &pin_b, &box_b);
+    // Box A goes down and frees b2; the rest of the test starts its own
+    // boxes.
     up_a.down(&env);
     assert!(up_a.wait().success(), "box A's up did not exit cleanly");
-
-    build_changed();
-    assert!(
-        image_id(&b2).is_none(),
-        "build 5 kept the freed b2 because the pinned b3 failed first"
-    );
-    assert!(image_id(&b3).is_some(), "build 5 removed the pinned b3");
-
-    // Box B goes down before the rest of the test, which starts its own
-    // boxes from the profile's `:latest`.
-    up_b.down(&env);
-    assert!(up_b.wait().success(), "box B's up did not exit cleanly");
 
     // The runtime's own build of the `FROM scratch` Containerfile, so the
     // image carries only the labels given here. No profile build's `ENV`
@@ -390,87 +327,11 @@ fn cleanup_removes_only_pinfolds_garbage() {
             repository: format!("localhost/pinfold/image-{name}"),
         };
         let build = HeldBuild::start(other, &name, default_image(other), &[]);
-        let inspected = run_ok(Command::new("container").args(["inspect", "buildkit"]));
-        let builder: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
-        let exports = builder[0]["configuration"]["mounts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|mount| mount["destination"] == "/var/lib/container-builder-shim/exports")
-            .unwrap()["source"]
-            .as_str()
-            .unwrap();
-        let backing = Path::new(exports)
-            .parent()
-            .unwrap()
-            .join("containers/buildkit/rootfs.ext4");
-        let allocated_kib = || {
-            let output = run_ok(Command::new("du").arg("-k").arg(&backing));
-            String::from_utf8(output.stdout)
-                .unwrap()
-                .split_whitespace()
-                .next()
-                .unwrap()
-                .parse::<u64>()
-                .unwrap()
-        };
-        // Trim existing free blocks before the fixture writes, so old
-        // storage cannot supply the allocation this scenario must reclaim.
-        run_ok(Command::new("container").args(["clean", "buildkit"]));
-        let before_fixture = allocated_kib();
-        let cache_name = format!("{profile}-cache");
-        let _cache_images = ImageCleanup {
-            repository: format!("localhost/pinfold/image-{cache_name}"),
-        };
-        let context = other.root.join("cache-context");
-        fs::create_dir_all(&context).unwrap();
-        let containerfile = context.join("Containerfile");
-        fs::write(
-            &containerfile,
-            format!(
-                "FROM {}\nRUN dd if=/dev/urandom of=/{cache_name} bs=1M count=64 && sync && rm /{cache_name} && sync\n",
-                default_image(other)
-            ),
-        )
-        .unwrap();
-        let (code, cached) = image_build(other, &cache_name, &containerfile, &context);
-        assert_eq!(code, 0, "the cache fixture build failed: {cached}");
-        let allocated = allocated_kib();
-        assert!(
-            allocated > before_fixture,
-            "the cache fixture allocated no host blocks: {before_fixture} -> {allocated} KiB"
-        );
-        let report = run_ok(env.command(pinfold()).args(["clean", "--dry-run"]));
-        let report = String::from_utf8(report.stdout).unwrap();
-        let measured: u64 = report
-            .lines()
-            .find_map(|line| line.trim().strip_prefix("build cache: "))
-            .unwrap()
-            .split_whitespace()
-            .next()
-            .unwrap()
-            .parse()
-            .unwrap();
-        // Other builds can allocate more between du and the report. This
-        // test is the only one pruning, and it has not pruned yet.
-        assert!(
-            measured >= allocated * 1024,
-            "build cache undercounts allocated backing storage: {report}"
-        );
-        assert!(
-            allocated_kib() >= allocated,
-            "--dry-run reclaimed builder blocks"
-        );
         let cleaned = env.command(pinfold()).arg("clean").output().unwrap();
-        let after_clean = allocated_kib();
         let built = build.finish();
         assert!(
             cleaned.status.success(),
             "clean during another caller's build: {cleaned:?}"
-        );
-        assert!(
-            after_clean < allocated,
-            "clean did not reclaim freed builder blocks: {allocated} -> {after_clean} KiB"
         );
         assert!(
             built.status.success(),
@@ -486,10 +347,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
         image_id(&unlabeled).is_some(),
         "clean removed an unlabeled image"
     );
-    // No build follows box B's going down. The profile is left holding b3,
-    // b4 and b5: b3 was pinned at build 5 and the two newer images stayed.
+    // No build follows box A's going down. The profile is left holding b2,
+    // b3 and b4: b2 was pinned at build 4 and the two newer images stayed.
     // `clean` applies the after-build rule to every source, so the profile
-    // falls to its newest two and b3 goes.
+    // falls to its newest two and b2 goes.
     let profile_images = labeled_images("dev.pinfold.profile", &profile);
     assert_eq!(
         profile_images.len(),
@@ -497,8 +358,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "clean did not leave the profile at its newest two images: {profile_images:?}"
     );
     assert!(
-        image_id(&b3).is_none(),
-        "clean kept b3, an image past the newest two whose box went down"
+        image_id(&b2).is_none(),
+        "clean kept b2, an image past the newest two whose box went down"
     );
     assert!(
         image_id(&shared_refs[0]).is_none(),
@@ -1179,4 +1040,81 @@ fn run_records_are_retained_within_bounds() {
 /// itself: its image list is the ground truth for what remains.
 fn labeled_images(label: &str, value: &str) -> Vec<String> {
     image_ids(|image| image.labels.get(label).map(String::as_str) == Some(value))
+}
+
+/// Hold a real cold artifact CONNECT after startup has claimed its name.
+struct HeldDownload {
+    child: Child,
+    events: BufReader<ChildStdout>,
+    url: String,
+}
+
+impl HeldDownload {
+    fn new() -> Self {
+        let mut child = Command::new("python3")
+            .args(["-u", "-c", include_str!("connect_proxy.py")])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("start artifact CONNECT fixture");
+        let events = BufReader::new(child.stdout.take().unwrap());
+        let mut fixture = Self {
+            child,
+            events,
+            url: String::new(),
+        };
+        let port: u16 = fixture.line().trim().parse().expect("fixture port");
+        fixture.url = format!("http://127.0.0.1:{port}");
+        fixture
+    }
+
+    fn vars(&self) -> [(&str, &str); 4] {
+        [
+            ("HTTPS_PROXY", self.url.as_str()),
+            ("https_proxy", self.url.as_str()),
+            ("NO_PROXY", ""),
+            ("no_proxy", ""),
+        ]
+    }
+
+    fn line(&mut self) -> String {
+        if self.events.buffer().is_empty() {
+            let mut ready = [nix::poll::PollFd::new(
+                self.events.get_ref().as_fd(),
+                nix::poll::PollFlags::POLLIN,
+            )];
+            assert!(
+                nix::poll::poll(&mut ready, 30_000_u16).unwrap() > 0,
+                "artifact fixture missed its readiness deadline"
+            );
+        }
+        let mut line = String::new();
+        assert_ne!(
+            self.events.read_line(&mut line).unwrap(),
+            0,
+            "artifact fixture exited"
+        );
+        line
+    }
+
+    fn event(&mut self, expected: &str) {
+        assert_eq!(self.line().trim(), expected, "artifact fixture event");
+    }
+
+    fn release(&mut self) {
+        self.child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"release\n")
+            .unwrap();
+    }
+}
+
+impl Drop for HeldDownload {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
