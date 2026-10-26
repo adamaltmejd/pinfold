@@ -17,8 +17,8 @@ use e2e::{
 #[cfg(target_os = "macos")]
 use super::box_::RuntimeContainer;
 use super::box_::{
-    ChildOwner, DiskCleanup, HeldBuild, HeldDownload, box_name, box_up, built_unique_ref,
-    disk_names, find_box_state_dir, image_build, image_rm, read_bounded,
+    ChildOwner, HeldBuild, HeldDownload, box_name, box_up, built_unique_ref, disk_names,
+    find_box_state_dir, image_build, image_rm, read_bounded,
 };
 use super::runs::run_id;
 
@@ -308,11 +308,6 @@ fn cleanup_removes_only_pinfolds_garbage() {
     seed_project(&moved_project, b"moved\n");
     let moved_state = project_state_dir(&env, moved_project.path());
     let moved_disk = format!("pi-{}-project", project_id(&env, moved_project.path()));
-    let _disks = DiskCleanup(vec![
-        live_disk.clone(),
-        other_disk.clone(),
-        moved_disk.clone(),
-    ]);
     // The live box attaches its project's home disk.
     let live_spec = serde_json::json!({
         "name": live,

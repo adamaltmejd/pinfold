@@ -149,10 +149,11 @@ pub struct Attachment {
     pub readonly: bool,
 }
 
-/// Hold a disk's lock while deciding and recording its attachments.
+/// Hold a disk's lock while deciding and recording its attachments. A
+/// disk belongs to one state root, and so does its lock.
 pub fn disk_lock(name: &str) -> io::Result<Flock<File>> {
-    Flock::lock(open_lock(&format!("disk:{name}"))?, FlockArg::LockExclusive)
-        .map_err(|(_, error)| error.into())
+    let key = format!("disk:{}:{name}", crate::dirs::state_root_key()?);
+    Flock::lock(open_lock(&key)?, FlockArg::LockExclusive).map_err(|(_, error)| error.into())
 }
 
 pub fn record(name: &str) -> io::Result<Option<Record>> {

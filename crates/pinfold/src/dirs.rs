@@ -24,6 +24,31 @@ pub fn cache_dir() -> io::Result<PathBuf> {
     xdg("XDG_CACHE_HOME", ".cache")
 }
 
+/// The first 16 hex digits of the sha256 of the canonical state dir. Disks
+/// belong to one state root; two spellings of one root share a key. A dir
+/// not made yet is its nearest existing ancestor, canonical, plus the rest,
+/// so `doctor` creates nothing.
+pub fn state_root_key() -> io::Result<String> {
+    let dir = state_dir()?;
+    let mut missing = Vec::new();
+    let mut existing = dir.as_path();
+    let mut canonical = loop {
+        match fs::canonicalize(existing) {
+            Ok(path) => break path,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+                    return Err(error);
+                };
+                missing.push(name);
+                existing = parent;
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    canonical.extend(missing.iter().rev());
+    Ok(sha256_hex(canonical.as_os_str().as_bytes())[..16].to_string())
+}
+
 /// `$XDG_CACHE_HOME/pinfold/artifacts`: pinned release binaries and the
 /// embedded init.
 pub fn artifacts_dir() -> io::Result<PathBuf> {

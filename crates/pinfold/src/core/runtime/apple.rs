@@ -19,6 +19,7 @@ use crate::core::runtime::{
     BoxInfo, BoxStat, BuildRequest, DiskInfo, ImageInfo, MemoryStat, PidsStat, Runtime, inspect,
     output, parse_json, spawn_error,
 };
+use crate::dirs;
 use crate::init::BOX_ENV_PREFIX;
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
@@ -26,6 +27,12 @@ pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
 
 /// Apple `container`.
 pub struct Apple;
+
+/// The volume behind disk `name`. Apple's volumes are host-wide and a disk
+/// belongs to one state root, so the root's key prefixes the name.
+fn volume(name: &str) -> io::Result<String> {
+    Ok(format!("{}-{name}", dirs::state_root_key()?))
+}
 
 /// Start the attached `container run` process that owns the box: stdin and
 /// stdout piped. When `proxy_socket` is set, carry that host unix socket
@@ -83,7 +90,10 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
         command.arg("--mount").arg(bind(&mount.host, &mount.guest));
     }
     for disk in &plan.disks {
-        let mut value = OsString::from(format!("type=volume,source={},target=", disk.name));
+        let mut value = OsString::from(format!(
+            "type=volume,source={},target=",
+            volume(&disk.name)?
+        ));
         value.push(&disk.guest);
         if disk.readonly {
             value.push(",readonly");
@@ -333,26 +343,30 @@ impl Runtime for Apple {
     fn list_disks(&self) -> io::Result<Vec<DiskInfo>> {
         let json = output(&["container", "volume", "list", "--format", "json"])?;
         let volumes: Vec<ListedVolume> = parse_json("container volume list", &json)?;
-        volumes
-            .into_iter()
-            .map(|volume| {
-                let configuration = volume.configuration;
-                Ok(DiskInfo {
-                    allocated: allocated_bytes(Path::new(&configuration.source))?,
-                    name: configuration.name,
-                    size: configuration.size,
-                })
-            })
-            .collect()
+        // Another root's volumes, and any pinfold did not make, are no disks.
+        let prefix = volume("")?;
+        let mut disks = Vec::new();
+        for listed in volumes {
+            let configuration = listed.configuration;
+            let Some(name) = configuration.name.strip_prefix(&prefix) else {
+                continue;
+            };
+            disks.push(DiskInfo {
+                allocated: allocated_bytes(Path::new(&configuration.source))?,
+                name: name.to_string(),
+                size: configuration.size,
+            });
+        }
+        Ok(disks)
     }
 
     fn create_disk(&self, name: &str, bytes: u64) -> io::Result<()> {
         let size = format!("{}G", bytes >> 30);
-        output(&["container", "volume", "create", "-s", &size, name]).map(drop)
+        output(&["container", "volume", "create", "-s", &size, &volume(name)?]).map(drop)
     }
 
     fn remove_disk(&self, name: &str) -> io::Result<()> {
-        output(&["container", "volume", "rm", name]).map(drop)
+        output(&["container", "volume", "rm", &volume(name)?]).map(drop)
     }
 
     /// The guest synced; what the volume keeps through a host crash is
@@ -499,9 +513,10 @@ pub fn own_disks(
     let mut setup: Vec<OsString> = vec!["init".into(), "setup".into()];
     for (index, name) in names.iter().enumerate() {
         let guest = format!("/pinfold-disk/{index}");
-        command
-            .arg("--mount")
-            .arg(format!("type=volume,source={name},target={guest}"));
+        command.arg("--mount").arg(format!(
+            "type=volume,source={},target={guest}",
+            volume(name)?
+        ));
         setup.extend(["--own".into(), owner.clone().into(), guest.into()]);
     }
     let result = command
