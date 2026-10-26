@@ -752,9 +752,10 @@ and the Public Suffix List. Pins move only with a pinfold release. A
 version pin only moves up, to a stable version at or below upstream's
 latest stable release, and is never rehashed at its version. The pi,
 claude and codex harnesses take the latest release once its assets exist;
-other tools and packages take a version only seven full days after its
-last required asset was published, and a missing publication time makes it
-ineligible. Every
+other image tools and prototype packages take a version only seven full
+days after its last required asset was published, and a missing
+publication time makes it ineligible. Cargo dependencies take the latest
+stable, non-yanked version. Every
 artifact download must match its publisher's digest; a source or
 integrity failure aborts before any pin file is written.
 

@@ -1,9 +1,9 @@
 
 FROM base AS rtk-arm64
-ADD --checksum=sha256:cd627c4091ad90b5e5aca83ca5af66ee4b8aa8537a736533fa90544f461f1c2b https://github.com/rtk-ai/rtk/releases/download/v1.0.1/rtk-aarch64-unknown-linux-gnu.tar.gz /tmp/rtk-aarch64.tar.gz
+ADD --checksum=sha256:ee24a43dac9162de55fea8460b5efcd56d401ec28b5117c921bffa8a57bc136e https://github.com/rtk-ai/rtk/releases/download/v1.0.1/rtk-oss-aarch64-unknown-linux-gnu.tar.gz /tmp/rtk-aarch64.tar.gz
 
 FROM base AS rtk-amd64
-ADD --checksum=sha256:5b919c3bccb799b67a61866d0e617410a4fcdf173e2614440e59de2fa2003436 https://github.com/rtk-ai/rtk/releases/download/v1.0.1/rtk-x86_64-unknown-linux-musl.tar.gz /tmp/rtk-x64.tar.gz
+ADD --checksum=sha256:a44e8ffc43981100b4ddf1710399a1649a6c874591aa6d0c0727fe6cbd983c41 https://github.com/rtk-ai/rtk/releases/download/v1.0.1/rtk-oss-x86_64-unknown-linux-musl.tar.gz /tmp/rtk-x64.tar.gz
 
 FROM rtk-${TARGETARCH} AS rtk-install
 RUN set -eux; \
