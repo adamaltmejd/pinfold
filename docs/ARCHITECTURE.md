@@ -1014,9 +1014,8 @@ applies to an image a box uses.
 
 `pinfold clean` lists sizes, then removes:
 - everything automatic, now
-- the runtime's unused build cache (Apple: prune BuildKit records, then
-  reclaim freed filesystem blocks online, keeping the shared builder and
-  active builds; podman: the
+- the runtime's unused build cache (Apple: prune BuildKit records, keeping
+  the shared builder and active builds; podman: the
   `dev.pinfold.layer` intermediate images no image builds on)
 - with `--unused AGE`, state and disks of projects not run for that long,
   except a project's with a live box. Never automatic: a project disk
@@ -1029,9 +1028,7 @@ project home's caches are inside its disk and not cleaned.
 
 `--dry-run` only lists. Run records are a category of their own. `doctor` shows disk use per category and suggests
 `clean` above 20 GB. `doctor` runs no maintenance and changes no pinfold
-state or artifacts. On Apple, disk use includes allocated builder backing
-storage, including a stopped builder; cleanup may reclaim less. Podman's
-build cache is unmeasured.
+state or artifacts. Podman's build cache is unmeasured.
 When runtime checks fail, it skips runtime-dependent image and disk
 probes. On Linux, failed preflight also reports missing host requirements
 independently of each other: `root` names a run as uid 0, `kvm` an
@@ -1245,7 +1242,7 @@ The two slow gates run separately.
 | 12 | A changed project file stops the run | A domain added to `.pinfold.toml` by a box commit, fetched and merged on the host, or a changed project Containerfile, makes the next run, `pinfold fetch` and `pinfold build` refuse as `untrusted` until `pinfold allow`. |
 | 13 | Project state persists and stays separate | Settings survive reseeding. Guest writes in two same-named projects remain separate on A/B/A runs. A second `pinfold pi` in a project with a live box is refused as `disk-in-use`. A long valid project basename launches. |
 | 14 | Both pi config levels load behind a route | A routed fake model receives profile and project skills and the host's allowlist. |
-| 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds; a source a build left above two drops to two on a later `pinfold clean` with no build after. `--dry-run --unused 0s` leaves a project state the real one removes. A project whose checkout was moved keeps its state and disks under plain `clean`. An unlabeled image, a live box, its project's state and disks survive `pinfold clean`, also with `--unused 0s`, which removes an idle project's state and disks; a dead box is removed and protects nothing. On Apple, a container started with the runtime's CLI from a pinfold-built image survives both, and a build in another state directory held active in RUN succeeds across clean. `image rm` of a name removes its tags whatever their age and no other name's; an image's last tag stays while a box uses it. On Linux, the image's root disk goes with it and stays while a box's image holds it. |
+| 15 | Cleanup removes only pinfold's garbage | After three builds of one source, two images remain; an image a box still uses survives later builds; a source a build left above two drops to two on a later `pinfold clean` with no build after, and of three build tags sharing one image it removes only the oldest. `--dry-run --unused 0s` leaves a project state the real one removes. A project whose checkout was moved keeps its state and disks under plain `clean`. An unlabeled image, a live box, its project's state and disks survive `pinfold clean`, also with `--unused 0s`, which removes an idle project's state and disks; a dead box is removed and protects nothing. On Apple, a container started with the runtime's CLI from a pinfold-built image survives both, and a build in another state directory held active in RUN succeeds across clean. `image rm` of a name removes its tags whatever their age and no other name's, and reports `removed` with the image it kept `in_use`; an image's last tag stays while a box uses it. Two names built from identical inputs share one image id; `image rm` of one removes its tags while a box of the other name runs the image, and leaves the other name's tags, the image and the box. On Linux, the image's root disk goes with it and stays while a box's image holds it. A claimed pi startup awaiting its real harness download keeps its project's state across `clean --unused 0s` while its checkout is absent; the launch then succeeds, and the same state is removable afterward. |
 | 16 | The highest layer sets the allowlist | The environment replaces project allow, CPU, memory and route settings. Kernel observations and a host HTTP fixture prove the result. Invalid UTF-8 overrides fail without disclosing their bytes. |
 | 17 | up refuses before it creates | A missing image, a bad env name, a `dev.pinfold.` label, a suffix allow entry on or above a public suffix, a mount or disk path with a comma, a mount or disk at or below `/proc`, `/sys` or `/dev` (also through `..`), a disk at `/`, `/tmp`, `/etc` or `/etc/resolv.conf` (also through `..`), a disk name that is a flag or a path, and a live name are refused as data, naming the cause; each leaves no box and no state dir. Of two `up`s racing for one name exactly one wins, and the winner answers exec. |
 | 18 | A caller reads the effective configuration as data | config reports project policy, trust, a built image as built, and the home disk actually attached. Without a runtime it still reports host policy, image_built null and image_error without creating state/cache/config files. Unknown project/profile TOML keys and a profile's containerfile are refused with the source and key; correcting the same file restores the fixture policy. |

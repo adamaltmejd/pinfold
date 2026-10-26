@@ -3,22 +3,23 @@
 //! tests in name order, and a queued writer blocks later readers.
 
 use std::fs::{self, File};
-use std::io::Write;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::io::{BufRead, BufReader, Write};
+use std::os::fd::AsFd;
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::{Duration, SystemTime};
 
 use e2e::{
-    HttpFixture, ImageCleanup, TestDir, TestEnv, assert_ok, box_list, build_profile, curl,
-    default_image, image_cli, image_id, image_ids, inspect, pinfold, profile_containerfile,
+    HttpFixture, ImageCleanup, TestDir, TestEnv, assert_ok, box_exec, box_list, build_profile,
+    curl, default_image, image_cli, image_id, image_ids, inspect, pinfold, profile_containerfile,
     project_id, project_state_dir, run_dir, run_ok, tagged_images,
 };
 
 #[cfg(target_os = "macos")]
 use super::box_::RuntimeContainer;
 use super::box_::{
-    HeldBuild, box_name, box_up, built_unique_ref, disk_names, find_box_state_dir, image_build,
-    image_rm,
+    ChildOwner, HeldBuild, box_name, box_up, built_unique_ref, disk_names, find_box_state_dir,
+    image_build, image_rm, read_bounded,
 };
 use super::runs::run_id;
 
@@ -48,16 +49,28 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // stale test); the live project's state goes and its assertion fails.
     // Sabotage: in `clean::boxes`, insert into `live_projects` above `if
     // alive`; the dead box then protects the other project, whose state
-    // survives `--unused`, and the removal assertion fails. Sabotage: drop the
+    // survives `--unused`, and the removal assertion fails. Sabotage: past the newest
+    // two build tags, remove every tag of the tag's image, as retention by
+    // image did; `clean` takes the image the newest two builds share and
+    // the shared-image assertion fails. Sabotage: skip a tag whose image a
+    // newer tag names; the oldest-tag assertion fails. Sabotage: drop the
     // in-use check from `remove_images`; the live box's last tag is offered
     // to the runtime, which deletes the image under the box, and the
-    // live-box image assertion fails. Sabotage: apply the newest-two rule or
+    // live-box image assertion fails. Sabotage: restore the per-id skip in
+    // `remove_images`; the twin box's shared image is reported in use, the
+    // retired name's tag on it survives, and the assertion that
+    // `retire_refs[1]` is gone fails. Sabotage: apply the newest-two rule or
     // the caller's one-hour grace in `image rm`; a fresh build survives and
     // the removed-tags assertion fails. Sabotage: match the name as a prefix in
     // `remove_images`; the image of the name extending the retired one goes
     // and its survival assertion fails. Sabotage: make `--dry-run` run the
     // real clean; the other project's state goes and the dry-run assertion
-    // fails.
+    // fails. Sabotage: on Linux, keep podman's repeated `Names` in
+    // `list_images`; the second removal of the newest image's tag is
+    // `image not known` and the one-line assertion fails. Sabotage: make
+    // `remove_images` remove every reference of an image's id instead of
+    // only the name's tags; the twin's tag goes with the shared image and
+    // the twin assertion fails.
     // Sabotage: force-delete Apple's shared builder during clean; the
     // other process's build, held in RUN by the host fixture, fails.
     // Sabotage: drop the `pinfold_box` check from `clean::boxes`; on Apple
@@ -161,6 +174,27 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert!(
         image_id(&unlabeled).is_some(),
         "the unlabeled image is missing before clean"
+    );
+
+    // A caller source whose three builds share one image, all past the
+    // hour's grace: the runtime builds one image under three build tags
+    // whose `<build>` times fall in 1970, in one build as pinfold tags its
+    // own. `clean` finds the name by its tags and removes only the oldest
+    // tag; the image stays under the newest two.
+    let shared = format!("{profile}-shared");
+    let shared_repository = format!("localhost/pinfold/image-{shared}");
+    let _shared_images = ImageCleanup {
+        repository: shared_repository.clone(),
+    };
+    let shared_refs = ["1-1", "2-1", "3-1"].map(|build| format!("{shared_repository}:{build}"));
+    runtime_build(&shared_refs.each_ref().map(String::as_str), &[]);
+    let shared_id = image_id(&shared_refs[0]);
+    assert!(
+        shared_id.is_some()
+            && shared_refs
+                .iter()
+                .all(|reference| image_id(reference) == shared_id),
+        "the three build tags do not name one image before clean"
     );
 
     // A project's state: a refused `pinfold pi` creates it before it names
@@ -328,6 +362,16 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "clean kept b2, an image past the newest two whose box went down"
     );
     assert!(
+        image_id(&shared_refs[0]).is_none(),
+        "clean kept the shared image's oldest build tag"
+    );
+    assert!(
+        shared_refs[1..]
+            .iter()
+            .all(|reference| image_id(reference) == shared_id),
+        "clean removed the image the newest two builds share"
+    );
+    assert!(
         !box_list(&env, &live_label).is_empty(),
         "clean removed a live box"
     );
@@ -410,12 +454,96 @@ fn cleanup_removes_only_pinfolds_garbage() {
         drop(user_container);
     }
 
+    // Sabotage: remove the shared project locks from pi startup and box up;
+    // clean deletes the existing state while the cold download holds startup
+    // after its claim but before a runtime box can protect the project.
+    // The checkout is moved away meanwhile; that alone protects nothing.
+    let env = TestEnv::with_private_cache("clean-startup");
+    let project = TestDir::new(&env, "starting-project");
+    let missing = format!("{profile}-startup-missing");
+    profile_containerfile(&env, &missing, "FROM scratch\n");
+    let refused = env
+        .command(pinfold())
+        .args(["pi", "--version"])
+        .env("PINFOLD_PROFILE", &missing)
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    assert!(!refused.status.success(), "the missing image was accepted");
+    let state = project_state_dir(&env, project.path());
+    let id = project_id(&env, project.path());
+    let marker = state.join("marker");
+    fs::write(&marker, b"starting project\n").unwrap();
+
+    let mut proxy = HeldDownload::new();
+    let child = env
+        .command(pinfold())
+        .envs(proxy.vars())
+        .args(["pi", "--version"])
+        .current_dir(project.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let mut child = ChildOwner::new(child, &env, None);
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    proxy.event("held");
+    let label = format!("dev.pinfold.project={id}");
+    assert!(
+        box_list(&env, &label).is_empty(),
+        "startup already had a runtime box before the artifact arrived"
+    );
+    struct RestoreProject {
+        root: PathBuf,
+        moved: PathBuf,
+    }
+    impl Drop for RestoreProject {
+        fn drop(&mut self) {
+            if self.moved.exists() {
+                fs::rename(&self.moved, &self.root).unwrap();
+            }
+        }
+    }
+    let restore = RestoreProject {
+        root: project.path().to_path_buf(),
+        moved: env.root.join("moved-project"),
+    };
+    fs::rename(&restore.root, &restore.moved).unwrap();
+    run_ok(env.command(pinfold()).args(["clean", "--unused", "0s"]));
+    assert_eq!(
+        fs::read(&marker).unwrap(),
+        b"starting project\n",
+        "clean removed the claimed startup's existing state"
+    );
+    fs::rename(&restore.moved, &restore.root).unwrap();
+    proxy.release();
+    read_bounded(
+        &mut child,
+        &mut output,
+        std::time::Duration::from_secs(90),
+        true,
+    )
+    .expect("pi finishes after the artifact download resumes");
+    assert!(
+        child.wait_bounded().success(),
+        "pi startup failed after clean"
+    );
+
+    // Positive control: the same stale state is removable after the
+    // real pi launch finishes and releases its project locks.
+    fs::rename(&restore.root, &restore.moved).unwrap();
+    run_ok(env.command(pinfold()).args(["clean", "--unused", "0s"]));
+    assert!(!state.exists(), "clean kept the idle project's stale state");
+
     // `image rm NAME` retires one caller image name: every tag of the name,
     // whatever its age, and no other name's, except an image's last tag
-    // while a listed box uses it. Both builds of `retire` are fresh, so
-    // the caller grace and the newest-two rule would keep them. A retire
-    // box pins the older build, so its last tag stays. A second name
-    // extending the first is untouched.
+    // while a listed box uses it. Three builds of `retire` are fresh, so
+    // the caller grace would keep them all. A retire box pins the oldest
+    // build, whose only tags are `retire`'s, so its last tag stays; a twin
+    // box pins the second build's image, which the twin's tags also hold,
+    // so `retire`'s tag on it goes. A second name extending the first is
+    // untouched.
     let base = default_image(&env);
     let rm_context = env.root.join("image-rm-context");
     fs::create_dir_all(&rm_context).unwrap();
@@ -430,7 +558,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         repository: format!("localhost/pinfold/image-{retire_name}"),
     };
     let mut retire_refs: Vec<String> = Vec::new();
-    for marker in ["retire-1", "retire-2"] {
+    for marker in ["retire-1", "retire-2", "retire-3"] {
         fs::write(rm_context.join("marker.txt"), format!("{marker}\n")).unwrap();
         let (code, built) = image_build(&env, &retire_name, &rm_containerfile, &rm_context);
         assert_eq!(built["event"], "built", "the {marker} build: {built}");
@@ -442,8 +570,18 @@ fn cleanup_removes_only_pinfolds_garbage() {
                 .to_string(),
         );
     }
-    let boxed_id =
-        image_id(&retire_refs[0]).unwrap_or_else(|| panic!("no image for {}", retire_refs[0]));
+    let retire_ids: Vec<String> = retire_refs
+        .iter()
+        .map(|reference| image_id(reference).unwrap_or_else(|| panic!("no image for {reference}")))
+        .collect();
+    let mut distinct_ids = retire_ids.clone();
+    distinct_ids.sort_unstable();
+    distinct_ids.dedup();
+    assert_eq!(
+        distinct_ids.len(),
+        3,
+        "the changed retire builds do not name three images: {retire_refs:?}"
+    );
     // A second name extending the first, with one build: `image rm` of
     // `retire` must not touch it.
     let similar_name = format!("{retire_name}-x");
@@ -459,20 +597,71 @@ fn cleanup_removes_only_pinfolds_garbage() {
         .unwrap_or_else(|| panic!("built carries no latest: {similar}"))
         .to_string();
 
-    // Box the older build, so the newer one, `latest` with it, is free.
+    // A third name built from the second retire build's identical inputs:
+    // its build returns that image and tags it under the third name.
+    let twin_name = format!("{retire_name}-twin");
+    let _twin_images = ImageCleanup {
+        repository: format!("localhost/pinfold/image-{twin_name}"),
+    };
+    fs::write(rm_context.join("marker.txt"), "retire-2\n").unwrap();
+    let (code, twin) = image_build(&env, &twin_name, &rm_containerfile, &rm_context);
+    assert_eq!(twin["event"], "built", "the twin build: {twin}");
+    assert_eq!(code, 0, "the twin build exited {code}");
+    let twin_latest = twin["latest"]
+        .as_str()
+        .unwrap_or_else(|| panic!("built carries no latest: {twin}"))
+        .to_string();
+    assert_eq!(
+        image_id(&twin_latest),
+        Some(retire_ids[1].clone()),
+        "identical inputs under the twin name did not share the retire image"
+    );
+
+    // Box the oldest build, so the newest two, `latest` among them, are the
+    // free ones.
     let retire_box = box_name("cleanup-retire");
     let retire_spec = serde_json::json!({ "name": retire_box, "image": retire_refs[0] });
     let mut up_retire = box_up(&env, &retire_spec, &retire_box);
 
+    // A twin box runs the shared image, so `retire`'s tag on it must be
+    // freed while the twin's tags hold the image up.
+    let twin_box = box_name("cleanup-twin");
+    let twin_spec = serde_json::json!({ "name": twin_box, "image": twin_latest });
+    let mut up_twin = box_up(&env, &twin_spec, &twin_box);
+
     let (code, removed) = image_rm(&env, &retire_name);
     assert_eq!(code, 0, "image rm {retire_name} exited {code}: {removed}");
+    assert_eq!(removed["event"], "removed", "image rm: {removed}");
+    // The twin's tags hold the shared image up, so the retire tag on it
+    // goes.
     assert!(
         image_id(&retire_refs[1]).is_none(),
-        "image rm left the retired name's tag on the free image: {retire_refs:?}"
+        "image rm left the retired name's tag on the twin box's image: {retire_refs:?}"
+    );
+    assert!(
+        image_id(&retire_refs[2]).is_none(),
+        "image rm left the retired name's tag on the removed image: {retire_refs:?}"
     );
     assert!(
         image_id(&format!("localhost/pinfold/image-{retire_name}:latest")).is_none(),
         "image rm left the retire name's latest tag"
+    );
+    // The retire box pins an image only `retire` tags, so its last tag
+    // stays and is reported.
+    assert_eq!(
+        removed["in_use"],
+        serde_json::json!([retire_ids[0]]),
+        "image rm did not report the last tag it kept: {removed}"
+    );
+    let untagged: Vec<&str> = removed["ids"]
+        .as_array()
+        .expect("ids is an array")
+        .iter()
+        .map(|id| id.as_str().expect("an id is a string"))
+        .collect();
+    assert!(
+        untagged.contains(&retire_ids[1].as_str()) && untagged.contains(&retire_ids[2].as_str()),
+        "image rm did not report both untagged images: {removed}"
     );
     assert!(
         image_id(&retire_refs[0]).is_some(),
@@ -483,20 +672,38 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // Sabotage: drop the listed-image check from `prune_root_disks`; the
     // disk goes with the first `image rm`.
     #[cfg(target_os = "linux")]
-    let root_disk = env.cache.join(format!("pinfold/root/{boxed_id}.ext4"));
+    let root_disk = |id: &str| env.cache.join(format!("pinfold/root/{id}.ext4"));
     #[cfg(target_os = "linux")]
     assert!(
-        root_disk.is_file(),
+        root_disk(&retire_ids[0]).is_file(),
         "image rm removed the root disk of the live box's image"
     );
-    #[cfg(not(target_os = "linux"))]
-    let _ = boxed_id;
     assert!(
         image_id(&similar_latest).is_some(),
         "image rm touched the image of a name it prefixes"
     );
+    assert_eq!(
+        image_id(&twin_latest),
+        Some(retire_ids[1].clone()),
+        "image rm removed the twin's tag with the shared image"
+    );
+    // Only references went, not the image: the twin box still answers from
+    // the shared image.
+    let alive = box_exec(&env, &twin_box, &["cat", "/marker.txt"]);
+    assert_eq!(
+        alive.code, 0,
+        "the twin box failed exec after image rm: {}",
+        alive.stderr
+    );
+    assert_eq!(
+        alive.stdout.trim(),
+        "retire-2",
+        "the twin box answered from another image: {}",
+        alive.stdout
+    );
 
-    // With the retire box down, its last tag goes.
+    // With the retire box down, its last tag goes; the twin box stays up
+    // through the removal and goes down below.
     up_retire.down(&env);
     assert!(
         up_retire.wait().success(),
@@ -512,8 +719,13 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // Sabotage: drop `prune_root_disks` from `image rm`; the disk remains.
     #[cfg(target_os = "linux")]
     assert!(
-        !root_disk.exists(),
+        !root_disk(&retire_ids[0]).exists(),
         "the removed image's root disk survived image rm"
+    );
+    up_twin.down(&env);
+    assert!(
+        up_twin.wait().success(),
+        "the twin box's up did not exit cleanly"
     );
 }
 
@@ -828,4 +1040,81 @@ fn run_records_are_retained_within_bounds() {
 /// itself: its image list is the ground truth for what remains.
 fn labeled_images(label: &str, value: &str) -> Vec<String> {
     image_ids(|image| image.labels.get(label).map(String::as_str) == Some(value))
+}
+
+/// Hold a real cold artifact CONNECT after startup has claimed its name.
+struct HeldDownload {
+    child: Child,
+    events: BufReader<ChildStdout>,
+    url: String,
+}
+
+impl HeldDownload {
+    fn new() -> Self {
+        let mut child = Command::new("python3")
+            .args(["-u", "-c", include_str!("connect_proxy.py")])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("start artifact CONNECT fixture");
+        let events = BufReader::new(child.stdout.take().unwrap());
+        let mut fixture = Self {
+            child,
+            events,
+            url: String::new(),
+        };
+        let port: u16 = fixture.line().trim().parse().expect("fixture port");
+        fixture.url = format!("http://127.0.0.1:{port}");
+        fixture
+    }
+
+    fn vars(&self) -> [(&str, &str); 4] {
+        [
+            ("HTTPS_PROXY", self.url.as_str()),
+            ("https_proxy", self.url.as_str()),
+            ("NO_PROXY", ""),
+            ("no_proxy", ""),
+        ]
+    }
+
+    fn line(&mut self) -> String {
+        if self.events.buffer().is_empty() {
+            let mut ready = [nix::poll::PollFd::new(
+                self.events.get_ref().as_fd(),
+                nix::poll::PollFlags::POLLIN,
+            )];
+            assert!(
+                nix::poll::poll(&mut ready, 30_000_u16).unwrap() > 0,
+                "artifact fixture missed its readiness deadline"
+            );
+        }
+        let mut line = String::new();
+        assert_ne!(
+            self.events.read_line(&mut line).unwrap(),
+            0,
+            "artifact fixture exited"
+        );
+        line
+    }
+
+    fn event(&mut self, expected: &str) {
+        assert_eq!(self.line().trim(), expected, "artifact fixture event");
+    }
+
+    fn release(&mut self) {
+        self.child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"release\n")
+            .unwrap();
+    }
+}
+
+impl Drop for HeldDownload {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
