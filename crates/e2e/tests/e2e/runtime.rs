@@ -969,9 +969,13 @@ fn disks_persist_and_attach_exclusively() {
     refilled.down(&env);
     assert!(refilled.wait().success());
 
-    // A name that is no disk name is refused as `spec`.
+    // A name that is no disk name is refused as `spec`; control: with no
+    // box attached, `disk rm` removes the work disk.
     let (code, refused) = disk_rm(&env, "../escape");
     assert_eq!((code, &refused["reason"]), (1, &"spec".into()), "{refused}");
+    let (code, removed) = disk_rm(&env, work);
+    assert_eq!((code, &removed["existed"]), (0, &true.into()), "{removed}");
+    assert!(!disk_names(&env).iter().any(|name| name == work));
 }
 
 fn disk_list(env: &TestEnv) -> Vec<serde_json::Value> {
