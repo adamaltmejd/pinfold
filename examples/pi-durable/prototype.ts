@@ -49,7 +49,6 @@ async function hostBoundary(project: string, state: string, binary: string) {
     ["dependencies", resolve(import.meta.dirname, "node_modules")],
     ["Pinfold ownership", resolve(await realpath("/tmp"), `pinfold-${process.getuid!()}`)],
   ];
-  if (isAbsolute(process.argv0)) roots.push(["Bun launch alias", process.argv0]);
   const home = homedir();
   if (!isAbsolute(home)) throw new Error("host HOME must be absolute");
   for (const [variable, fallback] of [["XDG_STATE_HOME", ".local/state"], ["XDG_CONFIG_HOME", ".config"], ["XDG_CACHE_HOME", ".cache"]]) {
@@ -62,12 +61,10 @@ async function hostBoundary(project: string, state: string, binary: string) {
   // in the project would expose or alter a host executable.
   for (const path of (process.env.PATH ?? "").split(delimiter)) roots.push(["host PATH", resolve(path || ".")]);
   for (const [name, path] of roots) {
-    const lexical = resolve(path);
-    const canonical = await canonicalDestination(lexical);
+    const root = await canonicalDestination(resolve(path));
     // `from` copies the project into the box and fetch writes into its `.git`, so
-    // overlap would expose or alter host state. Both the lexical and the
-    // canonical path are checked.
-    if ([lexical, canonical].some((root) => within(project, root) || within(root, project))) throw new Error(`host-boundary: project overlaps ${name}`);
+    // overlap would expose or alter host state.
+    if (within(project, root) || within(root, project)) throw new Error(`host-boundary: project overlaps ${name}`);
   }
 }
 
@@ -189,9 +186,6 @@ class Box {
 }
 
 async function main() {
-  // Bun canonicalizes a direct script path, hiding a replaceable launch alias.
-  // Importing through --eval keeps the caller's path in argv[1].
-  if (!process.execArgv.some((arg) => arg === "--eval" || arg === "-e")) throw new Error("host-boundary: launch with bun run start or bun run resume");
   const { values, positionals } = parseArgs({ args: process.argv.slice(2), allowPositionals: true, options: {
     state: { type: "string" }, pinfold: { type: "string" }, project: { type: "string" }, image: { type: "string" },
     "base-url": { type: "string" }, model: { type: "string" }, prompt: { type: "string" },

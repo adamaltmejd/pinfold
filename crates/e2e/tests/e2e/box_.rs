@@ -389,8 +389,7 @@ sys.exit(result.returncode)
         let mut stopped_spec = spec.clone();
         stopped_spec["name"] = stopped_name.clone().into();
         let mut stopped = box_up(&env, &stopped_spec, &stopped_name);
-        let stopped_state =
-            find_box_state_dir(&env, stopped.pid()).expect("find stopped owner's state");
+        let stopped_state = find_box_state_dir(&env).expect("find stopped owner's state");
         let resume = Resume(stopped.pid());
         run_ok(Command::new("kill").args(["-STOP", &stopped.pid().to_string()]));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -580,7 +579,7 @@ sys.exit(result.returncode)
         let mut child = ChildOwner::new(child, &env, None);
         let mut output = BufReader::new(child.stdout.take().unwrap());
         proxy.event("held");
-        let state = find_box_state_dir(&env, child.id()).expect("claimed startup state");
+        let state = find_box_state_dir(&env).expect("claimed startup state");
         let parent = state.parent().unwrap().to_path_buf();
         struct RestorePermissions(PathBuf, fs::Permissions);
         impl Drop for RestorePermissions {
@@ -5206,18 +5205,13 @@ pub(crate) fn box_name(test: &str) -> String {
     format!("pinfold-e2e-{}-{test}", std::process::id())
 }
 
-/// The state dir whose `pid` file names `owner`, if it is there yet. State
-/// dirs are keyed by a hash of the box name, so a test finds one by the
-/// owner it recorded.
-pub(super) fn find_box_state_dir(env: &TestEnv, owner: u32) -> Option<PathBuf> {
+/// The state root's one box state dir. State dirs are keyed by a hash of
+/// the box name, so a test with one box finds its dir as the only entry.
+pub(super) fn find_box_state_dir(env: &TestEnv) -> Option<PathBuf> {
     let boxes = env.state.join("pinfold").join("boxes");
-    for entry in fs::read_dir(boxes).ok()?.flatten() {
-        let dir = entry.path();
-        if fs::read_to_string(dir.join("pid")).is_ok_and(|text| text.trim() == owner.to_string()) {
-            return Some(dir);
-        }
-    }
-    None
+    let mut entries = fs::read_dir(boxes).ok()?.flatten();
+    let only = entries.next()?.path();
+    entries.next().is_none().then_some(only)
 }
 
 /// Assert that the `what` up (`refused` or `failed`) left no state dir and no

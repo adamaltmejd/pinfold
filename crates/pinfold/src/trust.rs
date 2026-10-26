@@ -10,7 +10,7 @@
 
 use std::fs;
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -85,7 +85,7 @@ pub fn validate_host_paths(root: &Path, config: &Config) -> io::Result<()> {
         paths.push(share.path()?);
     }
     for path in paths {
-        if resolve_host_path(&path)?.starts_with(&root) {
+        if dirs::resolve_host_path(&path)?.starts_with(&root) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 format!(
@@ -97,38 +97,6 @@ pub fn validate_host_paths(root: &Path, config: &Config) -> io::Result<()> {
         }
     }
     Ok(())
-}
-
-/// Resolve existing ancestors too, before a new XDG directory is created.
-fn resolve_host_path(path: &Path) -> io::Result<PathBuf> {
-    match fs::canonicalize(path) {
-        Ok(path) => Ok(path),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_symlink()) {
-                let target = fs::read_link(path)?;
-                return resolve_host_path(
-                    &path.parent().expect("a symlink has a parent").join(target),
-                );
-            }
-            let parent = path.parent().ok_or(error)?;
-            let mut resolved = resolve_host_path(parent)?;
-            match path.components().next_back() {
-                Some(Component::Normal(name)) => resolved.push(name),
-                Some(Component::ParentDir) => {
-                    resolved.pop();
-                }
-                Some(Component::CurDir) => {}
-                _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "host path has no parent",
-                    ));
-                }
-            }
-            Ok(resolved)
-        }
-        Err(error) => Err(error),
-    }
 }
 
 /// The hashes of the project's config inputs as they are now.

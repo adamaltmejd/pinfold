@@ -8,7 +8,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::core::sha256_hex;
 
@@ -26,27 +26,43 @@ pub fn cache_dir() -> io::Result<PathBuf> {
 
 /// The first 16 hex digits of the sha256 of the canonical state dir. Disks
 /// belong to one state root; two spellings of one root share a key. A dir
-/// not made yet is its nearest existing ancestor, canonical, plus the rest,
-/// so `doctor` creates nothing.
+/// not made yet resolves through its existing ancestors, so `doctor`
+/// creates nothing.
 pub fn state_root_key() -> io::Result<String> {
-    let dir = state_dir()?;
-    let mut missing = Vec::new();
-    let mut existing = dir.as_path();
-    let mut canonical = loop {
-        match fs::canonicalize(existing) {
-            Ok(path) => break path,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
-                    return Err(error);
-                };
-                missing.push(name);
-                existing = parent;
-            }
-            Err(error) => return Err(error),
-        }
-    };
-    canonical.extend(missing.iter().rev());
+    let canonical = resolve_host_path(&state_dir()?)?;
     Ok(sha256_hex(canonical.as_os_str().as_bytes())[..16].to_string())
+}
+
+/// Resolve existing ancestors too, before a new XDG directory is created.
+pub fn resolve_host_path(path: &Path) -> io::Result<PathBuf> {
+    match fs::canonicalize(path) {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_symlink()) {
+                let target = fs::read_link(path)?;
+                return resolve_host_path(
+                    &path.parent().expect("a symlink has a parent").join(target),
+                );
+            }
+            let parent = path.parent().ok_or(error)?;
+            let mut resolved = resolve_host_path(parent)?;
+            match path.components().next_back() {
+                Some(Component::Normal(name)) => resolved.push(name),
+                Some(Component::ParentDir) => {
+                    resolved.pop();
+                }
+                Some(Component::CurDir) => {}
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "host path has no parent",
+                    ));
+                }
+            }
+            Ok(resolved)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// `$XDG_CACHE_HOME/pinfold/artifacts`: pinned release binaries and the

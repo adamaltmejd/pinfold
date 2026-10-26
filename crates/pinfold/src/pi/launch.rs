@@ -322,15 +322,10 @@ fn box_plan(config: &Config, id: &str, image: &str) -> Plan {
     Plan {
         name: format!("pi-{id}-{}", std::process::id()),
         image: Some(image.to_string()),
-        profile: None,
-        harness: None,
         labels: BTreeMap::from([(clean::PROJECT_LABEL.to_string(), id.to_string())]),
-        mounts: Vec::new(),
-        disks: Vec::new(),
-        env: BTreeMap::new(),
-        egress: None,
         cpus: Some(config.cpus),
         memory: Some(config.memory.clone()),
+        ..Plan::default()
     }
 }
 

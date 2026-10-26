@@ -27,9 +27,7 @@ streaming OpenAI chat completions and tools. The key is not included in the box
 spec or job manifest. Prompts, model answers and tool output are checkpointed;
 choose their contents accordingly.
 
-Use the package's `start` and `resume` commands. Their loader preserves the
-original controller path for the host-boundary check. Direct Bun script
-launches resolve symlinks too early and are refused. The supplied Bun config
+Use the package's `start` and `resume` commands. The supplied Bun config
 disables `.env` loading and automatic dependency installation.
 
 The project must be a git checkout with a `.git` directory. The box works on
@@ -47,9 +45,7 @@ The checkpoint directory, Pinfold and Bun executables, controller and dependenci
 Pinfold's effective state/config/cache and ownership directories, and host PATH
 entries must be disjoint from the project. Linux runtime authority is
 also checked. Paths and existing symlink ancestors are canonicalized before any
-box work, including absent directories under a symlink alias. A replaceable
-symlink inside the project is rejected even if its target is outside. This
-includes the script entrypoint used to launch the controller. `from` copies
+box work, including absent directories under a symlink alias. `from` copies
 the project into the box and the fetch writes into its `.git`, so overlap would
 expose or alter host state. The box has no mount, so neither checkpoint
 database nor writer database is exposed to the guest. Keep the state directory private on the host. Do not copy a live

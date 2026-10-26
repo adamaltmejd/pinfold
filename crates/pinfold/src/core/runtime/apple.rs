@@ -91,7 +91,7 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
     }
     let init_dir = init
         .parent()
-        .expect("box::up refuses an init without a directory");
+        .expect("init lives in the artifacts directory");
     command
         .arg("--mount")
         .arg(bind(init_dir, init_dir))
@@ -489,7 +489,7 @@ pub fn own_disks(
 ) -> io::Result<()> {
     let init_dir = init
         .parent()
-        .expect("box::up refuses an init without a directory");
+        .expect("init lives in the artifacts directory");
     let owner = format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid());
     let mut command = std::process::Command::new("container");
     command

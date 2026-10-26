@@ -91,7 +91,7 @@ impl Claimed {
         {
             let result = runtime
                 .remove_disk(&disk.name)
-                .and_then(|()| mark_clean(&disk.name))
+                .and_then(|()| unmark(&disk.name, UNCLEAN))
                 .and_then(|()| unmark(&disk.name, UNFILLED));
             if let Err(error) = result {
                 eprintln!("pinfold: startup cleanup: disk {:?}: {error}", disk.name);
@@ -102,7 +102,7 @@ impl Claimed {
             .iter()
             .filter(|disk| !attached.contains_key(*disk))
         {
-            if let Err(error) = mark_clean(disk) {
+            if let Err(error) = unmark(disk, UNCLEAN) {
                 eprintln!("pinfold: startup cleanup: disk {disk:?}: {error}");
             }
         }
@@ -239,7 +239,7 @@ pub fn claim(
 /// on its own leaves them unclean.
 pub fn detached(disks: &[Disk]) -> io::Result<()> {
     for disk in disks.iter().filter(|disk| !disk.readonly) {
-        mark_clean(&disk.name)?;
+        unmark(&disk.name, UNCLEAN)?;
     }
     Ok(())
 }
@@ -339,10 +339,6 @@ fn unmark(name: &str, kind: &str) -> io::Result<()> {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
         _ => Ok(()),
     }
-}
-
-fn mark_clean(name: &str) -> io::Result<()> {
-    unmark(name, UNCLEAN)
 }
 
 /// Once the box is ready, its new disks hold their `from`, synced in the
@@ -487,7 +483,7 @@ pub fn remove(runtime: &dyn Runtime, name: &str) -> io::Result<Removal> {
     if existed {
         runtime.remove_disk(name)?;
     }
-    mark_clean(name)?;
+    unmark(name, UNCLEAN)?;
     unmark(name, UNFILLED)?;
     Ok(Removal::Removed { existed })
 }
