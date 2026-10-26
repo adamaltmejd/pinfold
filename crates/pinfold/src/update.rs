@@ -268,13 +268,5 @@ fn installation_lock(path: &Path) -> io::Result<Flock<File>> {
         return Err(io::Error::other("executable-replaced: rerun the update"));
     }
     loaded_version(path)?;
-    // Owners from releases before executable locking still hold their pid file.
-    for entry in dirs::entries(&dirs::boxes_dir()?)? {
-        if entry.file_type()?.is_dir() && core::clean::owner_alive(&entry.path()) {
-            return Err(io::Error::other(
-                "running-boxes: close pinfold boxes before updating",
-            ));
-        }
-    }
     Ok(lock)
 }

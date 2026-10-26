@@ -78,17 +78,6 @@ fn report(what: &str, result: io::Result<()>) {
     }
 }
 
-/// Whether published ownership still holds this state directory.
-pub fn owner_alive(state_dir: &Path) -> bool {
-    let Ok(records) = ownership::records() else {
-        return true;
-    };
-    records
-        .iter()
-        .filter(|record| record.state_dir == state_dir)
-        .any(|record| ownership::name_alive(&record.name).unwrap_or(true))
-}
-
 /// A pinfold box whose owning `box up` process is gone: the runtime removes
 /// the box, and its state dir goes with it.
 #[derive(Clone)]
