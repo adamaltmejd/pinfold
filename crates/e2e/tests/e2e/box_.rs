@@ -18,7 +18,6 @@ use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
     box_stat, build_profile, curl, default_image, egress_log, exit_code, git, image_cli, image_id,
     json_lines, pinfold, pinfold_in, profile_containerfile, run_ok, runtime_images, tagged_images,
-    untagged_images,
 };
 
 #[test]
@@ -1760,10 +1759,8 @@ fn disks_persist_and_attach_exclusively() {
     assert!(listed["allocated"].as_u64().unwrap() < 1 << 30, "{listed}");
 }
 
-/// Every disk `disk list` prints.
 fn disk_list(env: &TestEnv) -> Vec<serde_json::Value> {
-    let output = run_ok(env.command(pinfold()).args(["disk", "list"]));
-    json_lines(&String::from_utf8_lossy(&output.stdout))
+    e2e::disk_list(env).unwrap_or_else(|error| panic!("{error}"))
 }
 
 pub(super) fn disk_names(env: &TestEnv) -> Vec<String> {
@@ -5288,4 +5285,22 @@ fn box_down(env: &TestEnv, name: &str) -> ExitStatus {
         .stdin(Stdio::null())
         .status()
         .expect("run pinfold box down")
+}
+
+/// The IDs of untagged images with the caller's label, including the
+/// intermediate layers a cached build leaves behind. Linux only.
+fn untagged_images(label: &str) -> std::collections::BTreeSet<String> {
+    let output = run_ok(Command::new("podman").args([
+        "images",
+        "-a",
+        "-q",
+        "--filter",
+        "dangling=true",
+        "--filter",
+        &format!("label={label}"),
+    ]));
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect()
 }

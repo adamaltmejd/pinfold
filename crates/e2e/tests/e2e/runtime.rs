@@ -10,8 +10,8 @@ use std::time::{Duration, SystemTime};
 
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_ok, box_exec, box_list, build_profile,
-    curl, default_image, egress_log, image_cli, image_id, inspect, json_lines, labeled_images,
-    pinfold, profile_containerfile, project_id, project_state_dir, run_ok, tagged_images,
+    curl, default_image, egress_log, image_cli, image_id, image_ids, inspect, json_lines, pinfold,
+    profile_containerfile, project_id, project_state_dir, run_dir, run_ok, tagged_images,
 };
 
 #[cfg(target_os = "macos")]
@@ -853,7 +853,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // `prune_root_disks` from `image rm`; the retired image's disk remains.
     #[cfg(target_os = "linux")]
     {
-        let root_disk = |id: &str| env.cache().join(format!("pinfold/root/{id}.ext4"));
+        let root_disk = |id: &str| env.cache.join(format!("pinfold/root/{id}.ext4"));
         assert!(
             !root_disk(&retire_ids[0]).exists(),
             "the removed image's root disk survived image rm"
@@ -1076,11 +1076,6 @@ fn a_runs_end_is_recorded_apart_from_its_start() {
     }
 }
 
-/// The run's directory, at the path the spec names.
-fn run_dir(env: &TestEnv, run_id: &str) -> PathBuf {
-    env.state.join("pinfold/runs").join(run_id)
-}
-
 /// Set the modification time of the run's directory and every file in it.
 fn age(dir: &Path, age: Duration) {
     let time = SystemTime::now() - age;
@@ -1190,4 +1185,10 @@ fn run_records_are_retained_within_bounds() {
         "the live run's log did not keep appending"
     );
     live_up.close_stdin();
+}
+
+/// The ids of every image carrying `label = value`, from the runtime
+/// itself: its image list is the ground truth for what remains.
+fn labeled_images(label: &str, value: &str) -> Vec<String> {
+    image_ids(|image| image.labels.get(label).map(String::as_str) == Some(value))
 }

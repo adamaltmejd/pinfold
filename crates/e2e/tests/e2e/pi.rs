@@ -19,7 +19,7 @@ use crate::box_::{ChildOwner, box_name, box_up, read_bounded};
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, allow, assert_denied, assert_ok, box_exec,
     box_list, box_stat, build_profile, curl, default_image, git, inspect, json_lines, pinfold,
-    pinfold_in, project_id, run_egress_log, run_ok,
+    pinfold_in, project_id, run_dir, run_ok,
 };
 
 /// The PINFOLD_ENV_ value `PiRpc` launches with: long enough that no disk
@@ -182,7 +182,7 @@ fn the_environment_is_exactly_the_spec() {
         let mut scanned = Vec::new();
         holding(&env.state, SECRET.as_bytes(), &mut scanned);
         holding(
-            &env.cache().join("pinfold/root"),
+            &env.cache.join("pinfold/root"),
             SECRET.as_bytes(),
             &mut scanned,
         );
@@ -741,7 +741,8 @@ fn the_highest_layer_sets_the_allowlist() {
     assert_denied(&denied, "403", "a request to registry.npmjs.org");
 
     // The log names the refused host and the reason.
-    let lines = json_lines(&run_egress_log(&env, &pi_run_id(&env, &name)));
+    let log = run_dir(&env, &pi_run_id(&env, &name)).join("egress.jsonl");
+    let lines = json_lines(&fs::read_to_string(&log).expect("read the pi run's egress log"));
     assert!(
         lines.iter().any(|line| line["host"] == "registry.npmjs.org"
             && line["decision"] == "refused"

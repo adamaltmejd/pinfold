@@ -68,7 +68,8 @@ pub struct TestEnv {
     pub root: PathBuf,
     /// `XDG_STATE_HOME`; pinfold's state dir is `<state>/pinfold`.
     pub state: PathBuf,
-    cache: PathBuf,
+    /// `XDG_CACHE_HOME`: the suite's shared cache, or the test's own.
+    pub cache: PathBuf,
     pub config: PathBuf,
 }
 
@@ -105,11 +106,6 @@ impl TestEnv {
         env
     }
 
-    /// The `XDG_CACHE_HOME` this env's commands run with.
-    pub fn cache(&self) -> &Path {
-        &self.cache
-    }
-
     pub fn command(&self, binary: &Path) -> Command {
         let mut command = Command::new(binary);
         for (name, _) in std::env::vars_os() {
@@ -131,13 +127,9 @@ impl Drop for TestEnv {
     fn drop(&mut self) {
         // Apple's disks are volumes outside the state root: remove this
         // root's. Linux disks live in the state root and go with it.
-        if cfg!(target_os = "macos")
-            && let Ok(listed) = self.command(pinfold()).args(["disk", "list"]).output()
-        {
-            for line in String::from_utf8_lossy(&listed.stdout).lines() {
-                if let Ok(disk) = serde_json::from_str::<serde_json::Value>(line)
-                    && let Some(name) = disk["name"].as_str()
-                {
+        if cfg!(target_os = "macos") {
+            for disk in disk_list(self).unwrap_or_default() {
+                if let Some(name) = disk["name"].as_str() {
                     let _ = self.command(pinfold()).args(["disk", "rm", name]).output();
                 }
             }
@@ -219,12 +211,6 @@ pub fn image_id(reference: &str) -> Option<String> {
         .next()
 }
 
-/// The ids of every image carrying `label = value`, from the runtime
-/// itself: its image list is the ground truth for what remains.
-pub fn labeled_images(label: &str, value: &str) -> Vec<String> {
-    image_ids(|image| image.labels.get(label).map(String::as_str) == Some(value))
-}
-
 /// The ids of every image tagged in `repository` (`<repository>:<tag>`),
 /// from the runtime itself. A caller image name's builds are its tags.
 pub fn tagged_images(repository: &str) -> Vec<String> {
@@ -237,7 +223,7 @@ pub fn tagged_images(repository: &str) -> Vec<String> {
 }
 
 /// The sorted, distinct ids of the runtime's images that `keep` accepts.
-fn image_ids(keep: impl Fn(&RuntimeImage) -> bool) -> Vec<String> {
+pub fn image_ids(keep: impl Fn(&RuntimeImage) -> bool) -> Vec<String> {
     let mut ids: Vec<String> = runtime_images()
         .unwrap_or_else(|error| panic!("{error}"))
         .into_iter()
@@ -253,7 +239,6 @@ fn image_ids(keep: impl Fn(&RuntimeImage) -> bool) -> Vec<String> {
 /// drop, so a failing run does not leave them for the next run to count or
 /// for the operator's disk. Every build tags its image so, and the tag
 /// remains even when a label sabotage drops the source label.
-/// Sabotage: hardcode `container`; `podman image ls` keeps the leak.
 pub struct ImageCleanup {
     pub repository: String,
 }
@@ -272,24 +257,6 @@ impl Drop for ImageCleanup {
             }
         }
     }
-}
-
-/// The IDs of untagged images with the caller's label, including the
-/// intermediate layers a cached build leaves behind. Linux only.
-pub fn untagged_images(label: &str) -> std::collections::BTreeSet<String> {
-    let output = run_ok(Command::new("podman").args([
-        "images",
-        "-a",
-        "-q",
-        "--filter",
-        "dangling=true",
-        "--filter",
-        &format!("label={label}"),
-    ]));
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::to_owned)
-        .collect()
 }
 
 /// Build the candidate's default profile once for this suite.
@@ -446,15 +413,29 @@ pub fn egress_log(ready: &serde_json::Value) -> String {
     fs::read_to_string(path).unwrap_or_else(|error| panic!("read {path}: {error}"))
 }
 
-/// A run's egress log by its run id, at the path the spec names under
-/// pinfold's state dir, for a pi box, which prints no `ready`.
-pub fn run_egress_log(env: &TestEnv, run_id: &str) -> String {
-    let path = env
-        .state
-        .join("pinfold/runs")
-        .join(run_id)
-        .join("egress.jsonl");
-    fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+/// A run's directory under pinfold's state dir, at the path the spec names.
+pub fn run_dir(env: &TestEnv, run_id: &str) -> PathBuf {
+    env.state.join("pinfold/runs").join(run_id)
+}
+
+/// Every disk `disk list` prints. An error, not a panic, so `TestEnv`'s
+/// drop can use it while unwinding.
+pub fn disk_list(env: &TestEnv) -> Result<Vec<serde_json::Value>, String> {
+    let output = env
+        .command(pinfold())
+        .args(["disk", "list"])
+        .output()
+        .map_err(|error| format!("run pinfold disk list: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "pinfold disk list failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).map_err(|error| format!("{line:?}: {error}")))
+        .collect()
 }
 
 /// Run `pinfold box inspect` or `box events` with `args` and return its exit
