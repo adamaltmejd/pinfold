@@ -23,7 +23,7 @@ use nix::sys::statvfs::{FsFlags, statvfs};
 use nix::sys::wait::{WaitStatus, waitpid};
 use nix::unistd::Pid;
 
-use crate::init::firecracker::{drop_bounding, pidfd_open};
+use crate::init::firecracker::{drop_bounding, pidfd_open, set_capabilities};
 
 /// Paths inside the jail. The VM configuration names the kernel, the disks
 /// and the vsock socket by these.
@@ -182,8 +182,6 @@ struct Plan {
     gid_map: Vec<u8>,
     /// The tmpfs root, on the host's side of `pivot_root`.
     root: CString,
-    /// Directories made in the tmpfs root before the binds.
-    dirs: Vec<CString>,
     binds: Vec<Bind>,
     /// `None` for the probe, which exits after mounting its tmpfs.
     exec: Option<Exec>,
@@ -198,6 +196,8 @@ struct Bind {
 }
 
 struct Exec {
+    /// The jail's `/dev`, made in the tmpfs root before the binds.
+    dev: CString,
     /// Paths inside the jail with their Landlock rights.
     rules: Vec<(CString, u64)>,
     argv: Vec<CString>,
@@ -211,7 +211,6 @@ impl Plan {
             gid_map,
             // In the probe's own mount namespace, over the host's root.
             root: c"/".to_owned(),
-            dirs: Vec::new(),
             binds: Vec::new(),
             exec: None,
         })
@@ -287,9 +286,12 @@ impl Plan {
             uid_map,
             gid_map,
             root: cstring(jail.root)?,
-            dirs: vec![target("/dev")?],
             binds,
-            exec: Some(Exec { rules, argv }),
+            exec: Some(Exec {
+                dev: target("/dev")?,
+                rules,
+                argv,
+            }),
         })
     }
 }
@@ -355,7 +357,6 @@ const STEPS: &[&str] = &[
     "add a Landlock rule",
     "restrict to the Landlock ruleset",
     "drop the bounding set",
-    "clear the ambient set",
     "clear the capability sets",
     "redirect stdio to /dev/null",
     "reset the signal mask",
@@ -484,7 +485,7 @@ fn start(plan: &Plan) -> io::Result<(Pid, OwnedFd)> {
     let errno = Errno::from_raw(field(8..12) as i32);
     let what = STEPS.get(step).copied().unwrap_or("an unknown step");
     let path = match what {
-        "make a jail directory" => plan.dirs.get(index),
+        "make a jail directory" => plan.exec.as_ref().map(|exec| &exec.dev),
         "make a bind target" | "bind" | "remount read-only" => {
             plan.binds.get(index).map(|bind| &bind.target)
         }
@@ -555,13 +556,11 @@ fn enter(plan: &Plan, alive: RawFd) -> Result<(), Failure> {
         Some(tmpfs_data),
     )
     .map_err(fail("mount the jail's tmpfs", 0))?;
-    if plan.exec.is_none() {
+    let Some(exec) = &plan.exec else {
         return Ok(());
-    }
-    for (index, dir) in plan.dirs.iter().enumerate() {
-        nix::unistd::mkdir(dir.as_c_str(), Mode::from_bits_truncate(0o755))
-            .map_err(fail("make a jail directory", index))?;
-    }
+    };
+    nix::unistd::mkdir(exec.dev.as_c_str(), Mode::from_bits_truncate(0o755))
+        .map_err(fail("make a jail directory", 0))?;
     for (index, bind) in plan.binds.iter().enumerate() {
         if bind.directory {
             nix::unistd::mkdir(bind.target.as_c_str(), Mode::from_bits_truncate(0o700))
@@ -683,23 +682,9 @@ fn restrict(exec: &Exec) -> Result<(), Failure> {
     }
     landlock::restrict(&ruleset).map_err(fail("restrict to the Landlock ruleset", 0))?;
     // A raw OS error carries its errno without allocating.
-    drop_bounding(None).map_err(|error| {
-        fail("drop the bounding set", 0)(Errno::from_raw(error.raw_os_error().unwrap_or(0)))
-    })?;
-    // SAFETY: prctl with integer arguments.
-    let clear_all = libc::PR_CAP_AMBIENT_CLEAR_ALL as libc::c_ulong;
-    let zero: libc::c_ulong = 0;
-    if unsafe { libc::prctl(libc::PR_CAP_AMBIENT, clear_all, zero, zero, zero) } != 0 {
-        return Err(fail("clear the ambient set", 0)(Errno::last()));
-    }
-    // `_LINUX_CAPABILITY_VERSION_3`: two 32-bit words per set, all zero.
-    let header = [0x2008_0522u32, 0];
-    let data = [0u32; 6];
-    // SAFETY: capset reads the header and two data structs.
-    if unsafe { libc::syscall(libc::SYS_capset, header.as_ptr(), data.as_ptr()) } != 0 {
-        return Err(fail("clear the capability sets", 0)(Errno::last()));
-    }
-    Ok(())
+    let errno = |error: io::Error| Errno::from_raw(error.raw_os_error().unwrap_or(0));
+    drop_bounding(None).map_err(|error| fail("drop the bounding set", 0)(errno(error)))?;
+    set_capabilities(None).map_err(|error| fail("clear the capability sets", 0)(errno(error)))
 }
 
 /// Landlock through raw system calls (`linux/landlock.h`).

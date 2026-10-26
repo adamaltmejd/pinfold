@@ -11,6 +11,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::dirs;
 
@@ -90,15 +91,14 @@ impl Harness {
         Ok(self.install_os_arch(OS_ARCH, cancel)?.join(&self.name))
     }
 
-    /// The directory of this harness's host helpers for this host, installed
-    /// the same way. It never enters a box.
-    pub fn install_host(&self, cancel: Option<&AtomicBool>) -> io::Result<PathBuf> {
-        self.install_os_arch(HOST_OS_ARCH, cancel)
-    }
-
     /// Download and install the assets for `os_arch` if the cache lacks
-    /// them, and return their directory.
-    fn install_os_arch(&self, os_arch: &str, cancel: Option<&AtomicBool>) -> io::Result<PathBuf> {
+    /// them, and return their directory. A host helper's (`HOST_OS_ARCH`)
+    /// never enters a box.
+    pub fn install_os_arch(
+        &self,
+        os_arch: &str,
+        cancel: Option<&AtomicBool>,
+    ) -> io::Result<PathBuf> {
         let assets = self.assets(os_arch);
         let dir = self.dir(os_arch)?;
         dirs::install_dir(&dir, |staging| {
@@ -206,7 +206,7 @@ const OS_ARCH: &str = if cfg!(target_arch = "aarch64") {
 
 /// The `os-arch` of a host helper on this host, as its rows name it. The
 /// macOS CLI is arm64 only; Linux arm64 is unsupported.
-const HOST_OS_ARCH: &str = if cfg!(target_os = "macos") {
+pub const HOST_OS_ARCH: &str = if cfg!(target_os = "macos") {
     "host-darwin-arm64"
 } else {
     "host-linux-x64"
@@ -224,7 +224,7 @@ pub fn init() -> io::Result<PathBuf> {
     const INIT: &[u8] = include_bytes!(env!("PINFOLD_INIT"));
     let dir = dirs::artifacts_dir()?
         .join("init")
-        .join(env!("PINFOLD_INIT_SHA256"))
+        .join(super::hex(&Sha256::digest(INIT)))
         .join("linux-arm64");
     dirs::install_dir(&dir, |staging| {
         let path = staging.join("pinfold");

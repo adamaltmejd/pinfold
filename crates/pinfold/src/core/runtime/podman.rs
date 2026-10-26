@@ -78,10 +78,6 @@ pub fn purge_build_cache() -> io::Result<()> {
     output(&["podman", "image", "prune", "--force", "--filter", &filter]).map(|_| ())
 }
 
-pub fn build_cache() -> &'static str {
-    "the dev.pinfold.layer intermediate images no image builds on"
-}
-
 pub fn build(request: &BuildRequest) -> io::Result<Result<(), String>> {
     let label = format!("{LAYER_LABEL}=true");
     let cache_flags: &[&str] = if request.cache {

@@ -150,6 +150,28 @@ impl Box {
         // or resolved.
         plan.validate()
             .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
+        // Pinfold adds the harness mount, a codex login's config dir and pi's
+        // login extension in `start`, and the profile's `share/` below.
+        // Check every guest path, the spec's and these, before `home_disk`
+        // picks the disk behind `$HOME`, so a clash is refused as spec and
+        // no tie can hide it.
+        let harness = plan.harness.as_deref().map(artifacts::guest);
+        let codex_config = plan
+            .logins()
+            .any(|(_, login)| login.is_codex())
+            .then(|| Path::new(login::CODEX_CONFIG_DIR));
+        let pi_login = plan
+            .logins()
+            .any(|(_, login)| login.is_pi())
+            .then(|| Path::new(login::PI_LOGIN_DIR));
+        let extra: Vec<&Path> = harness
+            .as_deref()
+            .into_iter()
+            .chain(codex_config)
+            .chain(pi_login)
+            .collect();
+        plan.validate_guests(&extra)
+            .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
 
         // A login route's token is read before the claim, so a missing
         // variable or an unusable Codex login refuses as `login` and leaves
@@ -180,29 +202,15 @@ impl Box {
         let seeds = profile.as_mut().and_then(|profile| {
             (!profile.home.is_empty()).then(|| std::mem::take(&mut profile.home))
         });
+        // The `share/` mount is known only now.
+        if profile
+            .as_ref()
+            .is_some_and(|profile| profile.share.is_some())
+        {
+            plan.validate_guests(&extra)
+                .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
+        }
 
-        // Pinfold adds the profile's `share/` above, and the harness mount,
-        // a codex login's config dir and pi's login extension in `start`.
-        // Check the spec's mounts against them before `home_disk` picks the
-        // disk behind `$HOME`, so a clash is refused as spec and no tie can
-        // hide it.
-        let harness = plan.harness.as_deref().map(artifacts::guest);
-        let codex_config = plan
-            .logins()
-            .any(|(_, login)| login.is_codex())
-            .then(|| Path::new(login::CODEX_CONFIG_DIR));
-        let pi_login = plan
-            .logins()
-            .any(|(_, login)| login.is_pi())
-            .then(|| Path::new(login::PI_LOGIN_DIR));
-        let extra: Vec<&Path> = harness
-            .as_deref()
-            .into_iter()
-            .chain(codex_config)
-            .chain(pi_login)
-            .collect();
-        plan.validate_guests(&extra)
-            .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
         let runtime = runtime();
         runtime
             .preflight()
@@ -623,14 +631,10 @@ async fn start(
                 disk::send_seeds(&seeding.relative, &seeding.seeds, out)
             })?;
         }
-        Some(actual)
+        actual
     } else {
-        None
-    };
-    // `ready` reports the labels `list` will.
-    let actual = match actual {
-        Some(actual) => actual,
-        None => runtime
+        // `ready` reports the labels `list` will.
+        runtime
             .list()?
             .into_iter()
             .find(|box_| box_.id == plan.name)
@@ -639,7 +643,7 @@ async fn start(
                     "the runtime does not list box {:?} after ready",
                     plan.name
                 ))
-            })?,
+            })?
     };
     Ok((actual, egress_log))
 }

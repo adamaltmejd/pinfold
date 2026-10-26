@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::env;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use tokio::runtime::Builder;
 
@@ -26,6 +25,7 @@ const HARNESS: &str = "pi";
 pub fn run(args: &[String]) -> io::Result<i32> {
     let cwd = canonical(&env::current_dir()?)?;
     let root = project_root(&cwd)?;
+    utf8(&root, "project root")?;
     refuse_worktree(&root)?;
     let config = Config::load(&root)?;
     trust::check(&root, &config)?;
@@ -34,7 +34,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     state::record_run(&root)?;
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
-    let plan = build_plan(&config, &id, &root, &image)?;
+    let plan = build_plan(&config, &id, &root, &image);
     run_box(&plan, &root, &cwd, args)
 }
 
@@ -57,9 +57,7 @@ exec git merge -q --ff-only "$host"
 /// checkout (Git). A failure is reported and never stops pi.
 fn sync(name: &str, init: &Path, root: &Path) {
     // No repository or no branch: nothing to push.
-    if !root.join(".git").is_dir()
-        || !git(root, &["for-each-ref", "--count=1", "refs/heads/"])
-            .is_ok_and(|out| !out.is_empty())
+    if !git(root, &["for-each-ref", "--count=1", "refs/heads/"]).is_some_and(|out| !out.is_empty())
     {
         return;
     }
@@ -127,12 +125,12 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
     };
     let box_runtime = runtime();
     let init = artifacts::init()?;
-    let (repo, guest_repo) = (root.clone(), guest.clone());
+    let (repo, guest_repo, box_init) = (root.clone(), guest.clone(), init.clone());
     let cross = move |name: &str| {
         if verb == "push" {
-            crossing::push(box_runtime, &init, name, &repo, &guest_repo, remote)
+            crossing::push(box_runtime, &box_init, name, &repo, &guest_repo, remote)
         } else {
-            crossing::fetch(box_runtime, &init, name, &guest_repo, &repo, remote)
+            crossing::fetch(box_runtime, &box_init, name, &guest_repo, &repo, remote)
         }
     };
     match project_box(&disk)? {
@@ -162,10 +160,9 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
     let plan = Plan {
-        disks: vec![project_disk(disk, &root, None)?],
+        disks: vec![project_disk(disk, &root, None)],
         ..box_plan(&config, &id, &image)
     };
-    let init = artifacts::init()?;
     let runtime = Builder::new_current_thread().enable_all().build()?;
     let result = runtime.block_on(async {
         let mut signals = Signals::new()?;
@@ -245,7 +242,7 @@ pub(crate) fn project_root(cwd: &Path) -> io::Result<PathBuf> {
     let cwd = canonical(cwd)?;
     // `--show-toplevel` fails inside `.git`, and the fallback would take
     // `.git` as the project, so refuse before anything is created.
-    if git(&cwd, &["rev-parse", "--is-inside-git-dir"]).is_ok_and(|inside| inside == "true") {
+    if git(&cwd, &["rev-parse", "--is-inside-git-dir"]).is_some_and(|inside| inside == "true") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
@@ -254,7 +251,7 @@ pub(crate) fn project_root(cwd: &Path) -> io::Result<PathBuf> {
             ),
         ));
     }
-    let top = git(&cwd, &["rev-parse", "--show-toplevel"]).ok();
+    let top = git(&cwd, &["rev-parse", "--show-toplevel"]);
     let root = canonical(top.as_deref().map_or(&cwd, Path::new))?;
     if !cwd.starts_with(&root) {
         return Err(io::Error::new(
@@ -334,7 +331,7 @@ fn warn_containerfile(image: &ImageInfo, bytes: &[u8], build: &str) {
     }
 }
 
-fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> io::Result<Plan> {
+fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> Plan {
     let mut env = BTreeMap::from([
         ("HOME".to_string(), Env::Exact(state::HOME.to_string())),
         ("HERDR_AGENT".to_string(), Env::Exact("pi".to_string())),
@@ -344,7 +341,7 @@ fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> io::Result
         (name.clone(), Env::From { from })
     }));
     let [home, project] = state::disk_names(id);
-    Ok(Plan {
+    Plan {
         profile: Some(config.profile.name.clone()),
         harness: Some(HARNESS.to_string()),
         disks: vec![
@@ -355,7 +352,7 @@ fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> io::Result
                 from: None,
                 readonly: false,
             },
-            project_disk(project, root, Some(root))?,
+            project_disk(project, root, Some(root)),
         ],
         env,
         egress: Some(Egress {
@@ -363,7 +360,7 @@ fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> io::Result
             routes: config.routes.clone(),
         }),
         ..box_plan(config, id, image)
-    })
+    }
 }
 
 /// The plan both a pi box and a transient crossing box start from: the
@@ -379,17 +376,16 @@ fn box_plan(config: &Config, id: &str, image: &str) -> Plan {
     }
 }
 
-/// The project disk, writable at the project's own path. `from` copies the
-/// checkout in when the disk is new.
-fn project_disk(name: String, root: &Path, from: Option<&Path>) -> io::Result<Disk> {
-    utf8(root, "project root")?;
-    Ok(Disk {
+/// The project disk, writable at the project's own path, which the caller
+/// has checked is UTF-8. `from` copies the checkout in when the disk is new.
+fn project_disk(name: String, root: &Path, from: Option<&Path>) -> Disk {
+    Disk {
         name,
         guest: root.to_path_buf(),
         size: None,
         from: from.map(Path::to_path_buf),
         readonly: false,
-    })
+    }
 }
 
 /// `path` as a string, for a spec or report value; `what` names it in the
@@ -478,29 +474,11 @@ fn run_box(plan: &Plan, root: &Path, cwd: &Path, args: &[String]) -> io::Result<
     result
 }
 
-/// Run git in `dir` and return its stdout less one trailing newline.
-fn git(dir: &Path, args: &[&str]) -> io::Result<String> {
-    let command = format!("git -C {} {}", dir.display(), args.join(" "));
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .map_err(|error| io::Error::new(error.kind(), format!("run {command}: {error}")))?;
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "{command} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    let mut stdout = String::from_utf8(output.stdout).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{command} printed non-UTF-8 output: {error}"),
-        )
-    })?;
-    if stdout.ends_with('\n') {
-        stdout.pop();
-    }
-    Ok(stdout)
+/// Run git in `dir`: its UTF-8 stdout less one trailing newline, or `None`
+/// when it fails.
+fn git(dir: &Path, args: &[&str]) -> Option<String> {
+    let output = crossing::git_command(dir).args(args).output().ok()?;
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let stdout = stdout.strip_suffix('\n').unwrap_or(&stdout);
+    output.status.success().then(|| stdout.to_string())
 }

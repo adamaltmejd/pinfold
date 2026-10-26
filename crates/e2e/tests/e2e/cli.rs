@@ -11,65 +11,6 @@ use e2e::{TestEnv, pinfold};
 #[path = "update.rs"]
 mod update;
 
-/// A fresh host with no runtime on PATH: `pinfold --version` and `pinfold
-/// box list --help` answer from the binary alone, spawn nothing and leave the
-/// state dir untouched.
-#[test]
-fn version_needs_no_runtime() {
-    let _runtime = crate::shared_runtime();
-    // Sabotage: run `crate::core::clean::maintain()` first in main.rs,
-    // before the options and the help check, as the code once did; with the
-    // empty PATH the pass writes under the state dir, so both empty-state
-    // assertions fail. Sabotage: print `pinfold 0.0.0` in main.rs's
-    // `--version` arm instead of `CARGO_PKG_VERSION`; stdout lacks the
-    // workspace version and the version assertion fails. Sabotage: in
-    // main.rs, answer `--help` after the daily pass instead of before it;
-    // `box list --help` then writes the maintenance state first, and its
-    // empty-state assertion fails.
-    let env = TestEnv::new("version");
-    let empty = env.root.join("empty-path");
-    fs::create_dir_all(&empty).unwrap();
-    // TestEnv creates the state dir, so untouched means still empty.
-    let state_entries = || {
-        fs::read_dir(&env.state)
-            .expect("read the state dir")
-            .count()
-    };
-
-    let output = env
-        .command(pinfold())
-        .arg("--version")
-        .env("PATH", &empty)
-        .output()
-        .expect("run pinfold --version");
-
-    assert!(
-        output.status.success(),
-        "pinfold --version failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    // The e2e crate shares the workspace version with pinfold.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains(env!("CARGO_PKG_VERSION")),
-        "pinfold --version printed no version: {stdout}"
-    );
-    assert_eq!(state_entries(), 0, "pinfold --version wrote state");
-
-    let help = env
-        .command(pinfold())
-        .args(["box", "list", "--help"])
-        .env("PATH", &empty)
-        .output()
-        .expect("run pinfold box list --help");
-    assert!(
-        help.status.success(),
-        "pinfold box list --help failed: {}",
-        String::from_utf8_lossy(&help.stderr)
-    );
-    assert_eq!(state_entries(), 0, "pinfold box list --help wrote state");
-}
-
 #[test]
 fn doctor_reports_without_changing_state() {
     let _runtime = crate::shared_runtime();
@@ -85,7 +26,14 @@ fn doctor_reports_without_changing_state() {
     // restriction on, the unprofiled copy reports `userns`. Skip the
     // probe; the copy reports no user-namespace token.
     // Materialize an embedded profile during inspection; the fresh cache
-    // gains files. Expected trees are the host's own pre-inspection snapshot.
+    // gains files. Sabotage: run `crate::core::clean::maintain()` first in
+    // main.rs, before the options and the help check; with the empty PATH
+    // the pass writes under the state dir, so the option's unchanged-tree
+    // assertion fails. Sabotage: print `pinfold 0.0.0` in main.rs's
+    // `--version` arm instead of `CARGO_PKG_VERSION`; the version assertion
+    // fails. Sabotage: in main.rs, answer `--help` after the daily pass
+    // instead of before it; `box list --help` then writes the maintenance
+    // state first, and its unchanged-tree assertion fails. Expected trees are the host's own pre-inspection snapshot.
     // Podman's image lookup may create its own short-name alias lock outside
     // these owned trees. Missing directories differ from empty directories.
     let env = TestEnv::with_private_cache("doctor");
@@ -209,6 +157,31 @@ fn doctor_reports_without_changing_state() {
                 _ => {}
             }
         }
+    }
+
+    // `--version` and `box list --help` answer from the binary alone with
+    // no runtime on PATH, and leave the same trees alone. The e2e crate
+    // shares the workspace version with pinfold.
+    for args in [&["--version"][..], &["box", "list", "--help"][..]] {
+        let output = env
+            .command(pinfold())
+            .args(args)
+            .env("PATH", &empty)
+            .output()
+            .expect("run a pinfold option");
+        assert!(output.status.success(), "pinfold {args:?}: {output:?}");
+        if args == ["--version"] {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout.contains(env!("CARGO_PKG_VERSION")),
+                "pinfold --version printed no version: {stdout}"
+            );
+        }
+        assert_eq!(
+            owned_trees(),
+            before,
+            "pinfold {args:?} changed pinfold's state, config or cache"
+        );
     }
 
     // The box half: the copy's `up` is refused as `runtime` naming the

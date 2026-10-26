@@ -89,12 +89,9 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
         }
         command.arg("--mount").arg(value);
     }
-    let init_dir = init
-        .parent()
-        .expect("init lives in the artifacts directory");
     command
         .arg("--mount")
-        .arg(bind(init_dir, init_dir))
+        .arg(init_mount(init))
         .arg("--entrypoint")
         .arg(init)
         .arg(
@@ -130,6 +127,14 @@ fn bind(host: &Path, guest: &Path) -> OsString {
     value.push(guest);
     value.push(",readonly");
     value
+}
+
+/// Init's directory, mounted read-only at the same path.
+fn init_mount(init: &Path) -> OsString {
+    let dir = init
+        .parent()
+        .expect("init lives in the artifacts directory");
+    bind(dir, dir)
 }
 
 /// The attached `container run` process that owns a box.
@@ -423,12 +428,8 @@ impl Runtime for Apple {
         "container"
     }
 
-    fn name(&self) -> &'static str {
-        "Apple container"
-    }
-
-    fn isolation(&self) -> &'static str {
-        "one VM per box"
+    fn describe(&self) -> &'static str {
+        "Apple container (one VM per box)"
     }
 
     /// The CLI's version, as the CLI reports it.
@@ -487,9 +488,6 @@ pub fn own_disks(
     name: &str,
     labels: &BTreeMap<String, String>,
 ) -> io::Result<()> {
-    let init_dir = init
-        .parent()
-        .expect("init lives in the artifacts directory");
     let owner = format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid());
     let mut command = std::process::Command::new("container");
     command
@@ -497,7 +495,7 @@ pub fn own_disks(
         .args(["--read-only", "--cap-drop", "ALL", "--cap-add", "CAP_CHOWN"])
         .args(["--name", name])
         .args(["--user", "0:0", "--mount"])
-        .arg(bind(init_dir, init_dir));
+        .arg(init_mount(init));
     for (key, value) in labels {
         command.arg("--label").arg(format!("{key}={value}"));
     }

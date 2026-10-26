@@ -2,7 +2,6 @@
 
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::fd::AsFd;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
@@ -11,7 +10,7 @@ use std::time::{Duration, Instant};
 use nix::poll::PollFlags;
 use sha2::{Digest, Sha256};
 
-use crate::core::pipe::{nonblocking, remaining, wait_ready};
+use crate::core::pipe::{self, nonblocking, wait_ready};
 
 pub fn bytes(url: &str, timeout: Duration, limit: u64) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
@@ -66,37 +65,23 @@ fn transfer(
         let mut total = 0_u64;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
-            remaining(deadline, cancel, "download")?;
-            match source.read(&mut buffer) {
-                Ok(0) => {
-                    if let Some(status) = child.try_wait()? {
-                        return if status.success() {
-                            Ok(())
-                        } else {
-                            Err(io::Error::other(format!("download failed: {status}")))
-                        };
-                    }
-                    wait_ready(None, PollFlags::empty(), deadline, cancel, "download")?;
+            let read = pipe::read(&mut source, &mut buffer, deadline, cancel, "download")?;
+            if read == 0 {
+                if let Some(status) = child.try_wait()? {
+                    return if status.success() {
+                        Ok(())
+                    } else {
+                        Err(io::Error::other(format!("download failed: {status}")))
+                    };
                 }
-                Ok(read) => {
-                    total += read as u64;
-                    if total > limit {
-                        return Err(io::Error::other("download exceeds byte limit"));
-                    }
-                    output.write_all(&buffer[..read])?;
-                }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    wait_ready(
-                        Some(source.as_fd()),
-                        PollFlags::POLLIN,
-                        deadline,
-                        cancel,
-                        "download",
-                    )?;
-                }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error),
+                wait_ready(None, PollFlags::empty(), deadline, cancel, "download")?;
+                continue;
             }
+            total += read as u64;
+            if total > limit {
+                return Err(io::Error::other("download exceeds byte limit"));
+            }
+            output.write_all(&buffer[..read])?;
         }
     })();
     if result.is_err() {

@@ -73,7 +73,7 @@ impl Runtime for Firecracker {
         argv: &[String],
     ) -> io::Result<ExitStatus> {
         let code = vsock::exec(&Self::record(name)?.state_dir, tty, workdir, argv)?;
-        Ok(super::exit_status(code))
+        Ok(exit_status(code))
     }
 
     /// `box exec` of this executable, for a caller that pipes its stdio.
@@ -87,9 +87,7 @@ impl Runtime for Firecracker {
         _workdir: Option<&Path>,
         argv: &[String],
     ) -> std::process::Command {
-        let mut command = std::process::Command::new(
-            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/proc/self/exe")),
-        );
+        let mut command = std::process::Command::new("/proc/self/exe");
         command
             .process_group(0)
             .args(["box", "exec", name, "--"])
@@ -157,7 +155,7 @@ impl Runtime for Firecracker {
     }
 
     fn build_cache(&self) -> &'static str {
-        podman::build_cache()
+        "the dev.pinfold.layer intermediate images no image builds on"
     }
 
     fn list_disks(&self) -> io::Result<Vec<DiskInfo>> {
@@ -212,10 +210,7 @@ impl Runtime for Firecracker {
     }
 
     fn remove_disk(&self, name: &str) -> io::Result<()> {
-        match fs::remove_file(disk_path(name)?) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-            _ => Ok(()),
-        }
+        crate::core::absent_ok(fs::remove_file(disk_path(name)?))
     }
 
     /// Firecracker's default cache ignores guest flushes, but each guest
@@ -232,17 +227,19 @@ impl Runtime for Firecracker {
         "podman"
     }
 
-    fn name(&self) -> &'static str {
-        "Firecracker"
-    }
-
-    fn isolation(&self) -> &'static str {
-        "one VM per box, pinned guest kernel"
+    fn describe(&self) -> &'static str {
+        "Firecracker (one VM per box, pinned guest kernel)"
     }
 
     fn version(&self) -> io::Result<String> {
         Ok(VMM.version.clone())
     }
+}
+
+/// A VMM's exit code, or `128+n` for signal `n`, as the exit status a
+/// runtime client would report: `exited` names 137 for a SIGKILLed VMM.
+fn exit_status(code: i32) -> ExitStatus {
+    std::os::unix::process::ExitStatusExt::from_raw((code & 0xff) << 8)
 }
 
 /// `$XDG_STATE_HOME/pinfold/disks`.

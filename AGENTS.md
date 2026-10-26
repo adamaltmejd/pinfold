@@ -43,8 +43,8 @@ rules for changing the repository.
   tickets, in a dated `docs/archive` file.
   Nightly dependency and toolchain pin releases inherit that audit from the
   latest release. No unreleased implementation changes may accompany them.
-  They require the Linux x64 suite, the full Mac suite, the prototype gate
-  on both hosts, and all release builds. Action commit pins change only in
+  They require the Linux x64 suite, the full Mac suite and all release
+  builds. Action commit pins change only in
   reviewed manual updates.
 - Every GitHub release's notes carry a "Caller changes" heading: each
   change to the box spec, a JSON line, an exit code or a CLI flag since

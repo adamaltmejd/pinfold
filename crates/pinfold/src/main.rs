@@ -84,11 +84,8 @@ fn main() -> ExitCode {
         }
     };
     update::notice(verb, args);
-    // The daily pass runs before any working command, the `pi` shim
-    // included; `init` is PID 1 in a box with no runtime to prune, and the
-    // options, help, doctor, apparmor-profile, box list and the run queries touch nothing. `box down` skips
-    // unrelated maintenance before its bounded owner request. `box up`
-    // installs its signal handlers before running the pass itself.
+    // The daily pass runs before working commands, the `pi` shim included.
+    // `box up` runs it itself, after installing its signal handlers.
     match (verb, args.first().map(String::as_str)) {
         ("init" | "update" | "doctor" | "config" | "artifacts" | "apparmor-profile", _)
         | ("box", Some("up" | "list" | "down" | "inspect" | "events")) => {}

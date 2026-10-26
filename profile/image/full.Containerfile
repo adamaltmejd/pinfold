@@ -33,7 +33,6 @@ RUN set -eux; \
 FROM documents AS full
 COPY --from=fff-install /opt/pinfold/packages/pi-fff /opt/pinfold/packages/pi-fff
 COPY --from=ponytail-install /opt/pinfold/packages/ponytail /opt/pinfold/packages/ponytail
-# gh from GitHub's signed apt repository.
 RUN set -eux; \
     export DEBIAN_FRONTEND=noninteractive; \
     mkdir -p /etc/apt/keyrings; \

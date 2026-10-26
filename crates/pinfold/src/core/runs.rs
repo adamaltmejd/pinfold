@@ -36,11 +36,7 @@ fn dir(run_id: &str) -> io::Result<PathBuf> {
 
 /// Whether the run reached ready: every ready run has a launch record.
 pub fn launched(run_id: &str) -> io::Result<bool> {
-    match fs::symlink_metadata(dir(run_id)?.join(LAUNCH)) {
-        Ok(_) => Ok(true),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
-    }
+    fs::exists(dir(run_id)?.join(LAUNCH))
 }
 
 /// The run's egress log path.
@@ -85,10 +81,7 @@ pub fn open_log(path: &Path) -> io::Result<File> {
 
 /// Remove a run that never reached ready. A missing run is removed.
 pub fn remove(run_id: &str) -> io::Result<()> {
-    match fs::remove_dir_all(dir(run_id)?) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-        _ => Ok(()),
-    }
+    crate::core::absent_ok(fs::remove_dir_all(dir(run_id)?))
 }
 
 fn write(run_id: &str, name: &str, record: &serde_json::Value) -> io::Result<()> {

@@ -394,41 +394,6 @@ def repin_build_tools(texts):
         print(f"{name} {current} -> {target}")
 
 
-def repin_packages(texts, cutoff):
-    path = ROOT / "examples" / "pi-durable" / "package.json"
-    manifest = json.loads(texts[path])
-    groups = [manifest[key] for key in ("dependencies", "devDependencies", "overrides")]
-    packages = {
-        name: json.loads(fetch(f"https://registry.npmjs.org/{name}"))
-        for group in groups
-        for name in group
-    }
-
-    def eligible(name):
-        package = packages[name]
-        ceiling = version(package["dist-tags"]["latest"])
-        if ceiling is None:
-            raise ValueError(f"{name}: latest version is not stable")
-        return {
-            number: candidate
-            for candidate, row in package["versions"].items()
-            if (number := version(candidate)) is not None
-            and number <= ceiling
-            and not row.get("deprecated")
-            and old_enough(package.get("time", {}).get(candidate), cutoff)
-        }
-
-    versions = {name: eligible(name) for name in packages}
-    for group in groups:
-        for name, current in group.items():
-            newer = [number for number in versions[name] if number > version(current)]
-            if newer:
-                target = versions[name][max(newer)]
-                print(f"{name} {current} -> {target}")
-                group[name] = target
-    texts[path] = json.dumps(manifest, indent=2) + "\n"
-
-
 def repin_yard(texts, cutoff):
     current = re.search(r"TRUFFLEHOG_VERSION=(" + VERSION + r")", texts[YARD])[1]
     rows = re.findall(r"arch=(arm64|amd64); sum=([0-9a-f]{64})", texts[YARD])
@@ -491,7 +456,6 @@ def main():
             YARD,
             ROOT / "rust-toolchain.toml",
             ROOT / "Cargo.toml",
-            ROOT / "examples" / "pi-durable" / "package.json",
             ROOT / "crates" / "pinfold" / "public_suffix_list.dat",
         ]
     }
@@ -547,7 +511,6 @@ def main():
 
     repin_firecracker(texts, cutoff)
     repin_build_tools(texts)
-    repin_packages(texts, cutoff)
     repin_yard(texts, cutoff)
     repin_suffix_list(texts)
     for path, text in texts.items():

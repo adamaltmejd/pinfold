@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+use nix::sys::socket::{MsgFlags, recv};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
@@ -661,29 +662,13 @@ fn copy_direction(reader: impl AsFd, writer: impl AsFd, activity: &Mutex<Instant
             Ok(_) => {}
         }
         // MSG_DONTWAIT handles stale readiness without making writes nonblocking.
-        // Safety: fd stays borrowed from reader, and buffer is writable for its length.
-        let received = unsafe {
-            nix::libc::recv(
-                fd.as_raw_fd(),
-                buffer.as_mut_ptr().cast(),
-                buffer.len(),
-                nix::libc::MSG_DONTWAIT,
-            )
+        let received = match recv(fd.as_raw_fd(), &mut buffer, MsgFlags::MSG_DONTWAIT) {
+            Ok(0) => return CopyEnd::Eof,
+            Ok(received) => received,
+            Err(nix::errno::Errno::EAGAIN | nix::errno::Errno::EINTR) => continue,
+            Err(_) => return CopyEnd::Failed,
         };
-        if received < 0 {
-            let error = io::Error::last_os_error();
-            if matches!(
-                error.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-            ) {
-                continue;
-            }
-            return CopyEnd::Failed;
-        }
-        if received == 0 {
-            return CopyEnd::Eof;
-        }
-        if let Err(error) = writer.write_all(&buffer[..received as usize]) {
+        if let Err(error) = writer.write_all(&buffer[..received]) {
             return if timed_out(&error) {
                 CopyEnd::WriteTimeout
             } else {
