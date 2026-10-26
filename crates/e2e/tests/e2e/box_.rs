@@ -3766,8 +3766,21 @@ fn a_login_route_keeps_the_login_on_the_host() {
     // anthropic-subscription the header `x-pinfold-unused`; the box's
     // forged Bearer reaches the fixture. Sabotage: in `Codex::headers`,
     // drop `ChatGPT-Account-ID`; pi's placeholder account id reaches the
-    // fixture (codex's half above fails on it first).
-    let subscription = HttpFixture::start(None);
+    // fixture (codex's half above fails on it first). Sabotage: set the
+    // anthropic-subscription placeholder to `pinfold-placeholder`; pi sends
+    // it as an API key, without its OAuth beta. Sabotage: in `pi_extension`,
+    // drop `apiKey`; pi has no openai-codex key and fails.
+    let subscription = HttpFixture::start(Some((
+        "text/event-stream",
+        concat!(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_e2e\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku-4-5\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        ),
+    )));
     let codex_model = HttpFixture::start(Some((
         "text/event-stream",
         concat!(
@@ -3790,6 +3803,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     };
     let pi_lapsing = pi_token(now + 120);
     let pi_refreshed = pi_token(now + 4 * 3600);
+    let pi_refresh_token = format!("pf-pi-refresh-{}", std::process::id());
     let pi_codex_home = TestDir::new(&env, "pi-codex-home");
     fs::write(
         pi_codex_home.path().join("auth.json"),
@@ -3798,7 +3812,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
             "tokens": {
                 "id_token": pi_token(now + 4 * 3600),
                 "access_token": pi_lapsing,
-                "refresh_token": format!("pf-pi-refresh-{}", std::process::id()),
+                "refresh_token": pi_refresh_token,
                 "account_id": pi_account,
             },
         })
@@ -3832,18 +3846,15 @@ fn a_login_route_keeps_the_login_on_the_host() {
             ("CODEX_REFRESH_TOKEN_URL_OVERRIDE", &refresh_url),
         ],
     );
-    let secrets = [&subscription_token, &pi_lapsing, &pi_refreshed, &pi_account];
+    let secrets = [
+        &subscription_token,
+        &pi_lapsing,
+        &pi_refreshed,
+        &pi_refresh_token,
+        &pi_account,
+    ];
     let environment = box_exec(&env, &pi_box, &["env"]);
     assert_ok(&environment, "env in the subscription pi box");
-    let placeholder = environment
-        .stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("ANTHROPIC_OAUTH_TOKEN="))
-        .expect("the subscription pi box has no ANTHROPIC_OAUTH_TOKEN");
-    assert!(
-        !placeholder.is_empty(),
-        "the subscription pi box's ANTHROPIC_OAUTH_TOKEN is empty"
-    );
     for secret in secrets {
         assert!(
             !environment.stdout.contains(secret.as_str()),
@@ -3881,6 +3892,61 @@ fn a_login_route_keeps_the_login_on_the_host() {
         Vec::<String>::new(),
         "the box's x-api-key reached the subscription fixture"
     );
+    // pi in the box, with pinfold's extension, on its built-in anthropic
+    // provider and the box's placeholder. pi's pinned source sends its
+    // `oauth-2025-04-20` beta only for a token it takes as a subscription.
+    let ran = box_exec(
+        &env,
+        &pi_box,
+        &[
+            "/opt/pinfold/pi/pi",
+            "-e",
+            "/opt/pinfold/login/pi.ts",
+            "--no-session",
+            "-p",
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-haiku-4-5",
+            "reply with ok",
+        ],
+    );
+    assert_ok(&ran, "pi -p through the anthropic-subscription login route");
+    let requests: Vec<_> = subscription.targets()[1..]
+        .iter()
+        .filter(|(target, _)| target.starts_with("/v1/messages"))
+        .map(|(_, headers)| headers.clone())
+        .collect();
+    assert!(
+        !requests.is_empty(),
+        "pi's request never reached the fixture at /v1/messages"
+    );
+    for headers in &requests {
+        let values = |name: &str| -> Vec<&str> {
+            headers
+                .iter()
+                .filter(|(header, _)| header.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_str())
+                .collect()
+        };
+        assert_eq!(
+            values("authorization"),
+            [format!("Bearer {subscription_token}").as_str()],
+            "pi's Authorization is not exactly the host token"
+        );
+        assert_eq!(
+            values("x-api-key"),
+            Vec::<&str>::new(),
+            "pi's request reached the fixture with an x-api-key"
+        );
+        assert!(
+            values("anthropic-beta")
+                .iter()
+                .any(|beta| beta.split(',').any(|f| f.trim() == "oauth-2025-04-20")),
+            "pi did not take the box's placeholder for a subscription token: {:?}",
+            values("anthropic-beta")
+        );
+    }
     // pi in the box, with pinfold's extension, on its built-in openai-codex
     // provider. A WebSocket attempt may reach the fixture first; every
     // request at the path carries the host login.
@@ -3933,13 +3999,14 @@ fn a_login_route_keeps_the_login_on_the_host() {
         &[
             "sh",
             "-c",
-            "printf %s \"$5\" > /tmp/pf-canary; \
-             grep -rlsF -e \"$1\" -e \"$2\" -e \"$3\" -e \"$4\" -e \"$5\" \
+            "printf %s \"$6\" > /tmp/pf-canary; \
+             grep -rlsF -e \"$1\" -e \"$2\" -e \"$3\" -e \"$4\" -e \"$5\" -e \"$6\" \
              /etc /opt/pinfold /tmp \"$HOME\"; true",
             "sh",
             &subscription_token,
             &pi_lapsing,
             &pi_refreshed,
+            &pi_refresh_token,
             &pi_account,
             &canary,
         ],
