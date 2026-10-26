@@ -542,7 +542,7 @@ fn serve_control(request: &Request, control: &OwnedFd, service: &OwnedFd) -> ! {
             Ok(connection) => connection,
             Err(Accepted::Peer) => continue,
             Err(Accepted::Failed) => {
-                back_off();
+                super::back_off();
                 continue;
             }
         };
@@ -607,24 +607,10 @@ fn exec_service(request: &Request, host: UnixStream, mut dropped: io::PipeReader
         Ok(listeners) => listeners,
         Err(error) => fail(&mut host, &error),
     };
-    if let Some(relay) = relay {
-        let relaying = spawn(move || {
-            loop {
-                match relay.accept() {
-                    Ok((client, _)) => {
-                        let _ = spawn(move || {
-                            if let Ok(server) = vsock_connect(PROXY_PORT) {
-                                let _ = super::relay(client, server);
-                            }
-                        });
-                    }
-                    Err(_) => back_off(),
-                }
-            }
-        });
-        if let Err(error) = relaying {
-            fail(&mut host, &error)
-        }
+    if let Some(relay) = relay
+        && let Err(error) = super::serve_relay(relay, || vsock_connect(PROXY_PORT))
+    {
+        fail(&mut host, &error)
     }
     // EOF once PID 1 holds only CAP_SYS_ADMIN, or has died.
     let _ = dropped.read(&mut [0]);
@@ -644,7 +630,7 @@ fn exec_service(request: &Request, host: UnixStream, mut dropped: io::PipeReader
                 let _ = spawn(move || serve(connection, &env));
             }
             Err(Accepted::Peer) => {}
-            Err(Accepted::Failed) => back_off(),
+            Err(Accepted::Failed) => super::back_off(),
         }
     }
 }
@@ -655,12 +641,6 @@ fn spawn<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> io::Result<thread::JoinHandle<T>> {
     thread::Builder::new().spawn(work)
-}
-
-/// Pause after an accept error, such as EMFILE, that would otherwise
-/// repeat at once.
-fn back_off() {
-    thread::sleep(Duration::from_millis(100));
 }
 
 /// Join the work cgroup, out of the OOM killer's reach, then drop to the

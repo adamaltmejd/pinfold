@@ -68,12 +68,7 @@ pub fn run(args: &[String]) -> ! {
             eprintln!("pinfold init: bind {RELAY_LISTEN}: {error}");
             process::exit(1)
         });
-        thread::spawn(move || {
-            for client in listener.incoming().flatten() {
-                let target = target.clone();
-                thread::spawn(move || relay(client, UnixStream::connect(&target)?));
-            }
-        });
+        serve_relay(listener, move || UnixStream::connect(&target)).expect("start the relay");
     }
 
     println!("ready");
@@ -151,24 +146,22 @@ fn exit_with(verb: &str, result: io::Result<()>) -> ! {
     }
 }
 
+const SETUP_USAGE: &str = "usage: pinfold init setup [--own UID:GID DIR]...";
+
 /// `init setup [--own UID:GID DIR]…`, run as root with only `CAP_CHOWN` on
 /// Apple: give each new disk's root to the box user.
 fn setup(args: &[String]) -> io::Result<()> {
     let mut args = args.iter();
     while let Some(option) = args.next() {
         let (Some(owner), Some(dir)) = (args.next(), args.next()) else {
-            return Err(io::Error::other(
-                "usage: pinfold init setup [--own UID:GID DIR]...",
-            ));
+            return Err(io::Error::other(SETUP_USAGE));
         };
         let owner = (option == "--own")
             .then(|| owner.split_once(':'))
             .flatten()
             .and_then(|(uid, gid)| Some((uid.parse().ok()?, gid.parse().ok()?)));
         let Some((uid, gid)) = owner else {
-            return Err(io::Error::other(
-                "usage: pinfold init setup [--own UID:GID DIR]...",
-            ));
+            return Err(io::Error::other(SETUP_USAGE));
         };
         nix::unistd::chown(
             dir.as_str(),
@@ -343,6 +336,31 @@ impl Write for Deadline<'_> {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
+}
+
+/// Relay each client `listener` accepts to a new `connect()` stream, each
+/// on its own thread.
+fn serve_relay(
+    listener: TcpListener,
+    connect: impl Fn() -> io::Result<UnixStream> + Clone + Send + 'static,
+) -> io::Result<()> {
+    thread::Builder::new().spawn(move || {
+        loop {
+            let Ok((client, _)) = listener.accept() else {
+                back_off();
+                continue;
+            };
+            let connect = connect.clone();
+            let _ = thread::Builder::new().spawn(move || relay(client, connect()?));
+        }
+    })?;
+    Ok(())
+}
+
+/// Pause after an accept error, such as EMFILE, that would otherwise
+/// repeat at once.
+fn back_off() {
+    thread::sleep(Duration::from_millis(100));
 }
 
 /// Guest upload EOF preserves the response path. Proxy EOF completes the
