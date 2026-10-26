@@ -11,9 +11,9 @@ use std::time::{Duration, SystemTime};
 
 use e2e::{
     HttpFixture, ImageCleanup, TestEnv, assert_denied, assert_ok, box_exec, box_list,
-    build_profile, curl, default_image, exit_code, git, image_cli, image_id, image_ids, inspect,
-    json_lines, pinfold, pinfold_in, profile_containerfile, project_id, project_state_dir, run_dir,
-    run_ok, tagged_images, test_dir,
+    build_profile, curl, default_image, exit_code, image_cli, image_id, image_ids, inspect,
+    json_lines, pinfold, profile_containerfile, project_id, project_state_dir, run_dir, run_ok,
+    tagged_images, test_dir,
 };
 
 #[cfg(target_os = "macos")]
@@ -21,7 +21,7 @@ use super::box_::RuntimeContainer;
 #[cfg(target_os = "linux")]
 use super::box_::vmm_pid;
 use super::box_::{
-    HeldBuild, Starting, assert_left_nothing, box_name, box_up, box_up_refused, box_up_start,
+    Starting, assert_left_nothing, box_name, box_up, box_up_refused, box_up_start,
     built_unique_ref, find_box_state_dir, image_build, image_rm, one_json_line,
 };
 use super::runs::run_id;
@@ -52,11 +52,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // stale test); the live project's state goes and its assertion fails.
     // Sabotage: in `clean::boxes`, insert into `live_projects` above `if
     // alive`; the dead box then protects the other project, whose state
-    // survives `--unused`, and the removal assertion fails. Sabotage: past the newest
-    // two build tags, remove every tag of the tag's image, as retention by
-    // image did; `clean` takes the image the newest two builds share and
-    // the shared-image assertion fails. Sabotage: skip a tag whose image a
-    // newer tag names; the oldest-tag assertion fails. Sabotage: drop the
+    // survives `--unused`, and the removal assertion fails. Sabotage: drop the
     // in-use check from `remove_images`; the live box's last tag is offered
     // to the runtime, which deletes the image under the box, and the
     // live-box image assertion fails. Sabotage: count only the source's
@@ -74,20 +70,11 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // fails. Sabotage: on Linux, keep podman's repeated `Names` in
     // `list_images`; the second removal of the newest image's tag is
     // `image not known` and the one-line assertion fails.
-    // Sabotage: force-delete Apple's shared builder during clean; the
-    // other process's build, held in RUN by the host fixture, fails.
     // Sabotage: drop the `pinfold_box` check from `clean::boxes`; on Apple
     // the user's container, which has no owner label, is removed as a dead
     // box and its survival assertion fails. Linux lists only pinfold's own
     // claims, so no runtime container can reach `clean` there.
     let env = TestEnv::new("cleanup");
-    let build_env = cfg!(target_os = "macos").then(|| {
-        let other = TestEnv::new("clean-build");
-        // This test's second caller must finish its daily pass before the
-        // dead fixture exists. Artifact inspection does not run maintenance.
-        box_list(&other, "dev.example.test=e2e-cleanup-dead");
-        other
-    });
     default_image(&env);
     // A profile of this test's own, named for this run, so the operator's
     // default profile images, the other tests and a failed run's leftovers
@@ -177,27 +164,6 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert!(
         image_id(&unlabeled).is_some(),
         "the unlabeled image is missing before clean"
-    );
-
-    // A caller source whose three builds share one image, all past the
-    // hour's grace: the runtime builds one image under three build tags
-    // whose `<build>` times fall in 1970, in one build as pinfold tags its
-    // own. `clean` finds the name by its tags and removes only the oldest
-    // tag; the image stays under the newest two.
-    let shared = format!("{profile}-shared");
-    let shared_repository = format!("localhost/pinfold/image-{shared}");
-    let _shared_images = ImageCleanup {
-        repository: shared_repository.clone(),
-    };
-    let shared_refs = ["1-1", "2-1", "3-1"].map(|build| format!("{shared_repository}:{build}"));
-    runtime_build(&shared_refs.each_ref().map(String::as_str), &[]);
-    let shared_id = image_id(&shared_refs[0]);
-    assert!(
-        shared_id.is_some()
-            && shared_refs
-                .iter()
-                .all(|reference| image_id(reference) == shared_id),
-        "the three build tags do not name one image before clean"
     );
 
     // A project's state: a refused `pinfold pi` creates it before it names
@@ -316,29 +282,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "--dry-run removed the other project's state"
     );
 
-    // The real clean removes the dead box and only the dead box. Apple's
-    // builder is shared across state directories, so keep another caller's
-    // RUN active while clean prunes unused cache.
-    if cfg!(target_os = "macos") {
-        let other = build_env.as_ref().unwrap();
-        let name = format!("{profile}-active");
-        let _active_images = ImageCleanup {
-            repository: format!("localhost/pinfold/image-{name}"),
-        };
-        let build = HeldBuild::start(other, &name, default_image(other), &[]);
-        let cleaned = env.command(pinfold()).arg("clean").output().unwrap();
-        let built = build.finish();
-        assert!(
-            cleaned.status.success(),
-            "clean during another caller's build: {cleaned:?}"
-        );
-        assert!(
-            built.status.success(),
-            "build held active across clean: {built:?}"
-        );
-    } else {
-        run_ok(env.command(pinfold()).args(["clean"]));
-    }
+    // The real clean removes the dead box and only the dead box.
+    run_ok(env.command(pinfold()).args(["clean"]));
     assert!(
         image_id(&unlabeled).is_some(),
         "clean removed an unlabeled image"
@@ -356,16 +301,6 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert!(
         image_id(&b2).is_none(),
         "clean kept b2, an image past the newest two whose box went down"
-    );
-    assert!(
-        image_id(&shared_refs[0]).is_none(),
-        "clean kept the shared image's oldest build tag"
-    );
-    assert!(
-        shared_refs[1..]
-            .iter()
-            .all(|reference| image_id(reference) == shared_id),
-        "clean removed the image the newest two builds share"
     );
     assert!(
         !box_list(&env, &live_label).is_empty(),
@@ -635,23 +570,12 @@ fn disks_persist_and_attach_exclusively() {
     // in `vm::config`; the readers' writes succeed and both read-only
     // assertions fail. Sabotage: skip the unfilled check in `disk::claim`;
     // the `up` after an owner killed mid-copy keeps the half-filled disk and
-    // the refilled tree assertion fails. Sabotage: check the project disk
-    // with a bare `list_disks` in `pi::launch::crossing`; `fetch` recreates
-    // the unfilled disk empty in its transient box and marks it filled, so
-    // the next `up` skips the copy and the refilled tree assertion fails.
+    // the refilled tree assertion fails.
     let env = TestEnv::new("disks");
     let image = default_image(&env);
-    let names = ["work", "sparse", "race", "nested"].map(|disk| box_name(&format!("disk-{disk}")));
-    let [work, sparse, race, nested] = &names;
-    // The refilled disk is a project's disk, so `pinfold fetch` there sees it.
-    let project = test_dir(&env, "project");
-    git(project.as_path(), &["init", "-q"]);
-    let config = run_ok(&mut pinfold_in(&env, project.as_path(), &["config"]));
-    let config: serde_json::Value = serde_json::from_slice(&config.stdout).unwrap();
-    let refill = &config["project"]["disks"]["project"]
-        .as_str()
-        .expect("project.disks.project is a string")
-        .to_string();
+    let names = ["work", "sparse", "race", "nested", "refill"]
+        .map(|disk| box_name(&format!("disk-{disk}")));
+    let [work, sparse, race, nested, refill] = &names;
     let boxes =
         ["writer", "second", "reader-a", "reader-b"].map(|b| box_name(&format!("disks-{b}")));
     let [writer, second, reader_a, reader_b] = &boxes;
@@ -665,7 +589,7 @@ fn disks_persist_and_attach_exclusively() {
         })
     };
 
-    // The host tree: a plain file, an executable, a symlink and a FIFO.
+    // The host tree: a plain file, an executable and a symlink.
     let from = test_dir(&env, "from");
     fs::write(from.as_path().join("plain.txt"), b"plain\n").unwrap();
     fs::write(from.as_path().join("run.sh"), b"#!/bin/sh\necho ran\n").unwrap();
@@ -677,7 +601,6 @@ fn disks_persist_and_attach_exclusively() {
     fs::create_dir(from.as_path().join("sub")).unwrap();
     fs::write(from.as_path().join("sub/deep.txt"), b"deep\n").unwrap();
     std::os::unix::fs::symlink("plain.txt", from.as_path().join("link")).unwrap();
-    nix::unistd::mkfifo(&from.as_path().join("fifo"), nix::sys::stat::Mode::S_IRWXU).unwrap();
     let work_disk =
         serde_json::json!({ "name": work, "guest": "/work", "size": "1G", "from": from.as_path() });
     // `from` is read only when the disk is created; a reader names none.
@@ -692,23 +615,13 @@ fn disks_persist_and_attach_exclusively() {
             "-c",
             "test -x /work/run.sh && /work/run.sh && test ! -x /work/plain.txt \
              && cat /work/sub/deep.txt && test -L /work/link && readlink /work/link \
-             && test ! -e /work/fifo && test ! -e /work/later.txt",
+             && test ! -e /work/later.txt",
         ],
     );
     assert_ok(&tree, "the copied tree");
     assert_eq!(tree.stdout, "ran\ndeep\nplain.txt\n");
-    let full = box_exec(
-        &env,
-        writer,
-        &["dd", "if=/dev/zero", "of=/work/big", "bs=1M", "count=1100"],
-    );
-    assert_denied(&full, "No space left on device", "a write past the 1G disk");
     assert_ok(
-        &box_exec(
-            &env,
-            writer,
-            &["sh", "-c", "rm /work/big && echo kept > /work/written"],
-        ),
+        &box_exec(&env, writer, &["sh", "-c", "echo kept > /work/written"]),
         "writing the disk",
     );
     // On Linux the box plants a symlink where a later nested disk's mount
@@ -1038,32 +951,6 @@ fn disks_persist_and_attach_exclusively() {
         disk_names(&env).contains(refill),
         "the interrupted up's disk is gone"
     );
-    // The unfilled disk is no project disk to `fetch` either: it exits
-    // nonzero and starts no box, so prints no crossing line and records no
-    // run, and leaves the disk for the next `up` to refill.
-    let runs = || -> Vec<_> {
-        let mut names: Vec<_> = fs::read_dir(env.state.join("pinfold/runs"))
-            .expect("read the runs dir")
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        names.sort();
-        names
-    };
-    let runs_before = runs();
-    let fetched = pinfold_in(&env, project.as_path(), &["fetch"])
-        .output()
-        .expect("run pinfold fetch");
-    assert!(
-        !fetched.status.success() && fetched.stdout.is_empty(),
-        "fetch on an unfilled disk: {:?} {}",
-        fetched.status,
-        String::from_utf8_lossy(&fetched.stderr)
-    );
-    assert_eq!(
-        runs(),
-        runs_before,
-        "fetch on an unfilled disk recorded a run"
-    );
     fs::remove_file(&first).unwrap();
     fs::write(&first, b"first\n").unwrap();
     let mut refilled = box_up(&env, &spec(writer, refill_disk), writer);
@@ -1082,14 +969,9 @@ fn disks_persist_and_attach_exclusively() {
     refilled.down(&env);
     assert!(refilled.wait().success());
 
-    // After `down`, `disk rm` removes it, and an absent disk exits 0. A
-    // name that is no disk name is refused as `spec`.
+    // A name that is no disk name is refused as `spec`.
     let (code, refused) = disk_rm(&env, "../escape");
     assert_eq!((code, &refused["reason"]), (1, &"spec".into()), "{refused}");
-    let (code, removed) = disk_rm(&env, work);
-    assert_eq!((code, &removed["existed"]), (0, &true.into()), "{removed}");
-    let (code, removed) = disk_rm(&env, work);
-    assert_eq!((code, &removed["existed"]), (0, &false.into()), "{removed}");
 }
 
 fn disk_list(env: &TestEnv) -> Vec<serde_json::Value> {

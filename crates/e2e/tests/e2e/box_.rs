@@ -1701,14 +1701,14 @@ fn a_caller_builds_an_image_from_its_own_tree() {
 }
 
 /// A real Apple build held inside RUN until its host HTTP fixture answers.
-pub(super) struct HeldBuild {
+struct HeldBuild {
     child: Option<Child>,
     release: Option<std::sync::mpsc::Sender<()>>,
     server: Option<std::thread::JoinHandle<()>>,
 }
 
 impl HeldBuild {
-    pub(super) fn start(env: &TestEnv, name: &str, base: &str, vars: &[(&str, &str)]) -> HeldBuild {
+    fn start(env: &TestEnv, name: &str, base: &str, vars: &[(&str, &str)]) -> HeldBuild {
         let network = run_ok(Command::new("container").args(["network", "ls", "--format", "json"]));
         let networks: serde_json::Value = serde_json::from_slice(&network.stdout).unwrap();
         let gateway = networks
@@ -1775,7 +1775,7 @@ impl HeldBuild {
         }
     }
 
-    pub(super) fn finish(mut self) -> std::process::Output {
+    fn finish(mut self) -> std::process::Output {
         self.release.take().unwrap().send(()).unwrap();
         self.server.take().unwrap().join().unwrap();
         self.child.take().unwrap().wait_with_output().unwrap()
