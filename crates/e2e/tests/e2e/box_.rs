@@ -3605,8 +3605,8 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
 #[test]
 fn a_caller_owned_box_launches_the_pinned_harness() {
     let _runtime = crate::shared_runtime();
-    // Guarantee 19: a caller-owned box launches the pinned harness. pi
-    // here; claude's and codex's boxes run in guarantee 26's test.
+    // Guarantee 19: a caller-owned box launches the pinned harness, pi
+    // only (row 19).
     // Sabotage: drop the harness mount (or mount the wrong directory); the
     // `/opt/pinfold/pi/pi --version` assertion fails. Sabotage: mount the
     // harness but leave `PINFOLD_ALLOW` unset; the allow list assertion

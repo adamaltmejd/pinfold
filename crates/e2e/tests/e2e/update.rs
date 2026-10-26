@@ -25,7 +25,7 @@ fn host_updates_are_verified_and_atomic() {
     // command symlink is replaced and the installed binary's inode stays
     // unchanged. Remove the exclusive executable lock; the owner under a
     // different XDG root no longer prevents updating its executable.
-    // Expected release bytes, digest and version come from the host fixture;
+    // Expected release bytes and digest come from the host fixture;
     // inode identity comes from the host filesystem.
     let env = TestEnv::new("update");
     let installed = env.root.join("pinfold");

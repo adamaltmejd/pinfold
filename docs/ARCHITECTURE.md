@@ -140,8 +140,8 @@ sysctl rather than the failing call.
    when there is one.
 7. `exec` work runs with `HTTPS_PROXY` and `http_proxy` set to
    `http://127.0.0.1:3128`.
-8. Sync and unmount the disks (Linux: init, after ending box work, see Always
-   applied; Apple: the runtime's stop),
+8. Sync and unmount the disks (Linux: init, after ending box work with
+   the work cgroup's `cgroup.kill`; Apple: the runtime's stop),
    stop and remove the box, record the disks clean and release them, and
    delete the socket.
 

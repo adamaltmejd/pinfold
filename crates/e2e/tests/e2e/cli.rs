@@ -31,7 +31,9 @@ fn doctor_reports_without_changing_state() {
     // the pass writes under the state dir, so the option's unchanged-tree
     // assertion fails. Sabotage: print `pinfold 0.0.0` in main.rs's
     // `--version` arm instead of `CARGO_PKG_VERSION`; the version assertion
-    // fails. Expected trees are the host's own pre-inspection snapshot.
+    // fails. Sabotage: in main.rs, answer `--help` after the daily pass
+    // instead of before it; `box list --help` then writes the maintenance
+    // state first, and its unchanged-tree assertion fails. Expected trees are the host's own pre-inspection snapshot.
     // Podman's image lookup may create its own short-name alias lock outside
     // these owned trees. Missing directories differ from empty directories.
     let env = TestEnv::with_private_cache("doctor");
