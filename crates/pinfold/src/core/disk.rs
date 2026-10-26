@@ -164,7 +164,7 @@ pub fn claim(
             continue;
         }
         if let Some(from) = &disk.from {
-            let (entries, bytes) = walk(from).map_err(Err)?;
+            let (entries, bytes) = walk(from, &disk.skip).map_err(Err)?;
             if bytes > disk.bytes() {
                 return Err(Ok((
                     RefusalReason::Limit,
@@ -350,8 +350,9 @@ pub fn filled(runtime: &dyn Runtime, created: &[Disk]) -> io::Result<()> {
 }
 
 /// `from`'s tree without following symlinks, parents first, and the sum of
-/// its regular files' sizes. Other file types are skipped.
-fn walk(from: &Path) -> io::Result<(Vec<Entry>, u64)> {
+/// its regular files' sizes. Other file types and the `skip` paths, with
+/// everything below them, are left out.
+fn walk(from: &Path, skip: &BTreeSet<PathBuf>) -> io::Result<(Vec<Entry>, u64)> {
     let mut entries = Vec::new();
     let mut bytes = 0u64;
     let mut pending = vec![PathBuf::new()];
@@ -360,6 +361,9 @@ fn walk(from: &Path) -> io::Result<(Vec<Entry>, u64)> {
         children.sort_by_key(|entry| entry.file_name());
         for child in children {
             let path = dir.join(child.file_name());
+            if skip.contains(&path) {
+                continue;
+            }
             let metadata = fs::symlink_metadata(child.path())?;
             let kind = metadata.file_type();
             if kind.is_dir() {

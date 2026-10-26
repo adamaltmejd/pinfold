@@ -1,8 +1,10 @@
 //! `pinfold pi`: assemble one project's box and run pi in it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
+use std::ffi::OsStr;
 use std::io::{self, IsTerminal};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use tokio::runtime::Builder;
@@ -29,12 +31,13 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     refuse_worktree(&root)?;
     let config = Config::load(&root)?;
     trust::check(&root, &config)?;
+    let skip = ignored(&root)?;
     let id = project_id(&root);
     let _project = ownership::project_lock(&id)?;
     state::record_run(&root)?;
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
-    let plan = build_plan(&config, &id, &root, &image);
+    let plan = build_plan(&config, &id, &root, &image, skip);
     run_box(&plan, &root, &cwd, args)
 }
 
@@ -160,7 +163,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
     let plan = Plan {
-        disks: vec![project_disk(disk, &root, None)],
+        disks: vec![project_disk(disk, &root, None, BTreeSet::new())],
         ..box_plan(&config, &id, &image)
     };
     let runtime = Builder::new_current_thread().enable_all().build()?;
@@ -331,7 +334,13 @@ fn warn_containerfile(image: &ImageInfo, bytes: &[u8], build: &str) {
     }
 }
 
-fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> Plan {
+fn build_plan(
+    config: &Config,
+    id: &str,
+    root: &Path,
+    image: &str,
+    skip: BTreeSet<PathBuf>,
+) -> Plan {
     let mut env = BTreeMap::from([
         ("HOME".to_string(), Env::Exact(state::HOME.to_string())),
         ("HERDR_AGENT".to_string(), Env::Exact("pi".to_string())),
@@ -351,8 +360,9 @@ fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> Plan {
                 size: None,
                 from: None,
                 readonly: false,
+                skip: BTreeSet::new(),
             },
-            project_disk(project, root, Some(root)),
+            project_disk(project, root, Some(root), skip),
         ],
         env,
         egress: Some(Egress {
@@ -377,15 +387,125 @@ fn box_plan(config: &Config, id: &str, image: &str) -> Plan {
 }
 
 /// The project disk, writable at the project's own path, which the caller
-/// has checked is UTF-8. `from` copies the checkout in when the disk is new.
-fn project_disk(name: String, root: &Path, from: Option<&Path>) -> Disk {
+/// has checked is UTF-8. `from` copies the checkout in when the disk is new,
+/// less `skip`.
+fn project_disk(name: String, root: &Path, from: Option<&Path>, skip: BTreeSet<PathBuf>) -> Disk {
     Disk {
         name,
         guest: root.to_path_buf(),
         size: None,
         from: from.map(Path::to_path_buf),
         readonly: false,
+        skip,
     }
+}
+
+/// The checkout's git-ignored paths, relative to `root`, which the first
+/// start leaves out. Each submodule and untracked nested repository adds
+/// its own, since git lists none inside them. A root without `.git`
+/// ignores nothing. With `.git`, a failed listing refuses: copying
+/// everything would bring in what the checkout ignores, such as `.env`
+/// files and keys.
+fn ignored(root: &Path) -> io::Result<BTreeSet<PathBuf>> {
+    match std::fs::symlink_metadata(root.join(".git")) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(error) => return Err(error),
+        Ok(_) => {}
+    }
+    let mut skip = BTreeSet::new();
+    let mut repos = vec![PathBuf::new()];
+    while let Some(repo) = repos.pop() {
+        let dir = root.join(&repo);
+        let path =
+            |entry: &[u8]| repo.join(OsStr::from_bytes(entry.strip_suffix(b"/").unwrap_or(entry)));
+        // `--directory` names a wholly ignored directory with a trailing
+        // slash; its files may be listed too.
+        let ignored = list(
+            &dir,
+            &["--others", "--ignored", "--exclude-standard", "--directory"],
+        )?;
+        skip.extend(ignored.iter().map(|entry| path(entry)));
+        // Without `--directory`, git names an untracked nested repository,
+        // at any depth, as `dir/` and lists nothing in it.
+        let nested = list(&dir, &["--others", "--exclude-standard"])?;
+        let staged = list(&dir, &["-s"])?;
+        let submodules = staged.iter().filter_map(|entry| {
+            let (meta, path) = entry.split_at(entry.iter().position(|byte| *byte == b'\t')?);
+            meta.starts_with(b"160000 ").then(|| &path[1..])
+        });
+        for entry in nested
+            .iter()
+            .filter(|entry| entry.ends_with(b"/"))
+            .map(Vec::as_slice)
+            .chain(submodules)
+        {
+            let child = path(entry);
+            let full = root.join(&child);
+            // A symlink or file here is copied as itself, never followed.
+            match std::fs::symlink_metadata(&full) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => continue,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(unlisted(&dir, &error.to_string())),
+            }
+            match std::fs::symlink_metadata(full.join(".git")) {
+                Ok(_) => repos.push(child),
+                // An uninitialized submodule: no repository lists inside it,
+                // so its contents are left out. The directory stays, or git
+                // in the box would see the submodule deleted.
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    let entries = std::fs::read_dir(&full)
+                        .and_then(|entries| entries.collect::<io::Result<Vec<_>>>())
+                        .map_err(|error| unlisted(&dir, &error.to_string()))?;
+                    skip.extend(entries.iter().map(|entry| child.join(entry.file_name())));
+                }
+                Err(error) => return Err(unlisted(&dir, &error.to_string())),
+            }
+        }
+    }
+    Ok(skip)
+}
+
+/// `git ls-files -z` in `dir` with `args`, one entry per path. The listing
+/// keeps readdir's bytes, so macOS's decomposed names match the copy's
+/// walk, and ignores a caller's `GIT_*` repository overrides.
+fn list(dir: &Path, args: &[&str]) -> io::Result<Vec<Vec<u8>>> {
+    let refused = |detail: &str| unlisted(dir, detail);
+    let mut command = crossing::git_command(dir);
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+    ] {
+        command.env_remove(name);
+    }
+    let output = command
+        .args(["-c", "core.precomposeunicode=false", "ls-files", "-z"])
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| refused(&error.to_string()))?;
+    if !output.status.success() {
+        return Err(refused(&String::from_utf8_lossy(&output.stderr)));
+    }
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(<[u8]>::to_vec)
+        .collect())
+}
+
+fn unlisted(dir: &Path, detail: &str) -> io::Error {
+    io::Error::other(format!(
+        "ignored-unlisted: cannot list the git-ignored files in {}: {}",
+        dir.display(),
+        detail.trim()
+    ))
 }
 
 /// `path` as a string, for a spec or report value; `what` names it in the
