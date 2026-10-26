@@ -134,6 +134,7 @@ pinfold fetch                                 # box branches as pinfold/*
 ```
 
 One box runs per project; a second start is refused as `disk-in-use`.
+The first start copies untracked and ignored files too.
 Treat the box's output and branches as untrusted. The
 [pinfold-delegate](skills/pinfold-delegate/SKILL.md) skill teaches an
 agent this; copy its directory into the agent's skills directory.
