@@ -2981,28 +2981,20 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
 #[test]
 fn a_login_route_keeps_the_login_on_the_host() {
     let _runtime = crate::shared_runtime();
-    // Guarantee 26, claude half. Sabotage: in `resolve_harness`, drop the
-    // `CLAUDE_CODE_OAUTH_TOKEN` placeholder and pass `$VAR` into the box
-    // instead (`Env::From { from: login.from }`); the box environment
-    // assertion fails. The value lives only in `up`'s environment; the box
-    // sends its own Authorization, which the proxy replaces with the login's
-    // Bearer header.
-    // codex half. Sabotage: forward the token into the box env (in
-    // `resolve_harness`, add `CODEX_ACCESS_TOKEN` as an `Env::Exact` of the
-    // token `resolve_login` returned); the codex box environment assertion
-    // fails. The login lapses within 5 minutes, so the pinned host helper
-    // refreshes it through the refresh fixture at `up`, and the model
-    // fixture must see the refreshed token, never the lapsing one.
-    // pi half, first. Sabotage: in `forward`, keep a box-sent header that
-    // shares an injected header's name; pi's stored auth.json key then
-    // reaches the openrouter fixture beside the host key. Sabotage: drop
-    // anthropic's `strip`; the box's forged Authorization reaches the
-    // anthropic fixture. Sabotage: in `run_box`, omit `-e`; pi dials
-    // openrouter.ai, which this run's allowlist refuses, and `pi -p` fails
-    // on the proxy's 403. Sabotage: in `Login::env`, give pi's key variable
-    // `$VAR`'s value instead of the placeholder; the box environment
-    // assertion fails. Sabotage: drop the per-provider check in `validate`;
-    // the second openrouter route comes up ready instead of `spec`.
+    // Guarantee 26, pi half, first. Sabotage: in `forward`, keep a box-sent
+    // header that shares an injected header's name; pi's stored auth.json
+    // key then reaches the openrouter fixture beside the host key.
+    // Sabotage: drop anthropic's `strip`; the box's forged Authorization
+    // reaches the anthropic fixture. Sabotage: in `forward`, compare header
+    // names case-sensitively; the box's `X-Api-Key` and `authorization`
+    // reach the anthropic fixture. Sabotage: in `run_box`, omit `-e`; pi
+    // dials openrouter.ai, which this run's allowlist refuses, and `pi -p`
+    // fails on the proxy's 403. Sabotage: in `Login::env`, give pi's key
+    // variable `$VAR`'s value instead of the placeholder; the box
+    // environment assertion fails. Sabotage: drop the per-provider check in
+    // `validate`; the second openrouter route comes up ready instead of
+    // `spec`. Sabotage: drop the empty check in `Login::resolve`; the empty
+    // `from` comes up ready instead of `login`.
     let env = TestEnv::new("login");
     let openrouter = HttpFixture::start(Some((
         "text/event-stream",
@@ -3110,7 +3102,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
 
     // In a running pi box: only placeholders in the environment, no key in
     // any file the box could read, and the anthropic route sets x-api-key
-    // and removes a forged Authorization.
+    // and removes forged credentials in any case and number.
     let (run, _, pi_box) = crate::pi::PiRpc::start_with_env(
         &env,
         project.path(),
@@ -3160,9 +3152,13 @@ fn a_login_route_keeps_the_login_on_the_host() {
         "5",
         &[
             "-H",
-            "x-api-key: from-box",
+            "X-Api-Key: from-box",
             "-H",
-            "Authorization: Bearer from-box",
+            "x-api-key: from-box-2",
+            "-H",
+            "x-api-key: from-box-3",
+            "-H",
+            "authorization: Bearer from-box",
             "http://anthropic.login/v1/messages",
         ],
     );
@@ -3199,8 +3195,8 @@ fn a_login_route_keeps_the_login_on_the_host() {
     }
     assert!(run.finish().success(), "pinfold pi did not exit cleanly");
 
-    // A second pi login route for one provider is refused as `spec`; an
-    // unset `from` as `login`. The runs above are the positive control.
+    // A second pi login route for one provider is refused as `spec`; a
+    // `from` variable set but empty as `login`. The runs above are the positive control.
     let refused_name = box_name("login-pi-refused");
     let route =
         |from: &str| serde_json::json!({ "login": "pi", "provider": "openrouter", "from": from });
@@ -3219,19 +3215,25 @@ fn a_login_route_keeps_the_login_on_the_host() {
         refused["reason"], "spec",
         "a second openrouter route: {refused}"
     );
-    let unset = serde_json::json!({
+    let empty = serde_json::json!({
         "name": refused_name,
         "image": default_image(&env),
         "harness": "pi",
-        "egress": { "routes": { "openrouter.login": route("PINFOLD_E2E_UNSET_KEY") } },
+        "egress": { "routes": { "openrouter.login": route("PINFOLD_E2E_EMPTY_KEY") } },
     });
-    let (code, refused) = box_up_refused(&env, &unset, &keys);
+    let (code, refused) = box_up_refused(&env, &empty, &[("PINFOLD_E2E_EMPTY_KEY", "")]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(
         refused["reason"], "login",
-        "an unset from variable: {refused}"
+        "an empty from variable: {refused}"
     );
 
+    // Guarantee 26, claude half. Sabotage: in `resolve_harness`, drop the
+    // `CLAUDE_CODE_OAUTH_TOKEN` placeholder and pass `$VAR` into the box
+    // instead (`Env::From { from: login.from }`); the box environment
+    // assertion fails. The value lives only in `up`'s environment; the box
+    // sends its own Authorization, which the proxy replaces with the login's
+    // Bearer header.
     let fixture = HttpFixture::start(None);
     let secret = format!("pf-login-{}", std::process::id());
     let name = box_name("login");
@@ -3322,9 +3324,15 @@ fn a_login_route_keeps_the_login_on_the_host() {
     up.down(&env);
     assert!(up.wait().success(), "box up did not exit cleanly");
 
-    // codex: a file-store login in its own CODEX_HOME whose access token
-    // lapses in 2 minutes, and a refresh endpoint that answers with a new
-    // token for the same account, hours out.
+    // codex half. Sabotage: forward the token into the box env (in
+    // `resolve_harness`, add `CODEX_ACCESS_TOKEN` as an `Env::Exact` of the
+    // token `resolve_login` returned); the codex box environment assertion
+    // fails. The login lapses within 5 minutes, so the pinned host helper
+    // refreshes it through the refresh fixture at `up`, and the model
+    // fixture must see the refreshed token, never the lapsing one.
+    // A file-store login in its own CODEX_HOME whose access token lapses in
+    // 2 minutes, and a refresh endpoint that answers with a new token for
+    // the same account, hours out.
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("the clock is past 1970")
