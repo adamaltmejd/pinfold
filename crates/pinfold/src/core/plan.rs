@@ -11,7 +11,7 @@ use crate::core::r#box::{Refusal, RefusalReason};
 use crate::core::{artifacts, login, network, proxy};
 
 /// A parsed box spec.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
     pub name: String,
