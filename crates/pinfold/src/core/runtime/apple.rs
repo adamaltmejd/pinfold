@@ -38,28 +38,17 @@ fn volume(name: &str) -> io::Result<String> {
 /// stdout piped. When `proxy_socket` is set, carry that host unix socket
 /// into the box, where init relays to it.
 ///
-/// `container` is resolved on pinfold's own `PATH` before the spec's `env`
-/// reaches the child, so a spec `PATH` cannot choose the runtime (GitHub
-/// #70). Guest values are encoded under prefixed names in the child's
-/// environment, so they cannot configure the host client, argv holds only
-/// names, and `ps` cannot read a secret.
+/// Guest values are encoded under prefixed names in the child's
+/// environment, so they cannot configure the host client, a spec `PATH`
+/// cannot choose the runtime (GitHub #70), argv holds only names, and `ps`
+/// cannot read a secret.
 ///
 /// `init` is a host path; it and its directory are mounted read-only at the
 /// same path, so it is also the path PID 1 runs.
 #[cfg_attr(target_os = "linux", expect(dead_code))]
 pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<Client> {
-    let program = std::env::var_os("PATH")
-        .and_then(|path| {
-            std::env::split_paths(&path)
-                .map(|dir| dir.join("container"))
-                .find(|candidate| {
-                    candidate.is_file()
-                        && nix::unistd::access(candidate, nix::unistd::AccessFlags::X_OK).is_ok()
-                })
-        })
-        .ok_or_else(|| spawn_error("container", io::ErrorKind::NotFound.into()))?;
     let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
-    let mut command = Command::new(program);
+    let mut command = Command::new("container");
     command
         .args(["run", "-i", "--name", &plan.name])
         .args(["--network", "none", "--cap-drop", "ALL"])
