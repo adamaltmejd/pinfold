@@ -774,9 +774,10 @@ impl Plan {
         Ok(token)
     }
 
-    /// Refuse two mounts or disks at one lexical guest path. `Box::up` calls
-    /// it once the profile is resolved, with `extra` the paths pinfold adds
-    /// itself, so it checks the final list.
+    /// Refuse two mounts or disks at one lexical guest path, or one on the
+    /// kernel's or a hiding path. `Box::up` calls it after `validate`, with
+    /// `extra` the paths pinfold adds itself, and again once a profile adds
+    /// its `share/`, so it checks the final list.
     pub fn validate_guests(&self, extra: &[&Path]) -> Result<(), String> {
         let mut guests = BTreeSet::new();
         for guest in self
