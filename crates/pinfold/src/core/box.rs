@@ -11,7 +11,7 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::core::clean;
 use crate::core::disk::Seeding;
-use crate::core::plan::{Disk, Env, Mount, Plan, Route, valid_name};
+use crate::core::plan::{Disk, Env, Login, Mount, Plan, Route, valid_name};
 use crate::core::profile::{Profile, Seed};
 use crate::core::runs::{self, Terminal};
 use crate::core::runtime::{self, BoxInfo, Child, Prepared, apple, runtime};
@@ -181,13 +181,23 @@ impl Box {
             (!profile.home.is_empty()).then(|| std::mem::take(&mut profile.home))
         });
 
-        // Pinfold adds the profile's `share/` above, and the harness mount
-        // and a codex login's config dir in `start`. Check the spec's mounts
-        // against them before `home_disk` picks the disk behind `$HOME`, so
-        // a clash is refused as spec and no tie can hide it.
+        // Pinfold adds the profile's `share/` above, and the harness mount,
+        // a codex login's config dir and pi's login extension in `start`.
+        // Check the spec's mounts against them before `home_disk` picks the
+        // disk behind `$HOME`, so a clash is refused as spec and no tie can
+        // hide it.
         let harness = plan.harness.as_deref().map(artifacts::guest);
         let codex_config = codex.as_ref().map(|_| Path::new(login::CODEX_CONFIG_DIR));
-        let extra: Vec<&Path> = harness.as_deref().into_iter().chain(codex_config).collect();
+        let pi_login = plan
+            .logins()
+            .any(|(_, login)| login.is_pi())
+            .then(|| Path::new(login::PI_LOGIN_DIR));
+        let extra: Vec<&Path> = harness
+            .as_deref()
+            .into_iter()
+            .chain(codex_config)
+            .chain(pi_login)
+            .collect();
         plan.validate_guests(&extra)
             .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
         let runtime = runtime();
@@ -713,8 +723,9 @@ async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
 
 /// Fold the spec's harness into the plan: install the pinned harness if it
 /// is not cached, mount it read-only, and set its environment. The spec's
-/// own env wins over the harness defaults. A codex login's config is written
-/// into the box's state dir and mounted read-only at `/etc/codex`.
+/// own env wins over the harness defaults. A codex login's config and pi's
+/// login extension are written into the box's state dir and mounted
+/// read-only at `/etc/codex` and `/opt/pinfold/login`.
 fn resolve_harness(
     plan: &mut Plan,
     state_dir: &Path,
@@ -727,22 +738,23 @@ fn resolve_harness(
         host: harness.install(Some(cancel))?,
         guest: artifacts::guest(&harness.name),
     });
-    let login = plan
-        .login()
-        .map(|(route, login)| (route.to_owned(), login.clone()));
+    let logins: Vec<(String, Login)> = plan
+        .logins()
+        .map(|(route, login)| (route.to_owned(), login.clone()))
+        .collect();
     let allow = plan
         .egress
         .as_ref()
         .map(|egress| egress.allow.join(","))
         .unwrap_or_default();
-    // The first default for a name wins: the harness's, then a login route's
-    // placeholders, then the allowlist.
+    // The first default for a name wins: the harness's, then the login
+    // routes' placeholders, then the allowlist.
     let defaults = harness
         .env
         .iter()
         .map(|(name, value)| (name.clone(), value.clone()))
         .chain(
-            login
+            logins
                 .iter()
                 .flat_map(|(route, login)| login.env(route))
                 .map(|(name, value)| (name.to_owned(), value)),
@@ -751,13 +763,27 @@ fn resolve_harness(
     for (name, value) in defaults {
         plan.env.entry(name).or_insert(Env::Exact(value));
     }
-    if let Some((route, _)) = login.filter(|(_, login)| login.is_codex()) {
+    if let Some((route, _)) = logins.iter().find(|(_, login)| login.is_codex()) {
         let dir = state_dir.join("codex");
         fs::create_dir_all(&dir)?;
-        fs::write(dir.join("config.toml"), login::codex_config(&route))?;
+        fs::write(dir.join("config.toml"), login::codex_config(route))?;
         plan.mounts.push(Mount {
             host: dir,
             guest: PathBuf::from(login::CODEX_CONFIG_DIR),
+        });
+    }
+    let mut pi_logins = Vec::new();
+    for (route, login) in logins.iter().filter(|(_, login)| login.is_pi()) {
+        let provider = login.pi_provider().map_err(io::Error::other)?;
+        pi_logins.push((route.as_str(), provider));
+    }
+    if !pi_logins.is_empty() {
+        let dir = state_dir.join("login");
+        fs::create_dir_all(&dir)?;
+        fs::write(dir.join("pi.ts"), login::pi_extension(&pi_logins))?;
+        plan.mounts.push(Mount {
+            host: dir,
+            guest: PathBuf::from(login::PI_LOGIN_DIR),
         });
     }
     Ok(())

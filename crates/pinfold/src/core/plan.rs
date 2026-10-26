@@ -60,8 +60,8 @@ pub enum Route {
     /// `{ "to": ORIGIN, "headers": {…} }`: the proxy dials `to` and adds the
     /// headers from its own environment.
     Inject(Inject),
-    /// `{ "login": HARNESS, "from"?: VAR, "to"?: ORIGIN }`: the proxy dials
-    /// the harness's origin with the harness's own headers.
+    /// `{ "login": HARNESS, "provider"?: P, "from"?: VAR, "to"?: ORIGIN }`:
+    /// the proxy dials the harness's origin with the harness's own headers.
     Login(Login),
 }
 
@@ -73,8 +73,11 @@ pub enum Route {
 pub struct Login {
     /// The harness the login belongs to; it must be the spec's `harness`.
     pub login: String,
-    /// The variable the token is read from, by name only. claude needs one;
-    /// codex takes none: its token comes from the host helper.
+    /// pi's provider, one of [`PI_PROVIDERS`]; only pi names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The variable the token is read from, by name only. claude and pi
+    /// need one; codex takes none: its token comes from the host helper.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
     /// The origin to dial instead of the harness's own.
@@ -112,6 +115,10 @@ pub struct Target {
     /// `to`'s authority, for the upstream Host header.
     pub authority: String,
 }
+
+/// A login route's target, its headers with values, and the box-sent
+/// header names it removes.
+pub type Resolved = (Target, Vec<(String, String)>, &'static [&'static str]);
 
 impl Inject {
     /// The parsed target and each header with its value from this process's
@@ -163,12 +170,58 @@ impl Inject {
 /// real header, so the box never needs the value.
 const LOGIN_PLACEHOLDER: &str = "pinfold-placeholder";
 
+/// A pi login route's provider: its origin, the base path of its built-in
+/// URL in the pinned pi, its key variable, the header the key goes in, and
+/// the box-sent headers removed besides.
+pub struct PiProvider {
+    pub name: &'static str,
+    origin: &'static str,
+    pub base_path: &'static str,
+    key: &'static str,
+    header: &'static str,
+    prefix: &'static str,
+    strip: &'static [&'static str],
+}
+
+pub const PI_PROVIDERS: [PiProvider; 3] = [
+    PiProvider {
+        name: "openrouter",
+        origin: "https://openrouter.ai",
+        base_path: "/api/v1",
+        key: "OPENROUTER_API_KEY",
+        header: "Authorization",
+        prefix: "Bearer ",
+        strip: &[],
+    },
+    PiProvider {
+        name: "openai",
+        origin: "https://api.openai.com",
+        base_path: "/v1",
+        key: "OPENAI_API_KEY",
+        header: "Authorization",
+        prefix: "Bearer ",
+        strip: &[],
+    },
+    PiProvider {
+        name: "anthropic",
+        origin: "https://api.anthropic.com",
+        base_path: "",
+        key: "ANTHROPIC_API_KEY",
+        header: "x-api-key",
+        prefix: "",
+        // Anthropic also reads a bearer token, which must not travel
+        // beside the key.
+        strip: &["Authorization"],
+    },
+];
+
 impl Login {
     /// The origin this login dials: the harness's own, or the spec's `to`.
     pub fn origin(&self) -> Result<&str, String> {
         let default = match self.login.as_str() {
             "claude" => "https://api.anthropic.com",
             "codex" => "https://chatgpt.com",
+            "pi" => self.pi_provider()?.origin,
             login => return Err(invalid(format!("login {login:?} is not supported"))),
         };
         Ok(self.to.as_deref().unwrap_or(default))
@@ -180,11 +233,36 @@ impl Login {
         self.login == "codex"
     }
 
+    /// Whether this is a pi login, whose box gets pinfold's pi extension.
+    pub fn is_pi(&self) -> bool {
+        self.login == "pi"
+    }
+
+    /// A pi login's provider.
+    pub fn pi_provider(&self) -> Result<&'static PiProvider, String> {
+        let provider = self.provider.as_deref().unwrap_or_default();
+        PI_PROVIDERS
+            .iter()
+            .find(|known| known.name == provider)
+            .ok_or_else(|| {
+                let names = PI_PROVIDERS.each_ref().map(|known| known.name);
+                invalid(format!(
+                    "pi login provider {provider:?} is not supported; the providers are {names:?}"
+                ))
+            })
+    }
+
     /// Check a login route without reading the environment: this build
-    /// serves the login, `from` is present for claude and absent for codex,
-    /// and `to` parses like an injecting route's.
+    /// serves the login, only pi names a provider, `from` is present for
+    /// claude and pi and absent for codex, and `to` parses like an
+    /// injecting route's.
     fn check(&self, route: &str) -> Result<(), String> {
         self.target()?;
+        if !self.is_pi() && self.provider.is_some() {
+            return Err(invalid(format!(
+                "login route {route:?} takes no provider: only pi's does"
+            )));
+        }
         if self.is_codex() {
             if self.from.is_some() {
                 return Err(invalid(format!(
@@ -209,29 +287,48 @@ impl Login {
         })
     }
 
-    /// claude's dialed target and Authorization header, from this process's
-    /// environment once at start. The target and the value rules are
+    /// claude's or pi's dialed target and credential header, from this
+    /// process's environment once at start, and the box-sent headers to
+    /// remove besides. The target and the value rules are
     /// [`Inject::resolve`]'s.
-    pub fn resolve(&self) -> Result<(Target, Vec<(String, String)>), String> {
+    pub fn resolve(&self) -> Result<Resolved, String> {
+        let (header, prefix, strip) = if self.is_pi() {
+            let provider = self.pi_provider()?;
+            (provider.header, provider.prefix, provider.strip)
+        } else {
+            ("Authorization", "Bearer ", &[][..])
+        };
+        let from = self.from.clone().unwrap_or_default();
+        if std::env::var_os(&from).is_some_and(|value| value.is_empty()) {
+            return Err(format!("environment variable {from} is empty"));
+        }
         let inject = Inject {
             to: self.origin()?.to_string(),
             headers: BTreeMap::from([(
-                "Authorization".to_string(),
+                header.to_string(),
                 Header {
-                    from: self.from.clone().unwrap_or_default(),
-                    prefix: "Bearer ".to_string(),
+                    from,
+                    prefix: prefix.to_string(),
                 },
             )]),
         };
-        inject.resolve()
+        let (target, headers) = inject.resolve()?;
+        Ok((target, headers, strip))
     }
 
     /// The box environment a login route adds beside the harness defaults;
     /// the spec's own `env` still wins. `route` is the route's name. codex
-    /// adds none: its box gets [`login::codex_config`].
+    /// adds none: its box gets [`login::codex_config`]. pi gets only its
+    /// key's placeholder: [`login::pi_extension`] points pi at the route.
     pub fn env(&self, route: &str) -> Vec<(&'static str, String)> {
         if self.is_codex() {
             return Vec::new();
+        }
+        if self.is_pi() {
+            return self
+                .pi_provider()
+                .map(|provider| vec![(provider.key, LOGIN_PLACEHOLDER.to_string())])
+                .unwrap_or_default();
         }
         vec![
             ("ANTHROPIC_BASE_URL", format!("http://{route}")),
@@ -513,6 +610,7 @@ impl Plan {
                 }
             }
             let mut seen_login = false;
+            let mut pi_providers = BTreeSet::new();
             for (name, route) in &egress.routes {
                 match route {
                     Route::Address(address) => {
@@ -544,13 +642,22 @@ impl Plan {
                             };
                             return Err(invalid(detail));
                         }
-                        if seen_login {
+                        login.check(name)?;
+                        // pi takes one login route per provider, the other
+                        // harnesses one per spec.
+                        if login.is_pi() {
+                            let provider = login.pi_provider()?.name;
+                            if !pi_providers.insert(provider) {
+                                return Err(invalid(format!(
+                                    "login route {name:?} is a second pi login route for {provider:?}"
+                                )));
+                            }
+                        } else if seen_login {
                             return Err(invalid(format!(
                                 "login route {name:?} is a second login route"
                             )));
                         }
                         seen_login = true;
-                        login.check(name)?;
                     }
                 }
             }
@@ -558,35 +665,36 @@ impl Plan {
         Ok(())
     }
 
-    /// The spec's login route, with its name.
-    pub fn login(&self) -> Option<(&str, &Login)> {
+    /// The spec's login routes, with their names.
+    pub fn logins(&self) -> impl Iterator<Item = (&str, &Login)> {
         self.egress
-            .as_ref()?
-            .routes
             .iter()
-            .find_map(|(name, route)| match route {
+            .flat_map(|egress| &egress.routes)
+            .filter_map(|(name, route)| match route {
                 Route::Login(login) => Some((name.as_str(), login)),
                 _ => None,
             })
     }
 
-    /// Resolve the login route's credential before the claim, so a login
+    /// Resolve each login route's credential before the claim, so a login
     /// that cannot be used refuses as `login` rather than `spec`: claude's
-    /// from this process's environment, codex's from the host helper. The
-    /// value never enters the plan; codex's token is returned for the proxy.
+    /// and pi's from this process's environment, codex's from the host
+    /// helper. The value never enters the plan; codex's token is returned
+    /// for the proxy.
     pub fn resolve_login(
         &self,
         cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<Option<login::Token>, String> {
-        let Some((route, login)) = self.login() else {
-            return Ok(None);
-        };
-        let resolved = if login.is_codex() {
-            login::token_from_helper(cancel).map(Some)
-        } else {
-            login.resolve().map(|_| None)
-        };
-        resolved.map_err(|error| format!("{} login route {route:?}: {error}", login.login))
+        let mut token = None;
+        for (route, login) in self.logins() {
+            let resolved = if login.is_codex() {
+                login::token_from_helper(cancel).map(|codex| token = Some(codex))
+            } else {
+                login.resolve().map(|_| ())
+            };
+            resolved.map_err(|error| format!("{} login route {route:?}: {error}", login.login))?;
+        }
+        Ok(token)
     }
 
     /// Refuse two mounts or disks at one lexical guest path. `extra` holds the paths

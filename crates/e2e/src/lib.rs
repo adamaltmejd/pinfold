@@ -494,7 +494,7 @@ pub fn project_id(env: &TestEnv, project: &Path) -> String {
 /// A host HTTP service, reachable from a box only through a route.
 pub struct HttpFixture {
     port: u16,
-    requests: Arc<Mutex<Vec<(Headers, String)>>>,
+    requests: Arc<Mutex<Vec<(String, Headers, String)>>>,
 }
 
 /// One request's header lines, as `(name, value)` in the order received.
@@ -529,18 +529,33 @@ impl HttpFixture {
     /// The headers and body of each request the fixture has answered, in
     /// order.
     pub fn requests(&self) -> Vec<(Headers, String)> {
-        self.requests.lock().expect("fixture requests").clone()
+        let requests = self.requests.lock().expect("fixture requests");
+        requests
+            .iter()
+            .map(|(_, headers, body)| (headers.clone(), body.clone()))
+            .collect()
+    }
+
+    /// The request target and headers of each request the fixture has
+    /// answered, in order.
+    pub fn targets(&self) -> Vec<(String, Headers)> {
+        let requests = self.requests.lock().expect("fixture requests");
+        requests
+            .iter()
+            .map(|(target, headers, _)| (target.clone(), headers.clone()))
+            .collect()
     }
 }
 
-/// Read one Content-Length-framed request, record its headers and body, and
-/// answer it.
-fn serve(stream: TcpStream, seen: &Mutex<Vec<(Headers, String)>>, answer: Answer) {
+/// Read one Content-Length-framed request, record its target, headers and
+/// body, and answer it.
+fn serve(stream: TcpStream, seen: &Mutex<Vec<(String, Headers, String)>>, answer: Answer) {
     let mut reader = BufReader::new(&stream);
     let mut line = String::new();
     if reader.read_line(&mut line).unwrap_or(0) == 0 {
         return;
     }
+    let target = line.split(' ').nth(1).unwrap_or_default().to_string();
     let mut host = String::new();
     let mut length = 0u64;
     let mut headers = Vec::new();
@@ -566,7 +581,9 @@ fn serve(stream: TcpStream, seen: &Mutex<Vec<(Headers, String)>>, answer: Answer
     let mut body = Vec::new();
     let _ = reader.by_ref().take(length).read_to_end(&mut body);
     let body = String::from_utf8_lossy(&body).into_owned();
-    seen.lock().expect("fixture requests").push((headers, body));
+    seen.lock()
+        .expect("fixture requests")
+        .push((target, headers, body));
     let (content_type, body) = match answer {
         Some((content_type, body)) => (content_type, body.to_string()),
         None => ("text/plain", format!("fixture host={host}\n")),

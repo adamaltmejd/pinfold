@@ -1,5 +1,6 @@
 //! A codex login route's token: asked of the pinned host helper, checked,
-//! and held in the proxy's memory only.
+//! and held in the proxy's memory only. Also the files a login route's
+//! harness reads in the box: codex's config and pi's extension.
 
 use std::fs::{File, TryLockError};
 use std::io::{self, Read, Write};
@@ -12,6 +13,7 @@ use nix::poll::PollFlags;
 use std::time::{Duration, Instant};
 
 use crate::core::pipe::{nonblocking, remaining, wait_ready};
+use crate::core::plan::PiProvider;
 use crate::core::{artifacts, now, ownership};
 
 /// Within this much of `exp`, the proxy asks the helper again. Codex's own
@@ -314,4 +316,26 @@ pub fn codex_config(route: &str) -> String {
          wire_api = \"responses\"\n\
          requires_openai_auth = false\n"
     )
+}
+
+/// The guest directory that holds pi's login extension.
+pub const PI_LOGIN_DIR: &str = "/opt/pinfold/login";
+
+/// The extension's guest path, which the pi layer passes to pi with `-e`.
+pub const PI_EXTENSION: &str = "/opt/pinfold/login/pi.ts";
+
+/// The box's `pi.ts`: points each pi login route's provider at its route,
+/// below the base path of the provider's built-in URL. It holds no secret;
+/// the proxy adds the key.
+pub fn pi_extension(routes: &[(&str, &PiProvider)]) -> String {
+    let mut calls = String::new();
+    for (route, provider) in routes {
+        // A JSON string is a JavaScript string literal.
+        let name = serde_json::Value::from(provider.name);
+        let base_url = serde_json::Value::from(format!("http://{route}{}", provider.base_path));
+        calls.push_str(&format!(
+            "  pi.registerProvider({name}, {{ baseUrl: {base_url} }});\n"
+        ));
+    }
+    format!("export default function (pi) {{\n{calls}}}\n")
 }
