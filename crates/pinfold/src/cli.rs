@@ -590,26 +590,23 @@ pub fn disk(args: &[String]) -> io::Result<i32> {
             Ok(0)
         }
         [verb, name] if verb == "rm" => {
-            let refused = |reason: &str, detail: String| {
-                println!(
-                    "{}",
-                    serde_json::json!({ "event": "refused", "disk": name, "reason": reason, "detail": detail })
-                );
-                Ok(1)
-            };
             if !valid_name(name) {
-                return refused(
-                    "spec",
-                    format!(
+                return Ok(refused(
+                    "disk",
+                    Some(name),
+                    RefusalReason::Spec,
+                    &format!(
                         "disk name {name:?} must start alphanumeric and hold only [A-Za-z0-9._-]"
                     ),
-                );
+                ));
             }
             match disk::remove(runtime, name)? {
-                disk::Removal::InUse(holder) => refused(
-                    "disk-in-use",
-                    format!("box {holder:?} attaches disk {name:?}"),
-                ),
+                disk::Removal::InUse(holder) => Ok(refused(
+                    "disk",
+                    Some(name),
+                    RefusalReason::DiskInUse,
+                    &format!("box {holder:?} attaches disk {name:?}"),
+                )),
                 disk::Removal::Removed { existed } => {
                     println!(
                         "{}",
@@ -649,7 +646,7 @@ struct CleanPlan {
     boxes: clean::Boxes,
     /// Unpinned artifact versions. Dead boxes' state dirs and leftover
     /// socket dirs count in `automatic_bytes` only.
-    automatic: BTreeSet<PathBuf>,
+    automatic: Vec<PathBuf>,
     /// Retired runs' directories, and the old name-keyed egress logs.
     runs: Vec<PathBuf>,
     run_bytes: u64,
@@ -677,8 +674,7 @@ impl CleanPlan {
             .map(|dead| dead.state_dir.clone())
             .chain(clean::leftover_socket_dirs()?)
             .collect();
-        let mut automatic = BTreeSet::new();
-        automatic.extend(artifacts::unpinned_versions()?);
+        let automatic = artifacts::unpinned_versions()?;
         let runs = runs::retired()?;
 
         let disks = runtime.list_disks()?;
@@ -691,6 +687,7 @@ impl CleanPlan {
                 moved.push(project.root.clone());
             }
             if Self::idle(&project, &boxes.live_projects, unused) {
+                project_state += clean::path_bytes(&project.dir);
                 let names: Vec<String> = crate::pi::state::disk_names(&project.id)
                     .into_iter()
                     .filter(|name| disks.iter().any(|disk| &disk.name == name))
@@ -698,9 +695,6 @@ impl CleanPlan {
                 if !names.is_empty() {
                     project_disks.insert(project.id.clone(), names);
                 }
-            }
-            if Self::idle(&project, &boxes.live_projects, unused) {
-                project_state += clean::path_bytes(&project.dir);
                 idle_projects.insert(project.id);
             }
         }
@@ -756,7 +750,7 @@ impl CleanPlan {
         clean::prune_boxes(runtime, &self.boxes)?;
         clean::prune_leftover_states(runtime)?;
         runtime.purge_build_cache()?;
-        clean::remove_paths(self.automatic.into_iter().collect())?;
+        clean::remove_paths(self.automatic)?;
         clean::remove_paths(self.runs)?;
         let mut locks = BTreeMap::new();
         for id in &self.idle_projects {
@@ -772,9 +766,7 @@ impl CleanPlan {
                     continue;
                 }
                 if Self::idle(&project, &live, self.unused) {
-                    if self.idle_projects.contains(&project.id) {
-                        clean::remove_paths(vec![project.dir.clone()])?;
-                    }
+                    clean::remove_paths(vec![project.dir.clone()])?;
                     // A disk a box attaches stays; `disk::remove` checks.
                     for name in self.project_disks.get(&project.id).into_iter().flatten() {
                         disk::remove(runtime, name)?;
