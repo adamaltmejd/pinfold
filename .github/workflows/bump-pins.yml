@@ -75,7 +75,12 @@ jobs:
           # Automatic notes promise no caller changes. Unreleased implementation
           # changes must first go through the operator's release pass.
           tag=$(gh release view --json tagName --jq .tagName)
-          if ! git diff --quiet "$tag" HEAD -- crates guest-kernel profile examples scripts .github .yard Cargo.toml Cargo.lock rust-toolchain.toml; then
+          status=0
+          git diff --quiet "$tag" HEAD -- crates guest-kernel profile examples scripts .github .yard Cargo.toml Cargo.lock rust-toolchain.toml || status=$?
+          if [ "$status" -gt 1 ]; then
+            exit "$status"
+          fi
+          if [ "$status" -eq 1 ]; then
             echo "::notice::Unreleased implementation changes since $tag; pins wait for a manual release."
             exit 0
           fi
