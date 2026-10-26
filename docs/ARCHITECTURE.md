@@ -1058,9 +1058,9 @@ images set git's system identity to `pi <pi@pinfold.invalid>`; a
 repository or home identity overrides it.
 
 `pinfold fetch` is `box fetch` into the checkout with remote `pinfold`;
-the user merges. `pinfold push` is `box push` of the checkout with remote
-`host`; uncommitted host edits do not cross (Crossing). The user merges;
-signing and host hooks are the user's.
+the user merges; signing and host hooks are the user's. `pinfold push` is
+`box push` of the checkout with remote `host`; uncommitted host edits do
+not cross (Crossing).
 
 Both check trust as `pinfold pi` does, then use the project's running pi
 box, or a transient box on the project disk without egress, and print
@@ -1073,11 +1073,11 @@ the box's checked-out branch to `host/<branch>`, by `git merge --ff-only`
 in the box as the box user, only when that branch is a proper ancestor of
 `host/<branch>` and the working tree has no tracked changes. Otherwise
 (diverged, ahead, equal, detached, no such `host/<branch>`) the checkout
-stays as the box left it. No agent runs during either: a start never
-joins a running box, since a second start is refused as `disk-in-use`. A
-checkout with no branches skips both silently. A failed push skips the
-fast-forward. A failure prints
-`pinfold pi: sync-failed: DETAIL` on stderr, and pi starts.
+stays as the box left it. pi is not yet running; the box's own hooks
+apply. The push bundles every branch's full history, so it grows with the
+repository, and neither step has a deadline. A checkout with no branches
+skips both silently. A failed push skips the fast-forward. A failure
+prints `pinfold pi: sync-failed: DETAIL` on stderr, and pi starts.
 
 ## Experimental durable caller
 

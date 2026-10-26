@@ -71,13 +71,19 @@ fn sync(name: &str, init: &Path, root: &Path) {
         return failed(&detail);
     }
     let argv = ["sh", "-c", FAST_FORWARD_SCRIPT, "sh", guest, "host"].map(str::to_owned);
-    match runtime()
-        .exec_command(name, init, false, None, &argv)
+    let mut command = runtime().exec_command(name, init, false, None, &argv);
+    command
         .stdin(std::process::Stdio::null())
-        .output()
-    {
-        Ok(output) if output.status.success() => {}
-        Ok(output) => failed(&String::from_utf8_lossy(&output.stderr)),
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => return failed(&error.to_string()),
+    };
+    let stderr = crossing::kept_stderr(&mut child);
+    match child.wait() {
+        Ok(status) if status.success() => {}
+        Ok(_) => failed(&stderr()),
         Err(error) => failed(&error.to_string()),
     }
 }
