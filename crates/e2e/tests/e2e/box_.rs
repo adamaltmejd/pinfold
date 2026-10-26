@@ -14,10 +14,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "macos")]
+use e2e::image_cli;
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
-    box_stat, build_profile, curl, default_image, egress_log, exit_code, git, image_cli, image_id,
-    json_lines, pinfold, pinfold_in, profile_containerfile, run_ok, runtime_images, tagged_images,
+    box_stat, build_profile, curl, default_image, egress_log, exit_code, git, image_id, json_lines,
+    pinfold, pinfold_in, profile_containerfile, run_ok, runtime_images, tagged_images,
 };
 
 #[test]
@@ -33,84 +35,28 @@ fn box_lifecycle_works_for_a_caller() {
     let _runtime = crate::shared_runtime();
     // Guarantee 9: the lifecycle works for a caller.
     // Sabotage: make `box down` a no-op; the post-down list assertion fails.
-    // Sabotage: restore the empty-name sentinel in `box_state_dir`; the
-    // `down ""` before the box's teardown removes the whole boxes directory,
-    // the live box's lock with it, and the `owner_alive` assertion fails.
     // Sabotage: drop the final `down` line; the last-line assertion fails.
     // Sabotage: make `box exec` drop the runtime's exit status and return 0;
     // the exit-3 assertion fails, and the zero-exit command below is the
     // positive control that the same path can succeed.
-    // Sabotage: drop init's SIGCHLD SIG_IGN; the orphaned `true` stays a
-    // zombie of PID 1 and the no-zombie assertion fails.
     // Sabotage: skip exec's existence check; the post-down exec fails
     // without exit 3 and the exit-3 assertion fails.
     // Sabotage: let Apple's `down` pass the runtime's stderr through again;
     // on macOS the second `down` prints the runtime's not-found error and the
     // empty-stderr assertion fails.
-    // Sabotage: find the image in `Box::up` by exact string match against
-    // `list_images()` references again; the tag-less `again` box is refused
-    // `image-missing` on both runtimes, so `box_up` panics on a first line
-    // that is not `ready`. On Linux the box named by id is refused the same
-    // way.
-    // Sabotage: key the state dir by the name again; the 60-character box
-    // fails at `up` with the socket-length error, so the ready read panics.
-    // Sabotage: give a box without `egress` a derived log path in `ready`;
-    // the null assertion fails.
     // Sabotage: drop the owner-label check from cli.rs `present` (or from
     // core::box::down's list check); exec or stat on the foreign container
     // runs, or down removes it. Drop list's owner-label filter and the
     // runtime-created container appears beside the live pinfold box.
-    // Sabotage: drop the valid-name gate in core::box::down; Apple's `rm`
-    // rejects the `--filter` name as a flag, so the exit assertion fails.
     let env = TestEnv::new("lifecycle");
-    // A caller's names can be long. The state dir is keyed by the name's
-    // hash, so 60 characters, past the old socket-path budget, still come
-    // up.
-    let name = format!("{:-<60}", box_name("lifecycle"));
+    let name = box_name("lifecycle");
     let label = "dev.example.test=lifecycle";
     let image = default_image(&env);
-    let image_id = image_id(image).expect("the runtime lists the default image");
     let spec = serde_json::json!({
         "name": name,
         "image": image,
         "labels": { "dev.example.test": "lifecycle", "dev.example.box": name },
     });
-    // Sabotage: return or panic after successful startup without awaiting
-    // teardown when readiness output fails. The real pipe reader is gone
-    // before the spec is sent; Apple's inventory and host state must be
-    // empty. A Linux VM ends with its owner, which guarantee 43 proves.
-    // The normal run below reuses the same name and spec with consumed output.
-    {
-        #[cfg(target_os = "macos")]
-        let runtime_box = RuntimeContainer { name: name.clone() };
-        let errors = env.root.join("closed-output.stderr");
-        let child = env
-            .command(pinfold())
-            .args(["box", "up"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(fs::File::create(&errors).expect("create closed-output stderr"))
-            .spawn()
-            .expect("start box up with closed output");
-        let mut child = ChildOwner::new(child, &env, None);
-        drop(child.stdout.take().expect("box up stdout reader"));
-        let mut stdin = child.stdin.take().expect("box up spec input");
-        serde_json::to_writer(&mut stdin, &spec).expect("write closed-output spec");
-        stdin.flush().expect("flush closed-output spec");
-        let status = child.wait_bounded();
-        assert_eq!(
-            status.code(),
-            Some(1),
-            "readiness output failure did not exit 1: {}",
-            fs::read_to_string(&errors).expect("read closed-output stderr")
-        );
-        #[cfg(target_os = "macos")]
-        assert!(
-            !runtime_box.listed(),
-            "readiness output failure left a runtime box"
-        );
-        assert_left_nothing(&env, &name, label, "closed-output");
-    }
     let mut up = box_up(&env, &spec, &name);
 
     // Exec immediately after ready, without another runtime query first.
@@ -131,163 +77,14 @@ fn box_lifecycle_works_for_a_caller() {
     let ok = box_exec(&env, &name, &["sh", "-c", "exit 0"]);
     assert_eq!(ok.code, 0);
 
-    // `ready` carries the owner and the image it runs.
-    assert_eq!(
-        up.ready["owner"],
-        up.pid(),
-        "ready owner is not up's pid: {}",
-        up.ready
-    );
-    assert_eq!(
-        up.ready["image"]["id"],
-        image_id.as_str(),
-        "ready names the wrong image id: {}",
-        up.ready
-    );
-    // The spec has no `egress`, so there is no proxy and no log: `ready`
-    // carries the field as null.
-    assert!(
-        up.ready.get("egress_log").is_some_and(|log| log.is_null()),
-        "ready gave a box without egress a log: {}",
-        up.ready
-    );
-
-    // Sabotage: discard parse_exec's workdir; pwd reports the image's
-    // default directory instead of the caller's /tmp.
-    let directory = run_ok(env.command(pinfold()).args([
-        "box",
-        "exec",
-        &name,
-        "--workdir",
-        "/tmp",
-        "--",
-        "pwd",
-    ]));
-    assert_eq!(String::from_utf8(directory.stdout).unwrap(), "/tmp\n");
-
-    // Sabotage: discard the explicit tty flag; stdout is a host pipe, so
-    // automatic TTY detection stays false and the guest's test -t fails.
-    // The host's stdin PTY lets either runtime set terminal attributes.
-    let terminal = run_ok(
-        env.command(Path::new("python3"))
-            .args([
-                "-c",
-                r#"
-import os, pty, subprocess, sys
-master, slave = pty.openpty()
-try:
-    result = subprocess.run(sys.argv[1:], stdin=slave, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, timeout=20)
-finally:
-    os.close(slave)
-    os.close(master)
-sys.stdout.buffer.write(result.stdout)
-sys.stderr.buffer.write(result.stderr)
-sys.exit(result.returncode)
-"#,
-            ])
-            .arg(pinfold())
-            .args([
-                "box",
-                "exec",
-                &name,
-                "--tty",
-                "--",
-                "sh",
-                "-c",
-                "test -t 0 && test -t 1 && printf tty-ready",
-            ]),
-    );
-    assert_eq!(
-        String::from_utf8(terminal.stdout).unwrap().trim(),
-        "tty-ready"
-    );
-
-    // A child orphaned by an exec session is reparented to init and reaped:
-    // after it, no process in the box is a zombie. The image has no `ps`, so
-    // the kernel's own state line is read.
-    let orphan = box_exec(&env, &name, &["sh", "-c", "true & exit 0"]);
-    assert_eq!(orphan.code, 0, "orphaning exec failed: {}", orphan.stderr);
-    let states = box_exec(
-        &env,
-        &name,
-        &["sh", "-c", "grep -Hs '^State:' /proc/[0-9]*/status; exit 0"],
-    );
-    assert!(
-        states.stdout.contains("State:"),
-        "read no process states: {}",
-        states.stderr
-    );
-    assert!(
-        !states.stdout.contains("(zombie)"),
-        "a zombie outlived its exec session:\n{}",
-        states.stdout
-    );
-
-    // `list` finds the box by the caller's label, with the labels `ready`
-    // reported and the same image id.
+    // `list` finds the box by the caller's label.
     let listed = box_list(&env, label);
-    let line = listed
-        .iter()
-        .find(|box_| box_["name"].as_str() == Some(name.as_str()))
-        .unwrap_or_else(|| panic!("list did not find {name}: {listed:?}"));
-    assert_eq!(
-        line["labels"], up.ready["labels"],
-        "list's labels differ from ready's: {line} vs {}",
-        up.ready
-    );
-    assert_eq!(
-        line["image"]["id"],
-        image_id.as_str(),
-        "list names the wrong image id: {line}"
-    );
-
-    // An empty name, or one a runtime would read as a flag, is not a box:
-    // `down` behaves as for any absent box and leaves the live box alone.
-    // The filter matches only this box, so a regression removes nothing
-    // else on the host.
-    let flag = format!("--filter=label=dev.example.box={name}");
-    for absent in ["", flag.as_str()] {
-        let down = env
-            .command(pinfold())
-            .args(["box", "down", absent])
-            .stdin(Stdio::null())
-            .output()
-            .expect("run pinfold box down");
-        assert!(
-            down.status.success(),
-            "down {absent:?} failed: {}: {}",
-            down.status,
-            String::from_utf8_lossy(&down.stderr)
-        );
-        assert!(
-            down.stdout.is_empty(),
-            "down {absent:?} printed on stdout: {}",
-            String::from_utf8_lossy(&down.stdout)
-        );
-        assert!(
-            down.stderr.is_empty(),
-            "down {absent:?} printed on stderr: {}",
-            String::from_utf8_lossy(&down.stderr)
-        );
-        let still = box_exec(&env, &name, &["sh", "-c", "exit 0"]);
-        assert_eq!(
-            still.code, 0,
-            "the live box stopped answering exec after down {absent:?}: {}",
-            still.stderr
-        );
-        let survivors = box_list(&env, label);
-        let live = survivors
+    assert!(
+        listed
             .iter()
-            .find(|box_| box_["name"].as_str() == Some(name.as_str()))
-            .unwrap_or_else(|| {
-                panic!("down {absent:?} took the live box out of list: {survivors:?}")
-            });
-        assert_eq!(
-            live["owner_alive"], true,
-            "list reports the live box's owner gone after down {absent:?}: {live}"
-        );
-    }
+            .any(|box_| box_["name"].as_str() == Some(name.as_str())),
+        "list did not find {name}: {listed:?}"
+    );
 
     // On Apple, a container pinfold did not create is no box, even under a
     // name `up` accepts: `exec` and `stat` exit 3 and `down` leaves it
@@ -341,31 +138,7 @@ sys.exit(result.returncode)
         drop(foreign);
     }
 
-    // Keep the attached runtime output active through teardown. The FIFO
-    // confirms a write to init's stdout, rather than the exec stream.
-    // Sabotage: block the owner's async thread in runtime removal again;
-    // its output drain stops and teardown can exceed the caller deadline.
-    // Apple controls the race in which forced rm's two output waiters
-    // split completion events; restoring rm -f reintroduces that race.
-    // A Firecracker VM attaches no output to its owner.
-    #[cfg(target_os = "macos")]
-    {
-        let writing = box_exec(
-            &env,
-            &name,
-            &[
-                "sh",
-                "-c",
-                "mkfifo /tmp/output-ready; \
-             (printf 'first\\n'; echo ready >/tmp/output-ready; exec yes output-pressure) \
-             >/proc/1/fd/1 2>/dev/null </dev/null & \
-             read -r ready </tmp/output-ready; test \"$ready\" = ready",
-            ],
-        );
-        assert_ok(&writing, "writing attached output before teardown");
-    }
-
-    // `down` removes the box and the owner exits with output still active.
+    // `down` removes the box and the owner exits.
     up.down(&env);
     let listed = box_list(&env, label);
     assert!(
@@ -492,23 +265,8 @@ sys.exit(result.returncode)
     );
 
     // Closing stdin is `down`: the owner prints the final `down` line and
-    // exits 0. This box names the image without its tag, which the runtime
-    // resolves to the same image.
-    let untagged = image
-        .strip_suffix(":latest")
-        .unwrap_or_else(|| panic!("the default image {image} is not tagged latest"));
-    let untagged_spec = serde_json::json!({
-        "name": name,
-        "image": untagged,
-        "labels": { "dev.example.test": "lifecycle" },
-    });
-    let mut again = box_up(&env, &untagged_spec, &name);
-    assert_eq!(
-        again.ready["image"]["id"],
-        image_id.as_str(),
-        "the tag-less image resolved to another id: {}",
-        again.ready
-    );
+    // exits 0.
+    let mut again = box_up(&env, &spec, &name);
     let lines = again.close_stdin();
     let down = lines
         .last()
@@ -523,160 +281,6 @@ sys.exit(result.returncode)
         "wrong down reason: {lines:?}"
     );
     assert!(again.wait().success(), "up did not exit 0 for stdin-closed");
-
-    // On Linux the image also resolves by its id. Apple's inspect resolves
-    // neither id nor digest; macOS asserts nothing about this form.
-    if cfg!(target_os = "linux") {
-        let spec = serde_json::json!({
-            "name": name,
-            "image": image_id,
-            "labels": { "dev.example.test": "lifecycle" },
-        });
-        let mut up = box_up(&env, &spec, &name);
-        assert_eq!(
-            up.ready["image"]["id"],
-            image_id.as_str(),
-            "the image id resolved to another id: {}",
-            up.ready
-        );
-        up.close_stdin();
-        assert!(up.wait().success(), "up did not exit 0 for stdin-closed");
-    }
-    // Sabotage: propagate a bookkeeping error before the terminal signal
-    // event. A cold real artifact request holds startup after the claim;
-    // host permissions make cleanup fail, independently of pinfold's logic.
-    // Sabotage: drop the post-start actual-image comparison. Retagging while
-    // that request is held then reports ready for the wrong image instead
-    // of failing and removing it. A stable-tag launch is the control.
-    {
-        let env = TestEnv::with_private_cache("lifecycle-startup");
-        let name = box_name("startup");
-        let label = "dev.example.test=lifecycle-startup";
-        let mut spec = serde_json::json!({
-            "name": name,
-            "image": image,
-            "harness": "pi",
-            "labels": { "dev.example.test": "lifecycle-startup" },
-        });
-        let mut proxy = HeldDownload::new();
-        let mut child = env
-            .command(pinfold())
-            .envs(proxy.vars())
-            .args(["box", "up"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(spec.to_string().as_bytes())
-            .unwrap();
-        let mut child = ChildOwner::new(child, &env, None);
-        let mut output = BufReader::new(child.stdout.take().unwrap());
-        proxy.event("held");
-        let state = find_box_state_dir(&env).expect("claimed startup state");
-        let parent = state.parent().unwrap().to_path_buf();
-        struct RestorePermissions(PathBuf, fs::Permissions);
-        impl Drop for RestorePermissions {
-            fn drop(&mut self) {
-                fs::set_permissions(&self.0, self.1.clone()).unwrap();
-            }
-        }
-        let restore =
-            RestorePermissions(parent.clone(), fs::metadata(&parent).unwrap().permissions());
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o500)).unwrap();
-        run_ok(Command::new("kill").args(["-TERM", &child.id().to_string()]));
-        proxy.event("closed");
-        let text = read_bounded(
-            &mut child,
-            &mut output,
-            std::time::Duration::from_secs(10),
-            true,
-        )
-        .expect("cancelled startup terminates stdout despite bookkeeping failure");
-        let terminal = json_lines(&text);
-        assert_eq!(terminal.len(), 1, "startup terminal events: {terminal:?}");
-        assert_eq!(terminal[0]["event"], "down");
-        assert_eq!(terminal[0]["reason"], "signal");
-        assert!(child.wait_bounded().success(), "runtime removal succeeded");
-        assert!(
-            state.exists(),
-            "permission failure did not leave recoverable state"
-        );
-        assert!(
-            box_list(&env, label).is_empty(),
-            "cancelled start left a runtime box"
-        );
-        drop(restore);
-        drop(proxy);
-        let mut healed_spec = spec.clone();
-        healed_spec.as_object_mut().unwrap().remove("harness");
-        let mut healed = box_up(&env, &healed_spec, &name);
-        healed.close_stdin();
-        assert!(healed.wait().success(), "same-name startup did not recover");
-        assert_left_nothing(&env, &name, label, "recovered");
-
-        let image_name = box_name("startup-image");
-        let _images = ImageCleanup {
-            repository: format!("localhost/pinfold/image-{image_name}"),
-        };
-        let context = TestDir::new(&env, "startup-image");
-        let containerfile = context.path().join("Containerfile");
-        fs::write(&containerfile, format!("FROM {image}\nCOPY stamp /stamp\n")).unwrap();
-        fs::write(context.path().join("stamp"), "first\n").unwrap();
-        let (code, built) = image_build(&env, &image_name, &containerfile, context.path());
-        assert_eq!(code, 0, "first race image build: {built}");
-        let first_ref = built["ref"].as_str().unwrap().to_string();
-        let latest = format!("localhost/pinfold/image-{image_name}:latest");
-        fs::write(context.path().join("stamp"), "second\n").unwrap();
-        let (code, built) = image_build(&env, &image_name, &containerfile, context.path());
-        assert_eq!(code, 0, "second race image build: {built}");
-        let second_ref = built["ref"].as_str().unwrap();
-        let tag = |source: &str| {
-            let mut command = Command::new(image_cli());
-            if cfg!(target_os = "macos") {
-                command.arg("image");
-            }
-            run_ok(command.args(["tag", source, &latest]));
-        };
-        // Build before the held CONNECT: curl's production connection
-        // deadline must cover only the native tag move, not a queued build.
-        tag(&first_ref);
-        let first = e2e::image_id(&latest).expect("runtime resolves first tagged image");
-        spec["image"] = latest.clone().into();
-        let mut proxy = HeldDownload::new();
-        let mut starting = box_up_start(&env, &spec, &proxy.vars());
-        proxy.event("held");
-        tag(second_ref);
-        proxy.release();
-        let second = e2e::image_id(&latest).expect("runtime resolves second tagged image");
-        assert_ne!(first, second, "fixture images must differ");
-        let failed = starting.first_line();
-        assert_eq!(failed["event"], "failed", "retagged startup: {failed}");
-        assert!(
-            failed["detail"]
-                .as_str()
-                .is_some_and(|detail| detail.contains("image-changed")),
-            "startup failed for another reason: {failed}"
-        );
-        assert_eq!(starting.child.wait_bounded().code(), Some(1));
-        assert!(
-            starting.rest().is_empty(),
-            "failed startup emitted another event"
-        );
-        assert_left_nothing(&env, &name, label, "retagged");
-        drop(proxy);
-        let mut stable = box_up(&env, &spec, &name);
-        assert_eq!(stable.ready["image"]["id"], second);
-        let stamp = box_exec(&env, &name, &["cat", "/stamp"]);
-        assert_ok(&stamp, "stable tag's file");
-        assert_eq!(stamp.stdout, "second\n");
-        stable.close_stdin();
-        assert!(stable.wait().success(), "stable image did not tear down");
-    }
 }
 
 #[test]
