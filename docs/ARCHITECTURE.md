@@ -1131,11 +1131,9 @@ Prototype-only dependencies are `@earendil-works/pi-durable`, `pi-ai` and
 `@types/node` for Bun's compatible APIs; execution requires Bun 1.4.3+.
 Launch from the controller directory, outside the project. Bun
 loads no `.env` files and auto-installs no dependencies under its supplied
-configuration. Package `start` and `resume` commands import the controller
-through Bun's eval loader to retain its lexical launch path. Direct script
-launches are refused as `host-boundary`. Exact versions live in
-`examples/pi-durable/package.json` and `bun.lock` and advance with nightly
-pins, including incompatible versions. Any prototype or dependency change
+configuration. Exact versions live in `examples/pi-durable/package.json`
+and `bun.lock` and advance with nightly pins, including incompatible
+versions. Any prototype or dependency change
 requires the typecheck
 and guarantee 35's standalone gate. The gate is validated on macOS and
 Linux x64.

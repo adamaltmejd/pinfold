@@ -881,12 +881,9 @@ fn losing_the_owner_fails_closed() {
     // and lets it through, so the unchanged-log assertion fails. Curl's own
     // error is not asserted: Apple's forwarder sometimes hangs after the
     // owner dies rather than closing, so the request may end in a timeout
-    // instead of a refusal. Sabotage: make the owner liveness test read the
-    // pid from the `pid` file and return `kill(pid, 0)` as `Ok` or `EPERM`;
-    // pid 1 then counts as alive, so `list` reports `owner_alive` true and
-    // `prune` skips the box, and both assertions fail. The positive control
-    // is the live box in `cleanup_removes_only_pinfolds_garbage`, whose
-    // `owner_alive` is true through the same test.
+    // instead of a refusal. The positive control is the live box in
+    // `cleanup_removes_only_pinfolds_garbage`, whose `owner_alive` is true
+    // through the same test.
     let env = TestEnv::new("owner-gone");
     let name = box_name("owner-gone");
     let label = "dev.example.test=owner-gone";

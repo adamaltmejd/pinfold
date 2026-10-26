@@ -597,19 +597,19 @@ impl Quarantine {
         // A killed fetch's quarantine outlives it, and git never prunes
         // one; remove those whose process is gone. A process runs one
         // crossing, so one under its own pid is a dead process's too.
-        let own = std::process::id() as i32;
+        let own = std::process::id();
         for entry in fs::read_dir(&objects)? {
             let entry = entry?;
             let name = entry.file_name();
             let Some(pid) = name
                 .to_str()
                 .and_then(|name| name.strip_prefix(QUARANTINE))
-                .and_then(|pid| pid.parse().ok())
+                .and_then(|pid| pid.parse::<u32>().ok())
             else {
                 continue;
             };
             let gone = pid == own
-                || nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None)
+                || nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None)
                     == Err(nix::errno::Errno::ESRCH);
             if gone {
                 let _ = fs::remove_dir_all(entry.path());

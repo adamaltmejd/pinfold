@@ -29,10 +29,11 @@ use sha2::{Digest, Sha256};
 /// symlink, synced and renamed into place.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let staging = path.with_extension(format!("tmp-{}", std::process::id()));
+    // A crashed process with our pid may have left one; never reuse its mode.
+    let _ = fs::remove_file(&staging);
     let written = fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .custom_flags(nix::libc::O_NOFOLLOW)
         .open(&staging)
