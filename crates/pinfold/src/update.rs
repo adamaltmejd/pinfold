@@ -115,7 +115,7 @@ fn notice_due(record_only: bool) -> io::Result<()> {
     file.write_all(&serde_json::to_vec(&previous)?)?;
     if profile_changed && !record_only {
         eprintln!(
-            "pinfold: bundled-profiles-changed: bundled profiles changed; saved project settings and user profiles were kept. To inspect a bundled profile, run `pinfold profile new fresh-profile --from NAME --builtin` (NAME: default, documents or full)."
+            "pinfold: bundled-profiles-changed: bundled profiles changed; saved project settings and user profiles were kept. To inspect a bundled profile that no user profile overrides, run `pinfold profile new fresh-profile --from NAME` (NAME: default, documents or full)."
         );
     }
     if !due {
@@ -268,13 +268,5 @@ fn installation_lock(path: &Path) -> io::Result<Flock<File>> {
         return Err(io::Error::other("executable-replaced: rerun the update"));
     }
     loaded_version(path)?;
-    // Owners from releases before executable locking still hold their pid file.
-    for entry in dirs::entries(&dirs::boxes_dir()?)? {
-        if entry.file_type()?.is_dir() && core::clean::owner_alive(&entry.path()) {
-            return Err(io::Error::other(
-                "running-boxes: close pinfold boxes before updating",
-            ));
-        }
-    }
     Ok(lock)
 }

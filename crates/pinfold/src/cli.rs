@@ -31,7 +31,7 @@ pinfold build [--profile NAME]   build this project's image, or a profile's; pri
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache]   a caller's image from its own context; one JSON line
 pinfold image rm NAME            retire a caller image name; one JSON line
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
-pinfold profile new NAME [--from PROFILE] [--builtin]   copy a profile to edit as files
+pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim unused disk space
 pinfold doctor                   runtime, kernel, image, artifacts, trust, config, disk use
 pinfold artifacts                pinned harnesses as JSON
@@ -45,15 +45,14 @@ pinfold --help                   print this usage";
 /// The process interface's verbs, which the table above does not spell out.
 const BOX_USAGE: &str = "\
 pinfold box up
-pinfold box exec BOX [--tty] [--workdir DIR] -- argv
+pinfold box exec BOX [--tty] -- argv
 pinfold box stat BOX
 pinfold box down BOX
 pinfold box list --label KEY[=VALUE]…
 pinfold box prune
 pinfold box inspect RUN
 pinfold box events RUN [--limit N] [--after CURSOR]
-pinfold box push BOX --repo REPO --into GUEST_REPO [--remote NAME]
-pinfold box fetch BOX --repo GUEST_REPO --into REPO [--remote NAME]
+pinfold box fetch BOX --repo GUEST_REPO --into REPO
 pinfold disk list
 pinfold disk rm NAME";
 
@@ -172,7 +171,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
         Some("prune") => prune(&args[1..]),
         Some("inspect") => inspect(&args[1..]),
         Some("events") => events(&args[1..]),
-        Some(verb @ ("push" | "fetch")) => crossing(verb, &args[1..]),
+        Some("fetch") => fetch(&args[1..]),
         Some(verb) => Err(usage("box", &format!("unknown box verb {verb:?}"))),
         None => Err(usage("box", "a box verb is required")),
     }
@@ -316,7 +315,7 @@ fn refused_box(refusal: &Refusal) -> i32 {
 }
 
 fn exec(args: &[String]) -> io::Result<i32> {
-    let (name, tty, workdir, argv) = parse_exec(args)?;
+    let (name, tty, argv) = parse_exec(args)?;
     let runtime = runtime();
     if !present(runtime, "exec", &name)? {
         return Ok(3);
@@ -325,7 +324,7 @@ fn exec(args: &[String]) -> io::Result<i32> {
     // for callers that drive pinfold through their own pty.
     let tty = tty || (io::stdin().is_terminal() && io::stdout().is_terminal());
     let init = artifacts::init()?;
-    let status = runtime.exec(&name, &init, tty, workdir.as_deref(), &argv)?;
+    let status = runtime.exec(&name, &init, tty, None, &argv)?;
     Ok(exit_code(status))
 }
 
@@ -340,32 +339,21 @@ fn stat(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// `push` and `fetch`: one JSON line, exit 0, 1 on a refusal or a broken
-/// transfer, 3 on an absent box.
-fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
-    let (name, repo, into, remote) = parse_crossing(verb, args)?;
+/// `box fetch`: one JSON line, exit 0, 1 on a refusal or a broken
+/// transfer, 3 on an absent box. The remote is the box's name.
+fn fetch(args: &[String]) -> io::Result<i32> {
+    let (name, repo, into) = parse_fetch(args)?;
     let runtime = runtime();
-    if !present(runtime, verb, &name)? {
+    if !present(runtime, "fetch", &name)? {
         return Ok(3);
     }
-    let remote = remote.unwrap_or_else(|| {
-        if verb == "push" {
-            "host".into()
-        } else {
-            name.clone()
-        }
-    });
     let init = artifacts::init()?;
-    let result = if verb == "push" {
-        crossing::push(runtime, &init, &name, Path::new(&repo), &into, &remote)
-    } else {
-        crossing::fetch(runtime, &init, &name, &repo, Path::new(&into), &remote)
-    };
-    Ok(report_crossing(verb, &name, &remote, result))
+    let result = crossing::fetch(runtime, &init, &name, &repo, Path::new(&into), &name);
+    Ok(report_crossing("fetch", &name, &name, result))
 }
 
-/// Print a crossing's one JSON line and return its exit code. `pinfold
-/// push` and `fetch` print the same lines as `box push` and `box fetch`.
+/// Print a crossing's one JSON line and return its exit code, for `box
+/// fetch` and the top-level `push` and `fetch`.
 pub(crate) fn report_crossing(
     verb: &str,
     name: &str,
@@ -396,36 +384,32 @@ pub(crate) fn report_crossing(
     }
 }
 
-fn parse_crossing(
-    verb: &str,
-    args: &[String],
-) -> io::Result<(String, String, String, Option<String>)> {
+fn parse_fetch(args: &[String]) -> io::Result<(String, String, String)> {
     let (name, mut rest) = match args {
         [name, rest @ ..] if !name.starts_with('-') => (name.clone(), rest),
-        _ => return Err(usage("box", &format!("{verb} needs a box name"))),
+        _ => return Err(usage("box", "fetch needs a box name")),
     };
-    let (mut repo, mut into, mut remote) = (None, None, None);
+    let (mut repo, mut into) = (None, None);
     while let [option, value, tail @ ..] = rest {
         let slot = match option.as_str() {
             "--repo" => &mut repo,
             "--into" => &mut into,
-            "--remote" => &mut remote,
-            _ => return Err(usage("box", &format!("unknown {verb} option {option:?}"))),
+            _ => return Err(usage("box", &format!("unknown fetch option {option:?}"))),
         };
         if slot.replace(value.clone()).is_some() {
-            return Err(usage("box", &format!("{verb} takes {option} once")));
+            return Err(usage("box", &format!("fetch takes {option} once")));
         }
         rest = tail;
     }
     if let [option] = rest {
         return Err(usage(
             "box",
-            &format!("{verb} option {option:?} needs a value"),
+            &format!("fetch option {option:?} needs a value"),
         ));
     }
     match (repo, into) {
-        (Some(repo), Some(into)) => Ok((name, repo, into, remote)),
-        _ => Err(usage("box", &format!("{verb} needs --repo and --into"))),
+        (Some(repo), Some(into)) => Ok((name, repo, into)),
+        _ => Err(usage("box", "fetch needs --repo and --into")),
     }
 }
 
@@ -1005,24 +989,17 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
     }))
 }
 
-fn parse_exec(args: &[String]) -> io::Result<(String, bool, Option<PathBuf>, Vec<String>)> {
+fn parse_exec(args: &[String]) -> io::Result<(String, bool, Vec<String>)> {
     let mut args = args.iter();
     let name = args
         .next()
         .ok_or_else(|| usage("box", "exec needs a box name"))?
         .clone();
     let mut tty = false;
-    let mut workdir = None;
     loop {
         match args.next().map(String::as_str) {
             Some("--") => break,
             Some("--tty") => tty = true,
-            Some("--workdir") => {
-                workdir =
-                    Some(PathBuf::from(args.next().ok_or_else(|| {
-                        usage("box", "--workdir needs a directory")
-                    })?));
-            }
             Some(option) => {
                 return Err(usage("box", &format!("unknown exec option {option:?}")));
             }
@@ -1033,7 +1010,7 @@ fn parse_exec(args: &[String]) -> io::Result<(String, bool, Option<PathBuf>, Vec
     if argv.is_empty() {
         return Err(usage("box", "exec needs a command after `--`"));
     }
-    Ok((name, tty, workdir, argv))
+    Ok((name, tty, argv))
 }
 
 fn single_name(args: &[String], verb: &str) -> io::Result<String> {
@@ -1259,13 +1236,9 @@ pub fn profile(args: &[String]) -> io::Result<i32> {
 }
 
 fn profile_new(args: &[String]) -> io::Result<()> {
-    let (name, from, builtin) = parse_profile_new(args)?;
+    let (name, from) = parse_profile_new(args)?;
     profile::check_name("profile", &name)?;
-    let source = if builtin {
-        Profile::builtin(&from)
-    } else {
-        Profile::load(&from)
-    };
+    let source = Profile::load(&from);
     let profiles = dirs::config_dir()?.join("profiles");
     fs::create_dir_all(&profiles)?;
     let target = profiles.join(&name);
@@ -1283,14 +1256,12 @@ fn profile_new(args: &[String]) -> io::Result<()> {
     result
 }
 
-fn parse_profile_new(args: &[String]) -> io::Result<(String, String, bool)> {
+fn parse_profile_new(args: &[String]) -> io::Result<(String, String)> {
     let mut name = None;
     let mut from = None;
-    let mut builtin = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--builtin" => builtin = true,
             "--from" => {
                 from = Some(
                     args.next()
@@ -1309,5 +1280,5 @@ fn parse_profile_new(args: &[String]) -> io::Result<(String, String, bool)> {
         }
     }
     let name = name.ok_or_else(|| usage("profile", "profile new needs a name"))?;
-    Ok((name, from.unwrap_or_else(|| "default".to_string()), builtin))
+    Ok((name, from.unwrap_or_else(|| "default".to_string())))
 }

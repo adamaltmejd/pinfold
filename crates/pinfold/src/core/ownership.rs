@@ -118,7 +118,6 @@ pub fn try_project_lock(id: &str) -> io::Result<Option<Flock<File>>> {
 pub struct Record {
     pub name: String,
     pub generation: String,
-    pub pid: i32,
     pub state_dir: PathBuf,
     /// The disks this generation attaches. They are released once the
     /// owner is dead and the runtime lists the box stopped or not at all,
@@ -223,7 +222,6 @@ impl Claim {
         self.record = Some(Record {
             name: self.name.clone(),
             generation: sha256_hex(random),
-            pid: std::process::id() as i32,
             state_dir: state_dir.to_path_buf(),
             disks: Vec::new(),
             described: None,
