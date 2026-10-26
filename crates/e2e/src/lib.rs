@@ -127,9 +127,14 @@ impl Drop for TestEnv {
     fn drop(&mut self) {
         // Apple's disks are volumes outside the state root: remove this
         // root's. Linux disks live in the state root and go with it.
-        if cfg!(target_os = "macos") {
-            for disk in disk_list(self).unwrap_or_default() {
-                if let Some(name) = disk["name"].as_str() {
+        // Best effort: a Drop during unwinding must not panic.
+        if cfg!(target_os = "macos")
+            && let Ok(listed) = self.command(pinfold()).args(["disk", "list"]).output()
+        {
+            for line in String::from_utf8_lossy(&listed.stdout).lines() {
+                if let Ok(disk) = serde_json::from_str::<serde_json::Value>(line)
+                    && let Some(name) = disk["name"].as_str()
+                {
                     let _ = self.command(pinfold()).args(["disk", "rm", name]).output();
                 }
             }
@@ -215,11 +220,17 @@ pub fn image_id(reference: &str) -> Option<String> {
 /// from the runtime itself. A caller image name's builds are its tags.
 pub fn tagged_images(repository: &str) -> Vec<String> {
     image_ids(|image| {
-        image.names.iter().any(|name| {
-            name.strip_prefix(repository)
-                .is_some_and(|rest| rest.starts_with(':'))
-        })
+        image
+            .names
+            .iter()
+            .any(|name| is_tagged_in(name, repository))
     })
+}
+
+/// Whether the reference `name` is a tag of `repository`. Podman may list
+/// a short name under `localhost/`.
+fn is_tagged_in(name: &str, repository: &str) -> bool {
+    name.contains(&format!("{repository}:"))
 }
 
 /// The sorted, distinct ids of the runtime's images that `keep` accepts.
@@ -246,10 +257,9 @@ pub struct ImageCleanup {
 impl Drop for ImageCleanup {
     fn drop(&mut self) {
         // Best effort: a Drop during unwinding must not panic.
-        let prefix = format!("{}:", self.repository);
         for image in runtime_images().unwrap_or_default() {
             for reference in image.names {
-                if reference.contains(&prefix) {
+                if is_tagged_in(&reference, &self.repository) {
                     let _ = Command::new(image_cli())
                         .args(["image", "rm", &reference])
                         .output();
@@ -330,21 +340,11 @@ pub fn json_lines(text: &str) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// A host directory under the test's root, removed with it.
-pub struct TestDir {
-    path: PathBuf,
-}
-
-impl TestDir {
-    pub fn new(env: &TestEnv, name: &str) -> TestDir {
-        let path = env.root.join(name);
-        fs::create_dir_all(&path).unwrap();
-        TestDir { path }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
+/// A new host directory under the test's root, removed with it.
+pub fn test_dir(env: &TestEnv, name: &str) -> PathBuf {
+    let path = env.root.join(name);
+    fs::create_dir_all(&path).unwrap();
+    path
 }
 
 pub struct ExecOutput {
@@ -418,26 +418,6 @@ pub fn run_dir(env: &TestEnv, run_id: &str) -> PathBuf {
     env.state.join("pinfold/runs").join(run_id)
 }
 
-/// Every disk `disk list` prints. An error, not a panic, so `TestEnv`'s
-/// drop can use it while unwinding.
-pub fn disk_list(env: &TestEnv) -> Result<Vec<serde_json::Value>, String> {
-    let output = env
-        .command(pinfold())
-        .args(["disk", "list"])
-        .output()
-        .map_err(|error| format!("run pinfold disk list: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "pinfold disk list failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|line| serde_json::from_str(line).map_err(|error| format!("{line:?}: {error}")))
-        .collect()
-}
-
 /// Run `pinfold box inspect` or `box events` with `args` and return its exit
 /// code and, on exit 0, its one JSON object (else null).
 pub fn run_query(command: &mut Command) -> (i32, serde_json::Value) {
@@ -467,28 +447,22 @@ pub fn exit_code(status: ExitStatus) -> i32 {
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
 }
 
-/// The project state dir whose recorded root is `project`.
-pub fn project_state_dir(env: &TestEnv, project: &Path) -> PathBuf {
-    let root = fs::canonicalize(project).expect("canonicalize project");
-    let projects = env.state.join("pinfold").join("projects");
-    for entry in fs::read_dir(&projects).expect("read projects dir") {
-        let dir = entry.expect("project entry").path();
-        let state = fs::read_to_string(dir.join("state.json")).expect("read state.json");
-        let state: serde_json::Value = serde_json::from_str(&state).expect("state.json is JSON");
-        if state["root"].as_str() == root.to_str() {
-            return dir;
-        }
-    }
-    panic!("no project state for {}", project.display());
+/// The project's id, as `pinfold config` reports it.
+pub fn project_id(env: &TestEnv, project: &Path) -> String {
+    let output = run_ok(env.command(pinfold()).arg("config").arg(project));
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("pinfold config prints one JSON object");
+    report["project"]["id"]
+        .as_str()
+        .expect("config names the project id")
+        .to_string()
 }
 
-/// The project's id, which names its state dir.
-pub fn project_id(env: &TestEnv, project: &Path) -> String {
-    project_state_dir(env, project)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .expect("the project id is UTF-8")
-        .to_string()
+/// The project's state dir, at the path the spec names.
+pub fn project_state_dir(env: &TestEnv, project: &Path) -> PathBuf {
+    env.state
+        .join("pinfold/projects")
+        .join(project_id(env, project))
 }
 
 /// A host HTTP service, reachable from a box only through a route.
@@ -526,24 +500,10 @@ impl HttpFixture {
         format!("127.0.0.1:{}", self.port)
     }
 
-    /// The headers and body of each request the fixture has answered, in
-    /// order.
-    pub fn requests(&self) -> Vec<(Headers, String)> {
-        let requests = self.requests.lock().expect("fixture requests");
-        requests
-            .iter()
-            .map(|(_, headers, body)| (headers.clone(), body.clone()))
-            .collect()
-    }
-
-    /// The request target and headers of each request the fixture has
+    /// The target, headers and body of each request the fixture has
     /// answered, in order.
-    pub fn targets(&self) -> Vec<(String, Headers)> {
-        let requests = self.requests.lock().expect("fixture requests");
-        requests
-            .iter()
-            .map(|(target, headers, _)| (target.clone(), headers.clone()))
-            .collect()
+    pub fn requests(&self) -> Vec<(String, Headers, String)> {
+        self.requests.lock().expect("fixture requests").clone()
     }
 }
 

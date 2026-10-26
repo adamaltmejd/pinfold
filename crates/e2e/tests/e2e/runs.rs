@@ -6,8 +6,8 @@ use std::process::Stdio;
 
 use crate::box_::{Up, box_name, box_up};
 use e2e::{
-    HttpFixture, TestDir, TestEnv, assert_denied, assert_ok, curl, default_image, egress_log,
-    pinfold, run_query,
+    HttpFixture, TestEnv, assert_denied, assert_ok, curl, default_image, egress_log, pinfold,
+    run_query, test_dir,
 };
 
 /// `ready`'s run id, checked against the generation label it must equal.
@@ -213,13 +213,13 @@ fn run_queries_are_bounded_and_need_no_runtime() {
     up.close_stdin();
 
     // With no runtime on PATH, both queries answer for finished runs.
-    let empty = TestDir::new(&env, "empty-path");
+    let empty = test_dir(&env, "empty-path");
     let offline = |args: &[&str]| {
         run_query(
             env.command(pinfold())
                 .arg("box")
                 .args(args)
-                .env("PATH", empty.path()),
+                .env("PATH", empty.as_path()),
         )
     };
     let (code, record) = offline(&["inspect", &run]);

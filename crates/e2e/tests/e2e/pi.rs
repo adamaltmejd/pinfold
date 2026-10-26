@@ -17,9 +17,9 @@ use std::process::{ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 
 use crate::box_::{ChildOwner, box_name, box_up, read_bounded};
 use e2e::{
-    HttpFixture, ImageCleanup, TestDir, TestEnv, allow, assert_denied, assert_ok, box_exec,
-    box_list, build_profile, curl, default_image, git, inspect, json_lines, pinfold, pinfold_in,
-    project_id, run_dir, run_ok,
+    HttpFixture, ImageCleanup, TestEnv, allow, assert_denied, assert_ok, box_exec, box_list,
+    build_profile, curl, default_image, git, inspect, json_lines, pinfold, pinfold_in, project_id,
+    run_dir, run_ok, test_dir,
 };
 
 /// The PINFOLD_ENV_ value `PiRpc` launches with: long enough that no disk
@@ -104,17 +104,17 @@ fn the_environment_is_exactly_the_spec() {
     // assertions fail.
     let env = TestEnv::new("pi-env");
     default_image(&env);
-    let project = TestDir::new(&env, "project");
-    git(project.path(), &["init", "-q"]);
+    let project = test_dir(&env, "project");
+    git(project.as_path(), &["init", "-q"]);
 
     // Warm the shared harness cache while no proxy variable is set: pinfold
     // fetches the harness on the host with curl, which honors https_proxy,
     // so the recognisable values below would break the fetch.
-    pi_version(&env, project.path());
+    pi_version(&env, project.as_path());
 
     let (run, _, name) = PiRpc::start_with_env(
         &env,
-        project.path(),
+        project.as_path(),
         &[
             ("HTTP_PROXY", "http://upper-proxy.invalid:3128"),
             ("https_proxy", "http://lower-proxy.invalid:3128"),
@@ -299,10 +299,10 @@ fn project_state_persists_and_stays_separate() {
     // refusal assertion fails.
     let env = TestEnv::new("pi-state");
     default_image(&env);
-    let a = TestDir::new(&env, "a/checkout");
-    let b = TestDir::new(&env, "b/checkout");
-    git(a.path(), &["init", "-q"]);
-    git(b.path(), &["init", "-q"]);
+    let a = test_dir(&env, "a/checkout");
+    let b = test_dir(&env, "b/checkout");
+    git(a.as_path(), &["init", "-q"]);
+    git(b.as_path(), &["init", "-q"]);
     let settings = "$HOME/.pi/agent/settings.json";
     let in_box = |name: &str, script: &str| {
         let output = box_exec(&env, name, &["sh", "-c", script]);
@@ -312,7 +312,7 @@ fn project_state_persists_and_stays_separate() {
 
     // The first run seeds the default profile's settings.json, and an edit
     // survives the next run: a seed is copied only when missing.
-    let (run_a, _, box_a) = PiRpc::start(&env, a.path());
+    let (run_a, _, box_a) = PiRpc::start(&env, a.as_path());
     let seeded = in_box(&box_a, &format!("cat {settings}"));
     assert!(seeded.contains("defaultProjectTrust"), "{seeded}");
     in_box(
@@ -324,7 +324,7 @@ fn project_state_persists_and_stays_separate() {
 
     // One pi box per project: a second start is refused while the first
     // holds the disks.
-    let refused = pinfold_in(&env, a.path(), &["pi", "--version"])
+    let refused = pinfold_in(&env, a.as_path(), &["pi", "--version"])
         .output()
         .expect("run a second pinfold pi");
     let stderr = String::from_utf8_lossy(&refused.stderr);
@@ -334,7 +334,7 @@ fn project_state_persists_and_stays_separate() {
 
     // A second checkout with the same directory name gets its own home and
     // does not see the first project's marker.
-    let (run_b, _, box_b) = PiRpc::start(&env, b.path());
+    let (run_b, _, box_b) = PiRpc::start(&env, b.as_path());
     let separate_b = in_box(
         &box_b,
         r#"test ! -e "$HOME/project-a-marker" && printf project-b > "$HOME/project-b-marker" && cat "$HOME/project-b-marker""#,
@@ -344,7 +344,7 @@ fn project_state_persists_and_stays_separate() {
 
     // The first project's home kept its edit and its marker. A deleted seed
     // comes back on the next run.
-    let (run_a, _, box_a) = PiRpc::start(&env, a.path());
+    let (run_a, _, box_a) = PiRpc::start(&env, a.as_path());
     let kept = in_box(
         &box_a,
         &format!(
@@ -356,7 +356,7 @@ fn project_state_persists_and_stays_separate() {
         "a run reseeded an edited file"
     );
     assert!(run_a.finish().success(), "the returning project failed");
-    let (run_a, _, box_a) = PiRpc::start(&env, a.path());
+    let (run_a, _, box_a) = PiRpc::start(&env, a.as_path());
     let reseeded = in_box(&box_a, &format!("cat {settings}"));
     assert!(
         reseeded.contains("defaultProjectTrust"),
@@ -366,10 +366,10 @@ fn project_state_persists_and_stays_separate() {
 
     // Sabotage: stop bounding the cosmetic project-id prefix; the trust
     // filename exceeds the host's 255-byte component limit before pi runs.
-    let long = TestDir::new(&env, &"x".repeat(245));
-    git(long.path(), &["init", "-q"]);
-    allow(&env, long.path());
-    pi_version(&env, long.path());
+    let long = test_dir(&env, &"x".repeat(245));
+    git(long.as_path(), &["init", "-q"]);
+    allow(&env, long.as_path());
+    pi_version(&env, long.as_path());
 }
 
 #[test]
@@ -401,8 +401,8 @@ fn a_changed_project_file_stops_the_run() {
     // assertion fails.
     let env = TestEnv::new("pi-trust");
     default_image(&env);
-    let project = TestDir::new(&env, "project");
-    let root = project.path();
+    let project = test_dir(&env, "project");
+    let root = project.as_path();
     let host_git = |args: &[&str]| git(root, args);
     host_git(&["init", "-q", "-b", "main"]);
     // The host identity stays out of the repository's config, which the
@@ -589,8 +589,8 @@ fn both_pi_config_levels_load_behind_a_route() {
     // Sabotage: omit the operating-context extension; its host-chosen
     // allowlist never reaches the model.
     let env = TestEnv::new("pi-levels");
-    let project = TestDir::new(&env, "project");
-    git(project.path(), &["init", "-q"]);
+    let project = test_dir(&env, "project");
+    git(project.as_path(), &["init", "-q"]);
 
     // The profile carries the user level: a skill in its share/pi package,
     // and the agent dir's models.json, where pi reads provider settings
@@ -635,7 +635,7 @@ fn both_pi_config_levels_load_behind_a_route() {
     // The project carries the project level: a skill under .pi/.
     let project_marker = "pinfold-e2e-project-skill-marker";
     write_skill(
-        &project.path().join(".pi/skills/e2e-project-skill"),
+        &project.as_path().join(".pi/skills/e2e-project-skill"),
         "e2e-project-skill",
         project_marker,
     );
@@ -667,7 +667,7 @@ fn both_pi_config_levels_load_behind_a_route() {
             "fake-model",
             "reply with ok",
         ])
-        .current_dir(project.path())
+        .current_dir(project.as_path())
         .env("PINFOLD_PROFILE", profile)
         .env("PINFOLD_ALLOW", allow)
         .env("PINFOLD_ROUTES", format!("fake.model={}", model.route()))
@@ -683,7 +683,7 @@ fn both_pi_config_levels_load_behind_a_route() {
         .requests()
         .last()
         .expect("the fake model got no request")
-        .1
+        .2
         .clone();
     assert!(
         request.contains(profile_marker),
@@ -720,26 +720,26 @@ fn the_highest_layer_sets_the_allowlist() {
     // the runtime's defaults and the memory assertion fails.
     let env = TestEnv::new("pi-allow");
     default_image(&env);
-    let project = TestDir::new(&env, "project");
-    git(project.path(), &["init", "-q"]);
+    let project = test_dir(&env, "project");
+    git(project.as_path(), &["init", "-q"]);
 
     // The environment's list replaces the project's, which replaces the
     // built-in one: the box's allowlist is exactly the host PINFOLD_ALLOW
     // names, though the project allows another. Resource and route
     // overrides use that same highest layer.
-    let config = project.path().join(".pinfold.toml");
+    let config = project.as_path().join(".pinfold.toml");
     let project_fixture = HttpFixture::start(Some(("text/plain", "project-route")));
     fs::write(
         &config,
         format!("allow = [\"registry.npmjs.org\"]\ncpus = 2\nmemory = \"1G\"\n[routes]\n'override.internal' = '{}'\n", project_fixture.route()),
     )
     .expect("write .pinfold.toml");
-    allow(&env, project.path());
+    allow(&env, project.as_path());
     let fixture = HttpFixture::start(Some(("text/plain", "env-route")));
     let route = format!("override.internal={}", fixture.route());
     let (run, _, name) = PiRpc::start_with_env(
         &env,
-        project.path(),
+        project.as_path(),
         &[
             ("PINFOLD_ALLOW", "api.github.com"),
             ("PINFOLD_CPUS", "1"),
@@ -839,7 +839,7 @@ fn the_highest_layer_sets_the_allowlist() {
     ] {
         let mut bytes = b"private-override-marker".to_vec();
         bytes.push(0xff);
-        let invalid = pinfold_in(&env, project.path(), &["config"])
+        let invalid = pinfold_in(&env, project.as_path(), &["config"])
             .env(key, std::ffi::OsString::from_vec(bytes))
             .output()
             .expect("inspect a non-UTF-8 override");
@@ -851,7 +851,7 @@ fn the_highest_layer_sets_the_allowlist() {
             "override value leaked: {stderr}"
         );
     }
-    run_ok(&mut pinfold_in(&env, project.path(), &["config"]));
+    run_ok(&mut pinfold_in(&env, project.as_path(), &["config"]));
 }
 
 #[test]
@@ -868,12 +868,12 @@ fn the_launch_record_is_the_applied_policy() {
     // record; its equality fails.
     let env = TestEnv::new("pi-launch");
     default_image(&env);
-    let project = TestDir::new(&env, "project");
-    git(project.path(), &["init", "-q"]);
+    let project = test_dir(&env, "project");
+    git(project.as_path(), &["init", "-q"]);
     let service = HttpFixture::start(Some(("text/plain", "service")));
     let upstream = HttpFixture::start(Some(("text/plain", "upstream")));
     let upstream_origin = format!("http://{}", upstream.route());
-    let config = project.path().join(".pinfold.toml");
+    let config = project.as_path().join(".pinfold.toml");
     fs::write(
         &config,
         format!(
@@ -882,12 +882,12 @@ fn the_launch_record_is_the_applied_policy() {
         ),
     )
     .expect("write .pinfold.toml");
-    allow(&env, project.path());
+    allow(&env, project.as_path());
     let secret = format!("pf-launch-secret-{}", std::process::id());
     let header = format!("pf-launch-header-{}", std::process::id());
     let (run, _, name) = PiRpc::start_with_env(
         &env,
-        project.path(),
+        project.as_path(),
         &[
             ("PINFOLD_ENV_SECRET", &secret),
             ("PINFOLD_E2E_LAUNCH_KEY", &header),
@@ -903,7 +903,7 @@ fn the_launch_record_is_the_applied_policy() {
             .replace("api.github.com", "example.com"),
     )
     .unwrap();
-    let report = config_json(&env, project.path());
+    let report = config_json(&env, project.as_path());
     assert_eq!(report["trust"]["ok"], false, "the change was trusted");
     assert_eq!(
         report["egress"]["allow"],
@@ -977,15 +977,15 @@ fn projects_exclude_host_authority() {
     // expected boundary; the allowed sibling runs with the same profile.
     let env = TestEnv::new("host-authority");
     default_image(&env);
-    let project = TestDir::new(&env, "project");
-    git(project.path(), &["init", "-q"]);
+    let project = test_dir(&env, "project");
+    git(project.as_path(), &["init", "-q"]);
     let alias = env.root.join("project-alias");
-    std::os::unix::fs::symlink(project.path(), &alias).expect("symlink project ancestor");
+    std::os::unix::fs::symlink(project.as_path(), &alias).expect("symlink project ancestor");
     for key in ["XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"] {
-        for ancestor in [project.path(), alias.as_path()] {
+        for ancestor in [project.as_path(), alias.as_path()] {
             let unsafe_root = ancestor.join(format!("missing-{key}/nested"));
             for args in [&["allow"][..], &["build"][..], &["pi", "--version"][..]] {
-                let output = pinfold_in(&env, project.path(), args)
+                let output = pinfold_in(&env, project.as_path(), args)
                     .env(key, &unsafe_root)
                     .output()
                     .expect("refuse project authority");
@@ -1002,8 +1002,8 @@ fn projects_exclude_host_authority() {
             );
         }
     }
-    allow(&env, project.path());
-    pi_version(&env, project.path());
+    allow(&env, project.as_path());
+    pi_version(&env, project.as_path());
 }
 
 #[test]
@@ -1019,17 +1019,17 @@ fn a_caller_reads_the_effective_configuration_as_data() {
     // image reads as not built.
     let env = TestEnv::new("pi-config");
     default_image(&env);
-    let project = TestDir::new(&env, "project");
-    git(project.path(), &["init", "-q"]);
+    let project = test_dir(&env, "project");
+    git(project.as_path(), &["init", "-q"]);
     fs::write(
-        project.path().join(".pinfold.toml"),
+        project.as_path().join(".pinfold.toml"),
         "allow = [\"api.github.com\"]\n",
     )
     .expect("write .pinfold.toml");
 
     // Before `pinfold allow`, the project's config is untrusted; the caller
     // reads that state as data, and the home disk it names.
-    let report = config_json(&env, project.path());
+    let report = config_json(&env, project.as_path());
     assert_eq!(
         report["egress"]["allow"],
         serde_json::json!(["api.github.com"]),
@@ -1052,8 +1052,8 @@ fn a_caller_reads_the_effective_configuration_as_data() {
         .to_string();
 
     // After `pinfold allow` the same command reports the config trusted.
-    allow(&env, project.path());
-    let report = config_json(&env, project.path());
+    allow(&env, project.as_path());
+    let report = config_json(&env, project.as_path());
     assert_eq!(
         report["trust"]["ok"].as_bool(),
         Some(true),
@@ -1062,7 +1062,7 @@ fn a_caller_reads_the_effective_configuration_as_data() {
 
     // The home disk the report names is the one the box attaches, writable,
     // at its $HOME: a file the box writes there is on that disk.
-    let (run, _, name) = PiRpc::start(&env, project.path());
+    let (run, _, name) = PiRpc::start(&env, project.as_path());
     let listed = run_ok(env.command(pinfold()).args(["disk", "list"])).stdout;
     let listed = json_lines(&String::from_utf8_lossy(&listed));
     let attached = listed
@@ -1095,15 +1095,15 @@ fn a_caller_reads_the_effective_configuration_as_data() {
     // The host's empty PATH makes image existence unknown; the project file
     // still supplies its effective allowlist, and fresh host dirs stay empty.
     let offline = TestEnv::with_private_cache("pi-config-offline");
-    let project = TestDir::new(&offline, "project");
+    let project = test_dir(&offline, "project");
     fs::write(
-        project.path().join(".pinfold.toml"),
+        project.as_path().join(".pinfold.toml"),
         "allow = [\"api.github.com\"]\n",
     )
     .unwrap();
-    let empty = TestDir::new(&offline, "empty-path");
+    let empty = test_dir(&offline, "empty-path");
     let output =
-        run_ok(pinfold_in(&offline, project.path(), &["config"]).env("PATH", empty.path()));
+        run_ok(pinfold_in(&offline, project.as_path(), &["config"]).env("PATH", empty.as_path()));
     let report: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("read offline config");
     assert_eq!(
@@ -1124,10 +1124,10 @@ fn a_caller_reads_the_effective_configuration_as_data() {
     // Sabotage: map `full` to the shared CONFIG in `Profile::builtin`; config
     // then reports only the built-in defaults. The expected list is the
     // spec's default list plus the two GitHub hosts.
-    let bare = TestDir::new(&offline, "bare");
+    let bare = test_dir(&offline, "bare");
     let output = run_ok(
-        pinfold_in(&offline, bare.path(), &["config"])
-            .env("PATH", empty.path())
+        pinfold_in(&offline, bare.as_path(), &["config"])
+            .env("PATH", empty.as_path())
             .env("PINFOLD_PROFILE", "full"),
     );
     let report: serde_json::Value =
@@ -1167,7 +1167,7 @@ fn a_caller_reads_the_effective_configuration_as_data() {
     fs::create_dir_all(&profile_dir).unwrap();
     fs::write(profile_dir.join("Containerfile"), "FROM scratch\n").unwrap();
     let profile_config = profile_dir.join("pinfold.toml");
-    let project_config = project.path().join(".pinfold.toml");
+    let project_config = project.as_path().join(".pinfold.toml");
     let valid_project = format!("profile = \"{profile}\"\n");
     let valid_profile = "allow = [\"api.github.com\"]\n";
     for (path, key, invalid, source) in [
@@ -1193,8 +1193,8 @@ fn a_caller_reads_the_effective_configuration_as_data() {
         fs::write(&project_config, &valid_project).unwrap();
         fs::write(&profile_config, valid_profile).unwrap();
         fs::write(path, invalid).unwrap();
-        let refused = pinfold_in(&offline, project.path(), &["config"])
-            .env("PATH", empty.path())
+        let refused = pinfold_in(&offline, project.as_path(), &["config"])
+            .env("PATH", empty.as_path())
             .output()
             .expect("read invalid configuration");
         let reason = String::from_utf8_lossy(&refused.stderr);
@@ -1205,8 +1205,9 @@ fn a_caller_reads_the_effective_configuration_as_data() {
         );
         fs::write(&project_config, &valid_project).unwrap();
         fs::write(&profile_config, valid_profile).unwrap();
-        let corrected =
-            run_ok(pinfold_in(&offline, project.path(), &["config"]).env("PATH", empty.path()));
+        let corrected = run_ok(
+            pinfold_in(&offline, project.as_path(), &["config"]).env("PATH", empty.as_path()),
+        );
         let report: serde_json::Value = serde_json::from_slice(&corrected.stdout).unwrap();
         assert_eq!(
             report["egress"]["allow"],

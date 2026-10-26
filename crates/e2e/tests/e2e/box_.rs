@@ -17,9 +17,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(target_os = "macos")]
 use e2e::image_cli;
 use e2e::{
-    HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
-    box_stat, build_profile, curl, default_image, egress_log, exit_code, git, image_id, json_lines,
-    pinfold, pinfold_in, profile_containerfile, run_ok, runtime_images, tagged_images,
+    HttpFixture, ImageCleanup, TestEnv, assert_denied, assert_ok, box_exec, box_list, box_stat,
+    build_profile, curl, default_image, egress_log, exit_code, git, image_id, json_lines, pinfold,
+    pinfold_in, profile_containerfile, run_ok, runtime_images, tagged_images, test_dir,
 };
 
 #[test]
@@ -674,9 +674,9 @@ fn disks_persist_and_attach_exclusively() {
     let names = ["work", "sparse", "race", "nested"].map(|disk| box_name(&format!("disk-{disk}")));
     let [work, sparse, race, nested] = &names;
     // The refilled disk is a project's disk, so `pinfold fetch` there sees it.
-    let project = TestDir::new(&env, "project");
-    git(project.path(), &["init", "-q"]);
-    let config = run_ok(&mut pinfold_in(&env, project.path(), &["config"]));
+    let project = test_dir(&env, "project");
+    git(project.as_path(), &["init", "-q"]);
+    let config = run_ok(&mut pinfold_in(&env, project.as_path(), &["config"]));
     let config: serde_json::Value = serde_json::from_slice(&config.stdout).unwrap();
     let refill = &config["project"]["disks"]["project"]
         .as_str()
@@ -696,24 +696,24 @@ fn disks_persist_and_attach_exclusively() {
     };
 
     // The host tree: a plain file, an executable, a symlink and a FIFO.
-    let from = TestDir::new(&env, "from");
-    fs::write(from.path().join("plain.txt"), b"plain\n").unwrap();
-    fs::write(from.path().join("run.sh"), b"#!/bin/sh\necho ran\n").unwrap();
+    let from = test_dir(&env, "from");
+    fs::write(from.as_path().join("plain.txt"), b"plain\n").unwrap();
+    fs::write(from.as_path().join("run.sh"), b"#!/bin/sh\necho ran\n").unwrap();
     fs::set_permissions(
-        from.path().join("run.sh"),
+        from.as_path().join("run.sh"),
         fs::Permissions::from_mode(0o755),
     )
     .unwrap();
-    fs::create_dir(from.path().join("sub")).unwrap();
-    fs::write(from.path().join("sub/deep.txt"), b"deep\n").unwrap();
-    std::os::unix::fs::symlink("plain.txt", from.path().join("link")).unwrap();
-    nix::unistd::mkfifo(&from.path().join("fifo"), nix::sys::stat::Mode::S_IRWXU).unwrap();
+    fs::create_dir(from.as_path().join("sub")).unwrap();
+    fs::write(from.as_path().join("sub/deep.txt"), b"deep\n").unwrap();
+    std::os::unix::fs::symlink("plain.txt", from.as_path().join("link")).unwrap();
+    nix::unistd::mkfifo(&from.as_path().join("fifo"), nix::sys::stat::Mode::S_IRWXU).unwrap();
     let work_disk =
-        serde_json::json!({ "name": work, "guest": "/work", "size": "1G", "from": from.path() });
+        serde_json::json!({ "name": work, "guest": "/work", "size": "1G", "from": from.as_path() });
     // `from` is read only when the disk is created; a reader names none.
     let reader = serde_json::json!({ "name": work, "guest": "/work", "readonly": true });
     let mut up = box_up(&env, &spec(writer, work_disk.clone()), writer);
-    fs::write(from.path().join("later.txt"), b"later\n").unwrap();
+    fs::write(from.as_path().join("later.txt"), b"later\n").unwrap();
     let tree = box_exec(
         &env,
         writer,
@@ -806,13 +806,13 @@ fn disks_persist_and_attach_exclusively() {
 
     // A `from` whose file sizes pass the disk's size is refused as `limit`
     // and leaves no disk.
-    let big = TestDir::new(&env, "big");
-    File::create(big.path().join("sparse"))
+    let big = test_dir(&env, "big");
+    File::create(big.as_path().join("sparse"))
         .unwrap()
         .set_len(2 << 30)
         .unwrap();
     let sparse_disk =
-        serde_json::json!({ "name": sparse, "guest": "/big", "size": "1G", "from": big.path() });
+        serde_json::json!({ "name": sparse, "guest": "/big", "size": "1G", "from": big.as_path() });
     let (code, refused) = box_up_refused(&env, &spec(second, sparse_disk), &[]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["reason"], "limit", "{refused}");
@@ -854,10 +854,10 @@ fn disks_persist_and_attach_exclusively() {
 
     // After `down`, two boxes attach it read-only at once, read the writer's
     // file and can write neither it nor their mount.
-    let mount = TestDir::new(&env, "mount");
+    let mount = test_dir(&env, "mount");
     let with_mount = |name: &str| {
         let mut spec = spec(name, reader.clone());
-        spec["mounts"] = serde_json::json!([{ "host": mount.path(), "guest": "/mount" }]);
+        spec["mounts"] = serde_json::json!([{ "host": mount.as_path(), "guest": "/mount" }]);
         spec
     };
     let mut starts = [
@@ -1035,10 +1035,9 @@ fn disks_persist_and_attach_exclusively() {
     // before that leaves a `container run` that may create its container
     // after the prune. The disk surviving and no `ready` show the kill
     // landed mid-copy, not after it or in a cleaned-up failure.
-    let first = from.path().join("0first.txt");
+    let first = from.as_path().join("0first.txt");
     fs::write(&first, b"first\n").unwrap();
-    let refill_disk =
-        serde_json::json!({ "name": refill, "guest": "/work", "size": "1G", "from": from.path() });
+    let refill_disk = serde_json::json!({ "name": refill, "guest": "/work", "size": "1G", "from": from.as_path() });
     let mut interrupted = box_up_start(&env, &spec(writer, refill_disk.clone()), &[]);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while !disk_names(&env).contains(refill) {
@@ -1047,7 +1046,7 @@ fn disks_persist_and_attach_exclusively() {
             "the interrupted up created no disk"
         );
     }
-    let fifo = from.path().join("fifo-swap");
+    let fifo = from.as_path().join("fifo-swap");
     nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).unwrap();
     fs::rename(&fifo, &first).unwrap();
     while !box_list(&env, label)
@@ -1083,7 +1082,7 @@ fn disks_persist_and_attach_exclusively() {
         names
     };
     let runs_before = runs();
-    let fetched = pinfold_in(&env, project.path(), &["fetch"])
+    let fetched = pinfold_in(&env, project.as_path(), &["fetch"])
         .output()
         .expect("run pinfold fetch");
     assert!(
@@ -1126,7 +1125,8 @@ fn disks_persist_and_attach_exclusively() {
 }
 
 fn disk_list(env: &TestEnv) -> Vec<serde_json::Value> {
-    e2e::disk_list(env).unwrap_or_else(|error| panic!("{error}"))
+    let output = run_ok(env.command(pinfold()).args(["disk", "list"]));
+    json_lines(&String::from_utf8_lossy(&output.stdout))
 }
 
 pub(super) fn disk_names(env: &TestEnv) -> Vec<String> {
@@ -1180,10 +1180,10 @@ fn work_leaves_the_box_only_by_fetch() {
     // `refs/heads/injected` lands on the host.
     let env = TestEnv::new("crossing");
     let name = box_name("crossing");
-    let project = TestDir::new(&env, "project");
-    let repo = project.path();
-    let markers = TestDir::new(&env, "markers");
-    let marker = |hook: &str| markers.path().join(hook);
+    let project = test_dir(&env, "project");
+    let repo = project.as_path();
+    let markers = test_dir(&env, "markers");
+    let marker = |hook: &str| markers.as_path().join(hook);
     let host_git = |args: &[&str]| git(repo, args).trim().to_string();
     host_git(&["init", "-q", "-b", "main"]);
     host_git(&["config", "user.name", "host"]);
@@ -1241,7 +1241,7 @@ fn work_leaves_the_box_only_by_fetch() {
               chmod 755 .git/hooks/$hook; done \
          && git config core.hooksPath .githooks \
          && git config core.fsmonitor 'touch {markers}/fsmonitor'",
-        markers = markers.path().display(),
+        markers = markers.as_path().display(),
     ));
     let host_heads = host_git(&["for-each-ref", "refs/heads/"]);
     let (code, fetched) = crossing_fetch(&env, &name, repo);
@@ -1281,7 +1281,7 @@ fn work_leaves_the_box_only_by_fetch() {
     );
     host_git(&["checkout", "-q", "feature"]);
     host_git(&["checkout", "-q", "main"]);
-    let touched: Vec<_> = fs::read_dir(markers.path()).unwrap().collect();
+    let touched: Vec<_> = fs::read_dir(markers.as_path()).unwrap().collect();
     assert!(
         touched.is_empty(),
         "a box hook ran on the host: {touched:?}"
@@ -1964,7 +1964,7 @@ fn the_proxy_refuses_the_tricks() {
     assert_ok(&body, "valid Content-Length body");
     assert!(body.stdout.starts_with("HTTP/1.1 200"), "{}", body.stdout);
     assert_eq!(
-        fixture.requests().last().expect("fixture saw POST").1,
+        fixture.requests().last().expect("fixture saw POST").2,
         "hello"
     );
 
@@ -2932,7 +2932,7 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
     );
     let requests = fixture.requests();
     let authorization: Vec<&str> = requests[0]
-        .0
+        .1
         .iter()
         .filter(|(header, _)| header.eq_ignore_ascii_case("authorization"))
         .map(|(_, value)| value.as_str())
@@ -3049,8 +3049,8 @@ fn a_login_route_keeps_the_login_on_the_host() {
     let _image = ImageCleanup {
         repository: format!("localhost/pinfold/profile-{profile}"),
     };
-    let project = TestDir::new(&env, "pi-login");
-    git(project.path(), &["init", "-q"]);
+    let project = test_dir(&env, "pi-login");
+    git(project.as_path(), &["init", "-q"]);
 
     // pi sends its stored key to the route at OpenRouter's API path; the
     // fixture gets only the host key. The model is in pi's built-in
@@ -3066,7 +3066,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
             "openai/gpt-4o-mini",
             "reply with ok",
         ])
-        .current_dir(project.path())
+        .current_dir(project.as_path())
         .env("PINFOLD_PROFILE", profile)
         .envs(keys)
         .stdin(Stdio::null())
@@ -3077,18 +3077,18 @@ fn a_login_route_keeps_the_login_on_the_host() {
         "pi -p through the openrouter login route failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let requests = openrouter.targets();
+    let requests = openrouter.requests();
     assert!(
         requests
             .iter()
-            .any(|(target, _)| target == "/api/v1/chat/completions"),
+            .any(|(target, _, _)| target == "/api/v1/chat/completions"),
         "pi's chat request never reached the fixture at OpenRouter's path: {:?}",
         requests
             .iter()
-            .map(|(target, _)| target)
+            .map(|(target, _, _)| target)
             .collect::<Vec<_>>()
     );
-    for (target, headers) in &requests {
+    for (target, headers, _) in &requests {
         let authorization: Vec<&str> = headers
             .iter()
             .filter(|(header, _)| header.eq_ignore_ascii_case("authorization"))
@@ -3105,7 +3105,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     // and removes forged credentials in any case and number.
     let (run, _, pi_box) = crate::pi::PiRpc::start_with_env(
         &env,
-        project.path(),
+        project.as_path(),
         &[("PINFOLD_PROFILE", profile), keys[0], keys[1]],
     );
     let environment = box_exec(&env, &pi_box, &["env"]);
@@ -3166,7 +3166,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     let requests = anthropic.requests();
     let values = |name: &str| -> Vec<String> {
         requests[0]
-            .0
+            .1
             .iter()
             .filter(|(header, _)| header.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.clone())
@@ -3277,7 +3277,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     );
     let requests = fixture.requests();
     let authorization: Vec<&str> = requests[0]
-        .0
+        .1
         .iter()
         .filter(|(header, _)| header.eq_ignore_ascii_case("authorization"))
         .map(|(_, value)| value.as_str())
@@ -3348,7 +3348,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     let lapsing = token(now + 120);
     let refreshed = token(now + 4 * 3600);
     let refresh_token = format!("pf-refresh-{}", std::process::id());
-    let codex_home = TestDir::new(&env, "codex-home");
+    let codex_home = test_dir(&env, "codex-home");
     let auth = serde_json::json!({
         "OPENAI_API_KEY": null,
         "tokens": {
@@ -3358,7 +3358,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
             "account_id": account,
         },
     });
-    fs::write(codex_home.path().join("auth.json"), auth.to_string()).unwrap();
+    fs::write(codex_home.as_path().join("auth.json"), auth.to_string()).unwrap();
     // Sabotage: remove the login lock or put it under XDG_STATE_HOME; the
     // second caller cannot report login-busy while the first holds refresh.
     // Answer only the first real helper request. A second refresh cannot
@@ -3421,7 +3421,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
             },
         },
     });
-    let codex_home_path = codex_home.path().to_str().expect("a UTF-8 temp path");
+    let codex_home_path = codex_home.as_path().to_str().expect("a UTF-8 temp path");
     let vars = [
         ("CODEX_HOME", codex_home_path),
         ("CODEX_REFRESH_TOKEN_URL_OVERRIDE", refresh_url.as_str()),
@@ -3511,7 +3511,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     let requests = model.requests();
     let values = |name: &str| -> Vec<String> {
         requests[0]
-            .0
+            .1
             .iter()
             .filter(|(header, _)| header.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.clone())
@@ -3535,7 +3535,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     );
     assert_ok(&login, "the contending caller's login route");
     let requests = model.requests();
-    let headers = &requests.last().unwrap().0;
+    let headers = &requests.last().unwrap().1;
     for (name, expected) in [
         ("authorization", format!("Bearer {refreshed}")),
         ("chatgpt-account-id", account.clone()),
@@ -3617,7 +3617,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     // refresh above is the positive control. All timing and process
     // observations come from the host, not helper output.
     for cancelled in [false, true] {
-        fs::write(codex_home.path().join("auth.json"), auth.to_string()).unwrap();
+        fs::write(codex_home.as_path().join("auth.json"), auth.to_string()).unwrap();
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let refresh_url = format!("http://{}/oauth/token", listener.local_addr().unwrap());
         let (accepted, request) = std::sync::mpsc::channel();
@@ -3750,8 +3750,8 @@ fn a_login_route_keeps_the_login_on_the_host() {
 
     // An empty CODEX_HOME has no login: up is refused as `login` and leaves
     // nothing. The box above is its positive control.
-    let empty = TestDir::new(&env, "codex-empty");
-    let empty_path = empty.path().to_str().expect("a UTF-8 temp path");
+    let empty = test_dir(&env, "codex-empty");
+    let empty_path = empty.as_path().to_str().expect("a UTF-8 temp path");
     let (code, refused) = box_up_refused(&env, &codex_spec, &[("CODEX_HOME", empty_path)]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["event"], "refused");
@@ -3804,9 +3804,9 @@ fn a_login_route_keeps_the_login_on_the_host() {
     let pi_lapsing = pi_token(now + 120);
     let pi_refreshed = pi_token(now + 4 * 3600);
     let pi_refresh_token = format!("pf-pi-refresh-{}", std::process::id());
-    let pi_codex_home = TestDir::new(&env, "pi-codex-home");
+    let pi_codex_home = test_dir(&env, "pi-codex-home");
     fs::write(
-        pi_codex_home.path().join("auth.json"),
+        pi_codex_home.as_path().join("auth.json"),
         serde_json::json!({
             "OPENAI_API_KEY": null,
             "tokens": {
@@ -3838,11 +3838,11 @@ fn a_login_route_keeps_the_login_on_the_host() {
     let refresh_url = format!("http://{}/oauth/token", pi_refresh.route());
     let (run, _, pi_box) = crate::pi::PiRpc::start_with_env(
         &env,
-        project.path(),
+        project.as_path(),
         &[
             ("PINFOLD_PROFILE", profile),
             ("PINFOLD_E2E_SUBSCRIPTION", &subscription_token),
-            ("CODEX_HOME", pi_codex_home.path().to_str().unwrap()),
+            ("CODEX_HOME", pi_codex_home.as_path().to_str().unwrap()),
             ("CODEX_REFRESH_TOKEN_URL_OVERRIDE", &refresh_url),
         ],
     );
@@ -3877,7 +3877,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     let requests = subscription.requests();
     let values = |name: &str| -> Vec<String> {
         requests[0]
-            .0
+            .1
             .iter()
             .filter(|(header, _)| header.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.clone())
@@ -3912,10 +3912,10 @@ fn a_login_route_keeps_the_login_on_the_host() {
         ],
     );
     assert_ok(&ran, "pi -p through the anthropic-subscription login route");
-    let requests: Vec<_> = subscription.targets()[1..]
+    let requests: Vec<_> = subscription.requests()[1..]
         .iter()
-        .filter(|(target, _)| target.starts_with("/v1/messages"))
-        .map(|(_, headers)| headers.clone())
+        .filter(|(target, _, _)| target.starts_with("/v1/messages"))
+        .map(|(_, headers, _)| headers.clone())
         .collect();
     assert!(
         !requests.is_empty(),
@@ -3968,15 +3968,15 @@ fn a_login_route_keeps_the_login_on_the_host() {
     );
     assert_ok(&ran, "pi -p through the openai-codex login route");
     let requests: Vec<_> = codex_model
-        .targets()
+        .requests()
         .into_iter()
-        .filter(|(target, _)| target == "/backend-api/codex/responses")
+        .filter(|(target, _, _)| target == "/backend-api/codex/responses")
         .collect();
     assert!(
         !requests.is_empty(),
         "pi's request never reached the fixture at Codex's path"
     );
-    for (_, headers) in &requests {
+    for (_, headers, _) in &requests {
         for (name, expected) in [
             ("authorization", format!("Bearer {pi_refreshed}")),
             ("chatgpt-account-id", pi_account.clone()),

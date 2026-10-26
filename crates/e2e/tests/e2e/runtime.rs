@@ -10,9 +10,9 @@ use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::{Duration, SystemTime};
 
 use e2e::{
-    HttpFixture, ImageCleanup, TestDir, TestEnv, assert_ok, box_exec, box_list, build_profile,
-    curl, default_image, image_cli, image_id, image_ids, inspect, pinfold, profile_containerfile,
-    project_id, project_state_dir, run_dir, run_ok, tagged_images,
+    HttpFixture, ImageCleanup, TestEnv, assert_ok, box_exec, box_list, build_profile, curl,
+    default_image, image_cli, image_id, image_ids, inspect, pinfold, profile_containerfile,
+    project_id, project_state_dir, run_dir, run_ok, tagged_images, test_dir,
 };
 
 #[cfg(target_os = "macos")]
@@ -203,29 +203,29 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // the other does not.
     let missing = format!("{profile}-missing");
     profile_containerfile(&env, &missing, "FROM scratch\n");
-    let seed_project = |project: &TestDir, text: &[u8]| {
+    let seed_project = |project: &Path, text: &[u8]| {
         let refused = env
             .command(pinfold())
             .args(["pi", "--version"])
             .env("PINFOLD_PROFILE", &missing)
-            .current_dir(project.path())
+            .current_dir(project)
             .output()
             .expect("run pinfold pi");
         assert!(!refused.status.success(), "pi ran a profile with no image");
-        let marker = project_state_dir(&env, project.path()).join("marker");
+        let marker = project_state_dir(&env, project).join("marker");
         fs::write(&marker, text).unwrap();
         marker
     };
 
-    let live_project = TestDir::new(&env, "live-project");
+    let live_project = test_dir(&env, "live-project");
     let live_marker = seed_project(&live_project, b"live\n");
-    let live_state = project_state_dir(&env, live_project.path());
-    let live_id = project_id(&env, live_project.path());
+    let live_state = project_state_dir(&env, live_project.as_path());
+    let live_id = project_id(&env, live_project.as_path());
 
-    let other_project = TestDir::new(&env, "other-project");
+    let other_project = test_dir(&env, "other-project");
     let other_marker = seed_project(&other_project, b"other\n");
-    let other_state = project_state_dir(&env, other_project.path());
-    let other_id = project_id(&env, other_project.path());
+    let other_state = project_state_dir(&env, other_project.as_path());
+    let other_id = project_id(&env, other_project.as_path());
 
     // A live pinfold box for the live project, and a dead box for the other
     // project: a dead box protects nothing. A caller spec may not name
@@ -241,10 +241,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
     runtime_build(&[&live_ref], &[&live_label]);
     let live_disk = format!("pi-{live_id}-home");
     let other_disk = format!("pi-{other_id}-home");
-    let moved_project = TestDir::new(&env, "moved-project");
+    let moved_project = test_dir(&env, "moved-project");
     seed_project(&moved_project, b"moved\n");
-    let moved_state = project_state_dir(&env, moved_project.path());
-    let moved_disk = format!("pi-{}-project", project_id(&env, moved_project.path()));
+    let moved_state = project_state_dir(&env, moved_project.as_path());
+    let moved_disk = format!("pi-{}-project", project_id(&env, moved_project.as_path()));
     // The live box attaches its project's home disk.
     let live_spec = serde_json::json!({
         "name": live,
@@ -407,7 +407,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         up.down(&env);
         assert!(up.wait().success(), "the disk's box did not exit cleanly");
     }
-    fs::rename(moved_project.path(), env.root.join("moved-away")).unwrap();
+    fs::rename(moved_project.as_path(), env.root.join("moved-away")).unwrap();
     run_ok(env.command(pinfold()).arg("clean"));
     assert!(
         moved_state.is_dir(),
@@ -459,19 +459,19 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // after its claim but before a runtime box can protect the project.
     // The checkout is moved away meanwhile; that alone protects nothing.
     let env = TestEnv::with_private_cache("clean-startup");
-    let project = TestDir::new(&env, "starting-project");
+    let project = test_dir(&env, "starting-project");
     let missing = format!("{profile}-startup-missing");
     profile_containerfile(&env, &missing, "FROM scratch\n");
     let refused = env
         .command(pinfold())
         .args(["pi", "--version"])
         .env("PINFOLD_PROFILE", &missing)
-        .current_dir(project.path())
+        .current_dir(project.as_path())
         .output()
         .unwrap();
     assert!(!refused.status.success(), "the missing image was accepted");
-    let state = project_state_dir(&env, project.path());
-    let id = project_id(&env, project.path());
+    let state = project_state_dir(&env, project.as_path());
+    let id = project_id(&env, project.as_path());
     let marker = state.join("marker");
     fs::write(&marker, b"starting project\n").unwrap();
 
@@ -480,7 +480,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         .command(pinfold())
         .envs(proxy.vars())
         .args(["pi", "--version"])
-        .current_dir(project.path())
+        .current_dir(project.as_path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -506,7 +506,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         }
     }
     let restore = RestoreProject {
-        root: project.path().to_path_buf(),
+        root: project.as_path().to_path_buf(),
         moved: env.root.join("moved-project"),
     };
     fs::rename(&restore.root, &restore.moved).unwrap();
