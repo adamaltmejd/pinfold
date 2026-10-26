@@ -9,6 +9,7 @@ FROM fff-${TARGETARCH} AS fff-install
 ARG TARGETARCH
 ADD --checksum=sha256:d25cacb52974a8c99be1ecf88a0ba554459402a8850798cc722e08b088d21de3 https://registry.npmjs.org/@ff-labs/pi-fff/-/pi-fff-0.11.0.tgz /tmp/pi-fff.tgz
 ADD --checksum=sha256:516e6e3ff779664b455b08207d03a80b97e25d9123a579b67f6f151fda358c73 https://registry.npmjs.org/@ff-labs/fff-bun/-/fff-bun-0.11.0.tgz /tmp/fff-bun.tgz
+# fff-node, pi-fff's Node fallback, is deliberately not staged: pi runs extensions under Bun.
 RUN set -eux; \
     case "${TARGETARCH}" in \
         arm64) native=fff-bin-linux-arm64-gnu ;; \

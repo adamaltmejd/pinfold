@@ -752,7 +752,7 @@ build, record the resolved base digest and strip setuid/setgid bits.
 |---|---|
 | `default` | shell, ca-certificates, git, curl, ripgrep, fd-find as `fd`, jq, less |
 | `documents` | default tools plus Bun, AnyDoc and Poppler |
-| `full` | documents tools plus gh, fff and ponytail |
+| `full` | documents tools plus gh, fff (pi extension) and ponytail |
 
 Fixed recipe fragments under `profile/image/` form complete independent
 Containerfiles. A built-in never builds from another profile's image.
