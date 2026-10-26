@@ -35,6 +35,9 @@ fn box_lifecycle_works_for_a_caller() {
     let _runtime = crate::shared_runtime();
     // Guarantee 9: the lifecycle works for a caller.
     // Sabotage: make `box down` a no-op; the post-down list assertion fails.
+    // Sabotage: restore the empty-name sentinel in `box_state_dir`; the
+    // `down ""` before the box's teardown removes the whole boxes directory,
+    // the live box's lock with it, and the `owner_alive` assertion fails.
     // Sabotage: drop the final `down` line; the last-line assertion fails.
     // Sabotage: make `box exec` drop the runtime's exit status and return 0;
     // the exit-3 assertion fails, and the zero-exit command below is the
@@ -48,10 +51,20 @@ fn box_lifecycle_works_for_a_caller() {
     // core::box::down's list check); exec or stat on the foreign container
     // runs, or down removes it. Drop list's owner-label filter and the
     // runtime-created container appears beside the live pinfold box.
+    // Sabotage: drop the valid-name gate in core::box::down; Apple's `rm`
+    // rejects the `--filter` name as a flag, so the exit assertion fails.
+    // Sabotage: key the state dir by the name again; the 60-character box
+    // fails at `up` with the socket-length error, so the ready read panics.
+    // Sabotage: give a box without `egress` a derived log path in `ready`;
+    // the null assertion fails.
     let env = TestEnv::new("lifecycle");
-    let name = box_name("lifecycle");
+    // A caller's names can be long. The state dir is keyed by the name's
+    // hash, so 60 characters, past the old socket-path budget, still come
+    // up.
+    let name = format!("{:-<60}", box_name("lifecycle"));
     let label = "dev.example.test=lifecycle";
     let image = default_image(&env);
+    let image_id = image_id(image).expect("the runtime lists the default image");
     let spec = serde_json::json!({
         "name": name,
         "image": image,
@@ -77,14 +90,68 @@ fn box_lifecycle_works_for_a_caller() {
     let ok = box_exec(&env, &name, &["sh", "-c", "exit 0"]);
     assert_eq!(ok.code, 0);
 
-    // `list` finds the box by the caller's label.
-    let listed = box_list(&env, label);
-    assert!(
-        listed
-            .iter()
-            .any(|box_| box_["name"].as_str() == Some(name.as_str())),
-        "list did not find {name}: {listed:?}"
+    // `ready` names the image the runtime resolved. The spec has no
+    // `egress`, so there is no proxy and no log: `egress_log` is null.
+    assert_eq!(
+        up.ready["image"]["id"],
+        image_id.as_str(),
+        "ready names the wrong image id: {}",
+        up.ready
     );
+    assert!(
+        up.ready.get("egress_log").is_some_and(|log| log.is_null()),
+        "ready gave a box without egress a log: {}",
+        up.ready
+    );
+
+    // `list` finds the box by the caller's label, with the same image id.
+    let listed = box_list(&env, label);
+    let line = listed
+        .iter()
+        .find(|box_| box_["name"].as_str() == Some(name.as_str()))
+        .unwrap_or_else(|| panic!("list did not find {name}: {listed:?}"));
+    assert_eq!(
+        line["image"]["id"],
+        image_id.as_str(),
+        "list names the wrong image id: {line}"
+    );
+
+    // An empty name, or one a runtime would read as a flag, is not a box:
+    // `down` behaves as for any absent box and leaves the live box alone.
+    // The filter matches only this box, so a regression removes nothing
+    // else on the host.
+    let flag = format!("--filter=label=dev.example.box={name}");
+    for absent in ["", flag.as_str()] {
+        let down = env
+            .command(pinfold())
+            .args(["box", "down", absent])
+            .stdin(Stdio::null())
+            .output()
+            .expect("run pinfold box down");
+        assert!(
+            down.status.success(),
+            "down {absent:?} failed: {}: {}",
+            down.status,
+            String::from_utf8_lossy(&down.stderr)
+        );
+        assert!(
+            down.stdout.is_empty() && down.stderr.is_empty(),
+            "down {absent:?} printed: {}{}",
+            String::from_utf8_lossy(&down.stdout),
+            String::from_utf8_lossy(&down.stderr)
+        );
+        let survivors = box_list(&env, label);
+        let live = survivors
+            .iter()
+            .find(|box_| box_["name"].as_str() == Some(name.as_str()))
+            .unwrap_or_else(|| {
+                panic!("down {absent:?} took the live box out of list: {survivors:?}")
+            });
+        assert_eq!(
+            live["owner_alive"], true,
+            "list reports the live box's owner gone after down {absent:?}: {live}"
+        );
+    }
 
     // On Apple, a container pinfold did not create is no box, even under a
     // name `up` accepts: `exec` and `stat` exit 3 and `down` leaves it
