@@ -877,6 +877,14 @@ fn the_launch_record_is_the_applied_policy() {
     assert_denied(&denied, "403", "the changed list's host");
 
     assert!(run.finish().success(), "pinfold pi did not exit cleanly");
+    // Guarantee 40: a pi box prints no `down`, so its harness ending is the
+    // terminal reason. Sabotage: record a pi run's end as `signal`, or write
+    // no terminal record for it; this assertion fails.
+    let (_, record) = inspect(&env, &run_id);
+    assert_eq!(
+        record["terminal"]["record"]["reason"], "harness-exited",
+        "{record}"
+    );
     // On Linux the scan covers the pi box's sparse disks too, after the
     // box is down: a guest write that kept its environment lands in one.
     for needle in [&secret, &header] {
