@@ -504,12 +504,9 @@ pub type Headers = Vec<(String, String)>;
 pub type Answer = Option<(&'static str, &'static str)>;
 
 impl HttpFixture {
-    pub const NOT_FOUND_PATH: &'static str = "/missing";
-    pub const NOT_FOUND_STATUS: u16 = 404;
-
-    /// Bind on loopback and answer each request with `answer`, or with the
-    /// Host header it carried when `answer` is `None`, until the process
-    /// exits. The status is 200, or `NOT_FOUND_STATUS` at `NOT_FOUND_PATH`.
+    /// Bind on loopback and answer each request 200 with `answer`, or with
+    /// the Host header it carried when `answer` is `None`, until the process
+    /// exits.
     pub fn start(answer: Answer) -> HttpFixture {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the fixture");
         let port = listener.local_addr().expect("fixture address").port();
@@ -544,15 +541,6 @@ fn serve(stream: TcpStream, seen: &Mutex<Vec<(Headers, String)>>, answer: Answer
     if reader.read_line(&mut line).unwrap_or(0) == 0 {
         return;
     }
-    let path = line
-        .split(' ')
-        .nth(1)
-        .and_then(|target| target.split('?').next());
-    let (code, reason) = if path == Some(HttpFixture::NOT_FOUND_PATH) {
-        (HttpFixture::NOT_FOUND_STATUS, "Not Found")
-    } else {
-        (200, "OK")
-    };
     let mut host = String::new();
     let mut length = 0u64;
     let mut headers = Vec::new();
@@ -584,7 +572,7 @@ fn serve(stream: TcpStream, seen: &Mutex<Vec<(Headers, String)>>, answer: Answer
         None => ("text/plain", format!("fixture host={host}\n")),
     };
     let response = format!(
-        "HTTP/1.1 {code} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let _ = (&stream).write_all(response.as_bytes());
