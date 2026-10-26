@@ -440,25 +440,26 @@ fn ignored(root: &Path) -> io::Result<BTreeSet<PathBuf>> {
             .chain(submodules)
         {
             let child = path(entry);
-            // Only a real directory holding `.git` is listed. Anything else
-            // at a submodule's path, an uninitialized one's directory or a
-            // symlink, is left out whole: no repository lists inside it.
-            let checked_out = match std::fs::symlink_metadata(root.join(&child)) {
-                Ok(metadata) if metadata.is_dir() => {
-                    match std::fs::symlink_metadata(root.join(&child).join(".git")) {
-                        Ok(_) => true,
-                        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-                        Err(error) => return Err(unlisted(&dir, &error.to_string())),
-                    }
-                }
-                Ok(_) => false,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            let full = root.join(&child);
+            // A symlink or file here is copied as itself, never followed.
+            match std::fs::symlink_metadata(&full) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => continue,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(unlisted(&dir, &error.to_string())),
-            };
-            if checked_out {
-                repos.push(child);
-            } else {
-                skip.insert(child);
+            }
+            match std::fs::symlink_metadata(full.join(".git")) {
+                Ok(_) => repos.push(child),
+                // An uninitialized submodule: no repository lists inside it,
+                // so its contents are left out. The directory stays, or git
+                // in the box would see the submodule deleted.
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    let entries = std::fs::read_dir(&full)
+                        .and_then(|entries| entries.collect::<io::Result<Vec<_>>>())
+                        .map_err(|error| unlisted(&dir, &error.to_string()))?;
+                    skip.extend(entries.iter().map(|entry| child.join(entry.file_name())));
+                }
+                Err(error) => return Err(unlisted(&dir, &error.to_string())),
             }
         }
     }

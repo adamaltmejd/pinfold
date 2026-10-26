@@ -223,7 +223,8 @@ fn project_state_persists_and_stays_separate() {
     // git-ignored one: not one a `.gitignore` or `.git/info/exclude`
     // names, nor one in an ignored or partly ignored directory, nor one a
     // submodule or an untracked nested repository ignores, nor one with a
-    // decomposed name, nor an uninitialized submodule's directory. A
+    // decomposed name, nor anything in an uninitialized submodule's
+    // directory, which stays so git does not see the submodule deleted. A
     // tracked file matching a pattern and a re-included one are copied,
     // though the caller's environment points git at an index that does
     // not exist.
@@ -319,7 +320,7 @@ fn project_state_persists_and_stays_separate() {
     let copied = in_box(
         &box_a,
         &format!(
-            r#"cd {} && cat tracked.env keep.env untracked.txt new/kept.txt new/nested/keep.txt sm/inner.txt && git rev-parse -q --verify HEAD >/dev/null && for path in secret.env local.key build new/sub new/nested/a.env sm/inner.env sm2 "$(printf 'cafe\314\201.env')"; do test ! -e "$path" || echo "$path"; done"#,
+            r#"cd {} && cat tracked.env keep.env untracked.txt new/kept.txt new/nested/keep.txt sm/inner.txt && git rev-parse -q --verify HEAD >/dev/null && test -d sm2 && test -z "$(git status --porcelain -- sm2)" && for path in secret.env local.key build new/sub new/nested/a.env sm/inner.env sm2/secret.env "$(printf 'cafe\314\201.env')"; do test ! -e "$path" || echo "$path"; done"#,
             a.display()
         ),
     );
