@@ -115,7 +115,7 @@ fn notice_due(record_only: bool) -> io::Result<()> {
     file.write_all(&serde_json::to_vec(&previous)?)?;
     if profile_changed && !record_only {
         eprintln!(
-            "pinfold: bundled-profiles-changed: bundled profiles changed; saved project settings and user profiles were kept. To inspect a bundled profile, run `pinfold profile new fresh-profile --from NAME --builtin` (NAME: default, documents or full)."
+            "pinfold: bundled-profiles-changed: bundled profiles changed; saved project settings and user profiles were kept. To inspect a bundled profile that no user profile overrides, run `pinfold profile new fresh-profile --from NAME` (NAME: default, documents or full)."
         );
     }
     if !due {
