@@ -883,7 +883,7 @@ gets its own.
   another `up` naming that disk is refused as `disk-in-use`. Boxes may
   share a disk read-only while none attaches it writable. Attachments are
   recorded under the box's claim and count while its owner lives or the
-  runtime has not stopped its box.
+  runtime lists its box in any state but stopped.
 - **Clean:** a writable attachment records the disk unclean. A stop
   pinfold requests of a running box (step 8) syncs and unmounts every
   disk, and pinfold records each clean once the runtime confirms it. A
