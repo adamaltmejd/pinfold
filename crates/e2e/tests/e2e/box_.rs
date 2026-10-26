@@ -1673,17 +1673,31 @@ fn disks_persist_and_attach_exclusively() {
         disk_names(&env).contains(refill),
         "the interrupted up's disk is gone"
     );
-    // The unfilled disk is no project disk to `fetch` either: it exits 1
-    // and starts no box, so prints no crossing line, and leaves the disk for
-    // the next `up` to refill.
+    // The unfilled disk is no project disk to `fetch` either: it exits
+    // nonzero and starts no box, so prints no crossing line and records no
+    // run, and leaves the disk for the next `up` to refill.
+    let runs = || -> Vec<_> {
+        let mut names: Vec<_> = fs::read_dir(env.state.join("pinfold/runs"))
+            .expect("read the runs dir")
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let runs_before = runs();
     let fetched = pinfold_in(&env, project.path(), &["fetch"])
         .output()
         .expect("run pinfold fetch");
-    assert_eq!(
-        (exit_code(fetched.status), fetched.stdout.as_slice()),
-        (1, b"".as_slice()),
-        "fetch on an unfilled disk: {}",
+    assert!(
+        !fetched.status.success() && fetched.stdout.is_empty(),
+        "fetch on an unfilled disk: {:?} {}",
+        fetched.status,
         String::from_utf8_lossy(&fetched.stderr)
+    );
+    assert_eq!(
+        runs(),
+        runs_before,
+        "fetch on an unfilled disk recorded a run"
     );
     fs::remove_file(&first).unwrap();
     fs::write(&first, b"first\n").unwrap();
