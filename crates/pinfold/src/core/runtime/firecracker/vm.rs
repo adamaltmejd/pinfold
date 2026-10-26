@@ -11,7 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::net::UnixListener;
 
-use super::{Firecracker, jail, vsock};
+use super::vsock::{self, put};
+use super::{Firecracker, jail};
 use crate::core::disk::{self, Fill, Seeding};
 use crate::core::plan::Plan;
 use crate::core::runtime::{output, podman};
@@ -165,7 +166,7 @@ fn image_env(image_id: &str) -> io::Result<Vec<(OsString, OsString)>> {
 pub struct Vm {
     vmm: jail::Vmm,
     state_dir: PathBuf,
-    /// Until the guest dials it, then closed and unlinked.
+    /// Until the guest dials it, then closed.
     boot: Option<(UnixListener, Boot)>,
 }
 
@@ -274,9 +275,6 @@ impl Vm {
             _ = self.vmm.wait() => return Err("box exited before ready".to_string()),
         };
         drop(listener);
-        let boot_socket =
-            vsock::socket(&self.state_dir).with_file_name(format!("v.sock_{BOOT_PORT}"));
-        let _ = fs::remove_file(boot_socket);
         let (stream, _) = accepted.map_err(|error| format!("boot connection: {error}"))?;
         let stream = stream
             .into_std()
@@ -354,11 +352,6 @@ impl Boot {
         drop(stream);
         vsock::set_env(state_dir, &self.env)
     }
-}
-
-fn put(payload: &mut Vec<u8>, bytes: &[u8]) {
-    payload.extend((bytes.len() as u32).to_be_bytes());
-    payload.extend(bytes);
 }
 
 /// The VM configuration, read by Firecracker inside the jail: paths are

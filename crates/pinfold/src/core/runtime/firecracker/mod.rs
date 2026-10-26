@@ -37,13 +37,11 @@ impl Firecracker {
         Ok(dir)
     }
 
-    /// The state dir of the box `list` names `name`.
-    fn state_dir(name: &str) -> io::Result<PathBuf> {
-        ownership::record(name)?
-            .map(|record| record.state_dir)
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, format!("no box named {name:?}"))
-            })
+    /// The ownership record of the box `list` names `name`.
+    fn record(name: &str) -> io::Result<ownership::Record> {
+        ownership::record(name)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, format!("no box named {name:?}"))
+        })
     }
 }
 
@@ -74,39 +72,33 @@ impl Runtime for Firecracker {
         workdir: Option<&Path>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        let code = vsock::exec(&Self::state_dir(name)?, tty, workdir, argv)?;
+        let code = vsock::exec(&Self::record(name)?.state_dir, tty, workdir, argv)?;
         Ok(super::exit_status(code))
     }
 
     /// `box exec` of this executable, for a caller that pipes its stdio.
+    /// Its only callers, the crossing's push and fetch, ask for no TTY and
+    /// no workdir.
     fn exec_command(
         &self,
         name: &str,
         _init: &Path,
-        tty: bool,
-        workdir: Option<&Path>,
+        _tty: bool,
+        _workdir: Option<&Path>,
         argv: &[String],
     ) -> std::process::Command {
         let mut command = std::process::Command::new(
             std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/proc/self/exe")),
         );
-        command.args(["box", "exec"]);
-        if tty {
-            command.arg("--tty");
-        } else {
-            command.process_group(0);
-        }
-        if let Some(dir) = workdir {
-            command.arg("--workdir").arg(dir);
-        }
-        command.arg(name).arg("--").args(argv);
+        command
+            .process_group(0)
+            .args(["box", "exec", name, "--"])
+            .args(argv);
         command
     }
 
     fn stat(&self, name: &str) -> io::Result<BoxStat> {
-        let record = ownership::record(name)?.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, format!("no box named {name:?}"))
-        })?;
+        let record = Self::record(name)?;
         let memory = record.described.and_then(|described| described.memory);
         let [current, peak, pids, pids_max, oom_kills] = vsock::stat(&record.state_dir)?;
         Ok(BoxStat {
