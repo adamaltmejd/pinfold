@@ -213,6 +213,9 @@ impl Runtime for Apple {
         // A stopped or absent box can refuse kill; removal still decides
         // success, and cannot force-stop a box whose kill actually failed.
         let _ = output(&["container", "kill", "--signal", "KILL", name]);
+        // Apple reports a killed box `running` for a moment, and `rm` refuses
+        // it then; `stop` returns once it has stopped.
+        let _ = output(&["container", "stop", name]);
         // stderr is captured: an absent box fails `rm` with the runtime's
         // not-found text, which is noise once the box is gone.
         let Err(error) = output(&["container", "rm", name]) else {
