@@ -822,10 +822,10 @@ registers rtk and ponytail. Metadata lookup and fingerprints write
 nothing; embedded shared files are materialized only after a box claims
 its name.
 
-The default and documents profiles' `pinfold.toml` sets no config, so
+The default and documents profiles' `pinfold.toml` set no config, so
 they get the built-in defaults. Full's sets `allow` to the default list
-plus `github.com` and `api.github.com`, for its gh and git over https. `PI_OFFLINE` is unset, so pi's package installs go
-through the proxy.
+plus `github.com` and `api.github.com`. `PI_OFFLINE` is unset, so pi's
+package installs go through the proxy.
 
 ## Disks
 
