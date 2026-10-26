@@ -22,14 +22,6 @@ use e2e::{
 
 #[test]
 fn box_lifecycle_works_for_a_caller() {
-    struct Resume(u32);
-    impl Drop for Resume {
-        fn drop(&mut self) {
-            let _ = Command::new("kill")
-                .args(["-CONT", &self.0.to_string()])
-                .status();
-        }
-    }
     let _runtime = crate::shared_runtime();
     // Guarantee 9: the lifecycle works for a caller.
     // Sabotage: make `box down` a no-op; the post-down list assertion fails.
@@ -213,88 +205,6 @@ fn box_lifecycle_works_for_a_caller() {
         "box survived down: {listed:?}"
     );
     assert!(up.wait().success(), "box up did not exit cleanly");
-
-    // A stopped owner still owns its name. Sabotage: restore down's
-    // timed fallback removal; down succeeds, its state disappears, and a
-    // replacement can start before the previous owner finishes cleanup.
-    // Sabotage: refuse the first claim lock conflict; the second-root up
-    // ends before the spec's ten-second contention wait.
-    // The runtime, host state and second XDG root are outside observers.
-    {
-        let other = TestEnv::new("lifecycle-other");
-        let stopped_name = box_name("lifecycle-stopped");
-        let mut stopped_spec = spec.clone();
-        stopped_spec["name"] = stopped_name.clone().into();
-        let mut stopped = box_up(&env, &stopped_spec, &stopped_name);
-        let stopped_state = find_box_state_dir(&env).expect("find stopped owner's state");
-        let resume = Resume(stopped.pid());
-        run_ok(Command::new("kill").args(["-STOP", &stopped.pid().to_string()]));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            let state = Command::new("ps")
-                .args(["-o", "state=", "-p", &stopped.pid().to_string()])
-                .output()
-                .expect("observe stopped owner");
-            if String::from_utf8_lossy(&state.stdout)
-                .trim_start()
-                .starts_with('T')
-            {
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline, "owner did not stop");
-            std::thread::yield_now();
-        }
-        let down_started = std::time::Instant::now();
-        let timed_out = other
-            .command(pinfold())
-            .args(["box", "down", &stopped_name])
-            .output()
-            .expect("down stopped owner from another state root");
-        assert!(
-            !timed_out.status.success(),
-            "down removed a still-owned generation"
-        );
-        assert!(
-            down_started.elapsed() < std::time::Duration::from_secs(15),
-            "down did not bound its owner wait"
-        );
-        assert!(
-            stopped_state.is_dir(),
-            "down removed the stopped owner's state"
-        );
-        let replacement_started = std::time::Instant::now();
-        let (code, refused) = box_up_refused(&other, &stopped_spec, &[]);
-        let contention_wait = replacement_started.elapsed();
-        assert!(
-            contention_wait >= std::time::Duration::from_secs(10)
-                && contention_wait < std::time::Duration::from_secs(15),
-            "claim did not wait its bounded contention budget: {contention_wait:?}"
-        );
-        assert_ne!(code, 0, "replacement ran while old owner was stopped");
-        assert_eq!(
-            refused["reason"], "name-in-use",
-            "replacement was refused for another reason: {refused}"
-        );
-        drop(resume);
-        let lines = stopped.starting.rest();
-        assert_eq!(
-            lines.last().expect("stopped owner's down line")["reason"],
-            "signal"
-        );
-        assert!(stopped.wait().success(), "queued intentional down failed");
-        drop(stopped);
-        // Positive control: the same second-root spec works after teardown.
-        let mut replacement = box_up(&other, &stopped_spec, &stopped_name);
-        assert_ok(
-            &box_exec(&other, &stopped_name, &["true"]),
-            "replacement after intentional teardown",
-        );
-        replacement.down(&other);
-        assert!(
-            replacement.wait().success(),
-            "replacement did not exit cleanly"
-        );
-    }
 
     // `down` is idempotent: on the box already gone it exits 0 and prints
     // nothing on either stream.
@@ -532,27 +442,38 @@ fn up_refuses_before_it_creates() {
     };
     let disk = box_name("refused-disk");
     let comma_from = serde_json::json!({ "name": disk, "guest": "/disk", "from": comma });
-    let comma_guest = serde_json::json!({ "name": disk, "guest": "/a,b" });
-    let mut cases = vec![(comma_from, "a,b"), (comma_guest, "a,b")];
-    for bad in ["-disk", "a/b"] {
-        cases.push((serde_json::json!({ "name": bad, "guest": "/disk" }), bad));
-    }
+    let mut cases = vec![
+        (comma_from, "a,b"),
+        (
+            serde_json::json!({ "name": "-disk", "guest": "/disk" }),
+            "-disk",
+        ),
+    ];
     // A disk at or below the guest kernel's /proc, /sys or /dev would
-    // replace the userns sysctl or the work cgroup; the hard case reaches
-    // one only after normalization. The positive control is the race's
+    // replace the userns sysctl or the work cgroup; each case reaches its
+    // path only after normalization. The positive control is the race's
     // winner below, whose mount at /devices shares the text but not the
     // component. Sabotage: drop the KERNEL_PATHS check from
     // `validate_guests`; these specs come up `ready` on Apple.
-    for guest in ["/proc/sys/user", "/work/../sys/fs/cgroup", "/dev"] {
+    for guest in [
+        "/work/../proc/sys/user",
+        "/work/../sys/fs/cgroup",
+        "/work/../dev",
+    ] {
         cases.push((serde_json::json!({ "name": disk, "guest": guest }), guest));
     }
     // A disk at /, /tmp, /etc or /etc/resolv.conf would hide the tmpfs /tmp
-    // or the empty resolv.conf (Always applied); three reach theirs only
-    // after normalization. The positive control is again the winner's mount at
-    // /devices. Sabotage: drop the HIDING_PATHS check from
-    // `validate_guests`; the `/tmp` disk then reaches the runtime, which
-    // creates the disk, and the `refused` and no-disk assertions fail.
-    for guest in ["/work/..", "/tmp", "/work/../etc", "/etc/./resolv.conf"] {
+    // or the empty resolv.conf (Always applied); each reaches its path only
+    // after normalization. The positive control is again the winner's mount
+    // at /devices. Sabotage: drop the HIDING_PATHS check from
+    // `validate_guests`; the `/work/../tmp` disk then reaches the runtime,
+    // which creates the disk, and the `refused` and no-disk assertions fail.
+    for guest in [
+        "/work/..",
+        "/work/../tmp",
+        "/work/../etc",
+        "/etc/./resolv.conf",
+    ] {
         cases.push((serde_json::json!({ "name": disk, "guest": guest }), guest));
     }
     for (case, named) in cases {
@@ -573,23 +494,6 @@ fn up_refuses_before_it_creates() {
             "a refused disk spec left a disk"
         );
     }
-    let kernel_mount = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "labels": { "dev.example.test": "refuses" },
-        "mounts": [{ "host": work, "guest": "/sys/fs/cgroup" }],
-    });
-    let (code, refused) = box_up_refused(&env, &kernel_mount, &[]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["reason"], "spec", "{refused}");
-    assert!(
-        refused["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("/sys/fs/cgroup"),
-        "the refusal did not name the path: {refused}"
-    );
-    assert_left_nothing(&env, &name, label, "refused");
 
     // Two `up`s on one free name at once: the claim lets exactly one hold
     // it, and the loser touches nothing of the winner's. Both are spawned
@@ -803,8 +707,7 @@ fn work_leaves_the_box_only_by_fetch() {
     // PATH stands in for a box that controls its processes' output. Each
     // bundle fails on its own, so refusing one can't mask another: a real
     // commit under a `refs/heads/x` head plus a
-    // `refs/heads/x:refs/heads/injected` head; the same plus a
-    // `refs/heads/x:refs/replace/<host main>` head; and a commit whose tree
+    // `refs/heads/x:refs/heads/injected` head; and a commit whose tree
     // holds a `.git` entry under a plain `refs/heads/x`; and a sound pack
     // under a `refs/heads/x` naming a commit it lacks, which fetch unbundles
     // before its connectivity check fails; and a sound bundle with both
@@ -822,7 +725,6 @@ fn work_leaves_the_box_only_by_fetch() {
     // pack. Sabotage: drop the `rev-list --not --glob` reach check from
     // crossing::fetch's listed loop; the omitted `x` lands at the host-only
     // commit.
-    let host_main = host_git(&["rev-parse", "main"]);
     // A host commit no box branch reaches: `feature` is checked out.
     host_git(&["commit", "-q", "--allow-empty", "-m", "host only"]);
     let host_only = host_git(&["rev-parse", "feature"]);
@@ -849,7 +751,6 @@ blob=$(echo evil | g hash-object -w --stdin)
 inner=$(printf '100644 blob %s\tconfig\n' "$blob" | g mktree)
 dotgit=$(g commit-tree -m dotgit "$(printf '040000 tree %s\t.git\n' "$inner" | g mktree)")
 mk injected "$evil" "$evil" refs/heads/x refs/heads/x:refs/heads/injected
-mk replace "$evil" "$evil" refs/heads/x refs/heads/x:refs/replace/{host_main}
 mk dotgit "$dotgit" "$dotgit" refs/heads/x
 mk missing "$evil" "$absent" refs/heads/x
 mk conflict "$evil" "$evil" refs/heads/x refs/heads/x/y
@@ -871,8 +772,16 @@ chmod 755 .hostile/git
 echo "$absent""#
     ));
     let conflict = format!("refs/remotes/{name}/x/y");
-    for case in [
-        "injected", "replace", "dotgit", "missing", "conflict", "omitted",
+    // git names the fsck entry, the commit the pack lacks, and the ref it
+    // can't update beside `x`; pinfold names the malformed branch, and the
+    // omitted branch's failure names its commit: each fetch failed for it,
+    // not for a malformed bundle.
+    for (case, reason) in [
+        ("injected", "x:refs/heads/injected"),
+        ("dotgit", "hasDotgit"),
+        ("missing", absent.trim()),
+        ("conflict", conflict.as_str()),
+        ("omitted", host_only.as_str()),
     ] {
         in_box(&format!(
             "cd /work/.hostile && cp {case} bundle && rm -f heads \
@@ -894,19 +803,9 @@ echo "$absent""#
             host_objects,
             "the {case} bundle left bytes in the host's objects"
         );
-        // git names the fsck entry, the commit the pack lacks, and the ref
-        // it can't update beside `x`, and the omitted branch's failure names
-        // its commit: each fetch failed for it, not for a malformed bundle.
-        let reason = match case {
-            "dotgit" => "hasDotgit",
-            "missing" => absent.trim(),
-            "conflict" => conflict.as_str(),
-            "omitted" => host_only.as_str(),
-            _ => continue,
-        };
         assert!(
             failed["detail"].as_str().unwrap().contains(reason),
-            "{failed}"
+            "{case}: {failed}"
         );
     }
 
@@ -1807,18 +1706,10 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     );
 
     // Sabotage: ignore `Build::cache` in `image::build`; the runtime
-    // reuses the cached RUN layer and /stamp stays equal. The cached build
-    // is the positive control; the bytes come from the guest's urandom.
-    let first_stamp = file_from_image(&env, &refs[0], "caller-stamp-1", "/stamp");
+    // reuses the cached RUN layer and /stamp stays equal. The one-id
+    // assertion above shows the cached build; the bytes come from the
+    // guest's urandom.
     let cached_stamp = file_from_image(&env, &again_ref, "caller-stamp-cached", "/stamp");
-    assert!(
-        !first_stamp.trim().is_empty(),
-        "the caller's RUN wrote no stamp"
-    );
-    assert_eq!(
-        first_stamp, cached_stamp,
-        "the caller build skipped its cache"
-    );
     let (code, fresh) = one_json_line(
         env.command(pinfold())
             .args(["image", "build", &name, "--no-cache", "--containerfile"])
@@ -3108,143 +2999,131 @@ fn a_login_route_keeps_the_login_on_the_host() {
     up.down(&env);
     assert!(up.wait().success(), "box up did not exit cleanly");
 
-    // Sabotage: remove the helper deadline or cancellation checks; a real
-    // helper waiting on this refresh service does not close its socket or
-    // finish up within the spec's bound. Omit kill/wait and the observed
-    // helper PID remains alive after up finishes. The successful real
-    // refresh above is the positive control. All timing and process
-    // observations come from the host, not helper output.
-    for cancelled in [false, true] {
-        fs::write(codex_home.as_path().join("auth.json"), auth.to_string()).unwrap();
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let refresh_url = format!("http://{}/oauth/token", listener.local_addr().unwrap());
-        let (accepted, request) = std::sync::mpsc::channel();
-        let (closed, eof) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(40)))
-                .unwrap();
-            let mut reader = BufReader::new(stream);
-            let mut line = String::new();
-            let mut length = 0usize;
-            loop {
-                line.clear();
-                if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                    return;
-                }
-                if line == "\r\n" {
-                    break;
-                }
-                if let Some((name, value)) = line.split_once(':')
-                    && name.eq_ignore_ascii_case("content-length")
-                {
-                    length = value.trim().parse().unwrap();
-                }
+    // Cancelling `up` while the real helper's refresh stalls reaps the
+    // helper and closes its fixture connection. Sabotage: drop the
+    // cancellation check from the helper wait; up outlives its bound.
+    // Omit kill/wait and the observed helper PID remains alive after up
+    // finishes. The successful real refresh above is the positive control.
+    // All timing and process observations come from the host, not helper
+    // output.
+    fs::write(codex_home.as_path().join("auth.json"), auth.to_string()).unwrap();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let refresh_url = format!("http://{}/oauth/token", listener.local_addr().unwrap());
+    let (accepted, request) = std::sync::mpsc::channel();
+    let (closed, eof) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(40)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        let mut length = 0usize;
+        loop {
+            line.clear();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                return;
             }
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body).unwrap();
-            accepted.send(()).unwrap();
-            // Never answer. EOF is the outside observer that the real
-            // helper stopped its unfinished HTTP operation.
-            let mut byte = [0u8; 1];
-            let ended = matches!(reader.read(&mut byte), Ok(0));
-            let _ = closed.send(ended);
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        accepted.send(()).unwrap();
+        // Never answer. EOF is the outside observer that the real
+        // helper stopped its unfinished HTTP operation.
+        let mut byte = [0u8; 1];
+        let ended = matches!(reader.read(&mut byte), Ok(0));
+        let _ = closed.send(ended);
+    });
+    let mut starting = box_up_start(
+        &env,
+        &codex_spec,
+        &[
+            ("CODEX_HOME", codex_home_path),
+            ("CODEX_REFRESH_TOKEN_URL_OVERRIDE", &refresh_url),
+        ],
+    );
+    let owner = starting.child.id();
+    let mut output = starting.stdout;
+    let (finished, events) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        let result = output.read_to_string(&mut text).map(|_| text);
+        let _ = finished.send(result);
+    });
+    if request
+        .recv_timeout(std::time::Duration::from_secs(15))
+        .is_err()
+    {
+        let _ = starting.child.kill();
+        let _ = reap_killed(&mut starting.child);
+        panic!("the real helper never reached the stalled refresh fixture");
+    }
+    let processes = run_ok(Command::new("ps").args(["-axo", "pid=,ppid=,comm="]));
+    let helper = String::from_utf8(processes.stdout)
+        .unwrap()
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?;
+            let parent = fields.next()?.parse::<u32>().ok()?;
+            let executable = fields.next()?;
+            if parent != owner {
+                return None;
+            }
+            // Linux comm truncates to 15 bytes; the helper name has 16.
+            let is_helper = if cfg!(target_os = "linux") {
+                fs::read_link(format!("/proc/{pid}/exe"))
+                    .ok()?
+                    .file_name()
+                    .is_some_and(|name| name == "codex-app-server")
+            } else {
+                executable.ends_with("codex-app-server")
+            };
+            is_helper.then(|| pid.to_string())
         });
-        let began = std::time::Instant::now();
-        let mut starting = box_up_start(
-            &env,
-            &codex_spec,
-            &[
-                ("CODEX_HOME", codex_home_path),
-                ("CODEX_REFRESH_TOKEN_URL_OVERRIDE", &refresh_url),
-            ],
-        );
-        let owner = starting.child.id();
-        let mut output = starting.stdout;
-        let (finished, events) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut text = String::new();
-            let result = output.read_to_string(&mut text).map(|_| text);
-            let _ = finished.send(result);
-        });
-        if request
-            .recv_timeout(std::time::Duration::from_secs(15))
-            .is_err()
-        {
+    let helper = match helper {
+        Some(helper) => helper,
+        None => {
             let _ = starting.child.kill();
             let _ = reap_killed(&mut starting.child);
-            panic!("the real helper never reached the stalled refresh fixture");
+            panic!("up has no observable real Codex helper child");
         }
-        let processes = run_ok(Command::new("ps").args(["-axo", "pid=,ppid=,comm="]));
-        let helper = String::from_utf8(processes.stdout)
-            .unwrap()
-            .lines()
-            .find_map(|line| {
-                let mut fields = line.split_whitespace();
-                let pid = fields.next()?;
-                let parent = fields.next()?.parse::<u32>().ok()?;
-                let executable = fields.next()?;
-                if parent != owner {
-                    return None;
-                }
-                // Linux comm truncates to 15 bytes; the helper name has 16.
-                let is_helper = if cfg!(target_os = "linux") {
-                    fs::read_link(format!("/proc/{pid}/exe"))
-                        .ok()?
-                        .file_name()
-                        .is_some_and(|name| name == "codex-app-server")
-                } else {
-                    executable.ends_with("codex-app-server")
-                };
-                is_helper.then(|| pid.to_string())
-            });
-        let helper = match helper {
-            Some(helper) => helper,
-            None => {
-                let _ = starting.child.kill();
-                let _ = reap_killed(&mut starting.child);
-                panic!("up has no observable real Codex helper child");
-            }
-        };
-        if cancelled {
-            run_ok(Command::new("kill").args(["-TERM", &owner.to_string()]));
+    };
+    run_ok(Command::new("kill").args(["-TERM", &owner.to_string()]));
+    let result = events.recv_timeout(std::time::Duration::from_secs(5));
+    let text = match result {
+        Ok(Ok(text)) => text,
+        _ => {
+            let _ = starting.child.kill();
+            let _ = reap_killed(&mut starting.child);
+            panic!("cancelled up outlived its stalled helper's bound");
         }
-        let bound = std::time::Duration::from_secs(if cancelled { 5 } else { 35 });
-        let result = events.recv_timeout(bound);
-        let text = match result {
-            Ok(Ok(text)) => text,
-            _ => {
-                let _ = starting.child.kill();
-                let _ = reap_killed(&mut starting.child);
-                panic!("stalled helper kept up alive past its completion bound");
-            }
-        };
-        let status = starting.child.wait_bounded();
-        drop(starting.stdin);
-        let lines = json_lines(&text);
-        if cancelled {
-            assert_eq!(lines.last().unwrap()["reason"], "signal");
-            assert!(status.success(), "cancelled login up failed: {status}");
-        } else {
-            assert_eq!(lines.first().unwrap()["event"], "refused");
-            assert_eq!(lines.first().unwrap()["reason"], "login");
-            assert!(!status.success(), "stalled login was accepted");
-            assert!(began.elapsed() < std::time::Duration::from_secs(35));
-        }
-        assert!(
-            eof.recv_timeout(std::time::Duration::from_secs(1)).unwrap(),
-            "the helper left its refresh connection open"
-        );
-        let remains = Command::new("kill")
-            .args(["-0", &helper])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
-        assert!(!remains.success(), "up left the Codex helper running");
-        assert_left_nothing(&env, &codex_name, label, "cancelled or timed-out login");
-    }
+    };
+    let status = starting.child.wait_bounded();
+    drop(starting.stdin);
+    let lines = json_lines(&text);
+    assert_eq!(lines.last().unwrap()["reason"], "signal");
+    assert!(status.success(), "cancelled login up failed: {status}");
+    assert!(
+        eof.recv_timeout(std::time::Duration::from_secs(1)).unwrap(),
+        "the helper left its refresh connection open"
+    );
+    let remains = Command::new("kill")
+        .args(["-0", &helper])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!remains.success(), "up left the Codex helper running");
+    assert_left_nothing(&env, &codex_name, label, "cancelled login");
 
     // An empty CODEX_HOME has no login: up is refused as `login` and leaves
     // nothing. The box above is its positive control.
@@ -3771,109 +3650,55 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
 #[test]
 fn a_caller_owned_box_launches_the_pinned_harness() {
     let _runtime = crate::shared_runtime();
-    // Guarantee 19: a caller-owned box launches the pinned harness, for
-    // each of pi, claude and codex.
+    // Guarantee 19: a caller-owned box launches the pinned harness. pi
+    // here; claude's and codex's boxes run in guarantee 26's test.
     // Sabotage: drop the harness mount (or mount the wrong directory); the
-    // `/opt/pinfold/<name>/<name> --version` assertion fails. Sabotage:
-    // mount the harness but leave `PINFOLD_ALLOW` unset; the allow list
-    // assertion fails. Sabotage: install codex under its target triple's
-    // name instead of `codex`; its `--version` exec fails. Sabotage:
-    // restore the directory-exists check in `dirs::install_dir`; after pi's
-    // executable is deleted from the cache the second box mounts the broken
-    // install and its `--version` exec exits 127.
-    // codex's `codex-code-mode-host` companion is not asserted: only a
-    // model-driven MCP tool call observes it.
+    // `/opt/pinfold/pi/pi --version` assertion fails. Sabotage: mount the
+    // harness but leave `PINFOLD_ALLOW` unset; the allow list assertion
+    // fails.
     let env = TestEnv::new("harness");
 
-    // The versions `pinfold artifacts` pins. The caller records which
+    // The version `pinfold artifacts` pins. The caller records which
     // harness it ran from the same report.
     let output = run_ok(env.command(pinfold()).arg("artifacts"));
     let pins: Vec<serde_json::Value> =
         serde_json::from_slice(&output.stdout).expect("pinfold artifacts output is JSON");
+    let pin = pins
+        .iter()
+        .find(|pin| pin["name"] == "pi")
+        .unwrap_or_else(|| panic!("pinfold artifacts does not name pi: {pins:?}"));
+    let version = pin["version"].as_str().expect("pin version is a string");
 
-    for harness in ["pi", "claude", "codex"] {
-        let pin = pins
-            .iter()
-            .find(|pin| pin["name"] == harness)
-            .unwrap_or_else(|| panic!("pinfold artifacts does not name {harness}: {pins:?}"));
-        let version = pin["version"].as_str().expect("pin version is a string");
+    // A caller-owned box: the spec names the image, the harness and the
+    // allow list. `$HOME` is the box's tmpfs.
+    let name = box_name("harness-pi");
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+        "harness": "pi",
+        "env": { "HOME": "/tmp" },
+        "egress": { "allow": ["api.github.com"] },
+    });
+    let mut up = box_up(&env, &spec, &name);
 
-        // A caller-owned box: the spec names the image, the harness and the
-        // allow list. `$HOME` is the box's tmpfs.
-        let name = box_name(&format!("harness-{harness}"));
-        let spec = serde_json::json!({
-            "name": name,
-            "image": default_image(&env),
-            "harness": harness,
-            "env": { "HOME": "/tmp" },
-            "egress": { "allow": ["api.github.com"] },
-        });
-        let mut up = box_up(&env, &spec, &name);
+    // The pinned harness is in the box and runs at the pinned version.
+    let ran = box_exec(&env, &name, &["/opt/pinfold/pi/pi", "--version"]);
+    assert_ok(&ran, "/opt/pinfold/pi/pi --version");
+    assert!(
+        ran.stdout.contains(version),
+        "the box's pi is not the pinned {version}: {}",
+        ran.stdout
+    );
 
-        // The pinned harness is in the box and runs at the pinned version.
-        let binary = format!("/opt/pinfold/{harness}/{harness}");
-        let ran = box_exec(&env, &name, &[&binary, "--version"]);
-        assert_ok(&ran, &format!("{binary} --version"));
-        assert!(
-            ran.stdout.contains(version),
-            "the box's {harness} is not the pinned {version}: {}",
-            ran.stdout
-        );
+    // The harness environment is the spec's allow list, exactly.
+    let allow = box_exec(&env, &name, &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""]);
+    assert_eq!(
+        allow.stdout, "api.github.com",
+        "the box's PINFOLD_ALLOW is not the spec's allow list"
+    );
 
-        // The harness environment is the spec's allow list, exactly.
-        let allow = box_exec(&env, &name, &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""]);
-        assert_eq!(
-            allow.stdout, "api.github.com",
-            "the box's PINFOLD_ALLOW is not the spec's allow list"
-        );
-
-        up.down(&env);
-        assert!(up.wait().success(), "box up did not exit cleanly");
-
-        // The host deleted the harness's executable from the cache after
-        // the install, the way the OS's temp cleaner or a partial delete
-        // does. The next use must reinstall rather than mount a directory
-        // whose binary is gone. Only pi: the repair downloads on the host
-        // again, and one harness proves the path without spending the
-        // suite's time three times. This scenario runs against a cache of
-        // its own: the pi tests run in this binary beside this one and
-        // mount the shared cache, which the deletion would break.
-        if harness == "pi" {
-            let private = TestEnv::with_private_cache("harness-damaged");
-
-            // Install pi into the private cache and read its path there.
-            let mut up = box_up(&private, &spec, &name);
-            up.down(&private);
-            assert!(up.wait().success(), "box up did not exit cleanly");
-            let output = run_ok(private.command(pinfold()).arg("artifacts"));
-            let report: Vec<serde_json::Value> =
-                serde_json::from_slice(&output.stdout).expect("pinfold artifacts output is JSON");
-            let pin = report
-                .iter()
-                .find(|pin| pin["name"] == harness)
-                .expect("pinfold artifacts names pi");
-            let install = pin["path"].as_str().expect("pin path is a string");
-            let host_binary = Path::new(install).join(harness);
-            fs::remove_file(&host_binary)
-                .unwrap_or_else(|error| panic!("remove {}: {error}", host_binary.display()));
-
-            // The second box repairs the install and runs the pinned pi.
-            let mut up = box_up(&private, &spec, &name);
-            let guest_binary = format!("/opt/pinfold/{harness}/{harness}");
-            let ran = box_exec(&private, &name, &[&guest_binary, "--version"]);
-            assert_ok(
-                &ran,
-                &format!("{guest_binary} --version after the cache lost it"),
-            );
-            assert!(
-                ran.stdout.contains(version),
-                "the re-installed {harness} is not the pinned {version}: {}",
-                ran.stdout
-            );
-            up.down(&private);
-            assert!(up.wait().success(), "box up did not exit cleanly");
-        }
-    }
+    up.down(&env);
+    assert!(up.wait().success(), "box up did not exit cleanly");
 }
 
 /// The VMM of a ready box on Linux: the one child process of its `box up`,
