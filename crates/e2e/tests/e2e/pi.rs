@@ -219,7 +219,54 @@ fn project_state_persists_and_stays_separate() {
         output.stdout
     };
 
+    // The first start copies `.git`, tracked and untracked files, and no
+    // git-ignored one: not one a `.gitignore` or `.git/info/exclude`
+    // names, nor one in an ignored or partly ignored directory. A tracked
+    // file matching a pattern and a re-included one are copied.
+    // Sabotage: pass an empty skip list to project_disk in build_plan; the
+    // ignored files appear in the box.
+    let write = |path: &str, contents: &str| {
+        let path = a.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    };
+    write(".gitignore", "*.env\n!keep.env\nbuild/\n");
+    write("tracked.env", "tracked");
+    git(a.as_path(), &["add", ".gitignore"]);
+    git(a.as_path(), &["add", "-f", "tracked.env"]);
+    let id = ["-c", "user.name=e2e", "-c", "user.email=e2e@example.test"];
+    git(
+        a.as_path(),
+        &[&id[..], &["commit", "-q", "-m", "start"]].concat(),
+    );
+    fs::OpenOptions::new()
+        .append(true)
+        .open(a.join(".git/info/exclude"))
+        .and_then(|mut exclude| exclude.write_all(b"local.key\n"))
+        .unwrap();
+    write("keep.env", "keep");
+    write("untracked.txt", "untracked");
+    write("new/kept.txt", "kept");
+    for ignored in [
+        "secret.env",
+        "local.key",
+        "build/deep/out.o",
+        "new/sub/nested.env",
+    ] {
+        write(ignored, "FAKE_SECRET=1");
+    }
     let (run_a, _, box_a) = PiRpc::start(&env, a.as_path());
+    let copied = in_box(
+        &box_a,
+        &format!(
+            "cd {} && cat tracked.env keep.env untracked.txt new/kept.txt && git rev-parse -q --verify HEAD >/dev/null && for path in secret.env local.key build new/sub; do test ! -e $path || echo $path; done",
+            a.display()
+        ),
+    );
+    assert_eq!(
+        copied, "trackedkeepuntrackedkept",
+        "the first copy is wrong"
+    );
     in_box(&box_a, r#"printf project-a > "$HOME/project-a-marker""#);
     assert!(run_a.finish().success(), "the first project failed");
 
@@ -241,6 +288,21 @@ fn project_state_persists_and_stays_separate() {
     );
     assert_eq!(kept, "project-a", "the first project's home changed");
     assert!(run_a.finish().success(), "the returning project failed");
+
+    // A `.git` git cannot list from refuses before anything starts, rather
+    // than copying ignored files. Sabotage: return an empty set from
+    // launch::ignored when git fails; the project starts.
+    let broken = test_dir(&env, "broken");
+    fs::create_dir(broken.join(".git")).unwrap();
+    let output = pinfold_in(&env, broken.as_path(), &["pi", "--version"])
+        .output()
+        .expect("run pinfold");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "an unlistable checkout started");
+    assert!(
+        stderr.contains("ignored-unlisted"),
+        "wrong refusal: {stderr}"
+    );
 
     // Sabotage: stop bounding the cosmetic project-id prefix; the trust
     // filename exceeds the host's 255-byte component limit before pi runs.

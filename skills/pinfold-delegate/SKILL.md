@@ -15,9 +15,10 @@ only as git branches you fetch and review.
 
 - Run from the project's main checkout. A git worktree is refused as
   `worktree`.
-- The first start copies the whole checkout into the box, untracked and
-  ignored files included, and the box keeps it. Check for secrets
-  (`.env`, keys) first.
+- The first start copies the checkout into the box, untracked files
+  included, and the box keeps it. Git-ignored files are not copied;
+  check that secrets (`.env`, keys) are ignored. To give the box an
+  ignored file, commit it or un-ignore it before the first start.
 - After that, only committed branches cross. Each start pushes the
   checkout's branches into the box as `host/<branch>`; uncommitted edits
   do not cross.

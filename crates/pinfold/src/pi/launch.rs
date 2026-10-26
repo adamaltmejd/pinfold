@@ -1,8 +1,10 @@
 //! `pinfold pi`: assemble one project's box and run pi in it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
+use std::ffi::OsStr;
 use std::io::{self, IsTerminal};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use tokio::runtime::Builder;
@@ -29,12 +31,13 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     refuse_worktree(&root)?;
     let config = Config::load(&root)?;
     trust::check(&root, &config)?;
+    let skip = ignored(&root)?;
     let id = project_id(&root);
     let _project = ownership::project_lock(&id)?;
     state::record_run(&root)?;
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
-    let plan = build_plan(&config, &id, &root, &image);
+    let plan = build_plan(&config, &id, &root, &image, skip);
     run_box(&plan, &root, &cwd, args)
 }
 
@@ -160,7 +163,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
     let plan = Plan {
-        disks: vec![project_disk(disk, &root, None)],
+        disks: vec![project_disk(disk, &root, None, BTreeSet::new())],
         ..box_plan(&config, &id, &image)
     };
     let runtime = Builder::new_current_thread().enable_all().build()?;
@@ -331,7 +334,13 @@ fn warn_containerfile(image: &ImageInfo, bytes: &[u8], build: &str) {
     }
 }
 
-fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> Plan {
+fn build_plan(
+    config: &Config,
+    id: &str,
+    root: &Path,
+    image: &str,
+    skip: BTreeSet<PathBuf>,
+) -> Plan {
     let mut env = BTreeMap::from([
         ("HOME".to_string(), Env::Exact(state::HOME.to_string())),
         ("HERDR_AGENT".to_string(), Env::Exact("pi".to_string())),
@@ -351,8 +360,9 @@ fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> Plan {
                 size: None,
                 from: None,
                 readonly: false,
+                skip: BTreeSet::new(),
             },
-            project_disk(project, root, Some(root)),
+            project_disk(project, root, Some(root), skip),
         ],
         env,
         egress: Some(Egress {
@@ -377,15 +387,63 @@ fn box_plan(config: &Config, id: &str, image: &str) -> Plan {
 }
 
 /// The project disk, writable at the project's own path, which the caller
-/// has checked is UTF-8. `from` copies the checkout in when the disk is new.
-fn project_disk(name: String, root: &Path, from: Option<&Path>) -> Disk {
+/// has checked is UTF-8. `from` copies the checkout in when the disk is new,
+/// less `skip`.
+fn project_disk(name: String, root: &Path, from: Option<&Path>, skip: BTreeSet<PathBuf>) -> Disk {
     Disk {
         name,
         guest: root.to_path_buf(),
         size: None,
         from: from.map(Path::to_path_buf),
         readonly: false,
+        skip,
     }
+}
+
+/// The checkout's git-ignored paths, relative to `root`, which the first
+/// start leaves out. A root without `.git` ignores nothing. With `.git`, a
+/// failed listing refuses: copying everything would bring in what the
+/// checkout ignores, such as `.env` files and keys.
+fn ignored(root: &Path) -> io::Result<BTreeSet<PathBuf>> {
+    match std::fs::symlink_metadata(root.join(".git")) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(error) => return Err(error),
+        Ok(_) => {}
+    }
+    let refused = |detail: &str| {
+        io::Error::other(format!(
+            "ignored-unlisted: cannot list the git-ignored files in {}: {}",
+            root.display(),
+            detail.trim()
+        ))
+    };
+    let args = [
+        "ls-files",
+        "-z",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--directory",
+    ];
+    let output = crossing::git_command(root)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| refused(&error.to_string()))?;
+    if !output.status.success() {
+        return Err(refused(&String::from_utf8_lossy(&output.stderr)));
+    }
+    // `--directory` names a wholly ignored directory with a trailing slash;
+    // its files may be listed too.
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            let path = path.strip_suffix(b"/").unwrap_or(path);
+            PathBuf::from(OsStr::from_bytes(path))
+        })
+        .collect())
 }
 
 /// `path` as a string, for a spec or report value; `what` names it in the
