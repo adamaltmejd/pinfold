@@ -31,12 +31,13 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     refuse_worktree(&root)?;
     let config = Config::load(&root)?;
     trust::check(&root, &config)?;
-    let skip = ignored(&root)?;
     let id = project_id(&root);
     let _project = ownership::project_lock(&id)?;
     state::record_run(&root)?;
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
+    // Listed after the build, so files it wrote are left out too.
+    let skip = ignored(&root)?;
     let plan = build_plan(&config, &id, &root, &image, skip);
     run_box(&plan, &root, &cwd, args)
 }
@@ -401,31 +402,81 @@ fn project_disk(name: String, root: &Path, from: Option<&Path>, skip: BTreeSet<P
 }
 
 /// The checkout's git-ignored paths, relative to `root`, which the first
-/// start leaves out. A root without `.git` ignores nothing. With `.git`, a
-/// failed listing refuses: copying everything would bring in what the
-/// checkout ignores, such as `.env` files and keys.
+/// start leaves out. Each submodule and untracked nested repository adds
+/// its own, since git lists none inside them. A root without `.git`
+/// ignores nothing. With `.git`, a failed listing refuses: copying
+/// everything would bring in what the checkout ignores, such as `.env`
+/// files and keys.
 fn ignored(root: &Path) -> io::Result<BTreeSet<PathBuf>> {
     match std::fs::symlink_metadata(root.join(".git")) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
         Err(error) => return Err(error),
         Ok(_) => {}
     }
+    let mut skip = BTreeSet::new();
+    let mut repos = vec![PathBuf::new()];
+    while let Some(repo) = repos.pop() {
+        let dir = root.join(&repo);
+        let path =
+            |entry: &[u8]| repo.join(OsStr::from_bytes(entry.strip_suffix(b"/").unwrap_or(entry)));
+        // `--directory` names a wholly ignored directory with a trailing
+        // slash; its files may be listed too.
+        let ignored = list(
+            &dir,
+            &["--others", "--ignored", "--exclude-standard", "--directory"],
+        )?;
+        skip.extend(ignored.iter().map(|entry| path(entry)));
+        // Without `--directory`, git names an untracked nested repository,
+        // at any depth, as `dir/` and lists nothing in it.
+        let nested = list(&dir, &["--others", "--exclude-standard"])?;
+        let staged = list(&dir, &["-s"])?;
+        let submodules = staged.iter().filter_map(|entry| {
+            let (meta, path) = entry.split_at(entry.iter().position(|byte| *byte == b'\t')?);
+            meta.starts_with(b"160000 ").then(|| &path[1..])
+        });
+        for entry in nested
+            .iter()
+            .filter(|entry| entry.ends_with(b"/"))
+            .map(Vec::as_slice)
+            .chain(submodules)
+        {
+            let child = path(entry);
+            // An uninitialized submodule has no `.git` and nothing to copy.
+            match std::fs::symlink_metadata(root.join(&child).join(".git")) {
+                Ok(_) => repos.push(child),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(skip)
+}
+
+/// `git ls-files -z` in `dir` with `args`, one entry per path. The listing
+/// keeps readdir's bytes, so macOS's decomposed names match the copy's
+/// walk, and ignores a caller's `GIT_*` repository overrides.
+fn list(dir: &Path, args: &[&str]) -> io::Result<Vec<Vec<u8>>> {
     let refused = |detail: &str| {
         io::Error::other(format!(
             "ignored-unlisted: cannot list the git-ignored files in {}: {}",
-            root.display(),
+            dir.display(),
             detail.trim()
         ))
     };
-    let args = [
-        "ls-files",
-        "-z",
-        "--others",
-        "--ignored",
-        "--exclude-standard",
-        "--directory",
-    ];
-    let output = crossing::git_command(root)
+    let mut command = crossing::git_command(dir);
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+    ] {
+        command.env_remove(name);
+    }
+    let output = command
+        .args(["-c", "core.precomposeunicode=false", "ls-files", "-z"])
         .args(args)
         .stdin(std::process::Stdio::null())
         .output()
@@ -433,16 +484,11 @@ fn ignored(root: &Path) -> io::Result<BTreeSet<PathBuf>> {
     if !output.status.success() {
         return Err(refused(&String::from_utf8_lossy(&output.stderr)));
     }
-    // `--directory` names a wholly ignored directory with a trailing slash;
-    // its files may be listed too.
     Ok(output
         .stdout
         .split(|byte| *byte == 0)
-        .filter(|path| !path.is_empty())
-        .map(|path| {
-            let path = path.strip_suffix(b"/").unwrap_or(path);
-            PathBuf::from(OsStr::from_bytes(path))
-        })
+        .filter(|entry| !entry.is_empty())
+        .map(<[u8]>::to_vec)
         .collect())
 }
 
