@@ -182,18 +182,7 @@ fn parse_request(payload: &[u8]) -> io::Result<Request> {
     }
     let mut fills = Vec::new();
     for _ in 0..fields.u32()? {
-        let fill = guest_path(&mut fields)?;
-        let missing = fields.u8()? != 0;
-        if !attachments
-            .iter()
-            .any(|attachment| attachment.writable && attachment.guest == fill)
-        {
-            return Err(io::Error::other(format!(
-                "fill {} is no writable disk",
-                fill.display()
-            )));
-        }
-        fills.push((fill, missing));
+        fills.push((guest_path(&mut fields)?, fields.u8()? != 0));
     }
     fields.end()?;
     attachments.sort_by_key(|attachment| attachment.guest.components().count());
@@ -215,22 +204,17 @@ fn device(fields: &mut Fields) -> io::Result<String> {
     Ok(format!("/dev/{name}"))
 }
 
+/// A plain absolute path below `/`, as [`mount_at`] walks it. The host's
+/// plan already refuses the kernel's and hidden paths.
 fn guest_path(fields: &mut Fields) -> io::Result<PathBuf> {
     let path = PathBuf::from(OsString::from_vec(fields.bytes()?.to_vec()));
     let mut components = path.components();
     if components.next() != Some(Component::RootDir)
         || path.components().count() < 2
         || !components.all(|component| matches!(component, Component::Normal(_)))
-        || ["/proc", "/sys", "/dev"]
-            .iter()
-            .any(|kernel| path.starts_with(kernel))
-        // Mirrors HIDING_PATHS in core/plan.rs, which this crate cannot import.
-        || ["/", "/tmp", "/etc", "/etc/resolv.conf"]
-            .iter()
-            .any(|hidden| path == Path::new(hidden))
     {
         return Err(io::Error::other(format!(
-            "guest path {} must be plain, absolute and below /, outside /proc, /sys and /dev, and none of /tmp, /etc and /etc/resolv.conf",
+            "guest path {} must be plain, absolute and below /",
             path.display()
         )));
     }
@@ -460,8 +444,9 @@ pub(crate) fn drop_bounding(keep: Option<u32>) -> io::Result<()> {
 }
 
 /// Make `keep` the only effective and permitted capability, with the
-/// inheritable and ambient sets empty.
-fn set_capabilities(keep: Option<u32>) -> io::Result<()> {
+/// inheritable and ambient sets empty. Only system calls, like
+/// [`drop_bounding`].
+pub(crate) fn set_capabilities(keep: Option<u32>) -> io::Result<()> {
     // Safety: prctl with integer arguments, as unsigned longs.
     if unsafe {
         libc::prctl(
@@ -538,13 +523,8 @@ fn serve_control(request: &Request, control: &OwnedFd, service: &OwnedFd) -> ! {
         if !fds[0].any().unwrap_or(false) {
             continue;
         }
-        let mut connection = match accept_host(control) {
-            Ok(connection) => connection,
-            Err(Accepted::Peer) => continue,
-            Err(Accepted::Failed) => {
-                super::back_off();
-                continue;
-            }
+        let Some(mut connection) = accept_host(control) else {
+            continue;
         };
         let reply = match read_frame(&mut connection) {
             Ok((UNMOUNT, _)) => unmounted
@@ -596,10 +576,9 @@ fn exec_service(request: &Request, host: UnixStream, mut dropped: io::PipeReader
         }
         let exec = vsock_listen(EXEC_PORT)?;
         // Without a proxy nothing listens, so a request finds no listener.
-        let relay = match request.relay {
-            true => Some(TcpListener::bind(super::RELAY_LISTEN)?),
-            false => None,
-        };
+        let relay = (request.relay)
+            .then(|| TcpListener::bind(super::RELAY_LISTEN))
+            .transpose()?;
         Ok((exec, relay))
     })();
     let mut host = host.into_inner();
@@ -622,25 +601,13 @@ fn exec_service(request: &Request, host: UnixStream, mut dropped: io::PipeReader
 
     let env = Arc::new(Env::default());
     loop {
-        match accept_host(&exec) {
+        if let Some(connection) = accept_host(&exec) {
+            let env = Arc::clone(&env);
             // A thread that cannot start, at the pids cap, drops its
-            // connection; the service stays up.
-            Ok(connection) => {
-                let env = Arc::clone(&env);
-                let _ = spawn(move || serve(connection, &env));
-            }
-            Err(Accepted::Peer) => {}
-            Err(Accepted::Failed) => super::back_off(),
+            // connection; the service stays up. `thread::spawn` would panic.
+            let _ = thread::Builder::new().spawn(move || serve(connection, &env));
         }
     }
-}
-
-/// Start a thread, or fail instead of panicking as `thread::spawn` does
-/// when the work cgroup's pids cap is reached.
-fn spawn<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
-) -> io::Result<thread::JoinHandle<T>> {
-    thread::Builder::new().spawn(work)
 }
 
 /// Join the work cgroup, out of the OOM killer's reach, then drop to the
@@ -825,7 +792,7 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
         None => None,
     };
     let mut reader = connection.try_clone()?;
-    spawn(move || relay_input(&mut reader, input, resize.as_ref()))?;
+    thread::Builder::new().spawn(move || relay_input(&mut reader, input, resize.as_ref()))?;
 
     let status = child.wait()?;
     for pump in pumps {
@@ -854,7 +821,7 @@ fn pump(
     output: &Arc<Mutex<UnixStream>>,
 ) -> io::Result<thread::JoinHandle<()>> {
     let output = Arc::clone(output);
-    spawn(move || {
+    thread::Builder::new().spawn(move || {
         let mut buffer = [0; 32 * 1024];
         let mut open = true;
         loop {
@@ -1004,24 +971,19 @@ fn vsock_listen(port: u32) -> io::Result<OwnedFd> {
 
 /// Accept the next connection from the host. Any other peer is closed at
 /// once. The guest kernel has no vsock loopback, so none can reach a guest
-/// listener today; the check keeps that true if one ever does.
-fn accept_host(listener: &OwnedFd) -> Result<UnixStream, Accepted> {
-    let fd = nix::sys::socket::accept4(listener.as_raw_fd(), SockFlag::SOCK_CLOEXEC)
-        .map_err(|_| Accepted::Failed)?;
+/// listener today; the check keeps that true if one ever does. A failed
+/// accept backs off. Either way there is no connection.
+fn accept_host(listener: &OwnedFd) -> Option<UnixStream> {
+    let Ok(fd) = nix::sys::socket::accept4(listener.as_raw_fd(), SockFlag::SOCK_CLOEXEC) else {
+        super::back_off();
+        return None;
+    };
     // Safety: accept4 returned a new descriptor, owned here alone.
     let connection = unsafe { OwnedFd::from_raw_fd(fd) };
     match nix::sys::socket::getpeername::<VsockAddr>(connection.as_raw_fd()) {
-        Ok(peer) if peer.cid() == HOST_CID => Ok(UnixStream::from(connection)),
-        _ => Err(Accepted::Peer),
+        Ok(peer) if peer.cid() == HOST_CID => Some(UnixStream::from(connection)),
+        _ => None,
     }
-}
-
-/// Why [`accept_host`] returned no connection.
-enum Accepted {
-    /// A peer other than the host, closed.
-    Peer,
-    /// accept itself failed.
-    Failed,
 }
 
 pub(crate) fn write_frame(output: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {

@@ -92,12 +92,9 @@ pub fn stat(state_dir: &Path) -> io::Result<[Option<u64>; 5]> {
     write_frame(&mut stream, STAT, &[])?;
     let payload = answer(&mut stream, STAT)?;
     let mut values = [None; 5];
-    let (fields, []) = payload.as_chunks::<9>() else {
+    let (fields @ [_, _, _, _, _], []) = payload.as_chunks::<9>() else {
         return Err(io::Error::other("the box's STAT has the wrong length"));
     };
-    if fields.len() != 5 {
-        return Err(io::Error::other("the box's STAT has the wrong length"));
-    }
     for (value, field) in values.iter_mut().zip(fields) {
         if field[0] != 0 {
             *value = Some(u64::from_be_bytes(field[1..].try_into().unwrap()));

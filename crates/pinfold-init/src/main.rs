@@ -16,22 +16,7 @@ fn main() -> ExitCode {
         }
     };
     match args.first().map(String::as_str) {
-        Some("--version" | "-V") => {
-            println!("pinfold {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
-        }
-        Some("init") => {
-            let args = &args[1..];
-            if args
-                .iter()
-                .take_while(|arg| arg.as_str() != "--")
-                .any(|arg| arg == "--help" || arg == "-h")
-            {
-                println!("pinfold init");
-                return ExitCode::SUCCESS;
-            }
-            init::run(args)
-        }
+        Some("init") => init::run(&args[1..]),
         _ => {
             eprintln!("usage: pinfold init");
             ExitCode::from(1)

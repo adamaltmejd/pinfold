@@ -87,9 +87,7 @@ impl Runtime for Firecracker {
         _workdir: Option<&Path>,
         argv: &[String],
     ) -> std::process::Command {
-        let mut command = std::process::Command::new(
-            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/proc/self/exe")),
-        );
+        let mut command = std::process::Command::new("/proc/self/exe");
         command
             .process_group(0)
             .args(["box", "exec", name, "--"])
