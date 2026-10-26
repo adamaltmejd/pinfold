@@ -428,8 +428,9 @@ fn loopback_up() -> io::Result<()> {
 const CAP_SYS_ADMIN: u32 = 21;
 
 /// Drop every capability but `keep` from the bounding set. Needs
-/// `CAP_SETPCAP`, so it comes before [`set_capabilities`].
-fn drop_bounding(keep: Option<u32>) -> io::Result<()> {
+/// `CAP_SETPCAP`, so it comes before [`set_capabilities`]. Only system
+/// calls: the VMM jail's child runs it between `clone` and `execve`.
+pub(crate) fn drop_bounding(keep: Option<u32>) -> io::Result<()> {
     for capability in 0..64 {
         if Some(capability) == keep {
             continue;
@@ -447,8 +448,9 @@ fn drop_bounding(keep: Option<u32>) -> io::Result<()> {
         } < 0
         {
             let error = io::Error::last_os_error();
-            // EINVAL: past the kernel's last capability.
-            if error.raw_os_error() == Some(libc::EINVAL) {
+            // EINVAL: past the kernel's last capability. Capability 0
+            // always exists, so EINVAL there is a failure.
+            if error.raw_os_error() == Some(libc::EINVAL) && capability > 0 {
                 break;
             }
             return Err(error);
@@ -502,7 +504,7 @@ fn set_capabilities(keep: Option<u32>) -> io::Result<()> {
     Ok(())
 }
 
-fn pidfd_open(pid: i32) -> io::Result<OwnedFd> {
+pub(crate) fn pidfd_open(pid: i32) -> io::Result<OwnedFd> {
     // Safety: pidfd_open returns a new descriptor or -1.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_long, 0 as libc::c_long) };
     if fd < 0 {
