@@ -1,6 +1,6 @@
 //! Nonblocking subprocess pipes with absolute deadlines and cancellation.
 
-use std::io;
+use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -36,6 +36,62 @@ pub(super) fn remaining(
                 format!("{operation} deadline exceeded"),
             )
         })
+}
+
+/// Read what a nonblocking `source` has, waiting for it; 0 at its end.
+pub(super) fn read(
+    source: &mut (impl Read + AsFd),
+    buffer: &mut [u8],
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+    operation: &str,
+) -> io::Result<usize> {
+    loop {
+        remaining(deadline, cancel, operation)?;
+        match source.read(buffer) {
+            Ok(read) => return Ok(read),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                wait_ready(
+                    Some(source.as_fd()),
+                    PollFlags::POLLIN,
+                    deadline,
+                    cancel,
+                    operation,
+                )?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return Err(io::Error::other(format!("{operation} output failed"))),
+        }
+    }
+}
+
+/// Write all of `bytes` to a nonblocking `sink`, waiting for room.
+pub(super) fn write_all(
+    sink: &mut (impl Write + AsFd),
+    mut bytes: &[u8],
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+    operation: &str,
+) -> io::Result<()> {
+    while !bytes.is_empty() {
+        remaining(deadline, cancel, operation)?;
+        match sink.write(bytes) {
+            Ok(0) => return Err(io::Error::other(format!("{operation} input closed"))),
+            Ok(written) => bytes = &bytes[written..],
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                wait_ready(
+                    Some(sink.as_fd()),
+                    PollFlags::POLLOUT,
+                    deadline,
+                    cancel,
+                    operation,
+                )?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return Err(io::Error::other(format!("{operation} input failed"))),
+        }
+    }
+    Ok(())
 }
 
 /// With no fd, wait for the next cancellation check or deadline.

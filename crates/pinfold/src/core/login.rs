@@ -3,8 +3,7 @@
 //! harness reads in the box: codex's config and pi's extension.
 
 use std::fs::{File, TryLockError};
-use std::io::{self, Read, Write};
-use std::os::fd::AsFd;
+use std::io::{self, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, PoisonError};
@@ -12,7 +11,7 @@ use std::sync::{Mutex, PoisonError};
 use nix::poll::PollFlags;
 use std::time::{Duration, Instant};
 
-use crate::core::pipe::{nonblocking, remaining, wait_ready};
+use crate::core::pipe::{self, nonblocking, remaining, wait_ready};
 use crate::core::plan::{PiCredential, PiProvider};
 use crate::core::{artifacts, now, ownership};
 
@@ -178,48 +177,17 @@ fn ask(
     for request in requests {
         writeln!(input, "{request}")?;
     }
-    let mut pending = input.as_slice();
-    while !pending.is_empty() {
-        remaining(deadline, cancel, "helper")?;
-        match stdin.write(pending) {
-            Ok(0) => return Err(io::Error::other("helper input closed")),
-            Ok(n) => pending = &pending[n..],
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                wait_ready(
-                    Some(stdin.as_fd()),
-                    PollFlags::POLLOUT,
-                    deadline,
-                    cancel,
-                    "helper",
-                )?;
-            }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(_) => return Err(io::Error::other("helper input failed")),
-        }
-    }
+    pipe::write_all(&mut stdin, &input, deadline, cancel, "helper")?;
     // stdin remains open until the answer arrives; some helper versions
     // exit when the caller closes it before the auth lookup finishes.
     let mut line = Vec::new();
     let mut total = 0usize;
     let mut buffer = [0u8; 8192];
     loop {
-        remaining(deadline, cancel, "helper")?;
-        let n = match stdout.read(&mut buffer) {
-            Ok(0) => return Err(io::Error::other("helper exited without an answer")),
-            Ok(n) => n,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                wait_ready(
-                    Some(stdout.as_fd()),
-                    PollFlags::POLLIN,
-                    deadline,
-                    cancel,
-                    "helper",
-                )?;
-                continue;
-            }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(_) => return Err(io::Error::other("helper output failed")),
-        };
+        let n = pipe::read(&mut stdout, &mut buffer, deadline, cancel, "helper")?;
+        if n == 0 {
+            return Err(io::Error::other("helper exited without an answer"));
+        }
         total += n;
         if total > MAX_OUTPUT {
             return Err(io::Error::other("helper output exceeds 256 KiB"));
