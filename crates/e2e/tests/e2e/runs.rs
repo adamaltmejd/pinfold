@@ -1,27 +1,19 @@
-//! Run records: guarantees 38 and 41. Guarantee 39 needs a pi box and lives
-//! in `pi.rs`; 40 and 42 need the runtime exclusively and live in
-//! `runtime.rs`.
-
-use std::process::Stdio;
+//! Run records: guarantee 38. Guarantee 39 needs a pi box and lives in
+//! `pi.rs`; 42 needs the runtime exclusively and lives in `runtime.rs`.
 
 use crate::box_::{Up, box_name, box_up};
 use e2e::{
-    HttpFixture, TestDir, TestEnv, assert_denied, assert_ok, curl, default_image, egress_log,
-    pinfold, run_query,
+    HttpFixture, TestEnv, assert_denied, assert_ok, curl, default_image, egress_log, inspect,
+    pinfold, run_query, test_dir,
 };
 
-/// `ready`'s run id, checked against the generation label it must equal.
+/// `ready`'s run id.
 pub(super) fn run_id(up: &Up) -> String {
     let ready = up.ready();
-    let id = ready["run_id"]
+    ready["run_id"]
         .as_str()
         .unwrap_or_else(|| panic!("ready names no run_id: {ready}"))
-        .to_string();
-    assert_eq!(
-        ready["labels"]["dev.pinfold.generation"], id,
-        "run_id is not the box's generation: {ready}"
-    );
-    id
+        .to_string()
 }
 
 fn events(env: &TestEnv, run_id: &str, after: Option<&str>) -> (i32, serde_json::Value) {
@@ -38,16 +30,37 @@ fn each_runs_history_is_its_own() {
     let _runtime = crate::shared_runtime();
     // Guarantee 38. Sabotage: key the egress log by box name again; the
     // second run's log already holds the first's lines, and the first run's
-    // events gain the second's request. Sabotage: emit a fresh random
+    // events gain the second's requests. Sabotage: emit a fresh random
     // `run_id` instead of the generation; the label equality fails.
     // Sabotage: print the first run's id in the second `down`; its run_id
-    // assertion fails.
+    // assertion fails. Sabotage: skip the terminal record in `Box::down`
+    // for a requested stop; the inspect after `box down` reports terminal
+    // `not-observed`. Writing it after `finish`'s ack is caught only when
+    // `inspect` wins the race: the owner waits on nothing after the ack, so
+    // no outside observer can hold it there. Sabotage: drop `detail` from
+    // the terminal record; the 137 assertion fails. Sabotage: list the
+    // runtime's images in `inspect`; with no `podman` or `container` on
+    // PATH it exits 1. (Listing boxes runs no program on Linux, so it would
+    // pass there.) Sabotage: resume after the cursor's line rather than at
+    // it; each page boundary skips a line and the order assertion fails.
+    // Counting an incomplete final line into `next` is not caught every
+    // run: the proxy appends each line in one write, so a partial line is
+    // rare. Sabotage: drop the run from the cursor; another run's cursor
+    // exits 0. Sabotage: report a no-egress run's log `unavailable`; the
+    // not-applicable assertions fail. Sabotage: a default limit of 1000;
+    // the first page then holds all 150 lines and its length assertion
+    // fails.
     let env = TestEnv::new("run-history");
+    let fixture = HttpFixture::start(None);
+    let image = default_image(&env);
     let name = box_name("run-history");
     let spec = serde_json::json!({
         "name": name,
-        "image": default_image(&env),
-        "egress": { "allow": ["api.github.com"] },
+        "image": image,
+        "egress": {
+            "allow": ["api.github.com"],
+            "routes": { "fixture.internal": fixture.route() },
+        },
     });
     let mut first = box_up(&env, &spec, &name);
     let first_run = run_id(&first);
@@ -65,6 +78,13 @@ fn each_runs_history_is_its_own() {
         &["-o", "/dev/null", "https://example.com/"],
     );
     assert_denied(&denied, "403", "the first run's request to example.com");
+    // `box down` returns only after the owner acknowledged teardown, so the
+    // terminal record is already there.
+    first.down(&env);
+    let (code, record) = inspect(&env, &first_run);
+    assert_eq!(code, 0, "inspect after down failed");
+    assert_eq!(record["terminal"]["state"], "available", "{record}");
+    assert_eq!(record["terminal"]["record"]["reason"], "signal", "{record}");
     let down = first.close_stdin();
     assert_eq!(
         down.last().expect("the first run's down line")["run_id"],
@@ -72,20 +92,61 @@ fn each_runs_history_is_its_own() {
     );
 
     let mut second = box_up(&env, &spec, &name);
-    let second_run = run_id(&second);
-    assert_ne!(second_run, first_run, "a reused name reused its run_id");
+    let run = run_id(&second);
+    assert_eq!(
+        second.ready()["labels"]["dev.pinfold.generation"],
+        run.as_str(),
+        "run_id is not the box's generation: {}",
+        second.ready()
+    );
+    assert_ne!(run, first_run, "a reused name reused its run_id");
     assert_eq!(
         egress_log(second.ready()),
         "",
         "the second run's log is not empty before its first request"
     );
-    let again = curl(
-        &env,
-        &name,
-        "30",
-        &["-o", "/dev/null", "https://api.github.com/"],
-    );
-    assert_ok(&again, "the second run's request");
+    let requests = |prefix: &str, count: usize| {
+        let script = format!(
+            "i=1; while [ $i -le {count} ]; do curl -sS -o /dev/null http://fixture.internal/{prefix}/$i || exit 1; i=$((i+1)); done"
+        );
+        let output = e2e::box_exec(&env, &name, &["sh", "-c", &script]);
+        assert_ok(&output, &format!("the {prefix} route requests"));
+    };
+    requests("n", 150);
+    // The box appends after the first page, so `next` must resume across
+    // lines that did not exist when it was issued.
+    let mut paths = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut appended = false;
+    loop {
+        let (code, page) = events(&env, &run, cursor.as_deref());
+        assert_eq!(code, 0, "events failed");
+        assert_eq!(page["state"], "available", "{page}");
+        let page_events = page["events"].as_array().expect("events is an array");
+        // 150 lines exist before the first page, so it is full at the
+        // spec's default limit of 100.
+        if cursor.is_none() {
+            assert_eq!(page_events.len(), 100, "the first page's length");
+        }
+        for event in page_events {
+            paths.push(event["path"].as_str().unwrap_or_default().to_string());
+        }
+        if let Some(next) = page["next"].as_str() {
+            cursor = Some(next.to_string());
+        }
+        if !appended {
+            requests("extra", 50);
+            appended = true;
+        } else if page["more"] == false {
+            break;
+        }
+    }
+    let expected: Vec<String> = (1..=150)
+        .map(|i| format!("/n/{i}"))
+        .chain((1..=50).map(|i| format!("/extra/{i}")))
+        .collect();
+    assert_eq!(paths, expected, "paging skipped, repeated or reordered");
+    let cursor = cursor.expect("paging returned a cursor");
 
     let (code, page) = events(&env, &first_run, None);
     assert_eq!(code, 0, "events for the first run failed");
@@ -109,122 +170,45 @@ fn each_runs_history_is_its_own() {
     let down = second.close_stdin();
     assert_eq!(
         down.last().expect("the second run's down line")["run_id"],
-        second_run.as_str()
+        run.as_str()
     );
-}
 
-#[test]
-fn run_queries_are_bounded_and_need_no_runtime() {
-    let _runtime = crate::shared_runtime();
-    // Guarantee 41. Sabotage: list the runtime's images in `inspect`; with
-    // no `podman` or `container` on PATH it exits 1. (Listing boxes runs no
-    // program on Linux, so it would pass there.)
-    // Sabotage: resume after the cursor's line rather than at it; each
-    // page boundary skips a line and the order assertion fails. Counting
-    // an incomplete final line into `next` is not caught every run: the
-    // proxy appends each line in one write, so a partial line is rare.
-    // Sabotage: drop the run from the cursor; another run's cursor exits 0.
-    // Sabotage: report a no-egress run's log `unavailable`; the
-    // not-applicable assertions fail. Sabotage: a default limit of 1000;
-    // the first page then holds all 150 lines and its length assertion
-    // fails.
-    let env = TestEnv::new("run-query");
-    let image = default_image(&env);
-
-    let quiet = box_name("run-query-quiet");
+    // SIGKILL of a no-egress box from the host: of its init through Apple's
+    // runtime, of its VMM on Linux. The box exits 137.
+    let quiet = box_name("run-history-quiet");
     let mut up = box_up(
         &env,
         &serde_json::json!({ "name": quiet, "image": image }),
         &quiet,
     );
     let quiet_run = run_id(&up);
-    up.close_stdin();
-
-    let fixture = HttpFixture::start(None);
-    let name = box_name("run-query");
-    let spec = serde_json::json!({
-        "name": name,
-        "image": image,
-        "egress": { "routes": { "fixture.internal": fixture.route() } },
-    });
-    let mut up = box_up(&env, &spec, &name);
-    let run = run_id(&up);
-    let requests = |prefix: &str, count: usize| {
-        format!(
-            "i=1; while [ $i -le {count} ]; do curl -sS -o /dev/null http://fixture.internal/{prefix}/$i || exit 1; i=$((i+1)); done"
-        )
-    };
-    let first = e2e::box_exec(&env, &name, &["sh", "-c", &requests("n", 150)]);
-    assert_ok(&first, "the first 150 route requests");
-    // The box keeps appending while the log is paged.
-    let mut appender = env
-        .command(pinfold())
-        .args([
-            "box",
-            "exec",
-            &name,
-            "--",
-            "sh",
-            "-c",
-            &requests("extra", 50),
-        ])
-        .stdin(Stdio::null())
-        .spawn()
-        .expect("spawn the appending exec");
-    let mut paths = Vec::new();
-    let mut cursor: Option<String> = None;
-    let mut appended = false;
-    let mut pages = 0;
-    loop {
-        let (code, page) = events(&env, &run, cursor.as_deref());
-        assert_eq!(code, 0, "events failed");
-        assert_eq!(page["state"], "available", "{page}");
-        let page_events = page["events"].as_array().expect("events is an array");
-        // 150 lines exist before the first page, so it is full at the
-        // spec's default limit of 100.
-        if pages == 0 {
-            assert_eq!(page_events.len(), 100, "the first page's length");
-        }
-        pages += 1;
-        for event in page_events {
-            assert_eq!(event["reason"], "route", "{event}");
-            paths.push(event["path"].as_str().unwrap_or_default().to_string());
-        }
-        if let Some(next) = page["next"].as_str() {
-            cursor = Some(next.to_string());
-        }
-        if page["more"] == false {
-            if appended {
-                break;
-            }
-            assert!(appender.wait().unwrap().success(), "the appending exec");
-            appended = true;
-        }
-    }
-    // Reaped above; the status is cached.
-    appender.wait().expect("reap the appending exec");
-    let expected: Vec<String> = (1..=150)
-        .map(|i| format!("/n/{i}"))
-        .chain((1..=50).map(|i| format!("/extra/{i}")))
-        .collect();
-    assert_eq!(paths, expected, "paging skipped, repeated or reordered");
-    assert!(pages > 1, "the log was read in one page");
-    let cursor = cursor.expect("paging returned a cursor");
-    up.close_stdin();
+    #[cfg(target_os = "linux")]
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(super::box_::vmm_pid(up.pid()) as i32),
+        nix::sys::signal::Signal::SIGKILL,
+    )
+    .expect("SIGKILL the box's VMM");
+    #[cfg(not(target_os = "linux"))]
+    e2e::run_ok(
+        std::process::Command::new(e2e::image_cli()).args(["kill", "--signal", "KILL", &quiet]),
+    );
+    assert_eq!(up.wait().code(), Some(1), "an exited box's up exit code");
+    let down = up.close_stdin();
+    let down = down.last().expect("down line");
+    assert_eq!(down["reason"], "exited", "{down}");
 
     // With no runtime on PATH, both queries answer for finished runs.
-    let empty = TestDir::new(&env, "empty-path");
+    let empty = test_dir(&env, "empty-path");
     let offline = |args: &[&str]| {
         run_query(
             env.command(pinfold())
                 .arg("box")
                 .args(args)
-                .env("PATH", empty.path()),
+                .env("PATH", empty.as_path()),
         )
     };
     let (code, record) = offline(&["inspect", &run]);
     assert_eq!(code, 0, "inspect with no runtime failed");
-    assert_eq!(record["terminal"]["record"]["reason"], "stdin-closed");
     assert_eq!(record["egress_log"]["state"], "available", "{record}");
     let (code, page) = offline(&["events", &run]);
     assert_eq!(code, 0, "events with no runtime failed");
@@ -232,6 +216,14 @@ fn run_queries_are_bounded_and_need_no_runtime() {
     let (code, record) = offline(&["inspect", &quiet_run]);
     assert_eq!(code, 0, "inspect of the no-egress run failed");
     assert_eq!(record["egress_log"]["state"], "not-applicable", "{record}");
+    let terminal = &record["terminal"]["record"];
+    assert_eq!(terminal["reason"], "exited", "{record}");
+    assert!(
+        terminal["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("137")),
+        "the terminal detail names no exit status 137: {record}"
+    );
     let (code, page) = offline(&["events", &quiet_run]);
     assert_eq!(code, 0, "events of the no-egress run failed");
     assert_eq!(page["state"], "not-applicable", "{page}");

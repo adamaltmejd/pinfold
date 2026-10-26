@@ -7,7 +7,6 @@ import socketserver
 import ssl
 import sys
 import threading
-import time
 
 root = pathlib.Path(sys.argv[1])
 asset = sys.argv[2]
@@ -36,23 +35,6 @@ class Proxy(socketserver.BaseRequestHandler):
             while headers.readline() not in (b"\r\n", b""):
                 pass
             if path == "/repos/adamaltmejd/pinfold/releases/latest":
-                with (root / "checks").open("ab") as log:
-                    log.write(b"check\n")
-                if (root / "offline").exists():
-                    start = time.monotonic()
-                    stream.settimeout(4)
-                    try:
-                        closed = not stream.recv(1)
-                    except (ConnectionResetError, ssl.SSLEOFError):
-                        closed = True
-                    except TimeoutError:
-                        closed = False
-                    print(json.dumps({
-                        "event": "stalled-check-closed",
-                        "closed": closed,
-                        "seconds": time.monotonic() - start,
-                    }), flush=True)
-                    return
                 body = json.dumps(
                     {
                         "tag_name": "v999.0.0",

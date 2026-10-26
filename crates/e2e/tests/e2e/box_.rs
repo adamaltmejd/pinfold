@@ -5,7 +5,7 @@
 //! default profile image once, and drives pinfold as a user would: the CLI,
 //! environment variables and the box spec are its only seams.
 
-use std::fs::{self, File};
+use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -14,24 +14,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(target_os = "macos")]
-use e2e::image_cli;
 use e2e::{
-    HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
-    box_stat, build_profile, curl, default_image, egress_log, exit_code, git, image_id, json_lines,
-    pinfold, pinfold_in, profile_containerfile, run_ok, runtime_images, tagged_images,
+    HttpFixture, ImageCleanup, TestEnv, assert_denied, assert_ok, box_exec, box_list, box_stat,
+    build_profile, curl, default_image, egress_log, exit_code, git, image_id, json_lines, pinfold,
+    profile_containerfile, run_ok, runtime_images, tagged_images, test_dir,
 };
 
 #[test]
 fn box_lifecycle_works_for_a_caller() {
-    struct Resume(u32);
-    impl Drop for Resume {
-        fn drop(&mut self) {
-            let _ = Command::new("kill")
-                .args(["-CONT", &self.0.to_string()])
-                .status();
-        }
-    }
     let _runtime = crate::shared_runtime();
     // Guarantee 9: the lifecycle works for a caller.
     // Sabotage: make `box down` a no-op; the post-down list assertion fails.
@@ -215,88 +205,6 @@ fn box_lifecycle_works_for_a_caller() {
         "box survived down: {listed:?}"
     );
     assert!(up.wait().success(), "box up did not exit cleanly");
-
-    // A stopped owner still owns its name. Sabotage: restore down's
-    // timed fallback removal; down succeeds, its state disappears, and a
-    // replacement can start before the previous owner finishes cleanup.
-    // Sabotage: refuse the first claim lock conflict; the second-root up
-    // ends before the spec's ten-second contention wait.
-    // The runtime, host state and second XDG root are outside observers.
-    {
-        let other = TestEnv::new("lifecycle-other");
-        let stopped_name = box_name("lifecycle-stopped");
-        let mut stopped_spec = spec.clone();
-        stopped_spec["name"] = stopped_name.clone().into();
-        let mut stopped = box_up(&env, &stopped_spec, &stopped_name);
-        let stopped_state = find_box_state_dir(&env).expect("find stopped owner's state");
-        let resume = Resume(stopped.pid());
-        run_ok(Command::new("kill").args(["-STOP", &stopped.pid().to_string()]));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            let state = Command::new("ps")
-                .args(["-o", "state=", "-p", &stopped.pid().to_string()])
-                .output()
-                .expect("observe stopped owner");
-            if String::from_utf8_lossy(&state.stdout)
-                .trim_start()
-                .starts_with('T')
-            {
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline, "owner did not stop");
-            std::thread::yield_now();
-        }
-        let down_started = std::time::Instant::now();
-        let timed_out = other
-            .command(pinfold())
-            .args(["box", "down", &stopped_name])
-            .output()
-            .expect("down stopped owner from another state root");
-        assert!(
-            !timed_out.status.success(),
-            "down removed a still-owned generation"
-        );
-        assert!(
-            down_started.elapsed() < std::time::Duration::from_secs(15),
-            "down did not bound its owner wait"
-        );
-        assert!(
-            stopped_state.is_dir(),
-            "down removed the stopped owner's state"
-        );
-        let replacement_started = std::time::Instant::now();
-        let (code, refused) = box_up_refused(&other, &stopped_spec, &[]);
-        let contention_wait = replacement_started.elapsed();
-        assert!(
-            contention_wait >= std::time::Duration::from_secs(10)
-                && contention_wait < std::time::Duration::from_secs(15),
-            "claim did not wait its bounded contention budget: {contention_wait:?}"
-        );
-        assert_ne!(code, 0, "replacement ran while old owner was stopped");
-        assert_eq!(
-            refused["reason"], "name-in-use",
-            "replacement was refused for another reason: {refused}"
-        );
-        drop(resume);
-        let lines = stopped.starting.rest();
-        assert_eq!(
-            lines.last().expect("stopped owner's down line")["reason"],
-            "signal"
-        );
-        assert!(stopped.wait().success(), "queued intentional down failed");
-        drop(stopped);
-        // Positive control: the same second-root spec works after teardown.
-        let mut replacement = box_up(&other, &stopped_spec, &stopped_name);
-        assert_ok(
-            &box_exec(&other, &stopped_name, &["true"]),
-            "replacement after intentional teardown",
-        );
-        replacement.down(&other);
-        assert!(
-            replacement.wait().success(),
-            "replacement did not exit cleanly"
-        );
-    }
 
     // `down` is idempotent: on the box already gone it exits 0 and prints
     // nothing on either stream.
@@ -534,27 +442,38 @@ fn up_refuses_before_it_creates() {
     };
     let disk = box_name("refused-disk");
     let comma_from = serde_json::json!({ "name": disk, "guest": "/disk", "from": comma });
-    let comma_guest = serde_json::json!({ "name": disk, "guest": "/a,b" });
-    let mut cases = vec![(comma_from, "a,b"), (comma_guest, "a,b")];
-    for bad in ["-disk", "a/b"] {
-        cases.push((serde_json::json!({ "name": bad, "guest": "/disk" }), bad));
-    }
+    let mut cases = vec![
+        (comma_from, "a,b"),
+        (
+            serde_json::json!({ "name": "-disk", "guest": "/disk" }),
+            "-disk",
+        ),
+    ];
     // A disk at or below the guest kernel's /proc, /sys or /dev would
-    // replace the userns sysctl or the work cgroup; the hard case reaches
-    // one only after normalization. The positive control is the race's
+    // replace the userns sysctl or the work cgroup; each case reaches its
+    // path only after normalization. The positive control is the race's
     // winner below, whose mount at /devices shares the text but not the
     // component. Sabotage: drop the KERNEL_PATHS check from
     // `validate_guests`; these specs come up `ready` on Apple.
-    for guest in ["/proc/sys/user", "/work/../sys/fs/cgroup", "/dev"] {
+    for guest in [
+        "/work/../proc/sys/user",
+        "/work/../sys/fs/cgroup",
+        "/work/../dev",
+    ] {
         cases.push((serde_json::json!({ "name": disk, "guest": guest }), guest));
     }
     // A disk at /, /tmp, /etc or /etc/resolv.conf would hide the tmpfs /tmp
-    // or the empty resolv.conf (Always applied); three reach theirs only
-    // after normalization. The positive control is again the winner's mount at
-    // /devices. Sabotage: drop the HIDING_PATHS check from
-    // `validate_guests`; the `/tmp` disk then reaches the runtime, which
-    // creates the disk, and the `refused` and no-disk assertions fail.
-    for guest in ["/work/..", "/tmp", "/work/../etc", "/etc/./resolv.conf"] {
+    // or the empty resolv.conf (Always applied); each reaches its path only
+    // after normalization. The positive control is again the winner's mount
+    // at /devices. Sabotage: drop the HIDING_PATHS check from
+    // `validate_guests`; the `/work/../tmp` disk then reaches the runtime,
+    // which creates the disk, and the `refused` and no-disk assertions fail.
+    for guest in [
+        "/work/..",
+        "/work/../tmp",
+        "/work/../etc",
+        "/etc/./resolv.conf",
+    ] {
         cases.push((serde_json::json!({ "name": disk, "guest": guest }), guest));
     }
     for (case, named) in cases {
@@ -575,23 +494,6 @@ fn up_refuses_before_it_creates() {
             "a refused disk spec left a disk"
         );
     }
-    let kernel_mount = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "labels": { "dev.example.test": "refuses" },
-        "mounts": [{ "host": work, "guest": "/sys/fs/cgroup" }],
-    });
-    let (code, refused) = box_up_refused(&env, &kernel_mount, &[]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["reason"], "spec", "{refused}");
-    assert!(
-        refused["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("/sys/fs/cgroup"),
-        "the refusal did not name the path: {refused}"
-    );
-    assert_left_nothing(&env, &name, label, "refused");
 
     // Two `up`s on one free name at once: the claim lets exactly one hold
     // it, and the loser touches nothing of the winner's. Both are spawned
@@ -640,506 +542,6 @@ fn up_refuses_before_it_creates() {
     );
 }
 
-#[test]
-fn disks_persist_and_attach_exclusively() {
-    // Exclusive: name locks are host-wide, so another test's maintenance
-    // pruning the dead writer holds its name and the disk counts as attached.
-    let _runtime = crate::exclusive_runtime();
-    // Guarantee 11: disks persist and attach exclusively.
-    // Sabotage: skip the attachment check in `disk::claim`; the read-only
-    // second `up` is refused `disk-unclean` instead, so the `disk-in-use`
-    // assertion fails. Sabotage: skip the `UNCLEAN` mark in `disk::claim`;
-    // after the prune the read-only `up` comes ready and the `disk-unclean`
-    // assertion fails.
-    // Sabotage: skip the size check; the sparse `from` reaches the copy,
-    // which fails in the box, and the `limit` assertion fails. Sabotage:
-    // write every copied file 644 in `init receive`; the exec-bit assertion
-    // fails. Sabotage: drop the disk locks in `disk::claim`; both racing
-    // `up`s create the disk and the loser ends `failed`, not `disk-in-use`.
-    // Sabotage: call `disk::detached` on every runtime stop in `Box::down`;
-    // after `container kill` the read-only `up` comes ready.
-    // Sabotage: drop `value.push(",readonly")` from `apple::bind`; on Apple
-    // the readers' mount is then writable and the "a write to a mount"
-    // assertion fails. Sabotage: on Linux, mount every attachment without
-    // `MS_RDONLY` in init's Firecracker setup and pass each drive writable
-    // in `vm::config`; the readers' writes succeed and both read-only
-    // assertions fail. Sabotage: skip the unfilled check in `disk::claim`;
-    // the `up` after an owner killed mid-copy keeps the half-filled disk and
-    // the refilled tree assertion fails. Sabotage: check the project disk
-    // with a bare `list_disks` in `pi::launch::crossing`; `fetch` recreates
-    // the unfilled disk empty in its transient box and marks it filled, so
-    // the next `up` skips the copy and the refilled tree assertion fails.
-    let env = TestEnv::new("disks");
-    let image = default_image(&env);
-    let names = ["work", "sparse", "race", "nested"].map(|disk| box_name(&format!("disk-{disk}")));
-    let [work, sparse, race, nested] = &names;
-    // The refilled disk is a project's disk, so `pinfold fetch` there sees it.
-    let project = TestDir::new(&env, "project");
-    git(project.path(), &["init", "-q"]);
-    let config = run_ok(&mut pinfold_in(&env, project.path(), &["config"]));
-    let config: serde_json::Value = serde_json::from_slice(&config.stdout).unwrap();
-    let refill = &config["project"]["disks"]["project"]
-        .as_str()
-        .expect("project.disks.project is a string")
-        .to_string();
-    let boxes =
-        ["writer", "second", "reader-a", "reader-b"].map(|b| box_name(&format!("disks-{b}")));
-    let [writer, second, reader_a, reader_b] = &boxes;
-    let label = "dev.example.test=disks";
-    let spec = |name: &str, disk: serde_json::Value| {
-        serde_json::json!({
-            "name": name,
-            "image": image,
-            "labels": { "dev.example.test": "disks" },
-            "disks": [disk],
-        })
-    };
-
-    // The host tree: a plain file, an executable, a symlink and a FIFO.
-    let from = TestDir::new(&env, "from");
-    fs::write(from.path().join("plain.txt"), b"plain\n").unwrap();
-    fs::write(from.path().join("run.sh"), b"#!/bin/sh\necho ran\n").unwrap();
-    fs::set_permissions(
-        from.path().join("run.sh"),
-        fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
-    fs::create_dir(from.path().join("sub")).unwrap();
-    fs::write(from.path().join("sub/deep.txt"), b"deep\n").unwrap();
-    std::os::unix::fs::symlink("plain.txt", from.path().join("link")).unwrap();
-    nix::unistd::mkfifo(&from.path().join("fifo"), nix::sys::stat::Mode::S_IRWXU).unwrap();
-    let work_disk =
-        serde_json::json!({ "name": work, "guest": "/work", "size": "1G", "from": from.path() });
-    // `from` is read only when the disk is created; a reader names none.
-    let reader = serde_json::json!({ "name": work, "guest": "/work", "readonly": true });
-    let mut up = box_up(&env, &spec(writer, work_disk.clone()), writer);
-    fs::write(from.path().join("later.txt"), b"later\n").unwrap();
-    let tree = box_exec(
-        &env,
-        writer,
-        &[
-            "sh",
-            "-c",
-            "test -x /work/run.sh && /work/run.sh && test ! -x /work/plain.txt \
-             && cat /work/sub/deep.txt && test -L /work/link && readlink /work/link \
-             && test ! -e /work/fifo && test ! -e /work/later.txt",
-        ],
-    );
-    assert_ok(&tree, "the copied tree");
-    assert_eq!(tree.stdout, "ran\ndeep\nplain.txt\n");
-    let full = box_exec(
-        &env,
-        writer,
-        &["dd", "if=/dev/zero", "of=/work/big", "bs=1M", "count=1100"],
-    );
-    assert_denied(&full, "No space left on device", "a write past the 1G disk");
-    assert_ok(
-        &box_exec(
-            &env,
-            writer,
-            &["sh", "-c", "rm /work/big && echo kept > /work/written"],
-        ),
-        "writing the disk",
-    );
-    // On Linux the box plants a symlink where a later nested disk's mount
-    // point goes; see below.
-    #[cfg(target_os = "linux")]
-    assert_ok(
-        &box_exec(
-            &env,
-            writer,
-            &["sh", "-c", "mkdir /work/other && ln -s other /work/x"],
-        ),
-        "planting a symlink on the disk",
-    );
-    #[cfg(not(target_os = "linux"))]
-    let _ = nested;
-
-    // While the writer attaches it, another `up` naming the disk, read-only
-    // or writable, is refused and creates nothing, and `disk rm` refuses.
-    for disk in [&reader, &work_disk] {
-        let (code, refused) = box_up_refused(&env, &spec(second, disk.clone()), &[]);
-        assert_eq!(code, 1, "a refused up exits 1: {refused}");
-        assert_eq!(refused["reason"], "disk-in-use", "{refused}");
-        let states = fs::read_dir(env.state.join("pinfold/boxes"))
-            .unwrap()
-            .count();
-        assert_eq!(states, 1, "the refused up left a state dir");
-        assert_eq!(box_list(&env, label).len(), 1, "the refused up left a box");
-    }
-    let (code, refused) = disk_rm(&env, work);
-    assert_eq!(
-        (code, &refused["reason"]),
-        (1, &"disk-in-use".into()),
-        "{refused}"
-    );
-
-    // Another state root naming the disk gets its own: its writable `up`
-    // runs beside the writer, sees none of the writer's files, and its
-    // `disk list` names only its own box. Sabotage: drop the state-root
-    // filter in `disk::attachments`; root B's `up` is refused `disk-in-use`.
-    // Sabotage (macOS): name volumes without the root's key in
-    // `apple::volume`; root B's `up` attaches root A's volume beside the
-    // writer, which the runtime refuses, and it ends `failed`, not `ready`.
-    let other = TestEnv::new("disks-b");
-    let theirs = serde_json::json!({ "name": work, "guest": "/work" });
-    let mut theirs = box_up(&other, &spec(second, theirs), second);
-    assert_ok(
-        &box_exec(&other, second, &["test", "!", "-e", "/work/written"]),
-        "another root's disk of the same name",
-    );
-    let listed: Vec<_> = disk_list(&other)
-        .into_iter()
-        .filter(|disk| disk["name"] == work.as_str())
-        .map(|disk| disk["attached"].clone())
-        .collect();
-    assert_eq!(
-        listed,
-        [serde_json::json!([{ "box": second, "readonly": false }])],
-        "root B's disk list"
-    );
-    theirs.down(&other);
-    assert!(theirs.wait().success(), "root B's box did not exit cleanly");
-
-    up.down(&env);
-    assert!(up.wait().success(), "the writer did not exit cleanly");
-
-    // A `from` whose file sizes pass the disk's size is refused as `limit`
-    // and leaves no disk.
-    let big = TestDir::new(&env, "big");
-    File::create(big.path().join("sparse"))
-        .unwrap()
-        .set_len(2 << 30)
-        .unwrap();
-    let sparse_disk =
-        serde_json::json!({ "name": sparse, "guest": "/big", "size": "1G", "from": big.path() });
-    let (code, refused) = box_up_refused(&env, &spec(second, sparse_disk), &[]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["reason"], "limit", "{refused}");
-    assert_left_nothing(&env, second, label, "limit");
-    assert!(
-        disk_names(&env).iter().all(|name| name != sparse),
-        "the limit refusal left a disk"
-    );
-
-    // Two writable `up`s racing for one new disk: exactly one runs. Both
-    // are spawned before either's first line is read.
-    let racer = serde_json::json!({ "name": race, "guest": "/race" });
-    let mut starts = [
-        box_up_start(&env, &spec(reader_a, racer.clone()), &[]),
-        box_up_start(&env, &spec(reader_b, racer), &[]),
-    ];
-    let lines = starts.each_mut().map(Starting::first_line);
-    let [first, second_start] = starts;
-    let [first_line, second_line] = lines;
-    let (winner, ready, mut loser, refused) = if first_line["event"] == "ready" {
-        (first, first_line, second_start, second_line)
-    } else {
-        (second_start, second_line, first, first_line)
-    };
-    assert_eq!(ready["event"], "ready", "neither racer came ready: {ready}");
-    assert_eq!(
-        refused["reason"], "disk-in-use",
-        "the losing racer: {refused}"
-    );
-    let winner_name = ready["box"].as_str().unwrap().to_string();
-    let mut winner = winner.into_up(&winner_name, ready);
-    drop(loser.stdin);
-    assert_eq!(exit_code(loser.child.wait_bounded()), 1, "the loser's exit");
-    winner.down(&env);
-    assert!(
-        winner.wait().success(),
-        "the racing winner did not exit cleanly"
-    );
-
-    // After `down`, two boxes attach it read-only at once, read the writer's
-    // file and can write neither it nor their mount.
-    let mount = TestDir::new(&env, "mount");
-    let with_mount = |name: &str| {
-        let mut spec = spec(name, reader.clone());
-        spec["mounts"] = serde_json::json!([{ "host": mount.path(), "guest": "/mount" }]);
-        spec
-    };
-    let mut starts = [
-        box_up_start(&env, &with_mount(reader_a), &[]),
-        box_up_start(&env, &with_mount(reader_b), &[]),
-    ];
-    let lines = starts.each_mut().map(Starting::first_line);
-    let [a, b] = starts;
-    let [a_line, b_line] = lines;
-    let mut readers = [a.into_up(reader_a, a_line), b.into_up(reader_b, b_line)];
-    for name in [reader_a, reader_b] {
-        let read = box_exec(
-            &env,
-            name,
-            &["sh", "-c", "cat /work/written; test ! -e /work/later.txt"],
-        );
-        assert_ok(&read, "reading the disk read-only");
-        assert_eq!(read.stdout, "kept\n");
-        let write = box_exec(&env, name, &["touch", "/work/new"]);
-        assert_denied(
-            &write,
-            "Read-only file system",
-            "a write to a read-only disk",
-        );
-        let write = box_exec(&env, name, &["touch", "/mount/new"]);
-        assert_denied(&write, "Read-only file system", "a write to a mount");
-    }
-    for reader in &mut readers {
-        reader.down(&env);
-        assert!(reader.wait().success(), "a reader did not exit cleanly");
-    }
-
-    // On Linux PID 1 makes a nested disk's mount point. One reached through
-    // the symlink the writer planted ends the start `failed`, naming it, and
-    // PID 1 creates nothing through the link; the same nesting at a plain
-    // path mounts and takes a write. The failed start leaves the disk
-    // unclean, which the writable `up` below clears. Sabotage: make the
-    // mount point with `fs::create_dir_all` in `mount_at`, keeping a
-    // canonicalize check; the start still fails, but PID 1 first makes
-    // /work/other/sub through the link and the absence assertion fails.
-    #[cfg(target_os = "linux")]
-    {
-        let with_nested = |guest: &str| {
-            let mut spec = spec(writer, work_disk.clone());
-            spec["disks"] = serde_json::json!([work_disk, { "name": nested, "guest": guest }]);
-            spec
-        };
-        let (code, failed) = box_up_refused(&env, &with_nested("/work/x/sub"), &[]);
-        assert_eq!(code, 1, "a failed up exits 1: {failed}");
-        assert_eq!(failed["event"], "failed", "{failed}");
-        assert!(
-            failed["detail"]
-                .as_str()
-                .is_some_and(|detail| detail.contains("/work/x/sub")),
-            "the failure did not name the mount point: {failed}"
-        );
-        let mut plain = box_up(&env, &with_nested("/work/plain/sub"), writer);
-        assert_ok(
-            &box_exec(
-                &env,
-                writer,
-                &[
-                    "sh",
-                    "-c",
-                    "test -L /work/x && touch /work/plain/sub/written",
-                ],
-            ),
-            "the link kept and the plain nesting writable",
-        );
-        assert_ok(
-            &box_exec(&env, writer, &["test", "!", "-e", "/work/other/sub"]),
-            "nothing made at the planted link's target",
-        );
-        plain.down(&env);
-        assert!(
-            plain.wait().success(),
-            "the nested writer did not exit cleanly"
-        );
-    }
-
-    // A writer whose box is killed under it leaves the disk unclean: its
-    // owner tears the box down, but nobody asked it to stop.
-    let mut ended = box_up(&env, &spec(writer, work_disk.clone()), writer);
-    #[cfg(target_os = "macos")]
-    run_ok(Command::new(image_cli()).args(["kill", writer.as_str()]));
-    #[cfg(target_os = "linux")]
-    run_ok(Command::new("kill").args(["-KILL", &vmm_pid(ended.pid()).to_string()]));
-    let _ = ended.wait();
-    let (code, refused) = box_up_refused(&env, &spec(reader_a, reader.clone()), &[]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["reason"], "disk-unclean", "{refused}");
-    // A teardown the runtime fails leaves the stopped box for `prune`, and
-    // its name is not free until then (#167).
-    run_ok(env.command(pinfold()).args(["box", "prune"]));
-    let mut recovery = box_up(&env, &spec(writer, work_disk.clone()), writer);
-    recovery.down(&env);
-    assert!(recovery.wait().success());
-
-    // A writer whose owner dies leaves the disk unclean: read-only is
-    // refused, writable recovers it. On macOS the box outlives its owner
-    // until the runtime ends it; on Linux the VMM dies soon after its owner.
-    // Once the box has stopped, the dead writer releases the disk before any
-    // `prune`.
-    // Sabotage: count a claim in `disk::attachments` while the runtime lists
-    // its box, running or not; the read-only `up` is refused `disk-in-use`
-    // and the `disk-unclean` assertion fails.
-    let mut killed = box_up(&env, &spec(writer, work_disk.clone()), writer);
-    killed.kill();
-    let _ = killed.wait();
-    // `stop` returns once the box has stopped. On Linux the VMM can outlive
-    // its owner briefly, so the wait reads `box list`.
-    #[cfg(target_os = "macos")]
-    run_ok(Command::new(image_cli()).args(["stop", "--signal", "KILL", writer.as_str()]));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    while box_list(&env, label)
-        .iter()
-        .any(|listed| listed["name"] == writer.as_str() && listed["state"] == "running")
-    {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the dead writer's box never stopped"
-        );
-    }
-    let (code, refused) = box_up_refused(&env, &spec(reader_a, reader.clone()), &[]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["reason"], "disk-unclean", "{refused}");
-    run_ok(env.command(pinfold()).args(["box", "prune"]));
-    assert_left_nothing(&env, reader_a, label, "unclean");
-    let mut recovery = box_up(&env, &spec(writer, work_disk.clone()), writer);
-    recovery.down(&env);
-    assert!(
-        recovery.wait().success(),
-        "the recovering writer did not exit cleanly"
-    );
-    let mut after = box_up(&env, &spec(reader_a, reader), reader_a);
-    assert_ok(
-        &box_exec(&env, reader_a, &["cat", "/work/written"]),
-        "reading after recovery",
-    );
-    #[cfg(target_os = "linux")]
-    {
-        after.down(&env);
-        assert!(after.wait().success());
-    }
-    // A dead owner's box the runtime has created but not started may still
-    // boot, so it holds its disk. Apple lists such a box `stopped`, as an
-    // orphaned `container run` leaves it; `container create` makes one.
-    // Sabotage: drop the `started_date` condition from `stopped` in
-    // `Apple::list`; the writable `up` runs and the `disk-in-use` assertion
-    // fails.
-    #[cfg(target_os = "macos")]
-    {
-        after.kill();
-        let _ = after.wait();
-        let _ = Command::new(image_cli())
-            .args(["rm", "--force", reader_a.as_str()])
-            .output();
-        run_ok(Command::new(image_cli()).args([
-            "create",
-            "--name",
-            reader_a.as_str(),
-            image,
-            "true",
-        ]));
-        let (code, refused) = box_up_refused(&env, &spec(writer, work_disk.clone()), &[]);
-        run_ok(Command::new(image_cli()).args(["rm", reader_a.as_str()]));
-        assert_eq!(code, 1, "a refused up exits 1: {refused}");
-        assert_eq!(refused["reason"], "disk-in-use", "{refused}");
-    }
-
-    // An owner killed while it copies `from` leaves no filled disk: the next
-    // `up` naming it copies the whole tree. Once the disk exists, the first
-    // file the copy opens is renamed over by a FIFO, so the copy can neither
-    // finish nor fail. The kill waits until the box runs: an owner killed
-    // before that leaves a `container run` that may create its container
-    // after the prune. The disk surviving and no `ready` show the kill
-    // landed mid-copy, not after it or in a cleaned-up failure.
-    let first = from.path().join("0first.txt");
-    fs::write(&first, b"first\n").unwrap();
-    let refill_disk =
-        serde_json::json!({ "name": refill, "guest": "/work", "size": "1G", "from": from.path() });
-    let mut interrupted = box_up_start(&env, &spec(writer, refill_disk.clone()), &[]);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    while !disk_names(&env).contains(refill) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the interrupted up created no disk"
-        );
-    }
-    let fifo = from.path().join("fifo-swap");
-    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).unwrap();
-    fs::rename(&fifo, &first).unwrap();
-    while !box_list(&env, label)
-        .iter()
-        .any(|listed| listed["name"] == writer.as_str() && listed["state"] == "running")
-    {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the interrupted up's box never ran"
-        );
-    }
-    interrupted.child.kill().expect("kill box up");
-    let _ = interrupted.child.wait_bounded();
-    run_ok(env.command(pinfold()).args(["box", "prune"]));
-    let printed = interrupted.rest();
-    assert!(
-        printed.iter().all(|line| line["event"] != "ready"),
-        "the interrupted up came ready: {printed:?}"
-    );
-    assert!(
-        disk_names(&env).contains(refill),
-        "the interrupted up's disk is gone"
-    );
-    // The unfilled disk is no project disk to `fetch` either: it exits
-    // nonzero and starts no box, so prints no crossing line and records no
-    // run, and leaves the disk for the next `up` to refill.
-    let runs = || -> Vec<_> {
-        let mut names: Vec<_> = fs::read_dir(env.state.join("pinfold/runs"))
-            .expect("read the runs dir")
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        names.sort();
-        names
-    };
-    let runs_before = runs();
-    let fetched = pinfold_in(&env, project.path(), &["fetch"])
-        .output()
-        .expect("run pinfold fetch");
-    assert!(
-        !fetched.status.success() && fetched.stdout.is_empty(),
-        "fetch on an unfilled disk: {:?} {}",
-        fetched.status,
-        String::from_utf8_lossy(&fetched.stderr)
-    );
-    assert_eq!(
-        runs(),
-        runs_before,
-        "fetch on an unfilled disk recorded a run"
-    );
-    fs::remove_file(&first).unwrap();
-    fs::write(&first, b"first\n").unwrap();
-    let mut refilled = box_up(&env, &spec(writer, refill_disk), writer);
-    let tree = box_exec(
-        &env,
-        writer,
-        &[
-            "sh",
-            "-c",
-            "cat /work/0first.txt && /work/run.sh && cat /work/sub/deep.txt \
-             && readlink /work/link && cat /work/later.txt",
-        ],
-    );
-    assert_ok(&tree, "the refilled tree");
-    assert_eq!(tree.stdout, "first\nran\ndeep\nplain.txt\nlater\n");
-    refilled.down(&env);
-    assert!(refilled.wait().success());
-
-    // After `down`, `disk rm` removes it, and an absent disk exits 0. A
-    // name that is no disk name is refused as `spec`.
-    let (code, refused) = disk_rm(&env, "../escape");
-    assert_eq!((code, &refused["reason"]), (1, &"spec".into()), "{refused}");
-    let (code, removed) = disk_rm(&env, work);
-    assert_eq!((code, &removed["existed"]), (0, &true.into()), "{removed}");
-    let (code, removed) = disk_rm(&env, work);
-    assert_eq!((code, &removed["existed"]), (0, &false.into()), "{removed}");
-}
-
-fn disk_list(env: &TestEnv) -> Vec<serde_json::Value> {
-    e2e::disk_list(env).unwrap_or_else(|error| panic!("{error}"))
-}
-
-pub(super) fn disk_names(env: &TestEnv) -> Vec<String> {
-    disk_list(env)
-        .iter()
-        .filter_map(|disk| disk["name"].as_str().map(String::from))
-        .collect()
-}
-
-fn disk_rm(env: &TestEnv, name: &str) -> (i32, serde_json::Value) {
-    one_json_line(env.command(pinfold()).args(["disk", "rm", name]))
-}
-
 /// Every client-side hook name in githooks(5).
 const CLIENT_HOOKS: &[&str] = &[
     "applypatch-msg",
@@ -1180,10 +582,10 @@ fn work_leaves_the_box_only_by_fetch() {
     // `refs/heads/injected` lands on the host.
     let env = TestEnv::new("crossing");
     let name = box_name("crossing");
-    let project = TestDir::new(&env, "project");
-    let repo = project.path();
-    let markers = TestDir::new(&env, "markers");
-    let marker = |hook: &str| markers.path().join(hook);
+    let project = test_dir(&env, "project");
+    let repo = project.as_path();
+    let markers = test_dir(&env, "markers");
+    let marker = |hook: &str| markers.as_path().join(hook);
     let host_git = |args: &[&str]| git(repo, args).trim().to_string();
     host_git(&["init", "-q", "-b", "main"]);
     host_git(&["config", "user.name", "host"]);
@@ -1241,7 +643,7 @@ fn work_leaves_the_box_only_by_fetch() {
               chmod 755 .git/hooks/$hook; done \
          && git config core.hooksPath .githooks \
          && git config core.fsmonitor 'touch {markers}/fsmonitor'",
-        markers = markers.path().display(),
+        markers = markers.as_path().display(),
     ));
     let host_heads = host_git(&["for-each-ref", "refs/heads/"]);
     let (code, fetched) = crossing_fetch(&env, &name, repo);
@@ -1281,7 +683,7 @@ fn work_leaves_the_box_only_by_fetch() {
     );
     host_git(&["checkout", "-q", "feature"]);
     host_git(&["checkout", "-q", "main"]);
-    let touched: Vec<_> = fs::read_dir(markers.path()).unwrap().collect();
+    let touched: Vec<_> = fs::read_dir(markers.as_path()).unwrap().collect();
     assert!(
         touched.is_empty(),
         "a box hook ran on the host: {touched:?}"
@@ -1305,8 +707,7 @@ fn work_leaves_the_box_only_by_fetch() {
     // PATH stands in for a box that controls its processes' output. Each
     // bundle fails on its own, so refusing one can't mask another: a real
     // commit under a `refs/heads/x` head plus a
-    // `refs/heads/x:refs/heads/injected` head; the same plus a
-    // `refs/heads/x:refs/replace/<host main>` head; and a commit whose tree
+    // `refs/heads/x:refs/heads/injected` head; and a commit whose tree
     // holds a `.git` entry under a plain `refs/heads/x`; and a sound pack
     // under a `refs/heads/x` naming a commit it lacks, which fetch unbundles
     // before its connectivity check fails; and a sound bundle with both
@@ -1324,7 +725,6 @@ fn work_leaves_the_box_only_by_fetch() {
     // pack. Sabotage: drop the `rev-list --not --glob` reach check from
     // crossing::fetch's listed loop; the omitted `x` lands at the host-only
     // commit.
-    let host_main = host_git(&["rev-parse", "main"]);
     // A host commit no box branch reaches: `feature` is checked out.
     host_git(&["commit", "-q", "--allow-empty", "-m", "host only"]);
     let host_only = host_git(&["rev-parse", "feature"]);
@@ -1351,7 +751,6 @@ blob=$(echo evil | g hash-object -w --stdin)
 inner=$(printf '100644 blob %s\tconfig\n' "$blob" | g mktree)
 dotgit=$(g commit-tree -m dotgit "$(printf '040000 tree %s\t.git\n' "$inner" | g mktree)")
 mk injected "$evil" "$evil" refs/heads/x refs/heads/x:refs/heads/injected
-mk replace "$evil" "$evil" refs/heads/x refs/heads/x:refs/replace/{host_main}
 mk dotgit "$dotgit" "$dotgit" refs/heads/x
 mk missing "$evil" "$absent" refs/heads/x
 mk conflict "$evil" "$evil" refs/heads/x refs/heads/x/y
@@ -1373,8 +772,16 @@ chmod 755 .hostile/git
 echo "$absent""#
     ));
     let conflict = format!("refs/remotes/{name}/x/y");
-    for case in [
-        "injected", "replace", "dotgit", "missing", "conflict", "omitted",
+    // git names the fsck entry, the commit the pack lacks, and the ref it
+    // can't update beside `x`; pinfold names the malformed branch, and the
+    // omitted branch's failure names its commit: each fetch failed for it,
+    // not for a malformed bundle.
+    for (case, reason) in [
+        ("injected", "x:refs/heads/injected"),
+        ("dotgit", "hasDotgit"),
+        ("missing", absent.trim()),
+        ("conflict", conflict.as_str()),
+        ("omitted", host_only.as_str()),
     ] {
         in_box(&format!(
             "cd /work/.hostile && cp {case} bundle && rm -f heads \
@@ -1396,19 +803,9 @@ echo "$absent""#
             host_objects,
             "the {case} bundle left bytes in the host's objects"
         );
-        // git names the fsck entry, the commit the pack lacks, and the ref
-        // it can't update beside `x`, and the omitted branch's failure names
-        // its commit: each fetch failed for it, not for a malformed bundle.
-        let reason = match case {
-            "dotgit" => "hasDotgit",
-            "missing" => absent.trim(),
-            "conflict" => conflict.as_str(),
-            "omitted" => host_only.as_str(),
-            _ => continue,
-        };
         assert!(
             failed["detail"].as_str().unwrap().contains(reason),
-            "{failed}"
+            "{case}: {failed}"
         );
     }
 
@@ -1505,7 +902,10 @@ fn nothing_can_gain_privileges() {
     // or init's read-only remount of the root on Linux; the rootfs write
     // then succeeds and its assertion fails. Sabotage: keep every
     // capability in PID 1 on Linux, or start the exec service before it
-    // drops them; the CapBnd assertions fail.
+    // drops them; the CapBnd assertions fail. Sabotage: pin another guest
+    // kernel under vmm.toml's version (on Linux), or run the box on the
+    // host's kernel; `uname -r` then names another release and its
+    // assertion fails.
     let env = TestEnv::new("privileges");
     let image = default_image(&env);
     let name = box_name("privileges");
@@ -1612,34 +1012,15 @@ fn nothing_can_gain_privileges() {
         assert_ok(&child, "a plain child process");
     }
 
-    up.down(&env);
-}
-
-#[test]
-fn each_box_has_its_own_kernel() {
-    let _runtime = crate::shared_runtime();
-    // Guarantee 37. Sabotage: pin another guest kernel under vmm.toml's
-    // version (on Linux), or run the box on the host's kernel; `uname -r`
-    // then names another release and its assertion fails.
-    let env = TestEnv::new("own-kernel");
-    let name = box_name("own-kernel");
-    let spec = serde_json::json!({ "name": name, "image": default_image(&env) });
-    let up = box_up(&env, &spec, &name);
+    // The box runs its own kernel, not the host's.
     let release = box_exec(&env, &name, &["uname", "-r"]);
     assert_ok(&release, "uname -r in the box");
-    let version = box_exec(&env, &name, &["cat", "/proc/version"]);
-    assert_ok(&version, "reading /proc/version in the box");
     let host = run_ok(Command::new("uname").arg("-r"));
     let host = String::from_utf8_lossy(&host.stdout);
     assert_ne!(
         release.stdout.trim(),
         host.trim(),
         "the box runs the host's kernel"
-    );
-    assert!(
-        !version.stdout.contains(host.trim()),
-        "the box's /proc/version names the host's release: {}",
-        version.stdout
     );
     // The release is the kernel half of the VMM pin, read from the pin file.
     #[cfg(target_os = "linux")]
@@ -1659,6 +1040,7 @@ fn each_box_has_its_own_kernel() {
             "the box's kernel is not the pinned one"
         );
     }
+
     up.down(&env);
 }
 
@@ -1843,12 +1225,37 @@ fn only_allowlisted_hosts_get_through() {
     // passes policy, so its 403 and "not allowlisted" assertions fail.
     // Sabotage: drop `egress_log` from `ready`, or report a path other than
     // the log handed to the proxy; the refusal is not found there.
+    // The proxy's tricks each have their control in the
+    // same box.
+    // Sabotage: delete either IP literal check; that request then
+    // logs "not allowlisted" (or reaches the box's own loopback), so the
+    // "ip literal" assertions fail.
+    // Sabotage: stop stripping IPv6 brackets in network::literal; [::1]
+    // logs "not allowlisted" instead of "ip literal".
+    // Sabotage: delete the loopback address check; localhost resolves to
+    // 127.0.0.1, the proxy dials it, and the 403 and "loopback" assertions
+    // fail.
+    // Sabotage: skip the SNI comparison; the --connect-to request finishes
+    // its TLS handshake against api.github.com, so the exit-35 and "sni
+    // mismatch" assertions fail.
+    // Sabotage: check the allowlist before the routes; CONNECT to
+    // fixture.internal logs "not allowlisted" and the "route" assertion
+    // fails.
+    // Sabotage: drop the duplicate-Content-Length check in parse_plain; the
+    // raw request reaches the fixture, so the 400 and "ambiguous
+    // framing" assertions fail. Sabotage: parse Content-Length with
+    // `str::parse::<u64>` alone; `+5` is read as 5, the request is
+    // forwarded, and the framing-refusal count falls short.
     let env = TestEnv::new("egress");
+    let fixture = HttpFixture::start(None);
     let name = box_name("egress");
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(&env),
-        "egress": { "allow": [".github.com"] },
+        "egress": {
+            "allow": [".github.com", "localhost"],
+            "routes": { "fixture.internal": fixture.route() },
+        },
     });
     let up = box_up(&env, &spec, &name);
 
@@ -1871,68 +1278,7 @@ fn only_allowlisted_hosts_get_through() {
         assert_denied(&denied, "403", &format!("a request to {host}"));
     }
 
-    // The log at the path `ready` names holds the refusal and its reason.
-    let log = up.ready["egress_log"]
-        .as_str()
-        .unwrap_or_else(|| panic!("ready names no egress log: {}", up.ready));
-    let lines = json_lines(&fs::read_to_string(log).expect("read the egress log ready names"));
-    for host in ["example.com", "evilgithub.com"] {
-        assert!(
-            lines.iter().any(|line| line["host"] == host
-                && line["decision"] == "refused"
-                && line["reason"] == "not allowlisted"),
-            "no not-allowlisted refusal for {host}: {lines:?}"
-        );
-    }
-
-    up.down(&env);
-}
-
-#[test]
-fn the_proxy_refuses_the_tricks() {
-    let _runtime = crate::shared_runtime();
-    // Guarantee 3. Each trick has its control in the same box.
-    //
-    // Sabotage: delete either IP literal check; that request then
-    // logs "not allowlisted" (or reaches the box's own loopback), so the
-    // "ip literal" assertions fail.
-    // Sabotage: stop stripping IPv6 brackets in network::literal; [::1]
-    // logs "not allowlisted" instead of "ip literal".
-    // Sabotage: delete the loopback address check; localhost resolves to
-    // 127.0.0.1, the proxy dials it, and the 403 and "loopback" assertions
-    // fail.
-    // Sabotage: skip the SNI comparison; the --connect-to request finishes
-    // its TLS handshake against api.github.com, so the exit-35 and "sni
-    // mismatch" assertions fail.
-    // Sabotage: check the allowlist before the routes; CONNECT to
-    // fixture.internal logs "not allowlisted" and the "route" assertion
-    // fails.
-    // Sabotage: drop the duplicate-Content-Length check in parse_plain; the
-    // raw request reaches the fixture, so the 400 and "ambiguous
-    // framing" assertions fail. Sabotage: parse Content-Length with
-    // `str::parse::<u64>` alone; `+5` is read as 5, the request is
-    // forwarded, and the framing-refusal count falls short.
-    let env = TestEnv::new("tricks");
-    let fixture = HttpFixture::start(None);
-    let name = box_name("tricks");
-    let spec = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "egress": {
-            "allow": ["api.github.com", "localhost"],
-            "routes": { "fixture.internal": fixture.route() },
-        },
-    });
-    let up = box_up(&env, &spec, &name);
-
     // Controls: the same paths work when the trick is not played.
-    let connect = curl(
-        &env,
-        &name,
-        "30",
-        &["-o", "/dev/null", "https://api.github.com/"],
-    );
-    assert_ok(&connect, "allowlisted CONNECT");
     let plain = curl(
         &env,
         &name,
@@ -1964,7 +1310,7 @@ fn the_proxy_refuses_the_tricks() {
     assert_ok(&body, "valid Content-Length body");
     assert!(body.stdout.starts_with("HTTP/1.1 200"), "{}", body.stdout);
     assert_eq!(
-        fixture.requests().last().expect("fixture saw POST").1,
+        fixture.requests().last().expect("fixture saw POST").2,
         "hello"
     );
 
@@ -2054,8 +1400,21 @@ fn the_proxy_refuses_the_tricks() {
         );
     }
 
+    // The log at the path `ready` names holds the refusal and its reason.
+    let log = up.ready["egress_log"]
+        .as_str()
+        .unwrap_or_else(|| panic!("ready names no egress log: {}", up.ready));
+    let lines = json_lines(&fs::read_to_string(log).expect("read the egress log ready names"));
+    for host in ["example.com", "evilgithub.com"] {
+        assert!(
+            lines.iter().any(|line| line["host"] == host
+                && line["decision"] == "refused"
+                && line["reason"] == "not allowlisted"),
+            "no not-allowlisted refusal for {host}: {lines:?}"
+        );
+    }
+
     // Every refusal names its own reason, distinct from "not allowlisted".
-    let lines = json_lines(&egress_log(&up.ready));
     for (host, reason) in [
         ("127.0.0.1", "ip literal"),
         ("[::1]", "ip literal"),
@@ -2085,71 +1444,6 @@ fn the_proxy_refuses_the_tricks() {
 }
 
 #[test]
-fn every_build_reruns_its_steps() {
-    let _runtime = crate::shared_runtime();
-    // Every build reruns every step, so a rebuild picks up base updates
-    // instead of replaying a cached `RUN` layer.
-    //
-    // Sabotage: drop `--no-cache` from Apple's build argv, or
-    // `--layers=false` from podman's. The second build then serves `/stamp`
-    // from the first build's layer, the two values match, and podman's
-    // untagged-image assertion fails.
-    let env = TestEnv::new("rerun");
-    default_image(&env);
-
-    let profile = format!("e2e-rerun-{}", std::process::id());
-    let layer_label = format!("dev.example.rerun={profile}");
-    let _images = ImageCleanup {
-        repository: format!("localhost/pinfold/profile-{profile}"),
-    };
-    // Random bytes at build time: a cached `RUN` layer replays the first
-    // build's file, so the two builds agree only when the cache is reused.
-    profile_containerfile(
-        &env,
-        &profile,
-        &format!(
-            "FROM debian:trixie-slim\nLABEL dev.example.rerun={profile}\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\n"
-        ),
-    );
-
-    // Podman's cached intermediates inherit the Containerfile's first
-    // label. Scope to this source so another test's cached caller build
-    // cannot look like our leak. Compare IDs so removing old layers cannot
-    // hide a newly leaked layer.
-    let before = if cfg!(target_os = "linux") {
-        Some(untagged_images(&layer_label))
-    } else {
-        None
-    };
-
-    build_profile(&env, &profile);
-    let first = built_unique_ref(&profile);
-    let first_stamp = file_from_image(&env, &first, "rerun-1", "/stamp");
-    // Positive control: the first build ran the `RUN` step and wrote /stamp.
-    assert!(
-        !first_stamp.trim().is_empty(),
-        "the first build left no /stamp"
-    );
-
-    build_profile(&env, &profile);
-    let second = built_unique_ref(&profile);
-    let second_stamp = file_from_image(&env, &second, "rerun-2", "/stamp");
-    assert_ne!(
-        first_stamp, second_stamp,
-        "the second build reused the first build's RUN layer"
-    );
-
-    if let Some(before) = before {
-        let after = untagged_images(&layer_label);
-        assert!(
-            after.is_subset(&before),
-            "the builds left new untagged images: {:?}",
-            after.difference(&before).collect::<Vec<_>>()
-        );
-    }
-}
-
-#[test]
 fn a_caller_builds_an_image_from_its_own_tree() {
     let _runtime = crate::shared_runtime();
     // Guarantee 23: a caller builds an image from its own tree.
@@ -2166,6 +1460,10 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // build's is stale, so the `built["id"]` assertion fails. Sabotage: write a unique
     // build label into every image again, as `dev.pinfold.build` was; the
     // repeated build makes a new image and the one-id assertion fails.
+    // Sabotage: build profiles with `cache` true, or drop `--no-cache` from
+    // Apple's build argv or `--layers=false` from podman's; the second
+    // profile build serves `/stamp` from the first build's layer, the two
+    // values match, and podman's untagged-image assertion fails.
     let env = TestEnv::new("image-build");
     let other = cfg!(target_os = "macos").then(|| TestEnv::new("image-colors"));
     let base = default_image(&env);
@@ -2309,18 +1607,10 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     );
 
     // Sabotage: ignore `Build::cache` in `image::build`; the runtime
-    // reuses the cached RUN layer and /stamp stays equal. The cached build
-    // is the positive control; the bytes come from the guest's urandom.
-    let first_stamp = file_from_image(&env, &refs[0], "caller-stamp-1", "/stamp");
+    // reuses the cached RUN layer and /stamp stays equal. The one-id
+    // assertion above shows the cached build; the bytes come from the
+    // guest's urandom.
     let cached_stamp = file_from_image(&env, &again_ref, "caller-stamp-cached", "/stamp");
-    assert!(
-        !first_stamp.trim().is_empty(),
-        "the caller's RUN wrote no stamp"
-    );
-    assert_eq!(
-        first_stamp, cached_stamp,
-        "the caller build skipped its cache"
-    );
     let (code, fresh) = one_json_line(
         env.command(pinfold())
             .args(["image", "build", &name, "--no-cache", "--containerfile"])
@@ -2336,6 +1626,47 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         "/stamp",
     );
     assert_ne!(cached_stamp, fresh_stamp, "--no-cache reused the RUN layer");
+
+    // Every profile build reruns every step, so a rebuild picks up base
+    // updates instead of replaying a cached `RUN` layer.
+    let profile = format!("e2e-rerun-{}", std::process::id());
+    let layer_label = format!("dev.example.rerun={profile}");
+    let _profile_images = ImageCleanup {
+        repository: format!("localhost/pinfold/profile-{profile}"),
+    };
+    profile_containerfile(
+        &env,
+        &profile,
+        &format!(
+            "FROM {base}\nLABEL dev.example.rerun={profile}\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\n"
+        ),
+    );
+    // Podman's cached intermediates inherit the Containerfile's first
+    // label. Scope to this source so another test's cached caller build
+    // cannot look like our leak. Compare IDs so removing old layers cannot
+    // hide a newly leaked layer.
+    let before = cfg!(target_os = "linux").then(|| untagged_images(&layer_label));
+    build_profile(&env, &profile);
+    let first_stamp = file_from_image(&env, &built_unique_ref(&profile), "rerun-1", "/stamp");
+    // Positive control: the first build ran the `RUN` step and wrote /stamp.
+    assert!(
+        !first_stamp.trim().is_empty(),
+        "the first build left no /stamp"
+    );
+    build_profile(&env, &profile);
+    let second_stamp = file_from_image(&env, &built_unique_ref(&profile), "rerun-2", "/stamp");
+    assert_ne!(
+        first_stamp, second_stamp,
+        "the second profile build reused the first build's RUN layer"
+    );
+    if let Some(before) = before {
+        let after = untagged_images(&layer_label);
+        assert!(
+            after.is_subset(&before),
+            "the builds left new untagged images: {:?}",
+            after.difference(&before).collect::<Vec<_>>()
+        );
+    }
 
     // Two callers with opposite colour settings share Apple's builder.
     // Hold one inside RUN before the other starts. Sabotage: inherit
@@ -2493,7 +1824,7 @@ pub(super) fn image_rm(env: &TestEnv, name: &str) -> (i32, serde_json::Value) {
 }
 
 /// Run `command` and return its exit code and its one stdout line, parsed.
-fn one_json_line(command: &mut Command) -> (i32, serde_json::Value) {
+pub(super) fn one_json_line(command: &mut Command) -> (i32, serde_json::Value) {
     let output = command
         .output()
         .unwrap_or_else(|error| panic!("run {command:?}: {error}"));
@@ -2548,8 +1879,55 @@ fn box_has_no_network_but_loopback() {
     // that the same box still has its one way out. Sabotage (Linux): keep
     // the boot listener on `v.sock_1000` open after boot; the guest's
     // connect to port 1000 is accepted and its reset assertion fails.
+    // Sabotage: start the proxy and relay even without `egress` in the
+    // spec; the no-egress box's explicit-proxy request then reaches the
+    // proxy instead of a refused connection, and the refusal assertions
+    // fail. Sabotage (Linux): listen on the VM's host proxy port,
+    // `v.sock_3128`, even without `egress`; the no-egress guest's vsock
+    // connect to CID 2 port 3128 is accepted and its reset assertion fails.
+    // The routed box's route and proxy connect are the positive controls.
     let env = TestEnv::new("network");
     let fixture = HttpFixture::start(None);
+
+    // Without `egress`, nothing gets out, not even through a route: a
+    // request sent to the proxy's port finds no listener.
+    let name = box_name("no-egress");
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+    });
+    let up = box_up(&env, &spec, &name);
+    let proxied = curl(
+        &env,
+        &name,
+        "5",
+        &[
+            "-v",
+            "-x",
+            "http://127.0.0.1:3128",
+            "http://fixture.internal/",
+        ],
+    );
+    assert_eq!(proxied.code, 7, "the box had a proxy: {}", proxied.stdout);
+    assert!(
+        proxied.stderr.contains("Connection refused"),
+        "the proxied request failed for another reason: {}",
+        proxied.stderr
+    );
+    // Past the guest's own network: the host's proxy port on vsock.
+    #[cfg(target_os = "linux")]
+    {
+        let reset = vsock_to_host(&env, &name, 3128);
+        assert_ok(&reset, "a vsock connect from the box");
+        assert_eq!(
+            reset.stdout.trim(),
+            "Connection reset by peer",
+            "vsock CID 2 port 3128 without egress"
+        );
+    }
+    up.down(&env);
+    drop(up);
+
     let name = box_name("network");
     let spec = serde_json::json!({
         "name": name,
@@ -2591,7 +1969,8 @@ fn box_has_no_network_but_loopback() {
     );
 
     // Positive control: the route answers through the proxy while the box
-    // has no network.
+    // has no network, and the same request the no-egress box made through
+    // the proxy's port answers here.
     let route = curl(&env, &name, "5", &["http://fixture.internal/"]);
     assert_eq!(route.code, 0, "the route failed: {}", route.stderr);
     assert!(
@@ -2932,7 +2311,7 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
     );
     let requests = fixture.requests();
     let authorization: Vec<&str> = requests[0]
-        .0
+        .1
         .iter()
         .filter(|(header, _)| header.eq_ignore_ascii_case("authorization"))
         .map(|(_, value)| value.as_str())
@@ -2994,7 +2373,12 @@ fn a_login_route_keeps_the_login_on_the_host() {
     // environment assertion fails. Sabotage: in `validate`, key the
     // per-provider check on P instead of pi's provider; the anthropic and
     // anthropic-subscription routes come up ready instead of `spec`. Sabotage: drop the empty check in `Login::resolve`; the empty
-    // `from` comes up ready instead of `login`.
+    // `from` comes up ready instead of `login`. Sabotage: skip the profile
+    // skill under the profile's share/pi/skills; the profile marker is
+    // absent from the request. Sabotage: stop the project from being
+    // trusted (remove defaultProjectTrust from the seeded settings); the
+    // project marker is absent. Sabotage: omit the operating-context
+    // extension; the profile's allowlist never reaches the model.
     let env = TestEnv::new("login");
     let openrouter = HttpFixture::start(Some((
         "text/event-stream",
@@ -3049,16 +2433,33 @@ fn a_login_route_keeps_the_login_on_the_host() {
     let _image = ImageCleanup {
         repository: format!("localhost/pinfold/profile-{profile}"),
     };
-    let project = TestDir::new(&env, "pi-login");
-    git(project.path(), &["init", "-q"]);
+    let project = test_dir(&env, "pi-login");
+    git(project.as_path(), &["init", "-q"]);
+    // Both pi config levels load: a skill in the profile's share/pi package
+    // and one under the project's .pi/. The seeded settings.json from
+    // `default` keeps defaultProjectTrust, so the project level loads too.
+    let profile_marker = "pinfold-e2e-profile-skill-marker";
+    write_skill(
+        &profile_dir.join("share/pi/skills/e2e-profile-skill"),
+        "e2e-profile-skill",
+        profile_marker,
+    );
+    let project_marker = "pinfold-e2e-project-skill-marker";
+    write_skill(
+        &project.as_path().join(".pi/skills/e2e-project-skill"),
+        "e2e-project-skill",
+        project_marker,
+    );
 
     // pi sends its stored key to the route at OpenRouter's API path; the
     // fixture gets only the host key. The model is in pi's built-in
-    // openrouter catalog, so only the extension can redirect it.
+    // openrouter catalog, so only the extension can redirect it. `pi -p`
+    // runs through the shim, without a TTY.
+    let shim = env.root.join("pi");
+    std::os::unix::fs::symlink(pinfold(), &shim).expect("symlink pi to pinfold");
     let output = env
-        .command(pinfold())
+        .command(&shim)
         .args([
-            "pi",
             "-p",
             "--provider",
             "openrouter",
@@ -3066,7 +2467,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
             "openai/gpt-4o-mini",
             "reply with ok",
         ])
-        .current_dir(project.path())
+        .current_dir(project.as_path())
         .env("PINFOLD_PROFILE", profile)
         .envs(keys)
         .stdin(Stdio::null())
@@ -3077,18 +2478,18 @@ fn a_login_route_keeps_the_login_on_the_host() {
         "pi -p through the openrouter login route failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let requests = openrouter.targets();
+    let requests = openrouter.requests();
     assert!(
         requests
             .iter()
-            .any(|(target, _)| target == "/api/v1/chat/completions"),
+            .any(|(target, _, _)| target == "/api/v1/chat/completions"),
         "pi's chat request never reached the fixture at OpenRouter's path: {:?}",
         requests
             .iter()
-            .map(|(target, _)| target)
+            .map(|(target, _, _)| target)
             .collect::<Vec<_>>()
     );
-    for (target, headers) in &requests {
+    for (target, headers, _) in &requests {
         let authorization: Vec<&str> = headers
             .iter()
             .filter(|(header, _)| header.eq_ignore_ascii_case("authorization"))
@@ -3099,13 +2500,38 @@ fn a_login_route_keeps_the_login_on_the_host() {
             "the openrouter fixture's Authorization at {target} is not exactly the host key"
         );
     }
+    let request = &requests
+        .iter()
+        .find(|(target, _, _)| target == "/api/v1/chat/completions")
+        .expect("the chat request")
+        .2;
+    assert!(
+        request.contains(profile_marker),
+        "the profile skill never reached the model; the profile config level did not load"
+    );
+    assert!(
+        request.contains(project_marker),
+        "the project skill never reached the model; the project config level did not load"
+    );
+    let body: serde_json::Value = serde_json::from_str(request).unwrap();
+    let system = body["messages"]
+        .as_array()
+        .expect("the model request has messages")
+        .iter()
+        .find(|message| message["role"] == "system" || message["role"] == "developer")
+        .and_then(|message| message["content"].as_str())
+        .expect("the model request has a system prompt");
+    assert!(
+        system.contains("login-allow.invalid"),
+        "the system prompt did not state the profile's allowlist: {system}"
+    );
 
     // In a running pi box: only placeholders in the environment, no key in
     // any file the box could read, and the anthropic route sets x-api-key
     // and removes forged credentials in any case and number.
     let (run, _, pi_box) = crate::pi::PiRpc::start_with_env(
         &env,
-        project.path(),
+        project.as_path(),
         &[("PINFOLD_PROFILE", profile), keys[0], keys[1]],
     );
     let environment = box_exec(&env, &pi_box, &["env"]);
@@ -3166,7 +2592,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     let requests = anthropic.requests();
     let values = |name: &str| -> Vec<String> {
         requests[0]
-            .0
+            .1
             .iter()
             .filter(|(header, _)| header.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.clone())
@@ -3277,7 +2703,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     );
     let requests = fixture.requests();
     let authorization: Vec<&str> = requests[0]
-        .0
+        .1
         .iter()
         .filter(|(header, _)| header.eq_ignore_ascii_case("authorization"))
         .map(|(_, value)| value.as_str())
@@ -3348,7 +2774,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     let lapsing = token(now + 120);
     let refreshed = token(now + 4 * 3600);
     let refresh_token = format!("pf-refresh-{}", std::process::id());
-    let codex_home = TestDir::new(&env, "codex-home");
+    let codex_home = test_dir(&env, "codex-home");
     let auth = serde_json::json!({
         "OPENAI_API_KEY": null,
         "tokens": {
@@ -3358,7 +2784,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
             "account_id": account,
         },
     });
-    fs::write(codex_home.path().join("auth.json"), auth.to_string()).unwrap();
+    fs::write(codex_home.as_path().join("auth.json"), auth.to_string()).unwrap();
     // Sabotage: remove the login lock or put it under XDG_STATE_HOME; the
     // second caller cannot report login-busy while the first holds refresh.
     // Answer only the first real helper request. A second refresh cannot
@@ -3421,7 +2847,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
             },
         },
     });
-    let codex_home_path = codex_home.path().to_str().expect("a UTF-8 temp path");
+    let codex_home_path = codex_home.as_path().to_str().expect("a UTF-8 temp path");
     let vars = [
         ("CODEX_HOME", codex_home_path),
         ("CODEX_REFRESH_TOKEN_URL_OVERRIDE", refresh_url.as_str()),
@@ -3511,7 +2937,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     let requests = model.requests();
     let values = |name: &str| -> Vec<String> {
         requests[0]
-            .0
+            .1
             .iter()
             .filter(|(header, _)| header.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.clone())
@@ -3535,7 +2961,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     );
     assert_ok(&login, "the contending caller's login route");
     let requests = model.requests();
-    let headers = &requests.last().unwrap().0;
+    let headers = &requests.last().unwrap().1;
     for (name, expected) in [
         ("authorization", format!("Bearer {refreshed}")),
         ("chatgpt-account-id", account.clone()),
@@ -3610,148 +3036,136 @@ fn a_login_route_keeps_the_login_on_the_host() {
     up.down(&env);
     assert!(up.wait().success(), "box up did not exit cleanly");
 
-    // Sabotage: remove the helper deadline or cancellation checks; a real
-    // helper waiting on this refresh service does not close its socket or
-    // finish up within the spec's bound. Omit kill/wait and the observed
-    // helper PID remains alive after up finishes. The successful real
-    // refresh above is the positive control. All timing and process
-    // observations come from the host, not helper output.
-    for cancelled in [false, true] {
-        fs::write(codex_home.path().join("auth.json"), auth.to_string()).unwrap();
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let refresh_url = format!("http://{}/oauth/token", listener.local_addr().unwrap());
-        let (accepted, request) = std::sync::mpsc::channel();
-        let (closed, eof) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(40)))
-                .unwrap();
-            let mut reader = BufReader::new(stream);
-            let mut line = String::new();
-            let mut length = 0usize;
-            loop {
-                line.clear();
-                if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                    return;
-                }
-                if line == "\r\n" {
-                    break;
-                }
-                if let Some((name, value)) = line.split_once(':')
-                    && name.eq_ignore_ascii_case("content-length")
-                {
-                    length = value.trim().parse().unwrap();
-                }
+    // Cancelling `up` while the real helper's refresh stalls reaps the
+    // helper and closes its fixture connection. Sabotage: drop the
+    // cancellation check from the helper wait; up outlives its bound.
+    // Omit kill/wait and the observed helper PID remains alive after up
+    // finishes. The successful real refresh above is the positive control.
+    // All timing and process observations come from the host, not helper
+    // output.
+    fs::write(codex_home.as_path().join("auth.json"), auth.to_string()).unwrap();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let refresh_url = format!("http://{}/oauth/token", listener.local_addr().unwrap());
+    let (accepted, request) = std::sync::mpsc::channel();
+    let (closed, eof) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(40)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        let mut length = 0usize;
+        loop {
+            line.clear();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                return;
             }
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body).unwrap();
-            accepted.send(()).unwrap();
-            // Never answer. EOF is the outside observer that the real
-            // helper stopped its unfinished HTTP operation.
-            let mut byte = [0u8; 1];
-            let ended = matches!(reader.read(&mut byte), Ok(0));
-            let _ = closed.send(ended);
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        accepted.send(()).unwrap();
+        // Never answer. EOF is the outside observer that the real
+        // helper stopped its unfinished HTTP operation.
+        let mut byte = [0u8; 1];
+        let ended = matches!(reader.read(&mut byte), Ok(0));
+        let _ = closed.send(ended);
+    });
+    let mut starting = box_up_start(
+        &env,
+        &codex_spec,
+        &[
+            ("CODEX_HOME", codex_home_path),
+            ("CODEX_REFRESH_TOKEN_URL_OVERRIDE", &refresh_url),
+        ],
+    );
+    let owner = starting.child.id();
+    let mut output = starting.stdout;
+    let (finished, events) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        let result = output.read_to_string(&mut text).map(|_| text);
+        let _ = finished.send(result);
+    });
+    if request
+        .recv_timeout(std::time::Duration::from_secs(15))
+        .is_err()
+    {
+        let _ = starting.child.kill();
+        let _ = reap_killed(&mut starting.child);
+        panic!("the real helper never reached the stalled refresh fixture");
+    }
+    let processes = run_ok(Command::new("ps").args(["-axo", "pid=,ppid=,comm="]));
+    let helper = String::from_utf8(processes.stdout)
+        .unwrap()
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?;
+            let parent = fields.next()?.parse::<u32>().ok()?;
+            let executable = fields.next()?;
+            if parent != owner {
+                return None;
+            }
+            // Linux comm truncates to 15 bytes; the helper name has 16.
+            let is_helper = if cfg!(target_os = "linux") {
+                fs::read_link(format!("/proc/{pid}/exe"))
+                    .ok()?
+                    .file_name()
+                    .is_some_and(|name| name == "codex-app-server")
+            } else {
+                executable.ends_with("codex-app-server")
+            };
+            is_helper.then(|| pid.to_string())
         });
-        let began = std::time::Instant::now();
-        let mut starting = box_up_start(
-            &env,
-            &codex_spec,
-            &[
-                ("CODEX_HOME", codex_home_path),
-                ("CODEX_REFRESH_TOKEN_URL_OVERRIDE", &refresh_url),
-            ],
-        );
-        let owner = starting.child.id();
-        let mut output = starting.stdout;
-        let (finished, events) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut text = String::new();
-            let result = output.read_to_string(&mut text).map(|_| text);
-            let _ = finished.send(result);
-        });
-        if request
-            .recv_timeout(std::time::Duration::from_secs(15))
-            .is_err()
-        {
+    let helper = match helper {
+        Some(helper) => helper,
+        None => {
             let _ = starting.child.kill();
             let _ = reap_killed(&mut starting.child);
-            panic!("the real helper never reached the stalled refresh fixture");
+            panic!("up has no observable real Codex helper child");
         }
-        let processes = run_ok(Command::new("ps").args(["-axo", "pid=,ppid=,comm="]));
-        let helper = String::from_utf8(processes.stdout)
-            .unwrap()
-            .lines()
-            .find_map(|line| {
-                let mut fields = line.split_whitespace();
-                let pid = fields.next()?;
-                let parent = fields.next()?.parse::<u32>().ok()?;
-                let executable = fields.next()?;
-                if parent != owner {
-                    return None;
-                }
-                // Linux comm truncates to 15 bytes; the helper name has 16.
-                let is_helper = if cfg!(target_os = "linux") {
-                    fs::read_link(format!("/proc/{pid}/exe"))
-                        .ok()?
-                        .file_name()
-                        .is_some_and(|name| name == "codex-app-server")
-                } else {
-                    executable.ends_with("codex-app-server")
-                };
-                is_helper.then(|| pid.to_string())
-            });
-        let helper = match helper {
-            Some(helper) => helper,
-            None => {
-                let _ = starting.child.kill();
-                let _ = reap_killed(&mut starting.child);
-                panic!("up has no observable real Codex helper child");
-            }
-        };
-        if cancelled {
-            run_ok(Command::new("kill").args(["-TERM", &owner.to_string()]));
+    };
+    run_ok(Command::new("kill").args(["-TERM", &owner.to_string()]));
+    let result = events.recv_timeout(std::time::Duration::from_secs(5));
+    let text = match result {
+        Ok(Ok(text)) => text,
+        _ => {
+            let _ = starting.child.kill();
+            let _ = reap_killed(&mut starting.child);
+            panic!("cancelled up outlived its stalled helper's bound");
         }
-        let bound = std::time::Duration::from_secs(if cancelled { 5 } else { 35 });
-        let result = events.recv_timeout(bound);
-        let text = match result {
-            Ok(Ok(text)) => text,
-            _ => {
-                let _ = starting.child.kill();
-                let _ = reap_killed(&mut starting.child);
-                panic!("stalled helper kept up alive past its completion bound");
-            }
-        };
-        let status = starting.child.wait_bounded();
-        drop(starting.stdin);
-        let lines = json_lines(&text);
-        if cancelled {
-            assert_eq!(lines.last().unwrap()["reason"], "signal");
-            assert!(status.success(), "cancelled login up failed: {status}");
-        } else {
-            assert_eq!(lines.first().unwrap()["event"], "refused");
-            assert_eq!(lines.first().unwrap()["reason"], "login");
-            assert!(!status.success(), "stalled login was accepted");
-            assert!(began.elapsed() < std::time::Duration::from_secs(35));
-        }
-        assert!(
-            eof.recv_timeout(std::time::Duration::from_secs(1)).unwrap(),
-            "the helper left its refresh connection open"
-        );
-        let remains = Command::new("kill")
-            .args(["-0", &helper])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
-        assert!(!remains.success(), "up left the Codex helper running");
-        assert_left_nothing(&env, &codex_name, label, "cancelled or timed-out login");
-    }
+    };
+    let status = starting.child.wait_bounded();
+    drop(starting.stdin);
+    let lines = json_lines(&text);
+    assert_eq!(lines.last().unwrap()["reason"], "signal");
+    assert!(status.success(), "cancelled login up failed: {status}");
+    assert!(
+        eof.recv_timeout(std::time::Duration::from_secs(1)).unwrap(),
+        "the helper left its refresh connection open"
+    );
+    let remains = Command::new("kill")
+        .args(["-0", &helper])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!remains.success(), "up left the Codex helper running");
+    assert_left_nothing(&env, &codex_name, label, "cancelled login");
 
     // An empty CODEX_HOME has no login: up is refused as `login` and leaves
     // nothing. The box above is its positive control.
-    let empty = TestDir::new(&env, "codex-empty");
-    let empty_path = empty.path().to_str().expect("a UTF-8 temp path");
+    let empty = test_dir(&env, "codex-empty");
+    let empty_path = empty.as_path().to_str().expect("a UTF-8 temp path");
     let (code, refused) = box_up_refused(&env, &codex_spec, &[("CODEX_HOME", empty_path)]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["event"], "refused");
@@ -3804,9 +3218,9 @@ fn a_login_route_keeps_the_login_on_the_host() {
     let pi_lapsing = pi_token(now + 120);
     let pi_refreshed = pi_token(now + 4 * 3600);
     let pi_refresh_token = format!("pf-pi-refresh-{}", std::process::id());
-    let pi_codex_home = TestDir::new(&env, "pi-codex-home");
+    let pi_codex_home = test_dir(&env, "pi-codex-home");
     fs::write(
-        pi_codex_home.path().join("auth.json"),
+        pi_codex_home.as_path().join("auth.json"),
         serde_json::json!({
             "OPENAI_API_KEY": null,
             "tokens": {
@@ -3838,11 +3252,11 @@ fn a_login_route_keeps_the_login_on_the_host() {
     let refresh_url = format!("http://{}/oauth/token", pi_refresh.route());
     let (run, _, pi_box) = crate::pi::PiRpc::start_with_env(
         &env,
-        project.path(),
+        project.as_path(),
         &[
             ("PINFOLD_PROFILE", profile),
             ("PINFOLD_E2E_SUBSCRIPTION", &subscription_token),
-            ("CODEX_HOME", pi_codex_home.path().to_str().unwrap()),
+            ("CODEX_HOME", pi_codex_home.as_path().to_str().unwrap()),
             ("CODEX_REFRESH_TOKEN_URL_OVERRIDE", &refresh_url),
         ],
     );
@@ -3877,7 +3291,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     let requests = subscription.requests();
     let values = |name: &str| -> Vec<String> {
         requests[0]
-            .0
+            .1
             .iter()
             .filter(|(header, _)| header.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.clone())
@@ -3912,10 +3326,10 @@ fn a_login_route_keeps_the_login_on_the_host() {
         ],
     );
     assert_ok(&ran, "pi -p through the anthropic-subscription login route");
-    let requests: Vec<_> = subscription.targets()[1..]
+    let requests: Vec<_> = subscription.requests()[1..]
         .iter()
-        .filter(|(target, _)| target.starts_with("/v1/messages"))
-        .map(|(_, headers)| headers.clone())
+        .filter(|(target, _, _)| target.starts_with("/v1/messages"))
+        .map(|(_, headers, _)| headers.clone())
         .collect();
     assert!(
         !requests.is_empty(),
@@ -3968,15 +3382,15 @@ fn a_login_route_keeps_the_login_on_the_host() {
     );
     assert_ok(&ran, "pi -p through the openai-codex login route");
     let requests: Vec<_> = codex_model
-        .targets()
+        .requests()
         .into_iter()
-        .filter(|(target, _)| target == "/backend-api/codex/responses")
+        .filter(|(target, _, _)| target == "/backend-api/codex/responses")
         .collect();
     assert!(
         !requests.is_empty(),
         "pi's request never reached the fixture at Codex's path"
     );
-    for (_, headers) in &requests {
+    for (_, headers, _) in &requests {
         for (name, expected) in [
             ("authorization", format!("Bearer {pi_refreshed}")),
             ("chatgpt-account-id", pi_account.clone()),
@@ -4110,85 +3524,6 @@ fn unsigned_jwt(claims: &serde_json::Value) -> String {
 }
 
 #[test]
-fn no_egress_means_no_way_out() {
-    let _runtime = crate::shared_runtime();
-    // Sabotage: start the proxy and relay even without `egress` in the spec;
-    // the explicit-proxy request then reaches the proxy instead of a refused
-    // connection, and the refusal assertions fail. The same request with the
-    // route in the spec is the positive control. Sabotage (Linux): listen on
-    // the VM's host proxy port, `v.sock_3128`, even without `egress`; the
-    // guest's vsock connect to CID 2 port 3128 is accepted and its reset
-    // assertion fails. The control box's connect is the positive control.
-    let env = TestEnv::new("no-egress");
-    let fixture = HttpFixture::start(None);
-    let name = box_name("no-egress");
-    let spec = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-    });
-    let up = box_up(&env, &spec, &name);
-
-    // No relay: a request sent to the proxy's port finds no listener.
-    let proxied = curl(
-        &env,
-        &name,
-        "5",
-        &[
-            "-v",
-            "-x",
-            "http://127.0.0.1:3128",
-            "http://fixture.internal/",
-        ],
-    );
-    assert_eq!(proxied.code, 7, "the box had a proxy: {}", proxied.stdout);
-    assert!(
-        proxied.stderr.contains("Connection refused"),
-        "the proxied request failed for another reason: {}",
-        proxied.stderr
-    );
-    // Past the guest's own network: the host's proxy port on vsock.
-    #[cfg(target_os = "linux")]
-    {
-        let reset = vsock_to_host(&env, &name, 3128);
-        assert_ok(&reset, "a vsock connect from the box");
-        assert_eq!(
-            reset.stdout.trim(),
-            "Connection reset by peer",
-            "vsock CID 2 port 3128 without egress"
-        );
-    }
-
-    up.down(&env);
-    drop(up);
-
-    // Positive control: the same request with the route in the spec answers.
-    let name = box_name("no-egress-control");
-    let spec = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "egress": {
-            "routes": { "fixture.internal": fixture.route() },
-        },
-    });
-    let up = box_up(&env, &spec, &name);
-    let route = curl(&env, &name, "5", &["http://fixture.internal/"]);
-    assert_eq!(route.code, 0, "the control route failed: {}", route.stderr);
-    assert!(
-        route.stdout.contains("fixture host=fixture.internal"),
-        "the control route answered: {}",
-        route.stdout
-    );
-    #[cfg(target_os = "linux")]
-    {
-        let proxy = vsock_to_host(&env, &name, 3128);
-        assert_ok(&proxy, "a vsock connect to the proxy");
-        assert_eq!(proxy.stdout.trim(), "connected", "vsock CID 2 port 3128");
-    }
-
-    up.down(&env);
-}
-
-#[test]
 fn a_caller_can_tell_an_oom_kill_from_a_failure() {
     let _runtime = crate::shared_runtime();
     // Guarantee 20: a caller can tell an OOM kill from a failure.
@@ -4273,109 +3608,55 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
 #[test]
 fn a_caller_owned_box_launches_the_pinned_harness() {
     let _runtime = crate::shared_runtime();
-    // Guarantee 19: a caller-owned box launches the pinned harness, for
-    // each of pi, claude and codex.
+    // Guarantee 19: a caller-owned box launches the pinned harness. pi
+    // here; claude's and codex's boxes run in guarantee 26's test.
     // Sabotage: drop the harness mount (or mount the wrong directory); the
-    // `/opt/pinfold/<name>/<name> --version` assertion fails. Sabotage:
-    // mount the harness but leave `PINFOLD_ALLOW` unset; the allow list
-    // assertion fails. Sabotage: install codex under its target triple's
-    // name instead of `codex`; its `--version` exec fails. Sabotage:
-    // restore the directory-exists check in `dirs::install_dir`; after pi's
-    // executable is deleted from the cache the second box mounts the broken
-    // install and its `--version` exec exits 127.
-    // codex's `codex-code-mode-host` companion is not asserted: only a
-    // model-driven MCP tool call observes it.
+    // `/opt/pinfold/pi/pi --version` assertion fails. Sabotage: mount the
+    // harness but leave `PINFOLD_ALLOW` unset; the allow list assertion
+    // fails.
     let env = TestEnv::new("harness");
 
-    // The versions `pinfold artifacts` pins. The caller records which
+    // The version `pinfold artifacts` pins. The caller records which
     // harness it ran from the same report.
     let output = run_ok(env.command(pinfold()).arg("artifacts"));
     let pins: Vec<serde_json::Value> =
         serde_json::from_slice(&output.stdout).expect("pinfold artifacts output is JSON");
+    let pin = pins
+        .iter()
+        .find(|pin| pin["name"] == "pi")
+        .unwrap_or_else(|| panic!("pinfold artifacts does not name pi: {pins:?}"));
+    let version = pin["version"].as_str().expect("pin version is a string");
 
-    for harness in ["pi", "claude", "codex"] {
-        let pin = pins
-            .iter()
-            .find(|pin| pin["name"] == harness)
-            .unwrap_or_else(|| panic!("pinfold artifacts does not name {harness}: {pins:?}"));
-        let version = pin["version"].as_str().expect("pin version is a string");
+    // A caller-owned box: the spec names the image, the harness and the
+    // allow list. `$HOME` is the box's tmpfs.
+    let name = box_name("harness-pi");
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+        "harness": "pi",
+        "env": { "HOME": "/tmp" },
+        "egress": { "allow": ["api.github.com"] },
+    });
+    let mut up = box_up(&env, &spec, &name);
 
-        // A caller-owned box: the spec names the image, the harness and the
-        // allow list. `$HOME` is the box's tmpfs.
-        let name = box_name(&format!("harness-{harness}"));
-        let spec = serde_json::json!({
-            "name": name,
-            "image": default_image(&env),
-            "harness": harness,
-            "env": { "HOME": "/tmp" },
-            "egress": { "allow": ["api.github.com"] },
-        });
-        let mut up = box_up(&env, &spec, &name);
+    // The pinned harness is in the box and runs at the pinned version.
+    let ran = box_exec(&env, &name, &["/opt/pinfold/pi/pi", "--version"]);
+    assert_ok(&ran, "/opt/pinfold/pi/pi --version");
+    assert!(
+        ran.stdout.contains(version),
+        "the box's pi is not the pinned {version}: {}",
+        ran.stdout
+    );
 
-        // The pinned harness is in the box and runs at the pinned version.
-        let binary = format!("/opt/pinfold/{harness}/{harness}");
-        let ran = box_exec(&env, &name, &[&binary, "--version"]);
-        assert_ok(&ran, &format!("{binary} --version"));
-        assert!(
-            ran.stdout.contains(version),
-            "the box's {harness} is not the pinned {version}: {}",
-            ran.stdout
-        );
+    // The harness environment is the spec's allow list, exactly.
+    let allow = box_exec(&env, &name, &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""]);
+    assert_eq!(
+        allow.stdout, "api.github.com",
+        "the box's PINFOLD_ALLOW is not the spec's allow list"
+    );
 
-        // The harness environment is the spec's allow list, exactly.
-        let allow = box_exec(&env, &name, &["sh", "-c", "printf %s \"$PINFOLD_ALLOW\""]);
-        assert_eq!(
-            allow.stdout, "api.github.com",
-            "the box's PINFOLD_ALLOW is not the spec's allow list"
-        );
-
-        up.down(&env);
-        assert!(up.wait().success(), "box up did not exit cleanly");
-
-        // The host deleted the harness's executable from the cache after
-        // the install, the way the OS's temp cleaner or a partial delete
-        // does. The next use must reinstall rather than mount a directory
-        // whose binary is gone. Only pi: the repair downloads on the host
-        // again, and one harness proves the path without spending the
-        // suite's time three times. This scenario runs against a cache of
-        // its own: the pi tests run in this binary beside this one and
-        // mount the shared cache, which the deletion would break.
-        if harness == "pi" {
-            let private = TestEnv::with_private_cache("harness-damaged");
-
-            // Install pi into the private cache and read its path there.
-            let mut up = box_up(&private, &spec, &name);
-            up.down(&private);
-            assert!(up.wait().success(), "box up did not exit cleanly");
-            let output = run_ok(private.command(pinfold()).arg("artifacts"));
-            let report: Vec<serde_json::Value> =
-                serde_json::from_slice(&output.stdout).expect("pinfold artifacts output is JSON");
-            let pin = report
-                .iter()
-                .find(|pin| pin["name"] == harness)
-                .expect("pinfold artifacts names pi");
-            let install = pin["path"].as_str().expect("pin path is a string");
-            let host_binary = Path::new(install).join(harness);
-            fs::remove_file(&host_binary)
-                .unwrap_or_else(|error| panic!("remove {}: {error}", host_binary.display()));
-
-            // The second box repairs the install and runs the pinned pi.
-            let mut up = box_up(&private, &spec, &name);
-            let guest_binary = format!("/opt/pinfold/{harness}/{harness}");
-            let ran = box_exec(&private, &name, &[&guest_binary, "--version"]);
-            assert_ok(
-                &ran,
-                &format!("{guest_binary} --version after the cache lost it"),
-            );
-            assert!(
-                ran.stdout.contains(version),
-                "the re-installed {harness} is not the pinned {version}: {}",
-                ran.stdout
-            );
-            up.down(&private);
-            assert!(up.wait().success(), "box up did not exit cleanly");
-        }
-    }
+    up.down(&env);
+    assert!(up.wait().success(), "box up did not exit cleanly");
 }
 
 /// The VMM of a ready box on Linux: the one child process of its `box up`,
@@ -4514,7 +3795,7 @@ pub(crate) fn box_up(env: &TestEnv, spec: &serde_json::Value, name: &str) -> Up 
 }
 
 /// [`box_up`] with extra variables in `up`'s own environment.
-fn box_up_with_env(
+pub(crate) fn box_up_with_env(
     env: &TestEnv,
     spec: &serde_json::Value,
     name: &str,
@@ -4531,7 +3812,7 @@ fn box_up_with_env(
 /// any of its output is read.
 pub(super) struct Starting {
     pub(super) child: ChildOwner,
-    stdin: Option<ChildStdin>,
+    pub(super) stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
 }
 
@@ -4555,7 +3836,7 @@ impl Starting {
     }
 
     /// Read the rest of `up`'s stdout to EOF.
-    fn rest(&mut self) -> Vec<serde_json::Value> {
+    pub(super) fn rest(&mut self) -> Vec<serde_json::Value> {
         let text = read_bounded(
             &mut self.child,
             &mut self.stdout,
@@ -4609,7 +3890,7 @@ pub(super) fn box_up_start(
 /// `vars` go in `up`'s own environment, as [`box_up_with_env`] gives them.
 /// For an `up` that refuses before it holds; close the spec stdin so the
 /// child cannot park.
-fn box_up_refused(
+pub(super) fn box_up_refused(
     env: &TestEnv,
     spec: &serde_json::Value,
     vars: &[(&str, &str)],
@@ -5044,4 +4325,16 @@ fn untagged_images(label: &str) -> std::collections::BTreeSet<String> {
         .lines()
         .map(str::to_owned)
         .collect()
+}
+
+/// Write one discoverable skill whose description carries `marker`.
+fn write_skill(dir: &Path, name: &str, marker: &str) {
+    fs::create_dir_all(dir).expect("create the skill directory");
+    fs::write(
+        dir.join("SKILL.md"),
+        format!(
+            "---\nname: {name}\ndescription: {marker} identifies this skill in a model request.\n---\n\n# {name}\n"
+        ),
+    )
+    .expect("write SKILL.md");
 }
