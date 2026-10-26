@@ -43,9 +43,7 @@ fn each_runs_history_is_its_own() {
     // PATH it exits 1. (Listing boxes runs no program on Linux, so it would
     // pass there.) Sabotage: resume after the cursor's line rather than at
     // it; each page boundary skips a line and the order assertion fails.
-    // Counting an incomplete final line into `next` is not caught every
-    // run: the proxy appends each line in one write, so a partial line is
-    // rare. Sabotage: drop the run from the cursor; another run's cursor
+    // Sabotage: drop the run from the cursor; another run's cursor
     // exits 0. Sabotage: report a no-egress run's log `unavailable`; the
     // not-applicable assertions fail. Sabotage: a default limit of 1000;
     // the first page then holds all 150 lines and its length assertion
