@@ -946,13 +946,7 @@ fn losing_the_owner_fails_closed() {
         "the egress log gained a line after the owner died: {after:?}"
     );
 
-    // The state dir's `pid` now names pid 1, which is alive and which this
-    // test cannot signal: pid reuse and EPERM in one write. Only the lock
-    // tells the owner is gone. State dirs are keyed by a hash of the name,
-    // so the test finds one by the owner it records.
-    let owner = up.pid();
-    let old_state = find_box_state_dir(&env, owner).expect("find the dead owner's state dir");
-    fs::write(old_state.join("pid"), "1").expect("overwrite the dead owner's pid");
+    let old_state = find_box_state_dir(&env).expect("find the dead owner's state dir");
 
     // Pinfold's own liveness test reports the owner gone before prune acts:
     // the box is still listed, with `owner_alive` false.
@@ -975,8 +969,9 @@ fn losing_the_owner_fails_closed() {
         "prune left the box: {listed:?}"
     );
 
-    // A crash before writing pid leaves only a state dir. Sabotage: treat
-    // a missing pid as permanently live; this fresh up refuses name-in-use.
+    // A crash before publishing its record leaves only a state dir.
+    // Sabotage: treat a state dir without a record as permanently live; this
+    // fresh up refuses name-in-use.
     // The host-created abandoned dir is the outside fixture.
     // Reuse the actual directory observed before prune, without deriving
     // pinfold's name hash in the test.
