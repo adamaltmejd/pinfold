@@ -183,9 +183,9 @@ impl Box {
 
         // Pinfold adds the profile's `share/` above, and the harness mount,
         // a codex login's config dir and pi's login extension in `start`.
-        // Check the spec's mounts against them before `home_disk` picks the
-        // disk behind `$HOME`, so a clash is refused as spec and no tie can
-        // hide it.
+        // Check every guest path, the spec's and these, before `home_disk`
+        // picks the disk behind `$HOME`, so a clash is refused as spec and
+        // no tie can hide it.
         let harness = plan.harness.as_deref().map(artifacts::guest);
         let codex_config = plan
             .logins()
@@ -623,14 +623,10 @@ async fn start(
                 disk::send_seeds(&seeding.relative, &seeding.seeds, out)
             })?;
         }
-        Some(actual)
+        actual
     } else {
-        None
-    };
-    // `ready` reports the labels `list` will.
-    let actual = match actual {
-        Some(actual) => actual,
-        None => runtime
+        // `ready` reports the labels `list` will.
+        runtime
             .list()?
             .into_iter()
             .find(|box_| box_.id == plan.name)
@@ -639,7 +635,7 @@ async fn start(
                     "the runtime does not list box {:?} after ready",
                     plan.name
                 ))
-            })?,
+            })?
     };
     Ok((actual, egress_log))
 }

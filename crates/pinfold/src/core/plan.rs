@@ -476,15 +476,16 @@ const DEFAULT_DISK_GIB: u64 = 64;
 
 /// A disk size: a whole number of gibibytes, at least 1, then `G`.
 fn disk_gibibytes(size: &str) -> Option<u64> {
-    let number = size.strip_suffix('G')?;
-    // `parse` alone would take a leading `+`.
-    if !number.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
+    digits(size.strip_suffix('G')?).filter(|gib| (1..=u64::MAX >> 30).contains(gib))
+}
+
+/// A whole number spelled in ASCII digits only: `parse` alone would take a
+/// leading `+`.
+fn digits(number: &str) -> Option<u64> {
     number
-        .parse::<u64>()
-        .ok()
-        .filter(|gib| (1..=u64::MAX >> 30).contains(gib))
+        .bytes()
+        .all(|byte| byte.is_ascii_digit())
+        .then(|| number.parse().ok())?
 }
 
 /// One environment entry.
@@ -663,7 +664,6 @@ impl Plan {
                 host_directory("disk from", from)?;
             }
         }
-        self.validate_guests(&[])?;
         for (name, value) in &self.env {
             if !valid_env_name(name) {
                 return Err(invalid(format!(
@@ -774,9 +774,9 @@ impl Plan {
         Ok(token)
     }
 
-    /// Refuse two mounts or disks at one lexical guest path. `extra` holds the paths
-    /// pinfold mounts after `validate` has run, so `Box::up` checks the
-    /// final list too.
+    /// Refuse two mounts or disks at one lexical guest path. `Box::up` calls
+    /// it once the profile is resolved, with `extra` the paths pinfold adds
+    /// itself, so it checks the final list.
     pub fn validate_guests(&self, extra: &[&Path]) -> Result<(), String> {
         let mut guests = BTreeSet::new();
         for guest in self
@@ -965,12 +965,7 @@ pub fn memory_mib(memory: &str) -> Option<u64> {
         Some(b'G') => 1024,
         _ => return None,
     };
-    // `parse` alone would take a leading `+`; `all` alone the empty string.
-    let number = &memory[..memory.len() - 1];
-    if !number.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    number.parse::<u64>().ok()?.checked_mul(multiplier)
+    digits(&memory[..memory.len() - 1])?.checked_mul(multiplier)
 }
 
 pub(crate) fn valid_name(name: &str) -> bool {
