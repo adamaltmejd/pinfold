@@ -2127,7 +2127,14 @@ echo "$absent""#
         let refused = pinfold_in(&env, &worktree, args).output().unwrap();
         let stderr = String::from_utf8_lossy(&refused.stderr);
         assert!(!refused.status.success(), "{args:?} ran in a worktree");
-        assert!(stderr.contains("worktree"), "wrong refusal: {stderr}");
+        // A token, not a substring: the refusal also prints a path, and
+        // this checkout may itself sit under a `worktrees` directory.
+        assert!(
+            stderr
+                .split_whitespace()
+                .any(|word| word.trim_end_matches(':') == "worktree"),
+            "wrong refusal: {stderr}"
+        );
     }
     for (verb, event) in [("push", "pushed"), ("fetch", "fetched")] {
         let (code, line) = one_json_line(&mut pinfold_in(&env, repo, &[verb]));
