@@ -11,10 +11,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::net::UnixListener;
 
-use super::{Firecracker, jail, vsock};
+use super::vsock::{self, put};
+use super::{Firecracker, jail};
 use crate::core::disk::{self, Fill, Seeding};
 use crate::core::plan::Plan;
-use crate::core::runtime::{output, podman::Podman};
+use crate::core::runtime::{output, podman};
 use crate::core::{artifacts, image};
 use crate::init::firecracker::{BOOT, BOOT_PORT, FAILED, READY, read_frame, write_frame};
 
@@ -70,10 +71,7 @@ pub fn prepare(
         .image
         .as_deref()
         .expect("box up resolves the profile's image before the runtime runs");
-    if !Podman
-        .resolve_image(reference)?
-        .is_ok_and(|image| image.id == image_id)
-    {
+    if !podman::resolve_image(reference)?.is_ok_and(|image| image.id == image_id) {
         return Err(io::Error::other(
             "image-changed: box started a different image",
         ));
@@ -82,7 +80,7 @@ pub fn prepare(
     let root_disk = image::root_disk(image_id)?;
     cancelled()?;
     let init_disk = state_dir.join("init.ext4");
-    artifacts::init_disk(&init_disk)?;
+    write_init_disk(&init_disk)?;
     let mut mounts = Vec::new();
     for (index, mount) in plan.mounts.iter().enumerate() {
         cancelled()?;
@@ -100,6 +98,25 @@ pub fn prepare(
     })
 }
 
+/// Write a read-only ext4 init disk at `disk` holding this executable as
+/// `/pinfold`, and the empty `/dev` and `/mnt` PID 1 mounts on: a Linux
+/// CLI's init for a box, and the guest kernel's root.
+fn write_init_disk(disk: &Path) -> io::Result<()> {
+    let tree = disk.with_extension("tree");
+    let _ = fs::remove_dir_all(&tree);
+    fs::create_dir(&tree)?;
+    let made = (|| {
+        fs::create_dir(tree.join("dev"))?;
+        fs::create_dir(tree.join("mnt"))?;
+        let init = tree.join("pinfold");
+        fs::copy(std::env::current_exe()?, &init)?;
+        fs::set_permissions(&init, fs::Permissions::from_mode(0o755))?;
+        mount_image(&tree, disk)
+    })();
+    let _ = fs::remove_dir_all(&tree);
+    made
+}
+
 /// Copy the host directory `host` into a new read-only ext4 image at
 /// `disk`, sized to the tree.
 fn mount_image(host: &Path, disk: &Path) -> io::Result<()> {
@@ -107,7 +124,7 @@ fn mount_image(host: &Path, disk: &Path) -> io::Result<()> {
     let _ = fs::remove_file(disk);
     // 10% and 16 MiB for metadata, an inode per entry, as the root disk.
     output(&[
-        &image::mkfs_ext4()?.to_string_lossy(),
+        &super::preflight::mkfs_ext4()?.to_string_lossy(),
         "-q",
         "-F",
         "-m",
@@ -168,7 +185,7 @@ fn image_env(image_id: &str) -> io::Result<Vec<(OsString, OsString)>> {
 pub struct Vm {
     vmm: jail::Vmm,
     state_dir: PathBuf,
-    /// Until the guest dials it, then closed and unlinked.
+    /// Until the guest dials it, then closed.
     boot: Option<(UnixListener, Boot)>,
 }
 
@@ -277,9 +294,6 @@ impl Vm {
             _ = self.vmm.wait() => return Err("box exited before ready".to_string()),
         };
         drop(listener);
-        let boot_socket =
-            vsock::socket(&self.state_dir).with_file_name(format!("v.sock_{BOOT_PORT}"));
-        let _ = fs::remove_file(boot_socket);
         let (stream, _) = accepted.map_err(|error| format!("boot connection: {error}"))?;
         let stream = stream
             .into_std()
@@ -357,11 +371,6 @@ impl Boot {
         drop(stream);
         vsock::set_env(state_dir, &self.env)
     }
-}
-
-fn put(payload: &mut Vec<u8>, bytes: &[u8]) {
-    payload.extend((bytes.len() as u32).to_be_bytes());
-    payload.extend(bytes);
 }
 
 /// The VM configuration, read by Firecracker inside the jail: paths are

@@ -6,7 +6,7 @@
 
 use std::ffi::{CStr, CString, c_char};
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -22,6 +22,8 @@ use nix::sys::stat::Mode;
 use nix::sys::statvfs::{FsFlags, statvfs};
 use nix::sys::wait::{WaitStatus, waitpid};
 use nix::unistd::Pid;
+
+use crate::init::firecracker::{drop_bounding, pidfd_open};
 
 /// Paths inside the jail. The VM configuration names the kernel, the disks
 /// and the vsock socket by these.
@@ -81,10 +83,6 @@ impl Vmm {
             };
             self.ended = Some(outcome);
         }
-        self.ended()
-    }
-
-    fn ended(&self) -> io::Result<i32> {
         match self.ended.as_ref().expect("an outcome was received") {
             Ok(code) => Ok(*code),
             Err(error) => Err(io::Error::other(error.clone())),
@@ -149,7 +147,7 @@ pub fn spawn(jail: &Jail) -> io::Result<Vmm> {
                 }
             };
             // Before `wait`: the unreaped VMM still holds its pid.
-            let _ = started_tx.send(pidfd_open(pid).map(|pidfd| (pid, pidfd)));
+            let _ = started_tx.send(pidfd_open(pid.as_raw()).map(|pidfd| (pid, pidfd)));
             // `_alive`'s write end stays open until the VMM has ended.
             let _ = status_tx.send(wait(pid));
         })?;
@@ -162,14 +160,6 @@ pub fn spawn(jail: &Jail) -> io::Result<Vmm> {
         status: status_rx,
         ended: None,
     })
-}
-
-fn pidfd_open(pid: Pid) -> io::Result<OwnedFd> {
-    // SAFETY: pidfd_open returns a new descriptor or -1.
-    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid.as_raw(), 0u32) };
-    let fd = Errno::result(fd).map_err(|error| io::Error::other(format!("pidfd_open: {error}")))?;
-    // SAFETY: a new descriptor, owned here alone.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd as RawFd) })
 }
 
 /// Make the jail's namespaces, maps and tmpfs root in a child that then
@@ -692,25 +682,10 @@ fn restrict(exec: &Exec) -> Result<(), Failure> {
             .map_err(fail("add a Landlock rule", index))?;
     }
     landlock::restrict(&ruleset).map_err(fail("restrict to the Landlock ruleset", 0))?;
-    // Drop every capability in the bounding set, up to the kernel's last.
-    for cap in 0..libc::c_ulong::MAX {
-        // SAFETY: prctl with integer arguments, passed as unsigned longs.
-        if unsafe {
-            libc::prctl(
-                libc::PR_CAPBSET_DROP,
-                cap,
-                0 as libc::c_ulong,
-                0 as libc::c_ulong,
-                0 as libc::c_ulong,
-            )
-        } != 0
-        {
-            match Errno::last() {
-                Errno::EINVAL if cap > 0 => break,
-                errno => return Err(fail("drop the bounding set", 0)(errno)),
-            }
-        }
-    }
+    // A raw OS error carries its errno without allocating.
+    drop_bounding(None).map_err(|error| {
+        fail("drop the bounding set", 0)(Errno::from_raw(error.raw_os_error().unwrap_or(0)))
+    })?;
     // SAFETY: prctl with integer arguments.
     let clear_all = libc::PR_CAP_AMBIENT_CLEAR_ALL as libc::c_ulong;
     let zero: libc::c_ulong = 0;

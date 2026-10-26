@@ -132,7 +132,7 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
     }
     // The second image is for rollback. A failure here is reported but never
     // fails the build that succeeded.
-    if let Err(error) = clean::keep_two_images(runtime, build.label, build.source) {
+    if let Err(error) = clean::keep_two_images(runtime, Some((build.label, build.source))) {
         eprintln!("pinfold: maintenance: {error}");
     }
     // A runtime that cannot answer does not fail a build that succeeded.
@@ -292,7 +292,7 @@ pub fn root_disk(id: &str) -> io::Result<PathBuf> {
     if disk.is_file() {
         return Ok(disk);
     }
-    let mkfs = mkfs_ext4()?;
+    let mkfs = crate::core::runtime::firecracker::preflight::mkfs_ext4()?;
     fs::create_dir_all(&dir)?;
     // One first use writes the disk; a concurrent one waits, then uses it.
     let lock = fs::File::options()
@@ -347,11 +347,4 @@ entries=$(find "$1/tree" -print0 | tr -dc '\0' | wc -c)
     let result = made.and_then(|_| fs::rename(&file, &disk));
     clean::remove_root_staging(&staging);
     result.map(|()| disk)
-}
-
-/// `mkfs.ext4`, which Debian keeps off a user's PATH.
-#[cfg(target_os = "linux")]
-pub fn mkfs_ext4() -> io::Result<PathBuf> {
-    crate::core::runtime::firecracker::preflight::mkfs_ext4()
-        .ok_or_else(|| io::Error::other("mkfs: no mkfs.ext4 on PATH, in /usr/sbin or in /sbin"))
 }

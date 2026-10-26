@@ -775,7 +775,7 @@ impl CleanPlan {
             }
         }
         drop(locks);
-        clean::keep_two_images_per_source(runtime)
+        clean::keep_two_images(runtime, None)
     }
 
     /// Whether `--unused` selects the project: not run for that long and no
