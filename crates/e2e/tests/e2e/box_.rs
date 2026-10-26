@@ -3352,8 +3352,8 @@ fn box_has_no_network_but_loopback() {
     // argv; on Linux, give the VM a network interface. The box gains an
     // interface and reaches `1.1.1.1`, so the interface and unreachable
     // assertions fail. The route to the fixture is the positive control
-    // that the same box still has its one way out. Sabotage (Linux): leave
-    // the boot listener `v.sock_1000` linked after boot; the guest's
+    // that the same box still has its one way out. Sabotage (Linux): keep
+    // the boot listener on `v.sock_1000` open after boot; the guest's
     // connect to port 1000 is accepted and its reset assertion fails.
     let env = TestEnv::new("network");
     let fixture = HttpFixture::start(None);
