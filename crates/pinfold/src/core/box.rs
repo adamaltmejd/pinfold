@@ -146,14 +146,6 @@ impl Box {
     /// before ready they remove what the start made and `up` returns
     /// [`UpError::Signal`]; after ready [`Box::hold`] watches them.
     pub async fn up(plan: &Plan, init: &Path, signals: &mut Signals) -> Result<Box, UpError> {
-        if init.parent().is_none_or(|parent| parent == Path::new("/")) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "init must live in a directory below /",
-            )
-            .into());
-        }
-
         // The spec rules are the first refusal, before anything is created
         // or resolved.
         plan.validate()
@@ -286,11 +278,7 @@ impl Box {
                 labels,
                 image_id: identity.id.clone(),
                 image_ref: image.clone(),
-                created: crate::core::rfc3339(
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |since| since.as_secs() as i64),
-                ),
+                created: crate::core::rfc3339(crate::core::now() as i64),
                 memory: plan.memory.clone(),
             })?;
         }
