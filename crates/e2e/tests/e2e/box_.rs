@@ -2466,8 +2466,9 @@ fn the_vmm_reaches_only_its_own_box() {
         // Its root holds exactly the spec's jail list (VMM jail): the
         // Firecracker binary, the guest kernel, the root and init disks, the
         // box's one disk, `/dev/kvm`, the vsock socket directory and the VM
-        // configuration, under the jail paths the configuration names them
-        // by. The disk is the box's own host file.
+        // configuration, in the spec's fixed jail layout for one disk and
+        // no mounts; the expected names are not read from `config.json`.
+        // The disk is the box's own host file.
         let root: Vec<(String, (u64, u64))> = fs::read_dir(format!("/proc/{vmm}/root"))
             .expect("read the VMM's root")
             .map(|entry| {
