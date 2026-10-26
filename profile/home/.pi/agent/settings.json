@@ -1,4 +1,5 @@
 {
     "packages": ["/opt/pinfold/profile/pi"],
-    "defaultProjectTrust": "always"
+    "defaultProjectTrust": "always",
+    "defaultTools": ["+codemode"]
 }
