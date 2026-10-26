@@ -1121,8 +1121,8 @@ a scheduler and a complete `ExecutionEnv` are outside this prototype.
 Its project is a disk filled from the host checkout by `from`, with
 results fetched back. The host project must be disjoint from checkpoints, controller and
 dependencies, Bun and Pinfold executables, PATH entries, Pinfold's host
-state and ownership paths, and runtime authority. Check both lexical and
-canonical paths, including nonexistent paths under symlinked ancestors.
+state and ownership paths, and runtime authority. Check canonical paths,
+including nonexistent paths under symlinked ancestors.
 Refuse overlap as `host-boundary` before box or model work. Checkpoints
 remain private on the host; a moved checkpoint namespace is refused.
 

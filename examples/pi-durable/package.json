@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "bun --eval 'await import(process.argv[1]);' ./prototype.ts start",
-    "resume": "bun --eval 'await import(process.argv[1]);' ./prototype.ts resume",
+    "start": "bun ./prototype.ts start",
+    "resume": "bun ./prototype.ts resume",
     "check": "bun --bun tsc --noEmit",
     "e2e": "bun durable_recovery_preserves_boxed_execution.ts"
   },
