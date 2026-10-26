@@ -506,7 +506,7 @@ fn git_input(
     Ok(output)
 }
 
-fn git_command(repo: &Path) -> Command {
+pub(crate) fn git_command(repo: &Path) -> Command {
     let mut command = Command::new("git");
     command.arg("-C").arg(repo);
     command
