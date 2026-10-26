@@ -1,6 +1,6 @@
 //! The end-to-end suite's one test binary.
 //!
-//! They run on a macOS host with the Apple `container` CLI, or a Linux host
+//! Its tests run on a macOS host with the Apple `container` CLI, or a Linux host
 //! with Firecracker and rootless podman for images.
 
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};

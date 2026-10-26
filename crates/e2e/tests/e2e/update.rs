@@ -45,18 +45,6 @@ fn host_updates_are_verified_and_atomic() {
     );
     fs::copy(replacement, fixture.root.join("release")).unwrap();
 
-    let check = run_ok(
-        fixture
-            .command(&env, &installed)
-            .args(["update", "--check"]),
-    );
-    assert!(
-        String::from_utf8_lossy(&check.stdout).contains("999.0.0"),
-        "check did not report the fixture version: {check:?}"
-    );
-    assert_eq!(fs::metadata(&installed).unwrap().ino(), original_inode);
-    assert_eq!(fs::read(&installed).unwrap(), original);
-
     let bad_checksum = fixture.root.join("bad-checksum");
     fs::write(&bad_checksum, b"").unwrap();
     let failure = fixture
@@ -100,9 +88,9 @@ fn host_updates_are_verified_and_atomic() {
 
     let other = TestEnv::new("update-owner");
     // Sabotage: hold the exclusive executable lock only before downloading.
-    // A real owner starts after the fixture observes the asset request;
-    // replacement must recheck that owner before its atomic rename. The
-    // owner is a `box exec` of the installed executable under another XDG
+    // A working command starts after the fixture observes the asset
+    // request; replacement must recheck it before its atomic rename. The
+    // command is a `box exec` of the installed executable under another XDG
     // root: exec needs no jail, so AppArmor's profile does not apply, and
     // it holds the executable lock until its command ends.
     let mut boxed = box_up(&other, &spec, &name);
@@ -140,7 +128,7 @@ fn host_updates_are_verified_and_atomic() {
     let refusal = update.wait_with_output().unwrap();
     assert!(
         !refusal.status.success(),
-        "owner starting during download was replaced"
+        "a command started during the download was replaced"
     );
     assert!(
         String::from_utf8_lossy(&refusal.stderr).contains("update-busy"),

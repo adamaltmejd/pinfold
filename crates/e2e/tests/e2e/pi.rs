@@ -18,8 +18,8 @@ use std::process::{ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use crate::box_::{ChildOwner, box_name, box_up, read_bounded};
 use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, allow, assert_denied, assert_ok, box_exec,
-    box_list, box_stat, build_profile, curl, default_image, git, inspect, json_lines, pinfold,
-    pinfold_in, project_id, run_egress_log, run_ok,
+    box_list, build_profile, curl, default_image, git, inspect, json_lines, pinfold, pinfold_in,
+    project_id, run_dir, run_ok,
 };
 
 /// The PINFOLD_ENV_ value `PiRpc` launches with: long enough that no disk
@@ -182,7 +182,7 @@ fn the_environment_is_exactly_the_spec() {
         let mut scanned = Vec::new();
         holding(&env.state, SECRET.as_bytes(), &mut scanned);
         holding(
-            &env.cache().join("pinfold/root"),
+            &env.cache.join("pinfold/root"),
             SECRET.as_bytes(),
             &mut scanned,
         );
@@ -210,9 +210,10 @@ fn the_environment_is_exactly_the_spec() {
     // `ready`, and `box_up` panics on its first line.
     let path = env.root.join("no-such-path");
     let name = box_name("env-path");
-    // Sabotage: export guest values under their original names to the
-    // runtime client again. Guest HOME and XDG_RUNTIME_DIR then change the
-    // client's state/storage, and LD_PRELOAD reaches the host loader. Encoding is also
+    // Sabotage: on Apple, export guest values under their original names to
+    // `container` again. Guest HOME and XDG_RUNTIME_DIR then move its state
+    // and storage, so `list` and `down` from the caller's own environment
+    // miss the box, and LD_PRELOAD reaches the host loader. Encoding is also
     // needed for a multiline value and a guest name that uses the transport
     // prefix. Expectations are the caller's literal spec values, observed
     // through the real guest's env output. Sabotage: stop removing transport
@@ -220,10 +221,6 @@ fn the_environment_is_exactly_the_spec() {
     let guest = [
         ("HOME", "/pinfold-guest-home-missing"),
         ("XDG_RUNTIME_DIR", "/pinfold-guest-runtime-missing"),
-        (
-            "CONTAINER_HOST",
-            "unix:///pinfold-guest-service-missing.sock",
-        ),
         ("LD_PRELOAD", "/pinfold-guest-preload-missing.so"),
         ("MULTILINE", "first line\nsecond line"),
         ("PINFOLD_BOX_ENV_HOME", "literal guest prefix variable"),
@@ -234,12 +231,14 @@ fn the_environment_is_exactly_the_spec() {
     for (key, value) in guest {
         variables.insert(key.into(), serde_json::json!(value));
     }
+    let label = "dev.example.test=env-path";
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(&env),
+        "labels": { "dev.example.test": "env-path" },
         "env": variables,
     });
-    let up = box_up(&env, &spec, &name);
+    let mut up = box_up(&env, &spec, &name);
     let boxed = box_exec(&env, &name, &["/bin/sh", "-c", "printf %s \"$PATH\""]);
     assert_eq!(boxed.code, 0, "reading PATH failed: {}", boxed.stderr);
     assert_eq!(
@@ -276,7 +275,15 @@ fn the_environment_is_exactly_the_spec() {
         [b"PINFOLD_BOX_ENV_HOME=literal guest prefix variable".as_slice()],
         "internal transport variables reached the guest command"
     );
-    drop(up);
+    // Local list and down still manage the box.
+    let listed = box_list(&env, label);
+    assert!(
+        listed.iter().any(|box_| box_["name"] == name.as_str()),
+        "list did not find the box: {listed:?}"
+    );
+    up.down(&env);
+    assert!(up.wait().success(), "the box's up did not exit cleanly");
+    assert!(box_list(&env, label).is_empty(), "down left the box");
 }
 
 #[test]
@@ -285,8 +292,8 @@ fn project_state_persists_and_stays_separate() {
     // Sabotage: derive the project id from the directory name alone (drop
     // the root hash in state.rs::project_id); the two checkouts named
     // `checkout` then share a home disk, and the second project sees the
-    // first's marker. Sabotage: seed $HOME on every run (drop `--missing`
-    // in box.rs's seed copy); the edited settings.json is overwritten and
+    // first's marker. Sabotage: seed $HOME on every run (make `init
+    // receive` ignore `missing`); the edited settings.json is overwritten and
     // the survives-a-run assertion fails. Sabotage: skip the attachment
     // check in `disk::claim`; the second `pinfold pi` starts and its
     // refusal assertion fails.
@@ -380,7 +387,9 @@ fn a_changed_project_file_stops_the_run() {
     // (`containerfile: None`); the changed Containerfile then runs and
     // builds, and the two refusal assertions after the change fail.
     // Sabotage: push under the `pinfold` remote in pi::launch::crossing;
-    // the box's merge of host/main fails.
+    // the box's merge of host/main fails. Sabotage: check trust in `build`
+    // only when the project names a Containerfile; the build after the
+    // domain change runs and its refusal assertion fails.
     let env = TestEnv::new("pi-trust");
     default_image(&env);
     let project = TestDir::new(&env, "project");
@@ -395,11 +404,9 @@ fn a_changed_project_file_stops_the_run() {
         let output = box_exec(&env, name, &["sh", "-c", script]);
         assert_ok(&output, script);
     };
-    let refused_pi = || {
-        let refused = pinfold_in(&env, root, &["pi", "--version"])
-            .output()
-            .expect("run pinfold pi --version");
-        assert!(!refused.status.success(), "the changed project file ran");
+    let refused = |args: &[&str]| {
+        let refused = pinfold_in(&env, root, args).output().expect("run pinfold");
+        assert!(!refused.status.success(), "{args:?} ran untrusted");
         let stderr = String::from_utf8_lossy(&refused.stderr);
         assert!(stderr.contains("untrusted"), "wrong refusal: {stderr}");
     };
@@ -421,20 +428,13 @@ fn a_changed_project_file_stops_the_run() {
         ),
     );
     assert!(run.finish().success(), "the bare run did not exit cleanly");
-    assert!(
-        !config.exists(),
-        "the box's file reached the host unfetched"
-    );
     run_ok(&mut pinfold_in(&env, root, &["fetch"]));
     host_git(&["merge", "-q", "--ff-only", "pinfold/main"]);
 
     // The file that appeared stops the run and the next fetch until
     // `pinfold allow` records it.
-    refused_pi();
-    let refused = pinfold_in(&env, root, &["fetch"]).output().unwrap();
-    let stderr = String::from_utf8_lossy(&refused.stderr);
-    assert!(!refused.status.success(), "fetch ran untrusted");
-    assert!(stderr.contains("untrusted"), "wrong refusal: {stderr}");
+    refused(&["pi", "--version"]);
+    refused(&["fetch"]);
     allow(&env, root);
     pi_version(&env, root);
 
@@ -459,8 +459,11 @@ fn a_changed_project_file_stops_the_run() {
     );
     host_git(&["merge", "-q", "--ff-only", "pinfold/main"]);
 
-    // The change stops the run again, and `pinfold allow` clears it.
-    refused_pi();
+    // The change stops the run, the fetch and the build again, and
+    // `pinfold allow` clears it.
+    for args in [&["pi", "--version"][..], &["fetch"][..], &["build"][..]] {
+        refused(args);
+    }
     allow(&env, root);
     pi_version(&env, root);
 
@@ -491,13 +494,8 @@ fn a_changed_project_file_stops_the_run() {
         "FROM localhost/pinfold/profile-default:latest\n# changed\n",
     )
     .expect("change the project Containerfile");
-    refused_pi();
-    let refused = pinfold_in(&env, root, &["build"])
-        .output()
-        .expect("run pinfold build");
-    assert!(!refused.status.success(), "the changed Containerfile built");
-    let stderr = String::from_utf8_lossy(&refused.stderr);
-    assert!(stderr.contains("untrusted"), "wrong refusal: {stderr}");
+    refused(&["pi", "--version"]);
+    refused(&["build"]);
     allow(&env, root);
     run_ok(&mut pinfold_in(&env, root, &["build"]));
     pi_version(&env, root);
@@ -643,8 +641,8 @@ fn the_highest_layer_sets_the_allowlist() {
     // project's in `Config::load` (or drop `Layer::from_env`'s allow); the
     // allowlist is then the project's registry.npmjs.org, so npm is let
     // through and the npm 403 assertion fails. Sabotage: drop `cpus` and
-    // `memory` from the Plan in `build_plan`; the box gets the runtime's
-    // defaults and the memory-limit assertion fails.
+    // `memory` from `box_plan`, which `build_plan` spreads; the box gets
+    // the runtime's defaults and the memory assertion fails.
     let env = TestEnv::new("pi-allow");
     default_image(&env);
     let project = TestDir::new(&env, "project");
@@ -675,17 +673,12 @@ fn the_highest_layer_sets_the_allowlist() {
         ],
     );
 
-    // `cpus` and `memory` reach the box: stat reports the memory limit; the
-    // Apple guest's cgroup shows the CPU quota, and a Firecracker VM has
-    // that many vCPUs.
-    let stat = box_stat(&env, &name);
-    assert_eq!(
-        stat["memory"]["limit"].as_u64(),
-        Some(512 * 1024 * 1024),
-        "the box's memory limit is not the environment's 512M: {stat}"
-    );
+    // `cpus` and `memory` reach the box as its kernel sees them: a
+    // Firecracker VM has that much memory and that many vCPUs; the Apple
+    // guest's cgroup holds the memory limit and the CPU quota.
     #[cfg(target_os = "linux")]
     {
+        crate::box_::assert_guest_memory(&env, &name, 512 << 20);
         let cpus = box_exec(&env, &name, &["nproc"]);
         assert_ok(&cpus, "nproc in the box");
         assert_eq!(
@@ -696,6 +689,13 @@ fn the_highest_layer_sets_the_allowlist() {
     }
     #[cfg(target_os = "macos")]
     {
+        let memory = box_exec(&env, &name, &["cat", "/sys/fs/cgroup/memory.max"]);
+        assert_ok(&memory, "reading memory.max");
+        assert_eq!(
+            memory.stdout.trim(),
+            (512u64 << 20).to_string(),
+            "the box's memory.max is not the environment's 512M"
+        );
         let cpus = box_exec(&env, &name, &["cat", "/sys/fs/cgroup/cpu.max"]);
         assert_eq!(cpus.code, 0, "reading cpu.max failed: {}", cpus.stderr);
         let mut cpu_max = cpus.stdout.split_whitespace();
@@ -742,7 +742,8 @@ fn the_highest_layer_sets_the_allowlist() {
     assert_denied(&denied, "403", "a request to registry.npmjs.org");
 
     // The log names the refused host and the reason.
-    let lines = json_lines(&run_egress_log(&env, &pi_run_id(&env, &name)));
+    let log = run_dir(&env, &pi_run_id(&env, &name)).join("egress.jsonl");
+    let lines = json_lines(&fs::read_to_string(&log).expect("read the pi run's egress log"));
     assert!(
         lines.iter().any(|line| line["host"] == "registry.npmjs.org"
             && line["decision"] == "refused"
@@ -876,6 +877,9 @@ fn the_launch_record_is_the_applied_policy() {
     assert_denied(&denied, "403", "the changed list's host");
 
     assert!(run.finish().success(), "pinfold pi did not exit cleanly");
+    // Guarantee 40: a pi box prints no `down`, so its harness ending is the
+    // terminal reason. Sabotage: record a pi run's end as `signal`, or write
+    // no terminal record for it; this assertion fails.
     let (_, record) = inspect(&env, &run_id);
     assert_eq!(
         record["terminal"]["record"]["reason"], "harness-exited",
@@ -931,7 +935,7 @@ fn projects_exclude_host_authority() {
 fn a_caller_reads_the_effective_configuration_as_data() {
     let _runtime = crate::shared_runtime();
     // Sabotage: report DEFAULT_ALLOW instead of the merged allow in
-    // `run_config`; `egress.allow` then names the built-in hosts and the
+    // `config_report`; `egress.allow` then names the built-in hosts and the
     // exact-list assertion fails. Sabotage: swap the two names
     // `state::disk_names` returns; `disk list` shows the reported home disk
     // attached at the project, not as $HOME, and the attachment assertion

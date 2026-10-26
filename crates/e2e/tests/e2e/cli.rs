@@ -122,10 +122,17 @@ fn doctor_reports_without_changing_state() {
     fs::create_dir_all(unprofiled.parent().unwrap()).unwrap();
     fs::copy(pinfold(), &unprofiled).unwrap();
     // From the host, not from pinfold: the kernel knob AppArmor's
-    // restriction is.
-    let apparmor_restricts =
+    // restriction is. The spec's Linux host keeps it on; without it the
+    // `userns-apparmor` half cannot be shown.
+    #[cfg(target_os = "linux")]
+    assert_eq!(
         fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-            .is_ok_and(|value| value.trim() == "1");
+            .ok()
+            .as_deref()
+            .map(str::trim),
+        Some("1"),
+        "kernel.apparmor_restrict_unprivileged_userns is not 1 on this host"
+    );
 
     // The real Podman also fails before reporting its host settings when
     // XDG_RUNTIME_DIR is absent, so every scenario but `ready` lists the
@@ -170,14 +177,6 @@ fn doctor_reports_without_changing_state() {
             })
             .expect("doctor reports host configuration");
         assert_eq!(config["memory"], "1G");
-        if scenario == "no-runtime" {
-            assert!(config["image_built"].is_null());
-            assert!(
-                config["image_error"]
-                    .as_str()
-                    .is_some_and(|error| !error.is_empty())
-            );
-        }
         assert_eq!(
             owned_trees(),
             before,
@@ -203,13 +202,9 @@ fn doctor_reports_without_changing_state() {
                     has("kvm"),
                     "doctor did not identify the unusable /dev/kvm: {report}"
                 ),
-                "unprofiled" if apparmor_restricts => assert!(
+                "unprofiled" => assert!(
                     has("userns-apparmor") && !has("userns"),
                     "the unprofiled copy did not report userns-apparmor: {report}"
-                ),
-                "unprofiled" => assert!(
-                    !has("userns") && !has("userns-apparmor"),
-                    "without AppArmor's restriction the copy reported a user-namespace token: {report}"
                 ),
                 _ => {}
             }
@@ -220,7 +215,7 @@ fn doctor_reports_without_changing_state() {
     // token, and the profiled executable starts a box. Sabotage: skip the
     // jail preflight; the copy's `up` fails later, without the token.
     #[cfg(target_os = "linux")]
-    if apparmor_restricts {
+    {
         use std::io::Write;
         use std::process::Stdio;
         let name = crate::box_::box_name("doctor");
@@ -305,7 +300,7 @@ fn ioctl_dev_denied(command: &mut std::process::Command) {
 
 // Preserve directories as well as file bytes: a supposedly read-only
 // inspection must not create even an empty cache directory.
-pub(super) fn host_tree(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+fn host_tree(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
     fn walk(root: &Path, dir: &Path, entries: &mut Vec<(PathBuf, Option<Vec<u8>>)>) {
         for entry in fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();

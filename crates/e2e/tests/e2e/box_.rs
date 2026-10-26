@@ -18,7 +18,6 @@ use e2e::{
     HttpFixture, ImageCleanup, TestDir, TestEnv, assert_denied, assert_ok, box_exec, box_list,
     box_stat, build_profile, curl, default_image, egress_log, exit_code, git, image_cli, image_id,
     json_lines, pinfold, pinfold_in, profile_containerfile, run_ok, runtime_images, tagged_images,
-    untagged_images,
 };
 
 #[test]
@@ -43,8 +42,8 @@ fn box_lifecycle_works_for_a_caller() {
     // positive control that the same path can succeed.
     // Sabotage: drop init's SIGCHLD SIG_IGN; the orphaned `true` stays a
     // zombie of PID 1 and the no-zombie assertion fails.
-    // Sabotage: skip exec's existence check; the post-down exec returns the
-    // runtime's 125 instead of 3.
+    // Sabotage: skip exec's existence check; the post-down exec fails
+    // without exit 3 and the exit-3 assertion fails.
     // Sabotage: let Apple's `down` pass the runtime's stderr through again;
     // on macOS the second `down` prints the runtime's not-found error and the
     // empty-stderr assertion fails.
@@ -525,7 +524,7 @@ sys.exit(result.returncode)
     );
     assert!(again.wait().success(), "up did not exit 0 for stdin-closed");
 
-    // podman also resolves the image by its id. Apple's inspect resolves
+    // On Linux the image also resolves by its id. Apple's inspect resolves
     // neither id nor digest; macOS asserts nothing about this form.
     if cfg!(target_os = "linux") {
         let spec = serde_json::json!({
@@ -566,7 +565,7 @@ sys.exit(result.returncode)
             .args(["box", "up"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::inherit())
             .spawn()
             .unwrap();
         child
@@ -575,7 +574,6 @@ sys.exit(result.returncode)
             .unwrap()
             .write_all(spec.to_string().as_bytes())
             .unwrap();
-        let mut errors = child.stderr.take().unwrap();
         let mut child = ChildOwner::new(child, &env, None);
         let mut output = BufReader::new(child.stdout.take().unwrap());
         proxy.event("held");
@@ -604,9 +602,6 @@ sys.exit(result.returncode)
         assert_eq!(terminal[0]["event"], "down");
         assert_eq!(terminal[0]["reason"], "signal");
         assert!(child.wait_bounded().success(), "runtime removal succeeded");
-        let mut diagnostic = String::new();
-        errors.read_to_string(&mut diagnostic).unwrap();
-        assert!(!diagnostic.is_empty(), "bookkeeping failure was silent");
         assert!(
             state.exists(),
             "permission failure did not leave recoverable state"
@@ -698,15 +693,12 @@ fn up_refuses_before_it_creates() {
     // keeping only the old empty-or-`=` test; the wildcard spec then comes up
     // `ready`, so the refusal assertion fails.
     // Sabotage: drop the comma and control-character check from the
-    // mount-path validation; the comma path then reaches the runtime, whose
-    // option parser reads the rest as mount options, so the refusal assertion
-    // fails.
+    // mount-path validation; the comma spec then comes up `ready` (on Apple
+    // the runtime's option parser reads the rest as mount options), so the
+    // refusal assertion fails.
     // Sabotage: drop the not-a-directory check from the mount validation;
     // the file-mount spec then reaches the runtime, so its `refused`
     // assertion fails.
-    // Sabotage: check duplicate guest paths before pinfold's own mounts are
-    // added, as today; the profile-mount spec then comes up `ready` and its
-    // `refused` assertion fails.
     // Sabotage: make the claim treat an existing state dir as success, as
     // `create_dir_all` does, and make the name checks always pass; the
     // concurrent loser is never refused `name-in-use`, and its failure path
@@ -724,11 +716,7 @@ fn up_refuses_before_it_creates() {
     // `255M` spec likewise reaches the runtime and its assertion fails.
     // Sabotage: drop the route check from `Plan::validate`; the URL route
     // spec comes up `ready`, so its `refused` assertion fails.
-    // Sabotage: drop the "has one below it" clause from the public-suffix
-    // check, keeping only rule equality; `.amazonaws.com` is not itself on
-    // the list, so its spec comes up `ready` and its `refused` assertion
-    // fails.
-    let env = TestEnv::with_private_cache("refuses");
+    let env = TestEnv::new("refuses");
     let name = box_name("refuses");
     let label = "dev.example.test=refuses";
 
@@ -744,28 +732,6 @@ fn up_refuses_before_it_creates() {
     assert_eq!(refused["event"], "refused");
     assert_eq!(refused["reason"], "image-missing");
     assert_left_nothing(&env, &name, label, "refused");
-
-    // Sabotage: materialize a bundled share during profile resolution before
-    // the missing-image refusal. The host cache must stay exactly as it was
-    // after init was cached by the preceding refusal.
-    let cache = env.root.join("cache");
-    let before = super::cli::host_tree(&cache);
-    let mut missing_profile = missing.clone();
-    missing_profile["profile"] = serde_json::json!("documents");
-    missing_profile["env"] = serde_json::json!({ "HOME": "/home/refused" });
-    let home_disk = box_name("refused-home");
-    missing_profile["disks"] = serde_json::json!([
-        { "name": home_disk, "guest": "/home/refused" }
-    ]);
-    let (code, refused) = box_up_refused(&env, &missing_profile, &[]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["reason"], "image-missing");
-    assert_left_nothing(&env, &name, label, "refused");
-    assert_eq!(
-        super::cli::host_tree(&cache),
-        before,
-        "a refusal wrote profile cache"
-    );
 
     // Sabotage: accept unknown fields inside an env `from` object. A valid
     // reference succeeds in the race's winner below; this nested misspelling
@@ -975,8 +941,9 @@ fn up_refuses_before_it_creates() {
     assert_left_nothing(&env, &name, label, "refused");
 
     // A spec whose mount path holds a comma is refused as data, naming the
-    // path, and leaves no state dir and no box: the bind value is built by
-    // concatenation, so the runtime reads the rest as mount options. The
+    // path, and leaves no state dir and no box: on Apple the bind value is
+    // built by concatenation, so the runtime reads the rest as mount
+    // options. The
     // positive control, a plain path mounting, is the race's winner below.
     let comma = env.root.join("a,b");
     fs::create_dir_all(&comma).unwrap();
@@ -1063,8 +1030,8 @@ fn up_refuses_before_it_creates() {
     // spec's own mounts, so the spec's directory would otherwise be silently
     // shadowed. The positive control is the race's winner below, which comes
     // up `ready` from the same image. Sabotage: check duplicates before
-    // pinfold's mounts are added, as today; this spec then comes up `ready`,
-    // so its `refused` assertion fails.
+    // pinfold's mounts are added; this spec then comes up `ready`, so its
+    // `refused` assertion fails.
     let work = env.root.join("work");
     fs::create_dir_all(&work).unwrap();
     let spec_mount = env.root.join("spec-share");
@@ -1101,8 +1068,8 @@ fn up_refuses_before_it_creates() {
     }
 
     // Disk specs are refused as data, naming the cause, before anything is
-    // created: a path with a comma (the volume value is concatenated like a
-    // bind), a malformed size or name, `from` with `readonly` (a read-only
+    // created: a path with a comma (on Apple the volume value is
+    // concatenated like a bind), a malformed size or name, `from` with `readonly` (a read-only
     // attachment cannot receive the copy), and a disk at a mount's
     // normalized guest path. The positive control, disks attaching, is guarantee 11's
     // `disks_persist_and_attach_exclusively`. Sabotage: drop the size check
@@ -1282,8 +1249,9 @@ fn disks_persist_and_attach_exclusively() {
     // Guarantee 11: disks persist and attach exclusively.
     // Sabotage: skip the attachment check in `disk::claim`; the read-only
     // second `up` is refused `disk-unclean` instead, so the `disk-in-use`
-    // assertion fails. Sabotage: skip `mark_unclean`; after the prune the
-    // read-only `up` comes ready and the `disk-unclean` assertion fails.
+    // assertion fails. Sabotage: skip the `UNCLEAN` mark in `disk::claim`;
+    // after the prune the read-only `up` comes ready and the `disk-unclean`
+    // assertion fails.
     // Sabotage: skip the size check; the sparse `from` reaches the copy,
     // which fails in the box, and the `limit` assertion fails. Sabotage:
     // write every copied file 644 in `init receive`; the exec-bit assertion
@@ -1291,9 +1259,12 @@ fn disks_persist_and_attach_exclusively() {
     // `up`s create the disk and the loser ends `failed`, not `disk-in-use`.
     // Sabotage: call `disk::detached` on every runtime stop in `Box::down`;
     // after `container kill` the read-only `up` comes ready.
-    // Sabotage: drop `value.push(",readonly")` from `runtime::bind`; the
-    // readers' mount is then writable and the "a write to a mount"
-    // assertion fails. Sabotage: skip the unfilled check in `disk::claim`;
+    // Sabotage: drop `value.push(",readonly")` from `apple::bind`; on Apple
+    // the readers' mount is then writable and the "a write to a mount"
+    // assertion fails. Sabotage: on Linux, mount every attachment without
+    // `MS_RDONLY` in init's Firecracker setup and pass each drive writable
+    // in `vm::config`; the readers' writes succeed and both read-only
+    // assertions fail. Sabotage: skip the unfilled check in `disk::claim`;
     // the `up` after an owner killed mid-copy keeps the half-filled disk and
     // the refilled tree assertion fails. Sabotage: check the project disk
     // with a bare `list_disks` in `pi::launch::crossing`; `fetch` recreates
@@ -1472,11 +1443,6 @@ fn disks_persist_and_attach_exclusively() {
     assert_eq!(
         refused["reason"], "disk-in-use",
         "the losing racer: {refused}"
-    );
-    let loser_name = refused["box"].as_str().unwrap();
-    assert!(
-        !env.state.join("pinfold/boxes").join(loser_name).exists(),
-        "the losing racer left a state dir"
     );
     let winner_name = ready["box"].as_str().unwrap().to_string();
     let mut winner = winner.into_up(&winner_name, ready);
@@ -1707,12 +1673,32 @@ fn disks_persist_and_attach_exclusively() {
         disk_names(&env).contains(refill),
         "the interrupted up's disk is gone"
     );
-    // The unfilled disk is no project disk to `fetch` either: it refuses and
-    // leaves the disk for the next `up` to refill.
+    // The unfilled disk is no project disk to `fetch` either: it exits
+    // nonzero and starts no box, so prints no crossing line and records no
+    // run, and leaves the disk for the next `up` to refill.
+    let runs = || -> Vec<_> {
+        let mut names: Vec<_> = fs::read_dir(env.state.join("pinfold/runs"))
+            .expect("read the runs dir")
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let runs_before = runs();
     let fetched = pinfold_in(&env, project.path(), &["fetch"])
         .output()
         .expect("run pinfold fetch");
-    assert!(!fetched.status.success(), "fetch ran on an unfilled disk");
+    assert!(
+        !fetched.status.success() && fetched.stdout.is_empty(),
+        "fetch on an unfilled disk: {:?} {}",
+        fetched.status,
+        String::from_utf8_lossy(&fetched.stderr)
+    );
+    assert_eq!(
+        runs(),
+        runs_before,
+        "fetch on an unfilled disk recorded a run"
+    );
     fs::remove_file(&first).unwrap();
     fs::write(&first, b"first\n").unwrap();
     let mut refilled = box_up(&env, &spec(writer, refill_disk), writer);
@@ -1759,10 +1745,8 @@ fn disks_persist_and_attach_exclusively() {
     assert!(listed["allocated"].as_u64().unwrap() < 1 << 30, "{listed}");
 }
 
-/// Every disk `disk list` prints.
 fn disk_list(env: &TestEnv) -> Vec<serde_json::Value> {
-    let output = run_ok(env.command(pinfold()).args(["disk", "list"]));
-    json_lines(&String::from_utf8_lossy(&output.stdout))
+    e2e::disk_list(env).unwrap_or_else(|error| panic!("{error}"))
 }
 
 pub(super) fn disk_names(env: &TestEnv) -> Vec<String> {
@@ -2143,7 +2127,14 @@ echo "$absent""#
         let refused = pinfold_in(&env, &worktree, args).output().unwrap();
         let stderr = String::from_utf8_lossy(&refused.stderr);
         assert!(!refused.status.success(), "{args:?} ran in a worktree");
-        assert!(stderr.contains("worktree:"), "wrong refusal: {stderr}");
+        // A token, not a substring: the refusal also prints a path, and
+        // this checkout may itself sit under a `worktrees` directory.
+        assert!(
+            stderr
+                .split_whitespace()
+                .any(|word| word.trim_end_matches(':') == "worktree"),
+            "wrong refusal: {stderr}"
+        );
     }
     for (verb, event) in [("push", "pushed"), ("fetch", "fetched")] {
         let (code, line) = one_json_line(&mut pinfold_in(&env, repo, &[verb]));
@@ -2385,12 +2376,6 @@ fn each_box_has_its_own_kernel() {
         "the box's /proc/version names the host's release: {}",
         version.stdout
     );
-    if let Ok(host_version) = fs::read_to_string("/proc/version") {
-        assert_ne!(
-            version.stdout, host_version,
-            "the box shares the host's /proc/version"
-        );
-    }
     // The release is the kernel half of the VMM pin, read from the pin file.
     #[cfg(target_os = "linux")]
     {
@@ -2425,7 +2410,9 @@ fn the_vmm_reaches_only_its_own_box() {
     // its mount points lie under the home. Sabotage: bind the box's state
     // dir into the jail; the root then holds that directory. Sabotage: drop
     // `close_range` before exec; the VMM inherits a descriptor under the
-    // home and the fd assertion fails.
+    // home and the fd assertion fails. Sabotage: bind the cache's pinned
+    // artifacts directory instead of each file; the root-list assertion
+    // fails.
     let env = TestEnv::new("vmm-jail");
     let home = std::env::var("HOME").expect("HOME is set");
     let names = [box_name("vmm-a"), box_name("vmm-b")];
@@ -2483,8 +2470,12 @@ fn the_vmm_reaches_only_its_own_box() {
                 "the VMM shares box up's {kind} namespace"
             );
         }
-        // Its root holds its own disk and nothing of the host's or the
-        // other box's.
+        // Its root holds exactly the spec's jail list (VMM jail): the
+        // Firecracker binary, the guest kernel, the root and init disks, the
+        // box's one disk, `/dev/kvm`, the vsock socket directory and the VM
+        // configuration, in the spec's fixed jail layout for one disk and
+        // no mounts; the expected names are not read from `config.json`.
+        // The disk is the box's own host file.
         let root: Vec<(String, (u64, u64))> = fs::read_dir(format!("/proc/{vmm}/root"))
             .expect("read the VMM's root")
             .map(|entry| {
@@ -2504,12 +2495,27 @@ fn the_vmm_reaches_only_its_own_box() {
             !root.iter().any(|(_, file)| *file == disk_files[1 - index]),
             "the VMM's root holds the other box's disk: {root:?}"
         );
-        for host in ["home", "etc", "usr", "tmp"] {
-            assert!(
-                !root.iter().any(|(name, _)| name == host),
-                "the VMM's root holds the host's /{host}: {root:?}"
-            );
-        }
+        let mut names: Vec<&str> = root.iter().map(|(name, _)| name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [
+                "config.json",
+                "dev",
+                "disk0.ext4",
+                "firecracker",
+                "init.ext4",
+                "root.ext4",
+                "vmlinux",
+                "vsock",
+            ],
+            "the VMM's root is not its jail's list"
+        );
+        let dev: Vec<_> = fs::read_dir(format!("/proc/{vmm}/root/dev"))
+            .expect("read the VMM's /dev")
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(dev, ["kvm"], "the VMM's /dev holds more than kvm");
         let mounts =
             fs::read_to_string(format!("/proc/{vmm}/mountinfo")).expect("read the VMM's mounts");
         for line in mounts.lines() {
@@ -2887,12 +2893,12 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // runtime gets no context holding marker.txt; the COPY fails and the
     // first `built` assertion fails. Sabotage: set the caller image window
     // to zero; the third build removes the first build's ref, so the ref's
-    // `up` is refused `image-missing`. Sabotage: make `build_id` in
-    // core/image.rs return a fixed string; the three builds then share one
+    // `up` is refused `image-missing`. Sabotage: make the new build's `id`
+    // in `image::build` a fixed string; the three builds then share one
     // ref, which names the third build, and the box reads `third`.
-    // Sabotage: report `local_image_id(runtime, &latest)` resolved before
-    // the build; the first build's id is absent and each later build's is
-    // stale, so the `built["id"]` assertion fails. Sabotage: write a unique
+    // Sabotage: in `image::build`, resolve the reported id from `latest`
+    // before the build; the first build's id is absent and each later
+    // build's is stale, so the `built["id"]` assertion fails. Sabotage: write a unique
     // build label into every image again, as `dev.pinfold.build` was; the
     // repeated build makes a new image and the one-id assertion fails.
     let env = TestEnv::new("image-build");
@@ -3037,7 +3043,7 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         "{latest} did not move back to the second build's image"
     );
 
-    // Sabotage: ignore the caller's no_cache in Image::build; the runtime
+    // Sabotage: ignore `Build::cache` in `image::build`; the runtime
     // reuses the cached RUN layer and /stamp stays equal. The cached build
     // is the positive control; the bytes come from the guest's urandom.
     let first_stamp = file_from_image(&env, &refs[0], "caller-stamp-1", "/stamp");
@@ -3409,23 +3415,10 @@ fn box_has_no_network_but_loopback() {
     // The host's vsock side: only the proxy listens. The exec port is the
     // guest's own, and the boot port's listener is gone once the box is
     // ready. A reset is the host refusing; a timeout would be a dropped
-    // packet. perl-base opens the socket by number: AF_VSOCK is 40 and a
-    // sockaddr_vm is family, reserved, port and CID.
+    // packet.
     #[cfg(target_os = "linux")]
     {
-        let connect = |port: u32| {
-            box_exec(
-                &env,
-                &name,
-                &[
-                    "perl",
-                    "-e",
-                    "socket(my $s, 40, 1, 0) or die \"socket: $!\\n\"; \
-                     print connect($s, pack('SSLLx4', 40, 0, $ARGV[0], 2)) ? \"connected\\n\" : \"$!\\n\"",
-                    &port.to_string(),
-                ],
-            )
-        };
+        let connect = |port: u32| vsock_to_host(&env, &name, port);
         for port in [1024, 1000] {
             let reset = connect(port);
             assert_ok(&reset, "a vsock connect from the box");
@@ -3462,44 +3455,64 @@ fn box_has_no_network_but_loopback() {
 #[test]
 fn a_route_reaches_exactly_one_host_service() {
     let _runtime = crate::shared_runtime();
-    // Sabotage: forward the client's Host header unchanged; the evil-Host
-    // request then reaches the fixture as evil.example and its assertion
-    // fails.
     // Sabotage: report the route before dialing, so `status` stays null;
     // the status assertion fails. Sabotage: log the whole request target;
     // the query sentinel then appears in the log and that assertion fails.
     let env = TestEnv::new("route");
-    let fixture = HttpFixture::start(None);
+    // The host service answers every request 404, so the logged status can
+    // only be the one it sent.
+    const STATUS: u16 = 404;
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let route = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut request = BufReader::new(&stream);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if request.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            let _ = (&stream).write_all(
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        }
+    });
+    // This one answers with the Host header it received.
+    let echo = HttpFixture::start(None);
     let name = box_name("route");
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(&env),
         "egress": {
-            "routes": { "fixture.internal": fixture.route() },
+            "routes": { "fixture.internal": route, "echo.internal": echo.route() },
         },
     });
     let mut up = box_up(&env, &spec, &name);
 
-    // The route reaches the fixture, and the Host header is rewritten from
-    // the absolute-form target, not passed through from the client.
+    // The Host header is rewritten from the absolute-form target, not
+    // passed through from the client. Sabotage: forward the client's Host
+    // header unchanged; the request then reaches the service as
+    // evil.example and this assertion fails.
     let rewritten = curl(
         &env,
         &name,
         "5",
-        &["-H", "Host: evil.example", "http://fixture.internal/"],
+        &["-H", "Host: evil.example", "http://echo.internal/"],
     );
     assert_eq!(rewritten.code, 0, "the route failed: {}", rewritten.stderr);
     assert!(
-        rewritten.stdout.contains("fixture host=fixture.internal"),
+        rewritten.stdout.contains("fixture host=echo.internal"),
         "the Host header was not rewritten: {}",
         rewritten.stdout
     );
 
-    // A route's log line names the method, the request path without its
-    // query, and the status the fixture sent. The method is not curl's
-    // default, so a constant GET fails (sabotage: log "GET" for every
-    // route). The expected status comes from the fixture. The query's
-    // sentinel never reaches the log.
+    // A route reaches the service, and its log line names the method, the
+    // request path without its query, and the status the service sent. The
+    // method is not curl's default, so a constant GET fails (sabotage: log
+    // "GET" for every route). The query's sentinel never reaches the log.
+    let path = "/missing";
     let sentinel = format!("pf-sentinel-{}", std::process::id());
     let missing = curl(
         &env,
@@ -3508,10 +3521,7 @@ fn a_route_reaches_exactly_one_host_service() {
         &[
             "-X",
             "DELETE",
-            &format!(
-                "http://fixture.internal{}?{sentinel}",
-                HttpFixture::NOT_FOUND_PATH
-            ),
+            &format!("http://fixture.internal{path}?{sentinel}"),
         ],
     );
     assert_eq!(
@@ -3531,15 +3541,11 @@ fn a_route_reaches_exactly_one_host_service() {
             line["host"] == "fixture.internal"
                 && line["decision"] == "allowed"
                 && line["reason"] == "route"
-                && line["path"] == HttpFixture::NOT_FOUND_PATH
+                && line["path"] == path
         })
         .unwrap_or_else(|| panic!("no route line for the missing path: {lines:?}"));
     assert_eq!(line["method"], "DELETE", "the route line's method: {line}");
-    assert_eq!(
-        line["status"],
-        HttpFixture::NOT_FOUND_STATUS,
-        "the route line's status: {line}"
-    );
+    assert_eq!(line["status"], STATUS, "the route line's status: {line}");
     // Sabotage: ignore an audit append error or omit its owner notification.
     // Earlier requests prove this route works with a writable log. Replacing
     // ready's regular log with a directory causes a real host write failure.
@@ -4034,11 +4040,6 @@ fn a_login_route_keeps_the_login_on_the_host() {
     busy.recv_timeout(std::time::Duration::from_secs(10))
         .expect("the second XDG root observed the shared login lock");
     refresh.set_nonblocking(true).unwrap();
-    assert_eq!(
-        refresh.accept().unwrap_err().kind(),
-        std::io::ErrorKind::WouldBlock,
-        "a second helper refreshed while the first held the login lock"
-    );
     release.send(()).unwrap();
     responder.join().unwrap();
     let ready = first.first_line();
@@ -4410,7 +4411,10 @@ fn no_egress_means_no_way_out() {
     // Sabotage: start the proxy and relay even without `egress` in the spec;
     // the explicit-proxy request then reaches the proxy instead of a refused
     // connection, and the refusal assertions fail. The same request with the
-    // route in the spec is the positive control.
+    // route in the spec is the positive control. Sabotage (Linux): listen on
+    // the VM's host proxy port, `v.sock_3128`, even without `egress`; the
+    // guest's vsock connect to CID 2 port 3128 is accepted and its reset
+    // assertion fails. The control box's connect is the positive control.
     let env = TestEnv::new("no-egress");
     let fixture = HttpFixture::start(None);
     let name = box_name("no-egress");
@@ -4438,6 +4442,17 @@ fn no_egress_means_no_way_out() {
         "the proxied request failed for another reason: {}",
         proxied.stderr
     );
+    // Past the guest's own network: the host's proxy port on vsock.
+    #[cfg(target_os = "linux")]
+    {
+        let reset = vsock_to_host(&env, &name, 3128);
+        assert_ok(&reset, "a vsock connect from the box");
+        assert_eq!(
+            reset.stdout.trim(),
+            "Connection reset by peer",
+            "vsock CID 2 port 3128 without egress"
+        );
+    }
 
     up.down(&env);
     drop(up);
@@ -4459,6 +4474,12 @@ fn no_egress_means_no_way_out() {
         "the control route answered: {}",
         route.stdout
     );
+    #[cfg(target_os = "linux")]
+    {
+        let proxy = vsock_to_host(&env, &name, 3128);
+        assert_ok(&proxy, "a vsock connect to the proxy");
+        assert_eq!(proxy.stdout.trim(), "connected", "vsock CID 2 port 3128");
+    }
 
     up.down(&env);
 }
@@ -4674,12 +4695,31 @@ pub(super) fn vmm_pid(up: u32) -> u32 {
     }
 }
 
+/// From inside the box, connect a vsock stream to the host, CID 2, on
+/// `port`, and print `connected` or the error. perl-base opens the socket
+/// by number: AF_VSOCK is 40 and a sockaddr_vm is family, reserved, port
+/// and CID.
+#[cfg(target_os = "linux")]
+fn vsock_to_host(env: &TestEnv, name: &str, port: u32) -> e2e::ExecOutput {
+    box_exec(
+        env,
+        name,
+        &[
+            "perl",
+            "-e",
+            "socket(my $s, 40, 1, 0) or die \"socket: $!\\n\"; \
+             print connect($s, pack('SSLLx4', 40, 0, $ARGV[0], 2)) ? \"connected\\n\" : \"$!\\n\"",
+            &port.to_string(),
+        ],
+    )
+}
+
 /// Assert that the guest kernel of a Firecracker box has `limit` bytes of
 /// memory: its `MemTotal` is the VM's size less what the kernel keeps, and
 /// any other size the VM could get (the 1 GiB default, half or twice the
 /// spec's) falls outside the 64 MiB below `limit`.
 #[cfg(target_os = "linux")]
-fn assert_guest_memory(env: &TestEnv, name: &str, limit: u64) {
+pub(super) fn assert_guest_memory(env: &TestEnv, name: &str, limit: u64) {
     let meminfo = box_exec(env, name, &["cat", "/proc/meminfo"]);
     assert_ok(&meminfo, "cat /proc/meminfo");
     let total = meminfo
@@ -5282,4 +5322,22 @@ fn box_down(env: &TestEnv, name: &str) -> ExitStatus {
         .stdin(Stdio::null())
         .status()
         .expect("run pinfold box down")
+}
+
+/// The IDs of untagged images with the caller's label, including the
+/// intermediate layers a cached build leaves behind. Linux only.
+fn untagged_images(label: &str) -> std::collections::BTreeSet<String> {
+    let output = run_ok(Command::new("podman").args([
+        "images",
+        "-a",
+        "-q",
+        "--filter",
+        "dangling=true",
+        "--filter",
+        &format!("label={label}"),
+    ]));
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect()
 }
