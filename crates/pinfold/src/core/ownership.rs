@@ -123,8 +123,9 @@ pub struct Record {
     pub generation: String,
     pub pid: i32,
     pub state_dir: PathBuf,
-    /// The disks this generation attaches; `prune` releases them by
-    /// removing the record.
+    /// The disks this generation attaches. They are released once the
+    /// owner is dead and the runtime lists the box stopped or not at all,
+    /// and `prune` removes the record.
     #[serde(default)]
     pub disks: Vec<Attachment>,
     /// The box as `list` reports it, once `up` knows it. Linux's inventory.

@@ -189,9 +189,11 @@ pub struct BoxInfo {
     pub image_ref: String,
     /// When the runtime created the box, RFC 3339 in UTC.
     pub created: String,
-    /// Whether the runtime reports the box `running`. Any other state,
-    /// `unknown` included, is stopped.
+    /// Whether the runtime reports the box `running`.
     pub running: bool,
+    /// Whether the runtime reports the box in its terminal stopped state. A
+    /// box starting, stopping or `unknown` may still write its disks.
+    pub stopped: bool,
 }
 
 /// One box's run facts, as `pinfold box stat` reports them. A field is

@@ -1594,9 +1594,10 @@ fn disks_persist_and_attach_exclusively() {
 
     // A writer whose owner dies leaves the disk unclean: read-only is
     // refused, writable recovers it. On macOS the box outlives its owner
-    // until the runtime ends it; on Linux the VMM dies with its owner. The
-    // dead writer then releases the disk before any `prune`. Another test's
-    // maintenance may prune the orphan first, so its stop is not asserted.
+    // until the runtime ends it; on Linux the VMM dies soon after its owner.
+    // Once the box has stopped, the dead writer releases the disk before any
+    // `prune`. Another test's maintenance may prune the orphan first, so its
+    // stop is not asserted.
     // Sabotage: count a claim in `disk::attachments` while the runtime lists
     // its box, running or not; the read-only `up` is refused `disk-in-use`
     // and the `disk-unclean` assertion fails.
@@ -1608,6 +1609,16 @@ fn disks_persist_and_attach_exclusively() {
     let _ = Command::new(image_cli())
         .args(["stop", "--signal", "KILL", writer.as_str()])
         .output();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while box_list(&env, label)
+        .iter()
+        .any(|listed| listed["name"] == writer.as_str() && listed["state"] == "running")
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the dead writer's box never stopped"
+        );
+    }
     let (code, refused) = box_up_refused(&env, &spec(reader_a, reader.clone()), &[]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["reason"], "disk-unclean", "{refused}");
@@ -1624,8 +1635,37 @@ fn disks_persist_and_attach_exclusively() {
         &box_exec(&env, reader_a, &["cat", "/work/written"]),
         "reading after recovery",
     );
-    after.down(&env);
-    assert!(after.wait().success());
+    #[cfg(target_os = "linux")]
+    {
+        after.down(&env);
+        assert!(after.wait().success());
+    }
+    // A dead owner's box the runtime has created but not started may still
+    // boot, so it holds its disk. Apple lists such a box `stopped`, as an
+    // orphaned `container run` leaves it; `container create` makes one. The
+    // box carries no pinfold label, so no other test's maintenance prunes it.
+    // Sabotage: drop the `started_date` condition from `stopped` in
+    // `Apple::list`; the writable `up` runs and the `disk-in-use` assertion
+    // fails.
+    #[cfg(target_os = "macos")]
+    {
+        after.kill();
+        let _ = after.wait();
+        let _ = Command::new(image_cli())
+            .args(["rm", "--force", reader_a.as_str()])
+            .output();
+        run_ok(Command::new(image_cli()).args([
+            "create",
+            "--name",
+            reader_a.as_str(),
+            image,
+            "true",
+        ]));
+        let (code, refused) = box_up_refused(&env, &spec(writer, work_disk.clone()), &[]);
+        run_ok(Command::new(image_cli()).args(["rm", reader_a.as_str()]));
+        assert_eq!(code, 1, "a refused up exits 1: {refused}");
+        assert_eq!(refused["reason"], "disk-in-use", "{refused}");
+    }
 
     // An owner killed while it copies `from` leaves no filled disk: the next
     // `up` naming it copies the whole tree. Once the disk exists, the first

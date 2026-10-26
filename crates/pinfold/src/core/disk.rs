@@ -246,8 +246,9 @@ pub fn detached(disks: &[Disk]) -> io::Result<()> {
 
 /// Each disk's attachments: box name and read-only flag, from every claim
 /// published in this state root whose owner holds its name or whose box
-/// still runs. A dead owner's stopped box attaches nothing, even before
-/// `prune` removes it. `except` is the caller's own box.
+/// the runtime has not stopped. A dead owner's box attaches nothing once
+/// the runtime lists it stopped or not at all, even before `prune` removes
+/// it. `except` is the caller's own box.
 pub fn attachments(
     runtime: &dyn Runtime,
     except: Option<&str>,
@@ -274,14 +275,14 @@ pub fn attachments(
     if records.is_empty() {
         return Ok(attached);
     }
-    let running: BTreeSet<String> = runtime
+    let unstopped: BTreeSet<String> = runtime
         .list()?
         .into_iter()
-        .filter(|b| b.running)
+        .filter(|b| !b.stopped)
         .map(|b| b.id)
         .collect();
     for record in records {
-        if !running.contains(&record.name) && !ownership::name_alive(&record.name)? {
+        if !unstopped.contains(&record.name) && !ownership::name_alive(&record.name)? {
             continue;
         }
         for disk in record.disks {

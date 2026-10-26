@@ -268,6 +268,8 @@ impl Runtime for Apple {
                     image_ref: configuration.image.reference,
                     created: configuration.created,
                     running: container.status.state == "running",
+                    stopped: container.status.state == "stopped"
+                        && container.status.started_date.is_some(),
                 }
             })
             .collect())
@@ -653,6 +655,10 @@ struct ListedResources {
 struct ListedStatus {
     #[serde(default)]
     state: String,
+    /// Set once the box has run. A box still booting lists `stopped`
+    /// without it.
+    #[serde(default, rename = "startedDate")]
+    started_date: Option<String>,
 }
 
 /// Every box `container list` reports, running or not.
