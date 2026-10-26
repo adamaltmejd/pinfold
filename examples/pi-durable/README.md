@@ -27,8 +27,9 @@ streaming OpenAI chat completions and tools. The key is not included in the box
 spec or job manifest. Prompts, model answers and tool output are checkpointed;
 choose their contents accordingly.
 
-Use the package's `start` and `resume` commands. The supplied Bun config
-disables `.env` loading and automatic dependency installation.
+Use the package's `start` and `resume` commands, launched from this
+directory, outside the project. The supplied Bun config disables `.env`
+loading and automatic dependency installation.
 
 The project must be a git checkout with a `.git` directory. The box works on
 a project disk, `durable-<id>` at `/workspace`, filled from the checkout when
@@ -69,9 +70,12 @@ survive. A hard host-process kill leaves recovery to the next writer and Pinfold
 owner teardown. There is no scheduler, multi-host coordination, automatic retry,
 read-only replay tool or general host filesystem tool.
 
-The prototype contract and pin-maintenance rule are in
+The prototype contract is in
 [ARCHITECTURE.md](../../docs/ARCHITECTURE.md#experimental-durable-caller).
-The standalone regression is guarantee 35, validated on macOS and Linux x64.
+Exact dependency versions live in `package.json` and `bun.lock` and move
+with pinfold's release pins, including incompatible versions. Any
+prototype or dependency change requires `bun run check` and the
+standalone regression, guarantee 35, validated on macOS and Linux x64.
 The command needs exclusive ownership of the runtime and
 an existing image with `sh`, `tail`, `grep`, `tr`, `mkfifo` and `git`:
 

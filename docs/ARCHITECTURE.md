@@ -82,8 +82,7 @@ One runtime per OS, not configurable:
 
 Anything else is refused: podman or docker as a box runtime, Firecracker
 under its own jailer or outside pinfold's VMM jail. Nothing warns at run
-time; `doctor` reports the runtime. On Linux, rootless podman 6.1.4+ builds images and runs no
-box.
+time; `doctor` reports the runtime. On Linux, rootless podman 6.1.4+ builds images.
 
 Preflight refuses box startup on older, prerelease or unrecognized runtime
 versions. Inventory and cleanup remain available on older versions.
@@ -91,7 +90,7 @@ versions. Inventory and cleanup remain available on older versions.
 Linux is x64 only. Preflight requires a user other than root, `/dev/kvm`
 readable and writable by the user (the `kvm` group), unprivileged user
 namespaces, Landlock ABI 5 or later (Linux 6.10+), `mkfs.ext4`
-(e2fsprogs), and podman with `rootless=true` for builds. Without user
+(e2fsprogs), and podman with `rootless=true`. Without user
 namespaces or Landlock ABI 5, `up` is refused as `runtime`, naming the missing requirement's token
 (below); there is no unjailed fallback.
 
@@ -127,21 +126,15 @@ sysctl rather than the failing call.
    (Transport). PID 1 is `pinfold init`. On Linux each mount reaches the
    guest as a read-only ext4 image written from the host directory at this
    start, so a host change after it never appears in the box.
-5. `pinfold init` relays `127.0.0.1:3128` to the socket, runs box work as
-   the host uid and reports ready (on Linux its exec
-   service does the relay, exec and ready report). On Linux it mounts the
-   disks first; on Apple the runtime does. On Linux PID 1 makes each mount
-   point without following a symlink: a symlink a box left on a disk
-   fails the start, and PID 1 creates nothing through it. Disks attach
-   only here, at boot; nothing attaches or detaches one later. On Linux
-   PID 1 then sets `user.max_user_namespaces` to 0 and forks the exec
-   service as
-   the host uid with every capability set
-   empty, in a root-owned work cgroup that holds the pids cap and that
-   box work cannot leave, and keeps only `CAP_SYS_ADMIN` itself. PID 1
-   then only reaps and answers step 8's unmount; it handles no workload
-   bytes. Before ready, the box copies each new disk's `from` in as the
-   box user, and on Linux the profile's missing home seeds.
+5. `pinfold init` relays `127.0.0.1:3128` to the socket and reports ready
+   (on Linux its exec service does the relay, exec and ready report). On
+   Linux it mounts the disks first; on Apple the runtime does. On Linux
+   PID 1 makes each mount point without following a symlink: a symlink a
+   box left on a disk fails the start, and PID 1 creates nothing through
+   it. Disks attach only here, at boot; nothing attaches or detaches one
+   later. On Linux PID 1 then puts box work in Always applied's state. Before
+   ready, the box copies each new disk's `from` in as the box user, and on
+   Linux the profile's missing home seeds.
 6. Apple only: wait until the runtime lists the box running, including
    without egress. One transient root exec makes the socket connectable,
    when there is one.
@@ -282,9 +275,8 @@ When `up` fails after it began creating, it removes what it made, prints one
 {"event":"failed","box":NAME,"detail":TEXT}
 ```
 
-A SIGTERM or SIGINT before `ready` tears down the same way and ends with
-`down`, reason `signal`, exit 0. Every `up` ends its stdout with exactly one
-of `refused`, `failed` or `down`.
+Every `up` ends its stdout with exactly one of `refused`, `failed` or
+`down`.
 A tag resolving to a different image during startup fails with
 `image-changed` in `detail` before `ready`.
 
@@ -304,8 +296,8 @@ runtime. On Apple it reads `container list`.
 `--label KEY=VALUE` matches that value; `--label KEY` matches any value of
 `KEY`; every box carries `dev.pinfold.owner`, so `--label dev.pinfold.owner`
 lists them all. A container without it is no box: `exec` and `stat` exit 3
-on it and `down` leaves it. Each line carries the box's labels and the image it runs, as the
-runtime records it, then its `dev.pinfold.owner` pid (or null), whether its
+on it and `down` leaves it. Each line carries the box's labels and its
+image, then its `dev.pinfold.owner` pid (or null), whether its
 generation owns the lifetime lock, and the runtime's RFC
 3339 `created` time and `state` (`running` or `stopped`):
 
@@ -492,16 +484,21 @@ run ...` (or `events`); it may never have existed or have been removed
 - No network interface but loopback, a read-only root, a tmpfs `/tmp`.
 - All box work runs as the host uid:gid with an empty capability bounding
   set and `no_new_privs`.
-- `NODE_USE_ENV_PROXY=1`: Node's fetch ignores `HTTPS_PROXY` without it.
+- `NODE_USE_ENV_PROXY=1`.
 - Apple adds: `--network none`, `--cap-drop ALL`, `--read-only`. PID 1 runs
   as the host uid.
 - Firecracker adds: no network device; the root disk and init disk
   read-only; `vcpu_count` and `mem_size_mib` from `cpus` and `memory`, 4 and 1G
   when the spec names none, as Apple's defaults; no swap; the image's
-  `Env` as defaults under the spec's `env`; a pids cap in the guest; an empty `/etc/resolv.conf`; no user
-  namespaces in the guest (`user.max_user_namespaces` 0); Firecracker's
-  own seccomp filters. `box up` runs the VMM as the user in the VMM jail
-  with a parent-death signal, so the VM ends with its owner.
+  `Env` as defaults under the spec's `env`; an empty `/etc/resolv.conf`;
+  Firecracker's own seccomp filters. `box up` runs the VMM as the user in
+  the VMM jail with a parent-death signal, so the VM ends with its owner.
+- In the Firecracker guest, PID 1 sets `user.max_user_namespaces` to 0
+  and forks the exec service as the host uid with every capability set
+  empty, in a root-owned work cgroup that holds the pids cap and that box
+  work cannot leave, and keeps only `CAP_SYS_ADMIN` itself. PID 1 then
+  only reaps and answers Lifecycle step 8's unmount; it handles no
+  workload bytes.
 - pinfold puts no secret value in a kernel command line, a VM
   configuration, an image layer, a disk or a persisted request; what a
   guest process writes is its own. On Linux the spec's env reaches
@@ -574,7 +571,6 @@ process. Getting further needs a host kernel bug.
   for that one `container run`. It appears at
   `/var/host-services/ssh-auth.sock`, root-owned and not connectable by the
   box user; the root exec in step 6 chmods it.
-- The socket carries only proxy connections.
 
 ## Egress proxy
 
@@ -673,14 +669,14 @@ profile image.
   build (no layer cache).
 - A build's identity is its unique tag, never an image label. A caller
   build whose layers and labels are unchanged returns the existing image.
-  Every build sets both family labels, `dev.pinfold.profile` and
-  `dev.pinfold.project`, and `dev.pinfold.base`, the other family empty.
-  Every build is tagged uniquely `<repo>:<build>` and moves the stable
-  `<repo>:latest` to it.
+  Every build sets `dev.pinfold.profile`, `dev.pinfold.project` and
+  `dev.pinfold.base`, the family labels not its own empty. Every build is
+  tagged uniquely `<repo>:<build>` and moves the stable `<repo>:latest`
+  to it.
 - A profile build uses `localhost/pinfold/profile-<name>`. The stable ref is
   what a project Containerfile `FROM`s and what `doctor` compares against.
-  Images carry `dev.pinfold.profile=<name>` and `dev.pinfold.base=<digest>`
-  (the resolved base) so Maintenance can find them.
+  Its `dev.pinfold.profile` is `<name>` and its `dev.pinfold.base` the
+  resolved base's digest.
 - A caller image is built by `pinfold image build NAME` from a context
   directory the caller vouches for, as it vouches for its mounts: no trust
   record, no project, no `.pinfold.toml`. The Containerfile may lie outside
@@ -739,7 +735,6 @@ It ignores curl configuration, rejects HTTP redirects, caps artifact
 transfers at 512 MiB and 5 minutes, and checks SHA-256 before installation.
 Cancellation kills and reaps the transfer before startup cleanup.
 
-
 `crates/pinfold/harnesses.toml`, embedded at build time, pins each harness
 (pi, claude, codex): a version, env defaults, and per box `os-arch`
 (`linux-arm64`, `linux-x64`) its release assets (URL, sha256, install form and
@@ -749,70 +744,38 @@ a harness, its assets are downloaded, checked and installed into
 directory there is mounted read-only at `/opt/pinfold/<name>`. An install
 records its files; a use that finds one missing reinstalls it. A checksum
 mismatch fails the start, naming the harness, version and asset. A harness
-no box asks for is never downloaded. A harness moves only with a pinfold
-release.
+no box asks for is never downloaded.
 
-Nightly CI repins harnesses, image tools, Rust, Cargo dependencies, prototype
-packages and Yard tools with
-`scripts/bump-pins.py`. Cargo requirements advance to the latest stable,
-non-yanked versions, including incompatible updates; Cargo and Bun regenerate
-their lockfiles. Rust advances to the stable channel's version once its Yard
-image provides Linux amd64 and arm64; the toolchain and Yard image move
-together. CI reads Bun's version from the candidate's image recipe after checkout.
-GitHub Actions retain full commit pins and change only in reviewed manual
-updates. The Public Suffix List advances to a newer dated snapshot from
-`publicsuffix.org`. A version pin only moves up, to a stable version at or
-below upstream's latest stable release, and is never
-rehashed at its version. pi, claude and codex take the latest release once
-its required assets exist. bun, rtk, ponytail and AnyDoc take the newest
-version whose release and every required asset (a replaced asset restarts
-the count), or on npm every required package version, was published seven
-full days ago and is not deprecated. AnyDoc's version must name its native
-packages at that version. Prototype packages and TruffleHog
-also wait seven full days. Prototype manifests and lockfiles advance in
-the same candidate. A missing or invalid publication time makes a
-version ineligible. Every artifact download must match its publisher's
-digest; a source or integrity failure aborts before any source pin file is written.
-
-Changed pins receive a patch release after Linux x64 tests, the full
-Mac suite including live login, and both release builds pass for the
-same commit. The prototype typecheck and guarantee 35 run on both
-platforms. Unreleased implementation changes since the latest release
-block it. A concurrent change to main aborts promotion.
-Automatic updates are disabled unless `PINFOLD_AUTO_RELEASES` is `true` and
-a dedicated Mac runner has the `pinfold-nightly` label.
-Manual runner checks can install missing build tools and run the Mac suite
-without updating pins or releasing.
-The next suite builds its default image from the candidate's embedded
-profile.
+`scripts/bump-pins.py` moves the pins: harnesses, Firecracker and the
+guest kernel, image tools, Rust, Cargo dependencies, prototype packages
+and the Public Suffix List. Pins move only with a pinfold release. A
+version pin only moves up, to a stable version at or below upstream's
+latest stable release, and is never rehashed at its version. The pi,
+claude and codex harnesses take the latest release once its assets exist;
+other tools and packages take a version only seven full days after its
+last required asset was published, and a missing publication time makes it
+ineligible. Every
+artifact download must match its publisher's digest; a source or
+integrity failure aborts before any pin file is written.
 
 On Linux, `crates/pinfold/vmm.toml` pins Firecracker and its guest kernel
-for `linux-x64`. Firecracker is its GitHub release binary, checked
-against its published digest. The guest kernel is pinfold's own build: a
-pinned kernel.org 6.18 stable release, verified against kernel.org's
-signature, built with Firecracker's x86_64 6.18 guest config for the pinned
-Firecracker version, without vsock loopback and with its config at
-`/proc/config.gz`. `guest-kernel/` pins and builds it, and its workflow
-publishes it as the asset of a prerelease tagged
-`guest-kernel-<kernel>-firecracker-<version>`, never the latest release;
-`vmm.toml` pins that asset's digest, and holds the one copy of
-Firecracker's version, which `guest-kernel/` reads. Both install like a
-harness, into `~/.cache/pinfold/artifacts/vmm/<version>/<os-arch>/`, where
-`<version>` names Firecracker's and the kernel's, on the first `up`. They
-move only with a pinfold release; nightly CI repins Firecracker like a
-harness, once a release has been out seven full days, and the kernel's
-config and release move with it. The repin waits for the matching kernel
-release, which the guest-kernel workflow publishes; it never publishes one.
+for `linux-x64`, each checked against its pinned digest. The guest kernel
+is pinfold's own build of a pinned kernel.org stable release, verified
+against kernel.org's signature and published as a prerelease, never the
+latest release, without
+vsock loopback and with its config at `/proc/config.gz`; `guest-kernel/`
+builds it. Both install like a harness, into
+`~/.cache/pinfold/artifacts/vmm/<version>/<os-arch>/`, where `<version>`
+names Firecracker's and the kernel's, on the first `up`.
 
 codex also pins a host helper, `codex-app-server`, per host `os-arch`
 (`darwin-arm64`, `linux-x64`), installed the same way into
 `~/.cache/pinfold/artifacts/codex/<version>/host-<os-arch>/` on the first
 `up` with a codex login route. It never enters a box.
 
-The init is not an artifact: it always comes from the CLI's own build. The
-macOS CLI embeds the `aarch64-unknown-linux-musl` `pinfold-init` build and writes
-it to the cache once; a Linux CLI writes its own executable into a
-read-only init disk. Both use the same init source.
+The init is not an artifact: it always comes from the CLI's own build
+(Code). The macOS CLI writes its embedded init to the cache once; a Linux
+CLI writes its own executable into a read-only init disk.
 
 ## Profiles
 
@@ -821,9 +784,9 @@ with or without a TTY.
 
 ```
 ~/.config/pinfold/profiles/<name>/
-  pinfold.toml    config defaults (the .pinfold.toml schema, less containerfile)
+  pinfold.toml    config defaults (Configuration)
   Containerfile   the profile image
-  home/           seeds for $HOME: a file is copied only if missing, then left alone
+  home/           seeds for $HOME
   share/          mounted read-only at /opt/pinfold/profile, as of each start
 ```
 
@@ -833,8 +796,8 @@ with or without a TTY.
 - `pinfold profile new` (CLI) writes a copy of `default`, or the profile
   named by `--from`. `--builtin` selects that named built-in directly,
   bypassing a user override; without `--from` it selects `default`.
-- `home/` needs `$HOME` on a writable disk; each seed is copied in at each
-  start, only if missing.
+- `home/` needs `$HOME` on a writable disk; seeds (Terms) are copied in at
+  each start.
 - pinfold does not manage pi settings: `pi install` in a box changes that
   project home only.
 
@@ -851,7 +814,7 @@ profiles does not rewrite saved settings. Every built-in includes the operating-
 extension, which writes the box's facts into the system prompt (the
 allowlist from `PINFOLD_ALLOW`, that a 403 is final, and that its commits
 reach the host only when the user runs `pinfold fetch`). Documents and full include `read-documents`. Full also
-registers rtk and ponytail. Shared resources are read-only. Metadata lookup and fingerprints write
+registers rtk and ponytail. Metadata lookup and fingerprints write
 nothing; embedded shared files are materialized only after a box claims
 its name.
 
@@ -975,9 +938,10 @@ Each such launch also compares all bundled profiles with their last
 observed fingerprint. Changes print `bundled-profiles-changed` once,
 independently of the network interval. No history means a silent baseline;
 self-update records a missing baseline before replacement. Saved project
-settings and user profiles are preserved.
-`PINFOLD_NO_UPDATE_CHECK=1` disables automatic checks and notices. The
-timestamp and fingerprint live under `~/.cache/pinfold/update-check`.
+settings and user profiles are preserved. `PINFOLD_NO_UPDATE_CHECK`
+(Configuration) turns off both the update check and the
+`bundled-profiles-changed` notice. The timestamp and fingerprint live under
+`~/.cache/pinfold/update-check`.
 
 ## Maintenance
 
@@ -1086,12 +1050,10 @@ measurement does not authorize a later deletion.
 The project disk holds the box's own repository. The agent commits there,
 under the box's hooks and config, none of which reach the host.
 
-- `pinfold fetch` brings the box's branches into the checkout as
-  `refs/remotes/pinfold/*` (Crossing). The user merges them; signing and
-  host hooks are the user's.
-- `pinfold push` sends the checkout's branches into the box as
-  `refs/remotes/host/*`; the agent merges or rebases them. Uncommitted
-  host edits do not cross.
+`pinfold fetch` is `box fetch` into the checkout with remote `pinfold`;
+the user merges. `pinfold push` is `box push` of the checkout with remote
+`host`; uncommitted host edits do not cross (Crossing). The user merges;
+signing and host hooks are the user's.
 
 Both check trust as `pinfold pi` does, then use the project's running pi
 box, or a transient box on the project disk without egress, and print
@@ -1122,16 +1084,8 @@ Refuse overlap as `host-boundary` before box or model work. Checkpoints
 remain private on the host; a moved checkpoint namespace is refused.
 
 Prototype-only dependencies are `@earendil-works/pi-durable`, `pi-ai` and
-`chord`, with transitive `pi-telemetry`. Development uses TypeScript and
-`@types/node` for Bun's compatible APIs; execution requires Bun 1.4.3+.
-Launch from the controller directory, outside the project. Bun
-loads no `.env` files and auto-installs no dependencies under its supplied
-configuration. Exact versions live in `examples/pi-durable/package.json`
-and `bun.lock` and advance with nightly pins, including incompatible
-versions. Any prototype or dependency change
-requires the typecheck
-and guarantee 35's standalone gate. The gate is validated on macOS and
-Linux x64.
+`chord`, with transitive `pi-telemetry`, and for development TypeScript
+and `@types/node`. Its README gives launch, pinning and gate rules.
 
 ## Configuration
 
@@ -1152,6 +1106,7 @@ Only the environment and project select `profile`; a profile's own
 | `cpus` | `PINFOLD_CPUS` | 4 | |
 | `memory` | `PINFOLD_MEMORY` | `8G` | |
 | — | `PINFOLD_ENV_<NAME>` | — | `<NAME>` in the box; the only way host env enters |
+| — | `PINFOLD_NO_UPDATE_CHECK` | — | `1` disables interactive update checks and notices (Updates) |
 
 The list keys take comma-separated values in the environment:
 
@@ -1212,21 +1167,16 @@ the command refuses as `project-in-git`.
 
 ## Guarantees
 
-Each has one end-to-end test. Testing policy is in `AGENTS.md`.
-Guarantees 1–21, 23–29, 33, 34 and 37–43 run through the Rust E2E crate.
-Guarantee 35 is the standalone
-`examples/pi-durable/durable_recovery_preserves_boxed_execution.ts` gate;
-its README gives installation and execution commands. Run it with exclusive
-runtime ownership, after the Rust suite.
-Guarantee 34 is an ignored slow test. Run it separately with
-`cargo test -p e2e --locked --test e2e box_::blocked_route_responses_release_the_upstream -- --ignored --exact`.
-Guarantee 36 is the separate Linux slow gate, `scripts/slow-proxy.sh`.
-It uses private network and mount namespaces: `api.github.com` resolves to
-a fixture address assigned only there, with a fixture CA trusted only by
-the guest. The ordinary Rust suite retains its five-minute
-CI budget, measured over the complete `cargo test -p e2e --locked` command,
-including compilation. CI fails when that command takes 300 seconds or more.
-The two slow gates run separately.
+Each has one end-to-end test in the Rust E2E crate's suite, but for
+three that run apart. Testing policy is in `AGENTS.md`.
+
+- 34 is an ignored slow test in the crate:
+  `cargo test -p e2e --locked --test e2e box_::blocked_route_responses_release_the_upstream -- --ignored --exact`.
+- 35 is the standalone
+  `examples/pi-durable/durable_recovery_preserves_boxed_execution.ts`
+  gate; its README gives the commands. It runs after the Rust suite, with
+  exclusive runtime ownership.
+- 36 is the Linux slow gate `scripts/slow-proxy.sh`.
 
 | # | Guarantee | Shown by |
 |---|---|---|
@@ -1256,7 +1206,7 @@ The two slow gates run separately.
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box list --help` exits 0, with no runtime and leaving the state dir untouched. |
 | 26 | A login route keeps the login on the host | With `to` at a host fixture, claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. With that refresh held, a caller under distinct XDG roots and the same CODEX_HOME reports `login-busy` once; no second refresh reaches the fixture, and releasing the first lets both boxes use the refreshed login. A stalled real helper refresh is deadline-bounded; cancellation reaps the helper and closes its fixture connection before returning without a box. An empty `CODEX_HOME` is refused as `login`. On macOS only, with a real login, codex completes one tool round trip through a route with no `to`. |
 | 27 | Doctor reports without changing state | With and without a runtime, doctor leaves complete Pinfold-owned state/config/cache trees unchanged, including absent roots, and reports host configuration. Native runtime bookkeeping is outside those trees. Linux runtime-dir and missing-kvm diagnostics use real failures. The Linux host keeps AppArmor's unprivileged user-namespace restriction on (`kernel.apparmor_restrict_unprivileged_userns` is 1); there a copy of pinfold outside its profile's path reports `userns-apparmor` and is refused as `runtime`; the profiled executable starts a box. |
-| 28 | Updates verify before atomic replacement | A host HTTPS release fixture supplies a different valid executable. Wrong checksums and live owners preserve the original bytes/inode; a working command started during a held asset transfer also prevents replacement. After teardown the verified bytes replace the inode and preserve the invoked command symlink. |
+| 28 | Host updates are verified and atomic | A host HTTPS release fixture supplies a different valid executable. Wrong checksums and live owners preserve the original bytes/inode; a working command started during a held asset transfer also prevents replacement. After teardown the verified bytes replace the inode and preserve the invoked command symlink. |
 | 29 | Interactive update checks are bounded | A host HTTPS fixture observes one interactive check per interval and none for opt-out/noninteractive commands. A stalled request closes within 1.75 seconds of fixture receipt and is not retried by the next launch. |
 | 33 | Projects exclude host authority | `allow`, build and pi refuse state, config or cache roots inside the project, including nonexistent paths reached through a symlinked ancestor. External roots allow the same project to run. |
 | 34 | Blocked route responses release the upstream | A normal routed response succeeds. A guest that keeps its upload open but stops reading causes the host fixture connection to close after the production write deadline, while the guest holder remains alive. Slow gate only. |
@@ -1269,13 +1219,6 @@ The two slow gates run separately.
 | 41 | Run queries are bounded and need no runtime | With no runtime on `PATH`, `inspect` and `events` answer for a finished run. A run with 150 decisions, paged at the default limit while its box keeps appending, returns every line once, in order, across `next`. A no-egress run reports egress `not-applicable`. A malformed run id, `--limit 101` and another run's cursor exit 1; an unknown run id exits 3. |
 | 42 | Run records are retained within bounds | `clean` removes an inactive run whose directory is aged 15 days on the host (`inspect` exits 3), while a live run aged the same stays `available` and its log keeps appending. With inactive runs padded on the host past 128 MiB in valid decision lines, `clean` removes the oldest inactive run and keeps the newest. |
 | 43 | The VMM reaches only its own box | Linux only. With two boxes up, each VMM is a child of its `box up` and runs as the user with `CapBnd` 0 and `NoNewPrivs` 1; its user, mount, PID, network, IPC and UTS namespaces differ from `box up`'s; its root, read through `/proc/PID/root`, holds exactly its jail's list and not the other box's disks; none of its mount points is under the user's home; its fds 0–2 are `/dev/null` and none is under the home; SIGKILL of `box up` ends the VM. |
-
-Linux (Firecracker) runs in CI on every push to main and every pull
-request, and on a dispatched ref, on GitHub's `ubuntu-26.04` runner,
-which grants `/dev/kvm` through a udev rule and loads pinfold's AppArmor
-profile for the built executable, keeping AppArmor's restriction on. Before a push, the operator runs macOS (Apple `container`) on the
-host, or nightly CI runs it on the dedicated Mac runner.
-`scripts/e2e-gate.sh` runs both suites for the current ref.
 
 ## Code
 
@@ -1313,11 +1256,5 @@ data, `crates/pinfold/public_suffix_list.dat`, embedded with `include_str!`.
 - Linux arm64 returns once a KVM host can run its suite; GitHub's arm64
   runners have none.
 - Where herdr reads `HERDR_AGENT`.
-- More than one pi box per project: each would need its own project disk.
-- yard-sthlm: whether its LXC gives `/dev/kvm`, unprivileged user
-  namespaces and Landlock ABI 5 (Linux 6.10+).
 - Freed blocks inside a disk: whether they return to the host, or a
   disk's allocation only grows.
-- Browser previews: nothing here precludes a later host-loopback port
-  forwarded to one named box's port over that box's vsock socket,
-  host-initiated and ending with the box.
