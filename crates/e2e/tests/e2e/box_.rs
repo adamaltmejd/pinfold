@@ -1259,16 +1259,23 @@ fn work_leaves_the_box_only_by_fetch() {
     // under a `refs/heads/x` naming a commit it lacks, which fetch unbundles
     // before its connectivity check fails; and a sound bundle with both
     // `refs/heads/x` and `refs/heads/x/y`, which only the ref transaction
-    // refuses. Each fetch fails, no host ref changes, and the host's object
-    // store keeps its paths and sizes.
+    // refuses; and a sound bundle under `refs/heads/z` while the box's
+    // listing names a `refs/heads/x` the bundle leaves out, at a host commit
+    // the box's namespace does not reach. Each fetch fails, no host ref
+    // changes, and the host's object store keeps its paths and sizes.
     // Sabotage: drop `--fsck-objects` from crossing::fetch's index-pack; the
     // `.git` bundle then lands on any host git, and its assertions fail.
     // Sabotage: drop the quarantine env from that index-pack; the `.git`
     // bundle leaves a `tmp_pack_*`. Sabotage: drop it from the fetch; the
     // missing commit's bundle leaves its pack. Sabotage: migrate in
     // crossing::update_refs before `prepare`; the `x/y` bundle leaves its
-    // pack.
+    // pack. Sabotage: drop the `rev-list --not --glob` reach check from
+    // crossing::fetch's listed loop; the omitted `x` lands at the host-only
+    // commit.
     let host_main = host_git(&["rev-parse", "main"]);
+    // A host commit no box branch reaches: `feature` is checked out.
+    host_git(&["commit", "-q", "--allow-empty", "-m", "host only"]);
+    let host_only = host_git(&["rev-parse", "feature"]);
     let host_refs = host_git(&["for-each-ref"]);
     let host_objects = object_store(repo);
     let absent = in_box(&format!(
@@ -1296,9 +1303,15 @@ mk replace "$evil" "$evil" refs/heads/x refs/heads/x:refs/replace/{host_main}
 mk dotgit "$dotgit" "$dotgit" refs/heads/x
 mk missing "$evil" "$absent" refs/heads/x
 mk conflict "$evil" "$evil" refs/heads/x refs/heads/x/y
+mk omitted "$evil" "$evil" refs/heads/z
+printf '%s refs/heads/x\n' {host_only} > .hostile/omitted.heads
 cat > .hostile/git <<'END'
 #!/bin/sh
 case " $* " in
+*" for-each-ref "*)
+  /usr/bin/git "$@" || exit
+  if [ -e /work/.hostile/heads ]; then cat /work/.hostile/heads; fi
+  exit 0 ;;
 *" rev-list "*) echo more; exit 0 ;;
 *" bundle create "*) exec cat /work/.hostile/bundle ;;
 esac
@@ -1308,8 +1321,13 @@ chmod 755 .hostile/git
 echo "$absent""#
     ));
     let conflict = format!("refs/remotes/{name}/x/y");
-    for case in ["injected", "replace", "dotgit", "missing", "conflict"] {
-        in_box(&format!("cp /work/.hostile/{case} /work/.hostile/bundle"));
+    for case in [
+        "injected", "replace", "dotgit", "missing", "conflict", "omitted",
+    ] {
+        in_box(&format!(
+            "cd /work/.hostile && cp {case} bundle && rm -f heads \
+             && if [ -e {case}.heads ]; then cp {case}.heads heads; fi"
+        ));
         let (code, failed) = crossing_fetch(&env, &name, repo);
         assert_eq!(
             (code, &failed["event"]),
@@ -1327,12 +1345,13 @@ echo "$absent""#
             "the {case} bundle left bytes in the host's objects"
         );
         // git names the fsck entry, the commit the pack lacks, and the ref
-        // it can't update beside `x`: each fetch failed for it, not for a
-        // malformed bundle.
+        // it can't update beside `x`, and the omitted branch's failure names
+        // its commit: each fetch failed for it, not for a malformed bundle.
         let reason = match case {
             "dotgit" => "hasDotgit",
             "missing" => absent.trim(),
             "conflict" => conflict.as_str(),
+            "omitted" => host_only.as_str(),
             _ => continue,
         };
         assert!(
