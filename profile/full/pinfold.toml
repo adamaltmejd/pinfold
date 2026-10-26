@@ -1,0 +1,15 @@
+# The built-in defaults (docs/ARCHITECTURE.md, Configuration) plus GitHub,
+# for the bundled gh and git over https. A list replaces the one below it.
+allow = [
+  "api.anthropic.com",
+  "platform.claude.com",
+  "api.openai.com",
+  "auth.openai.com",
+  "chatgpt.com",
+  "openrouter.ai",
+  "opencode.ai",
+  "registry.npmjs.org",
+  "pi.dev",
+  "github.com",
+  "api.github.com",
+]

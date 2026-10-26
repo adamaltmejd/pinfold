@@ -107,12 +107,12 @@ clean and strictly behind.
 To edit a built-in profile, copy it:
 `pinfold profile new NAME --from full --builtin`.
 
-Optional profiles add tools to the default, not egress:
+Optional profiles add tools to the default; only `full` adds egress:
 
 | Profile | Adds |
 |---|---|
 | `documents` | Bun, AnyDoc for local document conversion, Poppler for PDFs |
-| `full` | documents tools plus gh, rtk and ponytail |
+| `full` | documents tools plus gh, rtk and ponytail; allows `github.com` and `api.github.com` |
 
 Build and select one explicitly:
 

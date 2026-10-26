@@ -13,6 +13,7 @@ const DOCUMENTS: &[u8] = include_bytes!("../../../../profile/image/documents.Con
 const FULL: &[u8] = include_bytes!("../../../../profile/image/full.Containerfile");
 const HARDEN: &[u8] = include_bytes!("../../../../profile/image/harden.Containerfile");
 const CONFIG: &[u8] = include_bytes!("../../../../profile/pinfold.toml");
+const FULL_CONFIG: &[u8] = include_bytes!("../../../../profile/full/pinfold.toml");
 const HOME: &[(&str, &[u8])] = &[(
     ".pi/agent/settings.json",
     include_bytes!("../../../../profile/home/.pi/agent/settings.json"),
@@ -136,10 +137,14 @@ impl Profile {
     /// A named built-in, even when a user's profile overrides it.
     pub fn builtin(name: &str) -> io::Result<Profile> {
         check_name("profile", name)?;
-        let (fragments, share): (&[&[u8]], _) = match name {
-            "default" => (&[BASE, HARDEN], DEFAULT_SHARE),
-            "documents" => (&[BASE, BUN, DOCUMENTS, HARDEN], DOCUMENTS_SHARE),
-            "full" => (&[BASE, BUN, DOCUMENTS, FULL, HARDEN], FULL_SHARE),
+        let (fragments, config, share): (&[&[u8]], &[u8], _) = match name {
+            "default" => (&[BASE, HARDEN], CONFIG, DEFAULT_SHARE),
+            "documents" => (&[BASE, BUN, DOCUMENTS, HARDEN], CONFIG, DOCUMENTS_SHARE),
+            "full" => (
+                &[BASE, BUN, DOCUMENTS, FULL, HARDEN],
+                FULL_CONFIG,
+                FULL_SHARE,
+            ),
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
@@ -150,7 +155,7 @@ impl Profile {
         Ok(Profile {
             name: name.to_string(),
             containerfile: fragments.concat(),
-            config: CONFIG.to_vec(),
+            config: config.to_vec(),
             home: HOME
                 .iter()
                 .map(|(path, contents)| Seed {
@@ -178,6 +183,7 @@ pub fn builtin_hash() -> io::Result<String> {
         FULL,
         HARDEN,
         CONFIG,
+        FULL_CONFIG,
         HOME,
         DEFAULT_SHARE,
         DOCUMENTS_SHARE,

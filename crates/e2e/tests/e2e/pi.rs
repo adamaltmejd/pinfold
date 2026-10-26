@@ -1120,6 +1120,35 @@ fn a_caller_reads_the_effective_configuration_as_data() {
             .is_some_and(|error| !error.is_empty()),
         "missing image observation error: {report}"
     );
+
+    // Sabotage: map `full` to the shared CONFIG in `Profile::builtin`; config
+    // then reports only the built-in defaults. The expected list is the
+    // spec's default list plus the two GitHub hosts.
+    let bare = TestDir::new(&offline, "bare");
+    let output = run_ok(
+        pinfold_in(&offline, bare.path(), &["config"])
+            .env("PATH", empty.path())
+            .env("PINFOLD_PROFILE", "full"),
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("read full profile config");
+    assert_eq!(
+        report["egress"]["allow"],
+        serde_json::json!([
+            "api.anthropic.com",
+            "platform.claude.com",
+            "api.openai.com",
+            "auth.openai.com",
+            "chatgpt.com",
+            "openrouter.ai",
+            "opencode.ai",
+            "registry.npmjs.org",
+            "pi.dev",
+            "github.com",
+            "api.github.com"
+        ]),
+        "the full profile's allowlist: {report}"
+    );
     for directory in [&offline.state, &offline.config, &offline.root.join("cache")] {
         assert_eq!(
             fs::read_dir(directory).unwrap().count(),
