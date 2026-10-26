@@ -811,7 +811,8 @@ pi's two config levels both load in every run:
 Every built-in seeds only `/opt/pinfold/profile/pi` as its pi package and
 sets `defaultProjectTrust: "always"`: the box is the boundary. It also
 adds pi's built-in `codemode` tool to the default tools; pi's built-in MCP
-is on by default, and its servers run in the box behind the proxy. The selected
+is on by default: stdio servers run in the box, and remote ones are
+reached through the proxy. The selected
 profile's live package chooses its extensions and skills, so switching
 profiles does not rewrite saved settings. Every built-in includes the operating-context
 extension, which writes the box's facts into the system prompt (the
