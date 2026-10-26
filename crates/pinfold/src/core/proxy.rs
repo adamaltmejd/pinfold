@@ -84,10 +84,12 @@ enum Upstream {
     /// A host service at `host:port`, dialed unchecked. The box's own
     /// authority stays the Host header.
     Address(Target),
-    /// An injecting route's target and its headers, values already read.
+    /// An injecting route's target and its headers, values already read,
+    /// and the box-sent headers it removes besides.
     Inject {
         target: Target,
         headers: Vec<(String, String)>,
+        strip: &'static [&'static str],
     },
     /// A codex login route's target; its headers come from the live token
     /// on each request.
@@ -113,7 +115,11 @@ impl Rules {
                 }
                 Route::Inject(inject) => {
                     let (target, headers) = inject.resolve().map_err(io::Error::other)?;
-                    Upstream::Inject { target, headers }
+                    Upstream::Inject {
+                        target,
+                        headers,
+                        strip: &[],
+                    }
                 }
                 Route::Login(login) if login.is_codex() => {
                     let token = codex.take().expect("up resolves a codex login's token");
@@ -123,8 +129,12 @@ impl Rules {
                     }
                 }
                 Route::Login(login) => {
-                    let (target, headers) = login.resolve().map_err(io::Error::other)?;
-                    Upstream::Inject { target, headers }
+                    let (target, headers, strip) = login.resolve().map_err(io::Error::other)?;
+                    Upstream::Inject {
+                        target,
+                        headers,
+                        strip,
+                    }
                 }
             };
             routes.insert(name.to_ascii_lowercase(), upstream);
@@ -309,6 +319,7 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &AuditLog, request: &Plain
         request,
         &request.authority,
         &[],
+        &[],
         &mut |_| Ok(()),
     );
 }
@@ -330,19 +341,26 @@ fn route(client: &mut UnixStream, log: &AuditLog, request: &Plain, upstream: &Up
         });
         record(log, &request.host, "allowed", "route", Some(fields))
     };
-    let (target, host, headers) = match upstream {
-        Upstream::Address(target) => (target, &request.authority, Cow::Borrowed(&[][..])),
-        Upstream::Inject { target, headers } => {
-            (target, &target.authority, Cow::Borrowed(headers.as_slice()))
-        }
+    let (target, host, headers, strip) = match upstream {
+        Upstream::Address(target) => (target, &request.authority, Cow::Borrowed(&[][..]), &[][..]),
+        Upstream::Inject {
+            target,
+            headers,
+            strip,
+        } => (
+            target,
+            &target.authority,
+            Cow::Borrowed(headers.as_slice()),
+            *strip,
+        ),
         Upstream::Codex { target, login } => match login.headers() {
-            Some(headers) => (target, &target.authority, Cow::Owned(headers)),
+            Some(headers) => (target, &target.authority, Cow::Owned(headers), &[][..]),
             None => return refuse(client, log, &request.host, 403, "login lapsed"),
         },
     };
     if !target.https {
         let server = dial((target.host.as_str(), target.port));
-        let _ = forward(client, server, request, host, &headers, &mut report);
+        let _ = forward(client, server, request, host, &headers, strip, &mut report);
         return;
     }
     let Some(address) = resolve_checked(client, log, &request.host, &target.host, target.port)
@@ -350,7 +368,7 @@ fn route(client: &mut UnixStream, log: &AuditLog, request: &Plain, upstream: &Up
         return;
     };
     let server = dial_tls(address, &target.host);
-    let _ = forward(client, server, request, host, &headers, &mut report);
+    let _ = forward(client, server, request, host, &headers, strip, &mut report);
 }
 
 /// Resolve once and check every address before anything is dialed. A
@@ -465,15 +483,17 @@ fn parse_plain(
 /// upstream's status code once its status line has arrived, or `None` when
 /// the exchange ends first. One request per
 /// connection. Each injected header replaces any the box sent under the
-/// same name. There is no upstream half-close: over TLS a close_notify
-/// before the response would end the exchange, and the server's close ends
-/// the response, with or without its own close_notify.
+/// same name, and a box-sent header named in `strip` is dropped. There is
+/// no upstream half-close: over TLS a close_notify before the response
+/// would end the exchange, and the server's close ends the response, with
+/// or without its own close_notify.
 fn forward(
     client: &mut UnixStream,
     server: Option<impl Read + Write>,
     request: &Plain,
     host: &str,
     inject: &[(String, String)],
+    strip: &[&str],
     report: &mut dyn FnMut(Option<u16>) -> io::Result<()>,
 ) -> io::Result<()> {
     let Some(mut server) = server else {
@@ -494,7 +514,9 @@ fn forward(
         .filter(|(name, _)| {
             !inject
                 .iter()
-                .any(|(injected, _)| injected.eq_ignore_ascii_case(name))
+                .map(|(injected, _)| injected.as_str())
+                .chain(strip.iter().copied())
+                .any(|dropped| dropped.eq_ignore_ascii_case(name))
         })
         .chain(inject)
     {

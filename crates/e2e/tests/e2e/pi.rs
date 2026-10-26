@@ -29,7 +29,7 @@ const SECRET: &str = "pinfold-e2e-secret-4f9c1d7a2be6";
 /// Walk `dir`, panic on a regular file whose data holds `needle`, and
 /// list every file read. Only data extents are read, so a sparse disk
 /// costs what it holds.
-fn holding(dir: &Path, needle: &[u8], scanned: &mut Vec<std::path::PathBuf>) {
+pub(crate) fn holding(dir: &Path, needle: &[u8], scanned: &mut Vec<std::path::PathBuf>) {
     use nix::errno::Errno;
     use nix::unistd::{Whence, lseek};
     use std::io::{Read, Seek, SeekFrom};
@@ -1216,7 +1216,7 @@ fn a_caller_reads_the_effective_configuration_as_data() {
 }
 
 /// A `pinfold pi --mode rpc` process with a live box.
-struct PiRpc {
+pub(crate) struct PiRpc {
     child: ChildOwner,
     stdin: Option<ChildStdin>,
     _reader: BufReader<ChildStdout>,
@@ -1231,7 +1231,7 @@ impl PiRpc {
 
     /// [`PiRpc::start`] with extra variables in `pinfold pi`'s own
     /// environment.
-    fn start_with_env(
+    pub(crate) fn start_with_env(
         env: &TestEnv,
         project: &Path,
         vars: &[(&str, &str)],
@@ -1303,7 +1303,7 @@ impl PiRpc {
     }
 
     /// Close pi's stdin, wait for it, and return its exit status.
-    fn finish(mut self) -> ExitStatus {
+    pub(crate) fn finish(mut self) -> ExitStatus {
         drop(self.stdin.take());
         self.child.wait_bounded()
     }

@@ -2981,19 +2981,259 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
 #[test]
 fn a_login_route_keeps_the_login_on_the_host() {
     let _runtime = crate::shared_runtime();
+    // Guarantee 26, pi half, first. Sabotage: in `forward`, keep a box-sent
+    // header that shares an injected header's name; pi's stored auth.json
+    // key then reaches the openrouter fixture beside the host key.
+    // Sabotage: drop anthropic's `strip`; the box's forged Authorization
+    // reaches the anthropic fixture. Sabotage: in `forward`, compare header
+    // names case-sensitively; the box's `X-Api-Key` and `authorization`
+    // reach the anthropic fixture. Sabotage: in `run_box`, omit `-e`; pi
+    // dials openrouter.ai, which this run's allowlist refuses, and `pi -p`
+    // fails on the proxy's 403. Sabotage: in `Login::env`, give pi's key
+    // variable `$VAR`'s value instead of the placeholder; the box
+    // environment assertion fails. Sabotage: drop the per-provider check in
+    // `validate`; the second openrouter route comes up ready instead of
+    // `spec`. Sabotage: drop the empty check in `Login::resolve`; the empty
+    // `from` comes up ready instead of `login`.
+    let env = TestEnv::new("login");
+    let openrouter = HttpFixture::start(Some((
+        "text/event-stream",
+        concat!(
+            "data: {\"id\":\"gen-e2e\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"openai/gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"gen-e2e\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"openai/gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
+            "data: [DONE]\n\n"
+        ),
+    )));
+    let anthropic = HttpFixture::start(None);
+    let openrouter_key = format!("pf-openrouter-key-{}", std::process::id());
+    let anthropic_key = format!("pf-anthropic-key-{}", std::process::id());
+    let keys = [
+        ("PINFOLD_E2E_OPENROUTER_KEY", openrouter_key.as_str()),
+        ("PINFOLD_E2E_ANTHROPIC_KEY", anthropic_key.as_str()),
+    ];
+    // Both providers' login routes in one profile's pinfold.toml, which
+    // needs no trust, and a different openrouter key stored in pi's
+    // auth.json, which pi prefers over the box's placeholder.
+    let profile = "e2e-login";
+    run_ok(
+        env.command(pinfold())
+            .args(["profile", "new", profile, "--from", "default"]),
+    );
+    let profile_dir = env.config.join("pinfold/profiles").join(profile);
+    fs::write(
+        profile_dir.join("pinfold.toml"),
+        format!(
+            "allow = [\"login-allow.invalid\"]\n\
+             [routes]\n\
+             \"openrouter.login\" = {{ login = \"pi\", provider = \"openrouter\", from = \"PINFOLD_E2E_OPENROUTER_KEY\", to = \"http://{}\" }}\n\
+             \"anthropic.login\" = {{ login = \"pi\", provider = \"anthropic\", from = \"PINFOLD_E2E_ANTHROPIC_KEY\", to = \"http://{}\" }}\n",
+            openrouter.route(),
+            anthropic.route()
+        ),
+    )
+    .expect("write the profile's pinfold.toml");
+    let agent_dir = profile_dir.join("home/.pi/agent");
+    fs::create_dir_all(&agent_dir).expect("create the profile's agent dir");
+    let stored = "pf-openrouter-stored-in-box";
+    fs::write(
+        agent_dir.join("auth.json"),
+        serde_json::json!({ "openrouter": { "type": "api_key", "key": stored } }).to_string(),
+    )
+    .expect("write the stored key");
+    fs::write(
+        profile_dir.join("Containerfile"),
+        format!("FROM {}\n", default_image(&env)),
+    )
+    .expect("write the profile's Containerfile");
+    build_profile(&env, profile);
+    let _image = ImageCleanup {
+        repository: format!("localhost/pinfold/profile-{profile}"),
+    };
+    let project = TestDir::new(&env, "pi-login");
+    git(project.path(), &["init", "-q"]);
+
+    // pi sends its stored key to the route at OpenRouter's API path; the
+    // fixture gets only the host key. The model is in pi's built-in
+    // openrouter catalog, so only the extension can redirect it.
+    let output = env
+        .command(pinfold())
+        .args([
+            "pi",
+            "-p",
+            "--provider",
+            "openrouter",
+            "--model",
+            "openai/gpt-4o-mini",
+            "reply with ok",
+        ])
+        .current_dir(project.path())
+        .env("PINFOLD_PROFILE", profile)
+        .envs(keys)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pinfold pi -p");
+    assert!(
+        output.status.success(),
+        "pi -p through the openrouter login route failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = openrouter.targets();
+    assert!(
+        requests
+            .iter()
+            .any(|(target, _)| target == "/api/v1/chat/completions"),
+        "pi's chat request never reached the fixture at OpenRouter's path: {:?}",
+        requests
+            .iter()
+            .map(|(target, _)| target)
+            .collect::<Vec<_>>()
+    );
+    for (target, headers) in &requests {
+        let authorization: Vec<&str> = headers
+            .iter()
+            .filter(|(header, _)| header.eq_ignore_ascii_case("authorization"))
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert!(
+            authorization == [format!("Bearer {openrouter_key}")],
+            "the openrouter fixture's Authorization at {target} is not exactly the host key"
+        );
+    }
+
+    // In a running pi box: only placeholders in the environment, no key in
+    // any file the box could read, and the anthropic route sets x-api-key
+    // and removes forged credentials in any case and number.
+    let (run, _, pi_box) = crate::pi::PiRpc::start_with_env(
+        &env,
+        project.path(),
+        &[("PINFOLD_PROFILE", profile), keys[0], keys[1]],
+    );
+    let environment = box_exec(&env, &pi_box, &["env"]);
+    assert_ok(&environment, "env in the pi box");
+    for variable in ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"] {
+        let placeholder = environment
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{variable}=")))
+            .unwrap_or_else(|| panic!("the pi box has no {variable}"));
+        assert!(!placeholder.is_empty(), "the pi box's {variable} is empty");
+    }
+    for key in [&openrouter_key, &anthropic_key] {
+        assert!(
+            !environment.stdout.contains(key.as_str()),
+            "the pi box's environment holds a host key"
+        );
+    }
+    let canary = format!("pf-canary-{}", std::process::id());
+    let scan = box_exec(
+        &env,
+        &pi_box,
+        &[
+            "sh",
+            "-c",
+            "printf %s \"$3\" > /tmp/pf-canary; \
+             grep -rlsF -e \"$1\" -e \"$2\" -e \"$3\" \
+             /etc /opt/pinfold /tmp \"$HOME\"; true",
+            "sh",
+            &openrouter_key,
+            &anthropic_key,
+            &canary,
+        ],
+    );
+    assert_eq!(
+        scan.stdout.lines().collect::<Vec<_>>(),
+        ["/tmp/pf-canary"],
+        "the pi box's files or home disk hold a key, or the scan missed the canary: {}",
+        scan.stderr
+    );
+    let forged = curl(
+        &env,
+        &pi_box,
+        "5",
+        &[
+            "-H",
+            "X-Api-Key: from-box",
+            "-H",
+            "x-api-key: from-box-2",
+            "-H",
+            "x-api-key: from-box-3",
+            "-H",
+            "authorization: Bearer from-box",
+            "http://anthropic.login/v1/messages",
+        ],
+    );
+    assert_ok(&forged, "the anthropic login route");
+    let requests = anthropic.requests();
+    let values = |name: &str| -> Vec<String> {
+        requests[0]
+            .0
+            .iter()
+            .filter(|(header, _)| header.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.clone())
+            .collect()
+    };
+    assert!(
+        values("x-api-key") == [anthropic_key.clone()],
+        "the anthropic fixture's x-api-key is not exactly the host key"
+    );
+    assert_eq!(
+        values("authorization"),
+        Vec::<String>::new(),
+        "the box's Authorization reached the anthropic fixture"
+    );
+    // On the host, nothing under the state root holds a key: the box's
+    // state dir with pinfold's extension, the run records and egress logs.
+    let mut scanned = Vec::new();
+    for key in [&openrouter_key, &anthropic_key] {
+        crate::pi::holding(&env.state, key.as_bytes(), &mut scanned);
+    }
+    for written in ["pi.ts", "egress.jsonl"] {
+        assert!(
+            scanned.iter().any(|path| path.ends_with(written)),
+            "the state root scan read no {written}"
+        );
+    }
+    assert!(run.finish().success(), "pinfold pi did not exit cleanly");
+
+    // A second pi login route for one provider is refused as `spec`; a
+    // `from` variable set but empty as `login`. The runs above are the positive control.
+    let refused_name = box_name("login-pi-refused");
+    let route =
+        |from: &str| serde_json::json!({ "login": "pi", "provider": "openrouter", "from": from });
+    let twice = serde_json::json!({
+        "name": refused_name,
+        "image": default_image(&env),
+        "harness": "pi",
+        "egress": { "routes": {
+            "first.login": route("PINFOLD_E2E_OPENROUTER_KEY"),
+            "second.login": route("PINFOLD_E2E_OPENROUTER_KEY"),
+        } },
+    });
+    let (code, refused) = box_up_refused(&env, &twice, &keys);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(
+        refused["reason"], "spec",
+        "a second openrouter route: {refused}"
+    );
+    let empty = serde_json::json!({
+        "name": refused_name,
+        "image": default_image(&env),
+        "harness": "pi",
+        "egress": { "routes": { "openrouter.login": route("PINFOLD_E2E_EMPTY_KEY") } },
+    });
+    let (code, refused) = box_up_refused(&env, &empty, &[("PINFOLD_E2E_EMPTY_KEY", "")]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(
+        refused["reason"], "login",
+        "an empty from variable: {refused}"
+    );
+
     // Guarantee 26, claude half. Sabotage: in `resolve_harness`, drop the
     // `CLAUDE_CODE_OAUTH_TOKEN` placeholder and pass `$VAR` into the box
     // instead (`Env::From { from: login.from }`); the box environment
     // assertion fails. The value lives only in `up`'s environment; the box
     // sends its own Authorization, which the proxy replaces with the login's
     // Bearer header.
-    // codex half. Sabotage: forward the token into the box env (in
-    // `resolve_harness`, add `CODEX_ACCESS_TOKEN` as an `Env::Exact` of the
-    // token `resolve_login` returned); the codex box environment assertion
-    // fails. The login lapses within 5 minutes, so the pinned host helper
-    // refreshes it through the refresh fixture at `up`, and the model
-    // fixture must see the refreshed token, never the lapsing one.
-    let env = TestEnv::new("login");
     let fixture = HttpFixture::start(None);
     let secret = format!("pf-login-{}", std::process::id());
     let name = box_name("login");
@@ -3084,9 +3324,15 @@ fn a_login_route_keeps_the_login_on_the_host() {
     up.down(&env);
     assert!(up.wait().success(), "box up did not exit cleanly");
 
-    // codex: a file-store login in its own CODEX_HOME whose access token
-    // lapses in 2 minutes, and a refresh endpoint that answers with a new
-    // token for the same account, hours out.
+    // codex half. Sabotage: forward the token into the box env (in
+    // `resolve_harness`, add `CODEX_ACCESS_TOKEN` as an `Env::Exact` of the
+    // token `resolve_login` returned); the codex box environment assertion
+    // fails. The login lapses within 5 minutes, so the pinned host helper
+    // refreshes it through the refresh fixture at `up`, and the model
+    // fixture must see the refreshed token, never the lapsing one.
+    // A file-store login in its own CODEX_HOME whose access token lapses in
+    // 2 minutes, and a refresh endpoint that answers with a new token for
+    // the same account, hours out.
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("the clock is past 1970")

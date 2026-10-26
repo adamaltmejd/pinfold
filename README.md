@@ -95,8 +95,9 @@ In a project:
    it keeps project settings, sessions and logins.
 3. Start pi: `pi`. The first run downloads the pinned pi release and
    creates the project's home and project disks.
-4. Run `/login` in pi once per project: state is per project. API keys
-   arrive through the environment instead.
+4. Run `/login` in pi once per project: state is per project. An API key
+   can instead stay on the host behind a pi login route in `routes`
+   (ARCHITECTURE.md, Egress proxy), or arrive through the environment.
 
 The first start copies the checkout into the box, which keeps that copy.
 `pinfold fetch` brings the box's commits back as `pinfold/*` branches for

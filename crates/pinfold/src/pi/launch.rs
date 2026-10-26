@@ -16,7 +16,7 @@ use crate::core::crossing::CrossingError;
 use crate::core::plan::{Disk, Egress, Env, Plan};
 use crate::core::runs::{self, Terminal};
 use crate::core::runtime::{ImageInfo, runtime};
-use crate::core::{artifacts, crossing, disk, image, ownership, sha256_hex};
+use crate::core::{artifacts, crossing, disk, image, login, ownership, sha256_hex};
 use crate::pi::state::{self, canonical, project_id};
 use crate::trust;
 
@@ -408,7 +408,12 @@ pub(crate) fn utf8<'a>(path: &'a Path, what: &str) -> io::Result<&'a str> {
 
 fn run_box(plan: &Plan, root: &Path, cwd: &Path, args: &[String]) -> io::Result<i32> {
     let init = artifacts::init()?;
+    let extension = plan
+        .logins()
+        .any(|(_, login)| login.is_pi())
+        .then(|| ["-e".to_string(), login::PI_EXTENSION.to_string()]);
     let argv: Vec<String> = std::iter::once(format!("{}/pi", artifacts::guest(HARNESS).display()))
+        .chain(extension.into_iter().flatten())
         .chain(args.iter().cloned())
         .collect();
     let (name, root, workdir) = (plan.name.clone(), root.to_path_buf(), cwd.to_path_buf());

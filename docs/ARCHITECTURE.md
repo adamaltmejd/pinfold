@@ -361,7 +361,8 @@ The box spec `up` reads from stdin:
   that harness's directory read-only at `/opt/pinfold/<name>`, its
   executable `/opt/pinfold/<name>/<name>`, and sets its pinned env
   defaults and `PINFOLD_ALLOW` (the spec's `egress.allow`, empty without egress). The
-  spec's own `env` wins; a spec mount at `/opt/pinfold/<name>` is refused.
+  spec's own `env` wins; a spec mount at `/opt/pinfold/<name>`, or with a
+  pi login route at `/opt/pinfold/login`, is refused.
   claude is the glibc build, so it needs a glibc image (the default profile
   is Debian). codex's `codex-code-mode-host` sits beside it. codex's own sandbox does
   not start in a box; a caller runs codex with
@@ -375,8 +376,8 @@ The box spec `up` reads from stdin:
   inside it whatever the spec's order; two at one lexical guest path, with
   `.` and `..` resolved, are refused as `spec` before preparation.
 - On Linux a box attaches at most 24 disks and mounts, pinfold's own
-  (the harness, `share/`, codex's config) included; more are refused as
-  `spec`.
+  (the harness, `share/`, codex's config, pi's login extension) included;
+  more are refused as `spec`.
 - A disk `name` is validated like a profile name, and named once per
   spec. `size` is a whole number
   followed by `G`, at least `1G`, default `64G`; it caps a disk pinfold
@@ -609,12 +610,12 @@ network listener, no token: the socket identifies the box.
   headers back. Header names that frame the request (`Host`,
   `Content-Length`, hop-by-hop) are refused.
 - **Login routes:** a route whose value is `{ "login": HARNESS }` carries
-  a subscription login for the box's harness; pinfold owns the origin, the
+  a login for the box's harness; pinfold owns the origin, the
   headers and the harness's config for the pinned version. `login` must
-  name the spec's `harness`, and a spec has at most one login route; else
-  `spec`. An optional `to` replaces the harness's origin, checked like an
-  injecting route's. The box gets only placeholders; the spec's own `env`
-  wins.
+  name the spec's `harness`, and a spec has at most one login route, or
+  for pi one per provider; else `spec`. An optional `to` replaces the
+  harness's origin, checked like an injecting route's. The box gets only
+  placeholders; the spec's own `env` wins.
   - `claude`: `{ "login": "claude", "from": VAR }`, where `$VAR` is a
     `claude setup-token` token read once at start like an injecting route's.
     The route goes to `https://api.anthropic.com` with `Authorization:
@@ -640,8 +641,39 @@ network listener, no token: the socket identifies the box.
     "http://<route>/backend-api/codex"`, `wire_api = "responses"` and
     `requires_openai_auth = false`; it is Codex's system layer, so the
     caller's own config still overrides it.
-  - `up` refuses a login it cannot use (no token, or not a usable JWT) as
-    `login`, naming the harness.
+  - `pi`: `{ "login": "pi", "provider": P, "from": VAR }`, where P is
+    `openrouter`, `anthropic` or `openai` and `$VAR` is that provider's API
+    key, read once at start like an injecting route's. A missing or other P
+    is refused as `spec`, and so is `provider` on a claude or codex login
+    route.
+
+    | P | Origin | Header set |
+    |---|---|---|
+    | `openrouter` | `https://openrouter.ai` | `Authorization: Bearer $VAR` |
+    | `openai` | `https://api.openai.com` | `Authorization: Bearer $VAR` |
+    | `anthropic` | `https://api.anthropic.com` | `x-api-key: $VAR`; a box-sent `Authorization` is removed |
+
+    The set header replaces any the box sent under that name. Other
+    headers, `anthropic-version` and `anthropic-beta` included, pass
+    unchanged. As for any route, every path under the origin is
+    forwarded, responses stream as received, and `Upgrade` is dropped.
+    For each pi login route the box gets P's key variable
+    (`OPENROUTER_API_KEY`, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`) set to
+    a placeholder. It also gets one pi extension, `pi.ts`, written by
+    pinfold per box and mounted read-only under `/opt/pinfold/login/`,
+    that sets each P's `baseUrl` to `http://<route>` plus the base path of
+    P's built-in URL in the pinned pi (`/api/v1` for openrouter, `/v1` for
+    openai, none for anthropic). The extension holds no secret. pi loads
+    it only when started with `-e /opt/pinfold/login/pi.ts`; the pi layer
+    passes that, a caller passes it itself. Its `baseUrl` sits above a
+    `models.json` one for P. pi started without it reaches P directly,
+    without the host key. pi prefers a stored `/login` credential
+    for P over the placeholder; the route replaces a stored key, and a
+    stored OAuth login's requests may fail upstream until `/logout`.
+    Nothing is written to the home disk; seeds, reseeding and `/login`
+    are unchanged.
+  - `up` refuses a login it cannot use (no token, an empty or unset
+    `from` variable, or not a usable JWT) as `login`, naming the harness.
 - **Limits:** a connection cap and a header timeout. A tunnel is idle, and
   closed, only when neither direction has carried bytes for 5 minutes.
   A write blocked for 5 minutes closes the connection even when the other
@@ -1031,15 +1063,16 @@ measurement does not authorize a later deletion.
   the box left it; host edits after that reach it only as branches. One pi box runs per project; a second start is refused as
   `disk-in-use`. A checkout whose `.git` is not a directory (a worktree)
   is refused as `worktree` by `pi`, `push` and `fetch`.
-- **Arguments** pass through unchanged. The box starts in the invoking
+- **Arguments** pass through unchanged, after `-e /opt/pinfold/login/pi.ts`
+  when the configuration has a pi login route. The box starts in the invoking
   directory. Paths outside the project fail, and pi reports them. A
   non-UTF-8 path in a pi box spec or configuration report is refused as
   `path-not-utf8`, naming its field.
 - **Environment:** the harness's variables (Box spec, `harness`), the
   core's proxy variables, `HERDR_AGENT` and `PINFOLD_ENV_*`.
 - **TTY** whenever the host has one.
-- **Auth:** OAuth `/login` once per project; API keys through the
-  environment.
+- **Auth:** an API key through a pi login route (Egress proxy), kept on
+  the host; else OAuth `/login` once per project, or the environment.
 - **herdr:** no herdr socket. The TTY passes through, so screen detection
   works, and the shim sets `HERDR_AGENT=pi`.
 - **After a run:** when the box ends for a reason other than
@@ -1120,7 +1153,7 @@ Only the environment and project select `profile`; a profile's own
 |---|---|---|---|
 | `profile` | `PINFOLD_PROFILE` | `default` | Profile name |
 | `allow` | `PINFOLD_ALLOW` | `api.anthropic.com`, `platform.claude.com`, `api.openai.com`, `auth.openai.com`, `chatgpt.com`, `openrouter.ai`, `opencode.ai`, `registry.npmjs.org`, `pi.dev` | Hosts the proxy lets through |
-| `routes` | `PINFOLD_ROUTES` | `{}` | Proxy routes: `name = "host:port"` for a host service, or an injecting route `name = { to = "https://…", headers = { Authorization = { from = "VAR", prefix = "Bearer " } } }` (see Egress proxy) |
+| `routes` | `PINFOLD_ROUTES` | `{}` | Proxy routes: `name = "host:port"` for a host service, an injecting route `name = { to = "https://…", headers = { Authorization = { from = "VAR", prefix = "Bearer " } } }`, or a pi login route `name = { login = "pi", provider = "openrouter", from = "OPENROUTER_API_KEY" }` (see Egress proxy) |
 | `containerfile` | — | the profile's image | The project's Containerfile, a path relative to the project; typically FROM the profile image |
 | `cpus` | `PINFOLD_CPUS` | 4 | |
 | `memory` | `PINFOLD_MEMORY` | `8G` | |
@@ -1130,7 +1163,7 @@ Only the environment and project select `profile`; a profile's own
 The list keys take comma-separated values in the environment:
 
 - `PINFOLD_ALLOW`: host names; a leading `.` makes a suffix entry.
-- `PINFOLD_ROUTES`: `name=host:port` pairs; an injecting route needs a file.
+- `PINFOLD_ROUTES`: `name=host:port` pairs; an injecting or login route needs a file.
 
 An unknown key in `.pinfold.toml` or a profile's `pinfold.toml` is refused,
 naming the file and the key. `containerfile` in a profile's `pinfold.toml` is
@@ -1223,7 +1256,7 @@ three that run apart. Testing policy is in `AGENTS.md`.
 | 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref, the image's id and the labels; three builds of one name move latest, and the first build's ref still comes up, on Linux with the build's labels in `ready`; two builds of unchanged inputs make one image under two refs; a failed build prints a bounded trailing log even after a 200,000-byte unterminated line, retains its final context marker and makes no image. Cached caller builds preserve a RUN-generated random stamp; --no-cache changes it. On Apple, builds from two state directories with different `NO_COLOR` and `BUILDKIT_COLORS` both succeed while one is held active in RUN. |
 | 24 | Every build reruns its steps | A second build changes a random RUN-generated stamp. On Podman the fixture-labeled set of dangling image IDs gains no member; concurrent builds and deletion of old images cannot conceal or fabricate a leak. |
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box list --help` exits 0, with no runtime and leaving the state dir untouched. |
-| 26 | A login route keeps the login on the host | With `to` at a host fixture, claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. With that refresh held, a caller under distinct XDG roots and the same CODEX_HOME reports `login-busy` once; no second refresh reaches the fixture, and releasing the first lets both boxes use the refreshed login. A stalled real helper refresh is deadline-bounded; cancellation reaps the helper and closes its fixture connection before returning without a box. An empty `CODEX_HOME` is refused as `login`. On macOS only, with a real login, codex completes one tool round trip through a route with no `to`. |
+| 26 | A login route keeps the login on the host | With `to` at a host fixture, claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. With that refresh held, a caller under distinct XDG roots and the same CODEX_HOME reports `login-busy` once; no second refresh reaches the fixture, and releasing the first lets both boxes use the refreshed login. A stalled real helper refresh is deadline-bounded; cancellation reaps the helper and closes its fixture connection before returning without a box. An empty `CODEX_HOME` is refused as `login`. On macOS only, with a real login, codex completes one tool round trip through a route with no `to`. pi, with `to` at host fixtures and an `openrouter` and an `anthropic` login route in one profile: with a different key stored in the home's `auth.json`, `pinfold pi -p` with an `openrouter` model reaches the fixture under `/api/v1/` with the host key as the Bearer header; a request the box sends through the anthropic route with its own `x-api-key` in two cases, three times, and a lowercase `authorization` arrives with exactly one `x-api-key`, the host key, and no `Authorization` in any case. The box's environment and files, its home disk, the state root and the egress log hold neither key. A second pi login route for one provider is refused as `spec`, and a `from` variable set but empty as `login`. |
 | 27 | Doctor reports without changing state | With and without a runtime, doctor leaves complete Pinfold-owned state/config/cache trees unchanged, including absent roots, and reports host configuration. Native runtime bookkeeping is outside those trees. Linux runtime-dir and missing-kvm diagnostics use real failures. The Linux host keeps AppArmor's unprivileged user-namespace restriction on (`kernel.apparmor_restrict_unprivileged_userns` is 1); there a copy of pinfold outside its profile's path reports `userns-apparmor` and is refused as `runtime`; the profiled executable starts a box. |
 | 28 | Host updates are verified and atomic | A host HTTPS release fixture supplies a different valid executable. Wrong checksums and live owners preserve the original bytes/inode; a working command started during a held asset transfer also prevents replacement. After teardown the verified bytes replace the inode and preserve the invoked command symlink. |
 | 29 | Interactive update checks are bounded | A host HTTPS fixture observes one interactive check per interval and none for opt-out/noninteractive commands. A stalled request closes within 1.75 seconds of fixture receipt and is not retried by the next launch. |
