@@ -35,7 +35,51 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
     let plan = build_plan(&config, &id, &root, &image)?;
-    run_box(&plan, &cwd, args)
+    run_box(&plan, &root, &cwd, args)
+}
+
+/// `$1` is the project's guest repository, `$2` the push's remote. Exits 0
+/// without a merge unless the checked-out branch is clean and a proper
+/// ancestor of its `$2/` counterpart.
+const FAST_FORWARD_SCRIPT: &str = r#"
+cd "$1" || exit
+ref=$(git symbolic-ref -q HEAD) || exit 0
+head=$(git rev-parse -q --verify HEAD) || exit 0
+host=$(git rev-parse -q --verify "refs/remotes/$2/${ref#refs/heads/}") || exit 0
+[ "$head" != "$host" ] && git merge-base --is-ancestor "$head" "$host" || exit 0
+# The refresh keeps stat-only differences from counting as changes.
+git update-index -q --refresh >/dev/null
+git diff-index --quiet HEAD -- || exit 0
+exec git merge -q --ff-only "$host"
+"#;
+
+/// Push the checkout's branches into the ready box, then fast-forward its
+/// checkout (Git). A failure is reported and never stops pi.
+fn sync(name: &str, init: &Path, root: &Path) {
+    // No repository or no branch: nothing to push.
+    if !root.join(".git").is_dir()
+        || !git(root, &["for-each-ref", "--count=1", "refs/heads/"])
+            .is_ok_and(|out| !out.is_empty())
+    {
+        return;
+    }
+    let Some(guest) = root.to_str() else { return };
+    let failed = |detail: &str| eprintln!("pinfold pi: sync-failed: {}", detail.trim());
+    if let Err(CrossingError::Refused(_, detail) | CrossingError::Failed(detail)) =
+        crossing::push(runtime(), init, name, root, guest, "host")
+    {
+        return failed(&detail);
+    }
+    let argv = ["sh", "-c", FAST_FORWARD_SCRIPT, "sh", guest, "host"].map(str::to_owned);
+    match runtime()
+        .exec_command(name, init, false, None, &argv)
+        .stdin(std::process::Stdio::null())
+        .output()
+    {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => failed(&String::from_utf8_lossy(&output.stderr)),
+        Err(error) => failed(&error.to_string()),
+    }
 }
 
 /// Refuse a checkout whose `.git` is not a directory: a worktree's (or a
@@ -356,12 +400,12 @@ pub(crate) fn utf8<'a>(path: &'a Path, what: &str) -> io::Result<&'a str> {
     })
 }
 
-fn run_box(plan: &Plan, cwd: &Path, args: &[String]) -> io::Result<i32> {
+fn run_box(plan: &Plan, root: &Path, cwd: &Path, args: &[String]) -> io::Result<i32> {
     let init = artifacts::init()?;
     let argv: Vec<String> = std::iter::once(format!("{}/pi", artifacts::guest(HARNESS).display()))
         .chain(args.iter().cloned())
         .collect();
-    let (name, workdir) = (plan.name.clone(), cwd.to_path_buf());
+    let (name, root, workdir) = (plan.name.clone(), root.to_path_buf(), cwd.to_path_buf());
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
     let box_runtime = runtime();
     let runtime = Builder::new_current_thread().enable_all().build()?;
@@ -378,7 +422,10 @@ fn run_box(plan: &Plan, cwd: &Path, args: &[String]) -> io::Result<i32> {
             }
             Err(error) => return Err(error.into()),
         };
+        // The sync runs here so that the signals and the box's end below
+        // also cover it.
         let exec = tokio::task::spawn_blocking(move || {
+            sync(&name, &init, &root);
             box_runtime.exec(&name, &init, tty, Some(&workdir), &argv)
         });
         let ended = tokio::select! {
