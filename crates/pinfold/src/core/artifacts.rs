@@ -234,40 +234,6 @@ pub fn init() -> io::Result<PathBuf> {
     Ok(dir.join("pinfold"))
 }
 
-/// Write a read-only ext4 init disk at `disk` holding this executable as
-/// `/pinfold`, and the empty `/dev` and `/mnt` PID 1 mounts on: a Linux
-/// CLI's init for a box, and the guest kernel's root.
-#[cfg(target_os = "linux")]
-pub fn init_disk(disk: &Path) -> io::Result<()> {
-    let tree = disk.with_extension("tree");
-    let _ = fs::remove_dir_all(&tree);
-    fs::create_dir(&tree)?;
-    let made = (|| {
-        fs::create_dir(tree.join("dev"))?;
-        fs::create_dir(tree.join("mnt"))?;
-        let init = tree.join("pinfold");
-        fs::copy(std::env::current_exe()?, &init)?;
-        fs::set_permissions(&init, fs::Permissions::from_mode(0o755))?;
-        // 10% and 4 MiB for the filesystem's own metadata.
-        let kib = fs::metadata(&init)?.len() / 1024 * 11 / 10 + 4096;
-        super::runtime::output(&[
-            &super::image::mkfs_ext4()?.to_string_lossy(),
-            "-q",
-            "-F",
-            "-m",
-            "0",
-            "-O",
-            "^has_journal",
-            "-d",
-            &tree.to_string_lossy(),
-            &disk.to_string_lossy(),
-            &format!("{kib}k"),
-        ])
-    })();
-    let _ = fs::remove_dir_all(&tree);
-    made.map(drop)
-}
-
 /// One pin's cache state, as `doctor` and `artifacts` report it. Nothing
 /// here downloads.
 #[derive(Serialize)]

@@ -80,7 +80,7 @@ pub fn prepare(
     let root_disk = image::root_disk(image_id)?;
     cancelled()?;
     let init_disk = state_dir.join("init.ext4");
-    artifacts::init_disk(&init_disk)?;
+    write_init_disk(&init_disk)?;
     let mut mounts = Vec::new();
     for (index, mount) in plan.mounts.iter().enumerate() {
         cancelled()?;
@@ -98,6 +98,25 @@ pub fn prepare(
     })
 }
 
+/// Write a read-only ext4 init disk at `disk` holding this executable as
+/// `/pinfold`, and the empty `/dev` and `/mnt` PID 1 mounts on: a Linux
+/// CLI's init for a box, and the guest kernel's root.
+fn write_init_disk(disk: &Path) -> io::Result<()> {
+    let tree = disk.with_extension("tree");
+    let _ = fs::remove_dir_all(&tree);
+    fs::create_dir(&tree)?;
+    let made = (|| {
+        fs::create_dir(tree.join("dev"))?;
+        fs::create_dir(tree.join("mnt"))?;
+        let init = tree.join("pinfold");
+        fs::copy(std::env::current_exe()?, &init)?;
+        fs::set_permissions(&init, fs::Permissions::from_mode(0o755))?;
+        mount_image(&tree, disk)
+    })();
+    let _ = fs::remove_dir_all(&tree);
+    made
+}
+
 /// Copy the host directory `host` into a new read-only ext4 image at
 /// `disk`, sized to the tree.
 fn mount_image(host: &Path, disk: &Path) -> io::Result<()> {
@@ -105,7 +124,7 @@ fn mount_image(host: &Path, disk: &Path) -> io::Result<()> {
     let _ = fs::remove_file(disk);
     // 10% and 16 MiB for metadata, an inode per entry, as the root disk.
     output(&[
-        &image::mkfs_ext4()?.to_string_lossy(),
+        &super::preflight::mkfs_ext4()?.to_string_lossy(),
         "-q",
         "-F",
         "-m",

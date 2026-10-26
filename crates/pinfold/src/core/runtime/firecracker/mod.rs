@@ -194,9 +194,7 @@ impl Runtime for Firecracker {
         let made = file.set_len(bytes).and_then(|()| {
             let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
             output(&[
-                &preflight::mkfs_ext4()
-                    .ok_or_else(|| io::Error::other("mkfs: no mkfs.ext4"))?
-                    .to_string_lossy(),
+                &preflight::mkfs_ext4()?.to_string_lossy(),
                 "-q",
                 "-F",
                 "-m",
