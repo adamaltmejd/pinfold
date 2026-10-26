@@ -211,10 +211,12 @@ impl Runtime for Apple {
         // Apple's forced removal races two process-output waiters (#83).
         // Kill through the existing monitor, then remove without forcing.
         // A stopped or absent box can refuse kill; removal still decides
-        // success, and cannot force-stop a box whose kill actually failed.
+        // success.
         let _ = output(&["container", "kill", "--signal", "KILL", name]);
-        // Apple reports a killed box `running` for a moment, and `rm` refuses
-        // it then; `stop` returns once it has stopped.
+        // Apple can report a killed box `running` for a moment, and `rm`
+        // refuses it then; `stop` returns once it has stopped. Only a box
+        // that refused kill while running gets stop's SIGTERM, 5 s grace and
+        // kill, which is #83's second waiter.
         let _ = output(&["container", "stop", name]);
         // stderr is captured: an absent box fails `rm` with the runtime's
         // not-found text, which is noise once the box is gone.
