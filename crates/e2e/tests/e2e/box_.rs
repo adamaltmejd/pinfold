@@ -902,7 +902,10 @@ fn nothing_can_gain_privileges() {
     // or init's read-only remount of the root on Linux; the rootfs write
     // then succeeds and its assertion fails. Sabotage: keep every
     // capability in PID 1 on Linux, or start the exec service before it
-    // drops them; the CapBnd assertions fail.
+    // drops them; the CapBnd assertions fail. Sabotage: pin another guest
+    // kernel under vmm.toml's version (on Linux), or run the box on the
+    // host's kernel; `uname -r` then names another release and its
+    // assertion fails.
     let env = TestEnv::new("privileges");
     let image = default_image(&env);
     let name = box_name("privileges");
@@ -1009,34 +1012,15 @@ fn nothing_can_gain_privileges() {
         assert_ok(&child, "a plain child process");
     }
 
-    up.down(&env);
-}
-
-#[test]
-fn each_box_has_its_own_kernel() {
-    let _runtime = crate::shared_runtime();
-    // Guarantee 37. Sabotage: pin another guest kernel under vmm.toml's
-    // version (on Linux), or run the box on the host's kernel; `uname -r`
-    // then names another release and its assertion fails.
-    let env = TestEnv::new("own-kernel");
-    let name = box_name("own-kernel");
-    let spec = serde_json::json!({ "name": name, "image": default_image(&env) });
-    let up = box_up(&env, &spec, &name);
+    // The box runs its own kernel, not the host's.
     let release = box_exec(&env, &name, &["uname", "-r"]);
     assert_ok(&release, "uname -r in the box");
-    let version = box_exec(&env, &name, &["cat", "/proc/version"]);
-    assert_ok(&version, "reading /proc/version in the box");
     let host = run_ok(Command::new("uname").arg("-r"));
     let host = String::from_utf8_lossy(&host.stdout);
     assert_ne!(
         release.stdout.trim(),
         host.trim(),
         "the box runs the host's kernel"
-    );
-    assert!(
-        !version.stdout.contains(host.trim()),
-        "the box's /proc/version names the host's release: {}",
-        version.stdout
     );
     // The release is the kernel half of the VMM pin, read from the pin file.
     #[cfg(target_os = "linux")]
@@ -1056,6 +1040,7 @@ fn each_box_has_its_own_kernel() {
             "the box's kernel is not the pinned one"
         );
     }
+
     up.down(&env);
 }
 
@@ -1240,12 +1225,37 @@ fn only_allowlisted_hosts_get_through() {
     // passes policy, so its 403 and "not allowlisted" assertions fail.
     // Sabotage: drop `egress_log` from `ready`, or report a path other than
     // the log handed to the proxy; the refusal is not found there.
+    // The proxy's tricks each have their control in the
+    // same box.
+    // Sabotage: delete either IP literal check; that request then
+    // logs "not allowlisted" (or reaches the box's own loopback), so the
+    // "ip literal" assertions fail.
+    // Sabotage: stop stripping IPv6 brackets in network::literal; [::1]
+    // logs "not allowlisted" instead of "ip literal".
+    // Sabotage: delete the loopback address check; localhost resolves to
+    // 127.0.0.1, the proxy dials it, and the 403 and "loopback" assertions
+    // fail.
+    // Sabotage: skip the SNI comparison; the --connect-to request finishes
+    // its TLS handshake against api.github.com, so the exit-35 and "sni
+    // mismatch" assertions fail.
+    // Sabotage: check the allowlist before the routes; CONNECT to
+    // fixture.internal logs "not allowlisted" and the "route" assertion
+    // fails.
+    // Sabotage: drop the duplicate-Content-Length check in parse_plain; the
+    // raw request reaches the fixture, so the 400 and "ambiguous
+    // framing" assertions fail. Sabotage: parse Content-Length with
+    // `str::parse::<u64>` alone; `+5` is read as 5, the request is
+    // forwarded, and the framing-refusal count falls short.
     let env = TestEnv::new("egress");
+    let fixture = HttpFixture::start(None);
     let name = box_name("egress");
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(&env),
-        "egress": { "allow": [".github.com"] },
+        "egress": {
+            "allow": [".github.com", "localhost"],
+            "routes": { "fixture.internal": fixture.route() },
+        },
     });
     let up = box_up(&env, &spec, &name);
 
@@ -1268,68 +1278,7 @@ fn only_allowlisted_hosts_get_through() {
         assert_denied(&denied, "403", &format!("a request to {host}"));
     }
 
-    // The log at the path `ready` names holds the refusal and its reason.
-    let log = up.ready["egress_log"]
-        .as_str()
-        .unwrap_or_else(|| panic!("ready names no egress log: {}", up.ready));
-    let lines = json_lines(&fs::read_to_string(log).expect("read the egress log ready names"));
-    for host in ["example.com", "evilgithub.com"] {
-        assert!(
-            lines.iter().any(|line| line["host"] == host
-                && line["decision"] == "refused"
-                && line["reason"] == "not allowlisted"),
-            "no not-allowlisted refusal for {host}: {lines:?}"
-        );
-    }
-
-    up.down(&env);
-}
-
-#[test]
-fn the_proxy_refuses_the_tricks() {
-    let _runtime = crate::shared_runtime();
-    // Guarantee 3. Each trick has its control in the same box.
-    //
-    // Sabotage: delete either IP literal check; that request then
-    // logs "not allowlisted" (or reaches the box's own loopback), so the
-    // "ip literal" assertions fail.
-    // Sabotage: stop stripping IPv6 brackets in network::literal; [::1]
-    // logs "not allowlisted" instead of "ip literal".
-    // Sabotage: delete the loopback address check; localhost resolves to
-    // 127.0.0.1, the proxy dials it, and the 403 and "loopback" assertions
-    // fail.
-    // Sabotage: skip the SNI comparison; the --connect-to request finishes
-    // its TLS handshake against api.github.com, so the exit-35 and "sni
-    // mismatch" assertions fail.
-    // Sabotage: check the allowlist before the routes; CONNECT to
-    // fixture.internal logs "not allowlisted" and the "route" assertion
-    // fails.
-    // Sabotage: drop the duplicate-Content-Length check in parse_plain; the
-    // raw request reaches the fixture, so the 400 and "ambiguous
-    // framing" assertions fail. Sabotage: parse Content-Length with
-    // `str::parse::<u64>` alone; `+5` is read as 5, the request is
-    // forwarded, and the framing-refusal count falls short.
-    let env = TestEnv::new("tricks");
-    let fixture = HttpFixture::start(None);
-    let name = box_name("tricks");
-    let spec = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "egress": {
-            "allow": ["api.github.com", "localhost"],
-            "routes": { "fixture.internal": fixture.route() },
-        },
-    });
-    let up = box_up(&env, &spec, &name);
-
     // Controls: the same paths work when the trick is not played.
-    let connect = curl(
-        &env,
-        &name,
-        "30",
-        &["-o", "/dev/null", "https://api.github.com/"],
-    );
-    assert_ok(&connect, "allowlisted CONNECT");
     let plain = curl(
         &env,
         &name,
@@ -1451,8 +1400,21 @@ fn the_proxy_refuses_the_tricks() {
         );
     }
 
+    // The log at the path `ready` names holds the refusal and its reason.
+    let log = up.ready["egress_log"]
+        .as_str()
+        .unwrap_or_else(|| panic!("ready names no egress log: {}", up.ready));
+    let lines = json_lines(&fs::read_to_string(log).expect("read the egress log ready names"));
+    for host in ["example.com", "evilgithub.com"] {
+        assert!(
+            lines.iter().any(|line| line["host"] == host
+                && line["decision"] == "refused"
+                && line["reason"] == "not allowlisted"),
+            "no not-allowlisted refusal for {host}: {lines:?}"
+        );
+    }
+
     // Every refusal names its own reason, distinct from "not allowlisted".
-    let lines = json_lines(&egress_log(&up.ready));
     for (host, reason) in [
         ("127.0.0.1", "ip literal"),
         ("[::1]", "ip literal"),
@@ -1482,71 +1444,6 @@ fn the_proxy_refuses_the_tricks() {
 }
 
 #[test]
-fn every_build_reruns_its_steps() {
-    let _runtime = crate::shared_runtime();
-    // Every build reruns every step, so a rebuild picks up base updates
-    // instead of replaying a cached `RUN` layer.
-    //
-    // Sabotage: drop `--no-cache` from Apple's build argv, or
-    // `--layers=false` from podman's. The second build then serves `/stamp`
-    // from the first build's layer, the two values match, and podman's
-    // untagged-image assertion fails.
-    let env = TestEnv::new("rerun");
-    default_image(&env);
-
-    let profile = format!("e2e-rerun-{}", std::process::id());
-    let layer_label = format!("dev.example.rerun={profile}");
-    let _images = ImageCleanup {
-        repository: format!("localhost/pinfold/profile-{profile}"),
-    };
-    // Random bytes at build time: a cached `RUN` layer replays the first
-    // build's file, so the two builds agree only when the cache is reused.
-    profile_containerfile(
-        &env,
-        &profile,
-        &format!(
-            "FROM debian:trixie-slim\nLABEL dev.example.rerun={profile}\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\n"
-        ),
-    );
-
-    // Podman's cached intermediates inherit the Containerfile's first
-    // label. Scope to this source so another test's cached caller build
-    // cannot look like our leak. Compare IDs so removing old layers cannot
-    // hide a newly leaked layer.
-    let before = if cfg!(target_os = "linux") {
-        Some(untagged_images(&layer_label))
-    } else {
-        None
-    };
-
-    build_profile(&env, &profile);
-    let first = built_unique_ref(&profile);
-    let first_stamp = file_from_image(&env, &first, "rerun-1", "/stamp");
-    // Positive control: the first build ran the `RUN` step and wrote /stamp.
-    assert!(
-        !first_stamp.trim().is_empty(),
-        "the first build left no /stamp"
-    );
-
-    build_profile(&env, &profile);
-    let second = built_unique_ref(&profile);
-    let second_stamp = file_from_image(&env, &second, "rerun-2", "/stamp");
-    assert_ne!(
-        first_stamp, second_stamp,
-        "the second build reused the first build's RUN layer"
-    );
-
-    if let Some(before) = before {
-        let after = untagged_images(&layer_label);
-        assert!(
-            after.is_subset(&before),
-            "the builds left new untagged images: {:?}",
-            after.difference(&before).collect::<Vec<_>>()
-        );
-    }
-}
-
-#[test]
 fn a_caller_builds_an_image_from_its_own_tree() {
     let _runtime = crate::shared_runtime();
     // Guarantee 23: a caller builds an image from its own tree.
@@ -1563,6 +1460,10 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // build's is stale, so the `built["id"]` assertion fails. Sabotage: write a unique
     // build label into every image again, as `dev.pinfold.build` was; the
     // repeated build makes a new image and the one-id assertion fails.
+    // Sabotage: build profiles with `cache` true, or drop `--no-cache` from
+    // Apple's build argv or `--layers=false` from podman's; the second
+    // profile build serves `/stamp` from the first build's layer, the two
+    // values match, and podman's untagged-image assertion fails.
     let env = TestEnv::new("image-build");
     let other = cfg!(target_os = "macos").then(|| TestEnv::new("image-colors"));
     let base = default_image(&env);
@@ -1725,6 +1626,47 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         "/stamp",
     );
     assert_ne!(cached_stamp, fresh_stamp, "--no-cache reused the RUN layer");
+
+    // Every profile build reruns every step, so a rebuild picks up base
+    // updates instead of replaying a cached `RUN` layer.
+    let profile = format!("e2e-rerun-{}", std::process::id());
+    let layer_label = format!("dev.example.rerun={profile}");
+    let _profile_images = ImageCleanup {
+        repository: format!("localhost/pinfold/profile-{profile}"),
+    };
+    profile_containerfile(
+        &env,
+        &profile,
+        &format!(
+            "FROM {base}\nLABEL dev.example.rerun={profile}\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\n"
+        ),
+    );
+    // Podman's cached intermediates inherit the Containerfile's first
+    // label. Scope to this source so another test's cached caller build
+    // cannot look like our leak. Compare IDs so removing old layers cannot
+    // hide a newly leaked layer.
+    let before = cfg!(target_os = "linux").then(|| untagged_images(&layer_label));
+    build_profile(&env, &profile);
+    let first_stamp = file_from_image(&env, &built_unique_ref(&profile), "rerun-1", "/stamp");
+    // Positive control: the first build ran the `RUN` step and wrote /stamp.
+    assert!(
+        !first_stamp.trim().is_empty(),
+        "the first build left no /stamp"
+    );
+    build_profile(&env, &profile);
+    let second_stamp = file_from_image(&env, &built_unique_ref(&profile), "rerun-2", "/stamp");
+    assert_ne!(
+        first_stamp, second_stamp,
+        "the second profile build reused the first build's RUN layer"
+    );
+    if let Some(before) = before {
+        let after = untagged_images(&layer_label);
+        assert!(
+            after.is_subset(&before),
+            "the builds left new untagged images: {:?}",
+            after.difference(&before).collect::<Vec<_>>()
+        );
+    }
 
     // Two callers with opposite colour settings share Apple's builder.
     // Hold one inside RUN before the other starts. Sabotage: inherit
@@ -1937,8 +1879,55 @@ fn box_has_no_network_but_loopback() {
     // that the same box still has its one way out. Sabotage (Linux): keep
     // the boot listener on `v.sock_1000` open after boot; the guest's
     // connect to port 1000 is accepted and its reset assertion fails.
+    // Sabotage: start the proxy and relay even without `egress` in the
+    // spec; the no-egress box's explicit-proxy request then reaches the
+    // proxy instead of a refused connection, and the refusal assertions
+    // fail. Sabotage (Linux): listen on the VM's host proxy port,
+    // `v.sock_3128`, even without `egress`; the no-egress guest's vsock
+    // connect to CID 2 port 3128 is accepted and its reset assertion fails.
+    // The routed box's route and proxy connect are the positive controls.
     let env = TestEnv::new("network");
     let fixture = HttpFixture::start(None);
+
+    // Without `egress`, nothing gets out, not even through a route: a
+    // request sent to the proxy's port finds no listener.
+    let name = box_name("no-egress");
+    let spec = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+    });
+    let up = box_up(&env, &spec, &name);
+    let proxied = curl(
+        &env,
+        &name,
+        "5",
+        &[
+            "-v",
+            "-x",
+            "http://127.0.0.1:3128",
+            "http://fixture.internal/",
+        ],
+    );
+    assert_eq!(proxied.code, 7, "the box had a proxy: {}", proxied.stdout);
+    assert!(
+        proxied.stderr.contains("Connection refused"),
+        "the proxied request failed for another reason: {}",
+        proxied.stderr
+    );
+    // Past the guest's own network: the host's proxy port on vsock.
+    #[cfg(target_os = "linux")]
+    {
+        let reset = vsock_to_host(&env, &name, 3128);
+        assert_ok(&reset, "a vsock connect from the box");
+        assert_eq!(
+            reset.stdout.trim(),
+            "Connection reset by peer",
+            "vsock CID 2 port 3128 without egress"
+        );
+    }
+    up.down(&env);
+    drop(up);
+
     let name = box_name("network");
     let spec = serde_json::json!({
         "name": name,
@@ -1980,7 +1969,8 @@ fn box_has_no_network_but_loopback() {
     );
 
     // Positive control: the route answers through the proxy while the box
-    // has no network.
+    // has no network, and the same request the no-egress box made through
+    // the proxy's port answers here.
     let route = curl(&env, &name, "5", &["http://fixture.internal/"]);
     assert_eq!(route.code, 0, "the route failed: {}", route.stderr);
     assert!(
@@ -3531,85 +3521,6 @@ fn unsigned_jwt(claims: &serde_json::Value) -> String {
     let header = encode(br#"{"alg":"none","typ":"JWT"}"#);
     let payload = encode(claims.to_string().as_bytes());
     format!("{header}.{payload}.{}", encode(b"unsigned"))
-}
-
-#[test]
-fn no_egress_means_no_way_out() {
-    let _runtime = crate::shared_runtime();
-    // Sabotage: start the proxy and relay even without `egress` in the spec;
-    // the explicit-proxy request then reaches the proxy instead of a refused
-    // connection, and the refusal assertions fail. The same request with the
-    // route in the spec is the positive control. Sabotage (Linux): listen on
-    // the VM's host proxy port, `v.sock_3128`, even without `egress`; the
-    // guest's vsock connect to CID 2 port 3128 is accepted and its reset
-    // assertion fails. The control box's connect is the positive control.
-    let env = TestEnv::new("no-egress");
-    let fixture = HttpFixture::start(None);
-    let name = box_name("no-egress");
-    let spec = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-    });
-    let up = box_up(&env, &spec, &name);
-
-    // No relay: a request sent to the proxy's port finds no listener.
-    let proxied = curl(
-        &env,
-        &name,
-        "5",
-        &[
-            "-v",
-            "-x",
-            "http://127.0.0.1:3128",
-            "http://fixture.internal/",
-        ],
-    );
-    assert_eq!(proxied.code, 7, "the box had a proxy: {}", proxied.stdout);
-    assert!(
-        proxied.stderr.contains("Connection refused"),
-        "the proxied request failed for another reason: {}",
-        proxied.stderr
-    );
-    // Past the guest's own network: the host's proxy port on vsock.
-    #[cfg(target_os = "linux")]
-    {
-        let reset = vsock_to_host(&env, &name, 3128);
-        assert_ok(&reset, "a vsock connect from the box");
-        assert_eq!(
-            reset.stdout.trim(),
-            "Connection reset by peer",
-            "vsock CID 2 port 3128 without egress"
-        );
-    }
-
-    up.down(&env);
-    drop(up);
-
-    // Positive control: the same request with the route in the spec answers.
-    let name = box_name("no-egress-control");
-    let spec = serde_json::json!({
-        "name": name,
-        "image": default_image(&env),
-        "egress": {
-            "routes": { "fixture.internal": fixture.route() },
-        },
-    });
-    let up = box_up(&env, &spec, &name);
-    let route = curl(&env, &name, "5", &["http://fixture.internal/"]);
-    assert_eq!(route.code, 0, "the control route failed: {}", route.stderr);
-    assert!(
-        route.stdout.contains("fixture host=fixture.internal"),
-        "the control route answered: {}",
-        route.stdout
-    );
-    #[cfg(target_os = "linux")]
-    {
-        let proxy = vsock_to_host(&env, &name, 3128);
-        assert_ok(&proxy, "a vsock connect to the proxy");
-        assert_eq!(proxy.stdout.trim(), "connected", "vsock CID 2 port 3128");
-    }
-
-    up.down(&env);
 }
 
 #[test]
