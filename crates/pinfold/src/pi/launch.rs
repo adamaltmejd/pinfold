@@ -31,13 +31,12 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     refuse_worktree(&root)?;
     let config = Config::load(&root)?;
     trust::check(&root, &config)?;
+    let skip = ignored(&root)?;
     let id = project_id(&root);
     let _project = ownership::project_lock(&id)?;
     state::record_run(&root)?;
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
-    // Listed after the build, so files it wrote are left out too.
-    let skip = ignored(&root)?;
     let plan = build_plan(&config, &id, &root, &image, skip);
     run_box(&plan, &root, &cwd, args)
 }
@@ -441,11 +440,25 @@ fn ignored(root: &Path) -> io::Result<BTreeSet<PathBuf>> {
             .chain(submodules)
         {
             let child = path(entry);
-            // An uninitialized submodule has no `.git` and nothing to copy.
-            match std::fs::symlink_metadata(root.join(&child).join(".git")) {
-                Ok(_) => repos.push(child),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
+            // Only a real directory holding `.git` is listed. Anything else
+            // at a submodule's path, an uninitialized one's directory or a
+            // symlink, is left out whole: no repository lists inside it.
+            let checked_out = match std::fs::symlink_metadata(root.join(&child)) {
+                Ok(metadata) if metadata.is_dir() => {
+                    match std::fs::symlink_metadata(root.join(&child).join(".git")) {
+                        Ok(_) => true,
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                        Err(error) => return Err(unlisted(&dir, &error.to_string())),
+                    }
+                }
+                Ok(_) => false,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                Err(error) => return Err(unlisted(&dir, &error.to_string())),
+            };
+            if checked_out {
+                repos.push(child);
+            } else {
+                skip.insert(child);
             }
         }
     }
@@ -456,13 +469,7 @@ fn ignored(root: &Path) -> io::Result<BTreeSet<PathBuf>> {
 /// keeps readdir's bytes, so macOS's decomposed names match the copy's
 /// walk, and ignores a caller's `GIT_*` repository overrides.
 fn list(dir: &Path, args: &[&str]) -> io::Result<Vec<Vec<u8>>> {
-    let refused = |detail: &str| {
-        io::Error::other(format!(
-            "ignored-unlisted: cannot list the git-ignored files in {}: {}",
-            dir.display(),
-            detail.trim()
-        ))
-    };
+    let refused = |detail: &str| unlisted(dir, detail);
     let mut command = crossing::git_command(dir);
     for name in [
         "GIT_DIR",
@@ -490,6 +497,14 @@ fn list(dir: &Path, args: &[&str]) -> io::Result<Vec<Vec<u8>>> {
         .filter(|entry| !entry.is_empty())
         .map(<[u8]>::to_vec)
         .collect())
+}
+
+fn unlisted(dir: &Path, detail: &str) -> io::Error {
+    io::Error::other(format!(
+        "ignored-unlisted: cannot list the git-ignored files in {}: {}",
+        dir.display(),
+        detail.trim()
+    ))
 }
 
 /// `path` as a string, for a spec or report value; `what` names it in the

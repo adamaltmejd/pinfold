@@ -223,8 +223,10 @@ fn project_state_persists_and_stays_separate() {
     // git-ignored one: not one a `.gitignore` or `.git/info/exclude`
     // names, nor one in an ignored or partly ignored directory, nor one a
     // submodule or an untracked nested repository ignores, nor one with a
-    // decomposed name. A tracked file matching a pattern and a re-included
-    // one are copied.
+    // decomposed name, nor an uninitialized submodule's directory. A
+    // tracked file matching a pattern and a re-included one are copied,
+    // though the caller's environment points git at an index that does
+    // not exist.
     // Sabotage: pass an empty skip list to project_disk in build_plan; the
     // ignored files appear in the box.
     // Sabotage: push no child repository in launch::ignored;
@@ -233,6 +235,10 @@ fn project_state_persists_and_stays_separate() {
     // only `new/`, and new/nested/a.env appears.
     // Sabotage: drop core.precomposeunicode=false from launch::list; on
     // macOS the decomposed name is listed composed, and that file appears.
+    // Sabotage: do nothing in launch::ignored for a submodule without
+    // `.git`; sm2/secret.env appears.
+    // Sabotage: drop the env_remove loop from launch::list; git reads the
+    // caller's empty index, tracked.env is skipped and its cat fails.
     let write = |path: &str, contents: &str| {
         let path = a.join(path);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -266,8 +272,21 @@ fn project_state_persists_and_stays_separate() {
     );
     git(
         a.as_path(),
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            source.to_str().unwrap(),
+            "sm2",
+        ],
+    );
+    git(
+        a.as_path(),
         &[&id[..], &["commit", "-q", "-m", "start"]].concat(),
     );
+    git(a.as_path(), &["submodule", "deinit", "-q", "-f", "sm2"]);
     fs::OpenOptions::new()
         .append(true)
         .open(a.join(".git/info/exclude"))
@@ -286,15 +305,21 @@ fn project_state_persists_and_stays_separate() {
         "new/sub/nested.env",
         "new/nested/a.env",
         "sm/inner.env",
+        "sm2/secret.env",
         "cafe\u{301}.env",
     ] {
         write(ignored, "FAKE_SECRET=1");
     }
-    let (run_a, _, box_a) = PiRpc::start(&env, a.as_path());
+    let missing_index = env.root.join("missing/index");
+    let (run_a, _, box_a) = PiRpc::start_with_env(
+        &env,
+        a.as_path(),
+        &[("GIT_INDEX_FILE", missing_index.to_str().unwrap())],
+    );
     let copied = in_box(
         &box_a,
         &format!(
-            r#"cd {} && cat tracked.env keep.env untracked.txt new/kept.txt new/nested/keep.txt sm/inner.txt && git rev-parse -q --verify HEAD >/dev/null && for path in secret.env local.key build new/sub new/nested/a.env sm/inner.env "$(printf 'cafe\314\201.env')"; do test ! -e "$path" || echo "$path"; done"#,
+            r#"cd {} && cat tracked.env keep.env untracked.txt new/kept.txt new/nested/keep.txt sm/inner.txt && git rev-parse -q --verify HEAD >/dev/null && for path in secret.env local.key build new/sub new/nested/a.env sm/inner.env sm2 "$(printf 'cafe\314\201.env')"; do test ! -e "$path" || echo "$path"; done"#,
             a.display()
         ),
     );
