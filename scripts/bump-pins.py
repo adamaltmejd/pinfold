@@ -17,7 +17,6 @@ IMAGE = ROOT / "profile" / "image"
 HARNESSES = ROOT / "crates" / "pinfold" / "harnesses.toml"
 VMM = ROOT / "crates" / "pinfold" / "vmm.toml"
 KERNEL = ROOT / "guest-kernel" / "pins"
-YARD = ROOT / ".yard" / "Dockerfile"
 # Containerfile pins that move together, by ADD destination. An npm package
 # comes after one whose dependencies or optionalDependencies name it at the
 # same version.
@@ -97,7 +96,7 @@ def github(urls, cutoff):
     if not all(parts) or len({part.group(1, 2, 3) for part in parts}) != 1:
         raise ValueError(f"{urls[0]}: pins are not one GitHub release")
     repo, prefix, current = parts[0][1], parts[0][2], version(parts[0][3])
-    # TruffleHog includes its version in asset names.
+    # Asset names may include the version.
     names = [part[4] for part in parts]
 
     def asset_names(number):
@@ -342,30 +341,10 @@ def repin_build_tools(texts):
     if version(current) is None or version(target) is None:
         raise ValueError("Rust toolchains must be stable versions")
     if version(target) > version(current):
-        image = json.loads(
-            fetch(
-                f"https://hub.docker.com/v2/repositories/library/rust/tags/{target}-slim-trixie"
-            )
+        print(f"rust {current} -> {target}")
+        texts[path] = replace(
+            texts[path], f'channel = "{current}"', f'channel = "{target}"'
         )
-        if not isinstance(image["images"], list):
-            raise ValueError(f"Rust {target}: invalid Yard image platform list")
-        platforms = {(row["os"], row["architecture"]) for row in image["images"]}
-        if any(
-            not isinstance(value, str) or not value
-            for row in platforms
-            for value in row
-        ):
-            raise ValueError(f"Rust {target}: invalid Yard image platform")
-        if not {("linux", "amd64"), ("linux", "arm64")} <= platforms:
-            print(f"rust {current}: {target} awaits both Yard image architectures")
-        else:
-            print(f"rust {current} -> {target}")
-            texts[path] = replace(
-                texts[path], f'channel = "{current}"', f'channel = "{target}"'
-            )
-            texts[YARD] = replace(
-                texts[YARD], f"rust:{current}-slim-trixie", f"rust:{target}-slim-trixie"
-            )
 
     path = ROOT / "Cargo.toml"
     for name, dependency in tomllib.loads(texts[path])["workspace"][
@@ -392,28 +371,6 @@ def repin_build_tools(texts):
         if count != 1:
             raise ValueError(f"{name}: cannot update Cargo requirement")
         print(f"{name} {current} -> {target}")
-
-
-def repin_yard(texts, cutoff):
-    current = re.search(r"TRUFFLEHOG_VERSION=(" + VERSION + r")", texts[YARD])[1]
-    rows = re.findall(r"arch=(arm64|amd64); sum=([0-9a-f]{64})", texts[YARD])
-    if len(rows) != 2:
-        raise ValueError("TruffleHog must pin both Linux architectures")
-    urls = [
-        f"https://github.com/trufflesecurity/trufflehog/releases/download/v{current}/trufflehog_{current}_linux_{arch}.tar.gz"
-        for arch, _ in rows
-    ]
-    update = github(urls, cutoff)
-    if update is None or update[2] is None:
-        return
-    _, target, assets = update
-    target = ".".join(map(str, target))
-    print(f"trufflehog {current} -> {target}")
-    texts[YARD] = replace(
-        texts[YARD], f"TRUFFLEHOG_VERSION={current}", f"TRUFFLEHOG_VERSION={target}"
-    )
-    for (_, old_sha), (_, sha) in zip(rows, assets, strict=True):
-        texts[YARD] = replace(texts[YARD], old_sha, sha)
 
 
 def repin_suffix_list(texts):
@@ -453,7 +410,6 @@ def main():
             HARNESSES,
             VMM,
             KERNEL,
-            YARD,
             ROOT / "rust-toolchain.toml",
             ROOT / "Cargo.toml",
             ROOT / "crates" / "pinfold" / "public_suffix_list.dat",
@@ -511,7 +467,6 @@ def main():
 
     repin_firecracker(texts, cutoff)
     repin_build_tools(texts)
-    repin_yard(texts, cutoff)
     repin_suffix_list(texts)
     for path, text in texts.items():
         path.write_text(text)
