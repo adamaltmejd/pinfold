@@ -386,6 +386,8 @@ fn a_changed_project_file_stops_the_run() {
     // Sabotage: record no Containerfile hash in trust::current
     // (`containerfile: None`); the changed Containerfile then runs and
     // builds, and the two refusal assertions after the change fail.
+    // Sabotage: drop the system identity from base.Containerfile; the
+    // box's first commit fails as "Author identity unknown".
     // Sabotage: push under the `pinfold` remote in pi::launch::crossing;
     // the box's merge of host/main fails. Sabotage: check trust in `build`
     // only when the project names a Containerfile; the build after the
@@ -396,9 +398,10 @@ fn a_changed_project_file_stops_the_run() {
     let root = project.path();
     let host_git = |args: &[&str]| git(root, args);
     host_git(&["init", "-q", "-b", "main"]);
-    host_git(&["config", "user.name", "e2e"]);
-    host_git(&["config", "user.email", "e2e@example.test"]);
-    host_git(&["commit", "-q", "--allow-empty", "-m", "start"]);
+    // The host identity stays out of the repository's config, which the
+    // project disk copies: the box commits under its image's identity.
+    let id = ["-c", "user.name=e2e", "-c", "user.email=e2e@example.test"];
+    host_git(&[&id[..], &["commit", "-q", "--allow-empty", "-m", "start"]].concat());
     let config = root.join(".pinfold.toml");
     let in_box = |name: &str, script: &str| {
         let output = box_exec(&env, name, &["sh", "-c", script]);
@@ -443,7 +446,7 @@ fn a_changed_project_file_stops_the_run() {
     let (run, _, name) = PiRpc::start(&env, root);
     fs::write(root.join("host.txt"), "host\n").unwrap();
     host_git(&["add", "host.txt"]);
-    host_git(&["commit", "-q", "-m", "host"]);
+    host_git(&[&id[..], &["commit", "-q", "-m", "host"]].concat());
     let pushed = run_ok(&mut pinfold_in(&env, root, &["push"]));
     let pushed = json_lines(&String::from_utf8_lossy(&pushed.stdout));
     assert_eq!(pushed[0]["event"], "pushed", "{pushed:?}");
@@ -460,6 +463,8 @@ fn a_changed_project_file_stops_the_run() {
         "the trusted run did not exit cleanly"
     );
     host_git(&["merge", "-q", "--ff-only", "pinfold/main"]);
+    let author = host_git(&["log", "-1", "--format=%an <%ae>", "pinfold/main"]);
+    assert_eq!(author.trim(), "pi <pi@pinfold.invalid>");
 
     // The change stops the run, the fetch and the build again, and
     // `pinfold allow` clears it.
