@@ -268,14 +268,10 @@ impl Claim {
     }
 
     fn publish(&self) -> io::Result<()> {
-        let destination = path(&format!("box:{}", self.name), "owner")?;
-        let staging = destination.with_extension(format!("tmp-{}", std::process::id()));
-        let published = fs::write(&staging, serde_json::to_vec(self.record.as_ref().unwrap())?)
-            .and_then(|()| fs::rename(&staging, destination));
-        if published.is_err() {
-            let _ = fs::remove_file(staging);
-        }
-        published
+        crate::core::write_atomic(
+            &path(&format!("box:{}", self.name), "owner")?,
+            &serde_json::to_vec(self.record.as_ref().unwrap())?,
+        )
     }
 
     pub fn generation(&self) -> &str {

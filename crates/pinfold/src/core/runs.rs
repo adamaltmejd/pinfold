@@ -4,12 +4,12 @@
 
 use std::collections::BTreeSet;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use crate::core::{now, ownership, rfc3339};
+use crate::core::{now, ownership, rfc3339, write_atomic};
 use crate::dirs;
 
 pub const EGRESS_LOG: &str = "egress.jsonl";
@@ -91,26 +91,8 @@ pub fn remove(run_id: &str) -> io::Result<()> {
     }
 }
 
-/// Write `record` as the run's `name`, atomically: a fresh 0600 file,
-/// renamed into place.
 fn write(run_id: &str, name: &str, record: &serde_json::Value) -> io::Result<()> {
-    let dir = dir(run_id)?;
-    let staging = dir.join(format!(".{name}.tmp"));
-    let written = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(nix::libc::O_NOFOLLOW)
-        .open(&staging)
-        .and_then(|mut file| {
-            file.write_all(record.to_string().as_bytes())?;
-            file.sync_all()
-        })
-        .and_then(|()| fs::rename(&staging, dir.join(name)));
-    if written.is_err() {
-        let _ = fs::remove_file(&staging);
-    }
-    written
+    write_atomic(&dir(run_id)?.join(name), record.to_string().as_bytes())
 }
 
 /// Write the launch record. `record` holds every field but `run_id` and
