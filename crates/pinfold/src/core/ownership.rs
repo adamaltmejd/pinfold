@@ -13,7 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::core::pipe::remaining;
-use crate::core::sha256_hex;
+use crate::core::{absent_ok, sha256_hex};
 
 pub const GENERATION_LABEL: &str = "dev.pinfold.generation";
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -32,14 +32,17 @@ fn root() -> io::Result<PathBuf> {
         Err(error) => return Err(error),
     }
     let metadata = fs::symlink_metadata(&path)?;
-    if !private(&metadata, metadata.is_dir()) {
-        return Err(io::Error::other("unsafe host ownership directory"));
-    }
+    check_private(&metadata, metadata.is_dir(), "directory")?;
     Ok(path)
 }
 
-fn private(metadata: &fs::Metadata, kind: bool) -> bool {
-    kind && metadata.uid() == nix::unistd::getuid().as_raw() && metadata.mode() & 0o077 == 0
+/// Refuse a host ownership `what` of the wrong kind, another user's, or
+/// open to group or others.
+fn check_private(metadata: &fs::Metadata, kind: bool, what: &str) -> io::Result<()> {
+    if kind && metadata.uid() == nix::unistd::getuid().as_raw() && metadata.mode() & 0o077 == 0 {
+        return Ok(());
+    }
+    Err(io::Error::other(format!("unsafe host ownership {what}")))
 }
 
 fn path(key: &str, suffix: &str) -> io::Result<PathBuf> {
@@ -59,18 +62,21 @@ pub fn open_lock(key: &str) -> io::Result<File> {
         .custom_flags(nix::libc::O_NOFOLLOW)
         .open(path(key, "lock")?)?;
     let metadata = file.metadata()?;
-    if !private(&metadata, metadata.is_file()) {
-        return Err(io::Error::other("unsafe host ownership lock"));
-    }
+    check_private(&metadata, metadata.is_file(), "lock")?;
     Ok(file)
 }
 
-fn try_lock(key: &str, mode: FlockArg) -> io::Result<Option<Flock<File>>> {
-    match Flock::lock(open_lock(key)?, mode) {
+/// The lock, or `None` while another holds it.
+fn try_flock(file: File, mode: FlockArg) -> io::Result<Option<Flock<File>>> {
+    match Flock::lock(file, mode) {
         Ok(lock) => Ok(Some(lock)),
         Err((_, nix::errno::Errno::EAGAIN)) => Ok(None),
         Err((_, error)) => Err(error.into()),
     }
+}
+
+fn try_lock(key: &str, mode: FlockArg) -> io::Result<Option<Flock<File>>> {
+    try_flock(open_lock(key)?, mode)
 }
 
 pub fn try_name_lock(name: &str) -> io::Result<Option<Flock<File>>> {
@@ -79,15 +85,12 @@ pub fn try_name_lock(name: &str) -> io::Result<Option<Flock<File>>> {
 
 /// Observe an existing lock without creating any host state.
 pub fn name_alive(name: &str) -> io::Result<bool> {
-    let directory = host_dir()?;
-    let metadata = match fs::symlink_metadata(&directory) {
+    let metadata = match fs::symlink_metadata(host_dir()?) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error),
     };
-    if !private(&metadata, metadata.is_dir()) {
-        return Err(io::Error::other("unsafe host ownership directory"));
-    }
+    check_private(&metadata, metadata.is_dir(), "directory")?;
     let file = match File::options()
         .read(true)
         .custom_flags(nix::libc::O_NOFOLLOW)
@@ -98,14 +101,8 @@ pub fn name_alive(name: &str) -> io::Result<bool> {
         Err(error) => return Err(error),
     };
     let metadata = file.metadata()?;
-    if !private(&metadata, metadata.is_file()) {
-        return Err(io::Error::other("unsafe host ownership lock"));
-    }
-    match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
-        Ok(_) => Ok(false),
-        Err((_, nix::errno::Errno::EAGAIN)) => Ok(true),
-        Err((_, error)) => Err(error.into()),
-    }
+    check_private(&metadata, metadata.is_file(), "lock")?;
+    Ok(try_flock(file, FlockArg::LockExclusiveNonblock)?.is_none())
 }
 
 pub fn project_lock(id: &str) -> io::Result<Flock<File>> {
@@ -174,23 +171,11 @@ pub fn remove_record(name: &str, generation: &str) -> io::Result<()> {
     if let Some(record) = record(name)?
         && record.generation == generation
     {
-        match fs::remove_dir_all(&record.state_dir) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
-        remove_file(&socket(name)?)?;
-        remove_file(&path(&format!("box:{name}"), "owner")?)?;
+        absent_ok(fs::remove_dir_all(&record.state_dir))?;
+        absent_ok(fs::remove_file(socket(name)?))?;
+        absent_ok(fs::remove_file(path(&format!("box:{name}"), "owner")?))?;
     }
     Ok(())
-}
-
-fn remove_file(path: &Path) -> io::Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
 }
 
 /// Name ownership precedes state creation. Publication follows the runtime
@@ -232,11 +217,7 @@ impl Claim {
         if let Some(old) = record(&self.name)? {
             remove_record(&self.name, &old.generation)?;
         }
-        match fs::remove_dir_all(state_dir) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
+        absent_ok(fs::remove_dir_all(state_dir))?;
         let mut random = [0; 16];
         File::open("/dev/urandom")?.read_exact(&mut random)?;
         self.record = Some(Record {
@@ -249,7 +230,7 @@ impl Claim {
         });
         fs::create_dir_all(state_dir)?;
         let endpoint = socket(&self.name)?;
-        remove_file(&endpoint)?;
+        absent_ok(fs::remove_file(&endpoint))?;
         self.listener = Some(UnixListener::bind(endpoint)?);
         self.publish()
     }
@@ -333,7 +314,7 @@ impl Drop for Claim {
             let _ = fs::remove_dir_all(&record.state_dir);
         }
         if self.record.is_some() {
-            let _ = socket(&self.name).and_then(|socket| remove_file(&socket));
+            let _ = socket(&self.name).and_then(|socket| absent_ok(fs::remove_file(socket)));
         }
     }
 }
@@ -418,31 +399,21 @@ pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<bool> {
 
 /// Published generations across every Pinfold state root.
 pub fn records() -> io::Result<Vec<Record>> {
-    let entries = match fs::read_dir(host_dir()?) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    entries
-        .filter_map(|entry| {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(error) => return Some(Err(error)),
-            };
-            if entry
-                .path()
-                .extension()
-                .is_none_or(|extension| extension != "owner")
-            {
-                return None;
-            }
-            // A record removed since the listing belongs to a box that ended.
-            match fs::read(entry.path()) {
-                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-                read => Some(
-                    read.and_then(|bytes| serde_json::from_slice(&bytes).map_err(io::Error::other)),
-                ),
-            }
-        })
-        .collect()
+    let mut records = Vec::new();
+    for entry in crate::dirs::entries(&host_dir()?)? {
+        let path = entry.path();
+        if path
+            .extension()
+            .is_none_or(|extension| extension != "owner")
+        {
+            continue;
+        }
+        // A record removed since the listing belongs to a box that ended.
+        match fs::read(&path) {
+            Ok(bytes) => records.push(serde_json::from_slice(&bytes).map_err(io::Error::other)?),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(records)
 }

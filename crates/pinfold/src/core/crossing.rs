@@ -273,9 +273,7 @@ pub fn fetch(
 /// refuses, such as `x` beside `x/y`, fails it before any pack moves into
 /// REPO; then migrate and commit. Closing stdin before `commit` aborts it.
 fn update_refs(repo: &Path, quarantine: &Quarantine, updates: &str) -> Result<(), CrossingError> {
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    let mut child = git_command(repo)
         .args(["update-ref", "-z", "--stdin"])
         .envs(quarantine.env())
         .stdin(Stdio::piped())

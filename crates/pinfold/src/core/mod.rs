@@ -48,6 +48,14 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     written
 }
 
+/// `result`, with a path that is already gone counted as removed.
+pub(crate) fn absent_ok(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+
 /// The sha256 of `bytes` as lowercase hex. Ids and cache paths on disk are
 /// made of it.
 pub(crate) fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {

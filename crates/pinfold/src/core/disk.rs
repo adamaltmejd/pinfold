@@ -307,11 +307,7 @@ fn marker(name: &str, kind: &str) -> io::Result<PathBuf> {
 }
 
 fn marked(name: &str, kind: &str) -> io::Result<bool> {
-    match fs::symlink_metadata(marker(name, kind)?) {
-        Ok(_) => Ok(true),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
-    }
+    fs::exists(marker(name, kind)?)
 }
 
 /// Whether a writable attachment of the disk ended without `down`.
@@ -335,10 +331,7 @@ fn mark(name: &str, kind: &str) -> io::Result<()> {
 }
 
 fn unmark(name: &str, kind: &str) -> io::Result<()> {
-    match fs::remove_file(marker(name, kind)?) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-        _ => Ok(()),
-    }
+    crate::core::absent_ok(fs::remove_file(marker(name, kind)?))
 }
 
 /// Once the box is ready, its new disks hold their `from`, synced in the

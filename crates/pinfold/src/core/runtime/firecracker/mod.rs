@@ -210,10 +210,7 @@ impl Runtime for Firecracker {
     }
 
     fn remove_disk(&self, name: &str) -> io::Result<()> {
-        match fs::remove_file(disk_path(name)?) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-            _ => Ok(()),
-        }
+        crate::core::absent_ok(fs::remove_file(disk_path(name)?))
     }
 
     /// Firecracker's default cache ignores guest flushes, but each guest
