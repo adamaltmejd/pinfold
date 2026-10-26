@@ -11,94 +11,86 @@ use crate::core::runtime::{BuildRequest, ImageInfo, inspect, output, parse_json}
 /// `clean` prunes only pinfold's build cache.
 const LAYER_LABEL: &str = "dev.pinfold.layer";
 
-/// Rootless podman.
-pub struct Podman;
+pub fn preflight() -> io::Result<()> {
+    // A misconfigured host fails closed here, before any box starts.
+    let json = output(&["podman", "info", "--format", "json"])?;
+    let info: Info = parse_json("podman info", &json)?;
+    super::require_version("podman", &info.version.version, [6, 1, 4])?;
+    if !info.host.security.rootless {
+        return Err(io::Error::other(
+            "rootful podman is not supported; pinfold requires rootless podman",
+        ));
+    }
+    Ok(())
+}
 
-impl Podman {
-    pub fn preflight(&self) -> io::Result<()> {
-        // A misconfigured host fails closed here, before any box starts.
-        let json = output(&["podman", "info", "--format", "json"])?;
-        let info: Info = parse_json("podman info", &json)?;
-        super::require_version("podman", &info.version.version, [6, 1, 4])?;
-        if !info.host.security.rootless {
-            return Err(io::Error::other(
-                "rootful podman is not supported; pinfold requires rootless podman",
-            ));
+pub fn list_images() -> io::Result<Vec<ImageInfo>> {
+    let json = output(&["podman", "image", "list", "--format", "json"])?;
+    let images: Vec<ListedImage> = parse_json("podman image list", &json)?;
+    let mut infos = Vec::new();
+    // One entry per name, so Maintenance can remove every tag of an
+    // old image; a dangling image is removed by its id. Podman emits
+    // one JSON entry per tag and repeats the image's whole `Names` list
+    // on each, so keep only the first entry per image.
+    let mut seen = BTreeSet::new();
+    for image in images {
+        if !seen.insert(image.id.clone()) {
+            continue;
         }
-        Ok(())
-    }
-
-    pub fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
-        let json = output(&["podman", "image", "list", "--format", "json"])?;
-        let images: Vec<ListedImage> = parse_json("podman image list", &json)?;
-        let mut infos = Vec::new();
-        // One entry per name, so Maintenance can remove every tag of an
-        // old image; a dangling image is removed by its id. Podman emits
-        // one JSON entry per tag and repeats the image's whole `Names` list
-        // on each, so keep only the first entry per image.
-        let mut seen = BTreeSet::new();
-        for image in images {
-            if !seen.insert(image.id.clone()) {
-                continue;
-            }
-            let references = if image.names.is_empty() {
-                vec![image.id.clone()]
-            } else {
-                image.names
-            };
-            for reference in references {
-                infos.push(ImageInfo {
-                    id: image.id.clone(),
-                    reference,
-                    labels: image.labels.clone(),
-                    digest: None,
-                });
-            }
-        }
-        Ok(infos)
-    }
-
-    pub fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageInfo, String>> {
-        Ok(
-            inspect::<InspectedImage>("podman", reference)?.map(|image| ImageInfo {
-                id: image.id,
-                reference: reference.to_string(),
-                labels: image.labels,
-                digest: Some(image.digest).filter(|digest| !digest.is_empty()),
-            }),
-        )
-    }
-
-    pub fn remove_image(&self, reference: &str) -> io::Result<()> {
-        // `image rm` also collects the layers no image references.
-        output(&["podman", "image", "rm", reference]).map(|_| ())
-    }
-
-    pub fn purge_build_cache(&self) -> io::Result<()> {
-        // `image prune` removes only dangling images and repeats until none
-        // is left, so an intermediate goes once nothing builds on it, and an
-        // intermediate under a kept image stays with it.
-        let filter = format!("label={LAYER_LABEL}");
-        output(&["podman", "image", "prune", "--force", "--filter", &filter]).map(|_| ())
-    }
-
-    pub fn build_cache(&self) -> &'static str {
-        "the dev.pinfold.layer intermediate images no image builds on"
-    }
-
-    pub fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
-        let label = format!("{LAYER_LABEL}=true");
-        let cache_flags: &[&str] = if request.cache {
-            // The cache is intermediate images carrying only buildah's own
-            // labels; this one is how `purge_build_cache` tells pinfold's
-            // apart.
-            &["--layer-label", &label]
+        let references = if image.names.is_empty() {
+            vec![image.id.clone()]
         } else {
-            // Every step reruns and no intermediate image is left behind.
-            &["--layers=false"]
+            image.names
         };
-        super::build("podman", cache_flags, request)
+        for reference in references {
+            infos.push(ImageInfo {
+                id: image.id.clone(),
+                reference,
+                labels: image.labels.clone(),
+                digest: None,
+            });
+        }
     }
+    Ok(infos)
+}
+
+pub fn resolve_image(reference: &str) -> io::Result<Result<ImageInfo, String>> {
+    Ok(
+        inspect::<InspectedImage>("podman", reference)?.map(|image| ImageInfo {
+            id: image.id,
+            reference: reference.to_string(),
+            labels: image.labels,
+            digest: Some(image.digest).filter(|digest| !digest.is_empty()),
+        }),
+    )
+}
+
+pub fn remove_image(reference: &str) -> io::Result<()> {
+    // `image rm` also collects the layers no image references.
+    output(&["podman", "image", "rm", reference]).map(|_| ())
+}
+
+pub fn purge_build_cache() -> io::Result<()> {
+    // `image prune` removes only dangling images and repeats until none
+    // is left, so an intermediate goes once nothing builds on it, and an
+    // intermediate under a kept image stays with it.
+    let filter = format!("label={LAYER_LABEL}");
+    output(&["podman", "image", "prune", "--force", "--filter", &filter]).map(|_| ())
+}
+
+pub fn build_cache() -> &'static str {
+    "the dev.pinfold.layer intermediate images no image builds on"
+}
+
+pub fn build(request: &BuildRequest) -> io::Result<Result<(), String>> {
+    let label = format!("{LAYER_LABEL}=true");
+    let cache_flags: &[&str] = if request.cache {
+        &["--layer-label", &label]
+    } else {
+        // Every step reruns and no intermediate image is left behind.
+        &["--layers=false"]
+    };
+    super::build("podman", cache_flags, request)
 }
 
 /// What preflight reads from `podman info`.

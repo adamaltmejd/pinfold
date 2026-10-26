@@ -19,7 +19,7 @@ pub use vm::{Prepared, Vm, prepare};
 
 use crate::core::artifacts::VMM;
 use crate::core::ownership;
-use crate::core::runtime::podman::Podman;
+use crate::core::runtime::podman;
 use crate::core::runtime::{
     BoxInfo, BoxStat, BuildRequest, DiskInfo, ImageInfo, MemoryStat, PidsStat, Runtime, output,
 };
@@ -53,7 +53,7 @@ impl Runtime for Firecracker {
         if !missing.is_empty() {
             return Err(io::Error::other(missing.join("; ")));
         }
-        Podman.preflight()
+        podman::preflight()
     }
 
     fn proxy_socket(&self, state_dir: &Path) -> io::Result<PathBuf> {
@@ -149,23 +149,23 @@ impl Runtime for Firecracker {
     }
 
     fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
-        Podman.list_images()
+        podman::list_images()
     }
 
     fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageInfo, String>> {
-        Podman.resolve_image(reference)
+        podman::resolve_image(reference)
     }
 
     fn remove_image(&self, reference: &str) -> io::Result<()> {
-        Podman.remove_image(reference)
+        podman::remove_image(reference)
     }
 
     fn purge_build_cache(&self) -> io::Result<()> {
-        Podman.purge_build_cache()
+        podman::purge_build_cache()
     }
 
     fn build_cache(&self) -> &'static str {
-        Podman.build_cache()
+        podman::build_cache()
     }
 
     fn list_disks(&self) -> io::Result<Vec<DiskInfo>> {
@@ -235,7 +235,7 @@ impl Runtime for Firecracker {
     }
 
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
-        Podman.build(request)
+        podman::build(request)
     }
 
     fn program(&self) -> &'static str {
