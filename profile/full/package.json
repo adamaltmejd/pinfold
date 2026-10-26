@@ -4,7 +4,7 @@
     "pi": {
         "extensions": [
             "extensions/operating-context.ts",
-            "/opt/pinfold/packages/rtk.ts",
+            "/opt/pinfold/packages/pi-fff/src/index.ts",
             "/opt/pinfold/packages/ponytail/pi-extension/index.js"
         ],
         "skills": ["skills", "/opt/pinfold/packages/ponytail/skills"]

@@ -113,7 +113,7 @@ Optional profiles add tools to the default; only `full` adds egress:
 | Profile | Adds |
 |---|---|
 | `documents` | Bun, AnyDoc for local document conversion, Poppler for PDFs |
-| `full` | documents tools plus gh, rtk and ponytail; allows `github.com` and `api.github.com` |
+| `full` | documents tools plus gh, fff and ponytail; allows `github.com` and `api.github.com` |
 
 Build and select one explicitly:
 

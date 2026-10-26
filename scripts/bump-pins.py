@@ -18,13 +18,19 @@ HARNESSES = ROOT / "crates" / "pinfold" / "harnesses.toml"
 VMM = ROOT / "crates" / "pinfold" / "vmm.toml"
 KERNEL = ROOT / "guest-kernel" / "pins"
 YARD = ROOT / ".yard" / "Dockerfile"
-# Containerfile pins that move together, by ADD destination. AnyDoc's CLI comes
-# first: its optionalDependencies must name its native packages' version.
+# Containerfile pins that move together, by ADD destination. An npm package
+# comes after one whose dependencies or optionalDependencies name it at the
+# same version.
 IMAGE_TOOLS = {
     "bun": (IMAGE / "bun.Containerfile", ["/tmp/bun-aarch64.zip", "/tmp/bun-x64.zip"]),
-    "rtk": (
+    "fff": (
         IMAGE / "full.Containerfile",
-        ["/tmp/rtk-aarch64.tar.gz", "/tmp/rtk-x64.tar.gz"],
+        [
+            "/tmp/pi-fff.tgz",
+            "/tmp/fff-bun.tgz",
+            "/tmp/fff-bin-aarch64.tgz",
+            "/tmp/fff-bin-x64.tgz",
+        ],
     ),
     "ponytail": (IMAGE / "full.Containerfile", ["/tmp/ponytail.tgz"]),
     "anydoc": (
@@ -179,13 +185,21 @@ def npm(urls, cutoff):
         return None
 
     def complete(candidate):
-        manifest = packages[0]["versions"][candidate]
-        natives = manifest.get("optionalDependencies", {})
-        return all(natives.get(name) == candidate for name in names[1:]) and all(
-            candidate in package["versions"]
-            and not package["versions"][candidate].get("deprecated")
+        manifests = [package["versions"].get(candidate) for package in packages]
+        if not all(manifests):
+            return False
+        named = [
+            manifest.get("dependencies", {}) | manifest.get("optionalDependencies", {})
+            for manifest in manifests
+        ]
+        return all(
+            any(earlier.get(name) == candidate for earlier in named[:index])
+            for index, name in enumerate(names)
+            if index
+        ) and all(
+            not manifest.get("deprecated")
             and old_enough(package.get("time", {}).get(candidate), cutoff)
-            for package in packages
+            for package, manifest in zip(packages, manifests)
         )
 
     eligible = [
