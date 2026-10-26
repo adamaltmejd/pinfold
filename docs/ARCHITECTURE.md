@@ -132,7 +132,7 @@ sysctl rather than the failing call.
    PID 1 makes each mount point without following a symlink: a symlink a
    box left on a disk fails the start, and PID 1 creates nothing through
    it. Disks attach only here, at boot; nothing attaches or detaches one
-   later. PID 1 then puts box work in Always applied's state. Before
+   later. On Linux PID 1 then puts box work in Always applied's state. Before
    ready, the box copies each new disk's `from` in as the box user, and on
    Linux the profile's missing home seeds.
 6. Apple only: wait until the runtime lists the box running, including
@@ -749,13 +749,20 @@ no box asks for is never downloaded.
 `scripts/bump-pins.py` moves the pins: harnesses, Firecracker and the
 guest kernel, image tools, Rust, Cargo dependencies, prototype packages
 and the Public Suffix List. Pins move only with a pinfold release. A
-version pin only moves up and is never rehashed at its version. Every
+version pin only moves up, to a stable version at or below upstream's
+latest stable release, and is never rehashed at its version. The pi,
+claude and codex harnesses take the latest release once its assets exist;
+other tools and packages take a version only seven full days after its
+last required asset was published, and a missing publication time makes it
+ineligible. Every
 artifact download must match its publisher's digest; a source or
 integrity failure aborts before any pin file is written.
 
 On Linux, `crates/pinfold/vmm.toml` pins Firecracker and its guest kernel
 for `linux-x64`, each checked against its pinned digest. The guest kernel
-is pinfold's own build of a pinned kernel.org stable release, without
+is pinfold's own build of a pinned kernel.org stable release, verified
+against kernel.org's signature and published as a prerelease, never the
+latest release, without
 vsock loopback and with its config at `/proc/config.gz`; `guest-kernel/`
 builds it. Both install like a harness, into
 `~/.cache/pinfold/artifacts/vmm/<version>/<os-arch>/`, where `<version>`
@@ -932,7 +939,8 @@ observed fingerprint. Changes print `bundled-profiles-changed` once,
 independently of the network interval. No history means a silent baseline;
 self-update records a missing baseline before replacement. Saved project
 settings and user profiles are preserved. `PINFOLD_NO_UPDATE_CHECK`
-(Configuration) turns both off. The timestamp and fingerprint live under
+(Configuration) turns off both the update check and the
+`bundled-profiles-changed` notice. The timestamp and fingerprint live under
 `~/.cache/pinfold/update-check`.
 
 ## Maintenance
@@ -1044,7 +1052,8 @@ under the box's hooks and config, none of which reach the host.
 
 `pinfold fetch` is `box fetch` into the checkout with remote `pinfold`;
 the user merges. `pinfold push` is `box push` of the checkout with remote
-`host`; uncommitted host edits do not cross (Crossing).
+`host`; uncommitted host edits do not cross (Crossing). The user merges;
+signing and host hooks are the user's.
 
 Both check trust as `pinfold pi` does, then use the project's running pi
 box, or a transient box on the project disk without egress, and print

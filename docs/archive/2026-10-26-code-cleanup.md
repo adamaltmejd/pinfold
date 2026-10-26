@@ -2,8 +2,10 @@
 
 The code-cleanup pass with test-audit's sweep, then the spec pass over
 ARCHITECTURE.md and README.md, before the release after v0.2.7. The audit
-read the tree at f75b6e7. Four PRs landed from it (#203, #204, #205,
-#208); the spec pass, README and this report are the fifth.
+read the tree at f75b6e7. Two bug-fix PRs landed just before it: #200
+(fetch has no deadline, closing #198) and #201 (disks per state root,
+closing #182 and part of #167). Four PRs landed from the audit (#203,
+#204, #205, #208); the spec pass, README and this report are the fifth.
 
 ## Numbers
 

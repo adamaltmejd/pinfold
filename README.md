@@ -42,8 +42,9 @@ install -m 0755 pinfold-*-aarch64-apple-darwin ~/.local/bin/pinfold
 ```
 
 `pinfold update` installs the latest stable release, verified; `--check`
-only reports it. Close boxes and other pinfold commands first. Interactive
-`pi` shows at most one update notice a day; `PINFOLD_NO_UPDATE_CHECK=1`
+only reports it. Close boxes and other pinfold commands first; the install
+directory must be writable. Interactive `pi` and `attach` show at most one
+update notice a day; `PINFOLD_NO_UPDATE_CHECK=1`
 turns it off.
 
 The macOS binary is not notarized. Clear a browser download's quarantine
