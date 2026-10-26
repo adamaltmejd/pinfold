@@ -47,15 +47,6 @@ jobs:
           toolchain=$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)
           rustup toolchain install "$toolchain" --profile minimal --component rustfmt --component clippy
 
-      - name: Candidate Bun version
-        id: tools
-        run: |
-          python3 scripts/bun-version.py >>"$GITHUB_OUTPUT"
-
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: ${{ steps.tools.outputs.bun }}
-
       - name: Refresh dependency lockfiles
         run: |
           cargo update
@@ -186,14 +177,6 @@ jobs:
         run: |
           toolchain=$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)
           rustup run "$toolchain" cargo test -p e2e --locked
-      - name: Prototype Bun version
-        id: tools
-        run: |
-          python3 scripts/bun-version.py >>"$GITHUB_OUTPUT"
-
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: ${{ steps.tools.outputs.bun }}
       - name: Reclaim caches after success or failure
         if: always()
         run: sh scripts/clean-mac-runner.sh
