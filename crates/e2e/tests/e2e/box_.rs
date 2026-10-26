@@ -442,13 +442,10 @@ fn up_refuses_before_it_creates() {
     };
     let disk = box_name("refused-disk");
     let comma_from = serde_json::json!({ "name": disk, "guest": "/disk", "from": comma });
-    let mut cases = vec![
-        (comma_from, "a,b"),
-        (
-            serde_json::json!({ "name": "-disk", "guest": "/disk" }),
-            "-disk",
-        ),
-    ];
+    let mut cases = vec![(comma_from, "a,b")];
+    for bad in ["-disk", "a/b"] {
+        cases.push((serde_json::json!({ "name": bad, "guest": "/disk" }), bad));
+    }
     // A disk at or below the guest kernel's /proc, /sys or /dev would
     // replace the userns sysctl or the work cgroup; each case reaches its
     // path only after normalization. The positive control is the race's

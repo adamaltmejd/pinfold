@@ -59,7 +59,13 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // newer tag names; the oldest-tag assertion fails. Sabotage: drop the
     // in-use check from `remove_images`; the live box's last tag is offered
     // to the runtime, which deletes the image under the box, and the
-    // live-box image assertion fails. Sabotage: apply the newest-two rule or
+    // live-box image assertion fails. Sabotage: count only the source's
+    // own tags in `remove_images`; the twin box's shared image is reported
+    // in use, the retired name's tag on it survives, and the assertion that
+    // the retired name's free tags are gone fails. Sabotage: make
+    // `remove_images` remove every reference of an image's id instead of
+    // only the name's tags; the twin's tag goes with the shared image and
+    // the twin assertion fails. Sabotage: apply the newest-two rule or
     // the caller's one-hour grace in `image rm`; a fresh build survives and
     // the removed-tags assertion fails. Sabotage: match the name as a prefix in
     // `remove_images`; the image of the name extending the retired one goes
@@ -434,7 +440,9 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // whatever its age, and no other name's, except an image's last tag
     // while a listed box uses it. Three builds of `retire` are fresh, so
     // the caller grace would keep them all. A retire box pins the oldest
-    // build, so its last tag stays. A second name extending the first is
+    // build, whose only tags are `retire`'s, so its last tag stays; a twin
+    // box pins the second build's image, which the twin's tags also hold,
+    // so `retire`'s tag on it goes. A second name extending the first is
     // untouched.
     let base = default_image(&env);
     let rm_context = env.root.join("image-rm-context");
@@ -489,11 +497,37 @@ fn cleanup_removes_only_pinfolds_garbage() {
         .unwrap_or_else(|| panic!("built carries no latest: {similar}"))
         .to_string();
 
+    // A third name built from the second retire build's identical inputs:
+    // its build returns that image and tags it under the third name.
+    let twin_name = format!("{retire_name}-twin");
+    let _twin_images = ImageCleanup {
+        repository: format!("localhost/pinfold/image-{twin_name}"),
+    };
+    fs::write(rm_context.join("marker.txt"), "retire-2\n").unwrap();
+    let (code, twin) = image_build(&env, &twin_name, &rm_containerfile, &rm_context);
+    assert_eq!(twin["event"], "built", "the twin build: {twin}");
+    assert_eq!(code, 0, "the twin build exited {code}");
+    let twin_latest = twin["latest"]
+        .as_str()
+        .unwrap_or_else(|| panic!("built carries no latest: {twin}"))
+        .to_string();
+    assert_eq!(
+        image_id(&twin_latest),
+        Some(retire_ids[1].clone()),
+        "identical inputs under the twin name did not share the retire image"
+    );
+
     // Box the oldest build, so the newest two, `latest` among them, are the
     // free ones.
     let retire_box = box_name("cleanup-retire");
     let retire_spec = serde_json::json!({ "name": retire_box, "image": retire_refs[0] });
     let mut up_retire = box_up(&env, &retire_spec, &retire_box);
+
+    // A twin box runs the shared image, so `retire`'s tag on it must be
+    // freed while the twin's tags hold the image up.
+    let twin_box = box_name("cleanup-twin");
+    let twin_spec = serde_json::json!({ "name": twin_box, "image": twin_latest });
+    let mut up_twin = box_up(&env, &twin_spec, &twin_box);
 
     let (code, removed) = image_rm(&env, &retire_name);
     assert_eq!(code, 0, "image rm {retire_name} exited {code}: {removed}");
@@ -534,8 +568,23 @@ fn cleanup_removes_only_pinfolds_garbage() {
         image_id(&similar_latest).is_some(),
         "image rm touched the image of a name it prefixes"
     );
+    assert_eq!(
+        image_id(&twin_latest),
+        Some(retire_ids[1].clone()),
+        "image rm removed the twin's tag with the shared image"
+    );
+    // Only references went, not the image: the twin box still answers from
+    // the shared image.
+    let alive = box_exec(&env, &twin_box, &["cat", "/marker.txt"]);
+    assert_ok(&alive, "the twin box's exec after image rm");
+    assert_eq!(
+        alive.stdout.trim(),
+        "retire-2",
+        "the twin box answered from another image"
+    );
 
-    // With the retire box down, its last tag goes.
+    // With the retire box down, its last tag goes; the twin box stays up
+    // through the removal and goes down below.
     up_retire.down(&env);
     assert!(
         up_retire.wait().success(),
@@ -553,6 +602,11 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert!(
         !root_disk(&retire_ids[0]).exists(),
         "the removed image's root disk survived image rm"
+    );
+    up_twin.down(&env);
+    assert!(
+        up_twin.wait().success(),
+        "the twin box's up did not exit cleanly"
     );
 }
 
@@ -689,6 +743,33 @@ fn disks_persist_and_attach_exclusively() {
         (1, &"disk-in-use".into()),
         "{refused}"
     );
+
+    // Another state root naming the disk gets its own: its writable `up`
+    // runs beside the writer, sees none of the writer's files, and its
+    // `disk list` names only its own box. Sabotage: drop the state-root
+    // filter in `disk::attachments`; root B's `up` is refused `disk-in-use`.
+    // Sabotage (macOS): name volumes without the root's key in
+    // `apple::volume`; root B's `up` attaches root A's volume beside the
+    // writer, which the runtime refuses, and it ends `failed`, not `ready`.
+    let other = TestEnv::new("disks-b");
+    let theirs = serde_json::json!({ "name": work, "guest": "/work" });
+    let mut theirs = box_up(&other, &spec(second, theirs), second);
+    assert_ok(
+        &box_exec(&other, second, &["test", "!", "-e", "/work/written"]),
+        "another root's disk of the same name",
+    );
+    let listed: Vec<_> = disk_list(&other)
+        .into_iter()
+        .filter(|disk| disk["name"] == work.as_str())
+        .map(|disk| disk["attached"].clone())
+        .collect();
+    assert_eq!(
+        listed,
+        [serde_json::json!([{ "box": second, "readonly": false }])],
+        "root B's disk list"
+    );
+    theirs.down(&other);
+    assert!(theirs.wait().success(), "root B's box did not exit cleanly");
 
     up.down(&env);
     assert!(up.wait().success(), "the writer did not exit cleanly");
@@ -878,6 +959,16 @@ fn disks_persist_and_attach_exclusively() {
         recovery.wait().success(),
         "the recovering writer did not exit cleanly"
     );
+    let mut after = box_up(&env, &spec(reader_a, reader), reader_a);
+    assert_ok(
+        &box_exec(&env, reader_a, &["cat", "/work/written"]),
+        "reading after recovery",
+    );
+    #[cfg(target_os = "linux")]
+    {
+        after.down(&env);
+        assert!(after.wait().success());
+    }
     // A dead owner's box the runtime has created but not started may still
     // boot, so it holds its disk. Apple lists such a box `stopped`, as an
     // orphaned `container run` leaves it; `container create` makes one
@@ -887,7 +978,6 @@ fn disks_persist_and_attach_exclusively() {
     // fails.
     #[cfg(target_os = "macos")]
     {
-        let mut after = box_up(&env, &spec(reader_a, reader), reader_a);
         after.kill();
         let _ = after.wait();
         let _ = Command::new(image_cli())
@@ -1002,9 +1092,13 @@ fn disks_persist_and_attach_exclusively() {
     assert_eq!((code, &removed["existed"]), (0, &false.into()), "{removed}");
 }
 
-fn disk_names(env: &TestEnv) -> Vec<String> {
+fn disk_list(env: &TestEnv) -> Vec<serde_json::Value> {
     let output = run_ok(env.command(pinfold()).args(["disk", "list"]));
     json_lines(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn disk_names(env: &TestEnv) -> Vec<String> {
+    disk_list(env)
         .iter()
         .filter_map(|disk| disk["name"].as_str().map(String::from))
         .collect()
