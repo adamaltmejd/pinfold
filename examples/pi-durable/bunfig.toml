@@ -1,4 +1,0 @@
-env = false
-
-[install]
-auto = "disable"
