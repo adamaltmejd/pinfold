@@ -125,7 +125,9 @@ fn run_queries_are_bounded_and_need_no_runtime() {
     // proxy appends each line in one write, so a partial line is rare.
     // Sabotage: drop the run from the cursor; another run's cursor exits 0.
     // Sabotage: report a no-egress run's log `unavailable`; the
-    // not-applicable assertions fail.
+    // not-applicable assertions fail. Sabotage: a default limit of 1000;
+    // the first page then holds all 150 lines and its length assertion
+    // fails.
     let env = TestEnv::new("run-query");
     let image = default_image(&env);
 
@@ -172,11 +174,18 @@ fn run_queries_are_bounded_and_need_no_runtime() {
     let mut paths = Vec::new();
     let mut cursor: Option<String> = None;
     let mut appended = false;
+    let mut pages = 0;
     loop {
         let (code, page) = events(&env, &run, cursor.as_deref());
         assert_eq!(code, 0, "events failed");
         assert_eq!(page["state"], "available", "{page}");
         let page_events = page["events"].as_array().expect("events is an array");
+        // 150 lines exist before the first page, so it is full at the
+        // spec's default limit of 100.
+        if pages == 0 {
+            assert_eq!(page_events.len(), 100, "the first page's length");
+        }
+        pages += 1;
         for event in page_events {
             assert_eq!(event["reason"], "route", "{event}");
             paths.push(event["path"].as_str().unwrap_or_default().to_string());
@@ -199,6 +208,7 @@ fn run_queries_are_bounded_and_need_no_runtime() {
         .chain((1..=50).map(|i| format!("/extra/{i}")))
         .collect();
     assert_eq!(paths, expected, "paging skipped, repeated or reordered");
+    assert!(pages > 1, "the log was read in one page");
     let cursor = cursor.expect("paging returned a cursor");
     up.close_stdin();
 
