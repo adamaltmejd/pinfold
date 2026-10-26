@@ -1060,7 +1060,8 @@ measurement does not authorize a later deletion.
   The first start creates it with the whole checkout as its `from`:
   `.git`, untracked and ignored files included. Later starts reuse it as
   the box left it; host edits after that reach it only as branches. One pi box runs per project; a second start is refused as
-  `disk-in-use`.
+  `disk-in-use`. A checkout whose `.git` is not a directory (a worktree)
+  is refused as `worktree` by `pi`, `push` and `fetch`.
 - **Arguments** pass through unchanged. The box starts in the invoking
   directory. Paths outside the project fail, and pi reports them. A
   non-UTF-8 path in a pi box spec or configuration report is refused as
@@ -1206,7 +1207,8 @@ touching the runtime or the state dir; `--help` or `-h` after a subcommand, befo
 prints that subcommand's syntax line and exits 0, touching neither. `pi`
 passes it to pi, and `attach` to its command once one is given.
 
-The project root is the git top level, else `$PWD`.
+The project root is the git top level, else `$PWD`. Inside a git directory,
+the command refuses as `project-in-git`.
 
 ## Guarantees
 
