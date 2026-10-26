@@ -402,7 +402,7 @@ fn build(
     cache_flags: &[&str],
     request: &BuildRequest,
 ) -> io::Result<Result<(), String>> {
-    let (mut reader, writer) = io::pipe()?;
+    let (reader, writer) = io::pipe()?;
     let mut command = std::process::Command::new(program);
     if cfg!(target_os = "macos") {
         // Apple includes color settings in the shared builder's identity
@@ -433,26 +433,21 @@ fn build(
     let mut child = child.map_err(|error| spawn_error(program, error))?;
     let mut tail = VecDeque::new();
     let mut newlines = 0;
-    let mut buffer = [0u8; 8192];
-    loop {
-        let size = match reader.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(size) => size,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+    for byte in io::BufReader::new(reader).bytes() {
+        let byte = match byte {
+            Ok(byte) => byte,
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(error);
             }
         };
-        for &byte in &buffer[..size] {
-            tail.push_back(byte);
-            newlines += usize::from(byte == b'\n');
-            while tail.len() > BUILD_LOG_BYTES
-                || newlines + usize::from(tail.back() != Some(&b'\n')) > 40
-            {
-                newlines -= usize::from(tail.pop_front() == Some(b'\n'));
-            }
+        tail.push_back(byte);
+        newlines += usize::from(byte == b'\n');
+        while tail.len() > BUILD_LOG_BYTES
+            || newlines + usize::from(tail.back() != Some(&b'\n')) > 40
+        {
+            newlines -= usize::from(tail.pop_front() == Some(b'\n'));
         }
     }
     if child.wait()?.success() {

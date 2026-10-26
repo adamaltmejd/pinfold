@@ -22,11 +22,8 @@ pub fn host_requirements() -> Vec<String> {
             "kvm: /dev/kvm: {error}; the user needs to read, write and use /dev/kvm (the kvm group)"
         ));
     }
-    if mkfs_ext4().is_none() {
-        missing.push(
-            "mkfs: no mkfs.ext4 on PATH, in /usr/sbin or in /sbin; disks need e2fsprogs"
-                .to_string(),
-        );
+    if let Err(error) = mkfs_ext4() {
+        missing.push(format!("{error}; disks need e2fsprogs"));
     }
     if let Err(error) = jail::probe() {
         // From the sysctl, not the error: AppArmor's refusal can surface as
@@ -104,7 +101,7 @@ fn kvm() -> io::Result<()> {
 
 /// The first executable `mkfs.ext4` on PATH, then in `/usr/sbin` and
 /// `/sbin`, which Debian leaves off a user's PATH.
-pub fn mkfs_ext4() -> Option<PathBuf> {
+pub fn mkfs_ext4() -> io::Result<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     std::env::split_paths(&path)
         .chain([PathBuf::from("/usr/sbin"), PathBuf::from("/sbin")])
@@ -112,6 +109,7 @@ pub fn mkfs_ext4() -> Option<PathBuf> {
         .find(|path| {
             path.is_file() && nix::unistd::access(path, nix::unistd::AccessFlags::X_OK).is_ok()
         })
+        .ok_or_else(|| io::Error::other("mkfs: no mkfs.ext4 on PATH, in /usr/sbin or in /sbin"))
 }
 
 /// `kernel.apparmor_restrict_unprivileged_userns`, absent where AppArmor

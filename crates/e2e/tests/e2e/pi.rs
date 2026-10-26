@@ -203,10 +203,11 @@ fn the_environment_is_exactly_the_spec() {
     // A caller-owned box whose spec PATH is one directory that does not
     // exist, so the runtime's directory is omitted on both macOS and Linux
     // (on Ubuntu /bin is /usr/bin, so a list of system dirs would not show
-    // the bug). The runtime is resolved on pinfold's own PATH before the
-    // spec's env, so the box still comes up. Sabotage: spawn the runtime by
-    // its bare name again; Rust then resolves it against the spec PATH, `up`
-    // fails before `ready`, and `box_up` panics on its first line.
+    // the bug). The spec's PATH reaches the runtime client only under its
+    // prefixed name, so the runtime is found on pinfold's own PATH and the
+    // box still comes up. Sabotage: export guest env unprefixed; Rust then
+    // resolves the runtime against the spec PATH, `up` fails before
+    // `ready`, and `box_up` panics on its first line.
     let path = env.root.join("no-such-path");
     let name = box_name("env-path");
     // Sabotage: on Apple, export guest values under their original names to

@@ -63,7 +63,7 @@ fn answer(stream: &mut UnixStream, kind: u8) -> io::Result<Vec<u8>> {
     }
 }
 
-fn put(payload: &mut Vec<u8>, bytes: &[u8]) {
+pub(super) fn put(payload: &mut Vec<u8>, bytes: &[u8]) {
     payload.extend((bytes.len() as u32).to_be_bytes());
     payload.extend(bytes);
 }

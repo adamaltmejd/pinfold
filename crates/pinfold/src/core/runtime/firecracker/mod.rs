@@ -19,7 +19,7 @@ pub use vm::{Prepared, Vm, prepare};
 
 use crate::core::artifacts::VMM;
 use crate::core::ownership;
-use crate::core::runtime::podman::Podman;
+use crate::core::runtime::podman;
 use crate::core::runtime::{
     BoxInfo, BoxStat, BuildRequest, DiskInfo, ImageInfo, MemoryStat, PidsStat, Runtime, output,
 };
@@ -37,13 +37,11 @@ impl Firecracker {
         Ok(dir)
     }
 
-    /// The state dir of the box `list` names `name`.
-    fn state_dir(name: &str) -> io::Result<PathBuf> {
-        ownership::record(name)?
-            .map(|record| record.state_dir)
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, format!("no box named {name:?}"))
-            })
+    /// The ownership record of the box `list` names `name`.
+    fn record(name: &str) -> io::Result<ownership::Record> {
+        ownership::record(name)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, format!("no box named {name:?}"))
+        })
     }
 }
 
@@ -53,7 +51,7 @@ impl Runtime for Firecracker {
         if !missing.is_empty() {
             return Err(io::Error::other(missing.join("; ")));
         }
-        Podman.preflight()
+        podman::preflight()
     }
 
     fn proxy_socket(&self, state_dir: &Path) -> io::Result<PathBuf> {
@@ -74,39 +72,33 @@ impl Runtime for Firecracker {
         workdir: Option<&Path>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        let code = vsock::exec(&Self::state_dir(name)?, tty, workdir, argv)?;
+        let code = vsock::exec(&Self::record(name)?.state_dir, tty, workdir, argv)?;
         Ok(super::exit_status(code))
     }
 
     /// `box exec` of this executable, for a caller that pipes its stdio.
+    /// Its only callers, the crossing's push and fetch, ask for no TTY and
+    /// no workdir.
     fn exec_command(
         &self,
         name: &str,
         _init: &Path,
-        tty: bool,
-        workdir: Option<&Path>,
+        _tty: bool,
+        _workdir: Option<&Path>,
         argv: &[String],
     ) -> std::process::Command {
         let mut command = std::process::Command::new(
             std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/proc/self/exe")),
         );
-        command.args(["box", "exec"]);
-        if tty {
-            command.arg("--tty");
-        } else {
-            command.process_group(0);
-        }
-        if let Some(dir) = workdir {
-            command.arg("--workdir").arg(dir);
-        }
-        command.arg(name).arg("--").args(argv);
+        command
+            .process_group(0)
+            .args(["box", "exec", name, "--"])
+            .args(argv);
         command
     }
 
     fn stat(&self, name: &str) -> io::Result<BoxStat> {
-        let record = ownership::record(name)?.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, format!("no box named {name:?}"))
-        })?;
+        let record = Self::record(name)?;
         let memory = record.described.and_then(|described| described.memory);
         let [current, peak, pids, pids_max, oom_kills] = vsock::stat(&record.state_dir)?;
         Ok(BoxStat {
@@ -149,23 +141,23 @@ impl Runtime for Firecracker {
     }
 
     fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
-        Podman.list_images()
+        podman::list_images()
     }
 
     fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageInfo, String>> {
-        Podman.resolve_image(reference)
+        podman::resolve_image(reference)
     }
 
     fn remove_image(&self, reference: &str) -> io::Result<()> {
-        Podman.remove_image(reference)
+        podman::remove_image(reference)
     }
 
     fn purge_build_cache(&self) -> io::Result<()> {
-        Podman.purge_build_cache()
+        podman::purge_build_cache()
     }
 
     fn build_cache(&self) -> &'static str {
-        Podman.build_cache()
+        podman::build_cache()
     }
 
     fn list_disks(&self) -> io::Result<Vec<DiskInfo>> {
@@ -202,9 +194,7 @@ impl Runtime for Firecracker {
         let made = file.set_len(bytes).and_then(|()| {
             let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
             output(&[
-                &preflight::mkfs_ext4()
-                    .ok_or_else(|| io::Error::other("mkfs: no mkfs.ext4"))?
-                    .to_string_lossy(),
+                &preflight::mkfs_ext4()?.to_string_lossy(),
                 "-q",
                 "-F",
                 "-m",
@@ -235,7 +225,7 @@ impl Runtime for Firecracker {
     }
 
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
-        Podman.build(request)
+        podman::build(request)
     }
 
     fn program(&self) -> &'static str {

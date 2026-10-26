@@ -125,13 +125,12 @@ impl Profile {
         if root.is_dir() {
             return load_dir(name, &root);
         }
-        if matches!(name, "default" | "documents" | "full") {
-            return Self::builtin(name);
-        }
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("profile {name:?} has no directory {}", root.display()),
-        ))
+        Self::builtin(name).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("profile {name:?} has no directory {}", root.display()),
+            )
+        })
     }
 
     /// A named built-in, even when a user's profile overrides it.

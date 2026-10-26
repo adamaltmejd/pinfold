@@ -428,8 +428,9 @@ fn loopback_up() -> io::Result<()> {
 const CAP_SYS_ADMIN: u32 = 21;
 
 /// Drop every capability but `keep` from the bounding set. Needs
-/// `CAP_SETPCAP`, so it comes before [`set_capabilities`].
-fn drop_bounding(keep: Option<u32>) -> io::Result<()> {
+/// `CAP_SETPCAP`, so it comes before [`set_capabilities`]. Only system
+/// calls: the VMM jail's child runs it between `clone` and `execve`.
+pub(crate) fn drop_bounding(keep: Option<u32>) -> io::Result<()> {
     for capability in 0..64 {
         if Some(capability) == keep {
             continue;
@@ -447,8 +448,9 @@ fn drop_bounding(keep: Option<u32>) -> io::Result<()> {
         } < 0
         {
             let error = io::Error::last_os_error();
-            // EINVAL: past the kernel's last capability.
-            if error.raw_os_error() == Some(libc::EINVAL) {
+            // EINVAL: past the kernel's last capability. Capability 0
+            // always exists, so EINVAL there is a failure.
+            if error.raw_os_error() == Some(libc::EINVAL) && capability > 0 {
                 break;
             }
             return Err(error);
@@ -502,7 +504,7 @@ fn set_capabilities(keep: Option<u32>) -> io::Result<()> {
     Ok(())
 }
 
-fn pidfd_open(pid: i32) -> io::Result<OwnedFd> {
+pub(crate) fn pidfd_open(pid: i32) -> io::Result<OwnedFd> {
     // Safety: pidfd_open returns a new descriptor or -1.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_long, 0 as libc::c_long) };
     if fd < 0 {
@@ -540,7 +542,7 @@ fn serve_control(request: &Request, control: &OwnedFd, service: &OwnedFd) -> ! {
             Ok(connection) => connection,
             Err(Accepted::Peer) => continue,
             Err(Accepted::Failed) => {
-                back_off();
+                super::back_off();
                 continue;
             }
         };
@@ -605,24 +607,10 @@ fn exec_service(request: &Request, host: UnixStream, mut dropped: io::PipeReader
         Ok(listeners) => listeners,
         Err(error) => fail(&mut host, &error),
     };
-    if let Some(relay) = relay {
-        let relaying = spawn(move || {
-            loop {
-                match relay.accept() {
-                    Ok((client, _)) => {
-                        let _ = spawn(move || {
-                            if let Ok(server) = vsock_connect(PROXY_PORT) {
-                                let _ = super::relay(client, server);
-                            }
-                        });
-                    }
-                    Err(_) => back_off(),
-                }
-            }
-        });
-        if let Err(error) = relaying {
-            fail(&mut host, &error)
-        }
+    if let Some(relay) = relay
+        && let Err(error) = super::serve_relay(relay, || vsock_connect(PROXY_PORT))
+    {
+        fail(&mut host, &error)
     }
     // EOF once PID 1 holds only CAP_SYS_ADMIN, or has died.
     let _ = dropped.read(&mut [0]);
@@ -642,7 +630,7 @@ fn exec_service(request: &Request, host: UnixStream, mut dropped: io::PipeReader
                 let _ = spawn(move || serve(connection, &env));
             }
             Err(Accepted::Peer) => {}
-            Err(Accepted::Failed) => back_off(),
+            Err(Accepted::Failed) => super::back_off(),
         }
     }
 }
@@ -653,12 +641,6 @@ fn spawn<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> io::Result<thread::JoinHandle<T>> {
     thread::Builder::new().spawn(work)
-}
-
-/// Pause after an accept error, such as EMFILE, that would otherwise
-/// repeat at once.
-fn back_off() {
-    thread::sleep(Duration::from_millis(100));
 }
 
 /// Join the work cgroup, out of the OOM killer's reach, then drop to the
