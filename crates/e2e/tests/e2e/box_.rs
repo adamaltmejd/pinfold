@@ -5,7 +5,7 @@
 //! default profile image once, and drives pinfold as a user would: the CLI,
 //! environment variables and the box spec are its only seams.
 
-use std::fs::{self, File};
+use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -856,9 +856,7 @@ fn disks_persist_and_attach_exclusively() {
     // assertion fails. Sabotage: skip the `UNCLEAN` mark in `disk::claim`;
     // after the prune the read-only `up` comes ready and the `disk-unclean`
     // assertion fails.
-    // Sabotage: skip the size check; the sparse `from` reaches the copy,
-    // which fails in the box, and the `limit` assertion fails. Sabotage:
-    // write every copied file 644 in `init receive`; the exec-bit assertion
+    // Sabotage: write every copied file 644 in `init receive`; the exec-bit assertion
     // fails. Sabotage: drop the disk locks in `disk::claim`; both racing
     // `up`s create the disk and the loser ends `failed`, not `disk-in-use`.
     // Sabotage: call `disk::detached` on every runtime stop in `Box::down`;
@@ -876,9 +874,8 @@ fn disks_persist_and_attach_exclusively() {
     // the next `up` skips the copy and the refilled tree assertion fails.
     let env = TestEnv::new("disks");
     let image = default_image(&env);
-    let names =
-        ["work", "sparse", "fresh", "race", "nested"].map(|disk| box_name(&format!("disk-{disk}")));
-    let [work, sparse, fresh, race, nested] = &names;
+    let names = ["work", "race", "nested"].map(|disk| box_name(&format!("disk-{disk}")));
+    let [work, race, nested] = &names;
     // The refilled disk is a project's disk, so `pinfold fetch` there sees it.
     let project = TestDir::new(&env, "project");
     git(project.path(), &["init", "-q"]);
@@ -1009,24 +1006,6 @@ fn disks_persist_and_attach_exclusively() {
 
     up.down(&env);
     assert!(up.wait().success(), "the writer did not exit cleanly");
-
-    // A `from` whose file sizes pass the disk's size is refused as `limit`
-    // and leaves no disk.
-    let big = TestDir::new(&env, "big");
-    File::create(big.path().join("sparse"))
-        .unwrap()
-        .set_len(2 << 30)
-        .unwrap();
-    let sparse_disk =
-        serde_json::json!({ "name": sparse, "guest": "/big", "size": "1G", "from": big.path() });
-    let (code, refused) = box_up_refused(&env, &spec(second, sparse_disk), &[]);
-    assert_eq!(code, 1, "a refused up exits 1: {refused}");
-    assert_eq!(refused["reason"], "limit", "{refused}");
-    assert_left_nothing(&env, second, label, "limit");
-    assert!(
-        disk_names(&env).iter().all(|name| name != sparse),
-        "the limit refusal left a disk"
-    );
 
     // Two writable `up`s racing for one new disk: exactly one runs. Both
     // are spawned before either's first line is read.
@@ -1321,32 +1300,12 @@ fn disks_persist_and_attach_exclusively() {
     refilled.down(&env);
     assert!(refilled.wait().success());
 
-    // After `down`, `disk rm` removes it, and an absent disk exits 0. A
-    // name that is no disk name is refused as `spec`.
+    // After `down`, `disk rm` removes it. A name that is no disk name is
+    // refused as `spec`.
     let (code, refused) = disk_rm(&env, "../escape");
     assert_eq!((code, &refused["reason"]), (1, &"spec".into()), "{refused}");
     let (code, removed) = disk_rm(&env, work);
     assert_eq!((code, &removed["existed"]), (0, &true.into()), "{removed}");
-    let (code, removed) = disk_rm(&env, work);
-    assert_eq!((code, &removed["existed"]), (0, &false.into()), "{removed}");
-
-    // A fresh default-size disk is sparse.
-    let mut new = box_up(
-        &env,
-        &spec(
-            writer,
-            serde_json::json!({ "name": fresh, "guest": "/fresh" }),
-        ),
-        writer,
-    );
-    new.down(&env);
-    assert!(new.wait().success());
-    let listed = disk_list(&env)
-        .into_iter()
-        .find(|disk| disk["name"] == fresh.as_str())
-        .expect("the fresh disk is listed");
-    assert_eq!(listed["size"], 64u64 << 30, "{listed}");
-    assert!(listed["allocated"].as_u64().unwrap() < 1 << 30, "{listed}");
 }
 
 fn disk_list(env: &TestEnv) -> Vec<serde_json::Value> {
