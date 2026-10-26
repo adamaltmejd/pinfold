@@ -3457,15 +3457,34 @@ fn a_route_reaches_exactly_one_host_service() {
             );
         }
     });
+    // This one answers with the Host header it received.
+    let echo = HttpFixture::start(None);
     let name = box_name("route");
     let spec = serde_json::json!({
         "name": name,
         "image": default_image(&env),
         "egress": {
-            "routes": { "fixture.internal": route },
+            "routes": { "fixture.internal": route, "echo.internal": echo.route() },
         },
     });
     let mut up = box_up(&env, &spec, &name);
+
+    // The Host header is rewritten from the absolute-form target, not
+    // passed through from the client. Sabotage: forward the client's Host
+    // header unchanged; the request then reaches the service as
+    // evil.example and this assertion fails.
+    let rewritten = curl(
+        &env,
+        &name,
+        "5",
+        &["-H", "Host: evil.example", "http://echo.internal/"],
+    );
+    assert_eq!(rewritten.code, 0, "the route failed: {}", rewritten.stderr);
+    assert!(
+        rewritten.stdout.contains("fixture host=echo.internal"),
+        "the Host header was not rewritten: {}",
+        rewritten.stdout
+    );
 
     // A route reaches the service, and its log line names the method, the
     // request path without its query, and the status the service sent. The
