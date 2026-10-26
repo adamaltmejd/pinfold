@@ -752,7 +752,7 @@ build, record the resolved base digest and strip setuid/setgid bits.
 |---|---|
 | `default` | shell, ca-certificates, git, curl, ripgrep, fd-find as `fd`, jq, less |
 | `documents` | default tools plus Bun, AnyDoc and Poppler |
-| `full` | documents tools plus gh, rtk and ponytail |
+| `full` | documents tools plus gh, fff (pi extension) and ponytail |
 
 Fixed recipe fragments under `profile/image/` form complete independent
 Containerfiles. A built-in never builds from another profile's image.
@@ -850,7 +850,7 @@ profiles does not rewrite saved settings. Every built-in includes the operating-
 extension, which writes the box's facts into the system prompt (the
 allowlist from `PINFOLD_ALLOW`, that a 403 is final, and that its commits
 reach the host only when the user runs `pinfold fetch`). Documents and full include `read-documents`. Full also
-registers rtk and ponytail. Metadata lookup and fingerprints write
+registers fff and ponytail. Metadata lookup and fingerprints write
 nothing; embedded shared files are materialized only after a box claims
 its name.
 

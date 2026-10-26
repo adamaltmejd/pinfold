@@ -1,19 +1,27 @@
 
-FROM base AS rtk-arm64
-ADD --checksum=sha256:ee24a43dac9162de55fea8460b5efcd56d401ec28b5117c921bffa8a57bc136e https://github.com/rtk-ai/rtk/releases/download/v1.0.1/rtk-oss-aarch64-unknown-linux-gnu.tar.gz /tmp/rtk-aarch64.tar.gz
+FROM base AS fff-arm64
+ADD --checksum=sha256:702bd8fe5d861fb5016a4fa0e62545a0a3e802dcc6b7232a3d02e54f0f90187e https://registry.npmjs.org/@ff-labs/fff-bin-linux-arm64-gnu/-/fff-bin-linux-arm64-gnu-0.11.0.tgz /tmp/fff-bin-aarch64.tgz
 
-FROM base AS rtk-amd64
-ADD --checksum=sha256:a44e8ffc43981100b4ddf1710399a1649a6c874591aa6d0c0727fe6cbd983c41 https://github.com/rtk-ai/rtk/releases/download/v1.0.1/rtk-oss-x86_64-unknown-linux-musl.tar.gz /tmp/rtk-x64.tar.gz
+FROM base AS fff-amd64
+ADD --checksum=sha256:36c5f09b7e315e4e1870fc2311dfae392d0f6e6197f3c0b0697e15d8d8344ebf https://registry.npmjs.org/@ff-labs/fff-bin-linux-x64-gnu/-/fff-bin-linux-x64-gnu-0.11.0.tgz /tmp/fff-bin-x64.tgz
 
-FROM rtk-${TARGETARCH} AS rtk-install
+FROM fff-${TARGETARCH} AS fff-install
+ARG TARGETARCH
+ADD --checksum=sha256:d25cacb52974a8c99be1ecf88a0ba554459402a8850798cc722e08b088d21de3 https://registry.npmjs.org/@ff-labs/pi-fff/-/pi-fff-0.11.0.tgz /tmp/pi-fff.tgz
+ADD --checksum=sha256:516e6e3ff779664b455b08207d03a80b97e25d9123a579b67f6f151fda358c73 https://registry.npmjs.org/@ff-labs/fff-bun/-/fff-bun-0.11.0.tgz /tmp/fff-bun.tgz
+# fff-node, pi-fff's Node fallback, is deliberately not staged: pi runs extensions under Bun.
 RUN set -eux; \
-    tar -xzf /tmp/rtk-*.tar.gz -C /tmp; \
-    install -m 0755 /tmp/rtk /usr/local/bin/rtk; \
-    export HOME=/tmp/rtk-home; \
-    mkdir -p "${HOME}" /opt/pinfold/packages; \
-    rtk init -g --agent pi; \
-    mv "${HOME}/.pi/agent/extensions/rtk.ts" /opt/pinfold/packages/rtk.ts; \
-    chmod a+r /opt/pinfold/packages/rtk.ts
+    case "${TARGETARCH}" in \
+        arm64) native=fff-bin-linux-arm64-gnu ;; \
+        amd64) native=fff-bin-linux-x64-gnu ;; \
+        *) echo "unsupported architecture ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    fff=/opt/pinfold/packages/pi-fff; \
+    mkdir -p "${fff}/node_modules/@ff-labs/fff-bun" "${fff}/node_modules/@ff-labs/${native}"; \
+    tar -xzf /tmp/pi-fff.tgz --strip-components=1 -C "${fff}"; \
+    tar -xzf /tmp/fff-bun.tgz --strip-components=1 -C "${fff}/node_modules/@ff-labs/fff-bun"; \
+    tar -xzf /tmp/fff-bin-*.tgz --strip-components=1 -C "${fff}/node_modules/@ff-labs/${native}"; \
+    chmod -R a+rX "${fff}"
 
 FROM base AS ponytail-install
 ADD --checksum=sha256:d2e8ef2f98e8f70bf40ffcd3ff157634fe13b2572e10ad70a62fc26db6de6dc5 https://registry.npmjs.org/@dietrichgebert/ponytail/-/ponytail-5.3.2.tgz /tmp/ponytail.tgz
@@ -23,8 +31,7 @@ RUN set -eux; \
     chmod -R a+rX /opt/pinfold/packages/ponytail
 
 FROM documents AS full
-COPY --from=rtk-install /usr/local/bin/rtk /usr/local/bin/rtk
-COPY --from=rtk-install /opt/pinfold/packages/rtk.ts /opt/pinfold/packages/rtk.ts
+COPY --from=fff-install /opt/pinfold/packages/pi-fff /opt/pinfold/packages/pi-fff
 COPY --from=ponytail-install /opt/pinfold/packages/ponytail /opt/pinfold/packages/ponytail
 # gh from GitHub's signed apt repository.
 RUN set -eux; \
