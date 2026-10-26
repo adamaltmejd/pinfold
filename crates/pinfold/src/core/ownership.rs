@@ -123,8 +123,9 @@ pub struct Record {
     pub generation: String,
     pub pid: i32,
     pub state_dir: PathBuf,
-    /// The disks this generation attaches; `prune` releases them by
-    /// removing the record.
+    /// The disks this generation attaches. They are released once the
+    /// owner is dead and the runtime lists the box stopped or not at all,
+    /// and `prune` removes the record.
     #[serde(default)]
     pub disks: Vec<Attachment>,
     /// The box as `list` reports it, once `up` knows it. Linux's inventory.
@@ -149,10 +150,11 @@ pub struct Attachment {
     pub readonly: bool,
 }
 
-/// Hold a disk's lock while deciding and recording its attachments.
+/// Hold a disk's lock while deciding and recording its attachments. A
+/// disk belongs to one state root, and so does its lock.
 pub fn disk_lock(name: &str) -> io::Result<Flock<File>> {
-    Flock::lock(open_lock(&format!("disk:{name}"))?, FlockArg::LockExclusive)
-        .map_err(|(_, error)| error.into())
+    let key = format!("disk:{}:{name}", crate::dirs::state_root_key()?);
+    Flock::lock(open_lock(&key)?, FlockArg::LockExclusive).map_err(|(_, error)| error.into())
 }
 
 pub fn record(name: &str) -> io::Result<Option<Record>> {

@@ -244,25 +244,45 @@ pub fn detached(disks: &[Disk]) -> io::Result<()> {
     Ok(())
 }
 
-/// Each disk's attachments: box name and read-only flag, from every
-/// published claim whose owner holds its name or whose box the runtime
-/// still lists. A dead box keeps its disks until `prune` removes it.
-/// `except` is the caller's own box.
+/// Each disk's attachments: box name and read-only flag, from every claim
+/// published in this state root whose owner holds its name or whose box
+/// the runtime has not stopped. A dead owner's box attaches nothing once
+/// the runtime lists it stopped or not at all, even before `prune` removes
+/// it. `except` is the caller's own box.
 pub fn attachments(
     runtime: &dyn Runtime,
     except: Option<&str>,
 ) -> io::Result<BTreeMap<String, Vec<(String, bool)>>> {
-    let records: Vec<_> = ownership::records()?
-        .into_iter()
-        .filter(|record| !record.disks.is_empty() && Some(record.name.as_str()) != except)
-        .collect();
     let mut attached: BTreeMap<String, Vec<(String, bool)>> = BTreeMap::new();
+    let boxes = match fs::canonicalize(dirs::boxes_dir()?) {
+        Ok(boxes) => boxes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(attached),
+        Err(error) => return Err(error),
+    };
+    let mut records = Vec::new();
+    for record in ownership::records()? {
+        if record.disks.is_empty() || Some(record.name.as_str()) == except {
+            continue;
+        }
+        // A claim's state dir goes only as its box is torn down.
+        match fs::canonicalize(&record.state_dir) {
+            Ok(dir) if dir.parent() == Some(boxes.as_path()) => records.push(record),
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
     if records.is_empty() {
         return Ok(attached);
     }
-    let listed: BTreeSet<String> = runtime.list()?.into_iter().map(|b| b.id).collect();
+    let unstopped: BTreeSet<String> = runtime
+        .list()?
+        .into_iter()
+        .filter(|b| !b.stopped)
+        .map(|b| b.id)
+        .collect();
     for record in records {
-        if !listed.contains(&record.name) && !ownership::name_alive(&record.name)? {
+        if !unstopped.contains(&record.name) && !ownership::name_alive(&record.name)? {
             continue;
         }
         for disk in record.disks {

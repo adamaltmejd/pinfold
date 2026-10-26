@@ -134,8 +134,10 @@ impl Runtime for Firecracker {
                     return None;
                 }
                 let described = record.described?;
+                let running = vmm_alive(&record.state_dir);
                 Some(BoxInfo {
-                    running: vmm_alive(&record.state_dir),
+                    running,
+                    stopped: !running,
                     id: record.name,
                     labels: described.labels,
                     image_id: described.image_id,

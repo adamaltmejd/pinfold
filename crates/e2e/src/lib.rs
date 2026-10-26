@@ -129,18 +129,16 @@ impl TestEnv {
 
 impl Drop for TestEnv {
     fn drop(&mut self) {
-        // Apple's disks outlive XDG roots: remove each recorded project's
-        // two (Pi layer), named `pi-<id>-home` and `pi-<id>-project`. Linux
-        // disks live in the state root and go with it.
+        // Apple's disks are volumes outside the state root: remove this
+        // root's. Linux disks live in the state root and go with it.
         if cfg!(target_os = "macos")
-            && let Ok(projects) = fs::read_dir(self.state.join("pinfold/projects"))
+            && let Ok(listed) = self.command(pinfold()).args(["disk", "list"]).output()
         {
-            for project in projects.flatten() {
-                let id = project.file_name().to_string_lossy().into_owned();
-                for disk in ["home", "project"] {
-                    let _ = Command::new(image_cli())
-                        .args(["volume", "rm", &format!("pi-{id}-{disk}")])
-                        .output();
+            for line in String::from_utf8_lossy(&listed.stdout).lines() {
+                if let Ok(disk) = serde_json::from_str::<serde_json::Value>(line)
+                    && let Some(name) = disk["name"].as_str()
+                {
+                    let _ = self.command(pinfold()).args(["disk", "rm", name]).output();
                 }
             }
         }

@@ -755,7 +755,6 @@ fn up_refuses_before_it_creates() {
     missing_profile["profile"] = serde_json::json!("documents");
     missing_profile["env"] = serde_json::json!({ "HOME": "/home/refused" });
     let home_disk = box_name("refused-home");
-    let _home_disk = DiskCleanup(vec![home_disk.clone()]);
     missing_profile["disks"] = serde_json::json!([
         { "name": home_disk, "guest": "/home/refused" }
     ]);
@@ -1124,7 +1123,6 @@ fn up_refuses_before_it_creates() {
         })
     };
     let disk = box_name("refused-disk");
-    let _disks = DiskCleanup(vec![disk.clone()]);
     let comma_from = serde_json::json!({ "name": disk, "guest": "/disk", "from": comma });
     let comma_guest = serde_json::json!({ "name": disk, "guest": "/a,b" });
     let mut cases = vec![(comma_from, "a,b"), (comma_guest, "a,b")];
@@ -1279,13 +1277,9 @@ fn up_refuses_before_it_creates() {
 
 #[test]
 fn disks_persist_and_attach_exclusively() {
-    // Exclusive on macOS until #167: run beside the shared tests there, the
-    // writer `container kill` ended still held its disk after its owner
-    // exited, so the `disk-unclean` assertion saw `disk-in-use`.
-    #[cfg(target_os = "macos")]
+    // Exclusive: name locks are host-wide, so another test's maintenance
+    // pruning the dead writer holds its name and the disk counts as attached.
     let _runtime = crate::exclusive_runtime();
-    #[cfg(not(target_os = "macos"))]
-    let _runtime = crate::shared_runtime();
     // Guarantee 11: disks persist and attach exclusively.
     // Sabotage: skip the attachment check in `disk::claim`; the read-only
     // second `up` is refused `disk-unclean` instead, so the `disk-in-use`
@@ -1320,7 +1314,6 @@ fn disks_persist_and_attach_exclusively() {
         .as_str()
         .expect("project.disks.project is a string")
         .to_string();
-    let _disks = DiskCleanup([names.as_slice(), std::slice::from_ref(refill)].concat());
     let boxes =
         ["writer", "second", "reader-a", "reader-b"].map(|b| box_name(&format!("disks-{b}")));
     let [writer, second, reader_a, reader_b] = &boxes;
@@ -1412,6 +1405,33 @@ fn disks_persist_and_attach_exclusively() {
         (1, &"disk-in-use".into()),
         "{refused}"
     );
+
+    // Another state root naming the disk gets its own: its writable `up`
+    // runs beside the writer, sees none of the writer's files, and its
+    // `disk list` names only its own box. Sabotage: drop the state-root
+    // filter in `disk::attachments`; root B's `up` is refused `disk-in-use`.
+    // Sabotage (macOS): name volumes without the root's key in
+    // `apple::volume`; root B's `up` attaches root A's volume beside the
+    // writer, which the runtime refuses, and it ends `failed`, not `ready`.
+    let other = TestEnv::new("disks-b");
+    let theirs = serde_json::json!({ "name": work, "guest": "/work" });
+    let mut theirs = box_up(&other, &spec(second, theirs), second);
+    assert_ok(
+        &box_exec(&other, second, &["test", "!", "-e", "/work/written"]),
+        "another root's disk of the same name",
+    );
+    let listed: Vec<_> = disk_list(&other)
+        .into_iter()
+        .filter(|disk| disk["name"] == work.as_str())
+        .map(|disk| disk["attached"].clone())
+        .collect();
+    assert_eq!(
+        listed,
+        [serde_json::json!([{ "box": second, "readonly": false }])],
+        "root B's disk list"
+    );
+    theirs.down(&other);
+    assert!(theirs.wait().success(), "root B's box did not exit cleanly");
 
     up.down(&env);
     assert!(up.wait().success(), "the writer did not exit cleanly");
@@ -1566,19 +1586,42 @@ fn disks_persist_and_attach_exclusively() {
     let (code, refused) = box_up_refused(&env, &spec(reader_a, reader.clone()), &[]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["reason"], "disk-unclean", "{refused}");
+    // A teardown the runtime fails leaves the stopped box for `prune`, and
+    // its name is not free until then (#167).
+    run_ok(env.command(pinfold()).args(["box", "prune"]));
     let mut recovery = box_up(&env, &spec(writer, work_disk.clone()), writer);
     recovery.down(&env);
     assert!(recovery.wait().success());
 
-    // A writer whose owner dies leaves the disk unclean once its box is
-    // pruned: read-only is refused, writable recovers it.
+    // A writer whose owner dies leaves the disk unclean: read-only is
+    // refused, writable recovers it. On macOS the box outlives its owner
+    // until the runtime ends it; on Linux the VMM dies soon after its owner.
+    // Once the box has stopped, the dead writer releases the disk before any
+    // `prune`.
+    // Sabotage: count a claim in `disk::attachments` while the runtime lists
+    // its box, running or not; the read-only `up` is refused `disk-in-use`
+    // and the `disk-unclean` assertion fails.
     let mut killed = box_up(&env, &spec(writer, work_disk.clone()), writer);
     killed.kill();
     let _ = killed.wait();
-    run_ok(env.command(pinfold()).args(["box", "prune"]));
+    // `stop` returns once the box has stopped. On Linux the VMM can outlive
+    // its owner briefly, so the wait reads `box list`.
+    #[cfg(target_os = "macos")]
+    run_ok(Command::new(image_cli()).args(["stop", "--signal", "KILL", writer.as_str()]));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while box_list(&env, label)
+        .iter()
+        .any(|listed| listed["name"] == writer.as_str() && listed["state"] == "running")
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the dead writer's box never stopped"
+        );
+    }
     let (code, refused) = box_up_refused(&env, &spec(reader_a, reader.clone()), &[]);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["reason"], "disk-unclean", "{refused}");
+    run_ok(env.command(pinfold()).args(["box", "prune"]));
     assert_left_nothing(&env, reader_a, label, "unclean");
     let mut recovery = box_up(&env, &spec(writer, work_disk.clone()), writer);
     recovery.down(&env);
@@ -1591,13 +1634,43 @@ fn disks_persist_and_attach_exclusively() {
         &box_exec(&env, reader_a, &["cat", "/work/written"]),
         "reading after recovery",
     );
-    after.down(&env);
-    assert!(after.wait().success());
+    #[cfg(target_os = "linux")]
+    {
+        after.down(&env);
+        assert!(after.wait().success());
+    }
+    // A dead owner's box the runtime has created but not started may still
+    // boot, so it holds its disk. Apple lists such a box `stopped`, as an
+    // orphaned `container run` leaves it; `container create` makes one.
+    // Sabotage: drop the `started_date` condition from `stopped` in
+    // `Apple::list`; the writable `up` runs and the `disk-in-use` assertion
+    // fails.
+    #[cfg(target_os = "macos")]
+    {
+        after.kill();
+        let _ = after.wait();
+        let _ = Command::new(image_cli())
+            .args(["rm", "--force", reader_a.as_str()])
+            .output();
+        run_ok(Command::new(image_cli()).args([
+            "create",
+            "--name",
+            reader_a.as_str(),
+            image,
+            "true",
+        ]));
+        let (code, refused) = box_up_refused(&env, &spec(writer, work_disk.clone()), &[]);
+        run_ok(Command::new(image_cli()).args(["rm", reader_a.as_str()]));
+        assert_eq!(code, 1, "a refused up exits 1: {refused}");
+        assert_eq!(refused["reason"], "disk-in-use", "{refused}");
+    }
 
     // An owner killed while it copies `from` leaves no filled disk: the next
     // `up` naming it copies the whole tree. Once the disk exists, the first
     // file the copy opens is renamed over by a FIFO, so the copy can neither
-    // finish nor fail. The disk surviving and no `ready` show the kill
+    // finish nor fail. The kill waits until the box runs: an owner killed
+    // before that leaves a `container run` that may create its container
+    // after the prune. The disk surviving and no `ready` show the kill
     // landed mid-copy, not after it or in a cleaned-up failure.
     let first = from.path().join("0first.txt");
     fs::write(&first, b"first\n").unwrap();
@@ -1614,6 +1687,15 @@ fn disks_persist_and_attach_exclusively() {
     let fifo = from.path().join("fifo-swap");
     nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).unwrap();
     fs::rename(&fifo, &first).unwrap();
+    while !box_list(&env, label)
+        .iter()
+        .any(|listed| listed["name"] == writer.as_str() && listed["state"] == "running")
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the interrupted up's box never ran"
+        );
+    }
     interrupted.child.kill().expect("kill box up");
     let _ = interrupted.child.wait_bounded();
     run_ok(env.command(pinfold()).args(["box", "prune"]));
@@ -1695,23 +1777,6 @@ fn disk_rm(env: &TestEnv, name: &str) -> (i32, serde_json::Value) {
     one_json_line(env.command(pinfold()).args(["disk", "rm", name]))
 }
 
-/// Disks a test names, removed through the runtime on drop: Apple's volume
-/// store is shared by every state root. Linux disks live in the state root
-/// and go with it.
-pub(super) struct DiskCleanup(pub(super) Vec<String>);
-
-impl Drop for DiskCleanup {
-    fn drop(&mut self) {
-        if cfg!(target_os = "macos") {
-            for name in &self.0 {
-                let _ = Command::new("container")
-                    .args(["volume", "rm", name])
-                    .output();
-            }
-        }
-    }
-}
-
 /// Every client-side hook name in githooks(5).
 const CLIENT_HOOKS: &[&str] = &[
     "applypatch-msg",
@@ -1757,7 +1822,6 @@ fn work_leaves_the_box_only_by_fetch() {
     // `refs/heads/injected` lands on the host.
     let env = TestEnv::new("crossing");
     let name = box_name("crossing");
-    let _disks = DiskCleanup(vec![name.clone()]);
     let project = TestDir::new(&env, "project");
     let repo = project.path();
     let markers = TestDir::new(&env, "markers");
@@ -2367,7 +2431,6 @@ fn the_vmm_reaches_only_its_own_box() {
     let home = std::env::var("HOME").expect("HOME is set");
     let names = [box_name("vmm-a"), box_name("vmm-b")];
     let disks = [format!("{}-disk", names[0]), format!("{}-disk", names[1])];
-    let _disks = DiskCleanup(disks.to_vec());
     let mut ups: Vec<Up> = names
         .iter()
         .zip(&disks)
