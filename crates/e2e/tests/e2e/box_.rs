@@ -3777,6 +3777,11 @@ fn a_login_route_keeps_the_login_on_the_host() {
     )));
     let subscription_token = format!("pf-subscription-{}", std::process::id());
     let pi_account = format!("pf-pi-account-{}", std::process::id());
+    // Read again: the codex half took a host-dependent time.
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock is past 1970")
+        .as_secs();
     let pi_token = |exp: u64| {
         unsigned_jwt(&serde_json::json!({
             "exp": exp,
