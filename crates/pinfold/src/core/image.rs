@@ -132,7 +132,7 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
     }
     // The second image is for rollback. A failure here is reported but never
     // fails the build that succeeded.
-    if let Err(error) = clean::keep_two_images(runtime, build.label, build.source) {
+    if let Err(error) = clean::keep_two_images(runtime, Some((build.label, build.source))) {
         eprintln!("pinfold: maintenance: {error}");
     }
     // A runtime that cannot answer does not fail a build that succeeded.

@@ -62,7 +62,7 @@ fn maintain_due() -> io::Result<()> {
         "boxes",
         boxes(runtime).and_then(|boxes| prune_boxes(runtime, &boxes).map(|_| ())),
     );
-    report("images", keep_two_images_per_source(runtime));
+    report("images", keep_two_images(runtime, None));
     report("sockets", prune_leftover_states(runtime));
     report(
         "artifacts",
@@ -261,14 +261,18 @@ pub fn path_bytes(path: &Path) -> u64 {
     }
 }
 
-/// Apply [`keep_two_images`] to every source any image names: each
+/// Keep the newest two builds of every source any image names: each
 /// non-empty family label, and every caller name a `localhost/pinfold/image-<NAME>`
-/// tag names. One image listing and one box listing serve every source;
+/// tag names. `only` limits the pass to one `(label, source)`, the one a
+/// build just made. One image listing and one box listing serve every source;
 /// [`prune_root_disks`] adds a second image listing when root disks exist,
 /// however many sources the pass has. Call it
 /// after dead boxes are pruned: its box listing is retention's one in-use
 /// rule. A failing source is reported and the rest continue.
-pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
+pub fn keep_two_images(
+    runtime: &dyn Runtime,
+    only: Option<(Option<&str>, &str)>,
+) -> io::Result<()> {
     let images = runtime.list_images()?;
     let in_use = in_use_images(runtime)?;
     let mut references = reference_counts(&images);
@@ -284,6 +288,9 @@ pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
         }
     }
     for (label, source) in sources {
+        if only.is_some_and(|only| only != (label, source.as_str())) {
+            continue;
+        }
         if let Err(error) =
             keep_two_images_from(runtime, &images, &in_use, &mut references, label, &source)
         {
@@ -293,7 +300,7 @@ pub fn keep_two_images_per_source(runtime: &dyn Runtime) -> io::Result<()> {
     prune_root_disks(runtime)
 }
 
-/// The ids of the images every listed box runs: the one in-use rule [`keep_two_images_per_source`],
+/// The ids of the images every listed box runs: the one in-use rule
 /// [`keep_two_images`] and [`remove_images`] share. Dead or alive, every
 /// listed box counts.
 fn in_use_images(runtime: &dyn Runtime) -> io::Result<BTreeSet<String>> {
@@ -342,24 +349,12 @@ fn reference_counts(images: &[ImageInfo]) -> BTreeMap<String, usize> {
 }
 
 /// Keep the newest two builds in [`source_images`], removing older build
-/// tags. A tag of an image a listed box uses is removed while another
-/// reference still names the image; the image's last tag stays, and is
-/// reported like a failed removal.
-pub fn keep_two_images(runtime: &dyn Runtime, label: Option<&str>, source: &str) -> io::Result<()> {
-    // One listing before anything goes: the ids of the images boxes pin,
-    // and every reference in the store, so an in-use image's last tag is
-    // known.
-    let images = runtime.list_images()?;
-    let in_use = in_use_images(runtime)?;
-    let mut references = reference_counts(&images);
-    let kept = keep_two_images_from(runtime, &images, &in_use, &mut references, label, source);
-    kept.and(prune_root_disks(runtime))
-}
-
-/// Apply [`keep_two_images`]'s rule to one source from a pass's listings:
-/// `images` and `in_use` are read once for every source, and `references`
-/// counts each image's tags as removals happen, so a later source sees what
-/// the earlier ones left.
+/// tags, from a pass's listings: `images` and `in_use` are read once for
+/// every source, and `references` counts each image's tags as removals
+/// happen, so a later source sees what the earlier ones left. A tag of an
+/// image a listed box uses is removed while another reference still names
+/// the image; the image's last tag stays, and is reported like a failed
+/// removal.
 fn keep_two_images_from(
     runtime: &dyn Runtime,
     images: &[ImageInfo],
