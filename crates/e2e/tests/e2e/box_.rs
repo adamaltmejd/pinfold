@@ -2383,7 +2383,12 @@ fn a_login_route_keeps_the_login_on_the_host() {
     // environment assertion fails. Sabotage: in `validate`, key the
     // per-provider check on P instead of pi's provider; the anthropic and
     // anthropic-subscription routes come up ready instead of `spec`. Sabotage: drop the empty check in `Login::resolve`; the empty
-    // `from` comes up ready instead of `login`.
+    // `from` comes up ready instead of `login`. Sabotage: skip the profile
+    // skill under the profile's share/pi/skills; the profile marker is
+    // absent from the request. Sabotage: stop the project from being
+    // trusted (remove defaultProjectTrust from the seeded settings); the
+    // project marker is absent. Sabotage: omit the operating-context
+    // extension; the profile's allowlist never reaches the model.
     let env = TestEnv::new("login");
     let openrouter = HttpFixture::start(Some((
         "text/event-stream",
@@ -2440,14 +2445,31 @@ fn a_login_route_keeps_the_login_on_the_host() {
     };
     let project = test_dir(&env, "pi-login");
     git(project.as_path(), &["init", "-q"]);
+    // Both pi config levels load: a skill in the profile's share/pi package
+    // and one under the project's .pi/. The seeded settings.json from
+    // `default` keeps defaultProjectTrust, so the project level loads too.
+    let profile_marker = "pinfold-e2e-profile-skill-marker";
+    write_skill(
+        &profile_dir.join("share/pi/skills/e2e-profile-skill"),
+        "e2e-profile-skill",
+        profile_marker,
+    );
+    let project_marker = "pinfold-e2e-project-skill-marker";
+    write_skill(
+        &project.as_path().join(".pi/skills/e2e-project-skill"),
+        "e2e-project-skill",
+        project_marker,
+    );
 
     // pi sends its stored key to the route at OpenRouter's API path; the
     // fixture gets only the host key. The model is in pi's built-in
-    // openrouter catalog, so only the extension can redirect it.
+    // openrouter catalog, so only the extension can redirect it. `pi -p`
+    // runs through the shim, without a TTY.
+    let shim = env.root.join("pi");
+    std::os::unix::fs::symlink(pinfold(), &shim).expect("symlink pi to pinfold");
     let output = env
-        .command(pinfold())
+        .command(&shim)
         .args([
-            "pi",
             "-p",
             "--provider",
             "openrouter",
@@ -2488,6 +2510,31 @@ fn a_login_route_keeps_the_login_on_the_host() {
             "the openrouter fixture's Authorization at {target} is not exactly the host key"
         );
     }
+    let request = &requests
+        .iter()
+        .find(|(target, _, _)| target == "/api/v1/chat/completions")
+        .expect("the chat request")
+        .2;
+    assert!(
+        request.contains(profile_marker),
+        "the profile skill never reached the model; the profile config level did not load"
+    );
+    assert!(
+        request.contains(project_marker),
+        "the project skill never reached the model; the project config level did not load"
+    );
+    let body: serde_json::Value = serde_json::from_str(request).unwrap();
+    let system = body["messages"]
+        .as_array()
+        .expect("the model request has messages")
+        .iter()
+        .find(|message| message["role"] == "system" || message["role"] == "developer")
+        .and_then(|message| message["content"].as_str())
+        .expect("the model request has a system prompt");
+    assert!(
+        system.contains("login-allow.invalid"),
+        "the system prompt did not state the profile's allowlist: {system}"
+    );
 
     // In a running pi box: only placeholders in the environment, no key in
     // any file the box could read, and the anthropic route sets x-api-key
@@ -3837,7 +3884,7 @@ pub(crate) fn box_up(env: &TestEnv, spec: &serde_json::Value, name: &str) -> Up 
 }
 
 /// [`box_up`] with extra variables in `up`'s own environment.
-fn box_up_with_env(
+pub(crate) fn box_up_with_env(
     env: &TestEnv,
     spec: &serde_json::Value,
     name: &str,
@@ -4367,4 +4414,16 @@ fn untagged_images(label: &str) -> std::collections::BTreeSet<String> {
         .lines()
         .map(str::to_owned)
         .collect()
+}
+
+/// Write one discoverable skill whose description carries `marker`.
+fn write_skill(dir: &Path, name: &str, marker: &str) {
+    fs::create_dir_all(dir).expect("create the skill directory");
+    fs::write(
+        dir.join("SKILL.md"),
+        format!(
+            "---\nname: {name}\ndescription: {marker} identifies this skill in a model request.\n---\n\n# {name}\n"
+        ),
+    )
+    .expect("write SKILL.md");
 }
