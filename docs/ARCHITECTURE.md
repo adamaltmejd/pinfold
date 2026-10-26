@@ -613,7 +613,7 @@ network listener, no token: the socket identifies the box.
   a login for the box's harness; pinfold owns the origin, the
   headers and the harness's config for the pinned version. `login` must
   name the spec's `harness`, and a spec has at most one login route, or
-  for pi one per provider; else `spec`. An optional `to` replaces the
+  for pi one per pi provider; else `spec`. An optional `to` replaces the
   harness's origin, checked like an injecting route's. The box gets only
   placeholders; the spec's own `env` wins.
   - `claude`: `{ "login": "claude", "from": VAR }`, where `$VAR` is a
@@ -642,36 +642,50 @@ network listener, no token: the socket identifies the box.
     `requires_openai_auth = false`; it is Codex's system layer, so the
     caller's own config still overrides it.
   - `pi`: `{ "login": "pi", "provider": P, "from": VAR }`, where P is
-    `openrouter`, `anthropic` or `openai` and `$VAR` is that provider's API
-    key, read once at start like an injecting route's. A missing or other P
+    `openrouter`, `anthropic`, `openai` or `anthropic-subscription` and
+    `$VAR` is that provider's API key, or for `anthropic-subscription` a
+    `claude setup-token` token, read once at start like an injecting
+    route's; or `{ "login": "pi", "provider": "openai-codex" }`, which
+    uses the host's Codex login as a `codex` login route does: helper,
+    in-memory token, JWT checks, refresh window, host-wide lock,
+    `login-busy`, `login lapsed`, deadline and reaping. A missing or other
+    P, `from` with `openai-codex`, or two routes for one pi provider
+    (`anthropic` and `anthropic-subscription` are both pi's `anthropic`)
     is refused as `spec`, and so is `provider` on a claude or codex login
     route.
 
-    | P | Origin | Header set |
-    |---|---|---|
-    | `openrouter` | `https://openrouter.ai` | `Authorization: Bearer $VAR` |
-    | `openai` | `https://api.openai.com` | `Authorization: Bearer $VAR` |
-    | `anthropic` | `https://api.anthropic.com` | `x-api-key: $VAR`; a box-sent `Authorization` is removed |
+    | P | pi provider | Origin | Header set |
+    |---|---|---|---|
+    | `openrouter` | `openrouter` | `https://openrouter.ai` | `Authorization: Bearer $VAR` |
+    | `openai` | `openai` | `https://api.openai.com` | `Authorization: Bearer $VAR` |
+    | `anthropic` | `anthropic` | `https://api.anthropic.com` | `x-api-key: $VAR`; a box-sent `Authorization` is removed |
+    | `anthropic-subscription` | `anthropic` | `https://api.anthropic.com` | `Authorization: Bearer $VAR`; a box-sent `x-api-key` is removed |
+    | `openai-codex` | `openai-codex` | `https://chatgpt.com` | `Authorization: Bearer` and `ChatGPT-Account-ID` from the host login |
 
     The set header replaces any the box sent under that name. Other
     headers, `anthropic-version` and `anthropic-beta` included, pass
     unchanged. As for any route, every path under the origin is
     forwarded, responses stream as received, and `Upgrade` is dropped.
-    For each pi login route the box gets P's key variable
-    (`OPENROUTER_API_KEY`, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`) set to
-    a placeholder. It also gets one pi extension, `pi.ts`, written by
-    pinfold per box and mounted read-only under `/opt/pinfold/login/`,
-    that sets each P's `baseUrl` to `http://<route>` plus the base path of
-    P's built-in URL in the pinned pi (`/api/v1` for openrouter, `/v1` for
-    openai, none for anthropic). The extension holds no secret. pi loads
-    it only when started with `-e /opt/pinfold/login/pi.ts`; the pi layer
-    passes that, a caller passes it itself. Its `baseUrl` sits above a
-    `models.json` one for P. pi started without it reaches P directly,
-    without the host key. pi prefers a stored `/login` credential
-    for P over the placeholder; the route replaces a stored key, and a
-    stored OAuth login's requests may fail upstream until `/logout`.
-    Nothing is written to the home disk; seeds, reseeding and `/login`
-    are unchanged.
+    For each pi login route the box gets a placeholder: P's key variable
+    (`OPENROUTER_API_KEY`, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`) for
+    the API-key forms; `ANTHROPIC_OAUTH_TOKEN`, set to a value pi takes
+    for a subscription token, for `anthropic-subscription`; for
+    `openai-codex` an unsigned JWT with a placeholder account id, held in
+    the extension as that provider's `apiKey`. The box also gets one pi
+    extension, `pi.ts`, written by pinfold per box and mounted read-only
+    under `/opt/pinfold/login/`, that sets each pi provider's `baseUrl` to
+    `http://<route>` plus the base path of its built-in URL in the pinned
+    pi (`/api/v1` for openrouter, `/v1` for openai, none for anthropic,
+    `/backend-api` for openai-codex). The extension holds no secret. pi
+    loads it only when started with `-e /opt/pinfold/login/pi.ts`; the pi
+    layer passes that, a caller passes it itself. Its `baseUrl` sits above
+    a `models.json` one for the provider. pi started without it reaches
+    the provider directly, without the host credential. pi's WebSocket
+    attempt for openai-codex fails at the route (no `Upgrade`) and pi
+    falls back to SSE for the session. A stored `/login` credential for
+    the pi provider still wins in pi; the route replaces its token, and
+    pi's refresh of it bypasses the route. Nothing is written to the home
+    disk; seeds, reseeding and `/login` are unchanged.
   - `up` refuses a login it cannot use (no token, an empty or unset
     `from` variable, or not a usable JWT) as `login`, naming the harness.
 - **Limits:** a connection cap and a header timeout. A tunnel is idle, and
@@ -804,7 +818,8 @@ names Firecracker's and the kernel's, on the first `up`.
 codex also pins a host helper, `codex-app-server`, per host `os-arch`
 (`darwin-arm64`, `linux-x64`), installed the same way into
 `~/.cache/pinfold/artifacts/codex/<version>/host-<os-arch>/` on the first
-`up` with a codex login route. It never enters a box.
+`up` with a codex login route or a pi `openai-codex` login route. It
+never enters a box.
 
 The init is not an artifact: it always comes from the CLI's own build
 (Code). The macOS CLI writes its embedded init to the cache once; a Linux
@@ -1071,8 +1086,9 @@ measurement does not authorize a later deletion.
 - **Environment:** the harness's variables (Box spec, `harness`), the
   core's proxy variables, `HERDR_AGENT` and `PINFOLD_ENV_*`.
 - **TTY** whenever the host has one.
-- **Auth:** an API key through a pi login route (Egress proxy), kept on
-  the host; else OAuth `/login` once per project, or the environment.
+- **Auth:** a subscription or API key through pi login routes (Egress
+  proxy), kept on the host; else OAuth `/login` once per project, or the
+  environment.
 - **herdr:** no herdr socket. The TTY passes through, so screen detection
   works, and the shim sets `HERDR_AGENT=pi`.
 - **After a run:** when the box ends for a reason other than
@@ -1256,7 +1272,7 @@ three that run apart. Testing policy is in `AGENTS.md`.
 | 23 | A caller builds an image from its own tree | An image built from a caller's context with a COPYed file reaches a box as that file; the built line carries the unique ref, the image's id and the labels; three builds of one name move latest, and the first build's ref still comes up, on Linux with the build's labels in `ready`; two builds of unchanged inputs make one image under two refs; a failed build prints a bounded trailing log even after a 200,000-byte unterminated line, retains its final context marker and makes no image. Cached caller builds preserve a RUN-generated random stamp; --no-cache changes it. On Apple, builds from two state directories with different `NO_COLOR` and `BUILDKIT_COLORS` both succeed while one is held active in RUN. |
 | 24 | Every build reruns its steps | A second build changes a random RUN-generated stamp. On Podman the fixture-labeled set of dangling image IDs gains no member; concurrent builds and deletion of old images cannot conceal or fabricate a leak. |
 | 25 | `--version` needs no runtime | `pinfold --version` prints the version, and `pinfold box list --help` exits 0, with no runtime and leaving the state dir untouched. |
-| 26 | A login route keeps the login on the host | With `to` at a host fixture, claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. With that refresh held, a caller under distinct XDG roots and the same CODEX_HOME reports `login-busy` once; no second refresh reaches the fixture, and releasing the first lets both boxes use the refreshed login. A stalled real helper refresh is deadline-bounded; cancellation reaps the helper and closes its fixture connection before returning without a box. An empty `CODEX_HOME` is refused as `login`. On macOS only, with a real login, codex completes one tool round trip through a route with no `to`. pi, with `to` at host fixtures and an `openrouter` and an `anthropic` login route in one profile: with a different key stored in the home's `auth.json`, `pinfold pi -p` with an `openrouter` model reaches the fixture under `/api/v1/` with the host key as the Bearer header; a request the box sends through the anthropic route with its own `x-api-key` in two cases, three times, and a lowercase `authorization` arrives with exactly one `x-api-key`, the host key, and no `Authorization` in any case. The box's environment and files, its home disk, the state root and the egress log hold neither key. A second pi login route for one provider is refused as `spec`, and a `from` variable set but empty as `login`. |
+| 26 | A login route keeps the login on the host | With `to` at a host fixture, claude: the fixture receives the `from` token as a Bearer header and the box has `ANTHROPIC_BASE_URL` and a placeholder. codex, with `CODEX_HOME` holding a login whose token lapses within 5 minutes and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` at a fixture: the model fixture receives the refreshed token and its account header; the box's environment, files and the egress log hold neither token. With that refresh held, a caller under distinct XDG roots and the same CODEX_HOME reports `login-busy` once; no second refresh reaches the fixture, and releasing the first lets both boxes use the refreshed login. A stalled real helper refresh is deadline-bounded; cancellation reaps the helper and closes its fixture connection before returning without a box. An empty `CODEX_HOME` is refused as `login`. On macOS only, with a real login, codex completes one tool round trip through a route with no `to`. pi, with `to` at host fixtures and an `openrouter` and an `anthropic` login route in one profile: with a different key stored in the home's `auth.json`, `pinfold pi -p` with an `openrouter` model reaches the fixture under `/api/v1/` with the host key as the Bearer header; a request the box sends through the anthropic route with its own `x-api-key` in two cases, three times, and a lowercase `authorization` arrives with exactly one `x-api-key`, the host key, and no `Authorization` in any case. The box's environment and files, its home disk, the state root and the egress log hold neither key. With an `anthropic-subscription` and an `openai-codex` route in one profile, `to` at host fixtures, and `CODEX_HOME` and `CODEX_REFRESH_TOKEN_URL_OVERRIDE` as for codex: a request the box sends through the anthropic route with its own `Authorization: Bearer sk-ant-oat…` and an `x-api-key` arrives with exactly one `Authorization`, the host token as Bearer, and no `x-api-key`; `pi -p` in that box with the extension and an `openai-codex` model reaches the fixture at `/backend-api/codex/responses` with the refreshed token and the fixture JWT's account id, not the placeholder's. The box's environment and files, its home disk, the state root and the egress log hold neither token nor that account id. An `anthropic` and an `anthropic-subscription` route in one spec are refused as `spec`, and a `from` variable set but empty as `login`. |
 | 27 | Doctor reports without changing state | With and without a runtime, doctor leaves complete Pinfold-owned state/config/cache trees unchanged, including absent roots, and reports host configuration. Native runtime bookkeeping is outside those trees. Linux runtime-dir and missing-kvm diagnostics use real failures. The Linux host keeps AppArmor's unprivileged user-namespace restriction on (`kernel.apparmor_restrict_unprivileged_userns` is 1); there a copy of pinfold outside its profile's path reports `userns-apparmor` and is refused as `runtime`; the profiled executable starts a box. |
 | 28 | Host updates are verified and atomic | A host HTTPS release fixture supplies a different valid executable. Wrong checksums and live owners preserve the original bytes/inode; a working command started during a held asset transfer also prevents replacement. After teardown the verified bytes replace the inode and preserve the invoked command symlink. |
 | 29 | Interactive update checks are bounded | A host HTTPS fixture observes one interactive check per interval and none for opt-out/noninteractive commands. A stalled request closes within 1.75 seconds of fixture receipt and is not retried by the next launch. |

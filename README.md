@@ -96,8 +96,11 @@ In a project:
 3. Start pi: `pi`. The first run downloads the pinned pi release and
    creates the project's home and project disks.
 4. Run `/login` in pi once per project: state is per project. An API key
-   can instead stay on the host behind a pi login route in `routes`
-   (ARCHITECTURE.md, Egress proxy), or arrive through the environment.
+   or a Claude or Codex subscription can instead stay on the host behind
+   a pi login route in `routes` (ARCHITECTURE.md, Egress proxy); an API
+   key can also arrive through the environment.
+   Using a Claude subscription through pi is subject to Anthropic's terms:
+   pi presents the token as Claude Code and may bill it as extra usage.
 
 The first start copies the checkout into the box, which keeps that copy.
 `pinfold fetch` brings the box's commits back as `pinfold/*` branches for

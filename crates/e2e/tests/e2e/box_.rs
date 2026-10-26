@@ -2991,9 +2991,9 @@ fn a_login_route_keeps_the_login_on_the_host() {
     // dials openrouter.ai, which this run's allowlist refuses, and `pi -p`
     // fails on the proxy's 403. Sabotage: in `Login::env`, give pi's key
     // variable `$VAR`'s value instead of the placeholder; the box
-    // environment assertion fails. Sabotage: drop the per-provider check in
-    // `validate`; the second openrouter route comes up ready instead of
-    // `spec`. Sabotage: drop the empty check in `Login::resolve`; the empty
+    // environment assertion fails. Sabotage: in `validate`, key the
+    // per-provider check on P instead of pi's provider; the anthropic and
+    // anthropic-subscription routes come up ready instead of `spec`. Sabotage: drop the empty check in `Login::resolve`; the empty
     // `from` comes up ready instead of `login`.
     let env = TestEnv::new("login");
     let openrouter = HttpFixture::start(Some((
@@ -3195,8 +3195,9 @@ fn a_login_route_keeps_the_login_on_the_host() {
     }
     assert!(run.finish().success(), "pinfold pi did not exit cleanly");
 
-    // A second pi login route for one provider is refused as `spec`; a
-    // `from` variable set but empty as `login`. The runs above are the positive control.
+    // An anthropic and an anthropic-subscription route, two forms of pi's
+    // one anthropic provider, are refused as `spec`; a `from` variable set
+    // but empty as `login`. The runs above are the positive control.
     let refused_name = box_name("login-pi-refused");
     let route =
         |from: &str| serde_json::json!({ "login": "pi", "provider": "openrouter", "from": from });
@@ -3205,15 +3206,15 @@ fn a_login_route_keeps_the_login_on_the_host() {
         "image": default_image(&env),
         "harness": "pi",
         "egress": { "routes": {
-            "first.login": route("PINFOLD_E2E_OPENROUTER_KEY"),
-            "second.login": route("PINFOLD_E2E_OPENROUTER_KEY"),
+            "first.login": { "login": "pi", "provider": "anthropic", "from": "PINFOLD_E2E_ANTHROPIC_KEY" },
+            "second.login": { "login": "pi", "provider": "anthropic-subscription", "from": "PINFOLD_E2E_ANTHROPIC_KEY" },
         } },
     });
     let (code, refused) = box_up_refused(&env, &twice, &keys);
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(
         refused["reason"], "spec",
-        "a second openrouter route: {refused}"
+        "two routes for pi's anthropic: {refused}"
     );
     let empty = serde_json::json!({
         "name": refused_name,
@@ -3756,6 +3757,203 @@ fn a_login_route_keeps_the_login_on_the_host() {
     assert_eq!(refused["event"], "refused");
     assert_eq!(refused["reason"], "login");
     assert_left_nothing(&env, &codex_name, label, "refused");
+
+    // pi's subscription forms, after the codex half has installed the host
+    // helper: an anthropic-subscription and an openai-codex route in one
+    // profile. The box forges a subscription-shaped Bearer, pi sends its
+    // placeholder account id, and the host login lapses inside the refresh
+    // window, so `up` waits on a refresh. Sabotage: give
+    // anthropic-subscription the header `x-pinfold-unused`; the box's
+    // forged Bearer reaches the fixture. Sabotage: in `Codex::headers`,
+    // drop `ChatGPT-Account-ID`; pi's placeholder account id reaches the
+    // fixture (codex's half above fails on it first).
+    let subscription = HttpFixture::start(None);
+    let codex_model = HttpFixture::start(Some((
+        "text/event-stream",
+        concat!(
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_e2e\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_e2e\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"
+        ),
+    )));
+    let subscription_token = format!("pf-subscription-{}", std::process::id());
+    let pi_account = format!("pf-pi-account-{}", std::process::id());
+    let pi_token = |exp: u64| {
+        unsigned_jwt(&serde_json::json!({
+            "exp": exp,
+            "https://api.openai.com/auth": { "chatgpt_account_id": pi_account },
+        }))
+    };
+    let pi_lapsing = pi_token(now + 120);
+    let pi_refreshed = pi_token(now + 4 * 3600);
+    let pi_codex_home = TestDir::new(&env, "pi-codex-home");
+    fs::write(
+        pi_codex_home.path().join("auth.json"),
+        serde_json::json!({
+            "OPENAI_API_KEY": null,
+            "tokens": {
+                "id_token": pi_token(now + 4 * 3600),
+                "access_token": pi_lapsing,
+                "refresh_token": format!("pf-pi-refresh-{}", std::process::id()),
+                "account_id": pi_account,
+            },
+        })
+        .to_string(),
+    )
+    .expect("write the pi Codex login");
+    let pi_refresh = HttpFixture::start(Some((
+        "application/json",
+        String::leak(serde_json::json!({ "access_token": pi_refreshed }).to_string()),
+    )));
+    fs::write(
+        profile_dir.join("pinfold.toml"),
+        format!(
+            "allow = [\"login-allow.invalid\"]\n\
+             [routes]\n\
+             \"subscription.login\" = {{ login = \"pi\", provider = \"anthropic-subscription\", from = \"PINFOLD_E2E_SUBSCRIPTION\", to = \"http://{}\" }}\n\
+             \"codex.login\" = {{ login = \"pi\", provider = \"openai-codex\", to = \"http://{}\" }}\n",
+            subscription.route(),
+            codex_model.route()
+        ),
+    )
+    .expect("rewrite the profile's pinfold.toml");
+    let refresh_url = format!("http://{}/oauth/token", pi_refresh.route());
+    let (run, _, pi_box) = crate::pi::PiRpc::start_with_env(
+        &env,
+        project.path(),
+        &[
+            ("PINFOLD_PROFILE", profile),
+            ("PINFOLD_E2E_SUBSCRIPTION", &subscription_token),
+            ("CODEX_HOME", pi_codex_home.path().to_str().unwrap()),
+            ("CODEX_REFRESH_TOKEN_URL_OVERRIDE", &refresh_url),
+        ],
+    );
+    let secrets = [&subscription_token, &pi_lapsing, &pi_refreshed, &pi_account];
+    let environment = box_exec(&env, &pi_box, &["env"]);
+    assert_ok(&environment, "env in the subscription pi box");
+    let placeholder = environment
+        .stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("ANTHROPIC_OAUTH_TOKEN="))
+        .expect("the subscription pi box has no ANTHROPIC_OAUTH_TOKEN");
+    assert!(
+        !placeholder.is_empty(),
+        "the subscription pi box's ANTHROPIC_OAUTH_TOKEN is empty"
+    );
+    for secret in secrets {
+        assert!(
+            !environment.stdout.contains(secret.as_str()),
+            "the subscription pi box's environment holds a host token or account id"
+        );
+    }
+    let forged = curl(
+        &env,
+        &pi_box,
+        "5",
+        &[
+            "-H",
+            "authorization: Bearer sk-ant-oat01-from-box",
+            "-H",
+            "X-Api-Key: from-box",
+            "http://subscription.login/v1/messages",
+        ],
+    );
+    assert_ok(&forged, "the anthropic-subscription login route");
+    let requests = subscription.requests();
+    let values = |name: &str| -> Vec<String> {
+        requests[0]
+            .0
+            .iter()
+            .filter(|(header, _)| header.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.clone())
+            .collect()
+    };
+    assert!(
+        values("authorization") == [format!("Bearer {subscription_token}")],
+        "the subscription fixture's Authorization is not exactly the host token"
+    );
+    assert_eq!(
+        values("x-api-key"),
+        Vec::<String>::new(),
+        "the box's x-api-key reached the subscription fixture"
+    );
+    // pi in the box, with pinfold's extension, on its built-in openai-codex
+    // provider. A WebSocket attempt may reach the fixture first; every
+    // request at the path carries the host login.
+    let ran = box_exec(
+        &env,
+        &pi_box,
+        &[
+            "/opt/pinfold/pi/pi",
+            "-e",
+            "/opt/pinfold/login/pi.ts",
+            "--no-session",
+            "-p",
+            "--provider",
+            "openai-codex",
+            "--model",
+            "gpt-6.1-sol",
+            "reply with ok",
+        ],
+    );
+    assert_ok(&ran, "pi -p through the openai-codex login route");
+    let requests: Vec<_> = codex_model
+        .targets()
+        .into_iter()
+        .filter(|(target, _)| target == "/backend-api/codex/responses")
+        .collect();
+    assert!(
+        !requests.is_empty(),
+        "pi's request never reached the fixture at Codex's path"
+    );
+    for (_, headers) in &requests {
+        for (name, expected) in [
+            ("authorization", format!("Bearer {pi_refreshed}")),
+            ("chatgpt-account-id", pi_account.clone()),
+        ] {
+            assert_eq!(
+                headers
+                    .iter()
+                    .filter(|(header, _)| header.eq_ignore_ascii_case(name))
+                    .map(|(_, value)| value.as_str())
+                    .collect::<Vec<_>>(),
+                [expected.as_str()],
+                "the openai-codex fixture's {name} is not the host login's"
+            );
+        }
+    }
+    let canary = format!("pf-canary-{}", std::process::id());
+    let scan = box_exec(
+        &env,
+        &pi_box,
+        &[
+            "sh",
+            "-c",
+            "printf %s \"$5\" > /tmp/pf-canary; \
+             grep -rlsF -e \"$1\" -e \"$2\" -e \"$3\" -e \"$4\" -e \"$5\" \
+             /etc /opt/pinfold /tmp \"$HOME\"; true",
+            "sh",
+            &subscription_token,
+            &pi_lapsing,
+            &pi_refreshed,
+            &pi_account,
+            &canary,
+        ],
+    );
+    assert_eq!(
+        scan.stdout.lines().collect::<Vec<_>>(),
+        ["/tmp/pf-canary"],
+        "the subscription pi box's files or home disk hold a host token or account id, or the scan missed the canary: {}",
+        scan.stderr
+    );
+    assert!(run.finish().success(), "pinfold pi did not exit cleanly");
+    let mut scanned = Vec::new();
+    for secret in secrets {
+        crate::pi::holding(&env.state, secret.as_bytes(), &mut scanned);
+    }
+    assert!(
+        scanned.iter().any(|path| path.ends_with("egress.jsonl")),
+        "the state root scan read no egress log"
+    );
 
     // Live, on the Apple runtime only: the operator's own Codex login, and
     // pinned codex completes one shell tool round trip through a login route

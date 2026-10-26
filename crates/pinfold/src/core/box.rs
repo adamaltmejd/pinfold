@@ -187,7 +187,10 @@ impl Box {
         // disk behind `$HOME`, so a clash is refused as spec and no tie can
         // hide it.
         let harness = plan.harness.as_deref().map(artifacts::guest);
-        let codex_config = codex.as_ref().map(|_| Path::new(login::CODEX_CONFIG_DIR));
+        let codex_config = plan
+            .logins()
+            .any(|(_, login)| login.is_codex())
+            .then(|| Path::new(login::CODEX_CONFIG_DIR));
         let pi_login = plan
             .logins()
             .any(|(_, login)| login.is_pi())

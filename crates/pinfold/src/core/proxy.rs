@@ -42,10 +42,10 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 const MAX_CONNECTIONS: usize = 64;
 
-/// Bind the box's socket, create its log, and serve. `codex` is a codex
-/// login route's token, asked of the host helper at `up`. The accept thread
-/// is never stopped: each owner exits right after teardown, which deletes
-/// the socket.
+/// Bind the box's socket, create its log, and serve. `codex` is the token of
+/// a login route on the host's Codex login, asked of the host helper at
+/// `up`. The accept thread is never stopped: each owner exits right after
+/// teardown, which deletes the socket.
 pub fn start(
     socket: &Path,
     egress: &Egress,
@@ -91,8 +91,8 @@ enum Upstream {
         headers: Vec<(String, String)>,
         strip: &'static [&'static str],
     },
-    /// A codex login route's target; its headers come from the live token
-    /// on each request.
+    /// The target of a login route on the host's Codex login; its headers
+    /// come from the live token on each request.
     Codex { target: Target, login: login::Codex },
 }
 
@@ -121,8 +121,8 @@ impl Rules {
                         strip: &[],
                     }
                 }
-                Route::Login(login) if login.is_codex() => {
-                    let token = codex.take().expect("up resolves a codex login's token");
+                Route::Login(login) if login.uses_host_codex() => {
+                    let token = codex.take().expect("up resolves a Codex login's token");
                     Upstream::Codex {
                         target: login.target().map_err(io::Error::other)?,
                         login: login::Codex::new(token),

@@ -13,7 +13,7 @@ use nix::poll::PollFlags;
 use std::time::{Duration, Instant};
 
 use crate::core::pipe::{nonblocking, remaining, wait_ready};
-use crate::core::plan::PiProvider;
+use crate::core::plan::{PiCredential, PiProvider};
 use crate::core::{artifacts, now, ownership};
 
 /// Within this much of `exp`, the proxy asks the helper again. Codex's own
@@ -325,17 +325,21 @@ pub const PI_LOGIN_DIR: &str = "/opt/pinfold/login";
 pub const PI_EXTENSION: &str = "/opt/pinfold/login/pi.ts";
 
 /// The box's `pi.ts`: points each pi login route's provider at its route,
-/// below the base path of the provider's built-in URL. It holds no secret;
-/// the proxy adds the key.
+/// below the base path of the provider's built-in URL, and gives an
+/// `openai-codex` route's provider its placeholder key. It holds no secret;
+/// the proxy adds the credential.
 pub fn pi_extension(routes: &[(&str, &PiProvider)]) -> String {
     let mut calls = String::new();
     for (route, provider) in routes {
-        // A JSON string is a JavaScript string literal.
-        let name = serde_json::Value::from(provider.name);
-        let base_url = serde_json::Value::from(format!("http://{route}{}", provider.base_path));
-        calls.push_str(&format!(
-            "  pi.registerProvider({name}, {{ baseUrl: {base_url} }});\n"
-        ));
+        // A JSON value is a JavaScript literal.
+        let name = serde_json::Value::from(provider.pi);
+        let mut config = serde_json::json!({
+            "baseUrl": format!("http://{route}{}", provider.base_path),
+        });
+        if let PiCredential::HostCodex { placeholder } = provider.credential {
+            config["apiKey"] = placeholder.into();
+        }
+        calls.push_str(&format!("  pi.registerProvider({name}, {config});\n"));
     }
     format!("export default function (pi) {{\n{calls}}}\n")
 }
