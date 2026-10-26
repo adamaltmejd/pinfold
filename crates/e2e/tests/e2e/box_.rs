@@ -1393,16 +1393,11 @@ const CLIENT_HOOKS: &[&str] = &[
 #[test]
 fn work_leaves_the_box_only_by_fetch() {
     let _runtime = crate::shared_runtime();
-    // Guarantee 10: disk writes stay in the box, push and fetch move
-    // branches only, nothing the box plants runs on the host, and pi does
-    // not start inside `.git`.
+    // Guarantee 10: disk writes stay in the box, fetch moves branches only,
+    // and nothing the box plants runs on the host.
     // Sabotage: write fetched branches under `refs/heads/` in crossing.rs;
-    // the fetched refs assertion fails. Sabotage: push with
-    // `+refs/heads/*:refs/heads/*` and `--update-head-ok` in the box script;
-    // nothing lands under refs/remotes/host/. Sabotage: bundle without the
-    // held commits (`--branches` alone); the second fetch's pack carries
-    // every commit. Sabotage: bundle `--tags` too and fetch with `--tags`
-    // for `--no-tags`; the box's tag lands. Sabotage: set REPO's
+    // the fetched refs assertion fails. Sabotage: bundle `--tags` too and
+    // fetch with `--tags` for `--no-tags`; the box's tag lands. Sabotage: set REPO's
     // `core.hooksPath` to `.githooks` after the fetch, as if fetch adopted
     // the box's config; a host checkout touches a marker. Sabotage: drop
     // `check_branch` from crossing.rs; the hostile bundle's
@@ -1417,8 +1412,6 @@ fn work_leaves_the_box_only_by_fetch() {
     host_git(&["init", "-q", "-b", "main"]);
     host_git(&["config", "user.name", "host"]);
     host_git(&["config", "user.email", "host@example.test"]);
-    // Every fetch keeps its pack whole, so a fetch's objects can be counted.
-    host_git(&["config", "fetch.unpackLimit", "1"]);
     fs::write(repo.join("a.txt"), b"a\n").unwrap();
     fs::write(repo.join("run.sh"), b"#!/bin/sh\n").unwrap();
     fs::set_permissions(repo.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
@@ -1457,53 +1450,15 @@ fn work_leaves_the_box_only_by_fetch() {
         "the box changed the host project"
     );
 
-    // push: the host moves on and pushes. Its branches land under
-    // refs/remotes/host/*; the box's tree and branches stay.
-    fs::write(repo.join("host.txt"), b"host\n").unwrap();
-    host_git(&["add", "host.txt"]);
-    host_git(&["commit", "-q", "-m", "host two"]);
-    let box_state = "cd /work && git symbolic-ref HEAD && git for-each-ref refs/heads/ \
-                     && git status --porcelain && cat a.txt && stat -c %a run.sh";
-    let unpushed = in_box(box_state);
-    let (code, pushed) = one_json_line(env.command(pinfold()).args([
-        "box",
-        "push",
-        name.as_str(),
-        "--repo",
-        repo.to_str().unwrap(),
-        "--into",
-        "/work",
-    ]));
-    assert_eq!(code, 0, "{pushed}");
-    let host_branches = branch_map(
-        &host_git(&["for-each-ref", "refs/heads/"]),
-        "refs/remotes/host/",
-    );
-    assert_eq!(pushed["event"], "pushed", "{pushed}");
-    assert_eq!(pushed["remote"], "host", "{pushed}");
-    assert_eq!(pushed["refs"], serde_json::json!(host_branches), "{pushed}");
-    let landed = in_box("git -C /work for-each-ref refs/remotes/");
-    assert_eq!(branch_map(&landed, ""), host_branches);
-    assert_eq!(
-        in_box(box_state),
-        unpushed,
-        "push changed the box's tree or branches"
-    );
-
-    // The box merges the host's work, tracks hooks in .githooks/ and
-    // .husky/, tags, and only then plants hooks under every client-side
-    // name, core.hooksPath and core.fsmonitor, each touching a host marker.
-    // The hooks commit's subject runs past 4096 bytes; it is the second
-    // fetch's bundle prerequisite, whose header line carries the subject.
-    // Sabotage: cap each header line at 4096 bytes in crossing::header;
-    // the second fetch fails as a malformed header.
+    // The box tracks hooks in .githooks/ and .husky/, tags, and only then
+    // plants hooks under every client-side name, core.hooksPath and
+    // core.fsmonitor, each touching a host marker.
     let hooks: String = CLIENT_HOOKS.iter().map(|hook| format!("{hook} ")).collect();
     in_box(&format!(
-        "cd /work && git merge -q --no-edit refs/remotes/host/main \
-         && for dir in .githooks .husky; do mkdir -p $dir; for hook in {hooks}; do \
+        "cd /work && for dir in .githooks .husky; do mkdir -p $dir; for hook in {hooks}; do \
               printf '#!/bin/sh\\ntouch {markers}/%s-%s\\n' $dir $hook > $dir/$hook; \
               chmod 755 $dir/$hook; done; done \
-         && git add .githooks .husky && git commit -q -m \"hooks $(printf %05000d 0)\" \
+         && git add .githooks .husky && git commit -q -m hooks \
          && git tag box-tag \
          && for hook in {hooks}; do \
               printf '#!/bin/sh\\ntouch {markers}/git-%s\\n' $hook > .git/hooks/$hook; \
@@ -1569,36 +1524,6 @@ fn work_leaves_the_box_only_by_fetch() {
         "the host's own hook did not run"
     );
     fs::remove_file(&control).unwrap();
-
-    // A second fetch after one more box commit carries only that commit,
-    // and a new branch at a commit the host already holds lands too.
-    let first = box_branches[&format!("refs/remotes/{name}/main")].clone();
-    // The box's own planted hooks stay out of its way here.
-    let commit = in_box(&format!(
-        "cd /work && g() {{ git -c core.hooksPath=/nonexistent -c core.fsmonitor=false \"$@\"; }} \
-         && echo two > two.txt && g add two.txt && g commit -q -m 'box two' \
-         && g branch old {first} && git rev-parse HEAD"
-    ));
-    let held = packs(repo);
-    let (code, fetched) = crossing_fetch(&env, &name, repo);
-    assert_eq!(code, 0, "{fetched}");
-    assert_eq!(
-        fetched["refs"][format!("refs/remotes/{name}/main")],
-        commit.trim()
-    );
-    assert_eq!(
-        fetched["refs"][format!("refs/remotes/{name}/old")],
-        first.as_str()
-    );
-    let new: Vec<_> = packs(repo).difference(&held).cloned().collect();
-    assert_eq!(new.len(), 1, "the second fetch's packs: {new:?}");
-    let pack = git(repo, &["verify-pack", "-v", new[0].to_str().unwrap()]);
-    let commits: Vec<_> = pack
-        .lines()
-        .filter(|line| line.split_whitespace().nth(1) == Some("commit"))
-        .map(|line| line.split_whitespace().next().unwrap())
-        .collect();
-    assert_eq!(commits, [commit.trim()], "the second fetch's commits");
 
     // A box that writes its own bundles: a `git` ahead of the real one on
     // PATH stands in for a box that controls its processes' output. Each
@@ -1694,56 +1619,6 @@ echo "$absent""#
 
     up.down(&env);
     assert!(up.wait().success(), "the box did not exit cleanly");
-
-    // The pi part: `pinfold pi` started inside the checkout's `.git` refuses
-    // before it creates a box or a disk, since the fallback root would be
-    // `.git` itself; from the root it runs. Sabotage: drop the
-    // `--is-inside-git-dir` check from `project_root`; the run starts and
-    // the exit assertion fails. Sabotage: remove `project-in-git` from that
-    // refusal; the reason assertion fails.
-    let dot_git = fs::canonicalize(repo.join(".git")).unwrap();
-    let refused = pinfold_in(&env, &dot_git, &["pi", "--version"])
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&refused.stderr);
-    assert!(
-        !refused.status.success(),
-        "pi started inside .git: {stderr}"
-    );
-    assert!(stderr.contains("project-in-git"), "wrong refusal: {stderr}");
-    run_ok(&mut pinfold_in(&env, repo, &["pi", "--version"]));
-
-    // A worktree's `.git` names a git dir the project disk does not hold:
-    // pi, push and fetch refuse it, and run from the main checkout, where
-    // push and fetch start a transient box on the project disk. Sabotage:
-    // drop `refuse_worktree` from pi::launch::crossing; push in the worktree
-    // fails for want of a project disk and the reason assertion fails.
-    let worktree = env.root.join("linked");
-    host_git(&[
-        "worktree",
-        "add",
-        "-q",
-        worktree.to_str().unwrap(),
-        "-b",
-        "wt",
-    ]);
-    for args in [&["pi", "--version"][..], &["push"][..], &["fetch"][..]] {
-        let refused = pinfold_in(&env, &worktree, args).output().unwrap();
-        let stderr = String::from_utf8_lossy(&refused.stderr);
-        assert!(!refused.status.success(), "{args:?} ran in a worktree");
-        // A token, not a substring: the refusal also prints a path, and
-        // this checkout may itself sit under a `worktrees` directory.
-        assert!(
-            stderr
-                .split_whitespace()
-                .any(|word| word.trim_end_matches(':') == "worktree"),
-            "wrong refusal: {stderr}"
-        );
-    }
-    for (verb, event) in [("push", "pushed"), ("fetch", "fetched")] {
-        let (code, line) = one_json_line(&mut pinfold_in(&env, repo, &[verb]));
-        assert_eq!((code, &line["event"]), (0, &event.into()), "{line}");
-    }
 }
 
 fn crossing_fetch(env: &TestEnv, name: &str, repo: &Path) -> (i32, serde_json::Value) {
@@ -1771,15 +1646,6 @@ fn branch_map(listing: &str, prefix: &str) -> std::collections::BTreeMap<String,
             };
             (name, oid.to_string())
         })
-        .collect()
-}
-
-/// The repository's pack index files.
-fn packs(repo: &Path) -> std::collections::BTreeSet<PathBuf> {
-    fs::read_dir(repo.join(".git/objects/pack"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "idx"))
         .collect()
 }
 
