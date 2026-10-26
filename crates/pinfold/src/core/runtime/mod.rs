@@ -93,13 +93,6 @@ pub use apple::Client as Child;
 #[cfg(target_os = "linux")]
 pub use firecracker::Vm as Child;
 
-/// A VMM's exit code, or `128+n` for signal `n`, as the exit status a
-/// runtime client would report: `exited` names 137 for a SIGKILLed VMM.
-#[cfg(target_os = "linux")]
-fn exit_status(code: i32) -> ExitStatus {
-    std::os::unix::process::ExitStatusExt::from_raw((code & 0xff) << 8)
-}
-
 pub(crate) fn require_version(program: &str, version: &str, minimum: [u64; 3]) -> io::Result<()> {
     let release: Option<[u64; 3]> = version
         .split('+')
@@ -358,11 +351,8 @@ pub trait Runtime: Sync {
     /// Linux.
     fn program(&self) -> &'static str;
 
-    /// The runtime's name, for `doctor`.
-    fn name(&self) -> &'static str;
-
-    /// The isolation the runtime gives each box, for `doctor`.
-    fn isolation(&self) -> &'static str;
+    /// The runtime's name and the isolation it gives each box, for `doctor`.
+    fn describe(&self) -> &'static str;
 
     /// The box runtime's version.
     fn version(&self) -> io::Result<String>;

@@ -850,7 +850,7 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     println!("pinfold doctor: {}", root.display());
 
     let runtime = runtime();
-    println!("runtime: {} ({})", runtime.name(), runtime.isolation());
+    println!("runtime: {}", runtime.describe());
     match runtime.version() {
         Ok(version) => println!("  version: {version}"),
         Err(error) => println!("  version: unavailable: {error}"),
@@ -1132,7 +1132,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
             eprint!("{output}");
             Err(io::Error::other(format!(
                 "the {} build failed",
-                runtime.name()
+                runtime.program()
             )))
         }
     }

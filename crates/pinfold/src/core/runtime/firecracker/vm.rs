@@ -309,7 +309,7 @@ impl Vm {
 
     /// Wait until the VM ends on its own or is stopped.
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
-        self.vmm.wait().await.map(super::super::exit_status)
+        self.vmm.wait().await.map(super::exit_status)
     }
 
     /// Stop a start that ended before ready, as [`Vm::down`].
