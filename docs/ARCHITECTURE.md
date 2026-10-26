@@ -1074,7 +1074,8 @@ in the box as the box user, only when that branch is a proper ancestor of
 (diverged, ahead, equal, detached, no such `host/<branch>`) the checkout
 stays as the box left it. No agent runs during either: a start never
 joins a running box, since a second start is refused as `disk-in-use`. A
-checkout with no branches skips both silently. A failure prints
+checkout with no branches skips both silently. A failed push skips the
+fast-forward. A failure prints
 `pinfold pi: sync-failed: DETAIL` on stderr, and pi starts.
 
 ## Experimental durable caller
