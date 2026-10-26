@@ -1,9 +1,9 @@
 
 FROM base AS rtk-arm64
-ADD --checksum=sha256:8d6d1aad9e69b42481eda7039507d1f7ee93698f87713cecd873d287c1931632 https://github.com/rtk-ai/rtk/releases/download/v0.51.0/rtk-aarch64-unknown-linux-gnu.tar.gz /tmp/rtk-aarch64.tar.gz
+ADD --checksum=sha256:ee24a43dac9162de55fea8460b5efcd56d401ec28b5117c921bffa8a57bc136e https://github.com/rtk-ai/rtk/releases/download/v1.0.1/rtk-oss-aarch64-unknown-linux-gnu.tar.gz /tmp/rtk-aarch64.tar.gz
 
 FROM base AS rtk-amd64
-ADD --checksum=sha256:5028d3b19a8f0990d30fec9fbb07e32782bc5698e618fb1861aad8a9ccba4eb5 https://github.com/rtk-ai/rtk/releases/download/v0.51.0/rtk-x86_64-unknown-linux-musl.tar.gz /tmp/rtk-x64.tar.gz
+ADD --checksum=sha256:a44e8ffc43981100b4ddf1710399a1649a6c874591aa6d0c0727fe6cbd983c41 https://github.com/rtk-ai/rtk/releases/download/v1.0.1/rtk-oss-x86_64-unknown-linux-musl.tar.gz /tmp/rtk-x64.tar.gz
 
 FROM rtk-${TARGETARCH} AS rtk-install
 RUN set -eux; \
@@ -16,7 +16,7 @@ RUN set -eux; \
     chmod a+r /opt/pinfold/packages/rtk.ts
 
 FROM base AS ponytail-install
-ADD --checksum=sha256:6393125c23d8da5a1f6848b0401bf546b2b84534b949d8722eb063206688a819 https://registry.npmjs.org/@dietrichgebert/ponytail/-/ponytail-5.1.0.tgz /tmp/ponytail.tgz
+ADD --checksum=sha256:d2e8ef2f98e8f70bf40ffcd3ff157634fe13b2572e10ad70a62fc26db6de6dc5 https://registry.npmjs.org/@dietrichgebert/ponytail/-/ponytail-5.3.2.tgz /tmp/ponytail.tgz
 RUN set -eux; \
     mkdir -p /opt/pinfold/packages/ponytail; \
     tar -xzf /tmp/ponytail.tgz --strip-components=1 -C /opt/pinfold/packages/ponytail; \
