@@ -76,8 +76,8 @@ jobs:
           # changes must first go through the operator's release pass.
           tag=$(gh release view --json tagName --jq .tagName)
           if ! git diff --quiet "$tag" HEAD -- crates guest-kernel profile examples scripts .github .yard Cargo.toml Cargo.lock rust-toolchain.toml; then
-            echo "Unreleased implementation changes since $tag; release them manually first." >&2
-            exit 1
+            echo "::notice::Unreleased implementation changes since $tag; pins wait for a manual release."
+            exit 0
           fi
 
           base=$(git rev-parse HEAD)
