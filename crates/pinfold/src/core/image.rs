@@ -20,13 +20,14 @@ pub const CONTAINERFILE_LABEL: &str = "dev.pinfold.containerfile-sha256";
 /// Where a build's files come from.
 pub enum Context<'a> {
     /// A fresh, empty context holding only these Containerfile bytes, so
-    /// the Containerfile is the build's only input.
+    /// the Containerfile is the build's only input. Every step reruns.
     Alone(&'a [u8]),
     /// A directory the caller vouches for, and a Containerfile that may lie
-    /// outside it.
+    /// outside it. `cache` lets the runtime reuse its layer cache.
     Dir {
         dir: &'a Path,
         containerfile: &'a Path,
+        cache: bool,
     },
 }
 
@@ -41,8 +42,6 @@ pub struct Build<'a> {
     pub context: Context<'a>,
     /// Labels beyond the family and base labels.
     pub labels: BTreeMap<String, String>,
-    /// Whether the runtime may reuse its layer cache.
-    pub cache: bool,
 }
 
 /// The image one build made.
@@ -106,13 +105,13 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
     let latest = format!("{repository}:latest");
     let reference = format!("{repository}:{id}");
     let tags = [latest.clone(), reference.clone()];
-    let request = |context: &Path, containerfile: &Path| {
+    let request = |context: &Path, containerfile: &Path, cache: bool| {
         runtime.build(&BuildRequest {
             context,
             containerfile,
             tags: &tags,
             labels: &labels,
-            cache: build.cache,
+            cache,
         })
     };
     let result = match build.context {
@@ -120,12 +119,16 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
             let context = dirs::cache_dir()?.join("build").join(&id);
             fs::create_dir_all(&context)?;
             let containerfile = context.join("Containerfile");
-            let result =
-                fs::write(&containerfile, bytes).and_then(|()| request(&context, &containerfile));
+            let result = fs::write(&containerfile, bytes)
+                .and_then(|()| request(&context, &containerfile, false));
             let _ = fs::remove_dir_all(&context);
             result?
         }
-        Context::Dir { dir, containerfile } => request(dir, containerfile)?,
+        Context::Dir {
+            dir,
+            containerfile,
+            cache,
+        } => request(dir, containerfile, cache)?,
     };
     if let Err(output) = result {
         return Ok(Err(output));
@@ -209,9 +212,9 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
             context: Context::Dir {
                 dir: &request.context,
                 containerfile: &request.containerfile,
+                cache: request.cache,
             },
             labels,
-            cache: request.cache,
         },
     )
     .map_err(failed)?

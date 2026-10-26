@@ -26,21 +26,12 @@ const READ_DOCUMENTS: (&str, &[u8]) = (
     "pi/skills/read-documents/SKILL.md",
     include_bytes!("../../../../profile/share/pi/skills/read-documents/SKILL.md"),
 );
-const DEFAULT_SHARE: &[(&str, &[u8])] = &[
-    (
-        "pi/package.json",
-        include_bytes!("../../../../profile/share/pi/package.json"),
-    ),
-    OPERATING_CONTEXT,
-];
-const DOCUMENTS_SHARE: &[(&str, &[u8])] = &[
-    (
-        "pi/package.json",
-        include_bytes!("../../../../profile/documents/package.json"),
-    ),
-    OPERATING_CONTEXT,
-    READ_DOCUMENTS,
-];
+const PI_PACKAGE: (&str, &[u8]) = (
+    "pi/package.json",
+    include_bytes!("../../../../profile/share/pi/package.json"),
+);
+const DEFAULT_SHARE: &[(&str, &[u8])] = &[PI_PACKAGE, OPERATING_CONTEXT];
+const DOCUMENTS_SHARE: &[(&str, &[u8])] = &[PI_PACKAGE, OPERATING_CONTEXT, READ_DOCUMENTS];
 const FULL_SHARE: &[(&str, &[u8])] = &[
     (
         "pi/package.json",
@@ -136,7 +127,6 @@ impl Profile {
 
     /// A named built-in, even when a user's profile overrides it.
     pub fn builtin(name: &str) -> io::Result<Profile> {
-        check_name("profile", name)?;
         let (fragments, config, share): (&[&[u8]], &[u8], _) = match name {
             "default" => (&[BASE, HARDEN], CONFIG, DEFAULT_SHARE),
             "documents" => (&[BASE, BUN, DOCUMENTS, HARDEN], CONFIG, DOCUMENTS_SHARE),
@@ -210,8 +200,15 @@ fn load_dir(name: &str, root: &Path) -> io::Result<Profile> {
     let home_dir = root.join("home");
     let mut home = Vec::new();
     if home_dir.is_dir() {
-        read_seed_dir(&home_dir, &home_dir, &mut home)?;
+        files(&home_dir, &home_dir, &mut home)?;
     }
+    let home = home
+        .into_iter()
+        .map(|path| {
+            let contents = fs::read(home_dir.join(&path))?;
+            Ok(Seed { path, contents })
+        })
+        .collect::<io::Result<_>>()?;
     let share = root.join("share");
     Ok(Profile {
         name: name.to_string(),
@@ -222,23 +219,19 @@ fn load_dir(name: &str, root: &Path) -> io::Result<Profile> {
     })
 }
 
-/// Every regular file under `home/`, at its path relative to it.
-fn read_seed_dir(root: &Path, dir: &Path, seeds: &mut Vec<Seed>) -> io::Result<()> {
+/// Every regular file under `dir`, at its path relative to `root`.
+fn files(root: &Path, dir: &Path, found: &mut Vec<PathBuf>) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
         let path = entry.path();
         if file_type.is_dir() {
-            read_seed_dir(root, &path, seeds)?;
+            files(root, &path, found)?;
         } else if file_type.is_file() {
             let relative = path
                 .strip_prefix(root)
-                .expect("a seed path stays under home/")
-                .to_path_buf();
-            seeds.push(Seed {
-                path: relative,
-                contents: fs::read(&path)?,
-            });
+                .expect("a walked path stays under its root");
+            found.push(relative.to_path_buf());
         }
     }
     Ok(())
@@ -272,26 +265,21 @@ pub fn write_profile(source: &Profile, target: &Path) -> io::Result<()> {
     fs::write(target.join("pinfold.toml"), &source.config)?;
     let seeds = source.home.iter().map(|seed| (&seed.path, &seed.contents));
     write_files(seeds, &target.join("home"))?;
-    if let Some(share) = &source.share {
-        match share {
-            Share::Directory(path) => copy_tree(path, &target.join("share"))?,
-            Share::Embedded(files) => write_files(files.iter().copied(), &target.join("share"))?,
+    let share = target.join("share");
+    match &source.share {
+        Some(Share::Directory(from)) => {
+            let mut found = Vec::new();
+            files(from, from, &mut found)?;
+            fs::create_dir_all(&share)?;
+            for path in found {
+                let to = share.join(&path);
+                fs::create_dir_all(to.parent().expect("a file path has a directory"))?;
+                // `copy` keeps the file's mode, so an executable stays one.
+                fs::copy(from.join(&path), to)?;
+            }
+            Ok(())
         }
+        Some(Share::Embedded(files)) => write_files(files.iter().copied(), &share),
+        None => Ok(()),
     }
-    Ok(())
-}
-
-pub fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
-    fs::create_dir_all(to)?;
-    for entry in fs::read_dir(from)? {
-        let entry = entry?;
-        let target = to.join(entry.file_name());
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            copy_tree(&entry.path(), &target)?;
-        } else if file_type.is_file() {
-            fs::copy(entry.path(), &target)?;
-        }
-    }
-    Ok(())
 }

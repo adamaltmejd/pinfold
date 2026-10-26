@@ -85,7 +85,7 @@ impl Codex {
 pub fn token_from_helper(cancel: Option<&AtomicBool>) -> Result<Token, String> {
     let codex = artifacts::harness("codex").expect("codex is pinned");
     let helper = codex
-        .install_host(cancel)
+        .install_os_arch(artifacts::HOST_OS_ARCH, cancel)
         .map_err(|error| format!("install the codex host helper: {error}"))?
         .join("codex-app-server");
     let deadline = Instant::now() + HELPER_TIMEOUT;

@@ -397,7 +397,6 @@ fn keep_two_images_from(
 
 /// What [`remove_images`] removed, and what a listed box still uses.
 /// `pinfold image rm` prints both lists.
-#[derive(Default)]
 pub struct Removed {
     /// The ids it untagged, one each.
     pub ids: Vec<String>,
@@ -412,39 +411,29 @@ pub fn remove_images(runtime: &dyn Runtime, source: &str) -> io::Result<Removed>
     let listing = runtime.list_images()?;
     let in_use = in_use_images(runtime)?;
     // Every reference the store lists, so an image's last tag counts
-    // another name's and another source's, not only this source's.
-    let references = reference_counts(&listing);
-    // This source's references, grouped by image id: two builds of
-    // unchanged inputs share one image, and two names share one by tag.
-    let mut images: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // another name's and another source's, not only this source's. Two
+    // builds of unchanged inputs share one image, and two names one by tag.
+    let mut references = reference_counts(&listing);
+    let (mut untagged, mut kept) = (BTreeSet::new(), BTreeSet::new());
     for image in source_images(&listing, None, source) {
-        images
-            .entry(image.id.clone())
-            .or_default()
-            .push(image.reference.clone());
-    }
-    let mut removed = Removed::default();
-    for (id, tags) in images {
-        // The image's last tag is this source's when it tags every
-        // reference of the id; with a box using the image, that one stays.
-        let last = references.get(&id).copied().unwrap_or(0) == tags.len();
-        if last && in_use.contains(&id) {
-            for tag in &tags[..tags.len() - 1] {
-                runtime.remove_image(tag)?;
-            }
-            removed.in_use.push(id);
+        let count = references.entry(image.id.clone()).or_default();
+        // With a box using the image, its last tag stays.
+        if in_use.contains(&image.id) && *count <= 1 {
+            kept.insert(image.id.clone());
             continue;
         }
-        for reference in &tags {
-            runtime.remove_image(reference)?;
-        }
-        removed.ids.push(id);
+        runtime.remove_image(&image.reference)?;
+        *count -= 1;
+        untagged.insert(image.id.clone());
     }
     // The images are gone already; a failed prune is the next one's.
     if let Err(error) = prune_root_disks(runtime) {
         eprintln!("pinfold: maintenance: root disks: {error}");
     }
-    Ok(removed)
+    Ok(Removed {
+        ids: untagged.difference(&kept).cloned().collect(),
+        in_use: kept.into_iter().collect(),
+    })
 }
 
 /// Remove the root disks of images the runtime no longer lists, and the

@@ -1120,7 +1120,6 @@ pub fn build(args: &[String]) -> io::Result<i32> {
                 .map(|digest| (clean::BASE_LABEL.to_string(), digest))
                 .into_iter()
                 .collect(),
-            cache: false,
         },
     )?;
     match built {
