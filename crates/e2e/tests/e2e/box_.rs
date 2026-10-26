@@ -354,6 +354,9 @@ fn box_lifecycle_works_for_a_caller() {
 fn up_refuses_before_it_creates() {
     let _runtime = crate::shared_runtime();
     // Guarantee 17: up refuses before it creates.
+    // Sabotage: parse the first JSON value straight into `Plan` again; the
+    // serde refusal is raised before any name is read, so the nested
+    // misspelling's `box` assertion fails.
     // Sabotage: drop the character-class check from the env-name validation,
     // keeping only the old empty-or-`=` test; the wildcard spec then comes up
     // `ready`, so the refusal assertion fails.
@@ -385,6 +388,29 @@ fn up_refuses_before_it_creates() {
     assert_eq!(code, 1, "a refused up exits 1: {refused}");
     assert_eq!(refused["event"], "refused");
     assert_eq!(refused["reason"], "image-missing");
+    assert_left_nothing(&env, &name, label, "refused");
+
+    // Sabotage: accept unknown fields inside an env `from` object. A valid
+    // reference succeeds in the race's winner below; this nested misspelling
+    // must be refused as spec, naming the key and the box, before runtime
+    // lookup or cache extraction.
+    let nested = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+        "labels": { "dev.example.test": "refuses" },
+        "env": { "NESTED_VALUE": { "from": "PINFOLD_E2E_NESTED", "misspelled": true } },
+    });
+    let (code, refused) = box_up_refused(&env, &nested, &[("PINFOLD_E2E_NESTED", "fixture-value")]);
+    assert_eq!(code, 1, "a refused up exits 1: {refused}");
+    assert_eq!(refused["reason"], "spec");
+    assert_eq!(refused["box"], name);
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("misspelled"),
+        "the refusal did not name the nested key: {refused}"
+    );
     assert_left_nothing(&env, &name, label, "refused");
 
     // A spec whose env name is not a POSIX name is refused as data, naming
@@ -577,10 +603,11 @@ fn up_refuses_before_it_creates() {
         "labels": { "dev.example.test": "refuses" },
         "mounts": [{ "host": work, "guest": "/devices" }],
         "egress": { "allow": [".github.com"] },
+        "env": { "NESTED_VALUE": { "from": "PINFOLD_E2E_NESTED" } },
     });
     let mut starts = [
-        box_up_start(&env, &live, &[]),
-        box_up_start(&env, &live, &[]),
+        box_up_start(&env, &live, &[("PINFOLD_E2E_NESTED", "fixture-value")]),
+        box_up_start(&env, &live, &[("PINFOLD_E2E_NESTED", "fixture-value")]),
     ];
     let lines = starts.each_mut().map(Starting::first_line);
     let [first, second] = starts;
@@ -603,6 +630,9 @@ fn up_refuses_before_it_creates() {
     assert_eq!(exit_code(status), 1, "the losing up did not exit 1");
     let ok = box_exec(&env, &name, &["true"]);
     assert_ok(&ok, "exec in the winner after the losing up");
+    let value = box_exec(&env, &name, &["sh", "-c", r#"printf %s "$NESTED_VALUE""#]);
+    assert_ok(&value, "reading the allowed nested env reference");
+    assert_eq!(value.stdout, "fixture-value");
     let _ = box_down(&env, &name);
     assert!(
         winner.wait().success(),
