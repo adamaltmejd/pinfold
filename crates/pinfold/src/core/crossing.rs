@@ -57,7 +57,8 @@ held=$(git -C "$repo" cat-file --batch-check='%(objectname) %(objecttype)' |
   sed -n 's/^\([0-9a-f]*\) commit$/^\1/p') || exit
 git -C "$repo" for-each-ref --format='%(objectname) %(refname)' refs/heads/ || exit
 echo
-revs() { echo --branches; printf '%s\n' $held; }
+# Full names: `bundle create` resolves a short one, and a same-named tag wins.
+revs() { git -C "$repo" for-each-ref --format='%(refname)' refs/heads/; printf '%s\n' $held; }
 [ -n "$(revs | git -C "$repo" rev-list -n1 --stdin)" ] || exit 0
 revs | exec git -C "$repo" bundle create -q - --stdin
 "#;
@@ -87,15 +88,24 @@ pub fn push(
     remote: &str,
 ) -> Result<Refs, CrossingError> {
     check_args(repo, guest_repo, remote)?;
-    if git(repo, &["for-each-ref", "--count=1", "refs/heads/"])?
-        .stdout
-        .is_empty()
-    {
+    let branches = succeeded(git(
+        repo,
+        &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+    )?)?
+    .stdout;
+    if branches.is_empty() {
         return Err(spec(format!("{} has no branches", repo.display())));
     }
     let bundle = Bundle::new()?;
     let path = bundle.path.as_str();
-    succeeded(git(repo, &["bundle", "create", "-q", path, "--branches"])?)?;
+    // Full names: `--branches` resolves each short one, and a same-named
+    // tag wins.
+    succeeded(git_input(
+        repo,
+        &["bundle", "create", "-q", path, "--stdin"],
+        &branches,
+        &[],
+    )?)?;
     let heads = bundle_heads(repo, path)?;
     let mut command = runtime.exec_command(
         name,

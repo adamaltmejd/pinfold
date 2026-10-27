@@ -39,9 +39,9 @@ pub fn run(args: &[String]) -> io::Result<i32> {
 }
 
 /// `$1` is the project's guest path, `$2` the host's branch or empty.
-/// Creates the box's repository there unless `.git` exists.
+/// Creates the box's repository there; on an existing one git keeps its
+/// branch, and repairs a `.git` an interrupted first start left partial.
 const INIT_SCRIPT: &str = r#"
-[ -e "$1/.git" ] && exit
 exec git init -q ${2:+"--initial-branch=$2"} "$1"
 "#;
 
@@ -61,13 +61,16 @@ fi
 exec git merge -q --ff-only "$host"
 "#;
 
-/// Create the box's repository if the project disk has none, push the
+/// Create the box's repository, push the
 /// checkout's branches into it, then fast-forward its checkout (Git). A
 /// failure is reported and never stops pi.
 fn sync(name: &str, init: &Path, root: &Path) {
     let Some(guest) = root.to_str() else { return };
     let failed = |detail: &str| eprintln!("pinfold pi: sync-failed: {}", detail.trim());
-    let branch = git(root, &["symbolic-ref", "-q", "--short", "HEAD"]).unwrap_or_default();
+    // `--short` would print `heads/<b>` when a tag shares the branch's name.
+    let branch = git(root, &["symbolic-ref", "-q", "HEAD"])
+        .and_then(|head| head.strip_prefix("refs/heads/").map(str::to_string))
+        .unwrap_or_default();
     if let Err(detail) = in_box(name, init, INIT_SCRIPT, &[guest, &branch]) {
         return failed(&detail);
     }
@@ -109,8 +112,7 @@ fn in_box(name: &str, init: &Path, script: &str, args: &[&str]) -> Result<(), St
 }
 
 /// Refuse a root without `.git`, which has no branches to cross, and one
-/// whose `.git` is not a directory: a worktree's (or a submodule's) `.git`
-/// file names a git dir outside the project.
+/// whose `.git` is not a directory (a worktree's or a submodule's).
 pub(crate) fn require_repo(root: &Path) -> io::Result<()> {
     let dot_git = root.join(".git");
     let refused = |detail: String| Err(io::Error::new(io::ErrorKind::InvalidInput, detail));
@@ -172,7 +174,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
         .list_disks()?
         .iter()
         .any(|listed| listed.name == disk)
-        // A disk whose first box never came ready holds no repository.
+        // A disk whose first box never came ready is empty.
         || disk::unfilled(&disk)?
     {
         return Err(io::Error::new(

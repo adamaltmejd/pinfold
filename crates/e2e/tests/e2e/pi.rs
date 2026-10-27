@@ -224,12 +224,17 @@ fn project_state_persists_and_stays_separate() {
     // Nothing else in the host's `.git` or work tree follows: not an
     // untracked `.env`, the blob of a file staged and then unstaged, a
     // stash, a remote URL holding a token, or a hook.
-    // Sabotage: give project_disk the checkout as `from` again; the box
-    // holds the host's `.git`, and every leak below appears.
+    // The host's branch shares its name with a tag.
+    // Sabotage: give project_disk the checkout as `from` again; the
+    // untracked `.env` makes the box's `git status` unclean.
     // Sabotage: bundle `--all` instead of `--branches` in crossing::push;
     // the stash commit's objects arrive and `stash` is printed.
     // Sabotage: drop the INIT_SCRIPT step from launch::sync; the push finds
-    // no repository and the HEAD comparison fails.
+    // no repository and committed.txt is missing.
+    // Sabotage: name the box's branch by `symbolic-ref --short`; it
+    // becomes `heads/work`, and committed.txt is missing.
+    // Sabotage: bundle by `--branches` in crossing::push; the tag named
+    // `work` empties the bundle, and committed.txt is missing.
     // Sabotage: exit when FAST_FORWARD_SCRIPT finds no HEAD, as before;
     // the unborn branch stays and committed.txt is missing.
     let write = |path: &str, contents: &str| fs::write(a.join(path), contents).unwrap();
@@ -241,6 +246,7 @@ fn project_state_persists_and_stays_separate() {
         &[&id[..], &["commit", "-q", "-m", "start"]].concat(),
     );
     let head = git(a.as_path(), &["rev-parse", "HEAD"]).trim().to_string();
+    git(a.as_path(), &["update-ref", "refs/tags/work", "HEAD"]);
     write(".env", "FAKE_TOKEN=pinfold-e2e-untracked-env");
     write("staged.txt", "pinfold-e2e-unstaged-blob");
     git(a.as_path(), &["add", "staged.txt"]);

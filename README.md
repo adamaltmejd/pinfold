@@ -1,7 +1,7 @@
 # pinfold
 
 Run a coding agent in a disposable micro-VM: Apple `container` on macOS,
-Firecracker on Linux. The box works on its own copy of the project, and
+Firecracker on Linux. The box works on its own clone of the project's branches, and
 its only way out is its own allowlisting proxy. `pinfold fetch` brings its
 commits back as branches.
 
