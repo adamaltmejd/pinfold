@@ -577,8 +577,10 @@ fn work_leaves_the_box_only_by_fetch() {
     // the box's config; a host checkout touches a marker. Sabotage: drop
     // `check_branch` from crossing.rs; the hostile bundle's
     // `refs/heads/injected` lands on the host. Sabotage: bundle by
-    // `--branches` in FETCH_SCRIPT; the tag named `main` empties the bundle
-    // and the fetch fails.
+    // `--branches` in FETCH_SCRIPT, or drop its
+    // `core.warnAmbiguousRefs=false`; a tag named as the branch drops
+    // `main` from the bundle, and the fetch fails: the listed branch is not
+    // carried.
     let env = TestEnv::new("crossing");
     let name = box_name("crossing");
     let project = test_dir(&env, "project");
@@ -627,16 +629,17 @@ fn work_leaves_the_box_only_by_fetch() {
         "the box changed the host project"
     );
 
-    // The box tracks hooks in .githooks/ and .husky/, adds a tag named as
-    // its branch, and only then plants hooks under every client-side name,
-    // core.hooksPath and core.fsmonitor, each touching a host marker.
+    // The box tracks hooks in .githooks/ and .husky/, adds tags named as
+    // its branch, short and full, and only then plants hooks under every
+    // client-side name, core.hooksPath and core.fsmonitor, each touching a
+    // host marker.
     let hooks: String = CLIENT_HOOKS.iter().map(|hook| format!("{hook} ")).collect();
     in_box(&format!(
         "cd /work && for dir in .githooks .husky; do mkdir -p $dir; for hook in {hooks}; do \
               printf '#!/bin/sh\\ntouch {markers}/%s-%s\\n' $dir $hook > $dir/$hook; \
               chmod 755 $dir/$hook; done; done \
          && git add .githooks .husky && git commit -q -m hooks \
-         && git tag main \
+         && git tag main && git tag refs/heads/main \
          && for hook in {hooks}; do \
               printf '#!/bin/sh\\ntouch {markers}/git-%s\\n' $hook > .git/hooks/$hook; \
               chmod 755 .git/hooks/$hook; done \

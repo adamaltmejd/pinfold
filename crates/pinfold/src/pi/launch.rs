@@ -39,9 +39,9 @@ pub fn run(args: &[String]) -> io::Result<i32> {
 }
 
 /// `$1` is the project's guest path, `$2` the host's branch or empty.
-/// Creates the box's repository there; on an existing one git keeps its
-/// branch, and repairs a `.git` an interrupted first start left partial.
+/// Creates the box's repository there unless `.git` exists.
 const INIT_SCRIPT: &str = r#"
+[ -e "$1/.git" ] && exit
 exec git init -q ${2:+"--initial-branch=$2"} "$1"
 "#;
 
@@ -61,7 +61,7 @@ fi
 exec git merge -q --ff-only "$host"
 "#;
 
-/// Create the box's repository, push the
+/// Create the box's repository if the project disk has none, push the
 /// checkout's branches into it, then fast-forward its checkout (Git). A
 /// failure is reported and never stops pi.
 fn sync(name: &str, init: &Path, root: &Path) {
