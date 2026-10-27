@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 
 use e2e::{
     HttpFixture, ImageCleanup, TestEnv, assert_denied, assert_ok, box_exec, box_list,
-    build_profile, curl, default_image, exit_code, image_cli, image_id, image_ids, inspect,
+    build_profile, curl, default_image, exit_code, git, image_cli, image_id, image_ids, inspect,
     json_lines, pinfold, profile_containerfile, project_id, project_state_dir, run_dir, run_ok,
     tagged_images, test_dir,
 };
@@ -173,6 +173,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let missing = format!("{profile}-missing");
     profile_containerfile(&env, &missing, "FROM scratch\n");
     let seed_project = |project: &Path, text: &[u8]| {
+        git(project, &["init", "-q"]);
         let refused = env
             .command(pinfold())
             .args(["pi", "--version"])

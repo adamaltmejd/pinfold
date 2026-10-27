@@ -99,8 +99,10 @@ In a project:
    Using a Claude subscription through pi is subject to Anthropic's terms:
    pi presents the token as Claude Code and may bill it as extra usage.
 
-The first start copies the checkout into the box, which keeps that copy.
-Files git ignores are left out.
+The project must be a git repository; a plain folder needs `git init`
+and a commit. Only committed branches enter the box, which keeps its
+own repository. Commit uncommitted work (a WIP commit on a branch will
+do) to give it to the box.
 `pinfold fetch` brings the box's commits back as `pinfold/*` branches for
 you to merge; `pinfold push` sends your branches in as `host/*`. Each
 `pi` start pushes too, and fast-forwards the box's branch when it is
@@ -135,8 +137,8 @@ pinfold fetch                                 # box branches as pinfold/*
 ```
 
 One box runs per project; a second start is refused as `disk-in-use`.
-The first start copies untracked files too, but no git-ignored file;
-commit or un-ignore a file the box needs.
+Only committed branches reach the box; untracked and ignored files
+never do.
 Treat the box's output and branches as untrusted. The
 [pinfold-delegate](skills/pinfold-delegate/SKILL.md) skill teaches an
 agent this; copy its directory into the agent's skills directory.

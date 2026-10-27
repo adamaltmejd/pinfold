@@ -2447,6 +2447,21 @@ fn a_login_route_keeps_the_login_on_the_host() {
         "e2e-project-skill",
         project_marker,
     );
+    // Only branches reach the box.
+    git(project.as_path(), &["add", ".pi"]);
+    git(
+        project.as_path(),
+        &[
+            "-c",
+            "user.name=e2e",
+            "-c",
+            "user.email=e2e@example.test",
+            "commit",
+            "-q",
+            "-m",
+            "skill",
+        ],
+    );
 
     // pi sends its stored key to the route at OpenRouter's API path; the
     // fixture gets only the host key. The model is in pi's built-in
