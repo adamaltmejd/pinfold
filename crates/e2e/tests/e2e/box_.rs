@@ -576,7 +576,11 @@ fn work_leaves_the_box_only_by_fetch() {
     // `core.hooksPath` to `.githooks` after the fetch, as if fetch adopted
     // the box's config; a host checkout touches a marker. Sabotage: drop
     // `check_branch` from crossing.rs; the hostile bundle's
-    // `refs/heads/injected` lands on the host.
+    // `refs/heads/injected` lands on the host. Sabotage: bundle by
+    // `--branches` in FETCH_SCRIPT, or drop its
+    // `core.warnAmbiguousRefs=false`; a tag named as the branch drops
+    // `main` from the bundle, and the fetch fails: the listed branch is not
+    // carried.
     let env = TestEnv::new("crossing");
     let name = box_name("crossing");
     let project = test_dir(&env, "project");
@@ -625,16 +629,17 @@ fn work_leaves_the_box_only_by_fetch() {
         "the box changed the host project"
     );
 
-    // The box tracks hooks in .githooks/ and .husky/, tags, and only then
-    // plants hooks under every client-side name, core.hooksPath and
-    // core.fsmonitor, each touching a host marker.
+    // The box tracks hooks in .githooks/ and .husky/, adds tags named as
+    // its branch, short and full, and only then plants hooks under every
+    // client-side name, core.hooksPath and core.fsmonitor, each touching a
+    // host marker.
     let hooks: String = CLIENT_HOOKS.iter().map(|hook| format!("{hook} ")).collect();
     in_box(&format!(
         "cd /work && for dir in .githooks .husky; do mkdir -p $dir; for hook in {hooks}; do \
               printf '#!/bin/sh\\ntouch {markers}/%s-%s\\n' $dir $hook > $dir/$hook; \
               chmod 755 $dir/$hook; done; done \
          && git add .githooks .husky && git commit -q -m hooks \
-         && git tag box-tag \
+         && git tag main && git tag refs/heads/main \
          && for hook in {hooks}; do \
               printf '#!/bin/sh\\ntouch {markers}/git-%s\\n' $hook > .git/hooks/$hook; \
               chmod 755 .git/hooks/$hook; done \
@@ -2446,6 +2451,21 @@ fn a_login_route_keeps_the_login_on_the_host() {
         &project.as_path().join(".pi/skills/e2e-project-skill"),
         "e2e-project-skill",
         project_marker,
+    );
+    // Only branches reach the box.
+    git(project.as_path(), &["add", ".pi"]);
+    git(
+        project.as_path(),
+        &[
+            "-c",
+            "user.name=e2e",
+            "-c",
+            "user.email=e2e@example.test",
+            "commit",
+            "-q",
+            "-m",
+            "skill",
+        ],
     );
 
     // pi sends its stored key to the route at OpenRouter's API path; the

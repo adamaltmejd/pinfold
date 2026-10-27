@@ -6,22 +6,21 @@ description: Hand a coding task to a pi agent sandboxed by pinfold, follow up on
 # Delegate to a pinfold box
 
 `pinfold pi` runs pi in a sandbox (a box) for the project in the current
-directory. The box has no host access beyond its own copy of the
-checkout and the project's configured routes, and egress only through
+directory. The box has no host access beyond its own repository of the
+checkout's branches and the project's configured routes, and egress only through
 pinfold's allowlist. Work comes back
 only as git branches you fetch and review.
 
 ## Before you start
 
 - Run from the project's main checkout. A git worktree is refused as
-  `worktree`.
-- The first start copies the checkout into the box, untracked files
-  included, and the box keeps it. Git-ignored files are not copied;
-  check that secrets (`.env`, keys) are ignored. To give the box an
-  ignored file, commit it or un-ignore it before the first start.
-- After that, only committed branches cross. Each start pushes the
-  checkout's branches into the box as `host/<branch>`; uncommitted edits
-  do not cross.
+  `worktree`, and a folder that is not a git repository as `not-git`
+  (it needs `git init` and a commit).
+- Only committed branches cross, always. Each start pushes the
+  checkout's branches into the box as `host/<branch>` and checks out the
+  current branch there on the first start. Untracked, ignored and
+  uncommitted files never cross: commit work the box needs, on a branch
+  (a WIP commit will do), before starting.
 - Setup is the user's: `pinfold allow`, `pinfold build`, and a model
   login (`/login` in pi, or a pi login route). Never run `pinfold allow`
   or `pinfold build` yourself. If a run fails on one of these, stop and

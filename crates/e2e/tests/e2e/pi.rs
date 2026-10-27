@@ -16,8 +16,8 @@ use std::process::{ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use crate::box_::{ChildOwner, box_name, box_up_with_env, read_bounded};
 use e2e::{
     HttpFixture, ImageCleanup, TestEnv, allow, assert_denied, assert_ok, box_exec, box_list, curl,
-    default_image, git, inspect, json_lines, pinfold, pinfold_in, project_id, run_dir, run_ok,
-    test_dir,
+    default_image, git, inspect, json_lines, pinfold, pinfold_in, project_id, project_state_dir,
+    run_dir, run_ok, test_dir,
 };
 
 /// The PINFOLD_ENV_ value `PiRpc` launches with: long enough that no disk
@@ -211,7 +211,7 @@ fn project_state_persists_and_stays_separate() {
     default_image(&env);
     let a = test_dir(&env, "a/checkout");
     let b = test_dir(&env, "b/checkout");
-    git(a.as_path(), &["init", "-q"]);
+    git(a.as_path(), &["init", "-q", "-b", "work"]);
     git(b.as_path(), &["init", "-q"]);
     let in_box = |name: &str, script: &str| {
         let output = box_exec(&env, name, &["sh", "-c", script]);
@@ -219,115 +219,72 @@ fn project_state_persists_and_stays_separate() {
         output.stdout
     };
 
-    // The first start copies `.git`, tracked and untracked files, and no
-    // git-ignored one: not one a `.gitignore` or `.git/info/exclude`
-    // names, nor one in an ignored or partly ignored directory, nor one a
-    // submodule or an untracked nested repository ignores, nor one with a
-    // decomposed name, nor anything in an uninitialized submodule's
-    // directory, which stays so git does not see the submodule deleted. A
-    // tracked file matching a pattern and a re-included one are copied,
-    // though the caller's environment points git at an index that does
-    // not exist.
-    // Sabotage: pass an empty skip list to project_disk in build_plan; the
-    // ignored files appear in the box.
-    // Sabotage: push no child repository in launch::ignored;
-    // new/nested/a.env and sm/inner.env appear.
-    // Sabotage: find nested repositories with `--directory`; git names
-    // only `new/`, and new/nested/a.env appears.
-    // Sabotage: drop core.precomposeunicode=false from launch::list; on
-    // macOS the decomposed name is listed composed, and that file appears.
-    // Sabotage: do nothing in launch::ignored for a submodule without
-    // `.git`; sm2/secret.env appears.
-    // Sabotage: drop the env_remove loop from launch::list; git reads the
-    // caller's empty index, tracked.env is skipped and its cat fails.
-    let write = |path: &str, contents: &str| {
-        let path = a.join(path);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, contents).unwrap();
-    };
-    write(".gitignore", "*.env\n!keep.env\nbuild/\n");
-    write("tracked.env", "tracked");
-    git(a.as_path(), &["add", ".gitignore"]);
-    git(a.as_path(), &["add", "-f", "tracked.env"]);
+    // Only branches cross: the first start makes a new repository in the
+    // box, named for the host's branch, and checks that branch out clean.
+    // Nothing else in the host's `.git` or work tree follows: not an
+    // untracked `.env`, the blob of a file staged and then unstaged, a
+    // stash, a remote URL holding a token, or a hook.
+    // Two tags shadow the host's branch, by its short and its full name.
+    // Sabotage: give project_disk the checkout as `from` again; the
+    // untracked `.env` makes the box's `git status` unclean.
+    // Sabotage: bundle `--all` instead of the branch list in crossing::push;
+    // the stash commit's objects arrive and `stash` is printed.
+    // Sabotage: drop the INIT_SCRIPT step from launch::sync; the push finds
+    // no repository and committed.txt is missing.
+    // Sabotage: name the box's branch by `symbolic-ref --short`; it
+    // becomes `heads/work`, and committed.txt is missing.
+    // Sabotage: bundle by `--branches` in crossing::push; the tag named
+    // `work` empties the bundle, and committed.txt is missing. Sabotage:
+    // drop `core.warnAmbiguousRefs=false` there; the tag named
+    // `refs/heads/work` does the same.
+    // Sabotage: exit when FAST_FORWARD_SCRIPT finds no HEAD, as before;
+    // the unborn branch stays and committed.txt is missing.
+    let write = |path: &str, contents: &str| fs::write(a.join(path), contents).unwrap();
     let id = ["-c", "user.name=e2e", "-c", "user.email=e2e@example.test"];
-    let source = test_dir(&env, "submodule");
-    git(source.as_path(), &["init", "-q"]);
-    fs::write(source.join(".gitignore"), "*.env\n").unwrap();
-    fs::write(source.join("inner.txt"), "inner").unwrap();
-    git(source.as_path(), &["add", "."]);
-    git(
-        source.as_path(),
-        &[&id[..], &["commit", "-q", "-m", "source"]].concat(),
-    );
-    git(
-        a.as_path(),
-        &[
-            "-c",
-            "protocol.file.allow=always",
-            "submodule",
-            "add",
-            "-q",
-            source.to_str().unwrap(),
-            "sm",
-        ],
-    );
-    git(
-        a.as_path(),
-        &[
-            "-c",
-            "protocol.file.allow=always",
-            "submodule",
-            "add",
-            "-q",
-            source.to_str().unwrap(),
-            "sm2",
-        ],
-    );
+    write("committed.txt", "committed");
+    git(a.as_path(), &["add", "committed.txt"]);
     git(
         a.as_path(),
         &[&id[..], &["commit", "-q", "-m", "start"]].concat(),
     );
-    git(a.as_path(), &["submodule", "deinit", "-q", "-f", "sm2"]);
-    fs::OpenOptions::new()
-        .append(true)
-        .open(a.join(".git/info/exclude"))
-        .and_then(|mut exclude| exclude.write_all(b"local.key\n"))
-        .unwrap();
-    write("keep.env", "keep");
-    write("untracked.txt", "untracked");
-    write("new/kept.txt", "kept");
-    write("new/nested/.gitignore", "*.env\n");
-    git(&a.join("new/nested"), &["init", "-q"]);
-    write("new/nested/keep.txt", "nested");
-    for ignored in [
-        "secret.env",
-        "local.key",
-        "build/deep/out.o",
-        "new/sub/nested.env",
-        "new/nested/a.env",
-        "sm/inner.env",
-        "sm2/secret.env",
-        "cafe\u{301}.env",
-    ] {
-        write(ignored, "FAKE_SECRET=1");
-    }
-    let missing_index = env.root.join("missing/index");
-    let (run_a, _, box_a) = PiRpc::start_with_env(
-        &env,
+    let head = git(a.as_path(), &["rev-parse", "HEAD"]).trim().to_string();
+    git(a.as_path(), &["update-ref", "refs/tags/work", "HEAD"]);
+    git(
         a.as_path(),
-        &[("GIT_INDEX_FILE", missing_index.to_str().unwrap())],
+        &["update-ref", "refs/tags/refs/heads/work", "HEAD"],
     );
-    let copied = in_box(
+    write(".env", "FAKE_TOKEN=pinfold-e2e-untracked-env");
+    write("staged.txt", "pinfold-e2e-unstaged-blob");
+    git(a.as_path(), &["add", "staged.txt"]);
+    let blob = git(a.as_path(), &["rev-parse", ":staged.txt"])
+        .trim()
+        .to_string();
+    git(a.as_path(), &["reset", "-q", "--", "staged.txt"]);
+    write("committed.txt", "pinfold-e2e-stashed");
+    git(a.as_path(), &[&id[..], &["stash", "-q"]].concat());
+    let stash = git(a.as_path(), &["rev-parse", "refs/stash"])
+        .trim()
+        .to_string();
+    git(
+        a.as_path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://x-access-token:pinfold-e2e-fake-token@example.invalid/repo.git",
+        ],
+    );
+    fs::create_dir_all(a.join(".git/hooks")).unwrap();
+    write(".git/hooks/pre-commit", "#!/bin/sh\nexit 1\n");
+    let (run_a, _, box_a) = PiRpc::start(&env, a.as_path());
+    let crossed = in_box(
         &box_a,
         &format!(
-            r#"cd {} && cat tracked.env keep.env untracked.txt new/kept.txt new/nested/keep.txt sm/inner.txt && git rev-parse -q --verify HEAD >/dev/null && test -d sm2 && test -z "$(git status --porcelain -- sm2)" && for path in secret.env local.key build new/sub new/nested/a.env sm/inner.env sm2/secret.env "$(printf 'cafe\314\201.env')"; do test ! -e "$path" || echo "$path"; done"#,
+            r#"cd {} && cat committed.txt && test "$(git rev-parse HEAD)" = {head} && test -z "$(git status --porcelain)" && {{ test ! -e .env || echo .env; test ! -e staged.txt || echo staged.txt; ! git cat-file -e {blob} 2>/dev/null || echo blob; ! git cat-file -e {stash} 2>/dev/null || echo stash; ! git config --list | grep -q fake-token || echo url; test ! -e .git/hooks/pre-commit || echo hook; }}"#,
             a.display()
         ),
     );
-    assert_eq!(
-        copied, "trackedkeepuntrackedkeptnestedinner",
-        "the first copy is wrong"
-    );
+    assert_eq!(crossed, "committed", "the first start is wrong");
     in_box(&box_a, r#"printf project-a > "$HOME/project-a-marker""#);
     assert!(run_a.finish().success(), "the first project failed");
 
@@ -350,20 +307,26 @@ fn project_state_persists_and_stays_separate() {
     assert_eq!(kept, "project-a", "the first project's home changed");
     assert!(run_a.finish().success(), "the returning project failed");
 
-    // A `.git` git cannot list from refuses before anything starts, rather
-    // than copying ignored files. Sabotage: return an empty set from
-    // launch::ignored when git fails; the project starts.
-    let broken = test_dir(&env, "broken");
-    fs::create_dir(broken.join(".git")).unwrap();
-    let output = pinfold_in(&env, broken.as_path(), &["pi", "--version"])
+    // A root without `.git` has no branches to cross: it refuses before
+    // anything is created, and runs once it has a commit. Sabotage: accept
+    // a missing `.git` in launch::require_repo; the plain folder starts.
+    let plain = test_dir(&env, "plain");
+    let output = pinfold_in(&env, plain.as_path(), &["pi", "--version"])
         .output()
         .expect("run pinfold");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "an unlistable checkout started");
+    assert!(!output.status.success(), "a folder without git started");
+    assert!(stderr.contains("not-git"), "wrong refusal: {stderr}");
     assert!(
-        stderr.contains("ignored-unlisted"),
-        "wrong refusal: {stderr}"
+        !project_state_dir(&env, plain.as_path()).exists(),
+        "the refusal created project state"
     );
+    git(plain.as_path(), &["init", "-q"]);
+    git(
+        plain.as_path(),
+        &[&id[..], &["commit", "-q", "--allow-empty", "-m", "start"]].concat(),
+    );
+    pi_version(&env, plain.as_path());
 
     // Sabotage: stop bounding the cosmetic project-id prefix; the trust
     // filename exceeds the host's 255-byte component limit before pi runs.
@@ -410,8 +373,8 @@ fn a_changed_project_file_stops_the_run() {
     let root = project.as_path();
     let host_git = |args: &[&str]| git(root, args);
     host_git(&["init", "-q", "-b", "main"]);
-    // The host identity stays out of the repository's config, which the
-    // project disk copies: the box commits under its image's identity.
+    // The host identity stays out of the repository's config: the box
+    // commits under its image's identity.
     let id = ["-c", "user.name=e2e", "-c", "user.email=e2e@example.test"];
     host_git(&[&id[..], &["commit", "-q", "--allow-empty", "-m", "start"]].concat());
     let root_str = root.to_str().unwrap().to_string();

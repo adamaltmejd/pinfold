@@ -459,10 +459,6 @@ pub struct Disk {
     pub from: Option<PathBuf>,
     #[serde(default)]
     pub readonly: bool,
-    /// Paths relative to `from` that the copy leaves out, with everything
-    /// below them. Set only by the pi layer, never by a box spec.
-    #[serde(skip)]
-    pub skip: BTreeSet<PathBuf>,
 }
 
 impl Disk {

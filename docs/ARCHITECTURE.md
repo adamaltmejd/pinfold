@@ -886,7 +886,8 @@ gets its own.
 
 ### Crossing
 
-Host files enter a box once, by a disk's `from`. After that, data
+A disk's `from` copies host files in once, when pinfold creates the
+disk; the pi layer's disks name none. Otherwise data
 crosses only as git branches, through `push` and `fetch`, each against a
 live box and run in it as the box user. Neither touches a working tree.
 Each prints one JSON line and exits 0; a refusal prints
@@ -1046,23 +1047,14 @@ measurement does not authorize a later deletion.
   paths in the home disk. The cosmetic name is at most 32 ASCII bytes.
   State, config and cache roots, the profile's directory and `share`,
   `trust/`, `artifacts/` and the lock directory inside the project are
-  refused as `host-path-in-project`, including symlinked ancestors, since
-  the first start would copy them into the box.
+  refused as `host-path-in-project`, including symlinked ancestors.
 - **Project disk:** attached writable at the project's own absolute path.
-  The first start creates it with the checkout as its `from`: `.git`,
-  tracked and untracked files, but no path git ignores
-  (`git ls-files --others --ignored --exclude-standard --directory`: the
-  checkout's ignore files, `.git/info/exclude` and `core.excludesFile`),
-  and none that each initialized submodule and untracked nested
-  repository ignores by its own rules. An uninitialized submodule's
-  directory is copied empty. Names are listed as stored, not
-  Unicode-precomposed, and the caller's `GIT_*` repository variables are
-  ignored. A root without `.git` ignores nothing. Every start
-  lists them, and a failed listing refuses as `ignored-unlisted`. Generic `disks[].from` copies the whole tree. Later
-  starts reuse the disk as the box left it; host edits after that reach
-  it only as branches. One pi box runs per project; a second start is
-  refused as `disk-in-use`. A checkout whose `.git` is not a directory (a
-  worktree) is refused as `worktree` by `pi`, `push` and `fetch`.
+  The first start creates it empty; the box's repository is made in it
+  and filled only with the host's branches (Git). Later starts reuse the
+  disk as the box left it. One pi box runs per project; a second start is
+  refused as `disk-in-use`. `pi`, `push` and `fetch` refuse a root
+  without `.git` as `not-git`, and one whose `.git` is not a directory (a
+  worktree) as `worktree`, before checking trust or creating state.
 - **Arguments** pass through unchanged, after `-e /opt/pinfold/login/pi.ts`
   when the configuration has a pi login route. The box starts in the invoking
   directory. Paths outside the project fail, and pi reports them. A
@@ -1086,7 +1078,10 @@ measurement does not authorize a later deletion.
 
 ### Git
 
-The project disk holds the box's own repository. The agent commits there,
+The project disk holds the box's own repository. Only the host's
+branches enter it: no host `.git` content, config, hook, stash, reflog,
+or untracked or ignored file, and a submodule only as its gitlink.
+The agent commits there,
 under the box's hooks and config, none of which reach the host. Built-in
 images set git's system identity to `pi <pi@pinfold.invalid>`; a
 repository or home identity overrides it.
@@ -1100,17 +1095,22 @@ box, or a transient box on the project disk without egress, and print
 Crossing's lines. With no project disk, or one whose
 box never came ready (Disks), both exit nonzero and start no box.
 
-Every `pinfold pi` start, once the box is ready and before pi runs, does
-`pinfold push`'s push into it, printing nothing. It then fast-forwards
-the box's checked-out branch to `host/<branch>`, by `git merge --ff-only`
-in the box as the box user, only when that branch is a proper ancestor of
-`host/<branch>` and the working tree has no tracked changes. Otherwise
-(diverged, ahead, equal, detached, no such `host/<branch>`) the checkout
-stays as the box left it. pi is not yet running; the box's own hooks
-apply. The push bundles every branch's full history, so it grows with the
-repository, and neither step has a deadline. A checkout with no branches
-skips both silently. A failed push skips the fast-forward. A failure
-prints `pinfold pi: sync-failed: DETAIL` on stderr, and pi starts.
+Every `pinfold pi` start, once the box is ready and before pi runs,
+syncs, printing nothing. A project disk without `.git` first gets a new
+repository, by `git init` in the box as the box user, its initial branch
+named for the host's checked-out branch, or git's default when the
+host's HEAD is detached. The start then does `pinfold push`'s push into
+it, and fast-forwards the box's checked-out branch to `host/<branch>`, by
+`git merge --ff-only` in the box as the box user, only when that branch
+is unborn, or is a proper ancestor of `host/<branch>` and the working
+tree has no tracked changes. Otherwise (diverged, ahead, equal,
+detached, no such `host/<branch>`) the checkout stays as the box left
+it. pi is not yet running; the box's own hooks apply. The push bundles
+every branch's full history, so it grows with the repository, and no
+step has a deadline. A checkout with no branches skips the push and the
+fast-forward silently. A failed step skips the rest. A failure prints
+`pinfold pi: sync-failed: DETAIL` on stderr, and pi starts; the next
+start retries.
 
 ## Configuration
 
@@ -1208,10 +1208,10 @@ two that run apart. Testing policy is in `AGENTS.md`.
 | 6 | The environment is exactly the spec | A caller box whose `up` has unprefixed proxy variables does not get them. Guest PATH, HOME, `XDG_RUNTIME_DIR`, `LD_PRELOAD`, multiline values and a transport-prefixed name arrive exactly while local list/exec/down still manage the box. Always-applied values win. Guarantee 39 shows PINFOLD_ENV_SECRET's path. |
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, egress fails closed; another XDG root sees the owner dead, prunes the box and reuses its name. The run's launch record stays `available` and its terminal `not-observed`, also after the prune. An abandoned partial claim is reclaimable. On Linux the VM ends with its owner (guarantee 43), so the egress half runs on Apple. |
 | 9 | The lifecycle works for a caller | `exec` immediately after `ready` streams both streams and returns the exit code, and exits 3 on an absent box; `ready` and `list` name the image's id, and without egress `ready`'s `egress_log` is null; `down` of an absent, empty or flag-like name exits 0, prints nothing and leaves the live box alone; closing `up`'s stdin tears the box down with reason `stdin-closed`. On Apple, a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. |
-| 10 | Work leaves the box only by fetch | A box's writes on its disk leave the host project's bytes, modes and mtimes unchanged. `fetch` lands only the box's branches, under `refs/remotes/<box>/*`, and no tag; after a merge and two checkouts on the host, nothing the box planted (hooks under every client-side name, `core.hooksPath`, `core.fsmonitor`, tracked `.githooks/` and `.husky/`) has run; control: a host hook runs. Each of five hostile bundles, an injected refspec head, a `.git` tree entry, a missing commit, `x` beside `x/y`, and a listed branch it omits, fails the fetch naming its cause and changes no host ref and nothing under `.git/objects`. |
+| 10 | Work leaves the box only by fetch | A box's writes on its disk leave the host project's bytes, modes and mtimes unchanged. `fetch` lands only the box's branches, under `refs/remotes/<box>/*`, and no tag, two that shadow a branch's names included; after a merge and two checkouts on the host, nothing the box planted (hooks under every client-side name, `core.hooksPath`, `core.fsmonitor`, tracked `.githooks/` and `.husky/`) has run; control: a host hook runs. Each of five hostile bundles, an injected refspec head, a `.git` tree entry, a missing commit, `x` beside `x/y`, and a listed branch it omits, fails the fetch naming its cause and changes no host ref and nothing under `.git/objects`. |
 | 11 | Disks persist and attach exclusively | A disk created with `from` holds the host tree's files, exec bits and symlink; after its owner is SIGKILLed during the copy and its box pruned, the next `up` naming it holds the whole tree. A file one box writes is read by the next box that attaches it; another state root naming the same disk gets its own. While a box attaches a disk writable, another `up` naming it and `disk rm` are refused as `disk-in-use` and create nothing; of two writable `up`s racing for one new disk exactly one runs and the other is refused as `disk-in-use`; two read-only boxes at once can write neither the disk nor a mount. A sparse `from` past the disk's `size` is refused as `limit`. After the runtime kills a writer's box, or the writer's owner is SIGKILLed, a read-only attachment is refused as `disk-unclean` until a writable one has run, and then reads the disk. On macOS, a dead owner's box the runtime created but never started holds its disk. `disk rm ../escape` is refused as `spec`. On Linux, a nested disk whose mount point is a symlink the box planted ends the start `failed` and leaves nothing at the link's target. |
 | 12 | A changed project file stops the run | A domain added to `.pinfold.toml` by a box commit, fetched and merged on the host, or a changed project Containerfile, makes the next run, `pinfold fetch` and `pinfold build` refuse as `untrusted` until `pinfold allow`. State, config or cache roots inside the project, reached through a symlinked ancestor whose suffix does not exist, make `allow`, build and pi refuse as `host-path-in-project`; with external roots the same project runs. With no identity in the repository or home, the box's commits arrive authored `pi <pi@pinfold.invalid>`. A start pushes host commits in: a clean box branch strictly behind is fast-forwarded to the host's commit; a dirty tracked file or a local box commit leaves the box's HEAD where it was while `host/main` still moves; an untracked box file the fast-forward would overwrite prints `sync-failed` and pi still runs. |
-| 13 | Project state persists and stays separate | Guest writes in two same-named projects remain separate on A/B/A runs. With the caller's `GIT_INDEX_FILE` naming a missing file, the first start's project disk holds `.git`, the checkout's tracked, untracked and `!`-re-included files, a submodule's tracked file and an untracked nested repository's untracked file, and no file any of them ignores, a decomposed name and a file in an uninitialized submodule's directory included; that directory is present and git reports it unchanged. A project whose empty `.git` git cannot list refuses as `ignored-unlisted`. A long valid project basename launches. |
+| 13 | Project state persists and stays separate | Guest writes in two same-named projects remain separate on A/B/A runs. The first start's box repository is checked out clean at the host's HEAD commit, on a branch two tags shadow by its short and its full name, holding its committed file, and holds none of the host's untracked `.env`, unstaged blob, stash, remote URL or hook. A root without `.git` refuses as `not-git` and creates no state; after `git init` and a commit it runs. A long valid project basename launches. |
 | 15 | Cleanup removes only pinfold's garbage | Of three builds of one source two images remain, never dropping one a box still uses. A live box, its project's state and disks, and on Apple a container the runtime's CLI started from a pinfold-built image, survive `pinfold clean --unused 0s`, which removes an idle project's state and disks; `--dry-run` removes nothing. An unlabeled image survives `clean`, and plain `clean` keeps every disk; a dead box is removed and protects nothing. `image rm` of a name removes its tags and no other name's, even on an image a twin name's running box shares, and keeps an image's last tag while a box uses it, reporting it `in_use`; on Linux the image's root disk goes with it. |
 | 17 | up refuses before it creates | A missing image, a misspelled nested spec key, a bad env name, a `dev.pinfold.` label, a suffix allow entry on or above a public suffix, a mount or disk `from` path with a comma, a disk at or below `/proc`, `/sys` or `/dev` or at `/`, `/tmp`, `/etc` or `/etc/resolv.conf`, each reached through `..` or `.`, a flag- or path-like disk name and a live name are refused as data, naming the cause; the misspelled key's refusal also names the box; each leaves no box and no state dir. Of two `up`s racing for one name exactly one wins, and the winner answers exec. |
 | 18 | A caller reads the effective configuration as data | Without a runtime, config reports host policy, image_built null and image_error without creating state/cache/config files. Unknown project/profile TOML keys and a profile's containerfile are refused with the source and key; correcting the same file restores the fixture policy. With `PINFOLD_PROFILE=full` and no project `allow`, config reports the default list plus `github.com` and `api.github.com`. Guarantee 39 shows the live report. |

@@ -1,10 +1,8 @@
 //! `pinfold pi`: assemble one project's box and run pi in it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::env;
-use std::ffi::OsStr;
 use std::io::{self, IsTerminal};
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use tokio::runtime::Builder;
@@ -28,82 +26,107 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     let cwd = canonical(&env::current_dir()?)?;
     let root = project_root(&cwd)?;
     utf8(&root, "project root")?;
-    refuse_worktree(&root)?;
+    require_repo(&root)?;
     let config = Config::load(&root)?;
     trust::check(&root, &config)?;
-    let skip = ignored(&root)?;
     let id = project_id(&root);
     let _project = ownership::project_lock(&id)?;
     state::record_run(&root)?;
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
-    let plan = build_plan(&config, &id, &root, &image, skip);
+    let plan = build_plan(&config, &id, &root, &image);
     run_box(&plan, &root, &cwd, args)
 }
 
+/// `$1` is the project's guest path, `$2` the host's branch or empty.
+/// Creates the box's repository there unless `.git` exists.
+const INIT_SCRIPT: &str = r#"
+[ -e "$1/.git" ] && exit
+exec git init -q ${2:+"--initial-branch=$2"} "$1"
+"#;
+
 /// `$1` is the project's guest repository, `$2` the push's remote. Exits 0
-/// without a merge unless the checked-out branch is clean and a proper
-/// ancestor of its `$2/` counterpart.
+/// without a merge unless the checked-out branch is unborn, or clean and a
+/// proper ancestor of its `$2/` counterpart.
 const FAST_FORWARD_SCRIPT: &str = r#"
 cd "$1" || exit
 ref=$(git symbolic-ref -q HEAD) || exit 0
-head=$(git rev-parse -q --verify HEAD) || exit 0
 host=$(git rev-parse -q --verify "refs/remotes/$2/${ref#refs/heads/}") || exit 0
-[ "$head" != "$host" ] && git merge-base --is-ancestor "$head" "$host" || exit 0
-# The refresh keeps stat-only differences from counting as changes.
-git update-index -q --refresh >/dev/null
-git diff-index --quiet HEAD -- || exit 0
+if head=$(git rev-parse -q --verify HEAD); then
+  [ "$head" != "$host" ] && git merge-base --is-ancestor "$head" "$host" || exit 0
+  # The refresh keeps stat-only differences from counting as changes.
+  git update-index -q --refresh >/dev/null
+  git diff-index --quiet HEAD -- || exit 0
+fi
 exec git merge -q --ff-only "$host"
 "#;
 
-/// Push the checkout's branches into the ready box, then fast-forward its
-/// checkout (Git). A failure is reported and never stops pi.
+/// Create the box's repository if the project disk has none, push the
+/// checkout's branches into it, then fast-forward its checkout (Git). A
+/// failure is reported and never stops pi.
 fn sync(name: &str, init: &Path, root: &Path) {
-    // No repository or no branch: nothing to push.
+    let Some(guest) = root.to_str() else { return };
+    let failed = |detail: &str| eprintln!("pinfold pi: sync-failed: {}", detail.trim());
+    // `--short` would print `heads/<b>` when a tag shares the branch's name.
+    let branch = git(root, &["symbolic-ref", "-q", "HEAD"])
+        .and_then(|head| head.strip_prefix("refs/heads/").map(str::to_string))
+        .unwrap_or_default();
+    if let Err(detail) = in_box(name, init, INIT_SCRIPT, &[guest, &branch]) {
+        return failed(&detail);
+    }
+    // No branch: nothing to push.
     if !git(root, &["for-each-ref", "--count=1", "refs/heads/"]).is_some_and(|out| !out.is_empty())
     {
         return;
     }
-    let Some(guest) = root.to_str() else { return };
-    let failed = |detail: &str| eprintln!("pinfold pi: sync-failed: {}", detail.trim());
     if let Err(CrossingError::Refused(_, detail) | CrossingError::Failed(detail)) =
         crossing::push(runtime(), init, name, root, guest, "host")
     {
         return failed(&detail);
     }
-    let argv = ["sh", "-c", FAST_FORWARD_SCRIPT, "sh", guest, "host"].map(str::to_owned);
+    if let Err(detail) = in_box(name, init, FAST_FORWARD_SCRIPT, &[guest, "host"]) {
+        failed(&detail);
+    }
+}
+
+/// Run `script` with `args` in the box as the box user; a failure's detail
+/// is its stderr.
+fn in_box(name: &str, init: &Path, script: &str, args: &[&str]) -> Result<(), String> {
+    let argv: Vec<String> = ["sh", "-c", script, "sh"]
+        .iter()
+        .chain(args)
+        .map(|arg| arg.to_string())
+        .collect();
     let mut command = runtime().exec_command(name, init, false, None, &argv);
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => return failed(&error.to_string()),
-    };
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
     let stderr = crossing::kept_stderr(&mut child);
     match child.wait() {
-        Ok(status) if status.success() => {}
-        Ok(_) => failed(&stderr()),
-        Err(error) => failed(&error.to_string()),
+        Ok(status) if status.success() => Ok(()),
+        Ok(_) => Err(stderr()),
+        Err(error) => Err(error.to_string()),
     }
 }
 
-/// Refuse a checkout whose `.git` is not a directory: a worktree's (or a
-/// submodule's) `.git` file names a git dir outside the project, which
-/// the project disk does not hold.
-pub(crate) fn refuse_worktree(root: &Path) -> io::Result<()> {
+/// Refuse a root without `.git`, which has no branches to cross, and one
+/// whose `.git` is not a directory (a worktree's or a submodule's).
+pub(crate) fn require_repo(root: &Path) -> io::Result<()> {
     let dot_git = root.join(".git");
+    let refused = |detail: String| Err(io::Error::new(io::ErrorKind::InvalidInput, detail));
     match std::fs::symlink_metadata(&dot_git) {
-        Ok(metadata) if !metadata.is_dir() => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "worktree: {} is not a directory; run pinfold from the main checkout",
-                dot_git.display()
-            ),
+        Ok(metadata) if !metadata.is_dir() => refused(format!(
+            "worktree: {} is not a directory; run pinfold from the main checkout",
+            dot_git.display()
         )),
-        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-        _ => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => refused(format!(
+            "not-git: {} is not a git repository; run `git init` and commit",
+            root.display()
+        )),
+        Err(error) => Err(error),
+        Ok(_) => Ok(()),
     }
 }
 
@@ -115,7 +138,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
         return Err(cli::usage(verb, &format!("{verb} takes no arguments")));
     }
     let root = project_root(&env::current_dir()?)?;
-    refuse_worktree(&root)?;
+    require_repo(&root)?;
     let config = Config::load(&root)?;
     trust::check(&root, &config)?;
     let id = project_id(&root);
@@ -151,8 +174,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
         .list_disks()?
         .iter()
         .any(|listed| listed.name == disk)
-        // The transient box names no `from`: claiming an unfilled disk
-        // would empty it and mark it filled.
+        // A disk whose first box never came ready is empty.
         || disk::unfilled(&disk)?
     {
         return Err(io::Error::new(
@@ -163,7 +185,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
     let plan = Plan {
-        disks: vec![project_disk(disk, &root, None, BTreeSet::new())],
+        disks: vec![project_disk(disk, &root)],
         ..box_plan(&config, &id, &image)
     };
     let runtime = Builder::new_current_thread().enable_all().build()?;
@@ -210,7 +232,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
 pub(crate) enum Holder {
     None,
     Ready(String),
-    /// Claimed but not ready: a first start's `from` copy may be partial.
+    /// Claimed but not ready: its repository may not exist yet.
     Starting(String),
 }
 
@@ -334,13 +356,7 @@ fn warn_containerfile(image: &ImageInfo, bytes: &[u8], build: &str) {
     }
 }
 
-fn build_plan(
-    config: &Config,
-    id: &str,
-    root: &Path,
-    image: &str,
-    skip: BTreeSet<PathBuf>,
-) -> Plan {
+fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> Plan {
     let mut env = BTreeMap::from([
         ("HOME".to_string(), Env::Exact(state::HOME.to_string())),
         ("HERDR_AGENT".to_string(), Env::Exact("pi".to_string())),
@@ -360,9 +376,8 @@ fn build_plan(
                 size: None,
                 from: None,
                 readonly: false,
-                skip: BTreeSet::new(),
             },
-            project_disk(project, root, Some(root), skip),
+            project_disk(project, root),
         ],
         env,
         egress: Some(Egress {
@@ -387,125 +402,15 @@ fn box_plan(config: &Config, id: &str, image: &str) -> Plan {
 }
 
 /// The project disk, writable at the project's own path, which the caller
-/// has checked is UTF-8. `from` copies the checkout in when the disk is new,
-/// less `skip`.
-fn project_disk(name: String, root: &Path, from: Option<&Path>, skip: BTreeSet<PathBuf>) -> Disk {
+/// has checked is UTF-8. It is created empty: only branches cross.
+fn project_disk(name: String, root: &Path) -> Disk {
     Disk {
         name,
         guest: root.to_path_buf(),
         size: None,
-        from: from.map(Path::to_path_buf),
+        from: None,
         readonly: false,
-        skip,
     }
-}
-
-/// The checkout's git-ignored paths, relative to `root`, which the first
-/// start leaves out. Each submodule and untracked nested repository adds
-/// its own, since git lists none inside them. A root without `.git`
-/// ignores nothing. With `.git`, a failed listing refuses: copying
-/// everything would bring in what the checkout ignores, such as `.env`
-/// files and keys.
-fn ignored(root: &Path) -> io::Result<BTreeSet<PathBuf>> {
-    match std::fs::symlink_metadata(root.join(".git")) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
-        Err(error) => return Err(error),
-        Ok(_) => {}
-    }
-    let mut skip = BTreeSet::new();
-    let mut repos = vec![PathBuf::new()];
-    while let Some(repo) = repos.pop() {
-        let dir = root.join(&repo);
-        let path =
-            |entry: &[u8]| repo.join(OsStr::from_bytes(entry.strip_suffix(b"/").unwrap_or(entry)));
-        // `--directory` names a wholly ignored directory with a trailing
-        // slash; its files may be listed too.
-        let ignored = list(
-            &dir,
-            &["--others", "--ignored", "--exclude-standard", "--directory"],
-        )?;
-        skip.extend(ignored.iter().map(|entry| path(entry)));
-        // Without `--directory`, git names an untracked nested repository,
-        // at any depth, as `dir/` and lists nothing in it.
-        let nested = list(&dir, &["--others", "--exclude-standard"])?;
-        let staged = list(&dir, &["-s"])?;
-        let submodules = staged.iter().filter_map(|entry| {
-            let (meta, path) = entry.split_at(entry.iter().position(|byte| *byte == b'\t')?);
-            meta.starts_with(b"160000 ").then(|| &path[1..])
-        });
-        for entry in nested
-            .iter()
-            .filter(|entry| entry.ends_with(b"/"))
-            .map(Vec::as_slice)
-            .chain(submodules)
-        {
-            let child = path(entry);
-            let full = root.join(&child);
-            // A symlink or file here is copied as itself, never followed.
-            match std::fs::symlink_metadata(&full) {
-                Ok(metadata) if metadata.is_dir() => {}
-                Ok(_) => continue,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(unlisted(&dir, &error.to_string())),
-            }
-            match std::fs::symlink_metadata(full.join(".git")) {
-                Ok(_) => repos.push(child),
-                // An uninitialized submodule: no repository lists inside it,
-                // so its contents are left out. The directory stays, or git
-                // in the box would see the submodule deleted.
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    let entries = std::fs::read_dir(&full)
-                        .and_then(|entries| entries.collect::<io::Result<Vec<_>>>())
-                        .map_err(|error| unlisted(&dir, &error.to_string()))?;
-                    skip.extend(entries.iter().map(|entry| child.join(entry.file_name())));
-                }
-                Err(error) => return Err(unlisted(&dir, &error.to_string())),
-            }
-        }
-    }
-    Ok(skip)
-}
-
-/// `git ls-files -z` in `dir` with `args`, one entry per path. The listing
-/// keeps readdir's bytes, so macOS's decomposed names match the copy's
-/// walk, and ignores a caller's `GIT_*` repository overrides.
-fn list(dir: &Path, args: &[&str]) -> io::Result<Vec<Vec<u8>>> {
-    let refused = |detail: &str| unlisted(dir, detail);
-    let mut command = crossing::git_command(dir);
-    for name in [
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_COMMON_DIR",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_CONFIG_PARAMETERS",
-        "GIT_CONFIG_COUNT",
-    ] {
-        command.env_remove(name);
-    }
-    let output = command
-        .args(["-c", "core.precomposeunicode=false", "ls-files", "-z"])
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|error| refused(&error.to_string()))?;
-    if !output.status.success() {
-        return Err(refused(&String::from_utf8_lossy(&output.stderr)));
-    }
-    Ok(output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|entry| !entry.is_empty())
-        .map(<[u8]>::to_vec)
-        .collect())
-}
-
-fn unlisted(dir: &Path, detail: &str) -> io::Error {
-    io::Error::other(format!(
-        "ignored-unlisted: cannot list the git-ignored files in {}: {}",
-        dir.display(),
-        detail.trim()
-    ))
 }
 
 /// `path` as a string, for a spec or report value; `what` names it in the
