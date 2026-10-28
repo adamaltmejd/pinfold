@@ -160,6 +160,30 @@ Treat the box's output and branches as untrusted. The
 [pinfold-delegate](skills/pinfold-delegate/SKILL.md) skill teaches an
 agent this; copy its directory into the agent's skills directory.
 
+## Fresh state
+
+`pinfold pi` and `pinfold pi -p` reuse the same home and project disks.
+To start fresh:
+
+1. Finish Pi after committing guest work you want to keep. Run `pinfold fetch`,
+   inspect the fetched commits, then merge or give them a host branch to retain them.
+2. Run `pinfold config`. Read the exact names from `project.disks.home`
+   and `project.disks.project`.
+3. Run `pinfold disk rm NAME` for each disk you want to clear.
+4. Launch `pinfold pi` or `pinfold pi -p "TASK"` again. No image rebuild
+   is needed.
+
+Remove both disks for a fresh home and project. Removing only the home
+preserves the guest repository; removing only the project preserves
+sessions, settings and other home files. Everything on a deleted disk is
+lost, including uncommitted work and home-only files. Fetch brings back commits,
+not uncommitted or home-only files. Later fetches can move `pinfold/*` refs.
+
+Disk removal refuses attached disks. The two removals are separate operations;
+serialize access to the project. Use `disk rm`, never delete state or volume
+files directly. Profiles, project trust and the selected image remain intact.
+A `sync-failed` warning means source synchronization failed even if Pi starts.
+
 ## Configuration
 
 See [Configuration](docs/ARCHITECTURE.md#configuration) for layers, keys and defaults.
