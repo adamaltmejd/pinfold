@@ -24,11 +24,6 @@ const PAYLOAD_MAX: u64 = 512 << 20;
 const INDEX: &str = "application/vnd.oci.image.index.v1+json";
 const MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
 const CONFIG: &str = "application/vnd.oci.image.config.v1+json";
-const ATTESTATION: &str = "application/vnd.docker.attestation.manifest.v1+json";
-const IN_TOTO: &str = "application/vnd.in-toto+json";
-const SLSA: &str = "https://slsa.dev/provenance/v1";
-const EMPTY_JSON: &str = "application/vnd.oci.empty.v1+json";
-const EMPTY_SHA: &str = "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
 const IMAGE_OWNER: &str = ".pinfold-image";
 
 fn check_cancel(cancel: Option<&AtomicBool>) -> io::Result<()> {
@@ -173,12 +168,12 @@ pub struct Verified {
     pub sources: Vec<Source>,
 }
 
-/// Informational BuildKit image inputs, independent of runnable identity.
-#[derive(Serialize, Deserialize)]
+/// Native discovery's resolved image inputs, independent of runnable identity.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
-    uri: String,
-    digest: String,
+    pub(super) uri: String,
+    pub(super) digest: String,
 }
 
 /// Frames: kind byte (`I`, `B`, `E`), big-endian u32 JSON-header length,
@@ -370,7 +365,9 @@ fn descriptor(
     objects: &BTreeMap<String, u64>,
     referenced: &mut BTreeSet<String>,
 ) -> io::Result<()> {
+    digest_hex(&descriptor.digest)?;
     if descriptor.data.is_some()
+        || !descriptor.urls.is_empty()
         || descriptor.artifact_type.is_some()
         || descriptor
             .annotations
@@ -379,19 +376,8 @@ fn descriptor(
             .annotations
             .contains_key("vnd.docker.reference.digest")
         || descriptor.platform.as_ref().is_some_and(|p| !native(p))
+        || objects.get(&descriptor.digest) != Some(&descriptor.size)
     {
-        return Err(invalid("image-output: invalid local descriptor"));
-    }
-    local_descriptor(descriptor, objects, referenced)
-}
-
-fn local_descriptor(
-    descriptor: &Descriptor,
-    objects: &BTreeMap<String, u64>,
-    referenced: &mut BTreeSet<String>,
-) -> io::Result<()> {
-    digest_hex(&descriptor.digest)?;
-    if !descriptor.urls.is_empty() || objects.get(&descriptor.digest) != Some(&descriptor.size) {
         return Err(invalid("image-output: invalid local descriptor"));
     }
     referenced.insert(descriptor.digest.clone());
@@ -413,183 +399,11 @@ fn json_object<T: serde::de::DeserializeOwned>(
     serde_json::from_slice(&fs::read(path)?).map_err(invalid_json)
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Statement {
-    #[serde(rename = "_type")]
-    kind: String,
-    subject: Vec<StatementSubject>,
-    predicate_type: String,
-    predicate: Provenance,
-}
-
-#[derive(Deserialize)]
-struct StatementSubject {
-    digest: BTreeMap<String, String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Provenance {
-    build_definition: BuildDefinition,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BuildDefinition {
-    build_type: String,
-    #[serde(default)]
-    resolved_dependencies: Vec<Material>,
-}
-
-#[derive(Deserialize)]
-struct Material {
-    uri: String,
-    #[serde(default)]
-    digest: BTreeMap<String, String>,
-}
-
-fn source(material: Material) -> io::Result<Option<Source>> {
-    if !material.uri.starts_with("pkg:docker/") && !material.uri.starts_with("pkg:oci/") {
-        return Ok(None);
-    }
-    let sha = material
-        .digest
-        .get("sha256")
-        .filter(|_| material.digest.len() == 1)
-        .ok_or_else(|| invalid("image-output: invalid image source digest"))?;
-    let digest = format!("sha256:{sha}");
-    digest_hex(&digest)?;
-    let reference = material.uri.split_once('/').unwrap().1;
-    if reference.is_empty()
-        || !reference.is_ascii()
-        || reference
-            .bytes()
-            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
-    {
-        return Err(invalid("image-output: invalid image source URI"));
-    }
-    Ok(Some(Source {
-        uri: material.uri,
-        digest,
-    }))
-}
-
-// This is the pinned BuildKit OCI artifact form, not an arbitrary attachment.
-// See v0.34.1 exporter/containerimage/writer.go:commitAttestationsManifest.
-fn attestation(
-    directory: &Path,
-    attachment: &Descriptor,
-    runnable: &Descriptor,
-    objects: &BTreeMap<String, u64>,
-    referenced: &mut BTreeSet<String>,
-    json_bytes: &mut u64,
-    cancel: Option<&AtomicBool>,
-) -> io::Result<Vec<Source>> {
-    check_cancel(cancel)?;
-    if attachment.media_type != MANIFEST
-        || attachment.artifact_type.is_some()
-        || attachment.data.is_some()
-        || attachment
-            .annotations
-            .get("vnd.docker.reference.type")
-            .map(String::as_str)
-            != Some("attestation-manifest")
-        || attachment.annotations.get("vnd.docker.reference.digest") != Some(&runnable.digest)
-        || !attachment.platform.as_ref().is_some_and(|platform| {
-            platform.os == "unknown"
-                && platform.architecture == "unknown"
-                && platform.variant.is_none()
-        })
-    {
-        return Err(invalid("image-output: invalid attestation descriptor"));
-    }
-    local_descriptor(attachment, objects, referenced)?;
-    let manifest: Manifest = json_object(directory, attachment, json_bytes)?;
-    let subject = manifest
-        .subject
-        .as_ref()
-        .ok_or_else(|| invalid("image-output: missing attestation subject"))?;
-    if manifest.schema_version != 2
-        || manifest.media_type.as_deref() != Some(MANIFEST)
-        || manifest.artifact_type.as_deref() != Some(ATTESTATION)
-        || subject.digest != runnable.digest
-        || subject.size != runnable.size
-        || subject.media_type != MANIFEST
-        || subject.platform.is_some()
-        || !subject.annotations.is_empty()
-        || manifest.layers.len() != 1
-        || manifest.config.media_type != EMPTY_JSON
-        || manifest.config.digest != EMPTY_SHA
-        || manifest.config.size != 2
-        || manifest
-            .config
-            .data
-            .as_ref()
-            .and_then(serde_json::Value::as_str)
-            != Some("e30=")
-        || manifest.config.artifact_type.is_some()
-        || manifest.config.platform.is_some()
-        || !manifest.config.annotations.is_empty()
-    {
-        return Err(invalid("image-output: unsupported attestation manifest"));
-    }
-    descriptor(subject, objects, referenced)?;
-    local_descriptor(&manifest.config, objects, referenced)?;
-    let empty: serde_json::Value = json_object(directory, &manifest.config, json_bytes)?;
-    if empty != serde_json::json!({}) {
-        return Err(invalid("image-output: invalid empty attestation config"));
-    }
-    let layer = &manifest.layers[0];
-    if layer.media_type != IN_TOTO
-        || layer
-            .annotations
-            .get("in-toto.io/predicate-type")
-            .map(String::as_str)
-            != Some(SLSA)
-    {
-        return Err(invalid("image-output: unsupported attestation layer"));
-    }
-    descriptor(layer, objects, referenced)?;
-    let statement: Statement = json_object(directory, layer, json_bytes)?;
-    let expected_sha = digest_hex(&runnable.digest)?;
-    if statement.kind != "https://in-toto.io/Statement/v1"
-        || statement.predicate_type != SLSA
-        || statement.subject.is_empty()
-        || statement.subject.len() > OBJECT_MAX
-        || statement.subject.iter().any(|subject| {
-            subject.digest.len() != 1
-                || subject.digest.get("sha256").map(String::as_str) != Some(expected_sha)
-        })
-        || statement.predicate.build_definition.build_type
-            != "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md"
-        || statement
-            .predicate
-            .build_definition
-            .resolved_dependencies
-            .len()
-            > OBJECT_MAX
-    {
-        return Err(invalid("image-output: invalid provenance statement"));
-    }
-    let mut sources = BTreeSet::new();
-    for material in statement.predicate.build_definition.resolved_dependencies {
-        check_cancel(cancel)?;
-        if let Some(source) = source(material)? {
-            sources.insert((source.uri, source.digest));
-        }
-    }
-    Ok(sources
-        .into_iter()
-        .map(|(uri, digest)| Source { uri, digest })
-        .collect())
-}
-
 fn validate(
     directory: &Path,
     objects: &BTreeMap<String, u64>,
     expected: &BTreeMap<String, String>,
-    admit_provenance: bool,
+    normalize: bool,
     cancel: Option<&AtomicBool>,
 ) -> io::Result<Verified> {
     check_cancel(cancel)?;
@@ -599,40 +413,13 @@ fn validate(
     }
     let index_bytes = fs::read(directory.join("index.json"))?;
     let mut json_bytes = index_bytes.len() as u64;
-    let outer: Index = serde_json::from_slice(&index_bytes).map_err(invalid_json)?;
-    index_shape(&outer, 1)?;
+    let index: Index = serde_json::from_slice(&index_bytes).map_err(invalid_json)?;
+    index_shape(&index, 1)?;
     let mut referenced = BTreeSet::new();
-    let mut envelope = BTreeSet::new();
-    let index = if admit_provenance {
-        // The pinned OCI exporter wraps ImageWriter's runnable+attestation
-        // index in one archive index descriptor. Accept exactly that level.
-        // v0.34.1 exporter/oci/export.go and containerd archive.WithManifest.
-        let exported = &outer.manifests[0];
-        if exported.media_type != INDEX || exported.platform.is_some() {
-            return Err(invalid(
-                "image-output: expected exported OCI index descriptor",
-            ));
-        }
-        descriptor(exported, objects, &mut envelope)?;
-        referenced.extend(envelope.iter().cloned());
-        let inner: Index = json_object(directory, exported, &mut json_bytes)?;
-        index_shape(&inner, 2)?;
-        inner
-    } else {
-        outer
-    };
-    let mut runnables = index.manifests.iter().filter(|descriptor| {
-        !descriptor
-            .annotations
-            .contains_key("vnd.docker.reference.type")
-    });
-    let runnable = runnables
-        .next()
-        .ok_or_else(|| invalid("image-output: missing runnable manifest"))?;
-    if runnables.next().is_some()
-        || runnable.media_type != MANIFEST
-        || !runnable.platform.as_ref().is_some_and(native)
-    {
+    let runnable = &index.manifests[0];
+    // Single-platform OCI export may omit descriptor.platform. The config
+    // below always supplies the required linux/amd64 platform check.
+    if runnable.media_type != MANIFEST {
         return Err(invalid("image-output: unsupported manifest media"));
     }
     descriptor(runnable, objects, &mut referenced)?;
@@ -673,25 +460,6 @@ fn validate(
         digest_hex(diff_id)?;
         descriptor(layer, objects, &mut referenced)?;
     }
-    let retained: BTreeSet<_> = referenced.difference(&envelope).cloned().collect();
-    let sources = if admit_provenance {
-        let attachment = index
-            .manifests
-            .iter()
-            .find(|descriptor| descriptor.digest != runnable.digest)
-            .ok_or_else(|| invalid("image-output: missing attestation manifest"))?;
-        attestation(
-            directory,
-            attachment,
-            runnable,
-            objects,
-            &mut referenced,
-            &mut json_bytes,
-            cancel,
-        )?
-    } else {
-        Vec::new()
-    };
     if referenced.len() != objects.len() {
         return Err(invalid("image-output: unreferenced object"));
     }
@@ -715,9 +483,8 @@ fn validate(
             Ok((name.to_string(), value.to_string()))
         })
         .collect::<io::Result<Vec<_>>>()?;
-    if admit_provenance {
-        // Changing timestamps and attestation digests cannot change stored
-        // runnable bytes or collide with another build of this same manifest.
+    if normalize {
+        // Exporter index annotations vary independently of runnable identity.
         let canonical = serde_json::to_vec(&serde_json::json!({
             "schemaVersion": 2,
             "mediaType": INDEX,
@@ -733,17 +500,13 @@ fn validate(
             .open(directory.join("index.json"))?;
         index_file.write_all(&canonical)?;
         index_file.sync_all()?;
-        for digest in objects.keys().filter(|digest| !retained.contains(*digest)) {
-            check_cancel(cancel)?;
-            fs::remove_file(directory.join("blobs/sha256").join(digest_hex(digest)?))?;
-        }
     }
     Ok(Verified {
         id: runnable.digest.clone(),
         labels: config.labels,
         env,
         directory: directory.to_path_buf(),
-        sources,
+        sources: Vec::new(),
     })
 }
 

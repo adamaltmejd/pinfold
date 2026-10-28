@@ -468,9 +468,6 @@ fn build(job: &Job, log: Arc<Mutex<Tail>>) -> io::Result<()> {
     }
     if job.phase != Phase::Convert {
         build.args(["--opt", "image-resolve-mode=pull"]);
-        if job.phase == Phase::Build {
-            build.args(["--opt", "attest:provenance=mode=min,version=v1"]);
-        }
         for name in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
             build.arg("--opt").arg(format!("build-arg:{name}={PROXY}"));
         }
@@ -537,7 +534,7 @@ fn build(job: &Job, log: Arc<Mutex<Tail>>) -> io::Result<()> {
     build.arg("--output").arg(if job.phase == Phase::Convert {
         "type=tar,dest=/work/root.tar"
     } else {
-        "type=oci,dest=/work/oci,tar=false,oci-mediatypes=true,oci-artifact=true,name=localhost/pinfold/build-result:latest"
+        "type=oci,dest=/work/oci,tar=false,oci-mediatypes=true"
     });
     logged(build, log)
 }

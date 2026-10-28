@@ -90,6 +90,7 @@ struct Prepared {
     dirty: PathBuf,
     contexts: Vec<Base>,
     context_bytes: u64,
+    sources: Vec<catalog::Source>,
     // Only native discovery's actual local inputs remain leased to publication.
     _bases: Vec<(String, PathBuf, Flock<File>)>,
 }
@@ -294,13 +295,17 @@ async fn run_transaction(
         &mut audit,
     )
     .await?;
-    let Received::Oci(verified) = built else {
+    let Received::Oci(mut verified) = built else {
         return Err(io::Error::other("image-output: unexpected root"));
     };
+    verified.sources = prepared.sources.clone();
     let recipe = sha256_hex(
         [
             include_bytes!("../../../../builder.toml").as_slice(),
+            include_bytes!("../../../../vmm.toml").as_slice(),
+            include_bytes!("job.rs").as_slice(),
             include_bytes!("../../../../src/init/builder.rs").as_slice(),
+            include_bytes!("../../../../src/init/firecracker.rs").as_slice(),
         ]
         .concat(),
     );
@@ -540,6 +545,7 @@ fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<P
         dirty,
         contexts,
         context_bytes,
+        sources: Vec::new(),
         _bases: Vec::new(),
     })
 }
@@ -553,6 +559,7 @@ fn select_bases(
 ) -> io::Result<()> {
     let mut selected = BTreeMap::new();
     let mut remote = BTreeMap::new();
+    let mut resolved = BTreeMap::new();
     for identifier in sources {
         check_cancel(cancel)?;
         let (local, image) = if let Some(image) = identifier.strip_prefix("oci-layout://") {
@@ -567,6 +574,7 @@ fn select_bases(
             .filter(|(reference, _)| !reference.is_empty())
             .ok_or_else(|| io::Error::other("image-output: discovery source lacks digest"))?;
         catalog::digest_hex(digest)?;
+        resolved.insert(identifier.clone(), digest.to_string());
         if local {
             let reference = reference.strip_suffix(":latest").unwrap_or(reference);
             let base = prepared
@@ -623,13 +631,12 @@ fn select_bases(
         },
         &mut budget,
     )?;
-    source_policy(
-        &prepared.input,
-        "docker-image://localhost/pinfold/*",
-        &remote,
-        &mut budget,
-    )?;
+    source_policy(&prepared.input, "docker-image://*", &remote, &mut budget)?;
     prepared._bases = bases;
+    prepared.sources = resolved
+        .into_iter()
+        .map(|(uri, digest)| catalog::Source { uri, digest })
+        .collect();
     Ok(())
 }
 
@@ -1223,14 +1230,22 @@ fn source_policy(
     converts: &BTreeMap<String, String>,
     budget: &mut InputBudget,
 ) -> io::Result<()> {
-    let mut rules = Vec::new();
+    // Conversion restarts policy evaluation. Deny first, then exact pinned
+    // ALLOW rules override it after a floating reference has been converted.
+    let mut rules = vec![
+        serde_json::json!({"action":"DENY","selector":{"identifier":identifier,"match_type":"WILDCARD"}}),
+    ];
     for (source, target) in converts {
         rules.push(serde_json::json!({
             "action":"CONVERT", "selector":{"identifier":source,"match_type":"EXACT"},
             "updates":{"identifier":target}
         }));
     }
-    rules.push(serde_json::json!({"action":"DENY","selector":{"identifier":identifier,"match_type":"WILDCARD"}}));
+    for target in converts.values().collect::<BTreeSet<_>>() {
+        rules.push(serde_json::json!({
+            "action":"ALLOW", "selector":{"identifier":target,"match_type":"EXACT"}
+        }));
+    }
     let bytes = serde_json::to_vec(&serde_json::json!({"version":1,"rules":rules}))?;
     if bytes.len() > 1 << 20 {
         return Err(io::Error::other("resource: builder source policy"));

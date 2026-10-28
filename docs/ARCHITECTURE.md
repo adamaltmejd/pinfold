@@ -801,8 +801,10 @@ The selected profile dependency is frozen to the identity recorded in
 `dev.pinfold.base`; a changed or missing dependency is `image-base-changed`.
 On both platforms that public label is empty for caller/profile builds;
 only managed project builds record the selected local profile identity.
-Other source digests are internal provenance, never user configuration.
-Linux records BuildKit's actually used image digests, not a parsed FROM.
+Other resolved image digests are internal metadata, never user configuration.
+Linux records the reachable image inputs from native BuildKit discovery,
+then freezes those identities for execution. This is not an attestation or
+an independent provenance claim.
 
 Guest output is a bounded framed stream. The host creates only fixed-mode
 staging paths derived from validated kinds and SHA-256 values, ignoring
@@ -810,8 +812,8 @@ all guest path, owner and link metadata. It never extracts a guest archive
 on the host or reads/mounts a guest-writable disk. Validate sizes, hashes,
 media, linux/amd64 config, expected labels and the complete local descriptor
 graph. No external descriptor URL or unreferenced object is admitted.
-Select one runnable manifest; a recognized provenance attestation must bind
-to that manifest and cannot become the runnable image identity.
+Admit one direct runnable manifest. Attachments, attestation manifests,
+nested indexes and unsupported media are refused rather than ignored.
 
 The converter receives only the host's validated read-only OCI layout,
 has no egress, and uses pinned BuildKit flattening plus guest tar and
@@ -832,8 +834,8 @@ converts, and works with the builder absent. Missing/damaged preparation
 requires an explicit rebuild; partial roots are never reusable.
 
 The cache is `$XDG_CACHE_HOME/pinfold/images/`: `catalog.json` maps refs to
-immutable manifests and records labels, config environment, internal source
-provenance and completed root derivation. There is no registry or resident
+immutable manifests and records labels, config environment, resolved image
+inputs and completed root derivation. There is no registry or resident
 daemon. Old Podman-only refs no longer resolve: rebuild profiles/projects
 with `build` and caller images with `image build`. The old Podman store,
 old derived-root cache and managed agent disks are left untouched.
