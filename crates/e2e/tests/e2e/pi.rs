@@ -1404,7 +1404,7 @@ fn pi_run_id(env: &TestEnv, name: &str) -> String {
 }
 
 /// The selected-profile case of guarantee 23, using real local builds.
-pub(super) fn selected_profile_freshness(env: &TestEnv, base: &str) {
+pub(super) fn selected_profile_freshness(env: &TestEnv, base: &str) -> ImageCleanup {
     let project = test_dir(env, "profile-freshness");
     let root = project.as_path();
     git(root, &["init", "-q"]);
@@ -1423,13 +1423,18 @@ pub(super) fn selected_profile_freshness(env: &TestEnv, base: &str) {
     // doctor misses the unchanged project's changed selected profile. Rebuild
     // the same project as the allowed counterpart; its warning must clear.
     let selected_profile = &format!("e2e-freshness-{}", std::process::id());
-    let _profile_image = ImageCleanup {
+    let profile_image = ImageCleanup {
         repository: format!("localhost/pinfold/profile-{selected_profile}"),
+    };
+    let profile_base = if cfg!(target_os = "linux") {
+        "scratch"
+    } else {
+        base
     };
     let profile_recipe = e2e::profile_containerfile(
         env,
         selected_profile,
-        &format!("FROM {base}\nENV PROFILE_PHASE=one\n"),
+        &format!("FROM {profile_base}\nENV PROFILE_PHASE=one\n"),
     );
     e2e::build_profile(env, selected_profile);
     fs::write(
@@ -1444,7 +1449,7 @@ pub(super) fn selected_profile_freshness(env: &TestEnv, base: &str) {
     run_ok(&mut pinfold_in(env, root, &["build"]));
     fs::write(
         &profile_recipe,
-        format!("FROM {base}\nENV PROFILE_PHASE=two\n"),
+        format!("FROM {profile_base}\nENV PROFILE_PHASE=two\n"),
     )
     .unwrap();
     e2e::build_profile(env, selected_profile);
@@ -1459,4 +1464,5 @@ pub(super) fn selected_profile_freshness(env: &TestEnv, base: &str) {
         !String::from_utf8_lossy(&rebuilt.stderr).contains("image-outdated"),
         "rebuilt project remains outdated: {rebuilt:?}"
     );
+    profile_image
 }

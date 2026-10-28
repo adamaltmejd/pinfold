@@ -1459,7 +1459,10 @@ fn only_allowlisted_hosts_get_through() {
 #[test]
 fn a_caller_builds_an_image_from_its_own_tree() {
     #[cfg(target_os = "linux")]
-    let _runtime = crate::exclusive_runtime();
+    let mut exclusive_runtime = Some(crate::exclusive_runtime());
+    // Keep the downgraded guard's drop slot ahead of every fixture.
+    #[cfg(target_os = "linux")]
+    let mut _runtime = None;
     #[cfg(not(target_os = "linux"))]
     let _runtime = crate::shared_runtime();
     // Guarantee 23: a caller builds an image from its own tree.
@@ -1486,14 +1489,12 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // image instead loses the child's marker, the positive trigger control.
     // Sabotage: return the post-rename directory sync error from catalog::commit
     // as a failed build; the first build reports failure after the kernel EIO.
-    // Sabotage: discover only surviving LLB image sources again; the zero-layer
-    // FROM's config identity is lost, so execution's default-deny policy refuses
-    // it before the first built assertion. Drop its config instead and the
-    // recipe's pinned upstream foo=bar check fails.
+    // Sabotage: refuse zero-layer local profiles or drop their image config;
+    // preparation or the fixture's PROFILE_PHASE=two RUN check fails.
     let env = TestEnv::new("image-build");
     let other = cfg!(target_os = "macos").then(|| TestEnv::new("image-colors"));
     let base = default_image(&env);
-    crate::pi::selected_profile_freshness(&env, base);
+    let freshness_profile = crate::pi::selected_profile_freshness(&env, base);
 
     let name = format!("pinfold-e2e-{}", std::process::id());
     let repository = format!("localhost/pinfold/image-{name}");
@@ -1512,8 +1513,8 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     };
     let from = if cfg!(target_os = "linux") {
         format!(
-            "FROM tonistiigi/test:nolayers@sha256:acf1bec0759497a99077fe034707bb64ef675aee61e9902e26af53aeb1c22e0c\n\
-             COPY --from={base} / /\nRUN test \"$foo\" = bar\n"
+            "FROM {}:latest\nCOPY --from={base} / /\nRUN test \"$PROFILE_PHASE\" = two\n",
+            freshness_profile.repository,
         )
     } else {
         format!("FROM {base}\n")
@@ -1588,6 +1589,14 @@ fn a_caller_builds_an_image_from_its_own_tree() {
             "the {marker} built line names another image id"
         );
         refs.push(reference);
+        #[cfg(target_os = "linux")]
+        if marker == "first" {
+            _runtime = Some(tokio::sync::RwLockWriteGuard::downgrade(
+                exclusive_runtime
+                    .take()
+                    .expect("the first build holds the exclusive runtime guard"),
+            ));
+        }
     }
 
     let names_ids = || tagged_images(&repository);
