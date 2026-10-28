@@ -778,10 +778,10 @@ Ownership, cancellation, audit failure and recovery remain host authority.
 A job must stop and reap its VMM before releasing ownership. Discard the
 derivable cache after unclean work; completed images survive cache removal.
 A handled recipe failure may retain the cache only after daemon/work teardown,
-sync and unmount, a complete failure/end/EOF receipt, VMM reaping and a watched
-host backing-file sync and durable clean-marker transition. A stopped transition
-restores the unclean marker or retires the backing file if restoration fails;
-later stops need not dirty the already-clean cache again.
+sync and unmount, a complete failure/end/EOF receipt, VMM reaping and a successful
+host backing-file sync. A stop during clean-marker updates attempts to restore
+the marker, then retire the backing file if restoration fails; errors propagate.
+A stop after those physical barriers does not make the cache unclean again.
 
 Daemon and RUN use the production proxy and audit. Initial build hosts are
 `registry-1.docker.io`, `auth.docker.io`, `production.cloudfront.docker.com`,

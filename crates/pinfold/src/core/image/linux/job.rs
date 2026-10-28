@@ -944,8 +944,9 @@ async fn clean_cache(
         .await
         .and_then(|()| check_cancel(cancel));
     if let Err(error) = result {
-        // The watcher joined the cleaner. A stop can win after unlink, so
-        // restore the marker before ownership can be released.
+        // The watcher joined the cleaner. Try restoring the marker or retiring
+        // the cache. A removed marker already followed guest shutdown and host
+        // sync, so two recovery errors cannot expose an active cache writer.
         let dirty = prepared.dirty.clone();
         let cache_disk = prepared.cache_disk.clone();
         tokio::task::spawn_blocking(move || {
