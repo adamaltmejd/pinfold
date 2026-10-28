@@ -2,8 +2,8 @@
 
 Date: 2026-10-28. Tested source/document head:
 `3d6b1068904b3131cea5ac0c9d0fbb60b93c8241`.
-This supplements the audit as recorded at that commit; the earlier dated
-records are not rewritten to track later state.
+This preserves the gate at that commit. The operator explicitly requested
+that the final preparation records also reflect this failed outcome.
 
 ## Ownership and invocation
 
@@ -52,6 +52,7 @@ and timer receipt are preserved privately under:
 |---|---:|---|
 | pinfold-builder-artifact-mac-gate.log | 5372 | b67cb4e67a0620d16a1f2a5d2bfb8579e5a8647480ea395b8c28fd8db598cdde |
 | pinfold-builder-artifact-mac-gate.json | 165 | e705d14f2f555341a907ad2b018c3880c5ba50b6d2a1436410c783ae926a1bca |
+| upstream-audit-observation.json | 611 | 677351d9b0101fc37762dc380e19d4685cea1670f2bf4a1ada07f727341ffff2 |
 
 The timer receipt retains its original `/private/tmp` log path. Both
 copies are mode 0600. The source artifact/provenance bytes were not changed.

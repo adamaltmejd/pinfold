@@ -27,9 +27,9 @@ does not release those CLI changes.
 | Release delete/add ratio, all files | 0.1131 | 0.1155 |
 | Release additions / deletions, crates | 1116 / 695 | 1119 / 706 |
 | Release delete/add ratio, crates | 0.6228 | 0.6309 |
-| New dated audit/readiness/proposal/note lines | 0 | 503 |
-| Release additions / deletions, including new records | 6367 / 720 | 6878 / 736 |
-| Release delete/add ratio, including new records | 0.1131 | 0.1070 |
+| New dated audit/readiness/proposal/note lines | 0 | 595 |
+| Release additions / deletions, including new records | 6367 / 720 | 6970 / 736 |
+| Release delete/add ratio, including new records | 0.1131 | 0.1056 |
 | Rust lines, all tracked .rs including dated prototypes | 24231 | 24223 |
 | Current crates' Rust lines | 23142 | 23134 |
 | Binary Rust lines, including build.rs and init crate | 14814 | 14806 |
@@ -39,7 +39,7 @@ does not release those CLI changes.
 | ARCHITECTURE.md lines | 1300 | 1300 |
 | Written rework proposals | 0 | 3 |
 | Active tickets opened | 0 | 0 |
-| Fresh Mac runtime suite wall time | not run | waiting for exclusive slot |
+| Fresh Mac runtime suite wall time | not run | 438.252 s, failed |
 
 The admitted code-comment cuts have possible net -8 lines and landed net
 -8. The complete five-file cleanup is 8 additions / 16 deletions. README
@@ -199,12 +199,18 @@ main still uses Podman and does not consume the root artifact.
   `2026-10-28-builder-artifact-readiness.md`, including all eight files,
   all 91 retained members, raw root, gzip EOF, source identity, three
   Debian signatures and live BuildKit publisher digest.
-- Fresh Mac suite: not started. The operator explicitly retains phase
-  6b's shared-store reservation. A coordinated exclusive run is required
-  before pushing these cleanup commits under the skill's step 4. No
-  prior phase/6b run is claimed as this branch's pass.
-- Cleanup-branch Linux CI and independent final-head review: pending
-  push/PR, which must wait for that Mac gate. No PR or merge is claimed.
+- Coordinated full Mac suite at `3d6b106`: 23 passed, 1 failed, 1 ignored,
+  exit 101; 434.74 s test time and 438.252 s including Cargo. The real
+  `box events` audit observation showed upstream 429 on the login route;
+  this is separate evidence from the suite log. The operator stopped only
+  the owned stalled live-login box; its command then exited 137. No retry.
+  `2026-10-28-builder-artifact-mac-gate.md` records the failure, limits,
+  private receipts and final absence of owned processes. The Mac slot is
+  released. No prior phase/6b run is substituted as a pass.
+- Cleanup-branch Linux CI and the operator's final-head decision remain
+  pending. The operator explicitly authorized a reviewable draft PR despite
+  this failed pre-push gate. That instruction grants no merge, publication,
+  gate exception or green Mac result.
 - Separate read-only correctness and lean/spec reviewers found no blocking
   issue in the five cleanup commits and these four prepared records.
   Their source/document reviews do not replace outstanding execution gates

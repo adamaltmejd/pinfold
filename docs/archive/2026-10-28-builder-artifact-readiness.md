@@ -137,9 +137,15 @@ inputs. The task explicitly excludes them. No pins, dependencies or
 workspace version move. No artifact rebuild or substituted CI output.
 
 The cleanup report and test proposals are separate dated records. The
-cleanup branch needs its coordinated Mac suite and Linux CI before its
-push/review can complete. Those source checks do not replace the builder
-proof, and the proof does not establish production runtime behavior.
+cleanup branch's coordinated Mac suite failed: 23 passed, 1 failed,
+1 ignored, exit 101, 438.252 seconds including Cargo. Its live-login box
+was intentionally stopped after a separately observed upstream 429;
+the live command then exited 137. The gate receipt preserves that
+distinction. A draft PR is explicitly authorized for review despite this
+failed gate; Linux CI and the operator's final decision remain required.
+No pass or publication-gate exception is implied. Source checks do not
+replace the builder proof, and the proof does not establish production
+runtime behavior.
 
 Only after operator review of this preparation should Adam receive the
 concrete request to publish these eight bytes under this one tag. The
