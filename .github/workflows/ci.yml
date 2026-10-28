@@ -25,7 +25,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.sha }}
 
-      - name: Rootless podman
+      - name: Firecracker host requirements
         run: sh scripts/setup-linux-runner.sh
 
       - name: Rust musl target

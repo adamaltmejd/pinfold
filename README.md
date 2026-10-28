@@ -16,7 +16,10 @@ commits back as branches.
 | Host | Runtime |
 |---|---|
 | macOS 26+ | Apple `container` 1.6.0+ (stable) |
-| Linux x64, kernel 6.10+ | `/dev/kvm` for the user (the `kvm` group), unprivileged user namespaces and Landlock, e2fsprogs, and rootless podman 6.1.4+ (stable) for image builds; pinfold fetches its pinned Firecracker |
+| Linux x64, kernel 6.10+ | `/dev/kvm` for the user (the `kvm` group), unprivileged user namespaces, Landlock and e2fsprogs; pinned Firecracker and isolated BuildKit image jobs |
+
+Linux builds require the [verified offline builder cache](builder-root/README.md).
+There is no public builder download.
 
 On Ubuntu 24.04+, AppArmor restricts user namespaces, and `box up` is
 refused as `runtime` naming `userns-apparmor`. Load pinfold's profile
@@ -100,6 +103,13 @@ In a project:
    Using a Claude subscription through pi is subject to Anthropic's terms:
    pi presents the token as Claude Code and may bill it as extra usage.
 
+Linux build egress has its own allowlist. Add exact hosts with
+`pinfold build --allow HOST` or `pinfold image build … --allow HOST`.
+Apple builds reject `--allow` additions.
+
+Rebuild old Podman-only Linux images explicitly with `build` or `image build`.
+Old Podman storage, derived roots and managed agent disks remain untouched.
+
 The project must be a git repository; a plain folder needs `git init`
 and a commit. Only committed branches enter the box, which keeps its
 own repository. Commit uncommitted work (a WIP commit on a branch will
@@ -127,11 +137,11 @@ PINFOLD_PROFILE=documents pi
 Set `profile = "documents"` in the project's `.pinfold.toml` to keep the
 selection, then run `pinfold allow`.
 
-To keep a profile's settings and packages while using another local image:
+To use another local image with a profile's settings:
 
 ```toml
 profile = "documents"
-image = "localhost/research-tools:latest"
+image = "localhost/pinfold/image-research-tools:latest"
 ```
 
 `image` can also be a profile default. A project `image` overrides it;

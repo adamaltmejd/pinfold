@@ -62,17 +62,15 @@ pub trait ImageService: Sync {
     /// List every image, with the labels recorded on it.
     fn list_images(&self) -> io::Result<Vec<ImageInfo>>;
 
-    /// Resolve `reference` to a local image with the runtime's own inspect,
-    /// so every spelling the runtime resolves is accepted. Never pulls. The
-    /// inner `Err` is the runtime's message when it cannot resolve it.
+    /// Resolve a local image reference or content identity. Never pulls.
+    /// The inner `Err` describes an unavailable image.
     fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageInfo, String>>;
 
     /// Remove one image by reference, and any layers no image references.
     fn remove_image(&self, reference: &str) -> io::Result<()>;
 
-    /// Remove unused build cache without interrupting builds. Apple: the
-    /// builder's unused records. podman: the intermediate images pinfold's cached builds
-    /// left that no image builds on.
+    /// Remove unused build cache without interrupting builds: Apple's unused
+    /// BuildKit records or Linux's exclusively claimed idle builder cache.
     fn purge_build_cache(&self) -> io::Result<()>;
 
     /// What [`ImageService::purge_build_cache`] removes, named for `pinfold
@@ -89,8 +87,7 @@ pub trait ImageService: Sync {
     /// output, stdout and stderr in order, when the build ran and failed.
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>>;
 
-    /// The image CLI's program name: `container` on macOS, `podman` on
-    /// Linux.
+    /// The build implementation's name for diagnostics.
     fn program(&self) -> &'static str;
 }
 

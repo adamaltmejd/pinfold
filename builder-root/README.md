@@ -9,7 +9,7 @@ cd target/builder-root
 sha256sum -c SHA256SUMS
 ```
 
-No installed BuildKit or Podman is needed. `pins.json` fixes the Debian
+No installed BuildKit is needed. `pins.json` fixes the Debian
 snapshot, signed Release, package index, archive keys and BuildKit asset.
 `packages.tsv` fixes every package's name, version, architecture, SHA-256
 and snapshot path. Downloads are HTTPS-only, at most 512 MiB and five
