@@ -531,8 +531,6 @@ before it execs Firecracker:
   and connecting to sockets (ABI 9's `RESOLVE_UNIX`), removing files and
   reading the directory in the vsock socket directory.
 
-Firecracker's own seccomp filters then apply.
-
 A compromised VMM reaches only that tree, as the user: no home, no other
 box's disks or socket, no host network or abstract socket, no host
 process. Getting further needs a host kernel bug.
@@ -845,7 +843,7 @@ dir under `$HOME`, seeded from `home/`, with packages from `share/`) and
 the project's own `.pi/` and `.agents/skills`.
 
 Every built-in seeds only `/opt/pinfold/profile/pi` as its pi package and
-sets `defaultProjectTrust: "always"`: the box is the boundary. It adds
+sets `defaultProjectTrust: "always"`. It adds
 pi's built-in `codemode` tool to the default tools; pi's built-in MCP is
 on by default: stdio servers run in the box, remote ones through the
 proxy. Every built-in includes the operating-context extension, which
@@ -981,7 +979,7 @@ checkout path and last run.
 
 Automatic, never prompting:
 - After a build: keep the newest two builds per source (a profile, a
-  project or a caller image name), the second for rollback, ordered by
+  project or a caller image name), ordered by
   their tags. Remove older builds' tags; an image goes with its last tag,
   and its dangling layers with it. An image a box still uses keeps its
   last tag, and pins only itself; which boxes use an image is read after
