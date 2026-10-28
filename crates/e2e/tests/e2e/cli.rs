@@ -273,7 +273,7 @@ fn ioctl_dev_denied(command: &mut std::process::Command) {
 
 // Preserve directories as well as file bytes: a supposedly read-only
 // inspection must not create even an empty cache directory.
-fn host_tree(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+pub(crate) fn host_tree(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
     fn walk(root: &Path, dir: &Path, entries: &mut Vec<(PathBuf, Option<Vec<u8>>)>) {
         for entry in fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();

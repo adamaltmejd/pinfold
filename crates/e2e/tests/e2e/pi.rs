@@ -16,8 +16,8 @@ use std::process::{ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use crate::box_::{ChildOwner, box_name, box_up_with_env, read_bounded};
 use e2e::{
     HttpFixture, ImageCleanup, TestEnv, allow, assert_denied, assert_ok, box_exec, box_list, curl,
-    default_image, git, inspect, json_lines, pinfold, pinfold_in, project_id, project_state_dir,
-    run_dir, run_ok, test_dir,
+    default_image, git, inspect, json_lines, pinfold, pinfold_in, project_id, run_dir, run_ok,
+    test_dir,
 };
 
 /// The PINFOLD_ENV_ value `PiRpc` launches with: long enough that no disk
@@ -310,15 +310,20 @@ fn project_state_persists_and_stays_separate() {
     // A root without `.git` has no branches to cross: it refuses before
     // anything is created, and runs once it has a commit. Sabotage: accept
     // a missing `.git` in launch::require_repo; the plain folder starts.
+    // Sabotage: create project state before require_repo refuses; the
+    // unchanged projects-tree assertion fails.
     let plain = test_dir(&env, "plain");
+    let projects = env.state.join("pinfold/projects");
+    let before = crate::cli::host_tree(&projects);
     let output = pinfold_in(&env, plain.as_path(), &["pi", "--version"])
         .output()
         .expect("run pinfold");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "a folder without git started");
     assert!(stderr.contains("not-git"), "wrong refusal: {stderr}");
-    assert!(
-        !project_state_dir(&env, plain.as_path()).exists(),
+    assert_eq!(
+        crate::cli::host_tree(&projects),
+        before,
         "the refusal created project state"
     );
     git(plain.as_path(), &["init", "-q"]);
