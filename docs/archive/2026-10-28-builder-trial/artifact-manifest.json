@@ -1,0 +1,213 @@
+{
+  "convert-metadata.bin": {
+    "bytes": 134217728,
+    "sha256": "2f9432b0e4ff30ceae86a8f86f2e61539fac9f968ff45052266ab8f9252e16e9"
+  },
+  "convert-xattr.bin": {
+    "bytes": 134217728,
+    "sha256": "86aea77beeaa8c77207041baceaa92d9ac8db950ce0e362387ee09d641024144"
+  },
+  "fixture.bin": {
+    "bytes": 1106886,
+    "sha256": "b4e820671ba5ee1b6909675a9da9526f40f2f6b2cd489f73a8478af540de7ceb",
+    "oci": {
+      "manifest": "sha256:74d897e251664ee57e05319581aa572414231fe1e40f02f809d6330c26a9e632",
+      "config": "sha256:e42de660966800f6aa71a7141b2bb7195726bb0636206b7d2380c6ff5c6db892",
+      "layers": 4,
+      "bytes": 1105941,
+      "labels": {
+        "example.phase": "6"
+      },
+      "env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "PHASE6_VALUE=preserved"
+      ]
+    }
+  },
+  "full-conversion.bin": {
+    "bytes": 451499008,
+    "sha256": "19621e9cb21f19f760cfa24ec08f1302be5b2b116ceb78d837ad20da44695478"
+  },
+  "local-base-multistage.bin": {
+    "bytes": 1108095,
+    "sha256": "feb947d81a2460daa3e88abfb8fa45005b2711f5cf6906daf53f5bf1f1894086",
+    "oci": {
+      "manifest": "sha256:d14aaab08707f93ce14528efca93efd88fd957835b9c7419ab0ab1184d932536",
+      "config": "sha256:85cf24d4050a07add6c32d2477a49c17125eb8d5d061dcf0a2d54048b8658958",
+      "layers": 6,
+      "bytes": 1106925,
+      "labels": {
+        "example.phase": "6"
+      },
+      "env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "PHASE6_VALUE=preserved"
+      ]
+    }
+  },
+  "overlay-default-cold.bin": {
+    "bytes": 70849105,
+    "sha256": "ca62187d3f973ab93c42ac4878df49eebf052eba6d064243413886dfdce3904d",
+    "oci": {
+      "manifest": "sha256:efd07e7e24f83a6b583f3757bc9abdb8ff7c73c7b84591a012957defd22ff35b",
+      "config": "sha256:3e83f537f0e136877711c0541eeb67672a56059c23f517463f93af964f3d9553",
+      "layers": 3,
+      "bytes": 70848265,
+      "labels": {},
+      "env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ]
+    }
+  },
+  "overlay-default-no-cache.bin": {
+    "bytes": 70848999,
+    "sha256": "82f9aa553c5517be2d2b8ddd5ed254ac6525a8a4714506b679117dbde960b9ce",
+    "oci": {
+      "manifest": "sha256:36e1c7c34783036ec6b55d398cc23c5217ae3341a401b9765283ad4d925be2ff",
+      "config": "sha256:61e5f46c2e24925847921d3bce7ba98bdab3f35c7fc7374bd858349a1579ebd8",
+      "layers": 3,
+      "bytes": 70848159,
+      "labels": {},
+      "env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ]
+    }
+  },
+  "overlay-default-warm.bin": {
+    "bytes": 70849105,
+    "sha256": "14f12480b5e7ef9accf8aee8416dd13db0a84eb5ca69c86f357bd8dbe7fead47",
+    "oci": {
+      "manifest": "sha256:efd07e7e24f83a6b583f3757bc9abdb8ff7c73c7b84591a012957defd22ff35b",
+      "config": "sha256:3e83f537f0e136877711c0541eeb67672a56059c23f517463f93af964f3d9553",
+      "layers": 3,
+      "bytes": 70848265,
+      "labels": {},
+      "env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ]
+    }
+  },
+  "overlay-full-cold.bin": {
+    "bytes": 151252280,
+    "sha256": "9e830cc96cec05db510861025cde61fddc788d72cee40fbadc9cea5af5f6f726",
+    "oci": {
+      "manifest": "sha256:b9ab91b85b2f7b0dbf13d49024587388a9e2150258fe78e22449ab5e23168364",
+      "config": "sha256:49a45a33a2cd1cbf8149368f556835f8381a6bc435915824bd335f5e1e1cb17b",
+      "layers": 9,
+      "bytes": 151250736,
+      "labels": {},
+      "env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ]
+    }
+  },
+  "overlay-full-warm.bin": {
+    "bytes": 151252280,
+    "sha256": "72f3dda40bc96359d5f880438b588082bcce05548feb810684ce9c76ed61a421",
+    "oci": {
+      "manifest": "sha256:b9ab91b85b2f7b0dbf13d49024587388a9e2150258fe78e22449ab5e23168364",
+      "config": "sha256:49a45a33a2cd1cbf8149368f556835f8381a6bc435915824bd335f5e1e1cb17b",
+      "layers": 9,
+      "bytes": 151250736,
+      "labels": {},
+      "env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ]
+    }
+  },
+  "recover-default-cold.bin": {
+    "bytes": 70849033,
+    "sha256": "6ddb1ab32567f79feb10d37a2b5a59bcd85e02f145551d06d771738bf540845e",
+    "oci": {
+      "manifest": "sha256:506b9f45dd1d0b8b6ac4be6e6e26f05c79f4e58efd7a962f9b517e499592bee6",
+      "config": "sha256:94b3be9f5692f1edbe2e35f2c6334e84e49a5c15fe282ceb70c3fcc76dfcb576",
+      "layers": 3,
+      "bytes": 70848193,
+      "labels": {},
+      "env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ]
+    }
+  },
+  "recover-default-no-cache.bin": {
+    "bytes": 70849039,
+    "sha256": "bc3c15bb02103974607068ab63ffb21d490bc5ba889cbc6534026f035328373a",
+    "oci": {
+      "manifest": "sha256:4ada7e803f4f6e8ac3e3b2f63fe3d65418a91fa63c8b3c549e61ebb0cd288a27",
+      "config": "sha256:559e5750af333b512d7d54ca38d59347d29c64745b13b2176a3a5a975656a535",
+      "layers": 3,
+      "bytes": 70848199,
+      "labels": {},
+      "env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ]
+    }
+  },
+  "recover-default-warm.bin": {
+    "bytes": 70849033,
+    "sha256": "ea3d45c1316992eee32d562c384dd5f23129dba83853c10b913ef82763011502",
+    "oci": {
+      "manifest": "sha256:506b9f45dd1d0b8b6ac4be6e6e26f05c79f4e58efd7a962f9b517e499592bee6",
+      "config": "sha256:94b3be9f5692f1edbe2e35f2c6334e84e49a5c15fe282ceb70c3fcc76dfcb576",
+      "layers": 3,
+      "bytes": 70848193,
+      "labels": {},
+      "env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ]
+    }
+  },
+  "recover-documents-cold.bin": {
+    "bytes": 131432477,
+    "sha256": "16834d00f5b5b876f4f94e81e917d0dc4afe17cc66410419e133c2a572dd554b",
+    "oci": {
+      "manifest": "sha256:934e60c875063e8aa0f06503e55302628ae37d22ae35599bf05c0ef01f7433d4",
+      "config": "sha256:4e97dafebdbf6996f6e10201af954d139a03ba1b65f88dc3c2018b463e4fe942",
+      "layers": 6,
+      "bytes": 131431283,
+      "labels": {},
+      "env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ]
+    }
+  },
+  "restart-full-warm.bin": {
+    "bytes": 151252280,
+    "sha256": "8b2b297de12459d357d02600a10288b63cc46af8b44393b3e330ce9f174f138c",
+    "oci": {
+      "manifest": "sha256:b9ab91b85b2f7b0dbf13d49024587388a9e2150258fe78e22449ab5e23168364",
+      "config": "sha256:49a45a33a2cd1cbf8149368f556835f8381a6bc435915824bd335f5e1e1cb17b",
+      "layers": 9,
+      "bytes": 151250736,
+      "labels": {},
+      "env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ]
+    }
+  },
+  "scratch.bin": {
+    "bytes": 1111040,
+    "sha256": "405dcd35cd599f330c145b15b8cca17aece6d3e07b372198c758aa1bf2ed768a"
+  },
+  "xattr-fixture.bin": {
+    "bytes": 1107290,
+    "sha256": "c8985a518b92f1c9a8812c74a17a47c0294e29690a0add4c1fcedb31813b75a9",
+    "oci": {
+      "manifest": "sha256:871f87c0b192a668ac95bfe54d8e13b1ab1091cd3eade32182688fddb6e2769b",
+      "config": "sha256:20b64763f357220cbd485a898e5013ccb2697653634ea4aa6e2552293b064c35",
+      "layers": 5,
+      "bytes": 1106232,
+      "labels": {
+        "example.phase": "6"
+      },
+      "env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "PHASE6_VALUE=preserved"
+      ]
+    }
+  },
+  "xattr-input.ext4": {
+    "bytes": 67108864,
+    "sha256": "3376d10f5302599a8855a20a35a4ffb1db039b1c53d3a8d9cd7507fd84c9c066"
+  }
+}

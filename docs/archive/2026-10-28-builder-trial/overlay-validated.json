@@ -1,0 +1,52 @@
+{
+  "overlay-default-no-cache": {
+    "manifest": "sha256:36e1c7c34783036ec6b55d398cc23c5217ae3341a401b9765283ad4d925be2ff",
+    "config": "sha256:61e5f46c2e24925847921d3bce7ba98bdab3f35c7fc7374bd858349a1579ebd8",
+    "layers": 3,
+    "bytes": 70848159,
+    "labels": {},
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "overlay-full-cold": {
+    "manifest": "sha256:b9ab91b85b2f7b0dbf13d49024587388a9e2150258fe78e22449ab5e23168364",
+    "config": "sha256:49a45a33a2cd1cbf8149368f556835f8381a6bc435915824bd335f5e1e1cb17b",
+    "layers": 9,
+    "bytes": 151250736,
+    "labels": {},
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "overlay-full-warm": {
+    "manifest": "sha256:b9ab91b85b2f7b0dbf13d49024587388a9e2150258fe78e22449ab5e23168364",
+    "config": "sha256:49a45a33a2cd1cbf8149368f556835f8381a6bc435915824bd335f5e1e1cb17b",
+    "layers": 9,
+    "bytes": 151250736,
+    "labels": {},
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "overlay-default-cold": {
+    "manifest": "sha256:efd07e7e24f83a6b583f3757bc9abdb8ff7c73c7b84591a012957defd22ff35b",
+    "config": "sha256:3e83f537f0e136877711c0541eeb67672a56059c23f517463f93af964f3d9553",
+    "layers": 3,
+    "bytes": 70848265,
+    "labels": {},
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "overlay-default-warm": {
+    "manifest": "sha256:efd07e7e24f83a6b583f3757bc9abdb8ff7c73c7b84591a012957defd22ff35b",
+    "config": "sha256:3e83f537f0e136877711c0541eeb67672a56059c23f517463f93af964f3d9553",
+    "layers": 3,
+    "bytes": 70848265,
+    "labels": {},
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  }
+}

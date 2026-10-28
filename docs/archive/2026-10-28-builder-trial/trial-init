@@ -1,0 +1,23 @@
+#!/bin/bash
+set -eux
+export PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mount -t tmpfs tmpfs /run
+mount -t tmpfs -o size=768m tmpfs /tmp
+mkdir -p /dev/pts /dev/shm /sys/fs/cgroup
+mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /dev/shm
+mount -t cgroup2 none /sys/fs/cgroup
+mount /dev/vdb /var/lib/buildkit
+if [ -b /dev/vdc ]; then mount -o ro /dev/vdc /input; fi
+ip link set lo up
+echo 0 >/proc/sys/user/max_user_namespaces
+socat TCP4-LISTEN:3128,bind=127.0.0.1,reuseaddr,fork VSOCK-CONNECT:2:3128 >/tmp/relay.log 2>&1 &
+export HTTP_PROXY=http://127.0.0.1:3128 HTTPS_PROXY=http://127.0.0.1:3128 http_proxy=http://127.0.0.1:3128 https_proxy=http://127.0.0.1:3128 NO_PROXY= no_proxy=
+export DOCKER_CONFIG=/tmp/empty-docker
+mkdir -p "$DOCKER_CONFIG"
+mkfifo /run/buildkit-log
+setpriv --no-new-privs --bounding-set=-all,+chown,+dac_override,+fowner,+fsetid,+kill,+setgid,+setuid,+setpcap,+net_bind_service,+net_raw,+sys_chroot,+mknod,+audit_write,+setfcap,+sys_admin buildkitd --addr unix:///run/buildkit/buildkitd.sock --root /var/lib/buildkit --oci-worker-snapshotter=${TRIAL_SNAPSHOTTER:-native} --oci-worker-net=host --containerd-worker=false --oci-worker-gc=false >/run/buildkit-log 2>&1 &
+exec setpriv --no-new-privs --bounding-set=-all,+chown,+dac_override,+fowner,+fsetid,+kill,+setgid,+setuid,+setpcap,+net_bind_service,+net_raw,+sys_chroot,+mknod,+audit_write,+setfcap,+sys_admin /usr/bin/python3 /usr/local/lib/trial-guest.py

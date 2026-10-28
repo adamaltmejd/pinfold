@@ -1,0 +1,106 @@
+{
+  "overlay": [
+    {
+      "boot_seconds": 1.708
+    },
+    {
+      "name": "overlay-inventory",
+      "seconds": 0.267,
+      "returncode": 0
+    },
+    {
+      "name": "overlay-default-cold",
+      "seconds": 20.76,
+      "returncode": 0,
+      "size": 70849105,
+      "sha256": "ca62187d3f973ab93c42ac4878df49eebf052eba6d064243413886dfdce3904d"
+    },
+    {
+      "name": "overlay-default-warm",
+      "seconds": 1.675,
+      "returncode": 0,
+      "size": 70849105,
+      "sha256": "14f12480b5e7ef9accf8aee8416dd13db0a84eb5ca69c86f357bd8dbe7fead47"
+    },
+    {
+      "name": "overlay-default-no-cache",
+      "seconds": 19.011,
+      "returncode": 0,
+      "size": 70848999,
+      "sha256": "82f9aa553c5517be2d2b8ddd5ed254ac6525a8a4714506b679117dbde960b9ce"
+    },
+    {
+      "name": "overlay-full-cold",
+      "seconds": 44.787,
+      "returncode": 0,
+      "size": 151252280,
+      "sha256": "9e830cc96cec05db510861025cde61fddc788d72cee40fbadc9cea5af5f6f726"
+    },
+    {
+      "name": "overlay-full-warm",
+      "seconds": 2.199,
+      "returncode": 0,
+      "size": 151252280,
+      "sha256": "72f3dda40bc96359d5f880438b588082bcce05548feb810684ce9c76ed61a421"
+    }
+  ],
+  "profiles": [
+    {
+      "boot_seconds": 1.734
+    },
+    {
+      "name": "inventory-narrow",
+      "seconds": 0.172,
+      "returncode": 0
+    },
+    {
+      "name": "proxy-controls",
+      "seconds": 0.167,
+      "returncode": 0
+    },
+    {
+      "name": "default-cold",
+      "seconds": 27.549,
+      "returncode": 2
+    },
+    {
+      "name": "default-warm",
+      "seconds": 0.768,
+      "returncode": 2
+    },
+    {
+      "name": "default-no-cache",
+      "seconds": 25.866,
+      "returncode": 2
+    },
+    {
+      "name": "documents-cold",
+      "seconds": 79.052,
+      "returncode": 2
+    },
+    {
+      "name": "full-cold",
+      "seconds": 102.554,
+      "returncode": 1
+    },
+    {
+      "name": "cache-profile",
+      "seconds": 4.987,
+      "returncode": 0
+    }
+  ],
+  "allowed": [
+    "api.github.com",
+    "auth.docker.io",
+    "cli.github.com",
+    "deb.debian.org",
+    "github.com",
+    "production.cloudfront.docker.com",
+    "registry-1.docker.io",
+    "registry.npmjs.org",
+    "release-assets.githubusercontent.com"
+  ],
+  "denied": [
+    "example.com"
+  ]
+}

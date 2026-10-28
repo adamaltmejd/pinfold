@@ -1,0 +1,50 @@
+{
+  "valid": {
+    "manifest": "sha256:74d897e251664ee57e05319581aa572414231fe1e40f02f809d6330c26a9e632",
+    "config": "sha256:e42de660966800f6aa71a7141b2bb7195726bb0636206b7d2380c6ff5c6db892",
+    "layers": 4,
+    "bytes": 1105941,
+    "labels": {
+      "example.phase": "6"
+    },
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "PHASE6_VALUE=preserved"
+    ]
+  },
+  "cases": [
+    {
+      "case": "truncated",
+      "refused": "truncated"
+    },
+    {
+      "case": "wrong-digest",
+      "refused": "content digest"
+    },
+    {
+      "case": "duplicate-frame",
+      "refused": "duplicate frame"
+    },
+    {
+      "case": "over-size",
+      "refused": "size bound"
+    },
+    {
+      "case": "path-kind",
+      "refused": "kind"
+    },
+    {
+      "case": "ownership-field",
+      "refused": "header fields"
+    },
+    {
+      "case": "trailing",
+      "refused": "trailing bytes"
+    },
+    {
+      "case": "missing-blobs",
+      "refused": "'index.json'"
+    }
+  ],
+  "prior_generation_unchanged": true
+}

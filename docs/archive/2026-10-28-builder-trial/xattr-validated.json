@@ -1,0 +1,1 @@
+{"manifest": "sha256:871f87c0b192a668ac95bfe54d8e13b1ab1091cd3eade32182688fddb6e2769b", "config": "sha256:20b64763f357220cbd485a898e5013ccb2697653634ea4aa6e2552293b064c35", "layers": 5, "bytes": 1106232, "labels": {"example.phase": "6"}, "env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "PHASE6_VALUE=preserved"]}
