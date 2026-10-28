@@ -166,7 +166,14 @@ int main(int argc, char **argv) {
         REQUIRE(ready >= 0);
         if (events[1].revents & POLLIN) break;
         if (!ready) { failure = ETIMEDOUT; break; }
-        REQUIRE(events[0].revents & POLLIN);
+        if (!(events[0].revents & POLLIN)) {
+            REQUIRE(events[0].revents & POLLHUP);
+            /* The filter's last user can exit before its pidfd is ready. */
+            if (listener >= 0) close(listener);
+            if (sockets[0] >= 0) close(sockets[0]);
+            listener = sockets[0] = -1;
+            continue;
+        }
         if (listener < 0) {
             listener = receive_listener(sockets[0]);
             REQUIRE(listener >= 0);
