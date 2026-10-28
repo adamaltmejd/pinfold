@@ -745,8 +745,8 @@ profile image.
   names an explicit platform. An unresolved platform is not pulled.
   The empty `scratch` base has no digest and is not pulled.
 
-On Linux a box boots its image as a read-only ext4 root disk: podman
-exports the image and `mkfs.ext4 -d` writes it, inside podman's user
+Firecracker preparation derives a read-only ext4 boot root from the image:
+podman exports the image and `mkfs.ext4 -d` writes it, inside podman's user
 namespace so files keep their image owners. The disk is made at the first
 `up` of an image id, at `~/.cache/pinfold/root/<id>.ext4`, and goes when
 the image goes.

@@ -427,7 +427,7 @@ pub fn remove_images(service: &dyn ImageService, source: &str) -> io::Result<Rem
 }
 
 /// Remove the root disks of images the runtime no longer lists, and the
-/// staging a killed [`crate::core::image::root_disk`] left. Every path that
+/// staging a killed Firecracker root conversion left. Every path that
 /// removes images ends here, so a root disk goes with its image.
 pub fn prune_root_disks(service: &dyn ImageService) -> io::Result<()> {
     let entries = dirs::entries(&dirs::root_disks_dir()?)?;

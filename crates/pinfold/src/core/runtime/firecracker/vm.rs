@@ -17,7 +17,8 @@ use crate::core::disk::{self, Fill, Seeding};
 use crate::core::image::{ImageService, podman};
 use crate::core::plan::Plan;
 use crate::core::runtime::output;
-use crate::core::{artifacts, image};
+use crate::core::{artifacts, clean};
+use crate::dirs;
 use crate::init::firecracker::{BOOT, BOOT_PORT, FAILED, READY, read_frame, write_frame};
 
 /// Exactly these: no secret ever reaches a kernel command line.
@@ -81,7 +82,7 @@ pub fn prepare(
         ));
     }
     cancelled()?;
-    let root_disk = image::root_disk(image_id)?;
+    let root_disk = root_disk(image_id)?;
     cancelled()?;
     let init_disk = state_dir.join("init.ext4");
     write_init_disk(&init_disk)?;
@@ -100,6 +101,72 @@ pub fn prepare(
         mounts,
         image_env: image_env(image_id)?,
     })
+}
+
+/// The read-only ext4 root disk a Linux box boots for image `id`, at
+/// `~/.cache/pinfold/root/<id>.ext4`, made at the image's first use. It goes
+/// when the image goes ([`clean::prune_root_disks`]).
+fn root_disk(id: &str) -> io::Result<PathBuf> {
+    let dir = dirs::root_disks_dir()?;
+    let disk = dir.join(format!("{id}.ext4"));
+    if disk.is_file() {
+        return Ok(disk);
+    }
+    let mkfs = super::preflight::mkfs_ext4()?;
+    fs::create_dir_all(&dir)?;
+    // One first use writes the disk; a concurrent one waits, then uses it.
+    let lock = fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(".lock"))?;
+    let _lock = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusive)
+        .map_err(|(_, error)| io::Error::from(error))?;
+    if disk.is_file() {
+        return Ok(disk);
+    }
+    let staging = dir.join(format!("{}{}", clean::ROOT_STAGING, std::process::id()));
+    let file = staging.join("disk");
+    // The container is never started; it only gives `export` the image's
+    // filesystem.
+    let container =
+        String::from_utf8_lossy(&output(&["podman", "create", "--pull=never", id, "true"])?)
+            .trim()
+            .to_string();
+    // Extraction, mkfs and removal of the tree run in podman's user
+    // namespace, so files keep their image owners and the host user can
+    // still remove what the namespace wrote. The image is never larger
+    // than its tree: allow 10% and 16 MiB for metadata, an inode per entry.
+    // The export goes to a file: in a pipe, a failed export could still
+    // leave tar a short archive to extract and cache.
+    const SCRIPT: &str = r#"set -eu
+trap 'rm -rf "$1/tree" "$1/export.tar"' EXIT
+rm -rf "$1/tree" "$1/export.tar" "$1/disk"
+mkdir -p "$1/tree"
+podman export -o "$1/export.tar" "$2"
+tar -xpf "$1/export.tar" -C "$1/tree"
+rm "$1/export.tar"
+kib=$(du -sk "$1/tree" | cut -f1)
+entries=$(find "$1/tree" -print0 | tr -dc '\0' | wc -c)
+"$3" -q -F -m 0 -O ^has_journal -N $((entries + 1024)) -d "$1/tree" \
+  "$1/disk" $((kib + kib / 10 + entries / 4 + 16384))k
+"#;
+    let staging_arg = staging.to_string_lossy();
+    let made = output(&[
+        "podman",
+        "unshare",
+        "sh",
+        "-c",
+        SCRIPT,
+        "sh",
+        &staging_arg,
+        &container,
+        &mkfs.to_string_lossy(),
+    ]);
+    let _ = output(&["podman", "rm", "--force", &container]);
+    let result = made.and_then(|_| fs::rename(&file, &disk));
+    clean::remove_root_staging(&staging);
+    result.map(|()| disk)
 }
 
 /// Write a read-only ext4 init disk at `disk` holding this executable as
