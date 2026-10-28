@@ -39,6 +39,9 @@ impl ImageService for Linux {
         catalog::remove(reference)
     }
     fn purge_build_cache(&self) -> io::Result<()> {
+        // Immutable output uses the catalog lock and image leases. A live
+        // builder prevents only removal of its separate writable cache.
+        catalog::collect_unreferenced()?;
         let Some(_idle) = ownership::try_name_lock(&cache_name()?)? else {
             return Ok(());
         };

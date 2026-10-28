@@ -213,7 +213,7 @@ fn doctor_reports_without_changing_state() {
 /// Landlock domain that handles only device ioctls and allows none.
 /// Opening the device still works; `KVM_GET_API_VERSION` gets EACCES.
 #[cfg(target_os = "linux")]
-fn ioctl_dev_denied(command: &mut std::process::Command) {
+pub(super) fn ioctl_dev_denied(command: &mut std::process::Command) {
     use nix::libc;
     use std::os::unix::process::CommandExt;
     #[repr(C)]

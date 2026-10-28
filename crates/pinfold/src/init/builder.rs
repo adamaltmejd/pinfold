@@ -438,7 +438,7 @@ fn build(job: &Job, log: Arc<Mutex<Tail>>) -> io::Result<()> {
         "cgroup-parent=/work/jobs",
     ]);
     if !job.cache {
-        build.args(["--opt", "no-cache"]);
+        build.arg("--no-cache");
     }
     if !job.convert {
         build.args(["--opt", "image-resolve-mode=pull"]);

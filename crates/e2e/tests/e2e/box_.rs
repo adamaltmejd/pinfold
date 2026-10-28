@@ -1480,6 +1480,7 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     let env = TestEnv::new("image-build");
     let other = cfg!(target_os = "macos").then(|| TestEnv::new("image-colors"));
     let base = default_image(&env);
+    crate::pi::selected_profile_freshness(&env, base);
 
     let name = format!("pinfold-e2e-{}", std::process::id());
     let repository = format!("localhost/pinfold/image-{name}");

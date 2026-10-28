@@ -2,7 +2,7 @@
 //! docs/ARCHITECTURE.md.
 //!
 //! They run on a macOS host with the Apple `container` CLI, or a Linux host
-//! with Firecracker and rootless podman for images. The harness isolates the XDG dirs, builds the
+//! with Firecracker and its isolated BuildKit jobs. The harness isolates the XDG dirs, builds the
 //! default profile image once, and drives `pinfold pi` as a user would. No
 //! model is needed: `pi --mode rpc` answers `get_state` while the box runs,
 //! and `pi --version` exits on its own.
@@ -670,6 +670,28 @@ fn the_launch_record_is_the_applied_policy() {
         Some(true),
         "the selected local image was reported not built: {report}"
     );
+    #[cfg(target_os = "linux")]
+    {
+        // Guarantee 18's present-store control. Sabotage: gate catalog reads
+        // on host preflight or an external runtime; this real ioctl refusal
+        // and empty PATH then hide the already-built selected image. Expected
+        // identity is the host inventory captured before removing those tools.
+        let catalog = env.cache.join("pinfold/images/catalog.json");
+        let before = fs::read(&catalog).unwrap();
+        let empty = test_dir(&env, "config-empty-path");
+        let mut command = pinfold_in(&env, project.as_path(), &["config"]);
+        command.env("PATH", &empty);
+        crate::cli::ioctl_dev_denied(&mut command);
+        let output = run_ok(&mut command);
+        let offline: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(offline["image_built"], true, "{offline}");
+        assert_eq!(offline["image"], selected_image, "{offline}");
+        assert_eq!(
+            fs::read(catalog).unwrap(),
+            before,
+            "config changed the existing catalog"
+        );
+    }
     assert_eq!(report["project"]["home"], "/home/pi", "{report}");
     let home_disk = report["project"]["disks"]["home"]
         .as_str()
@@ -1001,8 +1023,9 @@ fn a_caller_reads_the_effective_configuration_as_data() {
     //
     // Sabotage: propagate a missing runtime from config_report, treat it as
     // an absent image, or populate embedded profiles while loading metadata.
-    // The host's empty PATH makes image existence unknown; the project file
-    // still supplies its effective allowlist, and fresh host dirs stay empty.
+    // The empty Linux store positively establishes absence. Apple's empty
+    // PATH leaves its native image probe unavailable. The project file still
+    // supplies its effective allowlist, and fresh host dirs stay empty.
     let offline = TestEnv::with_private_cache("pi-config-offline");
     let project = test_dir(&offline, "project");
     fs::write(
@@ -1019,16 +1042,27 @@ fn a_caller_reads_the_effective_configuration_as_data() {
         report["egress"]["allow"],
         serde_json::json!(["api.github.com"])
     );
-    assert!(
-        report["image_built"].is_null(),
-        "unobserved image reported as missing: {report}"
-    );
-    assert!(
-        report["image_error"]
-            .as_str()
-            .is_some_and(|error| !error.is_empty()),
-        "missing image observation error: {report}"
-    );
+    if cfg!(target_os = "linux") {
+        assert_eq!(
+            report["image_built"], false,
+            "an empty store reported an image: {report}"
+        );
+        assert!(
+            report["image_error"].is_null(),
+            "empty local store is not a probe failure: {report}"
+        );
+    } else {
+        assert!(
+            report["image_built"].is_null(),
+            "unobserved image reported as missing: {report}"
+        );
+        assert!(
+            report["image_error"]
+                .as_str()
+                .is_some_and(|error| !error.is_empty()),
+            "missing image observation error: {report}"
+        );
+    }
 
     // Sabotage: map `full` to the shared CONFIG in `Profile::builtin`; config
     // then reports only the built-in defaults. The expected list is the
@@ -1188,7 +1222,15 @@ fn a_caller_reads_the_effective_configuration_as_data() {
             assert_eq!(report["image"], image, "{report}");
         }
         assert_eq!(report["containerfile"], serde_json::json!(containerfile));
-        assert!(report["image_built"].is_null(), "{report}");
+        assert_eq!(
+            report["image_built"],
+            if cfg!(target_os = "linux") {
+                serde_json::json!(false)
+            } else {
+                serde_json::Value::Null
+            },
+            "{report}"
+        );
         assert_eq!(owned_trees(), before, "config wrote pinfold files");
     }
 
@@ -1359,4 +1401,62 @@ fn pi_run_id(env: &TestEnv, name: &str) -> String {
                 .map(String::from)
         })
         .unwrap_or_else(|| panic!("no listed generation for {name}"))
+}
+
+/// The selected-profile case of guarantee 23, using real local builds.
+pub(super) fn selected_profile_freshness(env: &TestEnv, base: &str) {
+    let project = test_dir(env, "profile-freshness");
+    let root = project.as_path();
+    git(root, &["init", "-q"]);
+    let containerfile = root.join("Containerfile");
+    fs::write(
+        root.join(".pinfold.toml"),
+        format!(
+            "profile = \"e2e-freshness-{}\"\ncontainerfile = \"Containerfile\"\n",
+            std::process::id()
+        ),
+    )
+    .unwrap();
+    // The selected local profile is the project's freshness dependency on
+    // both hosts. Sabotage: omit that identity from project build labels,
+    // compare only recipe bytes, or compare the profile with its first FROM;
+    // doctor misses the unchanged project's changed selected profile. Rebuild
+    // the same project as the allowed counterpart; its warning must clear.
+    let selected_profile = &format!("e2e-freshness-{}", std::process::id());
+    let _profile_image = ImageCleanup {
+        repository: format!("localhost/pinfold/profile-{selected_profile}"),
+    };
+    let _project_image = ImageCleanup {
+        repository: format!("localhost/pinfold/project-{}", project_id(env, root)),
+    };
+    let profile_recipe = e2e::profile_containerfile(
+        env,
+        selected_profile,
+        &format!("FROM {base}\nENV PROFILE_PHASE=one\n"),
+    );
+    e2e::build_profile(env, selected_profile);
+    fs::write(
+        &containerfile,
+        format!("FROM localhost/pinfold/profile-{selected_profile}:latest\n"),
+    )
+    .unwrap();
+    allow(env, root);
+    run_ok(&mut pinfold_in(env, root, &["build"]));
+    fs::write(
+        &profile_recipe,
+        format!("FROM {base}\nENV PROFILE_PHASE=two\n"),
+    )
+    .unwrap();
+    e2e::build_profile(env, selected_profile);
+    let outdated = run_ok(&mut pinfold_in(env, root, &["doctor"]));
+    assert!(
+        String::from_utf8_lossy(&outdated.stderr).contains("image-outdated"),
+        "changed selected profile was missed: {outdated:?}"
+    );
+    run_ok(&mut pinfold_in(env, root, &["build"]));
+    let rebuilt = run_ok(&mut pinfold_in(env, root, &["doctor"]));
+    assert!(
+        !String::from_utf8_lossy(&rebuilt.stderr).contains("image-outdated"),
+        "rebuilt project remains outdated: {rebuilt:?}"
+    );
 }

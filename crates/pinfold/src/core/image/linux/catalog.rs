@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -29,6 +29,7 @@ const IN_TOTO: &str = "application/vnd.in-toto+json";
 const SLSA: &str = "https://slsa.dev/provenance/v1";
 const EMPTY_JSON: &str = "application/vnd.oci.empty.v1+json";
 const EMPTY_SHA: &str = "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
+const IMAGE_OWNER: &str = ".pinfold-image";
 
 fn check_cancel(cancel: Option<&AtomicBool>) -> io::Result<()> {
     if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
@@ -271,6 +272,21 @@ struct Index {
     manifests: Vec<Descriptor>,
     subject: Option<serde_json::Value>,
     artifact_type: Option<String>,
+}
+
+fn index_shape(index: &Index, manifests: usize) -> io::Result<()> {
+    if index.schema_version != 2
+        || index.media_type.as_deref() != Some(INDEX)
+        || index.manifests.len() != manifests
+        || index.subject.is_some()
+        || index.artifact_type.is_some()
+    {
+        return Err(invalid(format!(
+            "image-output: invalid OCI index; expected {manifests} descriptors, received {}",
+            index.manifests.len()
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -548,18 +564,28 @@ fn validate(
     }
     let index_bytes = fs::read(directory.join("index.json"))?;
     let mut json_bytes = index_bytes.len() as u64;
-    let index: Index = serde_json::from_slice(&index_bytes).map_err(invalid_json)?;
-    if index.schema_version != 2
-        || index
-            .media_type
-            .as_deref()
-            .is_some_and(|media| media != INDEX)
-        || index.manifests.len() != if admit_provenance { 2 } else { 1 }
-        || index.subject.is_some()
-        || index.artifact_type.is_some()
-    {
-        return Err(invalid("image-output: expected one runnable OCI image"));
-    }
+    let outer: Index = serde_json::from_slice(&index_bytes).map_err(invalid_json)?;
+    index_shape(&outer, 1)?;
+    let mut referenced = BTreeSet::new();
+    let mut envelope = BTreeSet::new();
+    let index = if admit_provenance {
+        // The pinned OCI exporter wraps ImageWriter's runnable+attestation
+        // index in one archive index descriptor. Accept exactly that level.
+        // v0.34.1 exporter/oci/export.go and containerd archive.WithManifest.
+        let exported = &outer.manifests[0];
+        if exported.media_type != INDEX || exported.platform.is_some() {
+            return Err(invalid(
+                "image-output: expected exported OCI index descriptor",
+            ));
+        }
+        descriptor(exported, objects, &mut envelope)?;
+        referenced.extend(envelope.iter().cloned());
+        let inner: Index = json_object(directory, exported, &mut json_bytes)?;
+        index_shape(&inner, 2)?;
+        inner
+    } else {
+        outer
+    };
     let mut runnables = index.manifests.iter().filter(|descriptor| {
         !descriptor
             .annotations
@@ -574,7 +600,6 @@ fn validate(
     {
         return Err(invalid("image-output: unsupported manifest media"));
     }
-    let mut referenced = BTreeSet::new();
     descriptor(runnable, objects, &mut referenced)?;
     let manifest: Manifest = json_object(directory, runnable, &mut json_bytes)?;
     if manifest.schema_version != 2
@@ -613,7 +638,7 @@ fn validate(
         digest_hex(diff_id)?;
         descriptor(layer, objects, &mut referenced)?;
     }
-    let retained = referenced.clone();
+    let retained: BTreeSet<_> = referenced.difference(&envelope).cloned().collect();
     let sources = if admit_provenance {
         let attachment = index
             .manifests
@@ -996,7 +1021,7 @@ pub fn publish(
         sources: verified.sources,
     };
     let target = image_dir(&verified.id)?;
-    directory(&target)?;
+    claim_image_directory(&target, &verified.id)?;
     let layout = target.join("oci");
     if !layout.exists() {
         // The receipt's layout contains only host-created fixed names.
@@ -1110,6 +1135,102 @@ pub fn remove(reference: &str) -> io::Result<()> {
     commit(&catalog, None)?;
     if last {
         crate::core::absent_ok(fs::remove_dir_all(image_dir(&id)?))?;
+    }
+    Ok(())
+}
+
+fn owner_bytes(id: &str) -> Vec<u8> {
+    format!("pinfold-image-v1\n{id}\n").into_bytes()
+}
+
+fn owned_image_directory(path: &Path, id: &str) -> io::Result<bool> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir()
+        || metadata.uid() != nix::unistd::getuid().as_raw()
+        || metadata.mode() & 0o7777 != 0o700
+    {
+        return Ok(false);
+    }
+    let marker = path.join(IMAGE_OWNER);
+    let expected = owner_bytes(id);
+    let metadata = match fs::symlink_metadata(&marker) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if !metadata.is_file()
+        || metadata.uid() != nix::unistd::getuid().as_raw()
+        || metadata.mode() & 0o7777 != 0o600
+        || metadata.len() != expected.len() as u64
+    {
+        return Ok(false);
+    }
+    let mut bytes = Vec::new();
+    File::options()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW)
+        .open(marker)?
+        .take(expected.len() as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    Ok(bytes == expected)
+}
+
+fn claim_image_directory(path: &Path, id: &str) -> io::Result<()> {
+    match fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {
+            // Write ownership before any OCI/root bytes. An interruption before
+            // this small marker completes leaves an unowned directory intact.
+            let mut marker = new_file(&path.join(IMAGE_OWNER))?;
+            marker.write_all(&owner_bytes(id))?;
+            marker.sync_all()?;
+            File::open(path)?.sync_all()?;
+            File::open(path.parent().expect("image directory has a parent"))?.sync_all()
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            if owned_image_directory(path, id)? {
+                Ok(())
+            } else {
+                Err(invalid(
+                    "image-store: output directory has no matching ownership marker",
+                ))
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Collect marked immutable output left before publication or after the last
+/// ref's removal. The catalog lock excludes publishers and new image leases.
+pub fn collect_unreferenced() -> io::Result<()> {
+    let directory = store()?;
+    match fs::symlink_metadata(&directory) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Err(invalid("image-store: invalid store directory")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    }
+    let _lock = catalog_lock()?;
+    let catalog = read_catalog()?;
+    let mut removed = false;
+    for entry in fs::read_dir(&directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let id = format!("sha256:{name}");
+        if digest_hex(&id).is_err()
+            || catalog.images.contains_key(&id)
+            || !owned_image_directory(&entry.path(), &id)?
+            || leased(&id)?
+        {
+            continue;
+        }
+        fs::remove_dir_all(entry.path())?;
+        removed = true;
+    }
+    if removed {
+        File::open(directory)?.sync_all()?;
     }
     Ok(())
 }
