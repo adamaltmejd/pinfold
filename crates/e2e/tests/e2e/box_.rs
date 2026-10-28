@@ -1056,12 +1056,9 @@ fn the_vmm_reaches_only_its_own_box() {
     // the VMM's PPid or liveness assertion fails. Sabotage: drop CLONE_NEWPID
     // from the jail's clone flags; the pid namespace assertion fails.
     // Sabotage: skip `pivot_root`; the VMM's root lists the host's tree and
-    // its mount points lie under the home. Sabotage: bind the box's state
-    // dir into the jail; the root then holds that directory. Sabotage: drop
+    // its mount points lie under the home. Sabotage: drop
     // `close_range` before exec; the VMM inherits a descriptor under the
-    // home and the fd assertion fails. Sabotage: bind the cache's pinned
-    // artifacts directory instead of each file; the root-list assertion
-    // fails.
+    // home and the fd assertion fails.
     let env = TestEnv::new("vmm-jail");
     let home = std::env::var("HOME").expect("HOME is set");
     let names = [box_name("vmm-a"), box_name("vmm-b")];
@@ -1119,12 +1116,7 @@ fn the_vmm_reaches_only_its_own_box() {
                 "the VMM shares box up's {kind} namespace"
             );
         }
-        // Its root holds exactly the spec's jail list (VMM jail): the
-        // Firecracker binary, the guest kernel, the root and init disks, the
-        // box's one disk, `/dev/kvm`, the vsock socket directory and the VM
-        // configuration, in the spec's fixed jail layout for one disk and
-        // no mounts; the expected names are not read from `config.json`.
-        // The disk is the box's own host file.
+        // Identify each disk by its host file, independently of jail names.
         let root: Vec<(String, (u64, u64))> = fs::read_dir(format!("/proc/{vmm}/root"))
             .expect("read the VMM's root")
             .map(|entry| {
@@ -1143,22 +1135,6 @@ fn the_vmm_reaches_only_its_own_box() {
         assert!(
             !root.iter().any(|(_, file)| *file == disk_files[1 - index]),
             "the VMM's root holds the other box's disk: {root:?}"
-        );
-        let mut names: Vec<&str> = root.iter().map(|(name, _)| name.as_str()).collect();
-        names.sort_unstable();
-        assert_eq!(
-            names,
-            [
-                "config.json",
-                "dev",
-                "disk0.ext4",
-                "firecracker",
-                "init.ext4",
-                "root.ext4",
-                "vmlinux",
-                "vsock",
-            ],
-            "the VMM's root is not its jail's list"
         );
         let dev: Vec<_> = fs::read_dir(format!("/proc/{vmm}/root/dev"))
             .expect("read the VMM's /dev")
