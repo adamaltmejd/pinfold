@@ -1,0 +1,1 @@
+{"component_fixture_only":true,"images":{"layer":{"digest":"sha256:5a3e7dbaba2f4a55af803724da1790152b1174d3808fa1e02374e7c17f4af229","ref":"127.0.0.1:46265/fixture/layer:latest"},"zero":{"digest":"sha256:23cdde30767e7c29b61249cac0a941c20d4a1acc1581d8e3a694d1b980b95abc","ref":"127.0.0.1:46265/fixture/zero:latest"}},"registry":"127.0.0.1:46265"}

@@ -1,0 +1,10 @@
+{
+  "ref": "refs/tags/v0.34.1",
+  "node_id": "MDM6UmVmOTI5NjkzNTI6cmVmcy90YWdzL3YwLjM0LjE=",
+  "url": "https://api.github.com/repos/moby/buildkit/git/refs/tags/v0.34.1",
+  "object": {
+    "sha": "401bf63d02833b70ef9393eb9702e2b5648dfaaf",
+    "type": "tag",
+    "url": "https://api.github.com/repos/moby/buildkit/git/tags/401bf63d02833b70ef9393eb9702e2b5648dfaaf"
+  }
+}

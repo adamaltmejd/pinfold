@@ -1,0 +1,24 @@
+{
+  "node_id": "TA_kwDOBYqZiNoAKDQwMWJmNjNkMDI4MzNiNzBlZjkzOTNlYjk3MDJlMmI1NjQ4ZGZhYWY",
+  "sha": "401bf63d02833b70ef9393eb9702e2b5648dfaaf",
+  "url": "https://api.github.com/repos/moby/buildkit/git/tags/401bf63d02833b70ef9393eb9702e2b5648dfaaf",
+  "tagger": {
+    "name": "Tonis Tiigi",
+    "email": "tonistiigi@gmail.com",
+    "date": "2026-10-20T21:05:13Z"
+  },
+  "object": {
+    "sha": "f5b59a1f2fb25a0cb7072c398cab9aed7835da4e",
+    "type": "commit",
+    "url": "https://api.github.com/repos/moby/buildkit/git/commits/f5b59a1f2fb25a0cb7072c398cab9aed7835da4e"
+  },
+  "tag": "v0.34.1",
+  "message": "v0.34.1\n-----BEGIN PGP SIGNATURE-----\n\niQGzBAABCAAdFiEEVxbwWSJT3TMaEhiGr6neX4q3rzkFAmrX14kACgkQr6neX4q3\nrzmvKAv9F2bqVdoAnxzu1dUCHlPS62ehOnkvHD02SSAzJRNfD1OXFqmhzW9Wm7Sz\nKfKkM9eem89gOEiKGmv384zz0Ygb6hfVwgmRX23CyNYxrBI3DPzgi1qGJiAh5mmg\nAothxfEuWFtXds2WXvthD6AInZQu/MzFwclf1faUWfAFrD5uJLBictBAwj8f3kHP\nR0pwnBup1+Gab9ulcZrnT/5CS1sgzMdHkzHLQeahn5CrcNKZ0zl9ZtoNfrNuISCE\nJYUYr6ebSjzKrat+fuV8bNBLtJo0JNIPygrtSocxOgbpl/qdG+/M86m2tm8w5MSt\nVw1AT+5GjQtwyBpM0C9+Otj2gqY3MqnY2C/uBdGw0HIxfN34uJ7EPsUaXkckHaEw\nkDf9ZB+65AelMzqb3irqJoy7/b7OvSgIJDtPicqRzBZe7ri5tp052BpI6V1BMl4/\nj8ZOwKpA1Gy+6SuTn1FYeSeYjl9dPeokQchj+Bd0rrzsebTrIgp1qZg9H8ck/O7M\nbiezXChg\n=ctDb\n-----END PGP SIGNATURE-----\n",
+  "verification": {
+    "verified": true,
+    "reason": "valid",
+    "signature": "-----BEGIN PGP SIGNATURE-----\n\niQGzBAABCAAdFiEEVxbwWSJT3TMaEhiGr6neX4q3rzkFAmrX14kACgkQr6neX4q3\nrzmvKAv9F2bqVdoAnxzu1dUCHlPS62ehOnkvHD02SSAzJRNfD1OXFqmhzW9Wm7Sz\nKfKkM9eem89gOEiKGmv384zz0Ygb6hfVwgmRX23CyNYxrBI3DPzgi1qGJiAh5mmg\nAothxfEuWFtXds2WXvthD6AInZQu/MzFwclf1faUWfAFrD5uJLBictBAwj8f3kHP\nR0pwnBup1+Gab9ulcZrnT/5CS1sgzMdHkzHLQeahn5CrcNKZ0zl9ZtoNfrNuISCE\nJYUYr6ebSjzKrat+fuV8bNBLtJo0JNIPygrtSocxOgbpl/qdG+/M86m2tm8w5MSt\nVw1AT+5GjQtwyBpM0C9+Otj2gqY3MqnY2C/uBdGw0HIxfN34uJ7EPsUaXkckHaEw\nkDf9ZB+65AelMzqb3irqJoy7/b7OvSgIJDtPicqRzBZe7ri5tp052BpI6V1BMl4/\nj8ZOwKpA1Gy+6SuTn1FYeSeYjl9dPeokQchj+Bd0rrzsebTrIgp1qZg9H8ck/O7M\nbiezXChg\n=ctDb\n-----END PGP SIGNATURE-----\n",
+    "payload": "object f5b59a1f2fb25a0cb7072c398cab9aed7835da4e\ntype commit\ntag v0.34.1\ntagger Tonis Tiigi <tonistiigi@gmail.com> 1792530313 -0700\n\nv0.34.1\n",
+    "verified_at": "2026-10-20T21:05:34Z"
+  }
+}

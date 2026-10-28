@@ -1,0 +1,117 @@
+result.json
+{
+  "def": {
+    "sha256:563c030b7b0460f772d932d7c55f1531d9f0deacfeac1ddc154d89e1622c2a46": {
+      "inputs": [
+        {
+          "digest": "sha256:811f87956f871585d62480eb7163e7b971e38e69aa318df03b8246be4dc30686"
+        }
+      ]
+    },
+    "sha256:811f87956f871585d62480eb7163e7b971e38e69aa318df03b8246be4dc30686": {
+      "exec": {
+        "meta": {
+          "args": [
+            "/bin/sh",
+            "-c",
+            "false"
+          ],
+          "env": [
+            "DISCOVERY_FIXTURE=zero",
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          ],
+          "cwd": "/",
+          "removeMountStubsRecursive": true
+        },
+        "mounts": [
+          {
+            "input": "-1",
+            "dest": "/"
+          }
+        ]
+      },
+      "platform": {
+        "Architecture": "amd64",
+        "OS": "linux"
+      },
+      "constraints": {}
+    }
+  },
+  "metadata": {
+    "sha256:563c030b7b0460f772d932d7c55f1531d9f0deacfeac1ddc154d89e1622c2a46": {
+      "caps": {
+        "constraints": true,
+        "meta.description": true,
+        "platform": true
+      }
+    },
+    "sha256:811f87956f871585d62480eb7163e7b971e38e69aa318df03b8246be4dc30686": {
+      "description": {
+        "com.docker.dockerfile.v1.command": "RUN false",
+        "llb.customname": "[1/2] ONBUILD RUN false"
+      },
+      "caps": {
+        "exec.meta.base": true,
+        "exec.meta.setsdefaultpath": true
+      }
+    }
+  },
+  "source": {
+    "locations": {
+      "sha256:811f87956f871585d62480eb7163e7b971e38e69aa318df03b8246be4dc30686": {
+        "locations": [
+          {
+            "ranges": [
+              {
+                "start": {
+                  "line": 1
+                },
+                "end": {
+                  "line": 1
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "infos": [
+      {
+        "filename": "Dockerfile",
+        "data": "RlJPTSAxMjcuMC4wLjE6NDYyNjUvZml4dHVyZS96ZXJvOmxhdGVzdAo=",
+        "definition": {
+          "def": [
+            "WgAaxQEKEmxvY2FsOi8vZG9ja2VyZmlsZRIUCgxsb2NhbC5kaWZmZXISBG5vbmUSSgoRbG9jYWwuZm9sbG93cGF0aHMSNVsiRG9ja2VyZmlsZSIsIkRvY2tlcmZpbGUuZG9ja2VyaWdub3JlIiwiZG9ja2VyZmlsZSJdEioKDWxvY2FsLnNlc3Npb24SGTB3dGc1ZzRuZHU5ejZ2cDMxazN1aWFvNjkSIQoTbG9jYWwuc2hhcmVka2V5aGludBIKZG9ja2VyZmlsZQ==",
+            "CkkKR3NoYTI1Njo1NDRiNTQ5ZjZlYjIzOTQ0Nzc3MjVhMjkzNzgwNWI3YjU2YWYxZmE4MGIwZGJiODhkOGUyYWUyNWQ0YjNlYmI3"
+          ],
+          "metadata": {
+            "sha256:544b549f6eb2394477725a2937805b7b56af1fa80b0dbb88d8e2ae25d4b3ebb7": {
+              "description": {
+                "llb.customname": "[internal] load build definition from Dockerfile"
+              },
+              "caps": {
+                "source.local": true,
+                "source.local.followpaths": true,
+                "source.local.sessionid": true,
+                "source.local.sharedkeyhint": true
+              }
+            },
+            "sha256:d427467100727ae4a2259f95a0d9f34fdfadc7f5de3e6866dd4fbb173f4e19a2": {
+              "caps": {
+                "constraints": true,
+                "meta.description": true,
+                "platform": true
+              }
+            }
+          },
+          "Source": {
+            "locations": {
+              "sha256:544b549f6eb2394477725a2937805b7b56af1fa80b0dbb88d8e2ae25d4b3ebb7": {}
+            }
+          }
+        },
+        "language": "Dockerfile"
+      }
+    ]
+  }
+}
