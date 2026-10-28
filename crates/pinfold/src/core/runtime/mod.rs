@@ -53,7 +53,7 @@ pub fn prepare(
 }
 
 /// Start the box. On Linux the boot carries the new disks' `fills` and the
-/// profile's `seeding`; Apple's caller copies them in after ready.
+/// profile's `seeding`; Apple applies them in [`Runtime::finish_start`].
 pub fn start(
     prepared: Prepared,
     plan: &Plan,
@@ -213,6 +213,18 @@ pub trait Runtime: Sync {
         Ok(state_dir.join("proxy.sock"))
     }
 
+    /// Complete backend initialization after init's ready protocol, then
+    /// return the box as inventory observes it. The caller publishes ready
+    /// and records disks filled only after this succeeds.
+    fn finish_start(
+        &self,
+        name: &str,
+        init: &Path,
+        proxy_socket: Option<&Path>,
+        fills: &[Fill],
+        seeding: Option<&Seeding>,
+    ) -> io::Result<BoxInfo>;
+
     /// Stop and remove the box of an owner that is gone.
     fn down(&self, name: &str) -> io::Result<()>;
 
@@ -253,6 +265,16 @@ pub trait Runtime: Sync {
 
     /// Create an empty disk of `bytes`.
     fn create_disk(&self, name: &str, bytes: u64) -> io::Result<()>;
+
+    /// Give newly created disks to the box user before attachment. The
+    /// caller holds their locks and the box's name and owns rollback.
+    fn own_disks(
+        &self,
+        names: &[&str],
+        plan: &Plan,
+        init: &Path,
+        generation: &str,
+    ) -> io::Result<()>;
 
     /// Remove a disk no box attaches.
     fn remove_disk(&self, name: &str) -> io::Result<()>;

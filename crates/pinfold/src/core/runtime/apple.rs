@@ -14,12 +14,14 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
+use crate::core::disk::{self, Fill, Seeding};
 use crate::core::image::service::inspect;
 use crate::core::image::{BuildRequest, ImageInfo, ImageService};
 use crate::core::plan::Plan;
 use crate::core::runtime::{
     BoxInfo, BoxStat, DiskInfo, MemoryStat, PidsStat, Runtime, output, parse_json, spawn_error,
 };
+use crate::core::{clean, ownership};
 use crate::dirs;
 use crate::init::BOX_ENV_PREFIX;
 
@@ -208,6 +210,31 @@ impl Runtime for Apple {
         super::require_version("container", version, [1, 6, 0])
     }
 
+    fn finish_start(
+        &self,
+        name: &str,
+        init: &Path,
+        proxy_socket: Option<&Path>,
+        fills: &[Fill],
+        seeding: Option<&Seeding>,
+    ) -> io::Result<BoxInfo> {
+        // Init can report ready before Apple records the box running.
+        // Wait even without egress, before the caller's first exec.
+        let actual = wait_until_running(name)?;
+        if proxy_socket.is_some() {
+            make_proxy_connectable(name)?;
+        }
+        for fill in fills {
+            copy_in(name, init, &fill.guest, false, |out| disk::send(fill, out))?;
+        }
+        if let Some(seeding) = seeding {
+            copy_in(name, init, &seeding.guest, true, |out| {
+                disk::send_seeds(&seeding.relative, &seeding.seeds, out)
+            })?;
+        }
+        Ok(actual)
+    }
+
     fn down(&self, name: &str) -> io::Result<()> {
         // Apple's forced removal races two process-output waiters (#83).
         // Kill through the existing monitor, then remove without forcing.
@@ -358,6 +385,84 @@ impl Runtime for Apple {
         command
     }
 
+    /// A transient helper owns only the new disks, under the caller's
+    /// name claim. It runs without network and with only CAP_CHOWN.
+    fn own_disks(
+        &self,
+        names: &[&str],
+        plan: &Plan,
+        init: &Path,
+        generation: &str,
+    ) -> io::Result<()> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        let name = &plan.name;
+        let image = plan.image.as_deref().expect("up resolved the image");
+        let labels = BTreeMap::from([
+            (
+                clean::OWNER_LABEL.to_string(),
+                plan.labels[clean::OWNER_LABEL].clone(),
+            ),
+            (
+                ownership::GENERATION_LABEL.to_string(),
+                generation.to_string(),
+            ),
+        ]);
+        let owner = format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid());
+        let mut command = std::process::Command::new("container");
+        command
+            .args(["run", "--progress", "none", "--network", "none"])
+            .args(["--read-only", "--cap-drop", "ALL", "--cap-add", "CAP_CHOWN"])
+            .args(["--name", name])
+            .args(["--user", "0:0", "--mount"])
+            .arg(init_mount(init));
+        for (key, value) in &labels {
+            command.arg("--label").arg(format!("{key}={value}"));
+        }
+        let mut setup: Vec<OsString> = vec!["init".into(), "setup".into()];
+        for (index, name) in names.iter().enumerate() {
+            let guest = format!("/pinfold-disk/{index}");
+            command.arg("--mount").arg(format!(
+                "type=volume,source={},target={guest}",
+                volume(name)?
+            ));
+            setup.extend(["--own".into(), owner.clone().into(), guest.into()]);
+        }
+        let result = command
+            .arg("--entrypoint")
+            .arg(init)
+            .arg(image)
+            .args(setup)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|error| spawn_error("container", error));
+        // The box reuses the helper's name, so the helper must be gone first.
+        // Apple reports a container `running` for a moment after `run` returns,
+        // and `rm` refuses it then; `run --rm` removes it just as late. `stop`
+        // returns once it has stopped, after which `rm` succeeds.
+        let stopped = output(&["container", "stop", name]);
+        let removed = output(&["container", "rm", name]);
+        let result = result?;
+        if !result.status.success() {
+            // Name a failed stop or removal too, so a leftover helper shows.
+            let leftover = match (&stopped, &removed) {
+                (Ok(_), Ok(_)) => String::new(),
+                _ => format!(
+                    "; removing helper {name}: {:?}, {:?}",
+                    stopped.err(),
+                    removed.err()
+                ),
+            };
+            return Err(io::Error::other(format!(
+                "give new disks to the box user: {}{leftover}",
+                String::from_utf8_lossy(&result.stderr).trim()
+            )));
+        }
+        stopped?;
+        removed.map(drop)
+    }
+
     fn describe(&self) -> &'static str {
         "Apple container (one VM per box)"
     }
@@ -372,7 +477,7 @@ impl Runtime for Apple {
 /// Wait, bounded, until `list` reports box `name` running. Apple records
 /// `.running` only after the box's first process starts, so `ready` can
 /// arrive first; an exec is refused in that gap.
-pub fn wait_until_running(name: &str) -> io::Result<BoxInfo> {
+fn wait_until_running(name: &str) -> io::Result<BoxInfo> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let state = Apple.list()?.into_iter().find(|box_| box_.id == name);
@@ -391,7 +496,7 @@ pub fn wait_until_running(name: &str) -> io::Result<BoxInfo> {
 
 /// Make the forwarded proxy socket in box `name` connectable by the box
 /// user: it arrives root-owned and mode 000. The one transient root exec.
-pub fn make_proxy_connectable(name: &str) -> io::Result<()> {
+fn make_proxy_connectable(name: &str) -> io::Result<()> {
     output(&[
         "container",
         "exec",
@@ -405,77 +510,10 @@ pub fn make_proxy_connectable(name: &str) -> io::Result<()> {
     .map(drop)
 }
 
-/// Give new volumes' roots, which arrive `0:0 755`, to the box user. A box's
-/// root exec cannot: the box drops every capability. So a transient
-/// container of the box's image runs init as root with only `CAP_CHOWN`
-/// and no network. It takes the box's name, still held by its claim, and
-/// its owner and generation labels, so `clean` sees a leftover as a dead
-/// box and removes it.
-pub fn own_disks(
-    names: &[&str],
-    image: &str,
-    init: &Path,
-    name: &str,
-    labels: &BTreeMap<String, String>,
-) -> io::Result<()> {
-    let owner = format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid());
-    let mut command = std::process::Command::new("container");
-    command
-        .args(["run", "--progress", "none", "--network", "none"])
-        .args(["--read-only", "--cap-drop", "ALL", "--cap-add", "CAP_CHOWN"])
-        .args(["--name", name])
-        .args(["--user", "0:0", "--mount"])
-        .arg(init_mount(init));
-    for (key, value) in labels {
-        command.arg("--label").arg(format!("{key}={value}"));
-    }
-    let mut setup: Vec<OsString> = vec!["init".into(), "setup".into()];
-    for (index, name) in names.iter().enumerate() {
-        let guest = format!("/pinfold-disk/{index}");
-        command.arg("--mount").arg(format!(
-            "type=volume,source={},target={guest}",
-            volume(name)?
-        ));
-        setup.extend(["--own".into(), owner.clone().into(), guest.into()]);
-    }
-    let result = command
-        .arg("--entrypoint")
-        .arg(init)
-        .arg(image)
-        .args(setup)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|error| spawn_error("container", error));
-    // The box reuses the helper's name, so the helper must be gone first.
-    // Apple reports a container `running` for a moment after `run` returns,
-    // and `rm` refuses it then; `run --rm` removes it just as late. `stop`
-    // returns once it has stopped, after which `rm` succeeds.
-    let stopped = output(&["container", "stop", name]);
-    let removed = output(&["container", "rm", name]);
-    let result = result?;
-    if !result.status.success() {
-        // Name a failed stop or removal too, so a leftover helper shows.
-        let leftover = match (&stopped, &removed) {
-            (Ok(_), Ok(_)) => String::new(),
-            _ => format!(
-                "; removing helper {name}: {:?}, {:?}",
-                stopped.err(),
-                removed.err()
-            ),
-        };
-        return Err(io::Error::other(format!(
-            "give new disks to the box user: {}{leftover}",
-            String::from_utf8_lossy(&result.stderr).trim()
-        )));
-    }
-    stopped?;
-    removed.map(drop)
-}
-
 /// Run `init receive GUEST` in box `name` as the box user with `stream`
 /// written to its stdin: a new disk's `from` copy, or with `missing`, the
 /// profile's seeds, each written only when absent.
-pub fn copy_in(
+fn copy_in(
     name: &str,
     init: &Path,
     guest: &Path,

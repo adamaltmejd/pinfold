@@ -18,8 +18,10 @@ use nix::unistd::Pid;
 pub use vm::{Prepared, Vm, prepare};
 
 use crate::core::artifacts::VMM;
+use crate::core::disk::{Fill, Seeding};
 use crate::core::image::podman;
 use crate::core::ownership;
+use crate::core::plan::Plan;
 use crate::core::runtime::{BoxInfo, BoxStat, DiskInfo, MemoryStat, PidsStat, Runtime, output};
 use crate::dirs;
 
@@ -54,6 +56,25 @@ impl Runtime for Firecracker {
 
     fn proxy_socket(&self, state_dir: &Path) -> io::Result<PathBuf> {
         Ok(Self::vsock_dir(state_dir)?.join("v.sock_3128"))
+    }
+
+    fn finish_start(
+        &self,
+        name: &str,
+        _init: &Path,
+        _proxy_socket: Option<&Path>,
+        _fills: &[Fill],
+        _seeding: Option<&Seeding>,
+    ) -> io::Result<BoxInfo> {
+        // The boot protocol already applied fills and seeds before ready.
+        self.list()?
+            .into_iter()
+            .find(|box_| box_.id == name)
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "the runtime does not list box {name:?} after ready"
+                ))
+            })
     }
 
     // The VMM ends with its owner's thread (PR_SET_PDEATHSIG), so an owner
@@ -184,6 +205,17 @@ impl Runtime for Firecracker {
             let _ = fs::remove_file(&path);
             return Err(error);
         }
+        Ok(())
+    }
+
+    // create_disk sets root_owner while formatting the image.
+    fn own_disks(
+        &self,
+        _names: &[&str],
+        _plan: &Plan,
+        _init: &Path,
+        _generation: &str,
+    ) -> io::Result<()> {
         Ok(())
     }
 

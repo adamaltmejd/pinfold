@@ -14,7 +14,7 @@ use crate::core::disk::Seeding;
 use crate::core::plan::{Disk, Env, Login, Mount, Plan, Route, valid_name};
 use crate::core::profile::{Profile, Seed};
 use crate::core::runs::{self, Terminal};
-use crate::core::runtime::{self, BoxInfo, Child, Prepared, apple, runtime};
+use crate::core::runtime::{self, BoxInfo, Child, Prepared, runtime};
 use crate::core::{artifacts, disk, login, ownership, proxy};
 use crate::dirs;
 
@@ -614,39 +614,13 @@ async fn start(
         _ = audit_failure(&mut progress.audit) => return Err(Stop::Failed(io::Error::other("audit-log: egress logging failed"))),
         ready = child.ready() => ready.map_err(Stop::NotReady)?,
     }
-    // Apple can forward init's ready before it records the box running.
-    // Wait even without egress, before the caller can issue its first exec.
-    let actual = if cfg!(target_os = "macos") {
-        let actual = apple::wait_until_running(&plan.name)?;
-        // Finish the one root exec, the new disks' copies and the seeds
-        // before ready reaches the caller.
-        if socket.is_some() {
-            apple::make_proxy_connectable(&plan.name)?;
-        }
-        for fill in &progress.claimed.fills {
-            apple::copy_in(&plan.name, init, &fill.guest, false, |out| {
-                disk::send(fill, out)
-            })?;
-        }
-        if let Some(seeding) = seeding {
-            apple::copy_in(&plan.name, init, &seeding.guest, true, |out| {
-                disk::send_seeds(&seeding.relative, &seeding.seeds, out)
-            })?;
-        }
-        actual
-    } else {
-        // `ready` reports the labels `list` will.
-        runtime
-            .list()?
-            .into_iter()
-            .find(|box_| box_.id == plan.name)
-            .ok_or_else(|| {
-                io::Error::other(format!(
-                    "the runtime does not list box {:?} after ready",
-                    plan.name
-                ))
-            })?
-    };
+    let actual = runtime.finish_start(
+        &plan.name,
+        init,
+        socket.as_deref(),
+        &progress.claimed.fills,
+        seeding,
+    )?;
     Ok((actual, egress_log))
 }
 
