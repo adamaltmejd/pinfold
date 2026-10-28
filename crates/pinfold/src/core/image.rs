@@ -206,9 +206,10 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
         ))
     })?;
     let images = service();
-    // A missing runtime binary shows first as a failed spawn; nothing ran.
+    // Linux's outer error is admission; running job errors are inner results.
+    // A missing Apple runtime binary shows first as a failed spawn.
     let failed = |error: io::Error| {
-        if error.kind() == io::ErrorKind::NotFound {
+        if cfg!(target_os = "linux") || error.kind() == io::ErrorKind::NotFound {
             ImageError::Refused(RefusalReason::Runtime, error.to_string())
         } else {
             ImageError::Failed(error.to_string())

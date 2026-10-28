@@ -117,6 +117,7 @@ impl InputBudget {
 }
 
 pub fn build(request: &BuildRequest) -> io::Result<Result<(), String>> {
+    crate::core::runtime::runtime().preflight()?;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
@@ -373,7 +374,6 @@ async fn run_transaction(
 
 fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<Prepared> {
     check_cancel(cancel)?;
-    crate::core::runtime::runtime().preflight()?;
     let root = artifacts::builder(Some(cancel))?;
     let vmm = artifacts::vmm(Some(cancel))?;
     let init = state.join("init.ext4");
