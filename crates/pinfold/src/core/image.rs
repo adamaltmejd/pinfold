@@ -11,8 +11,14 @@ use crate::core::r#box::RefusalReason;
 use crate::core::clean;
 use crate::core::plan;
 use crate::core::profile;
-use crate::core::runtime::{BuildRequest, Runtime, TARGET_ARCH, output, runtime};
+#[cfg(target_os = "linux")]
+pub mod podman;
+pub(crate) mod service;
+
+use crate::core::runtime::output;
 use crate::dirs;
+use service::TARGET_ARCH;
+pub use service::{BuildRequest, ImageInfo, ImageService, service};
 
 /// The Containerfile bytes a managed image was built from.
 pub const CONTAINERFILE_LABEL: &str = "dev.pinfold.containerfile-sha256";
@@ -61,7 +67,7 @@ pub struct Built {
 /// Build one source's image, tag it uniquely and move the stable ref to it,
 /// then run retention for the source's images. The inner `Err` is the
 /// build's output when the build ran and failed.
-pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, String>> {
+pub fn build(images: &dyn ImageService, build: Build) -> io::Result<Result<Built, String>> {
     // A new build's id, the `<build>` of its unique tag. It starts with the
     // build's nanoseconds since the epoch in hex, which retention orders
     // builds by. It is never a label, so a cached build of unchanged inputs
@@ -106,7 +112,7 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
     let reference = format!("{repository}:{id}");
     let tags = [latest.clone(), reference.clone()];
     let request = |context: &Path, containerfile: &Path, cache: bool| {
-        runtime.build(&BuildRequest {
+        images.build(&BuildRequest {
             context,
             containerfile,
             tags: &tags,
@@ -135,11 +141,11 @@ pub fn build(runtime: &dyn Runtime, build: Build) -> io::Result<Result<Built, St
     }
     // The second image is for rollback. A failure here is reported but never
     // fails the build that succeeded.
-    if let Err(error) = clean::keep_two_images(runtime, Some((build.label, build.source))) {
+    if let Err(error) = clean::keep_two_images(images, Some((build.label, build.source))) {
         eprintln!("pinfold: maintenance: {error}");
     }
     // A runtime that cannot answer does not fail a build that succeeded.
-    let id = runtime
+    let id = images
         .resolve_image(&reference)
         .ok()
         .and_then(Result::ok)
@@ -191,7 +197,7 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
             request.containerfile.display()
         ))
     })?;
-    let runtime = runtime();
+    let images = service();
     // A missing runtime binary shows first as a failed spawn; nothing ran.
     let failed = |error: io::Error| {
         if error.kind() == io::ErrorKind::NotFound {
@@ -201,11 +207,11 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
         }
     };
     let mut labels = request.labels;
-    if let Some(digest) = base_digest(runtime, &containerfile).map_err(failed)? {
+    if let Some(digest) = base_digest(images, &containerfile).map_err(failed)? {
         labels.insert(clean::BASE_LABEL.to_string(), digest);
     }
     build(
-        runtime,
+        images,
         Build {
             label: None,
             source: &request.name,
@@ -226,7 +232,7 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
 /// digest is read from local storage and nothing is pulled; any other base
 /// is pulled first, so a floating tag's digest is current. A `FROM` that
 /// names a variable or the empty `scratch` base has none.
-pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Option<String>> {
+pub fn base_digest(images: &dyn ImageService, containerfile: &[u8]) -> io::Result<Option<String>> {
     let Ok(text) = std::str::from_utf8(containerfile) else {
         return Ok(None);
     };
@@ -260,7 +266,7 @@ pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Op
             // pinfold build records [`clean::BASE_LABEL`], empty when its
             // own base did not resolve, so its presence marks the image; a
             // caller image's family labels are all empty.
-            if let Ok(image) = runtime.resolve_image(base)?
+            if let Ok(image) = images.resolve_image(base)?
                 && image.labels.contains_key(clean::BASE_LABEL)
             {
                 return Ok(image.digest);
@@ -270,13 +276,13 @@ pub fn base_digest(runtime: &dyn Runtime, containerfile: &[u8]) -> io::Result<Op
             let native = format!("linux/{TARGET_ARCH}");
             let platform =
                 platform.or_else(|| cfg!(target_os = "macos").then_some(native.as_str()));
-            let mut arguments = vec![runtime.program(), "image", "pull"];
+            let mut arguments = vec![images.program(), "image", "pull"];
             if let Some(platform) = platform {
                 arguments.extend(["--platform", platform]);
             }
             arguments.push(base);
             let _ = output(&arguments);
-            Ok(runtime
+            Ok(images
                 .resolve_image(base)?
                 .ok()
                 .and_then(|image| image.digest))

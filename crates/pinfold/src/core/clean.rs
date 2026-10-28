@@ -8,7 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nix::fcntl::Flock;
 
-use crate::core::runtime::{BoxInfo, ImageInfo, Runtime, output, runtime};
+use crate::core::image::{ImageInfo, ImageService, service};
+use crate::core::runtime::{BoxInfo, Runtime, output, runtime};
 use crate::core::{artifacts, ownership, runs};
 use crate::dirs;
 
@@ -62,7 +63,7 @@ fn maintain_due() -> io::Result<()> {
         "boxes",
         boxes(runtime).and_then(|boxes| prune_boxes(runtime, &boxes).map(|_| ())),
     );
-    report("images", keep_two_images(runtime, None));
+    report("images", keep_two_images(service(), None));
     report("sockets", prune_leftover_states(runtime));
     report(
         "artifacts",
@@ -259,11 +260,11 @@ pub fn path_bytes(path: &Path) -> u64 {
 /// after dead boxes are pruned: its box listing is retention's one in-use
 /// rule. A failing source is reported and the rest continue.
 pub fn keep_two_images(
-    runtime: &dyn Runtime,
+    service: &dyn ImageService,
     only: Option<(Option<&str>, &str)>,
 ) -> io::Result<()> {
-    let images = runtime.list_images()?;
-    let in_use = in_use_images(runtime)?;
+    let images = service.list_images()?;
+    let in_use = in_use_images(runtime())?;
     let mut references = reference_counts(&images);
     let mut sources: BTreeSet<(Option<&'static str>, String)> = BTreeSet::new();
     for image in &images {
@@ -281,12 +282,12 @@ pub fn keep_two_images(
             continue;
         }
         if let Err(error) =
-            keep_two_images_from(runtime, &images, &in_use, &mut references, label, &source)
+            keep_two_images_from(service, &images, &in_use, &mut references, label, &source)
         {
             eprintln!("pinfold: maintenance: images: {source}: {error}");
         }
     }
-    prune_root_disks(runtime)
+    prune_root_disks(service)
 }
 
 /// The ids of the images every listed box runs: the one in-use rule
@@ -345,7 +346,7 @@ fn reference_counts(images: &[ImageInfo]) -> BTreeMap<String, usize> {
 /// the image; the image's last tag stays, and is reported like a failed
 /// removal.
 fn keep_two_images_from(
-    runtime: &dyn Runtime,
+    service: &dyn ImageService,
     images: &[ImageInfo],
     in_use: &BTreeSet<String>,
     references: &mut BTreeMap<String, usize>,
@@ -370,7 +371,7 @@ fn keep_two_images_from(
             failures.push(format!("{reference}: in use"));
             continue;
         }
-        if let Err(error) = runtime.remove_image(&reference) {
+        if let Err(error) = service.remove_image(&reference) {
             // Every removal carries its reference in the runtime's error;
             // join them into the one line the caller prints.
             failures.push(error.to_string());
@@ -396,9 +397,9 @@ pub struct Removed {
 /// Retire a caller image name: remove its tags, except an image's last tag
 /// while a listed box uses it. Return the ids untagged and whose last tag
 /// stayed. Another name's tags on a shared image stay.
-pub fn remove_images(runtime: &dyn Runtime, source: &str) -> io::Result<Removed> {
-    let listing = runtime.list_images()?;
-    let in_use = in_use_images(runtime)?;
+pub fn remove_images(service: &dyn ImageService, source: &str) -> io::Result<Removed> {
+    let listing = service.list_images()?;
+    let in_use = in_use_images(runtime())?;
     // Every reference the store lists, so an image's last tag counts
     // another name's and another source's, not only this source's. Two
     // builds of unchanged inputs share one image, and two names one by tag.
@@ -411,12 +412,12 @@ pub fn remove_images(runtime: &dyn Runtime, source: &str) -> io::Result<Removed>
             kept.insert(image.id.clone());
             continue;
         }
-        runtime.remove_image(&image.reference)?;
+        service.remove_image(&image.reference)?;
         *count -= 1;
         untagged.insert(image.id.clone());
     }
     // The images are gone already; a failed prune is the next one's.
-    if let Err(error) = prune_root_disks(runtime) {
+    if let Err(error) = prune_root_disks(service) {
         eprintln!("pinfold: maintenance: root disks: {error}");
     }
     Ok(Removed {
@@ -428,12 +429,12 @@ pub fn remove_images(runtime: &dyn Runtime, source: &str) -> io::Result<Removed>
 /// Remove the root disks of images the runtime no longer lists, and the
 /// staging a killed [`crate::core::image::root_disk`] left. Every path that
 /// removes images ends here, so a root disk goes with its image.
-pub fn prune_root_disks(runtime: &dyn Runtime) -> io::Result<()> {
+pub fn prune_root_disks(service: &dyn ImageService) -> io::Result<()> {
     let entries = dirs::entries(&dirs::root_disks_dir()?)?;
     if entries.is_empty() {
         return Ok(());
     }
-    let ids: BTreeSet<String> = runtime
+    let ids: BTreeSet<String> = service
         .list_images()?
         .into_iter()
         .map(|image| image.id)

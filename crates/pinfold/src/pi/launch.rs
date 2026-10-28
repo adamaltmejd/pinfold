@@ -12,9 +12,10 @@ use crate::config::Config;
 use crate::core::r#box::{Box, RefusalReason, Shutdown, Signals, UpError};
 use crate::core::clean;
 use crate::core::crossing::CrossingError;
+use crate::core::image::{ImageInfo, service};
 use crate::core::plan::{Disk, Egress, Env, Plan};
 use crate::core::runs::{self, Terminal};
-use crate::core::runtime::{ImageInfo, runtime};
+use crate::core::runtime::runtime;
 use crate::core::{artifacts, crossing, disk, image, login, ownership, sha256_hex};
 use crate::pi::state::{self, canonical, project_id};
 use crate::trust;
@@ -318,7 +319,7 @@ pub(crate) fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
             config.profile.containerfile.as_slice(),
         ),
     };
-    let Ok(built) = runtime().resolve_image(image)? else {
+    let Ok(built) = service().resolve_image(image)? else {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("image {image} is missing; run `{build}`"),
@@ -330,7 +331,7 @@ pub(crate) fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
             .labels
             .get(clean::BASE_LABEL)
             .filter(|digest| !digest.is_empty());
-        let current = runtime().resolve_image(&base)?.ok();
+        let current = service().resolve_image(&base)?.ok();
         if let Some(profile) = &current {
             warn_containerfile(profile, &config.profile.containerfile, &profile_build);
         }

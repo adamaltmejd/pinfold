@@ -82,7 +82,9 @@ One runtime per OS, not configurable:
 
 Anything else is refused: podman or docker as a box runtime, Firecracker
 under its own jailer or outside pinfold's VMM jail. Nothing warns at run
-time; `doctor` reports the runtime. On Linux, rootless podman 6.1.4+ builds images.
+time; `doctor` reports the runtime. Image operations use Apple `container`
+on macOS and rootless podman 6.1.4+ on Linux, independently of the box
+execution interface. Common core owns image retention and in-use protection.
 
 Preflight refuses box startup on older, prerelease or unrecognized runtime
 versions. Inventory and cleanup remain available on older versions.

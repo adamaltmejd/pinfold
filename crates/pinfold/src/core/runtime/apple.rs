@@ -14,10 +14,11 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
+use crate::core::image::service::inspect;
+use crate::core::image::{BuildRequest, ImageInfo, ImageService};
 use crate::core::plan::Plan;
 use crate::core::runtime::{
-    BoxInfo, BoxStat, BuildRequest, DiskInfo, ImageInfo, MemoryStat, PidsStat, Runtime, inspect,
-    output, parse_json, spawn_error,
+    BoxInfo, BoxStat, DiskInfo, MemoryStat, PidsStat, Runtime, output, parse_json, spawn_error,
 };
 use crate::dirs;
 use crate::init::BOX_ENV_PREFIX;
@@ -274,73 +275,6 @@ impl Runtime for Apple {
             .collect())
     }
 
-    fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
-        let json = output(&["container", "image", "list", "--format", "json"])?;
-        let images: Vec<ListedImage> = parse_json("container image list", &json)?;
-        images.into_iter().map(image_info).collect()
-    }
-
-    fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageInfo, String>> {
-        // `image inspect` prints the same entries as `image list`.
-        match inspect::<ListedImage>("container", reference)? {
-            Ok(image) => image_info(image).map(Ok),
-            Err(stderr) => Ok(Err(stderr)),
-        }
-    }
-
-    fn remove_image(&self, reference: &str) -> io::Result<()> {
-        // `image delete` also collects the layers no image references.
-        output(&["container", "image", "delete", reference]).map(|_| ())
-    }
-
-    fn purge_build_cache(&self) -> io::Result<()> {
-        let Some(builder) = container("buildkit")? else {
-            return Ok(());
-        };
-        if builder.status.state != "running" {
-            // `builder start` may replace an existing instance when its
-            // defaults changed; start this instance without replacing it.
-            output(&["container", "start", "buildkit"])?;
-        }
-        // BuildKit holds active records while pruning. Deleting the shared
-        // builder instead interrupts builds in other processes (#75).
-        output(&[
-            "container",
-            "exec",
-            "buildkit",
-            "buildctl",
-            "prune",
-            "--all",
-        ])?;
-        // Pruning frees guest blocks; online trim returns them to the host
-        // without replacing the builder or stopping active builds (#86).
-        output(&["container", "clean", "buildkit"]).map(drop)
-    }
-
-    fn build_cache(&self) -> &'static str {
-        "the shared builder's backing storage (unused cache is pruned)"
-    }
-
-    fn build_cache_bytes(&self) -> io::Result<Option<u64>> {
-        let Some(builder) = container("buildkit")? else {
-            return Ok(Some(0));
-        };
-        // The exports mount records the runtime's actual app root, including
-        // a custom root. Count allocated blocks: rootfs.ext4 is sparse and
-        // BuildKit's logical cache size misses retained filesystem space (#74).
-        let exports = builder
-            .configuration
-            .mounts
-            .iter()
-            .find(|mount| mount.destination == "/var/lib/container-builder-shim/exports")
-            .map(|mount| Path::new(&mount.source))
-            .ok_or_else(|| io::Error::other("builder exports mount is missing"))?;
-        let root = exports
-            .parent()
-            .ok_or_else(|| io::Error::other("builder exports mount has no parent"))?;
-        allocated_bytes(&root.join("containers/buildkit")).map(Some)
-    }
-
     fn list_disks(&self) -> io::Result<Vec<DiskInfo>> {
         let json = output(&["container", "volume", "list", "--format", "json"])?;
         let volumes: Vec<ListedVolume> = parse_json("container volume list", &json)?;
@@ -374,11 +308,6 @@ impl Runtime for Apple {
     /// the runtime's.
     fn sync_disk(&self, _name: &str) -> io::Result<()> {
         Ok(())
-    }
-
-    fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
-        let cache_flags: &[&str] = if request.cache { &[] } else { &["--no-cache"] };
-        super::build("container", cache_flags, request)
     }
 
     fn exec(
@@ -427,10 +356,6 @@ impl Runtime for Apple {
             .args(["init", "exec", "--"])
             .args(argv);
         command
-    }
-
-    fn program(&self) -> &'static str {
-        "container"
     }
 
     fn describe(&self) -> &'static str {
@@ -727,4 +652,82 @@ fn image_info(image: ListedImage) -> io::Result<ImageInfo> {
         labels,
         digest,
     })
+}
+
+impl ImageService for Apple {
+    fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
+        let json = output(&["container", "image", "list", "--format", "json"])?;
+        let images: Vec<ListedImage> = parse_json("container image list", &json)?;
+        images.into_iter().map(image_info).collect()
+    }
+
+    fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageInfo, String>> {
+        // `image inspect` prints the same entries as `image list`.
+        match inspect::<ListedImage>("container", reference)? {
+            Ok(image) => image_info(image).map(Ok),
+            Err(stderr) => Ok(Err(stderr)),
+        }
+    }
+
+    fn remove_image(&self, reference: &str) -> io::Result<()> {
+        // `image delete` also collects the layers no image references.
+        output(&["container", "image", "delete", reference]).map(|_| ())
+    }
+
+    fn purge_build_cache(&self) -> io::Result<()> {
+        let Some(builder) = container("buildkit")? else {
+            return Ok(());
+        };
+        if builder.status.state != "running" {
+            // `builder start` may replace an existing instance when its
+            // defaults changed; start this instance without replacing it.
+            output(&["container", "start", "buildkit"])?;
+        }
+        // BuildKit holds active records while pruning. Deleting the shared
+        // builder instead interrupts builds in other processes (#75).
+        output(&[
+            "container",
+            "exec",
+            "buildkit",
+            "buildctl",
+            "prune",
+            "--all",
+        ])?;
+        // Pruning frees guest blocks; online trim returns them to the host
+        // without replacing the builder or stopping active builds (#86).
+        output(&["container", "clean", "buildkit"]).map(drop)
+    }
+
+    fn build_cache(&self) -> &'static str {
+        "the shared builder's backing storage (unused cache is pruned)"
+    }
+
+    fn build_cache_bytes(&self) -> io::Result<Option<u64>> {
+        let Some(builder) = container("buildkit")? else {
+            return Ok(Some(0));
+        };
+        // The exports mount records the runtime's actual app root, including
+        // a custom root. Count allocated blocks: rootfs.ext4 is sparse and
+        // BuildKit's logical cache size misses retained filesystem space (#74).
+        let exports = builder
+            .configuration
+            .mounts
+            .iter()
+            .find(|mount| mount.destination == "/var/lib/container-builder-shim/exports")
+            .map(|mount| Path::new(&mount.source))
+            .ok_or_else(|| io::Error::other("builder exports mount is missing"))?;
+        let root = exports
+            .parent()
+            .ok_or_else(|| io::Error::other("builder exports mount has no parent"))?;
+        allocated_bytes(&root.join("containers/buildkit")).map(Some)
+    }
+
+    fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
+        let cache_flags: &[&str] = if request.cache { &[] } else { &["--no-cache"] };
+        crate::core::image::service::build("container", cache_flags, request)
+    }
+
+    fn program(&self) -> &'static str {
+        "container"
+    }
 }

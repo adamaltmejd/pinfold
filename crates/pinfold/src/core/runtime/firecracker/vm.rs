@@ -14,8 +14,9 @@ use tokio::net::UnixListener;
 use super::vsock::{self, put};
 use super::{Firecracker, jail};
 use crate::core::disk::{self, Fill, Seeding};
+use crate::core::image::{ImageService, podman};
 use crate::core::plan::Plan;
-use crate::core::runtime::{output, podman};
+use crate::core::runtime::output;
 use crate::core::{artifacts, image};
 use crate::init::firecracker::{BOOT, BOOT_PORT, FAILED, READY, read_frame, write_frame};
 
@@ -71,7 +72,10 @@ pub fn prepare(
         .image
         .as_deref()
         .expect("box up resolves the profile's image before the runtime runs");
-    if !podman::resolve_image(reference)?.is_ok_and(|image| image.id == image_id) {
+    if !podman::Podman
+        .resolve_image(reference)?
+        .is_ok_and(|image| image.id == image_id)
+    {
         return Err(io::Error::other(
             "image-changed: box started a different image",
         ));
