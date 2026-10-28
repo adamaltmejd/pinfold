@@ -144,25 +144,29 @@ impl Drop for TestEnv {
     }
 }
 
-/// The image CLI this host uses: `podman` on Linux, Apple `container` on
-/// macOS.
+/// Apple's native image and container CLI.
 pub fn image_cli() -> &'static str {
-    if cfg!(target_os = "linux") {
-        "podman"
-    } else {
-        "container"
-    }
+    "container"
 }
 
-/// One runtime image, normalized across podman and Apple `container`.
+/// One image, observed in Apple's runtime or Linux's persisted catalog.
 pub struct RuntimeImage {
     pub id: String,
     pub names: Vec<String>,
     pub labels: BTreeMap<String, String>,
 }
 
-/// Every image the runtime knows, from its own image list.
+fn suite_cache() -> PathBuf {
+    fs::canonicalize(std::env::temp_dir())
+        .expect("canonicalize the temp dir")
+        .join("pinfold-e2e-cache")
+}
+
+/// Every image from the native runtime or the actual Linux store on the host.
 pub fn runtime_images() -> Result<Vec<RuntimeImage>, String> {
+    if cfg!(target_os = "linux") {
+        return catalog_images(&suite_cache());
+    }
     let output = Command::new(image_cli())
         .args(["image", "list", "--format", "json"])
         .output()
@@ -179,20 +183,42 @@ pub fn runtime_images() -> Result<Vec<RuntimeImage>, String> {
     Ok(images.iter().map(normalize_image).collect())
 }
 
+fn catalog_images(cache: &Path) -> Result<Vec<RuntimeImage>, String> {
+    let path = cache.join("pinfold/images/catalog.json");
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
+    };
+    let catalog: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
+    let references = catalog["references"]
+        .as_object()
+        .ok_or("the image catalog has no references")?;
+    catalog["images"]
+        .as_object()
+        .ok_or("the image catalog has no images")?
+        .iter()
+        .map(|(id, image)| {
+            Ok(RuntimeImage {
+                id: id.clone(),
+                names: references
+                    .iter()
+                    .filter(|(_, target)| target.as_str() == Some(id.as_str()))
+                    .map(|(name, _)| name.clone())
+                    .collect(),
+                labels: serde_json::from_value(image["labels"].clone())
+                    .map_err(|error| format!("image labels: {error}"))?,
+            })
+        })
+        .collect()
+}
+
 /// One image list entry, whatever the runtime's schema.
 fn normalize_image(image: &serde_json::Value) -> RuntimeImage {
-    // podman: `Id`, `Names` and `Labels`, the last two null when empty.
     let labels = |value: &serde_json::Value| -> BTreeMap<String, String> {
         serde_json::from_value(value.clone()).unwrap_or_default()
     };
-    if let Some(id) = image["Id"].as_str() {
-        return RuntimeImage {
-            id: id.to_string(),
-            names: serde_json::from_value::<Vec<String>>(image["Names"].clone())
-                .unwrap_or_default(),
-            labels: labels(&image["Labels"]),
-        };
-    }
     // Apple `container`: build labels are OCI image config labels; a locally
     // built image also carries name annotations on its index descriptor.
     let mut all = labels(&image["configuration"]["descriptor"]["annotations"]);
@@ -227,8 +253,7 @@ pub fn tagged_images(repository: &str) -> Vec<String> {
     })
 }
 
-/// Whether the reference `name` is a tag of `repository`. Podman may list
-/// a short name under `localhost/`.
+/// Whether the reference `name` is a tag of `repository`.
 fn is_tagged_in(name: &str, repository: &str) -> bool {
     name.contains(&format!("{repository}:"))
 }
@@ -246,10 +271,8 @@ pub fn image_ids(keep: impl Fn(&RuntimeImage) -> bool) -> Vec<String> {
     ids
 }
 
-/// Removes every image tagged `<repository>:<tag>` from the runtime store on
-/// drop, so a failing run does not leave them for the next run to count or
-/// for the operator's disk. Every build tags its image so, and the tag
-/// remains even when a label sabotage drops the source label.
+/// Best-effort public removal on drop. Linux can retire caller names only;
+/// its managed families remain subject to normal retention.
 pub struct ImageCleanup {
     pub repository: String,
 }
@@ -257,6 +280,15 @@ pub struct ImageCleanup {
 impl Drop for ImageCleanup {
     fn drop(&mut self) {
         // Best effort: a Drop during unwinding must not panic.
+        if cfg!(target_os = "linux") {
+            if let Some(name) = self.repository.strip_prefix("localhost/pinfold/image-") {
+                let env = TestEnv::new("image-cleanup");
+                let _ = env.command(pinfold()).args(["image", "rm", name]).output();
+            }
+            // Managed families have no public removal command. Ordinary
+            // retention owns those images; tests do not edit their catalog.
+            return;
+        }
         for image in runtime_images().unwrap_or_default() {
             for reference in image.names {
                 if is_tagged_in(&reference, &self.repository) {
@@ -272,7 +304,41 @@ impl Drop for ImageCleanup {
 /// Build the candidate's default profile once for this suite.
 pub fn default_image(env: &TestEnv) -> &'static str {
     static IMAGE: OnceLock<()> = OnceLock::new();
+    static LINUX: OnceLock<Mutex<std::collections::BTreeSet<PathBuf>>> = OnceLock::new();
     const STABLE: &str = "localhost/pinfold/profile-default:latest";
+    if cfg!(target_os = "linux") {
+        let mut built = LINUX.get_or_init(Mutex::default).lock().unwrap();
+        if !built.contains(&env.cache) {
+            // A private image store needs a real build too. Populate only the
+            // documented offline archive cache; the binary checks its pin.
+            if env.cache != suite_cache() {
+                let source = suite_cache().join("pinfold/artifacts/builder");
+                for version in fs::read_dir(&source).expect("suite builder archive cache") {
+                    let version = version.unwrap();
+                    for artifact in fs::read_dir(version.path()).unwrap() {
+                        let artifact = artifact.unwrap();
+                        if artifact.file_type().unwrap().is_file()
+                            && artifact
+                                .path()
+                                .extension()
+                                .is_some_and(|suffix| suffix == "gz")
+                        {
+                            let target = env
+                                .cache
+                                .join("pinfold/artifacts/builder")
+                                .join(version.file_name())
+                                .join(artifact.file_name());
+                            fs::create_dir_all(target.parent().unwrap()).unwrap();
+                            fs::copy(artifact.path(), target).unwrap();
+                        }
+                    }
+                }
+            }
+            build_profile(env, "default");
+            built.insert(env.cache.clone());
+        }
+        return STABLE;
+    }
     IMAGE.get_or_init(|| {
         build_profile(env, "default");
     });

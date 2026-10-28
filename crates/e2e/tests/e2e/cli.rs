@@ -17,7 +17,7 @@ fn doctor_reports_without_changing_state() {
     // Guarantee 27. Sabotage: run maintenance before doctor; the fresh
     // state directory gains a maintenance stamp and the old artifact goes.
     // Sabotage: omit host_requirements after a failed preflight; the Linux
-    // refusal no longer names the missing runtime directory. Drop the
+    // refusal no longer names the missing host capability. Drop the
     // ioctl from the kvm check; the device the Landlock domain leaves
     // unusable loses its `kvm` line. Check membership of the kvm group
     // instead of access; CI's user is outside it, its 0666 device is
@@ -34,8 +34,7 @@ fn doctor_reports_without_changing_state() {
     // fails. Sabotage: in main.rs, answer `--help` after the daily pass
     // instead of before it; `box list --help` then writes the maintenance
     // state first, and its unchanged-tree assertion fails. Expected trees are the host's own pre-inspection snapshot.
-    // Podman's image lookup may create its own short-name alias lock outside
-    // these owned trees. Missing directories differ from empty directories.
+    // Missing directories differ from empty directories.
     let env = TestEnv::with_private_cache("doctor");
     fs::write(env.root.join(".pinfold.toml"), "memory = \"1G\"\n").unwrap();
     let old = env.root.join("cache/pinfold/artifacts/pi/0.0.0/marker");
@@ -62,7 +61,6 @@ fn doctor_reports_without_changing_state() {
     let before = owned_trees();
     let empty = env.root.join("empty-path");
     fs::create_dir(&empty).unwrap();
-    let missing = env.root.join("missing-runtime");
 
     // An executable outside the AppArmor profile's path. CI profiles only
     // the built binary.
@@ -82,17 +80,10 @@ fn doctor_reports_without_changing_state() {
         "kernel.apparmor_restrict_unprivileged_userns is not 1 on this host"
     );
 
-    // The real Podman also fails before reporting its host settings when
-    // XDG_RUNTIME_DIR is absent, so every scenario but `ready` lists the
-    // host requirements. All reports leave the same fixtures alone.
-    for scenario in [
-        "ready",
-        "no-runtime",
-        "missing-runtime-dir",
-        "no-kvm",
-        "unprofiled",
-    ] {
-        let linux_only = matches!(scenario, "missing-runtime-dir" | "no-kvm" | "unprofiled");
+    // PATH-empty also exercises Linux's native catalog inspection: no
+    // external image runtime or installed builder is needed to read it.
+    for scenario in ["ready", "no-runtime", "no-kvm", "unprofiled"] {
+        let linux_only = matches!(scenario, "no-kvm" | "unprofiled");
         if linux_only && !cfg!(target_os = "linux") {
             continue;
         }
@@ -106,9 +97,6 @@ fn doctor_reports_without_changing_state() {
             ioctl_dev_denied(&mut command);
         }
         command.arg("doctor").current_dir(&env.root);
-        if scenario != "ready" {
-            command.env("XDG_RUNTIME_DIR", &missing);
-        }
         if scenario == "no-runtime" {
             command.env("PATH", &empty);
         }
@@ -132,20 +120,12 @@ fn doctor_reports_without_changing_state() {
         );
         if scenario != "ready" && cfg!(target_os = "linux") {
             let report = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                report.contains("runtime-dir") && report.contains(missing.to_str().unwrap()),
-                "doctor did not identify the missing runtime directory: {report}"
-            );
             let tokens: Vec<&str> = report
                 .lines()
                 .filter_map(|line| line.trim_start().split_once(':').map(|(token, _)| token))
                 .collect();
             let has = |token: &str| tokens.contains(&token);
             match scenario {
-                "missing-runtime-dir" => assert!(
-                    !has("kvm") && !has("userns") && !has("userns-apparmor"),
-                    "the profiled binary on a usable host reported a jail requirement: {report}"
-                ),
                 "no-kvm" => assert!(
                     has("kvm"),
                     "doctor did not identify the unusable /dev/kvm: {report}"

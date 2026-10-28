@@ -6,14 +6,18 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(target_os = "macos")]
+use std::process::Stdio;
 use std::time::{Duration, SystemTime};
 
+#[cfg(target_os = "macos")]
+use e2e::image_cli;
 use e2e::{
     HttpFixture, ImageCleanup, TestEnv, assert_denied, assert_ok, box_exec, box_list,
-    build_profile, curl, default_image, exit_code, git, image_cli, image_id, image_ids, inspect,
-    json_lines, pinfold, profile_containerfile, project_id, project_state_dir, run_dir, run_ok,
-    tagged_images, test_dir,
+    build_profile, curl, default_image, exit_code, git, image_id, image_ids, inspect, json_lines,
+    pinfold, profile_containerfile, project_id, project_state_dir, run_dir, run_ok, tagged_images,
+    test_dir,
 };
 
 #[cfg(target_os = "macos")]
@@ -67,9 +71,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // `remove_images`; the image of the name extending the retired one goes
     // and its survival assertion fails. Sabotage: make `--dry-run` run the
     // real clean; the other project's state goes and the dry-run assertion
-    // fails. Sabotage: on Linux, keep podman's repeated `Names` in
-    // `list_images`; the second removal of the newest image's tag is
-    // `image not known` and the one-line assertion fails.
+    // fails.
     // Sabotage: drop the `pinfold_box` check from `clean::boxes`; on Apple
     // the user's container, which has no owner label, is removed as a dead
     // box and its survival assertion fails. Linux lists only pinfold's own
@@ -136,6 +138,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // image carries only the labels given here. No profile build's `ENV`
     // step is in it for the runtime's cache to return.
     fs::write(&containerfile, "FROM scratch\n").unwrap();
+    #[cfg(target_os = "macos")]
     let runtime_build = |tags: &[&str], labels: &[&str]| {
         let mut command = Command::new(image_cli());
         // Match pinfold's builder configuration; fixture builds must not
@@ -159,12 +162,16 @@ fn cleanup_removes_only_pinfolds_garbage() {
 
     // An unlabeled image: no `dev.pinfold` label, so `clean` must leave it.
     // Its tag shares the profile prefix, so the guard above deletes it.
-    let unlabeled = format!("localhost/pinfold/profile-{profile}:unlabeled");
-    runtime_build(&[&unlabeled], &[]);
-    assert!(
-        image_id(&unlabeled).is_some(),
-        "the unlabeled image is missing before clean"
-    );
+    #[cfg(target_os = "macos")]
+    let unlabeled = {
+        let reference = format!("localhost/pinfold/profile-{profile}:unlabeled");
+        runtime_build(&[&reference], &[]);
+        assert!(
+            image_id(&reference).is_some(),
+            "the unlabeled image is missing before clean"
+        );
+        reference
+    };
 
     // A project's state: a refused `pinfold pi` creates it before it names
     // the missing image. The profile is never built, so this part downloads
@@ -203,12 +210,30 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // comes from its image, as a real project image carries it.
     let live_label = format!("dev.pinfold.project={live_id}");
     let live = box_name("cleanup-live");
-    let live_repository = format!("e2e-cleanup-live-{}", std::process::id());
+    #[cfg(target_os = "linux")]
+    let build_project = |project: &Path| {
+        fs::write(project.join("Containerfile"), "FROM scratch\n").unwrap();
+        fs::write(
+            project.join(".pinfold.toml"),
+            format!("profile = \"{missing}\"\ncontainerfile = \"Containerfile\"\n"),
+        )
+        .unwrap();
+        e2e::allow(&env, project);
+        run_ok(env.command(pinfold()).arg("build").current_dir(project));
+    };
+    let live_repository = if cfg!(target_os = "linux") {
+        format!("localhost/pinfold/project-{live_id}")
+    } else {
+        format!("e2e-cleanup-live-{}", std::process::id())
+    };
     let _live_images = ImageCleanup {
         repository: live_repository.clone(),
     };
     let live_ref = format!("{live_repository}:latest");
+    #[cfg(target_os = "macos")]
     runtime_build(&[&live_ref], &[&live_label]);
+    #[cfg(target_os = "linux")]
+    build_project(&live_project);
     let live_disk = format!("pi-{live_id}-home");
     let other_disk = format!("pi-{other_id}-home");
     // The live box attaches its project's home disk.
@@ -221,12 +246,19 @@ fn cleanup_removes_only_pinfolds_garbage() {
 
     let dead_label = "dev.example.test=e2e-cleanup-dead";
     let dead = box_name("cleanup-dead");
-    let dead_repository = format!("e2e-cleanup-dead-{}", std::process::id());
+    let dead_repository = if cfg!(target_os = "linux") {
+        format!("localhost/pinfold/project-{other_id}")
+    } else {
+        format!("e2e-cleanup-dead-{}", std::process::id())
+    };
     let _dead_images = ImageCleanup {
         repository: dead_repository.clone(),
     };
     let dead_ref = format!("{dead_repository}:latest");
+    #[cfg(target_os = "macos")]
     runtime_build(&[&dead_ref], &[&format!("dev.pinfold.project={other_id}")]);
+    #[cfg(target_os = "linux")]
+    build_project(&other_project);
     let dead_spec = serde_json::json!({
         "name": dead,
         "image": dead_ref,
@@ -285,6 +317,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
 
     // The real clean removes the dead box and only the dead box.
     run_ok(env.command(pinfold()).args(["clean"]));
+    #[cfg(target_os = "macos")]
     assert!(
         image_id(&unlabeled).is_some(),
         "clean removed an unlabeled image"
@@ -491,13 +524,25 @@ fn cleanup_removes_only_pinfolds_garbage() {
     );
     // A Linux box boots its image's root disk. The retire box's image just
     // lost every tag but the one its use holds; its root disk stays.
-    // Sabotage: drop the listed-image check from `prune_root_disks`; the
-    // disk goes with the first `image rm`.
+    // Sabotage: remove a completed representation while its manifest lease
+    // is held; the observed backing file goes with the first `image rm`.
     #[cfg(target_os = "linux")]
-    let root_disk = |id: &str| env.cache.join(format!("pinfold/root/{id}.ext4"));
+    let root_disk = fs::read_dir(
+        env.cache
+            .join("pinfold/images")
+            .join(retire_ids[0].strip_prefix("sha256:").unwrap()),
+    )
+    .unwrap()
+    .map(Result::unwrap)
+    .map(|entry| entry.path())
+    .find(|path| {
+        path.extension()
+            .is_some_and(|extension| extension == "ext4")
+    })
+    .expect("the live image has a completed backing file");
     #[cfg(target_os = "linux")]
     assert!(
-        root_disk(&retire_ids[0]).is_file(),
+        root_disk.is_file(),
         "image rm removed the root disk of the live box's image"
     );
     assert!(
@@ -533,10 +578,11 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "the second image rm left a tag of the retired name"
     );
     // With its box down, the image goes and its root disk with it.
-    // Sabotage: drop `prune_root_disks` from `image rm`; the disk remains.
+    // Sabotage: skip completed-root deletion when its last reference goes;
+    // the observed backing file remains after the owner is down.
     #[cfg(target_os = "linux")]
     assert!(
-        !root_disk(&retire_ids[0]).exists(),
+        !root_disk.exists(),
         "the removed image's root disk survived image rm"
     );
     up_twin.down(&env);

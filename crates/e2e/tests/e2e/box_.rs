@@ -1,7 +1,7 @@
 //! End-to-end tests for the guarantees in docs/ARCHITECTURE.md.
 //!
 //! They run on a macOS host with the Apple `container` CLI, or a Linux host
-//! with Firecracker and rootless podman for images. The harness builds the `pinfold` binary, builds the
+//! with Firecracker and its isolated BuildKit jobs. The harness builds the `pinfold` binary, builds the
 //! default profile image once, and drives pinfold as a user would: the CLI,
 //! environment variables and the box spec are its only seams.
 
@@ -1474,9 +1474,9 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // build label into every image again, as `dev.pinfold.build` was; the
     // repeated build makes a new image and the one-id assertion fails.
     // Sabotage: build profiles with `cache` true, or drop `--no-cache` from
-    // Apple's build argv or `--layers=false` from podman's; the second
+    // Apple's build argv or ignore Linux's no-cache request; the second
     // profile build serves `/stamp` from the first build's layer, the two
-    // values match, and podman's untagged-image assertion fails.
+    // values match.
     let env = TestEnv::new("image-build");
     let other = cfg!(target_os = "macos").then(|| TestEnv::new("image-colors"));
     let base = default_image(&env);
@@ -1643,7 +1643,6 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // Every profile build reruns every step, so a rebuild picks up base
     // updates instead of replaying a cached `RUN` layer.
     let profile = format!("e2e-rerun-{}", std::process::id());
-    let layer_label = format!("dev.example.rerun={profile}");
     let _profile_images = ImageCleanup {
         repository: format!("localhost/pinfold/profile-{profile}"),
     };
@@ -1654,11 +1653,6 @@ fn a_caller_builds_an_image_from_its_own_tree() {
             "FROM {base}\nLABEL dev.example.rerun={profile}\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\n"
         ),
     );
-    // Podman's cached intermediates inherit the Containerfile's first
-    // label. Scope to this source so another test's cached caller build
-    // cannot look like our leak. Compare IDs so removing old layers cannot
-    // hide a newly leaked layer.
-    let before = cfg!(target_os = "linux").then(|| untagged_images(&layer_label));
     build_profile(&env, &profile);
     let first_stamp = file_from_image(&env, &built_unique_ref(&profile), "rerun-1", "/stamp");
     // Positive control: the first build ran the `RUN` step and wrote /stamp.
@@ -1672,14 +1666,6 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         first_stamp, second_stamp,
         "the second profile build reused the first build's RUN layer"
     );
-    if let Some(before) = before {
-        let after = untagged_images(&layer_label);
-        assert!(
-            after.is_subset(&before),
-            "the builds left new untagged images: {:?}",
-            after.difference(&before).collect::<Vec<_>>()
-        );
-    }
 
     // Two callers with opposite colour settings share Apple's builder.
     // Hold one inside RUN before the other starts. Sabotage: inherit
@@ -1714,6 +1700,107 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         assert_eq!(held["event"], "built");
         assert!(image_id(held["ref"].as_str().unwrap()).is_some());
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_build_steps_stay_inside_the_builder_role() {
+    let _runtime = crate::shared_runtime();
+    // Guarantee 44. Sabotage: run the recipe on the host again; its uid,
+    // capabilities, user-namespace knob or interfaces differ from the role.
+    // Drop no_new_privs or restore user namespaces; the kernel observations
+    // below differ. Give the VM a NIC; its interface list is no longer lo.
+    // Reuse the agent allowlist or omit explicit build additions; the allowed
+    // API request fails. Bypass the proxy policy/audit; the denied request's
+    // 403 or its exact refusal reason disappears. The same RUN's successful
+    // API request is the allowed control. Resolve a root by bootstrapping a
+    // builder at launch; the launch fails after its artifact is moved away.
+    // Expected values come from the approved role, the guest kernel and the
+    // HTTP endpoint/status; expected file bytes are this caller's fixture.
+    let env = TestEnv::with_private_cache("builder-role");
+    let base = default_image(&env);
+    let name = format!("e2e-builder-role-{}", std::process::id());
+    let context = test_dir(&env, "context");
+    let recipe = context.join("Containerfile");
+    fs::write(
+        &recipe,
+        format!(
+            r#"FROM {base}
+RUN set -eu; {{ \
+    printf 'uid='; id -u; \
+    printf 'caps='; awk '/^CapBnd:/ {{print $2}}' /proc/self/status; \
+    printf 'nnp='; awk '/^NoNewPrivs:/ {{print $2}}' /proc/self/status; \
+    printf 'userns='; cat /proc/sys/user/max_user_namespaces; \
+    printf 'interfaces='; printf '%s\n' /sys/class/net/* | sed 's,.*/,,'; \
+    curl -sS --max-time 30 https://api.github.com >/dev/null; printf 'allowed=yes\n'; \
+    printf 'denied='; curl -sS --max-time 5 -o /dev/null -w '%{{http_code}}\n' http://example.com; \
+    }} >/builder-observed
+"#
+        ),
+    )
+    .unwrap();
+    let (code, built) = one_json_line(
+        env.command(pinfold())
+            .args([
+                "image",
+                "build",
+                &name,
+                "--allow",
+                "api.github.com",
+                "--containerfile",
+            ])
+            .arg(&recipe)
+            .arg("--context")
+            .arg(&context),
+    );
+    assert_eq!(code, 0, "the isolated build failed: {built}");
+    assert_eq!(built["event"], "built", "{built}");
+    let audited = fs::read_dir(env.state.join("pinfold/runs"))
+        .unwrap()
+        .map(Result::unwrap)
+        .filter_map(|entry| fs::read_to_string(entry.path().join("egress.jsonl")).ok())
+        .any(|text| {
+            let lines = json_lines(&text);
+            lines
+                .iter()
+                .any(|line| line["host"] == "api.github.com" && line["decision"] == "allowed")
+                && lines.iter().any(|line| {
+                    line["host"] == "example.com"
+                        && line["decision"] == "refused"
+                        && line["reason"] == "not allowlisted"
+                })
+        });
+    assert!(
+        audited,
+        "the build lacks its allowed/denied proxy decisions"
+    );
+
+    // Remove the idle cache through the public operation, then make the
+    // bootstrap unavailable in this private cache before launching the result.
+    run_ok(env.command(pinfold()).arg("clean"));
+    fs::rename(
+        env.cache.join("pinfold/artifacts/builder"),
+        env.root.join("saved-builder"),
+    )
+    .unwrap();
+    let box_name = box_name("builder-result");
+    let up = box_up(
+        &env,
+        &serde_json::json!({"name": box_name, "image": built["ref"]}),
+        &box_name,
+    );
+    let observed = box_exec(&env, &box_name, &["cat", "/builder-observed"]);
+    assert_ok(
+        &observed,
+        "read the actual RUN's kernel and egress observations",
+    );
+    assert_eq!(
+        observed.stdout,
+        "uid=0\ncaps=00000000a80425fb\nnnp=1\nuserns=0\ninterfaces=lo\nallowed=yes\ndenied=403\n"
+    );
+    up.down(&env);
+    let (code, removed) = image_rm(&env, &name);
+    assert_eq!(code, 0, "remove the completed image: {removed}");
 }
 
 /// A real Apple build held inside RUN until its host HTTP fixture answers.
@@ -4335,24 +4422,6 @@ fn box_down(env: &TestEnv, name: &str) -> ExitStatus {
         .stdin(Stdio::null())
         .status()
         .expect("run pinfold box down")
-}
-
-/// The IDs of untagged images with the caller's label, including the
-/// intermediate layers a cached build leaves behind. Linux only.
-fn untagged_images(label: &str) -> std::collections::BTreeSet<String> {
-    let output = run_ok(Command::new("podman").args([
-        "images",
-        "-a",
-        "-q",
-        "--filter",
-        "dangling=true",
-        "--filter",
-        &format!("label={label}"),
-    ]));
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::to_owned)
-        .collect()
 }
 
 /// Write one discoverable skill whose description carries `marker`.
