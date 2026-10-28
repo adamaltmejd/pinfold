@@ -31,10 +31,10 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     let config = Config::load(&root)?;
     trust::check(&root, &config)?;
     let id = project_id(&root);
-    let image = resolve_image(&config, &id);
-    ensure_image(&config, &image)?;
     let _project = ownership::project_lock(&id)?;
     state::record_run(&root)?;
+    let image = resolve_image(&config, &id);
+    ensure_image(&config, &image)?;
     let plan = build_plan(&config, &id, &root, &image);
     run_box(&plan, &root, &cwd, args)
 }

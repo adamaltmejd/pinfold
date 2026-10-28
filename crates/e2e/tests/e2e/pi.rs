@@ -976,7 +976,11 @@ fn the_launch_record_is_the_applied_policy() {
     .unwrap();
     allow(&env, project.as_path());
     fs::write(profile_dir.join("home/seed"), "seed-three").unwrap();
-    let (run, _, name) = PiRpc::start(&env, project.as_path());
+    let (run, _, name) = PiRpc::start_with_env(
+        &env,
+        project.as_path(),
+        &[("PINFOLD_E2E_LAUNCH_KEY", &header)],
+    );
     let files = box_exec(
         &env,
         &name,
