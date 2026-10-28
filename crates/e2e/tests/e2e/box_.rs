@@ -1458,6 +1458,9 @@ fn only_allowlisted_hosts_get_through() {
 
 #[test]
 fn a_caller_builds_an_image_from_its_own_tree() {
+    #[cfg(target_os = "linux")]
+    let _runtime = crate::exclusive_runtime();
+    #[cfg(not(target_os = "linux"))]
     let _runtime = crate::shared_runtime();
     // Guarantee 23: a caller builds an image from its own tree.
     //
@@ -1481,6 +1484,12 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // conversion again. Its ONBUILD fires during preparation, so the parent
     // already holds /onbuild-marker. Removing ONBUILD from the published
     // image instead loses the child's marker, the positive trigger control.
+    // Sabotage: return the post-rename directory sync error from catalog::commit
+    // as a failed build; the first build reports failure after the kernel EIO.
+    // Sabotage: discover only surviving LLB image sources again; the zero-layer
+    // FROM's config identity is lost, so execution's default-deny policy refuses
+    // it before the first built assertion. Drop its config instead and the
+    // recipe's pinned upstream foo=bar check fails.
     let env = TestEnv::new("image-build");
     let other = cfg!(target_os = "macos").then(|| TestEnv::new("image-colors"));
     let base = default_image(&env);
@@ -1501,18 +1510,61 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     } else {
         ""
     };
+    let from = if cfg!(target_os = "linux") {
+        format!(
+            "FROM tonistiigi/test:nolayers@sha256:acf1bec0759497a99077fe034707bb64ef675aee61e9902e26af53aeb1c22e0c\n\
+             COPY --from={base} / /\nRUN test \"$foo\" = bar\n"
+        )
+    } else {
+        format!("FROM {base}\n")
+    };
     fs::write(
         &containerfile,
         format!(
-            "FROM {base}\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\nCOPY marker.txt /marker.txt\n{onbuild}"
+            "{from}RUN head -c8 /dev/urandom | od -An -tx1 > /stamp\nCOPY marker.txt /marker.txt\n{onbuild}"
         ),
     )
     .unwrap();
 
+    #[cfg(target_os = "linux")]
+    let (supervisor, receipt) = {
+        let fault = test_dir(&env, "fsync-eio");
+        fs::set_permissions(&fault, fs::Permissions::from_mode(0o700)).unwrap();
+        let supervisor = fault.join("supervise");
+        run_ok(
+            Command::new("cc")
+                .args(["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror"])
+                .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/e2e/fsync_eio.c"))
+                .arg("-o")
+                .arg(&supervisor),
+        );
+        (supervisor, fault.join("receipt.json"))
+    };
     let mut refs: Vec<String> = Vec::new();
     for marker in ["first", "second", "third"] {
         fs::write(context.join("marker.txt"), format!("{marker}\n")).unwrap();
-        let (code, built) = image_build(&env, &name, &containerfile, &context);
+        let mut command = image_build_command(&env, &name, &containerfile, &context);
+        #[cfg(target_os = "linux")]
+        if marker == "first" {
+            let cli = command;
+            command = env.command(&supervisor);
+            command
+                .arg(env.cache.join("pinfold/images"))
+                .arg(&receipt)
+                .arg("--")
+                .arg(cli.get_program())
+                .args(cli.get_args());
+        }
+        let (code, built) = one_json_line(&mut command);
+        #[cfg(target_os = "linux")]
+        if marker == "first" {
+            let injected: serde_json::Value =
+                serde_json::from_slice(&fs::read(&receipt).expect("read kernel fault receipt"))
+                    .expect("parse kernel fault receipt");
+            assert_eq!(injected["supervisor_errno"], 0, "{injected}");
+            assert_eq!(injected["injections"], 1, "{injected}");
+            assert_eq!(injected["injected_errno"], nix::libc::EIO, "{injected}");
+        }
         assert_eq!(built["event"], "built", "the {marker} build: {built}");
         assert_eq!(code, 0, "the {marker} build exited {code}");
         let reference = built["ref"]
@@ -1945,14 +1997,18 @@ pub(super) fn image_build(
     containerfile: &Path,
     context: &Path,
 ) -> (i32, serde_json::Value) {
-    one_json_line(
-        env.command(pinfold())
-            .args(["image", "build", name, "--containerfile"])
-            .arg(containerfile)
-            .arg("--context")
-            .arg(context)
-            .args(["--label", "dev.example.test=image"]),
-    )
+    one_json_line(&mut image_build_command(env, name, containerfile, context))
+}
+
+fn image_build_command(env: &TestEnv, name: &str, containerfile: &Path, context: &Path) -> Command {
+    let mut command = env.command(pinfold());
+    command
+        .args(["image", "build", name, "--containerfile"])
+        .arg(containerfile)
+        .arg("--context")
+        .arg(context)
+        .args(["--label", "dev.example.test=image"]);
+    command
 }
 
 /// Run `pinfold image rm NAME` and return its exit code and its one stdout
