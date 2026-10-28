@@ -584,13 +584,14 @@ fn capture_discovery(mut command: Command, log: Arc<Mutex<Tail>>) -> io::Result<
 fn convert(log: Arc<Mutex<Tail>>) -> io::Result<()> {
     fs::create_dir("/work/tree")?;
     let mut tar = command("tar", false);
+    // fsutil emits raw ACL xattrs. GNU tar's --acls would replace them when
+    // its separate textual ACL headers are absent.
     tar.args([
         "--numeric-owner",
         "--same-owner",
         "--same-permissions",
         "--xattrs",
         "--xattrs-include=*",
-        "--acls",
         "-xpf",
         "/work/root.tar",
         "-C",

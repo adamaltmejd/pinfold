@@ -1477,6 +1477,10 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // Apple's build argv or ignore Linux's no-cache request; the second
     // profile build serves `/stamp` from the first build's layer, the two
     // values match.
+    // Sabotage: use the published OCI layout directly in Linux's FROM-only
+    // conversion again. Its ONBUILD fires during preparation, so the parent
+    // already holds /onbuild-marker. Removing ONBUILD from the published
+    // image instead loses the child's marker, the positive trigger control.
     let env = TestEnv::new("image-build");
     let other = cfg!(target_os = "macos").then(|| TestEnv::new("image-colors"));
     let base = default_image(&env);
@@ -1492,10 +1496,15 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     let context = env.root.join("image-context");
     fs::create_dir_all(&context).unwrap();
     let containerfile = env.root.join("Containerfile");
+    let onbuild = if cfg!(target_os = "linux") {
+        "ONBUILD RUN printf 'pinfold-onbuild-child\\n' > /onbuild-marker\n"
+    } else {
+        ""
+    };
     fs::write(
         &containerfile,
         format!(
-            "FROM {base}\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\nCOPY marker.txt /marker.txt\n"
+            "FROM {base}\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\nCOPY marker.txt /marker.txt\n{onbuild}"
         ),
     )
     .unwrap();
@@ -1557,7 +1566,35 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         read.stdout, "first\n",
         "the first build's ref names another build"
     );
+    #[cfg(target_os = "linux")]
+    assert_ok(
+        &box_exec(&env, &first, &["test", "!", "-e", "/onbuild-marker"]),
+        "the parent's ONBUILD remains deferred",
+    );
     up.down(&env);
+
+    #[cfg(target_os = "linux")]
+    {
+        let child_name = format!("{name}-onbuild");
+        let _child_images = ImageCleanup {
+            repository: format!("localhost/pinfold/image-{child_name}"),
+        };
+        let child_recipe = env.root.join("Containerfile.child");
+        fs::write(&child_recipe, format!("FROM {}\n", refs[0])).unwrap();
+        let (code, child) = image_build(&env, &child_name, &child_recipe, &context);
+        assert_eq!(code, 0, "the ONBUILD child failed: {child}");
+        assert_eq!(child["event"], "built", "the ONBUILD child: {child}");
+        assert_eq!(
+            file_from_image(
+                &env,
+                child["ref"].as_str().expect("the child has a build ref"),
+                "onbuild-child",
+                "/onbuild-marker",
+            ),
+            "pinfold-onbuild-child\n",
+            "the child did not execute its inherited ONBUILD",
+        );
+    }
 
     // A failed build carries a bounded tail and makes no image. Sabotage:
     // collect the full build output or cap only its line count; the giant

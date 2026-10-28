@@ -652,6 +652,7 @@ fn prepare_conversion(verified: &Verified, state: &Path, cancel: &AtomicBool) ->
         cancel,
         &mut budget,
     )?;
+    let conversion_id = conversion_base(&input.join("bases/0"), &verified.id, cancel, &mut budget)?;
     budget.charge(4096)?;
     fs::write(
         input.join("recipe/Dockerfile"),
@@ -665,7 +666,7 @@ fn prepare_conversion(verified: &Verified, state: &Path, cancel: &AtomicBool) ->
             labels: &verified.labels,
             bases: vec![Base {
                 reference: "prepared".into(),
-                digest: verified.id.clone(),
+                digest: conversion_id,
                 directory: "/input/bases/0".into(),
             }],
         },
@@ -673,6 +674,72 @@ fn prepare_conversion(verified: &Verified, state: &Path, cancel: &AtomicBool) ->
     )?;
     source_policy(&input, "docker-image://*", &BTreeMap::new(), &mut budget)?;
     empty_disk(&state.join("converter.ext4"), WORK_BYTES, cancel)
+}
+
+fn conversion_base(
+    layout: &Path,
+    id: &str,
+    cancel: &AtomicBool,
+    budget: &mut InputBudget,
+) -> io::Result<String> {
+    // This private copy has already passed OCI admission. FROM must flatten its
+    // layers without treating inherited ONBUILD instructions as new work.
+    let blobs = layout.join("blobs/sha256");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(blobs.join(catalog::digest_hex(id)?))?)
+            .map_err(io::Error::other)?;
+    let config_id = manifest["config"]["digest"]
+        .as_str()
+        .ok_or_else(|| io::Error::other("image-prepare: missing configuration digest"))?;
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&fs::read(blobs.join(catalog::digest_hex(config_id)?))?)
+            .map_err(io::Error::other)?;
+    let mut removed = false;
+    if let Some(fields) = config.as_object_mut() {
+        // BuildKit's Go decoder also accepts case-insensitive field aliases.
+        for (name, value) in fields {
+            if name.eq_ignore_ascii_case("config")
+                && let Some(fields) = value.as_object_mut()
+            {
+                fields.retain(|name, _| {
+                    let keep = !name.eq_ignore_ascii_case("OnBuild");
+                    removed |= !keep;
+                    keep
+                });
+            }
+        }
+    }
+    if !removed {
+        return Ok(id.to_string());
+    }
+    let mut blob = |bytes: Vec<u8>| -> io::Result<(String, usize)> {
+        check_cancel(cancel)?;
+        budget.charge(bytes.len() as u64)?;
+        let hash = sha256_hex(&bytes);
+        File::options()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(blobs.join(&hash))?
+            .write_all(&bytes)?;
+        Ok((format!("sha256:{hash}"), bytes.len()))
+    };
+    let (config_id, config_size) = blob(serde_json::to_vec(&config)?)?;
+    manifest["config"]["digest"] = config_id.into();
+    manifest["config"]["size"] = config_size.into();
+    let (manifest_id, manifest_size) = blob(serde_json::to_vec(&manifest)?)?;
+    let index = serde_json::to_vec(&serde_json::json!({
+        "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [{
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": manifest_id, "size": manifest_size,
+            "platform": {"os": "linux", "architecture": "amd64"}
+        }]
+    }))?;
+    check_cancel(cancel)?;
+    budget.charge(index.len() as u64)?;
+    fs::write(layout.join("index.json"), index)?;
+    Ok(manifest_id)
 }
 
 enum Received {

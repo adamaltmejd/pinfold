@@ -324,7 +324,7 @@ struct Manifest {
     schema_version: u32,
     media_type: Option<String>,
     config: Descriptor,
-    layers: Vec<Descriptor>,
+    layers: Option<Vec<Descriptor>>,
     subject: Option<Descriptor>,
     artifact_type: Option<String>,
 }
@@ -351,7 +351,7 @@ struct ContainerConfig {
 struct Rootfs {
     #[serde(rename = "type")]
     kind: String,
-    diff_ids: Vec<String>,
+    diff_ids: Option<Vec<String>>,
 }
 
 fn native(platform: &Platform) -> bool {
@@ -424,6 +424,7 @@ fn validate(
     }
     descriptor(runnable, objects, &mut referenced)?;
     let manifest: Manifest = json_object(directory, runnable, &mut json_bytes)?;
+    let layers = manifest.layers.unwrap_or_default();
     if manifest.schema_version != 2
         || manifest
             .media_type
@@ -431,23 +432,26 @@ fn validate(
             .is_some_and(|media| media != MANIFEST)
         || manifest.subject.is_some()
         || manifest.artifact_type.is_some()
-        || manifest.layers.len() > OBJECT_MAX - 2
+        || layers.len() > OBJECT_MAX - 2
         || manifest.config.media_type != CONFIG
     {
         return Err(invalid("image-output: unsupported runnable manifest"));
     }
     descriptor(&manifest.config, objects, &mut referenced)?;
     let config: ImageConfig = json_object(directory, &manifest.config, &mut json_bytes)?;
+    // The pinned exporter represents a scratch image's empty layers and diff
+    // IDs as null. Their counts must still agree before admitting any image.
+    let diff_ids = config.rootfs.diff_ids.unwrap_or_default();
     if !native(&Platform {
         architecture: config.architecture,
         os: config.os,
         variant: config.variant,
     }) || config.rootfs.kind != "layers"
-        || config.rootfs.diff_ids.len() != manifest.layers.len()
+        || diff_ids.len() != layers.len()
     {
         return Err(invalid("image-output: invalid image configuration"));
     }
-    for (layer, diff_id) in manifest.layers.iter().zip(&config.rootfs.diff_ids) {
+    for (layer, diff_id) in layers.iter().zip(&diff_ids) {
         check_cancel(cancel)?;
         if !matches!(
             layer.media_type.as_str(),
