@@ -45,7 +45,7 @@ fn invalid(detail: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, detail.into())
 }
 
-fn digest_hex(digest: &str) -> io::Result<&str> {
+pub(super) fn digest_hex(digest: &str) -> io::Result<&str> {
     digest
         .strip_prefix("sha256:")
         .filter(|value| {
@@ -103,6 +103,40 @@ fn success(stream: &mut impl Read, bytes: &[u8]) -> io::Result<()> {
         return Err(invalid("image-output: trailing bytes"));
     }
     Ok(())
+}
+
+/// Native frontend discovery returns one bounded JSON receipt, then success.
+pub fn receive_discovery(stream: &mut impl Read) -> io::Result<Vec<String>> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Discovery {
+        sources: Vec<String>,
+    }
+    let (kind, bytes) = frame_header(stream)?;
+    let header: Header = serde_json::from_slice(&bytes).map_err(invalid_json)?;
+    if kind != b'I' || header.size > JSON_MAX {
+        return Err(invalid("image-output: invalid discovery frame"));
+    }
+    let mut payload = Vec::with_capacity(header.size as usize);
+    copy_checked(stream, &mut payload, header.size, &header.digest, None)?;
+    let (kind, bytes) = frame_header(stream)?;
+    if kind != b'E' {
+        return Err(invalid("image-output: missing discovery success"));
+    }
+    success(stream, &bytes)?;
+    let discovery: Discovery = serde_json::from_slice(&payload).map_err(invalid_json)?;
+    if discovery.sources.len() > OBJECT_MAX
+        || discovery.sources.iter().any(|source| {
+            source.len() > HEADER_MAX
+                || !source.is_ascii()
+                || source
+                    .bytes()
+                    .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        })
+    {
+        return Err(invalid("image-output: invalid discovery sources"));
+    }
+    Ok(discovery.sources)
 }
 
 /// A converter emits one `D` frame with digest/size and opaque root bytes,
@@ -559,7 +593,8 @@ fn validate(
     cancel: Option<&AtomicBool>,
 ) -> io::Result<Verified> {
     check_cancel(cancel)?;
-    if fs::symlink_metadata(directory.join("index.json"))?.len() > JSON_MAX {
+    let index_metadata = fs::symlink_metadata(directory.join("index.json"))?;
+    if !index_metadata.is_file() || index_metadata.len() > JSON_MAX {
         return Err(invalid("image-output: index limit"));
     }
     let index_bytes = fs::read(directory.join("index.json"))?;
@@ -916,7 +951,13 @@ pub fn complete_root(id: &str, recipe: &str) -> io::Result<Option<(PathBuf, Stri
     }
 }
 
-fn commit(catalog: &Catalog, cancel: Option<&AtomicBool>) -> io::Result<()> {
+/// Once the catalog rename succeeds, the build is visible. Later cancellation,
+/// audit failure or directory-sync failure cannot report an unchanged failure.
+pub enum Publication {
+    Committed { durability_error: Option<String> },
+}
+
+fn commit(catalog: &Catalog, cancel: Option<&AtomicBool>) -> io::Result<Publication> {
     let directory = store()?;
     let bytes = serde_json::to_vec(catalog)?;
     check_cancel(cancel)?;
@@ -939,7 +980,13 @@ fn commit(catalog: &Catalog, cancel: Option<&AtomicBool>) -> io::Result<()> {
         let _ = fs::remove_file(staging);
     }
     written?;
-    File::open(directory)?.sync_all()
+    // The rename above is the commit point. A later fsync error affects crash
+    // durability, not whether the new generation is already visible to callers.
+    let durability_error = File::open(directory)
+        .and_then(|directory| directory.sync_all())
+        .err()
+        .map(|error| error.to_string());
+    Ok(Publication::Committed { durability_error })
 }
 
 fn verify_layout(
@@ -948,8 +995,19 @@ fn verify_layout(
     cancel: Option<&AtomicBool>,
 ) -> io::Result<Verified> {
     check_cancel(cancel)?;
+    for directory in [
+        path.to_path_buf(),
+        path.join("blobs"),
+        path.join("blobs/sha256"),
+    ] {
+        if !fs::symlink_metadata(directory)?.is_dir() {
+            return Err(invalid("image-store: invalid OCI layout directory"));
+        }
+    }
     let layout_path = path.join("oci-layout");
-    if fs::symlink_metadata(&layout_path)?.len() > HEADER_MAX as u64
+    let layout_metadata = fs::symlink_metadata(&layout_path)?;
+    if !layout_metadata.is_file()
+        || layout_metadata.len() > HEADER_MAX as u64
         || fs::read(layout_path)? != b"{\"imageLayoutVersion\":\"1.0.0\"}"
     {
         return Err(invalid("image-store: invalid OCI layout version"));
@@ -996,7 +1054,7 @@ pub fn publish(
     recipe: &str,
     tags: &[String],
     cancel: &AtomicBool,
-) -> io::Result<()> {
+) -> io::Result<Publication> {
     check_cancel(Some(cancel))?;
     digest_hex(&verified.id)?;
     digest_hex(root_sha)?;
@@ -1092,23 +1150,107 @@ pub fn publish(
     commit(&catalog, Some(cancel))
 }
 
-/// Freeze all local base references and their immutable layouts while the
-/// catalog generation is locked. The leases protect inputs until the job ends.
-pub fn bases() -> io::Result<Vec<(ImageInfo, PathBuf, Flock<File>)>> {
+pub struct BaseMetadata {
+    pub id: String,
+    pub references: Vec<String>,
+    pub labels: BTreeMap<String, String>,
+    pub manifest: Vec<u8>,
+    pub config_digest: String,
+    pub config: Vec<u8>,
+}
+
+fn metadata_blob(layout: &Path, digest: &str, cancel: &AtomicBool) -> io::Result<Vec<u8>> {
+    check_cancel(Some(cancel))?;
+    let mut file = File::options()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(layout.join("blobs/sha256").join(digest_hex(digest)?))?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > JSON_MAX {
+        return Err(invalid("image-store: invalid base metadata"));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    copy_checked(&mut file, &mut bytes, metadata.len(), digest, Some(cancel))?;
+    Ok(bytes)
+}
+
+/// Snapshot only immutable manifest/config metadata. Native frontend discovery
+/// needs no layers, and unrelated images acquire no lifetime lease.
+pub fn base_metadata(cancel: &AtomicBool) -> io::Result<Vec<BaseMetadata>> {
+    check_cancel(Some(cancel))?;
     if !store()?.join("catalog.json").exists() {
         return Ok(Vec::new());
     }
     let _lock = catalog_lock()?;
     let catalog = read_catalog()?;
-    catalog
-        .references
-        .iter()
-        .map(|(reference, id)| {
-            let guard = shared_lease(id)?;
-            let layout = image_dir(id)?.join("oci");
-            Ok((info(id, reference, &catalog.images[id]), layout, guard))
-        })
-        .collect()
+    let mut references: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for (reference, id) in &catalog.references {
+        references.entry(id).or_default().push(reference.clone());
+    }
+    let mut total = 0u64;
+    let mut snapshots = Vec::new();
+    for (id, references) in references {
+        let layout = image_dir(id)?.join("oci");
+        let manifest = metadata_blob(&layout, id, cancel)?;
+        let parsed: Manifest = serde_json::from_slice(&manifest).map_err(invalid_json)?;
+        if parsed.schema_version != 2
+            || parsed.media_type.as_deref() != Some(MANIFEST)
+            || parsed.subject.is_some()
+            || parsed.artifact_type.is_some()
+            || parsed.config.media_type != CONFIG
+            || !parsed.config.urls.is_empty()
+            || parsed.config.data.is_some()
+            || parsed.config.artifact_type.is_some()
+        {
+            return Err(invalid("image-store: invalid base manifest"));
+        }
+        let config = metadata_blob(&layout, &parsed.config.digest, cancel)?;
+        if config.len() as u64 != parsed.config.size {
+            return Err(invalid("image-store: invalid base configuration size"));
+        }
+        total = total
+            .checked_add(manifest.len() as u64 + config.len() as u64)
+            .filter(|total| *total <= PAYLOAD_MAX)
+            .ok_or_else(|| invalid("resource: local base metadata size"))?;
+        snapshots.push(BaseMetadata {
+            id: id.to_string(),
+            references,
+            labels: catalog.images[id].labels.clone(),
+            manifest,
+            config_digest: parsed.config.digest,
+            config,
+        });
+    }
+    Ok(snapshots)
+}
+
+/// Only identities selected by native discovery acquire leases and full-layout
+/// verification. A removal during discovery refuses rather than retargeting.
+pub fn lease_bases(
+    ids: &BTreeSet<String>,
+    cancel: &AtomicBool,
+) -> io::Result<Vec<(String, PathBuf, Flock<File>)>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let _lock = catalog_lock()?;
+    let catalog = read_catalog()?;
+    let mut bases = Vec::new();
+    for id in ids {
+        check_cancel(Some(cancel))?;
+        let image = catalog
+            .images
+            .get(id)
+            .ok_or_else(|| invalid("image-base-changed: selected local base was removed"))?;
+        let guard = shared_lease(id)?;
+        let layout = image_dir(id)?.join("oci");
+        let verified = verify_layout(&layout, &image.labels, Some(cancel))?;
+        if verified.id != *id || verified.labels != image.labels || verified.env != image.env {
+            return Err(invalid("image-store: local base OCI identity mismatch"));
+        }
+        bases.push((id.clone(), layout, guard));
+    }
+    Ok(bases)
 }
 
 /// Remove a reference; a last reference is retained while a box or build owns
@@ -1132,7 +1274,10 @@ pub fn remove(reference: &str) -> io::Result<()> {
     if last {
         catalog.images.remove(&id);
     }
-    commit(&catalog, None)?;
+    let Publication::Committed { durability_error } = commit(&catalog, None)?;
+    if let Some(error) = durability_error {
+        eprintln!("pinfold: image-store: committed removal durability: {error}");
+    }
     if last {
         crate::core::absent_ok(fs::remove_dir_all(image_dir(&id)?))?;
     }

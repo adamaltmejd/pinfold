@@ -1,6 +1,6 @@
 //! A finite build transaction. The VMM sees only its fixed role's disks.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
@@ -19,8 +19,8 @@ use serde::Serialize;
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 
-use super::catalog::{self, Verified};
-use crate::core::image::{BuildRequest, ImageInfo};
+use super::catalog::{self, Publication, Verified};
+use crate::core::image::BuildRequest;
 use crate::core::ownership::{self, Claim};
 use crate::core::plan::{Egress, Plan};
 use crate::core::runtime::firecracker::{jail, vm};
@@ -43,16 +43,30 @@ const BUILD_HOSTS: &[&str] = &[
     "cli.github.com",
 ];
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct Base {
     reference: String,
     digest: String,
     directory: String,
 }
 
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Phase {
+    Discover,
+    Build,
+    Convert,
+}
+
+impl Phase {
+    fn egress(self) -> bool {
+        !matches!(self, Self::Convert)
+    }
+}
+
 #[derive(Serialize)]
 struct Job<'a> {
-    convert: bool,
+    phase: Phase,
     cache: bool,
     labels: &'a BTreeMap<String, String>,
     bases: Vec<Base>,
@@ -74,9 +88,10 @@ struct Prepared {
     cache_disk: PathBuf,
     input: PathBuf,
     dirty: PathBuf,
-    // Every local reference is a possible Dockerfile context. Keep its snapshot
-    // leased through conversion and publication, without parsing the recipe.
-    _bases: Vec<(ImageInfo, PathBuf, Flock<File>)>,
+    contexts: Vec<Base>,
+    context_bytes: u64,
+    // Only native discovery's actual local inputs remain leased to publication.
+    _bases: Vec<(String, PathBuf, Flock<File>)>,
 }
 
 #[derive(Default)]
@@ -146,26 +161,37 @@ async fn transaction(request: &BuildRequest<'_>) -> io::Result<Result<(), String
             result = &mut work => result,
             _ = interrupt.recv() => {
                 cancel.store(true, Ordering::Release);
-                let _ = work.await;
-                Err(io::ErrorKind::Interrupted.into())
+                work.await
             },
             _ = terminate.recv() => {
                 cancel.store(true, Ordering::Release);
-                let _ = work.await;
-                Err(io::ErrorKind::Interrupted.into())
+                work.await
             },
         }
     };
     // run_transaction never returns until a spawned VMM has been reaped and
     // every host worker has stopped. Only then may the cache claim be released.
-    let writable = tokio::task::spawn_blocking(move || writable_snapshot(&state))
-        .await
-        .map_err(io::Error::other)
-        .and_then(|result| result);
+    let writable = tokio::task::spawn_blocking(move || {
+        writable_snapshot(&state)?;
+        crate::core::absent_ok(fs::remove_dir_all(&state))
+    })
+    .await
+    .map_err(io::Error::other)
+    .and_then(|result| result);
     let sockets = cleanup_generation_sockets(&claim);
     let cleanup = claim.finish(writable.is_ok() && sockets.is_ok()).await;
-    match result.and(writable).and(sockets).and(cleanup) {
-        Ok(()) => Ok(Ok(())),
+    if let Err(error) = writable.and(sockets).and(cleanup) {
+        eprintln!("pinfold: build cleanup: {error}");
+    }
+    match result {
+        Ok(Publication::Committed { durability_error }) => {
+            if let Some(error) = durability_error {
+                eprintln!(
+                    "pinfold: image-store: build committed; crash durability not confirmed: {error}"
+                );
+            }
+            Ok(Ok(()))
+        }
         Err(error) => Ok(Err(error.to_string())),
     }
 }
@@ -175,7 +201,7 @@ async fn run_transaction(
     state: PathBuf,
     cancel: Arc<AtomicBool>,
     claim: &mut Claim,
-) -> io::Result<()> {
+) -> io::Result<Publication> {
     let preparing = {
         let state = state.clone();
         let cancel = cancel.clone();
@@ -226,12 +252,41 @@ async fn run_transaction(
         egress_log.display()
     );
     fs::set_permissions(proxy_socket, fs::Permissions::from_mode(0o600))?;
+    let discovered = run_job(
+        &state.join("discover"),
+        &prepared,
+        &prepared.cache_disk,
+        &prepared.input,
+        Phase::Discover,
+        &request.labels,
+        &state.join("discovery.json"),
+        &cancel,
+        claim,
+        &mut audit,
+    )
+    .await?;
+    let Received::Discovery(sources) = discovered else {
+        return Err(io::Error::other(
+            "image-output: unexpected discovery result",
+        ));
+    };
+    let selecting = {
+        let cancel = cancel.clone();
+        let labels = request.labels.clone();
+        let cache = request.cache;
+        tokio::task::spawn_blocking(move || {
+            let mut prepared = prepared;
+            select_bases(&mut prepared, sources, &labels, cache, &cancel)?;
+            Ok(prepared)
+        })
+    };
+    let prepared = watch_worker(selecting, &cancel, claim, Some(&mut audit)).await?;
     let built = run_job(
         &state.join("build"),
         &prepared,
         &prepared.cache_disk,
         &prepared.input,
-        true,
+        Phase::Build,
         &request.labels,
         &state.join("oci"),
         &cancel,
@@ -281,7 +336,7 @@ async fn run_transaction(
             &prepared,
             &state.join("converter.ext4"),
             &state.join("conversion-input"),
-            false,
+            Phase::Convert,
             &request.labels,
             &root_file,
             &cancel,
@@ -308,8 +363,7 @@ async fn run_transaction(
             &worker_cancel,
         )
     });
-    watch_worker(publishing, &cancel, claim, Some(&mut audit)).await?;
-    Ok(())
+    watch_publication(publishing, &cancel, claim, &mut audit).await
 }
 
 fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<Prepared> {
@@ -343,7 +397,7 @@ fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<P
     if !cache_disk.exists() {
         empty_disk(&cache_disk, CACHE_BYTES, cancel)?;
     }
-    let bases = catalog::bases()?;
+    let bases = catalog::base_metadata(cancel)?;
     let input = state.join("input");
     let mut budget = InputBudget::default();
     private_dir(&input.join("context"))?;
@@ -360,6 +414,7 @@ fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<P
         cancel,
         &mut budget,
     )?;
+    let context_bytes = budget.bytes;
     // The project CLI resolved its selected profile before this snapshot.
     // Keep that identity even if another publisher has since moved latest.
     let selected_base = request
@@ -375,7 +430,7 @@ fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<P
         .map(|expected| {
             bases
                 .iter()
-                .find(|(image, _, _)| {
+                .find(|image| {
                     &image.id == expected
                         && image
                             .labels
@@ -389,53 +444,92 @@ fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<P
                 })
         })
         .transpose()?;
-    let selected_reference = selected_base.map(|(image, _, _)| {
+    let selected_reference = selected_base.map(|image| {
         format!(
             "localhost/pinfold/profile-{}",
             image.labels[clean::PROFILE_LABEL]
         )
     });
-    let mut contexts = Vec::new();
-    let mut layouts: BTreeMap<String, String> = BTreeMap::new();
-    for (image, path, _lease) in &bases {
-        let reference = image
-            .reference
-            .strip_suffix(":latest")
-            .unwrap_or(&image.reference);
-        let (image, path) = if selected_reference.as_deref() == Some(reference) {
-            let (image, path, _) = selected_base.expect("a selected reference has a selected base");
-            (image, path)
-        } else {
-            (image, path)
-        };
-        let relative = if let Some(relative) = layouts.get(&image.id) {
-            relative.clone()
-        } else {
-            let relative = format!("bases/{}", layouts.len());
-            let target = input.join(&relative);
-            private_dir(&target)?;
-            copy_tree(path, &target, cancel, &mut budget)?;
-            layouts.insert(image.id.clone(), relative.clone());
-            relative
-        };
-        contexts.push(Base {
-            reference: reference.to_string(),
-            digest: image.id.clone(),
-            directory: format!("/input/{relative}"),
-        });
+    if bases.len() > 4096 {
+        return Err(io::Error::other("resource: local base metadata count"));
     }
+    let mut contexts = BTreeMap::new();
+    for (index, image) in bases.iter().enumerate() {
+        check_cancel(cancel)?;
+        let relative = format!("bases/{index}");
+        let target = input.join(&relative);
+        private_dir(&target.join("blobs/sha256"))?;
+        for (name, bytes) in [
+            (
+                "oci-layout".to_string(),
+                b"{\"imageLayoutVersion\":\"1.0.0\"}".to_vec(),
+            ),
+            (
+                "index.json".to_string(),
+                serde_json::to_vec(&serde_json::json!({
+                    "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+                    "manifests": [{"mediaType":"application/vnd.oci.image.manifest.v1+json",
+                        "digest":image.id,"size":image.manifest.len(),
+                        "platform":{"os":"linux","architecture":"amd64"}}]
+                }))?,
+            ),
+            (
+                format!("blobs/sha256/{}", catalog::digest_hex(&image.id)?),
+                image.manifest.clone(),
+            ),
+            (
+                format!(
+                    "blobs/sha256/{}",
+                    catalog::digest_hex(&image.config_digest)?
+                ),
+                image.config.clone(),
+            ),
+        ] {
+            budget.charge(bytes.len() as u64)?;
+            fs::write(target.join(name), bytes)?;
+        }
+        for reference in &image.references {
+            let reference = reference.strip_suffix(":latest").unwrap_or(reference);
+            let selected = selected_reference.as_deref() == Some(reference);
+            let (selected_image, selected_index) = if selected {
+                let selected = selected_base.expect("a selected reference has a selected base");
+                (
+                    selected,
+                    bases
+                        .iter()
+                        .position(|base| base.id == selected.id)
+                        .unwrap(),
+                )
+            } else {
+                (image, index)
+            };
+            contexts.insert(
+                reference.to_string(),
+                Base {
+                    reference: reference.to_string(),
+                    digest: selected_image.id.clone(),
+                    directory: format!("/input/bases/{selected_index}"),
+                },
+            );
+        }
+    }
+    let contexts: Vec<_> = contexts.into_values().collect();
     write_job(
         &input,
         &Job {
-            convert: false,
+            phase: Phase::Discover,
             cache: request.cache,
             labels: &request.labels,
-            bases: contexts,
+            bases: contexts.clone(),
         },
         &mut budget,
     )?;
-    budget.charge(4096)?;
-    source_policy(&input, "docker-image://localhost/pinfold/*")?;
+    source_policy(
+        &input,
+        "docker-image://localhost/pinfold/*",
+        &BTreeMap::new(),
+        &mut budget,
+    )?;
     check_cancel(cancel)?;
     Ok(Prepared {
         root,
@@ -444,8 +538,99 @@ fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<P
         cache_disk,
         input,
         dirty,
-        _bases: bases,
+        contexts,
+        context_bytes,
+        _bases: Vec::new(),
     })
+}
+
+fn select_bases(
+    prepared: &mut Prepared,
+    sources: Vec<String>,
+    labels: &BTreeMap<String, String>,
+    cache: bool,
+    cancel: &AtomicBool,
+) -> io::Result<()> {
+    let mut selected = BTreeMap::new();
+    let mut remote = BTreeMap::new();
+    for identifier in sources {
+        check_cancel(cancel)?;
+        let (local, image) = if let Some(image) = identifier.strip_prefix("oci-layout://") {
+            (true, image)
+        } else if let Some(image) = identifier.strip_prefix("docker-image://") {
+            (false, image)
+        } else {
+            return Err(io::Error::other("image-output: unknown discovery source"));
+        };
+        let (reference, digest) = image
+            .rsplit_once('@')
+            .filter(|(reference, _)| !reference.is_empty())
+            .ok_or_else(|| io::Error::other("image-output: discovery source lacks digest"))?;
+        catalog::digest_hex(digest)?;
+        if local {
+            let reference = reference.strip_suffix(":latest").unwrap_or(reference);
+            let base = prepared
+                .contexts
+                .iter()
+                .find(|base| base.reference == reference && base.digest == digest)
+                .ok_or_else(|| io::Error::other("image-output: unknown discovered local base"))?;
+            selected.insert(reference.to_string(), base.clone());
+        } else {
+            if reference.starts_with("localhost/pinfold/") {
+                return Err(io::Error::other(
+                    "image-output: managed base resolved through registry",
+                ));
+            }
+            let source = format!("docker-image://{reference}");
+            if remote
+                .insert(source, identifier.clone())
+                .is_some_and(|previous| previous != identifier)
+            {
+                return Err(io::Error::other(
+                    "image-base-changed: remote source changed during discovery",
+                ));
+            }
+        }
+    }
+    let ids: BTreeSet<_> = selected.values().map(|base| base.digest.clone()).collect();
+    let bases = catalog::lease_bases(&ids, cancel)?;
+    crate::core::absent_ok(fs::remove_dir_all(prepared.input.join("bases")))?;
+    private_dir(&prepared.input.join("bases"))?;
+    let mut budget = InputBudget {
+        bytes: prepared.context_bytes,
+    };
+    let mut layouts = BTreeMap::new();
+    for (index, (id, path, _lease)) in bases.iter().enumerate() {
+        check_cancel(cancel)?;
+        let relative = format!("bases/{index}");
+        let target = prepared.input.join(&relative);
+        private_dir(&target)?;
+        copy_tree(path, &target, cancel, &mut budget)?;
+        layouts.insert(id.clone(), format!("/input/{relative}"));
+    }
+    let mut contexts = Vec::new();
+    for mut base in selected.into_values() {
+        base.directory = layouts[&base.digest].clone();
+        contexts.push(base);
+    }
+    write_job(
+        &prepared.input,
+        &Job {
+            phase: Phase::Build,
+            cache,
+            labels,
+            bases: contexts,
+        },
+        &mut budget,
+    )?;
+    source_policy(
+        &prepared.input,
+        "docker-image://localhost/pinfold/*",
+        &remote,
+        &mut budget,
+    )?;
+    prepared._bases = bases;
+    Ok(())
 }
 
 fn prepare_conversion(verified: &Verified, state: &Path, cancel: &AtomicBool) -> io::Result<()> {
@@ -468,7 +653,7 @@ fn prepare_conversion(verified: &Verified, state: &Path, cancel: &AtomicBool) ->
     write_job(
         &input,
         &Job {
-            convert: true,
+            phase: Phase::Convert,
             cache: false,
             labels: &verified.labels,
             bases: vec![Base {
@@ -479,12 +664,12 @@ fn prepare_conversion(verified: &Verified, state: &Path, cancel: &AtomicBool) ->
         },
         &mut budget,
     )?;
-    budget.charge(4096)?;
-    source_policy(&input, "docker-image://*")?;
+    source_policy(&input, "docker-image://*", &BTreeMap::new(), &mut budget)?;
     empty_disk(&state.join("converter.ext4"), WORK_BYTES, cancel)
 }
 
 enum Received {
+    Discovery(Vec<String>),
     Oci(Verified),
     Root(String, u64),
 }
@@ -495,7 +680,7 @@ async fn run_job(
     prepared: &Prepared,
     work: &Path,
     input: &Path,
-    build: bool,
+    phase: Phase,
     expected: &BTreeMap<String, String>,
     output_path: &Path,
     cancel: &Arc<AtomicBool>,
@@ -504,7 +689,7 @@ async fn run_job(
 ) -> io::Result<Received> {
     check_cancel(cancel)?;
     private_dir(state)?;
-    let vsock = socket_dir(claim.generation(), build)?;
+    let vsock = socket_dir(claim.generation(), phase.egress())?;
     private_dir(&vsock)?;
     let disk = state.join("input.ext4");
     let formatting = {
@@ -515,6 +700,11 @@ async fn run_job(
     };
     watch_worker(formatting, cancel, claim, Some(&mut *audit)).await?;
     check_cancel(cancel)?;
+    // Discovery and build use the same audited relay sequentially. Their VMM
+    // and boot listener are gone before these two endpoint names are reused.
+    for name in ["v.sock".to_string(), format!("v.sock_{BOOT_PORT}")] {
+        crate::core::absent_ok(fs::remove_file(vsock.join(name)))?;
+    }
     let listener = UnixListener::bind(vsock.join(format!("v.sock_{BOOT_PORT}")))?;
     let drives = vec![(work.to_path_buf(), true), (disk, false)];
     let plan = Plan {
@@ -560,7 +750,7 @@ async fn run_job(
         let reader = tokio::task::spawn_blocking(move || {
             let mut reader = JobReader { stream, deadline, cancel: cancellation };
             let mut request = vec![0; 8];
-            request.push(u8::from(build));
+            request.push(u8::from(phase.egress()));
             put(&mut request, b"vdb");
             request.extend(2u32.to_be_bytes());
             for (device, path, writable) in [
@@ -578,8 +768,11 @@ async fn run_job(
                 FAILED => return Err(io::Error::other(String::from_utf8_lossy(&payload).into_owned())),
                 _ => return Err(io::Error::other("image-output: missing successful job handshake")),
             }
-            if build { catalog::receive(&mut reader, &destination, &expected).map(Received::Oci) }
-            else { catalog::receive_root(&mut reader, &destination).map(|(sha,size)| Received::Root(sha,size)) }
+            match phase {
+                Phase::Discover => catalog::receive_discovery(&mut reader).map(Received::Discovery),
+                Phase::Build => catalog::receive(&mut reader, &destination, &expected).map(Received::Oci),
+                Phase::Convert => catalog::receive_root(&mut reader, &destination).map(|(sha,size)| Received::Root(sha,size)),
+            }
         });
         tokio::pin!(reader);
         tokio::select! {
@@ -649,6 +842,26 @@ async fn watch_worker<T>(
             let _ = worker.await;
             Err(io::Error::other("audit-log: builder audit failed"))
         },
+    }
+}
+
+async fn watch_publication(
+    mut worker: tokio::task::JoinHandle<io::Result<Publication>>,
+    cancel: &AtomicBool,
+    claim: &mut Claim,
+    audit: &mut tokio::sync::oneshot::Receiver<()>,
+) -> io::Result<Publication> {
+    let stopped = tokio::select! {
+        result = &mut worker => return result.map_err(io::Error::other)?,
+        _ = claim.stop_requested() => io::Error::from(io::ErrorKind::Interrupted),
+        _ = audit => io::Error::other("audit-log: builder audit failed"),
+    };
+    cancel.store(true, Ordering::Release);
+    // A request before the rename prevents publication. If the worker already
+    // committed, its visible generation and successful outcome must agree.
+    match worker.await.map_err(io::Error::other)? {
+        Ok(committed) => Ok(committed),
+        Err(_) => Err(stopped),
     }
 }
 
@@ -1004,10 +1217,24 @@ pub(super) fn writable_snapshot(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn source_policy(input: &Path, identifier: &str) -> io::Result<()> {
-    let policy = serde_json::json!({"version":1,"rules":[{"action":"DENY","selector":{"identifier":identifier,"match_type":"WILDCARD"}}]});
-    fs::write(
-        input.join("source-policy.json"),
-        serde_json::to_vec(&policy)?,
-    )
+fn source_policy(
+    input: &Path,
+    identifier: &str,
+    converts: &BTreeMap<String, String>,
+    budget: &mut InputBudget,
+) -> io::Result<()> {
+    let mut rules = Vec::new();
+    for (source, target) in converts {
+        rules.push(serde_json::json!({
+            "action":"CONVERT", "selector":{"identifier":source,"match_type":"EXACT"},
+            "updates":{"identifier":target}
+        }));
+    }
+    rules.push(serde_json::json!({"action":"DENY","selector":{"identifier":identifier,"match_type":"WILDCARD"}}));
+    let bytes = serde_json::to_vec(&serde_json::json!({"version":1,"rules":rules}))?;
+    if bytes.len() > 1 << 20 {
+        return Err(io::Error::other("resource: builder source policy"));
+    }
+    budget.charge(bytes.len() as u64)?;
+    fs::write(input.join("source-policy.json"), bytes)
 }

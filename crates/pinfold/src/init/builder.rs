@@ -24,15 +24,25 @@ const SOCKET: &str = "unix:///run/buildkit/buildkitd.sock";
 const LOG_BYTES: usize = 64 * 1024;
 // Candidate admission cap; final runtime policy still needs boundary evidence.
 const OUTPUT_BYTES: u64 = 512 * 1024 * 1024;
+const JSON_BYTES: u64 = 1024 * 1024;
+const DEFINITION_OPS: usize = 4096;
 const CAPABILITIES: u64 = 0xa82425fb;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Job {
-    convert: bool,
+    phase: Phase,
     cache: bool,
     labels: BTreeMap<String, String>,
     bases: Vec<Base>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Phase {
+    Discover,
+    Build,
+    Convert,
 }
 
 #[derive(Deserialize)]
@@ -78,7 +88,7 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
         return Err(io::Error::other("resource: builder job metadata"));
     }
     let job: Job = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-    if relay == job.convert {
+    if relay == (job.phase == Phase::Convert) {
         return Err(io::Error::other("invalid builder egress role"));
     }
     capabilities()?;
@@ -99,27 +109,34 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
     let stopped = daemon.stop();
     built.map_err(|error| failed(error, &log))?;
     stopped.map_err(|error| failed(error, &daemon_log))?;
-    let output = if job.convert {
-        convert(Arc::clone(&log)).map_err(|error| failed(error, &log))?;
-        Path::new("/work/root.ext4")
-    } else {
-        Path::new("/work/oci")
+    let output = match job.phase {
+        Phase::Discover => Path::new("/work/discovery.json"),
+        Phase::Build => Path::new("/work/oci"),
+        Phase::Convert => {
+            convert(Arc::clone(&log)).map_err(|error| failed(error, &log))?;
+            Path::new("/work/root.ext4")
+        }
     };
     // No RUN descendant may keep changing an output after its daemon exited.
     stop_work()?;
     nix::unistd::sync();
     write_frame(host, READY, &[])?;
-    if job.convert {
-        send(host, b'D', output)?;
-    } else {
-        send(host, b'I', &output.join("index.json"))?;
-        let mut blobs =
-            fs::read_dir(output.join("blobs/sha256"))?.collect::<Result<Vec<_>, _>>()?;
-        blobs.sort_by_key(|entry| entry.file_name());
-        for blob in blobs {
-            send(host, b'B', &blob.path())?;
+    match job.phase {
+        Phase::Discover => {
+            send(host, b'I', output)?;
+            fs::remove_file(output)?;
         }
-        fs::remove_dir_all(output)?;
+        Phase::Convert => send(host, b'D', output)?,
+        Phase::Build => {
+            send(host, b'I', &output.join("index.json"))?;
+            let mut blobs =
+                fs::read_dir(output.join("blobs/sha256"))?.collect::<Result<Vec<_>, _>>()?;
+            blobs.sort_by_key(|entry| entry.file_name());
+            for blob in blobs {
+                send(host, b'B', &blob.path())?;
+            }
+            fs::remove_dir_all(output)?;
+        }
     }
     nix::unistd::sync();
     nix::mount::umount("/input")?;
@@ -261,11 +278,17 @@ fn failed(error: io::Error, log: &Mutex<Tail>) -> io::Error {
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
         .text();
-    io::Error::other(if text.is_empty() {
-        error.to_string()
-    } else {
-        text
-    })
+    if text.is_empty() {
+        return error;
+    }
+    let mut tail = Tail::default();
+    tail.push(text.as_bytes());
+    if !text.ends_with('\n') {
+        tail.push(b"\n");
+    }
+    // A resource refusal must retain its reason after progress diagnostics.
+    tail.push(error.to_string().as_bytes());
+    io::Error::other(tail.text())
 }
 
 struct Daemon {
@@ -277,7 +300,7 @@ struct Daemon {
 impl Daemon {
     fn start(job: &Job, log: Arc<Mutex<Tail>>) -> io::Result<Self> {
         let (mut reader, writer) = io::pipe()?;
-        let mut command = command("buildkitd", !job.convert);
+        let mut command = command("buildkitd", job.phase != Phase::Convert);
         command
             .args([
                 "--addr",
@@ -419,13 +442,16 @@ fn stop_work() -> io::Result<()> {
 }
 
 fn build(job: &Job, log: Arc<Mutex<Tail>>) -> io::Result<()> {
-    let mut build = command("buildctl", !job.convert);
+    let mut build = command("buildctl", job.phase != Phase::Convert);
     build.args([
         "build",
         "--source-policy-file",
         "/input/source-policy.json",
         "--frontend",
         "dockerfile.v0",
+        // Presence suppresses caller #syntax forwarding in the pinned frontend.
+        "--opt",
+        "cmdline=",
         "--local",
         "context=/input/context",
         "--local",
@@ -440,9 +466,11 @@ fn build(job: &Job, log: Arc<Mutex<Tail>>) -> io::Result<()> {
     if !job.cache {
         build.arg("--no-cache");
     }
-    if !job.convert {
+    if job.phase != Phase::Convert {
         build.args(["--opt", "image-resolve-mode=pull"]);
-        build.args(["--opt", "attest:provenance=mode=min,version=v1"]);
+        if job.phase == Phase::Build {
+            build.args(["--opt", "attest:provenance=mode=min,version=v1"]);
+        }
         for name in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
             build.arg("--opt").arg(format!("build-arg:{name}={PROXY}"));
         }
@@ -473,12 +501,87 @@ fn build(job: &Job, log: Arc<Mutex<Tail>>) -> io::Result<()> {
             base.reference, base.digest
         ));
     }
-    build.arg("--output").arg(if job.convert {
+    if job.phase == Phase::Discover {
+        build.args(["--opt", "requestid=frontend.convertllb"]);
+        let bytes = capture_discovery(build, log)?;
+        let result = bytes
+            .strip_prefix(b"result.json\n")
+            .ok_or_else(|| io::Error::other("discovery: missing native frontend result"))?;
+        let result: serde_json::Value = serde_json::from_slice(result)
+            .map_err(|_| io::Error::other("discovery: invalid native frontend result"))?;
+        let definition = result
+            .get("def")
+            .and_then(serde_json::Value::as_object)
+            .filter(|definition| definition.len() <= DEFINITION_OPS)
+            .ok_or_else(|| io::Error::other("resource: discovery definition"))?;
+        let mut sources = BTreeSet::new();
+        for operation in definition.values() {
+            if let Some(source) = operation.get("source") {
+                let identifier = source
+                    .get("identifier")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| io::Error::other("discovery: invalid native source"))?;
+                if identifier.starts_with("oci-layout://")
+                    || identifier.starts_with("docker-image://")
+                {
+                    sources.insert(identifier.to_string());
+                }
+            }
+        }
+        let metadata = serde_json::to_vec(&serde_json::json!({"sources": sources}))?;
+        if metadata.len() as u64 > JSON_BYTES {
+            return Err(io::Error::other("resource: discovery sources"));
+        }
+        return fs::write("/work/discovery.json", metadata);
+    }
+    build.arg("--output").arg(if job.phase == Phase::Convert {
         "type=tar,dest=/work/root.tar"
     } else {
         "type=oci,dest=/work/oci,tar=false,oci-mediatypes=true,oci-artifact=true,name=localhost/pinfold/build-result:latest"
     });
     logged(build, log)
+}
+
+fn capture_discovery(mut command: Command, log: Arc<Mutex<Tail>>) -> io::Result<Vec<u8>> {
+    let (mut reader, writer) = io::pipe()?;
+    command.stdout(Stdio::piped()).stderr(writer);
+    let child = command.spawn();
+    drop(command);
+    let mut child = child?;
+    let errors = thread::spawn(move || -> io::Result<()> {
+        let mut buffer = [0; 4096];
+        loop {
+            let count = reader.read(&mut buffer)?;
+            if count == 0 {
+                return Ok(());
+            }
+            log.lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .push(&buffer[..count]);
+        }
+    });
+    let mut bytes = Vec::new();
+    let read = child
+        .stdout
+        .take()
+        .expect("discovery stdout is piped")
+        .take(JSON_BYTES + 1)
+        .read_to_end(&mut bytes);
+    if read.is_err() || bytes.len() as u64 > JSON_BYTES {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = errors.join();
+        read?;
+        return Err(io::Error::other("resource: discovery JSON"));
+    }
+    let status = child.wait()?;
+    errors
+        .join()
+        .map_err(|_| io::Error::other("discovery log reader panicked"))??;
+    if !status.success() {
+        return Err(io::Error::other(format!("discovery: {status}")));
+    }
+    Ok(bytes)
 }
 
 fn convert(log: Arc<Mutex<Tail>>) -> io::Result<()> {

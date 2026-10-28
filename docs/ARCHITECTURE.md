@@ -788,9 +788,15 @@ stable reasons. Apple rejects `--allow` additions and retains its existing
 build egress policy. Build records name their audit log on stderr and use
 normal retained run records; no credential values enter argv or files.
 
-Snapshot local image refs to immutable leased identities for the whole
-transaction. Supply them as BuildKit OCI contexts, including normalized
-`:latest` names. A source policy refuses managed-image registry fallback.
+Freeze caller context and local image metadata. A finite discovery guest
+uses pinned BuildKit's native Dockerfile frontend to resolve the reachable
+sources, including arguments, stages and COPY sources. It receives no
+unrelated image layers. Lease and validate only the local identities it
+selects, then supply those complete OCI contexts to the build guest,
+including normalized `:latest` names. Deleted identities fail preparation;
+they are never retargeted. A source policy refuses managed-image registry
+fallback and pins discovered external image digests for the build pass.
+Linux uses the pinned native frontend; `#syntax` cannot select another one.
 The selected profile dependency is frozen to the identity recorded in
 `dev.pinfold.base`; a changed or missing dependency is `image-base-changed`.
 On both platforms that public label is empty for caller/profile builds;
@@ -815,8 +821,11 @@ bytes. Reuse only a completed representation with matching manifest,
 converter recipe/bootstrap and verified raw-root size/hash.
 
 Publish immutable OCI objects and completed root before one atomic catalog
-generation containing the unique ref and latest together. Failure,
-truncation, deadline or interruption changes neither ref. Running-image and
+generation containing the unique ref and latest together. The catalog
+rename commits the build. Before commit, failure, truncation, deadline or
+interruption changes neither ref. After commit, late stop, audit, durability
+or cleanup errors do not change its successful outcome; durability and
+cleanup problems are reported. Running-image and
 build-input leases prevent removal through concurrent clean/rm/publication.
 Launch reads only the catalog and completed root/config; it never builds or
 converts, and works with the builder absent. Missing/damaged preparation
@@ -828,12 +837,6 @@ provenance and completed root derivation. There is no registry or resident
 daemon. Old Podman-only refs no longer resolve: rebuild profiles/projects
 with `build` and caller images with `image build`. The old Podman store,
 old derived-root cache and managed agent disks are left untouched.
-
-Image jobs use two vCPUs, 2560 MiB RAM, an 8 GiB cache and a fresh 3 GiB
-converter disk. Each VM job is bounded to five minutes. Input snapshots,
-OCI payload and raw-root output each cap at 512 MiB, JSON at 1 MiB, headers
-at 8 KiB and objects at 4096; excess is a `resource` failure. Artifact
-installation retains its separate 512 MiB/five-minute contract.
 
 Built-in images use `debian:trixie-slim`, upgrade Debian packages at each
 build and strip setuid/setgid bits.

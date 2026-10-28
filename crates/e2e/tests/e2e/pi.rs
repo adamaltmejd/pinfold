@@ -1426,9 +1426,6 @@ pub(super) fn selected_profile_freshness(env: &TestEnv, base: &str) {
     let _profile_image = ImageCleanup {
         repository: format!("localhost/pinfold/profile-{selected_profile}"),
     };
-    let _project_image = ImageCleanup {
-        repository: format!("localhost/pinfold/project-{}", project_id(env, root)),
-    };
     let profile_recipe = e2e::profile_containerfile(
         env,
         selected_profile,
@@ -1440,6 +1437,9 @@ pub(super) fn selected_profile_freshness(env: &TestEnv, base: &str) {
         format!("FROM localhost/pinfold/profile-{selected_profile}:latest\n"),
     )
     .unwrap();
+    let _project_image = ImageCleanup {
+        repository: format!("localhost/pinfold/project-{}", project_id(env, root)),
+    };
     allow(env, root);
     run_ok(&mut pinfold_in(env, root, &["build"]));
     fs::write(
