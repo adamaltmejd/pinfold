@@ -1,0 +1,24 @@
+[
+  {
+    "case": "key",
+    "returncode": 1,
+    "output_published": false,
+    "expected_refusal": true
+  },
+  {
+    "case": "release",
+    "returncode": 1,
+    "output_published": false,
+    "expected_refusal": true
+  },
+  {
+    "case": "package",
+    "returncode": 1,
+    "output_published": false,
+    "expected_refusal": true
+  },
+  {
+    "case": "missing-signing-keys",
+    "returncode": 2
+  }
+]

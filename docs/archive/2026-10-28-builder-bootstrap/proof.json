@@ -1,0 +1,20 @@
+{
+  "results": [
+    {
+      "role": "builder",
+      "seconds": 3.737,
+      "success": true
+    },
+    {
+      "role": "converter",
+      "seconds": 75.896,
+      "success": true
+    }
+  ],
+  "root_sha256": "710189b13d814e4026e1095bd393dad99465e4042ced5dae069c59fd79cbaa80",
+  "fixture_busybox_sha256": "7ae95c260622412ceba6eb9f45d68f616cdc091a1d71d6c0a08b5875bb2c31dd",
+  "golden_input_sha256": "3376d10f5302599a8855a20a35a4ffb1db039b1c53d3a8d9cd7507fd84c9c066",
+  "converted_gzip_sha256": "de861aea08671d18ee319d3c9650ab468f7d05474685e2330ce8a01e79ca4f03",
+  "production_jail": false,
+  "network_devices": []
+}

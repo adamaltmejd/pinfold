@@ -1,0 +1,14 @@
+{
+  "archive": "/Users/adam/Code/pinfold/target/phase6-builder-bootstrap-2026-10-28/evidence.tar.gz",
+  "bytes": 267038450,
+  "sha256": "f8681084207eabc7004667342bd97df650d2ee101aa365d8dd75965a03dbd97b",
+  "verified_regular_members": 91,
+  "raw_member_bytes": 929008845,
+  "final_root_sha256": "710189b13d814e4026e1095bd393dad99465e4042ced5dae069c59fd79cbaa80",
+  "final_converted_raw_sha256": "2a88d3730c07c32ae29fddf5a77355c332bcfc90d60c4ee96364ee286539ade6",
+  "final_converted_raw_bytes": 134217728,
+  "gzip_crc_and_eof": true,
+  "cache_disks_included": false,
+  "guest_disks_mounted_on_host": false,
+  "vmm_processes_before_copy": 0
+}

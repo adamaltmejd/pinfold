@@ -1,0 +1,19 @@
+{
+  "source": "https://api.github.com/repos/moby/buildkit/releases/tags/v0.34.1",
+  "tag": "v0.34.1",
+  "asset": {
+    "id": 660559865,
+    "name": "buildkit-v0.34.1.linux-amd64.tar.gz",
+    "size": 92218962,
+    "digest": "sha256:a59539daf547fe0958efe2d07e41c0a6944e1112a66d7e519ec1cf5b673ef15b",
+    "created_at": "2026-10-20T21:39:16Z",
+    "updated_at": "2026-10-20T21:39:20Z",
+    "browser_download_url": "https://github.com/moby/buildkit/releases/download/v0.34.1/buildkit-v0.34.1.linux-amd64.tar.gz"
+  },
+  "host_tools": {
+    "buildctl": null,
+    "buildkitd": null,
+    "podman": null
+  },
+  "busybox_package": "busybox-static\t1:1.37.0-6+b9"
+}
