@@ -13,11 +13,10 @@ use std::path::{Path, PathBuf};
 use nix::fcntl::Flock;
 
 use crate::core::r#box::RefusalReason;
-use crate::core::clean;
 use crate::core::ownership::{self, Attachment, Claim};
 use crate::core::plan::{Disk, Plan};
 use crate::core::profile::Seed;
-use crate::core::runtime::{Runtime, apple};
+use crate::core::runtime::Runtime;
 use crate::dirs;
 use crate::init::{STREAM_DIR, STREAM_END, STREAM_EXECUTABLE, STREAM_FILE, STREAM_SYMLINK};
 
@@ -195,21 +194,8 @@ pub fn claim(
             runtime.create_disk(&disk.name, disk.bytes())?;
             created.push(disk.clone());
         }
-        if cfg!(target_os = "macos") && !created.is_empty() {
-            let names: Vec<&str> = created.iter().map(|disk| disk.name.as_str()).collect();
-            let image = plan.image.as_deref().expect("up resolved the image");
-            let labels = BTreeMap::from([
-                (
-                    clean::OWNER_LABEL.to_string(),
-                    plan.labels[clean::OWNER_LABEL].clone(),
-                ),
-                (
-                    ownership::GENERATION_LABEL.to_string(),
-                    claim.generation().to_string(),
-                ),
-            ]);
-            apple::own_disks(&names, image, init, name, &labels)?;
-        }
+        let names: Vec<&str> = created.iter().map(|disk| disk.name.as_str()).collect();
+        runtime.own_disks(&names, plan, init, claim.generation())?;
         for disk in disks.iter().filter(|disk| !disk.readonly) {
             if !unclean(&disk.name)? {
                 mark(&disk.name, UNCLEAN)?;

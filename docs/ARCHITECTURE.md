@@ -85,6 +85,8 @@ under its own jailer or outside pinfold's VMM jail. Nothing warns at run
 time; `doctor` reports the runtime. Image operations use Apple `container`
 on macOS and rootless podman 6.1.4+ on Linux, independently of the box
 execution interface. Common core owns image retention and in-use protection.
+Execution backends own native disk creation and ownership mechanics. Common
+core owns disk claims, exclusivity, recovery and cleanup policy.
 
 Preflight refuses box startup on older, prerelease or unrecognized runtime
 versions. Inventory and cleanup remain available on older versions.

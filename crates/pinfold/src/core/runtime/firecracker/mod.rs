@@ -187,6 +187,17 @@ impl Runtime for Firecracker {
         Ok(())
     }
 
+    // create_disk sets root_owner while formatting the image.
+    fn own_disks(
+        &self,
+        _names: &[&str],
+        _plan: &crate::core::plan::Plan,
+        _init: &Path,
+        _generation: &str,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+
     fn remove_disk(&self, name: &str) -> io::Result<()> {
         crate::core::absent_ok(fs::remove_file(disk_path(name)?))
     }

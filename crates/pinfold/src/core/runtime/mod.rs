@@ -254,6 +254,16 @@ pub trait Runtime: Sync {
     /// Create an empty disk of `bytes`.
     fn create_disk(&self, name: &str, bytes: u64) -> io::Result<()>;
 
+    /// Give newly created disks to the box user before attachment. The
+    /// caller holds their locks and the box's name and owns rollback.
+    fn own_disks(
+        &self,
+        names: &[&str],
+        plan: &Plan,
+        init: &Path,
+        generation: &str,
+    ) -> io::Result<()>;
+
     /// Remove a disk no box attaches.
     fn remove_disk(&self, name: &str) -> io::Result<()>;
 
