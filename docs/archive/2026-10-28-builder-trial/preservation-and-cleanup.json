@@ -1,0 +1,25 @@
+{
+  "scope": "Local host archive verification only; guest-side mounts are separate runtime evidence.",
+  "artifact_verification": {
+    "verified_at_utc": "2026-10-28T11:19:22.905215+00:00",
+    "archive": "/Users/adam/Code/pinfold/target/phase6-builder-trial-2026-10-28/artifacts.tar.gz",
+    "archive_bytes": 1744714512,
+    "archive_sha256": "ffe34d0730337e0ff620e89455a78bc668cb442ba0d48f1d136bc709ab828209",
+    "verified_regular_members": 23,
+    "raw_member_bytes": 3273517649,
+    "member_manifest": "docs/archive/2026-10-28-builder-trial/artifact-manifest.json and pins.json",
+    "metadata_archive": "/Users/adam/Code/pinfold/target/phase6-builder-trial-2026-10-28/evidence.tar.gz",
+    "metadata_bytes": 127953,
+    "metadata_sha256": "102ef4e7ba536e3ae4b914923343b14d5ec7bdfcde756b0c3bc5adedcf07d228",
+    "cache_disks_included": false,
+    "extracted_or_mounted_guest_disks": false
+  },
+  "lease_release": {
+    "ok": true,
+    "command": "release",
+    "status": "idle"
+  },
+  "lease_release_recorded_at_utc": "2026-10-28T11:22:32.108572+00:00",
+  "writable_cache_disks_preserved": false,
+  "production_code_or_contract_changed": false
+}

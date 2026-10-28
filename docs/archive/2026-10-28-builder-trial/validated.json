@@ -1,0 +1,55 @@
+{
+  "fixture": {
+    "manifest": "sha256:74d897e251664ee57e05319581aa572414231fe1e40f02f809d6330c26a9e632",
+    "config": "sha256:e42de660966800f6aa71a7141b2bb7195726bb0636206b7d2380c6ff5c6db892",
+    "layers": 4,
+    "bytes": 1105941,
+    "labels": {
+      "example.phase": "6"
+    },
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "PHASE6_VALUE=preserved"
+    ]
+  },
+  "recover-default-cold": {
+    "manifest": "sha256:506b9f45dd1d0b8b6ac4be6e6e26f05c79f4e58efd7a962f9b517e499592bee6",
+    "config": "sha256:94b3be9f5692f1edbe2e35f2c6334e84e49a5c15fe282ceb70c3fcc76dfcb576",
+    "layers": 3,
+    "bytes": 70848193,
+    "labels": {},
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "recover-default-no-cache": {
+    "manifest": "sha256:4ada7e803f4f6e8ac3e3b2f63fe3d65418a91fa63c8b3c549e61ebb0cd288a27",
+    "config": "sha256:559e5750af333b512d7d54ca38d59347d29c64745b13b2176a3a5a975656a535",
+    "layers": 3,
+    "bytes": 70848199,
+    "labels": {},
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "recover-default-warm": {
+    "manifest": "sha256:506b9f45dd1d0b8b6ac4be6e6e26f05c79f4e58efd7a962f9b517e499592bee6",
+    "config": "sha256:94b3be9f5692f1edbe2e35f2c6334e84e49a5c15fe282ceb70c3fcc76dfcb576",
+    "layers": 3,
+    "bytes": 70848193,
+    "labels": {},
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  },
+  "recover-documents-cold": {
+    "manifest": "sha256:934e60c875063e8aa0f06503e55302628ae37d22ae35599bf05c0ef01f7433d4",
+    "config": "sha256:4e97dafebdbf6996f6e10201af954d139a03ba1b65f88dc3c2018b463e4fe942",
+    "layers": 6,
+    "bytes": 131431283,
+    "labels": {},
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+  }
+}
