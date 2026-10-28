@@ -1037,6 +1037,17 @@ struct JobReader {
     deadline: Instant,
     cancel: Arc<AtomicBool>,
 }
+impl JobReader {
+    fn error(error: io::Error) -> io::Error {
+        // read_exact and write_all retry Interrupted. Cancellation ends this
+        // stream; ordinary syscall interruptions are handled inside pipe.
+        if error.kind() == io::ErrorKind::Interrupted {
+            io::Error::new(io::ErrorKind::ConnectionAborted, error)
+        } else {
+            error
+        }
+    }
+}
 impl Read for JobReader {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         pipe::read(
@@ -1046,6 +1057,7 @@ impl Read for JobReader {
             Some(&self.cancel),
             "image-output",
         )
+        .map_err(Self::error)
     }
 }
 impl Write for JobReader {
@@ -1056,7 +1068,8 @@ impl Write for JobReader {
             self.deadline,
             Some(&self.cancel),
             "image-input",
-        )?;
+        )
+        .map_err(Self::error)?;
         Ok(buffer.len())
     }
     fn flush(&mut self) -> io::Result<()> {

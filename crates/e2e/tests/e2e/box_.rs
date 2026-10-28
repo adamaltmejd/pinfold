@@ -1814,6 +1814,10 @@ fn a_caller_builds_an_image_from_its_own_tree() {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_build_steps_stay_inside_the_builder_role() {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
+
     let _runtime = crate::shared_runtime();
     // Guarantee 44. Sabotage: run the recipe on the host again; its uid,
     // capabilities, user-namespace knob or interfaces differ from the role.
@@ -1826,6 +1830,11 @@ fn linux_build_steps_stay_inside_the_builder_role() {
     // builder at launch; the launch fails after its artifact is moved away.
     // Expected values come from the approved role, the guest kernel and the
     // HTTP endpoint/status; expected file bytes are this caller's fixture.
+    // Sabotage: remove JobReader::error's cancellation mapping; read_exact
+    // retries semantic Interrupted forever and the bounded failed-line read
+    // times out. Skip VMM teardown or publish the interrupted output; the
+    // pidfd or unchanged-reference assertion fails. The following normal
+    // build is the same-cache recovery control.
     let env = TestEnv::with_private_cache("builder-role");
     let base = default_image(&env);
     let name = format!("e2e-builder-role-{}", std::process::id());
@@ -1848,8 +1857,9 @@ RUN set -eu; {{ \
         ),
     )
     .unwrap();
-    let (code, built) = one_json_line(
-        env.command(pinfold())
+    let build = |recipe: &Path| {
+        let mut command = env.command(pinfold());
+        command
             .args([
                 "image",
                 "build",
@@ -1858,10 +1868,100 @@ RUN set -eu; {{ \
                 "api.github.com",
                 "--containerfile",
             ])
-            .arg(&recipe)
+            .arg(recipe)
             .arg("--context")
-            .arg(&context),
+            .arg(&context);
+        command
+    };
+    let references = || {
+        let catalog: serde_json::Value = serde_json::from_slice(
+            &fs::read(env.cache.join("pinfold/images/catalog.json")).expect("read private catalog"),
+        )
+        .expect("parse private catalog");
+        catalog["references"]
+            .as_object()
+            .expect("catalog public references")
+            .clone()
+    };
+    let before = references();
+    let blocked = context.join("Blocked.Containerfile");
+    fs::write(
+        &blocked,
+        format!(
+            "FROM {base}\nRUN curl -fsS --max-time 30 https://api.github.com >/dev/null; mkfifo /blocked; cat /blocked\n"
+        ),
+    )
+    .unwrap();
+    let runs = env.state.join("pinfold/runs");
+    let watcher = Inotify::init(InitFlags::IN_CLOEXEC | InitFlags::IN_NONBLOCK).unwrap();
+    watcher
+        .add_watch(&runs, AddWatchFlags::IN_CREATE | AddWatchFlags::IN_MOVED_TO)
+        .expect("watch the private run root before starting the build");
+    let previous = fs::read_dir(&runs)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    let mut interrupted = ChildOwner::new(
+        build(&blocked)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("start the blocked real build"),
+        &env,
+        None,
     );
+    let mut stdout = BufReader::new(interrupted.stdout.take().unwrap());
+    wait_for_build_api_allowed(&watcher, &runs, &previous, stdout.get_ref());
+    let vmm = vmm_pid(interrupted.id());
+    // SAFETY: pidfd_open returns a new descriptor or -1.
+    let pidfd = unsafe { nix::libc::syscall(nix::libc::SYS_pidfd_open, vmm as i32, 0u32) };
+    assert!(
+        pidfd >= 0,
+        "pidfd_open the blocked build's VMM: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: a new descriptor, owned here alone.
+    let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd as i32) };
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(interrupted.id() as i32),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .expect("SIGINT the build owner during RUN");
+    let output = read_bounded(
+        &mut interrupted,
+        &mut stdout,
+        std::time::Duration::from_secs(60),
+        true,
+    )
+    .expect("read the interrupted build to EOF");
+    assert_eq!(interrupted.wait_bounded().code(), Some(1), "{output}");
+    let failed = json_lines(&output);
+    assert_eq!(failed.len(), 1, "interrupted build output: {output}");
+    assert_eq!(failed[0]["event"], "failed", "{output}");
+    assert!(
+        failed[0]["log"].as_array().unwrap().iter().any(|line| {
+            line.as_str()
+                .unwrap()
+                .split_whitespace()
+                .any(|token| token == "cancelled")
+        }),
+        "the interrupted build lacks its cancellation token: {output}"
+    );
+    let mut ended = [nix::libc::pollfd {
+        fd: pidfd.as_raw_fd(),
+        events: nix::libc::POLLIN,
+        revents: 0,
+    }];
+    // SAFETY: poll on one owned descriptor.
+    let ready = unsafe { nix::libc::poll(ended.as_mut_ptr(), 1, 10_000) };
+    assert_eq!(ready, 1, "the interrupted build left its VMM alive");
+    assert_eq!(
+        references(),
+        before,
+        "the interrupted build changed public refs"
+    );
+
+    let (code, built) = one_json_line(&mut build(&recipe));
     assert_eq!(code, 0, "the isolated build failed: {built}");
     assert_eq!(built["event"], "built", "{built}");
     let audited = fs::read_dir(env.state.join("pinfold/runs"))
@@ -1910,6 +2010,95 @@ RUN set -eu; {{ \
     up.down(&env);
     let (code, removed) = image_rm(&env, &name);
     assert_eq!(code, 0, "remove the completed image: {removed}");
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_build_api_allowed(
+    watcher: &nix::sys::inotify::Inotify,
+    runs: &Path,
+    previous: &std::collections::BTreeSet<PathBuf>,
+    stdout: &ChildStdout,
+) {
+    use nix::poll::{PollFd, PollFlags, poll};
+    use nix::sys::inotify::AddWatchFlags;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    let mut watched = std::collections::BTreeSet::new();
+    loop {
+        for entry in fs::read_dir(runs).expect("read private run directories") {
+            let path = entry.unwrap().path();
+            if previous.contains(&path) || !path.is_dir() {
+                continue;
+            }
+            if watched.insert(path.clone()) {
+                watcher
+                    .add_watch(&path, AddWatchFlags::IN_CREATE | AddWatchFlags::IN_MOVED_TO)
+                    .expect("watch the new run before looking for its log");
+            }
+            let log = path.join("egress.jsonl");
+            if !log.is_file() {
+                continue;
+            }
+            if watched.insert(log.clone()) {
+                watcher
+                    .add_watch(
+                        &log,
+                        AddWatchFlags::IN_MODIFY | AddWatchFlags::IN_CLOSE_WRITE,
+                    )
+                    .expect("watch the egress log before reading existing records");
+            }
+            let mut bytes = Vec::new();
+            fs::File::open(&log)
+                .expect("open the new build's egress log")
+                .take(HARNESS_OUTPUT_LIMIT as u64 + 1)
+                .read_to_end(&mut bytes)
+                .expect("read the new build's egress log");
+            assert!(
+                bytes.len() <= HARNESS_OUTPUT_LIMIT,
+                "build readiness log exceeds 1 MiB"
+            );
+            for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+                if line.last() != Some(&b'\n') {
+                    continue;
+                }
+                let event: serde_json::Value =
+                    serde_json::from_slice(line).expect("parse a complete egress record");
+                if event["host"] == "api.github.com" && event["decision"] == "allowed" {
+                    return;
+                }
+            }
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "build did not reach its audited API request"
+        );
+        let millis = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+        let mut fds = [
+            PollFd::new(watcher.as_fd(), PollFlags::POLLIN),
+            PollFd::new(stdout.as_fd(), PollFlags::POLLIN),
+        ];
+        match poll(&mut fds, nix::poll::PollTimeout::try_from(millis).unwrap()) {
+            Err(nix::errno::Errno::EINTR) => continue,
+            result => assert!(
+                result.expect("poll build readiness") > 0,
+                "build readiness deadline"
+            ),
+        }
+        assert!(
+            fds[1].revents().unwrap().is_empty(),
+            "build ended before its audited RUN request"
+        );
+        let events = watcher
+            .read_events()
+            .expect("read build readiness notifications");
+        assert!(
+            events
+                .iter()
+                .all(|event| !event.mask.contains(AddWatchFlags::IN_Q_OVERFLOW)),
+            "build readiness notifications overflowed"
+        );
+    }
 }
 
 /// A real Apple build held inside RUN until its host HTTP fixture answers.
