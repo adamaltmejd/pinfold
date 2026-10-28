@@ -294,7 +294,7 @@ impl Runtime for Apple {
     }
 
     fn purge_build_cache(&self) -> io::Result<()> {
-        let Some(builder) = builder()? else {
+        let Some(builder) = container("buildkit")? else {
             return Ok(());
         };
         if builder.status.state != "running" {
@@ -322,7 +322,7 @@ impl Runtime for Apple {
     }
 
     fn build_cache_bytes(&self) -> io::Result<Option<u64>> {
-        let Some(builder) = builder()? else {
+        let Some(builder) = container("buildkit")? else {
             return Ok(Some(0));
         };
         // The exports mount records the runtime's actual app root, including
@@ -662,11 +662,6 @@ fn containers() -> io::Result<Vec<ListedContainer>> {
 /// The listed container with this id, if the runtime has one.
 fn container(name: &str) -> io::Result<Option<ListedContainer>> {
     Ok(containers()?.into_iter().find(|entry| entry.id == name))
-}
-
-/// The shared BuildKit builder, if the runtime has one.
-fn builder() -> io::Result<Option<ListedContainer>> {
-    container("buildkit")
 }
 
 /// One `container volume list --format json` entry, as much as pinfold needs.
