@@ -266,7 +266,7 @@ async fn run_transaction(
         &mut audit,
     )
     .await?;
-    let Received::Discovery(sources) = discovered else {
+    let Received::Discovery(resolutions) = discovered else {
         return Err(io::Error::other(
             "image-output: unexpected discovery result",
         ));
@@ -277,7 +277,7 @@ async fn run_transaction(
         let cache = request.cache;
         tokio::task::spawn_blocking(move || {
             let mut prepared = prepared;
-            select_bases(&mut prepared, sources, &labels, cache, &cancel)?;
+            select_bases(&mut prepared, resolutions, &labels, cache, &cancel)?;
             Ok(prepared)
         })
     };
@@ -552,7 +552,7 @@ fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<P
 
 fn select_bases(
     prepared: &mut Prepared,
-    sources: Vec<String>,
+    resolutions: Vec<catalog::Resolution>,
     labels: &BTreeMap<String, String>,
     cache: bool,
     cancel: &AtomicBool,
@@ -560,44 +560,69 @@ fn select_bases(
     let mut selected = BTreeMap::new();
     let mut remote = BTreeMap::new();
     let mut resolved = BTreeMap::new();
-    for identifier in sources {
+    for resolution in resolutions {
         check_cancel(cancel)?;
-        let (local, image) = if let Some(image) = identifier.strip_prefix("oci-layout://") {
-            (true, image)
-        } else if let Some(image) = identifier.strip_prefix("docker-image://") {
-            (false, image)
-        } else {
-            return Err(io::Error::other("image-output: unknown discovery source"));
-        };
-        let (reference, digest) = image
-            .rsplit_once('@')
-            .filter(|(reference, _)| !reference.is_empty())
-            .ok_or_else(|| io::Error::other("image-output: discovery source lacks digest"))?;
-        catalog::digest_hex(digest)?;
-        resolved.insert(identifier.clone(), digest.to_string());
-        if local {
-            let reference = reference.strip_suffix(":latest").unwrap_or(reference);
+        if resolution.requested.starts_with("oci-layout://") {
+            let index = resolution
+                .store
+                .as_deref()
+                .and_then(|store| store.strip_prefix("base"))
+                .and_then(|index| index.parse::<usize>().ok())
+                .filter(|index| {
+                    resolution.store.as_deref() == Some(format!("base{index}").as_str())
+                })
+                .ok_or_else(|| io::Error::other("image-output: invalid discovered local store"))?;
             let base = prepared
                 .contexts
-                .iter()
-                .find(|base| base.reference == reference && base.digest == digest)
+                .get(index)
                 .ok_or_else(|| io::Error::other("image-output: unknown discovered local base"))?;
-            selected.insert(reference.to_string(), base.clone());
-        } else {
-            if reference.starts_with("localhost/pinfold/") {
+            let identifier = format!("oci-layout://{}@{}", base.reference, base.digest);
+            if resolution.requested != identifier
+                || resolution.effective != identifier
+                || resolution.digest != base.digest
+            {
                 return Err(io::Error::other(
-                    "image-output: managed base resolved through registry",
+                    "image-output: local resolution identity mismatch",
                 ));
             }
-            let source = format!("docker-image://{reference}");
+            resolved.insert(identifier, resolution.digest);
+            selected.insert(base.reference.clone(), base.clone());
+        } else {
+            if resolution.store.is_some() {
+                return Err(io::Error::other(
+                    "image-output: external resolution has local store",
+                ));
+            }
+            let pinned = |identifier: &str| -> io::Result<String> {
+                let image = identifier
+                    .strip_prefix("docker-image://")
+                    .ok_or_else(|| io::Error::other("image-output: unknown discovery source"))?;
+                let reference = if let Some((reference, digest)) = image.split_once('@') {
+                    if digest != resolution.digest {
+                        return Err(io::Error::other("image-output: resolution digest mismatch"));
+                    }
+                    reference
+                } else {
+                    image
+                };
+                if reference.is_empty() || reference.starts_with("localhost/pinfold/") {
+                    return Err(io::Error::other(
+                        "image-output: invalid or registry-resolved managed base",
+                    ));
+                }
+                Ok(format!("docker-image://{reference}@{}", resolution.digest))
+            };
+            pinned(&resolution.requested)?;
+            let target = pinned(&resolution.effective)?;
             if remote
-                .insert(source, identifier.clone())
-                .is_some_and(|previous| previous != identifier)
+                .insert(resolution.requested, target.clone())
+                .is_some_and(|previous| previous != target)
             {
                 return Err(io::Error::other(
                     "image-base-changed: remote source changed during discovery",
                 ));
             }
+            resolved.insert(target, resolution.digest);
         }
     }
     let ids: BTreeSet<_> = selected.values().map(|base| base.digest.clone()).collect();
@@ -743,7 +768,7 @@ fn conversion_base(
 }
 
 enum Received {
-    Discovery(Vec<String>),
+    Discovery(Vec<catalog::Resolution>),
     Oci(Verified),
     Root(String, u64),
 }

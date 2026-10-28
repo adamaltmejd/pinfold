@@ -790,7 +790,10 @@ normal retained run records; no credential values enter argv or files.
 
 Freeze caller context and local image metadata. A finite discovery guest
 uses pinned BuildKit's native Dockerfile frontend to resolve the reachable
-sources, including arguments, stages and COPY sources. It receives no
+sources, including arguments, stages and COPY sources. A helper compiled
+from that BuildKit version records resolver replies before empty-rootfs
+optimization. Local replies bind to the frozen request's exact OCI store
+and image identity. It receives no
 unrelated image layers. Lease and validate only the local identities it
 selects, then supply those complete OCI contexts to the build guest,
 including normalized `:latest` names. Deleted identities fail preparation;
@@ -899,9 +902,12 @@ builds it. Both install like a harness, into
 names Firecracker's and the kernel's, on the first `up`.
 
 `builder-root/` separately builds a Linux x64 bootstrap from a signed Debian
-snapshot, an exact package closure and pinned BuildKit binaries. It emits
+snapshot, an exact package closure and pinned BuildKit binaries. It compiles
+the discovery helper from that BuildKit source and vendor tree using a
+pinned Go compiler, with module downloads disabled. Go is a producer input;
+the consumer needs no host Go installation. It emits
 a tar.gz ext4 root, manifest and SHA256SUMS; the workflow only builds.
-It requires Linux root, Python 3.11+, debootstrap, GnuPG, curl 8.4+,
+It requires Linux root, Python 3.11.4+, debootstrap, GnuPG, curl 8.4+,
 e2fsprogs and GNU tar. `crates/pinfold/builder.toml` embeds the reviewed
 archive, raw-root and recipe identities. The draft consumer has no public
 download URL: a cache miss fails with `builder-unavailable` until separate

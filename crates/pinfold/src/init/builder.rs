@@ -25,7 +25,6 @@ const LOG_BYTES: usize = 64 * 1024;
 // Candidate admission cap; final runtime policy still needs boundary evidence.
 const OUTPUT_BYTES: u64 = 512 * 1024 * 1024;
 const JSON_BYTES: u64 = 1024 * 1024;
-const DEFINITION_OPS: usize = 4096;
 const CAPABILITIES: u64 = 0xa82425fb;
 
 #[derive(Deserialize)]
@@ -442,16 +441,32 @@ fn stop_work() -> io::Result<()> {
 }
 
 fn build(job: &Job, log: Arc<Mutex<Tail>>) -> io::Result<()> {
-    let mut build = command("buildctl", job.phase != Phase::Convert);
+    let mut build = command(
+        if job.phase == Phase::Discover {
+            "pinfold-discover"
+        } else {
+            "buildctl"
+        },
+        job.phase != Phase::Convert,
+    );
+    if job.phase == Phase::Discover {
+        build.args(["--addr", SOCKET]);
+    } else {
+        build.args([
+            "build",
+            "--frontend",
+            "dockerfile.v0",
+            // Presence suppresses caller #syntax forwarding in the pinned frontend.
+            "--opt",
+            "cmdline=",
+        ]);
+        if !job.cache {
+            build.arg("--no-cache");
+        }
+    }
     build.args([
-        "build",
         "--source-policy-file",
         "/input/source-policy.json",
-        "--frontend",
-        "dockerfile.v0",
-        // Presence suppresses caller #syntax forwarding in the pinned frontend.
-        "--opt",
-        "cmdline=",
         "--local",
         "context=/input/context",
         "--local",
@@ -463,9 +478,6 @@ fn build(job: &Job, log: Arc<Mutex<Tail>>) -> io::Result<()> {
         "--opt",
         "cgroup-parent=/work/jobs",
     ]);
-    if !job.cache {
-        build.arg("--no-cache");
-    }
     if job.phase != Phase::Convert {
         build.args(["--opt", "image-resolve-mode=pull"]);
         for name in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
@@ -499,37 +511,8 @@ fn build(job: &Job, log: Arc<Mutex<Tail>>) -> io::Result<()> {
         ));
     }
     if job.phase == Phase::Discover {
-        build.args(["--opt", "requestid=frontend.convertllb"]);
         let bytes = capture_discovery(build, log)?;
-        let result = bytes
-            .strip_prefix(b"result.json\n")
-            .ok_or_else(|| io::Error::other("discovery: missing native frontend result"))?;
-        let result: serde_json::Value = serde_json::from_slice(result)
-            .map_err(|_| io::Error::other("discovery: invalid native frontend result"))?;
-        let definition = result
-            .get("def")
-            .and_then(serde_json::Value::as_object)
-            .filter(|definition| definition.len() <= DEFINITION_OPS)
-            .ok_or_else(|| io::Error::other("resource: discovery definition"))?;
-        let mut sources = BTreeSet::new();
-        for operation in definition.values() {
-            if let Some(source) = operation.get("source") {
-                let identifier = source
-                    .get("identifier")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| io::Error::other("discovery: invalid native source"))?;
-                if identifier.starts_with("oci-layout://")
-                    || identifier.starts_with("docker-image://")
-                {
-                    sources.insert(identifier.to_string());
-                }
-            }
-        }
-        let metadata = serde_json::to_vec(&serde_json::json!({"sources": sources}))?;
-        if metadata.len() as u64 > JSON_BYTES {
-            return Err(io::Error::other("resource: discovery sources"));
-        }
-        return fs::write("/work/discovery.json", metadata);
+        return fs::write("/work/discovery.json", bytes);
     }
     build.arg("--output").arg(if job.phase == Phase::Convert {
         "type=tar,dest=/work/root.tar"

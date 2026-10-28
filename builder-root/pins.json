@@ -4,9 +4,23 @@
   "release_signature_sha256": "9f80d5c8e4f9fd918a8b4fedd35c00ecc6c1a3ca9eddbc981c83823d4a4b8dc4",
   "packages_sha256": "7778d3e3f303b7ddb8ce0fe7c8d57473a076c6bf2e8f241f75421d2396352498",
   "keyring_sha256": "312f12f3a3043d9aadc5ba532410dab2b45f91eb76230e7509bf6ced903738d4",
+  "go": {
+    "version": "1.26.10",
+    "published": "2026-10-19",
+    "url": "https://go.dev/dl/go1.26.10.linux-amd64.tar.gz",
+    "sha256": "ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5"
+  },
   "buildkit": {
     "version": "0.34.1",
+    "commit": "f5b59a1f2fb25a0cb7072c398cab9aed7835da4e",
     "url": "https://github.com/moby/buildkit/releases/download/v0.34.1/buildkit-v0.34.1.linux-amd64.tar.gz",
-    "sha256": "a59539daf547fe0958efe2d07e41c0a6944e1112a66d7e519ec1cf5b673ef15b"
+    "sha256": "a59539daf547fe0958efe2d07e41c0a6944e1112a66d7e519ec1cf5b673ef15b",
+    "source_url": "https://codeload.github.com/moby/buildkit/tar.gz/f5b59a1f2fb25a0cb7072c398cab9aed7835da4e",
+    "source_sha256": "6608d2ee63bedf99e1e3fecbfa19868c36f34a402c410a9605529986632816c3",
+    "source_files": {
+      "go.mod": "9114ace60db407b7b70eccc340cda6cc5ff3313400afbdd8e1f14849bc244fb3",
+      "go.sum": "35904aa6f9ae03717b2ee03ed55e6f026de822f556e37491801d13cf13fb9e46",
+      "vendor/modules.txt": "d7484cb1c241d6e6a52a2d79e3b96a6c67bae4f41b2a549396844aae7414bcea"
+    }
   }
 }

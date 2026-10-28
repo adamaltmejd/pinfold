@@ -1,7 +1,7 @@
-# Reviewed phase 6a bytes, preserved in the bootstrap evidence bundle.
+# Candidate helper bootstrap bytes, preserved in the integration evidence bundle.
 # Public distribution is awaiting approval. No download URL is pinned.
-archive_sha256 = "e7dd1ab60072ee99ff387e21ac34791b1285c950f439f0d1ef0a5c54a41823e0"
-archive_bytes = 114456820
-root_sha256 = "710189b13d814e4026e1095bd393dad99465e4042ced5dae069c59fd79cbaa80"
+archive_sha256 = "09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4"
+archive_bytes = 122578909
+root_sha256 = "ef1aaa0fe1c6cafaa57bd4615ed6a077fe2cd27adc4a114792401bf6d1de1968"
 root_bytes = 1073741824
-recipe_sha256 = "d985bd63260afaedcbaf90c3fbfc95f5d077b03cd13407137c3b4c4724ac5e0f"
+recipe_sha256 = "d4fea170a1a33385e33951a981e649fc6b07053c5e965b99dc620719e744c30c"

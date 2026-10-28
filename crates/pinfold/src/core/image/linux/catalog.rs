@@ -101,11 +101,11 @@ fn success(stream: &mut impl Read, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Native frontend discovery returns one bounded JSON receipt, then success.
-pub fn receive_discovery(stream: &mut impl Read) -> io::Result<Vec<String>> {
+pub fn receive_discovery(stream: &mut impl Read) -> io::Result<Vec<Resolution>> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Discovery {
-        sources: Vec<String>,
+        resolutions: Vec<Resolution>,
     }
     let (kind, bytes) = frame_header(stream)?;
     let header: Header = serde_json::from_slice(&bytes).map_err(invalid_json)?;
@@ -120,18 +120,40 @@ pub fn receive_discovery(stream: &mut impl Read) -> io::Result<Vec<String>> {
     }
     success(stream, &bytes)?;
     let discovery: Discovery = serde_json::from_slice(&payload).map_err(invalid_json)?;
-    if discovery.sources.len() > OBJECT_MAX
-        || discovery.sources.iter().any(|source| {
-            source.len() > HEADER_MAX
-                || !source.is_ascii()
-                || source
+    if discovery.resolutions.len() > OBJECT_MAX {
+        return Err(invalid("image-output: discovery resolution limit"));
+    }
+    for resolution in &discovery.resolutions {
+        for value in [
+            Some(resolution.requested.as_str()),
+            Some(resolution.effective.as_str()),
+            resolution.store.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if value.is_empty()
+                || value.len() > HEADER_MAX
+                || !value.is_ascii()
+                || value
                     .bytes()
                     .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
-        })
-    {
-        return Err(invalid("image-output: invalid discovery sources"));
+            {
+                return Err(invalid("image-output: invalid discovery resolution"));
+            }
+        }
+        digest_hex(&resolution.digest)?;
     }
-    Ok(discovery.sources)
+    Ok(discovery.resolutions)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Resolution {
+    pub(super) requested: String,
+    pub(super) effective: String,
+    pub(super) digest: String,
+    pub(super) store: Option<String>,
 }
 
 /// A converter emits one `D` frame with digest/size and opaque root bytes,
