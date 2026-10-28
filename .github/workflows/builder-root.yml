@@ -1,0 +1,35 @@
+name: Builder root
+
+on:
+  pull_request:
+    paths:
+      - builder-root/**
+      - .github/workflows/builder-root.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build bootstrap
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq debootstrap gnupg curl ca-certificates e2fsprogs
+
+      - name: Build
+        run: sudo python3 builder-root/build.py dist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: builder-root
+          path: dist/*
+          if-no-files-found: error

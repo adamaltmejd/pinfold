@@ -1,0 +1,12 @@
+{
+  "snapshot": "https://snapshot.debian.org/archive/debian/20261020T000000Z",
+  "release_sha256": "ed56aac47e7911e65ee63aae8d67e29f20e023f840e49f8ed037043a33de138a",
+  "release_signature_sha256": "9f80d5c8e4f9fd918a8b4fedd35c00ecc6c1a3ca9eddbc981c83823d4a4b8dc4",
+  "packages_sha256": "7778d3e3f303b7ddb8ce0fe7c8d57473a076c6bf2e8f241f75421d2396352498",
+  "keyring_sha256": "312f12f3a3043d9aadc5ba532410dab2b45f91eb76230e7509bf6ced903738d4",
+  "buildkit": {
+    "version": "0.34.1",
+    "url": "https://github.com/moby/buildkit/releases/download/v0.34.1/buildkit-v0.34.1.linux-amd64.tar.gz",
+    "sha256": "a59539daf547fe0958efe2d07e41c0a6944e1112a66d7e519ec1cf5b673ef15b"
+  }
+}

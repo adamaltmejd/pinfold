@@ -821,6 +821,12 @@ builds it. Both install like a harness, into
 `~/.cache/pinfold/artifacts/vmm/<version>/<os-arch>/`, where `<version>`
 names Firecracker's and the kernel's, on the first `up`.
 
+`builder-root/` separately builds a Linux x64 bootstrap from a signed Debian
+snapshot, an exact package closure and pinned BuildKit binaries. It emits
+a tar.gz ext4 root, manifest and SHA256SUMS; the workflow only builds.
+It requires Linux root, Python 3.11+, debootstrap, GnuPG, curl 8.4+,
+e2fsprogs and GNU tar. The installed CLI does not consume it.
+
 codex also pins a host helper, `codex-app-server`, per host `os-arch`
 (`darwin-arm64`, `linux-x64`), installed the same way into
 `~/.cache/pinfold/artifacts/codex/<version>/host-<os-arch>/` on the first
