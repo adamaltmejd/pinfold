@@ -14,7 +14,8 @@ the job's received `oci/index.json`. It checked the descriptor's device,
 inode and regular-file type, found the CLI's actual Firecracker descendant,
 and killed that VMM through its pidfd. It then resumed the fsync without
 injecting an errno. The received index was 409 bytes. The kernel receipt
-records one kill, VMM death, supervisor exit 0 and CLI exit 1. There was no
+records one kill, VMM death and no supervisor error (`supervisor_errno=0`).
+The CLI exited 1; the supervisor propagated that same exit status. There was no
 synthetic stream, runtime replacement or host layer extraction.
 
 The CLI reported failed with an incomplete-read diagnostic after 18.525
