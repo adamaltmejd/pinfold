@@ -615,7 +615,7 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
         format!("{total} B measured; removing unused data")
     };
     println!("pinfold clean: {action}");
-    plan.print(runtime);
+    plan.print();
     if !dry_run {
         plan.remove(runtime)?;
     }
@@ -679,7 +679,7 @@ impl CleanPlan {
 
         Ok(CleanPlan {
             boxes,
-            build_cache_bytes: runtime.build_cache_bytes()?,
+            build_cache_bytes: image::service().build_cache_bytes()?,
             automatic_bytes: automatic
                 .iter()
                 .chain(&box_paths)
@@ -706,12 +706,18 @@ impl CleanPlan {
             + self.build_cache_bytes.unwrap_or(0)
     }
 
-    fn print(&self, runtime: &dyn Runtime) {
+    fn print(&self) {
         println!("  automatic maintenance: {} B", self.automatic_bytes);
         println!("  run records: {} B", self.run_bytes);
         match self.build_cache_bytes {
-            Some(bytes) => println!("  build cache: {bytes} B; {}", runtime.build_cache()),
-            None => println!("  build cache: unmeasured; {}", runtime.build_cache()),
+            Some(bytes) => println!(
+                "  build cache: {bytes} B; {}",
+                image::service().build_cache()
+            ),
+            None => println!(
+                "  build cache: unmeasured; {}",
+                image::service().build_cache()
+            ),
         }
         println!("  project state: {} B", self.project_state);
         println!("  disks: {} B", self.disk_bytes);
@@ -726,7 +732,7 @@ impl CleanPlan {
     fn remove(self, runtime: &dyn Runtime) -> io::Result<()> {
         clean::prune_boxes(runtime, &self.boxes)?;
         clean::prune_leftover_states(runtime)?;
-        runtime.purge_build_cache()?;
+        image::service().purge_build_cache()?;
         clean::remove_paths(self.automatic)?;
         clean::remove_paths(self.runs)?;
         let mut locks = BTreeMap::new();
@@ -752,7 +758,7 @@ impl CleanPlan {
             }
         }
         drop(locks);
-        clean::keep_two_images(runtime, None)
+        clean::keep_two_images(image::service(), None)
     }
 
     /// Whether `--unused` selects the project: not run for that long and no
@@ -881,7 +887,7 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     }
     match CleanPlan::measure(runtime, None) {
         Ok(plan) => {
-            plan.print(runtime);
+            plan.print();
             let total = plan.total();
             if total > 20 << 30 {
                 println!("  {total} B is over 20 GB; run `pinfold clean`");
@@ -954,7 +960,7 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
     let project = crate::pi::state::project_id(root);
     let [home_disk, project_disk] = crate::pi::state::disk_names(&project);
     let image = crate::pi::launch::resolve_image(config, &project);
-    let (image_built, image_error) = match runtime().resolve_image(&image) {
+    let (image_built, image_error) = match image::service().resolve_image(&image) {
         Ok(resolved) => (Some(resolved.is_ok()), None),
         Err(error) => (None, Some(error.to_string())),
     };
@@ -1059,7 +1065,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
         }
         _ => return Err(usage("build", "build takes no arguments or --profile NAME")),
     };
-    let runtime = runtime();
+    let images = image::service();
     // A project image records the profile image it was built from, so
     // `pinfold pi` warns when the profile image moves past it; a profile
     // image records the image its FROM pulls.
@@ -1068,7 +1074,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
             clean::PROJECT_LABEL,
             id,
             bytes,
-            runtime
+            images
                 .resolve_image(&profile.image_ref())?
                 .ok()
                 .map(|image| image.id),
@@ -1077,11 +1083,11 @@ pub fn build(args: &[String]) -> io::Result<i32> {
             clean::PROFILE_LABEL,
             &profile.name,
             &profile.containerfile,
-            image::base_digest(runtime, &profile.containerfile)?,
+            image::base_digest(images, &profile.containerfile)?,
         ),
     };
     let built = image::build(
-        runtime,
+        images,
         Build {
             label: Some(label),
             source,
@@ -1101,7 +1107,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
             eprint!("{output}");
             Err(io::Error::other(format!(
                 "the {} build failed",
-                runtime.program()
+                images.program()
             )))
         }
     }
@@ -1167,7 +1173,7 @@ fn image_rm(args: &[String]) -> io::Result<i32> {
     if let Err(error) = profile::check_name("image", name) {
         return Ok(refused(Some(name), error.to_string()));
     }
-    let removed = clean::remove_images(runtime(), name)?;
+    let removed = clean::remove_images(image::service(), name)?;
     println!(
         "{}",
         serde_json::json!({

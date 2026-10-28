@@ -82,7 +82,9 @@ One runtime per OS, not configurable:
 
 Anything else is refused: podman or docker as a box runtime, Firecracker
 under its own jailer or outside pinfold's VMM jail. Nothing warns at run
-time; `doctor` reports the runtime. On Linux, rootless podman 6.1.4+ builds images.
+time; `doctor` reports the runtime. Image operations use Apple `container`
+on macOS and rootless podman 6.1.4+ on Linux, independently of the box
+execution interface. Common core owns image retention and in-use protection.
 
 Preflight refuses box startup on older, prerelease or unrecognized runtime
 versions. Inventory and cleanup remain available on older versions.
@@ -743,8 +745,8 @@ profile image.
   names an explicit platform. An unresolved platform is not pulled.
   The empty `scratch` base has no digest and is not pulled.
 
-On Linux a box boots its image as a read-only ext4 root disk: podman
-exports the image and `mkfs.ext4 -d` writes it, inside podman's user
+Firecracker preparation derives a read-only ext4 boot root from the image:
+podman exports the image and `mkfs.ext4 -d` writes it, inside podman's user
 namespace so files keep their image owners. The disk is made at the first
 `up` of an image id, at `~/.cache/pinfold/root/<id>.ext4`, and goes when
 the image goes.

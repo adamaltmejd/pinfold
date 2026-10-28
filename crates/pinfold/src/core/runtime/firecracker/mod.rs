@@ -18,11 +18,9 @@ use nix::unistd::Pid;
 pub use vm::{Prepared, Vm, prepare};
 
 use crate::core::artifacts::VMM;
+use crate::core::image::podman;
 use crate::core::ownership;
-use crate::core::runtime::podman;
-use crate::core::runtime::{
-    BoxInfo, BoxStat, BuildRequest, DiskInfo, ImageInfo, MemoryStat, PidsStat, Runtime, output,
-};
+use crate::core::runtime::{BoxInfo, BoxStat, DiskInfo, MemoryStat, PidsStat, Runtime, output};
 use crate::dirs;
 
 /// Firecracker, run by pinfold itself.
@@ -138,26 +136,6 @@ impl Runtime for Firecracker {
             .collect())
     }
 
-    fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
-        podman::list_images()
-    }
-
-    fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageInfo, String>> {
-        podman::resolve_image(reference)
-    }
-
-    fn remove_image(&self, reference: &str) -> io::Result<()> {
-        podman::remove_image(reference)
-    }
-
-    fn purge_build_cache(&self) -> io::Result<()> {
-        podman::purge_build_cache()
-    }
-
-    fn build_cache(&self) -> &'static str {
-        "the dev.pinfold.layer intermediate images no image builds on"
-    }
-
     fn list_disks(&self) -> io::Result<Vec<DiskInfo>> {
         let dir = disks_dir()?;
         let mut disks = Vec::new();
@@ -217,14 +195,6 @@ impl Runtime for Firecracker {
     /// write it completed is already in the image file.
     fn sync_disk(&self, name: &str) -> io::Result<()> {
         fs::File::open(disk_path(name)?)?.sync_all()
-    }
-
-    fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
-        podman::build(request)
-    }
-
-    fn program(&self) -> &'static str {
-        "podman"
     }
 
     fn describe(&self) -> &'static str {

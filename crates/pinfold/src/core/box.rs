@@ -224,15 +224,17 @@ impl Box {
             .expect("a validated spec has an image after profile resolution");
         // The runtime resolves the reference, so every spelling it resolves
         // locally is accepted. It is still given `image`, not the id.
-        let identity = runtime.resolve_image(&image)?.map_err(|message| {
-            refused(
-                &plan,
-                RefusalReason::ImageMissing,
-                format!(
-                    "image {image:?} is not present locally; build or pull it first: {message}"
-                ),
-            )
-        })?;
+        let identity = crate::core::image::service()
+            .resolve_image(&image)?
+            .map_err(|message| {
+                refused(
+                    &plan,
+                    RefusalReason::ImageMissing,
+                    format!(
+                        "image {image:?} is not present locally; build or pull it first: {message}"
+                    ),
+                )
+            })?;
         let seeding = seeds
             .map(|seeds| home_disk(&plan, seeds))
             .transpose()
