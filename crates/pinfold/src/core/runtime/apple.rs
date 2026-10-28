@@ -14,6 +14,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
+use crate::core::disk::{self, Fill, Seeding};
 use crate::core::image::service::inspect;
 use crate::core::image::{BuildRequest, ImageInfo, ImageService};
 use crate::core::plan::Plan;
@@ -207,6 +208,31 @@ impl Runtime for Apple {
             .and_then(|value| value.split_whitespace().next())
             .unwrap_or(&reported);
         super::require_version("container", version, [1, 6, 0])
+    }
+
+    fn finish_start(
+        &self,
+        name: &str,
+        init: &Path,
+        proxy_socket: Option<&Path>,
+        fills: &[Fill],
+        seeding: Option<&Seeding>,
+    ) -> io::Result<BoxInfo> {
+        // Init can report ready before Apple records the box running.
+        // Wait even without egress, before the caller's first exec.
+        let actual = wait_until_running(name)?;
+        if proxy_socket.is_some() {
+            make_proxy_connectable(name)?;
+        }
+        for fill in fills {
+            copy_in(name, init, &fill.guest, false, |out| disk::send(fill, out))?;
+        }
+        if let Some(seeding) = seeding {
+            copy_in(name, init, &seeding.guest, true, |out| {
+                disk::send_seeds(&seeding.relative, &seeding.seeds, out)
+            })?;
+        }
+        Ok(actual)
     }
 
     fn down(&self, name: &str) -> io::Result<()> {
@@ -451,7 +477,7 @@ impl Runtime for Apple {
 /// Wait, bounded, until `list` reports box `name` running. Apple records
 /// `.running` only after the box's first process starts, so `ready` can
 /// arrive first; an exec is refused in that gap.
-pub fn wait_until_running(name: &str) -> io::Result<BoxInfo> {
+fn wait_until_running(name: &str) -> io::Result<BoxInfo> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let state = Apple.list()?.into_iter().find(|box_| box_.id == name);
@@ -470,7 +496,7 @@ pub fn wait_until_running(name: &str) -> io::Result<BoxInfo> {
 
 /// Make the forwarded proxy socket in box `name` connectable by the box
 /// user: it arrives root-owned and mode 000. The one transient root exec.
-pub fn make_proxy_connectable(name: &str) -> io::Result<()> {
+fn make_proxy_connectable(name: &str) -> io::Result<()> {
     output(&[
         "container",
         "exec",
@@ -487,7 +513,7 @@ pub fn make_proxy_connectable(name: &str) -> io::Result<()> {
 /// Run `init receive GUEST` in box `name` as the box user with `stream`
 /// written to its stdin: a new disk's `from` copy, or with `missing`, the
 /// profile's seeds, each written only when absent.
-pub fn copy_in(
+fn copy_in(
     name: &str,
     init: &Path,
     guest: &Path,
