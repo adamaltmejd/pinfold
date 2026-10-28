@@ -523,6 +523,39 @@ fn a_changed_project_file_stops_the_run() {
     let stderr = String::from_utf8_lossy(&started.stderr);
     assert!(stderr.contains("sync-failed"), "no sync failure: {stderr}");
 
+    // Adding an explicit image changes trusted bytes even when it names
+    // the image the project already ran. Sabotage: omit `image` from the
+    // project trust input, or skip trust for explicit-image launches.
+    e2e::profile_containerfile(&env, "default", "FROM scratch\n");
+    fs::write(
+        &config,
+        format!(
+            "{}image = {:?}\n",
+            fs::read_to_string(&config).unwrap(),
+            default_image(&env)
+        ),
+    )
+    .unwrap();
+    for args in [&["pi", "--version"][..], &["fetch"][..], &["build"][..]] {
+        refused(args);
+    }
+    allow(&env, root);
+    let started = run_ok(&mut pinfold_in(&env, root, &["pi", "--version"]));
+    // Sabotage: compare an explicit image with its unrelated profile
+    // recipe; the managed-image freshness warning is then false.
+    assert!(
+        !String::from_utf8_lossy(&started.stderr).contains("image-outdated"),
+        "an explicit image was judged against the profile recipe"
+    );
+    // Trust is checked before the explicit-image build refusal. Sabotage:
+    // fall back to the profile recipe; this starts a build instead.
+    let no_recipe = pinfold_in(&env, root, &["build"]).output().unwrap();
+    assert!(!no_recipe.status.success(), "an explicit image was rebuilt");
+    assert!(
+        String::from_utf8_lossy(&no_recipe.stderr).contains("image-no-recipe"),
+        "{no_recipe:?}"
+    );
+
     // The project's own Containerfile is trusted the same way: a change to
     // it stops both the run and the build until `pinfold allow` records the
     // new bytes.
@@ -530,9 +563,11 @@ fn a_changed_project_file_stops_the_run() {
         repository: format!("localhost/pinfold/project-{}", project_id(&env, root)),
     };
     let containerfile = root.join("Containerfile.pinfold");
+    // The project recipe also works with a configuration-only profile.
+    fs::create_dir_all(env.config.join("pinfold/profiles/e2e-project-recipe")).unwrap();
     fs::write(
         &config,
-        "containerfile = \"Containerfile.pinfold\"\nallow = [\"example.com\"]\n",
+        "profile = \"e2e-project-recipe\"\ncontainerfile = \"Containerfile.pinfold\"\nallow = [\"example.com\"]\n",
     )
     .expect("point .pinfold.toml at the project Containerfile");
     fs::write(
@@ -592,7 +627,16 @@ fn the_launch_record_is_the_applied_policy() {
     // replaced by another tag; on both runtimes the built profile image
     // reads as not built.
     let env = TestEnv::new("pi-launch");
-    default_image(&env);
+    let selected_image = default_image(&env);
+    let selected_id = e2e::image_id(selected_image).expect("the runtime holds the selected image");
+    // A configuration-only profile supplies native files independently of
+    // the explicit image. Sabotage: require its Containerfile, omit its
+    // seeds/share, or make the share writable; the real guest fails below.
+    let profile_dir = env.config.join("pinfold/profiles/e2e-launch");
+    fs::create_dir_all(profile_dir.join("home")).unwrap();
+    fs::create_dir_all(profile_dir.join("share")).unwrap();
+    fs::write(profile_dir.join("home/seed"), "seed-one").unwrap();
+    fs::write(profile_dir.join("share/fixture"), "share-one").unwrap();
     let project = test_dir(&env, "project");
     git(project.as_path(), &["init", "-q"]);
     let service = HttpFixture::start(Some(("text/plain", "service")));
@@ -602,7 +646,7 @@ fn the_launch_record_is_the_applied_policy() {
     fs::write(
         &config,
         format!(
-            "allow = [\"registry.npmjs.org\"]\ncpus = 2\nmemory = \"1G\"\n[routes]\n'service.internal' = '{}'\n[routes.'inject.internal']\nto = '{upstream_origin}'\nheaders = {{ Authorization = {{ from = \"PINFOLD_E2E_LAUNCH_KEY\", prefix = \"Bearer \" }} }}\n",
+            "profile = \"e2e-launch\"\nimage = \"{selected_image}\"\nallow = [\"registry.npmjs.org\"]\ncpus = 2\nmemory = \"1G\"\n[routes]\n'service.internal' = '{}'\n[routes.'inject.internal']\nto = '{upstream_origin}'\nheaders = {{ Authorization = {{ from = \"PINFOLD_E2E_LAUNCH_KEY\", prefix = \"Bearer \" }} }}\n",
             service.route()
         ),
     )
@@ -624,7 +668,7 @@ fn the_launch_record_is_the_applied_policy() {
     assert_eq!(
         report["image_built"].as_bool(),
         Some(true),
-        "the profile image default_image built was reported not built: {report}"
+        "the selected local image was reported not built: {report}"
     );
     assert_eq!(report["project"]["home"], "/home/pi", "{report}");
     let home_disk = report["project"]["disks"]["home"]
@@ -689,6 +733,21 @@ fn the_launch_record_is_the_applied_policy() {
         ],
     );
     let run_id = pi_run_id(&env, &name);
+    let files = box_exec(
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            "cat \"$HOME/seed\" /opt/pinfold/profile/fixture && printf user-kept > \"$HOME/seed\" && ! { printf guest-write > /opt/pinfold/profile/fixture; }",
+        ],
+    );
+    assert_ok(&files, "reading seeds and refusing a profile share write");
+    assert_eq!(files.stdout, "seed-oneshare-one");
+    assert_eq!(
+        fs::read_to_string(profile_dir.join("share/fixture")).unwrap(),
+        "share-one"
+    );
 
     // PINFOLD_ENV_SECRET arrives as SECRET, and never shows in host `ps`
     // while the box runs.
@@ -818,7 +877,8 @@ fn the_launch_record_is_the_applied_policy() {
         &config,
         fs::read_to_string(&config)
             .unwrap()
-            .replace("registry.npmjs.org", "example.com"),
+            .replace("registry.npmjs.org", "example.com")
+            .replace(selected_image, "localhost/pinfold/e2e-unselected:missing"),
     )
     .unwrap();
     let report = config_json(&env, project.as_path());
@@ -851,6 +911,10 @@ fn the_launch_record_is_the_applied_policy() {
     );
     assert_eq!(launch["cpus"], 1.0);
     assert_eq!(launch["memory"], "512M");
+    // Sabotage: resolve image identity from current project config at
+    // inspection time. The host's runtime inventory supplies the id.
+    assert_eq!(launch["image"]["ref"], selected_image);
+    assert_eq!(launch["image"]["id"], selected_id);
 
     // The started list still decides: the environment's host passes; the
     // file's host at start and the changed file's host are refused before
@@ -896,6 +960,35 @@ fn the_launch_record_is_the_applied_policy() {
     for needle in [&secret, &header] {
         holding(&env.state, needle.as_bytes(), &mut Vec::new());
     }
+
+    // Host-owned profile changes need no project reapproval and do not
+    // reset a persistent home. Sabotage: overwrite existing seeds on
+    // startup, cache share bytes across starts, or recreate disks when
+    // profile files change. The guest's edited seed must survive.
+    fs::write(profile_dir.join("home/seed"), "seed-two").unwrap();
+    fs::write(profile_dir.join("share/fixture"), "share-two").unwrap();
+    fs::write(
+        &config,
+        fs::read_to_string(&config)
+            .unwrap()
+            .replace("localhost/pinfold/e2e-unselected:missing", selected_image),
+    )
+    .unwrap();
+    allow(&env, project.as_path());
+    fs::write(profile_dir.join("home/seed"), "seed-three").unwrap();
+    let (run, _, name) = PiRpc::start(&env, project.as_path());
+    let files = box_exec(
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            "cat \"$HOME/seed\" /opt/pinfold/profile/fixture",
+        ],
+    );
+    assert_ok(&files, "reading retained seed and current share");
+    assert_eq!(files.stdout, "user-keptshare-two");
+    assert!(run.finish().success(), "the profile update run failed");
 }
 
 #[test]
@@ -1025,6 +1118,123 @@ fn a_caller_reads_the_effective_configuration_as_data() {
             report["egress"]["allow"],
             serde_json::json!(["api.github.com"])
         );
+    }
+
+    // Image sources are selected after layering. Sabotage: ignore a
+    // profile's image, prefer a recipe over an explicit image, or require
+    // every profile to hold a Containerfile. Each expected reference and
+    // source below comes from the fixture's own declared inputs.
+    let recipe = profile_dir.join("Containerfile");
+    fs::write(project.join("recipe"), "FROM scratch\n").unwrap();
+    git(project.as_path(), &["init", "-q"]);
+    let owned_trees = || {
+        [&offline.state, &offline.config, &offline.root.join("cache")]
+            .into_iter()
+            .map(|directory| crate::cli::host_tree(directory))
+            .collect::<Vec<_>>()
+    };
+    for (project_inputs, profile_inputs, has_recipe, source, image, containerfile) in [
+        (
+            "",
+            "",
+            true,
+            "profile",
+            format!("localhost/pinfold/profile-{profile}:latest"),
+            Some("profile"),
+        ),
+        (
+            "",
+            "image = 'localhost/fixture-profile:local'\n",
+            true,
+            "explicit",
+            "localhost/fixture-profile:local".to_string(),
+            None,
+        ),
+        (
+            "image = 'localhost/fixture-project:local'\n",
+            "image = 'localhost/fixture-profile:local'\n",
+            false,
+            "explicit",
+            "localhost/fixture-project:local".to_string(),
+            None,
+        ),
+        (
+            "containerfile = 'recipe'\n",
+            "",
+            false,
+            "project",
+            String::new(),
+            Some("recipe"),
+        ),
+    ] {
+        fs::write(&project_config, format!("{valid_project}{project_inputs}")).unwrap();
+        fs::write(&profile_config, format!("{valid_profile}{profile_inputs}")).unwrap();
+        if has_recipe {
+            fs::write(&recipe, "FROM scratch\n").unwrap();
+        } else if recipe.exists() {
+            fs::remove_file(&recipe).unwrap();
+        }
+        let before = owned_trees();
+        let output = run_ok(
+            pinfold_in(&offline, project.as_path(), &["config"]).env("PATH", empty.as_path()),
+        );
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["image_source"], source, "{report}");
+        if source != "project" {
+            assert_eq!(report["image"], image, "{report}");
+        }
+        assert_eq!(report["containerfile"], serde_json::json!(containerfile));
+        assert!(report["image_built"].is_null(), "{report}");
+        assert_eq!(owned_trees(), before, "config wrote pinfold files");
+    }
+
+    // A profile image conflicts with a project recipe just as a project
+    // image does. Missing and empty selections are distinct refusals.
+    // Sabotage: choose silently on conflict, accept no image source, or
+    // create box/project state before Config::load rejects. Config changes
+    // no files; working commands may perform ordinary daily maintenance.
+    for (project_inputs, profile_inputs, reason) in [
+        (
+            "containerfile = 'recipe'\n",
+            "image = 'localhost/fixture-profile:local'\n",
+            "image-source-conflict",
+        ),
+        ("", "", "image-source-missing"),
+        ("image = ''\n", "", "image-invalid"),
+    ] {
+        fs::write(&project_config, format!("{valid_project}{project_inputs}")).unwrap();
+        fs::write(&profile_config, format!("{valid_profile}{profile_inputs}")).unwrap();
+        let before = owned_trees();
+        for args in [
+            &["config"][..],
+            &["pi", "--version"][..],
+            &["build"][..],
+            &["allow"][..],
+        ] {
+            let output = pinfold_in(&offline, project.as_path(), args)
+                .env("PATH", empty.as_path())
+                .output()
+                .expect("refuse an invalid image selection");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!output.status.success(), "{args:?} accepted {reason}");
+            assert!(stderr.contains(reason), "wrong refusal: {stderr}");
+            if args == ["config"] {
+                assert_eq!(owned_trees(), before, "config wrote pinfold files");
+            }
+        }
+        for directory in ["boxes", "projects", "disks", "runs"] {
+            assert!(
+                !offline.state.join("pinfold").join(directory).exists(),
+                "{reason} created {directory} state"
+            );
+        }
+        fs::write(
+            &project_config,
+            format!("{valid_project}image = 'localhost/fixture-project:local'\n"),
+        )
+        .unwrap();
+        fs::write(&profile_config, valid_profile).unwrap();
+        run_ok(pinfold_in(&offline, project.as_path(), &["config"]).env("PATH", empty.as_path()));
     }
 }
 
