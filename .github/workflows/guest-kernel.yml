@@ -71,7 +71,7 @@ jobs:
           path: dist
 
       # A prerelease is never the latest release, which `pinfold update`
-      # reads. An existing tag fails the create; a new build needs new pins.
+      # reads. A new build needs new pins.
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
