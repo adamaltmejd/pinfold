@@ -1,0 +1,100 @@
+{
+  "artifact": {
+    "bytes": 122578909,
+    "name": "pinfold-builder-linux-x64-09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4.tar.gz",
+    "sha256": "09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4"
+  },
+  "bit_identical_filesystem": false,
+  "debian_packages": 85,
+  "discovery_helper": {
+    "binary": {
+      "bytes": 22282402,
+      "path": "/usr/local/bin/pinfold-discover",
+      "sha256": "0b8927187764740c328a245e21c44a08cb419aa93911d3be624e4c943f2907d0"
+    },
+    "build_info": "/home/agent/builder-root-4w5yhawz/root/usr/local/bin/pinfold-discover: go1.26.10\n\tpath\tgithub.com/moby/buildkit/cmd/pinfold-discover\n\tmod\tgithub.com/moby/buildkit\t(devel)\t\n\tdep\tgithub.com/agext/levenshtein\tv1.2.3\t\n\tdep\tgithub.com/cespare/xxhash/v2\tv2.3.0\t\n\tdep\tgithub.com/containerd/console\tv1.0.5\t\n\tdep\tgithub.com/containerd/containerd/api\tv1.12.0\t\n\tdep\tgithub.com/containerd/containerd/v2\tv2.4.1\t\n\tdep\tgithub.com/containerd/continuity\tv0.5.0\t\n\tdep\tgithub.com/containerd/errdefs\tv1.0.0\t\n\tdep\tgithub.com/containerd/errdefs/pkg\tv0.3.0\t\n\tdep\tgithub.com/containerd/log\tv0.2.0\t\n\tdep\tgithub.com/containerd/log/otel\tv0.1.0\t\n\tdep\tgithub.com/containerd/platforms\tv1.0.0-rc.5\t\n\tdep\tgithub.com/containerd/stargz-snapshotter/estargz\tv0.18.2\t\n\tdep\tgithub.com/containerd/ttrpc\tv1.2.10\t\n\tdep\tgithub.com/containerd/typeurl/v2\tv2.3.0\t\n\tdep\tgithub.com/cyphar/filepath-securejoin\tv0.7.0\t\n\tdep\tgithub.com/distribution/reference\tv0.6.0\t\n\tdep\tgithub.com/docker/cli\tv29.8.2+incompatible\t\n\tdep\tgithub.com/docker/docker-credential-helpers\tv0.9.9\t\n\tdep\tgithub.com/docker/go-units\tv0.5.0\t\n\tdep\tgithub.com/felixge/httpsnoop\tv1.1.0\t\n\tdep\tgithub.com/go-logr/logr\tv1.4.4\t\n\tdep\tgithub.com/go-logr/stdr\tv1.2.2\t\n\tdep\tgithub.com/gofrs/flock\tv0.13.1\t\n\tdep\tgithub.com/gohugoio/hashstructure\tv0.6.0\t\n\tdep\tgithub.com/google/shlex\tv0.0.0-20191202100458-e7afc7fbc510\t\n\tdep\tgithub.com/google/uuid\tv1.6.0\t\n\tdep\tgithub.com/grpc-ecosystem/grpc-gateway/v2\tv2.30.0\t\n\tdep\tgithub.com/hashicorp/go-cleanhttp\tv0.5.2\t\n\tdep\tgithub.com/in-toto/attestation\tv1.2.0\t\n\tdep\tgithub.com/in-toto/in-toto-golang\tv0.11.0\t\n\tdep\tgithub.com/klauspost/compress\tv1.20.1\t\n\tdep\tgithub.com/moby/docker-image-spec\tv1.3.1\t\n\tdep\tgithub.com/moby/go-archive\tv0.2.0\t\n\tdep\tgithub.com/moby/locker\tv1.0.1\t\n\tdep\tgithub.com/moby/patternmatcher\tv0.6.1\t\n\tdep\tgithub.com/moby/sys/mountinfo\tv0.7.2\t\n\tdep\tgithub.com/moby/sys/signal\tv0.7.1\t\n\tdep\tgithub.com/moby/sys/user\tv0.4.1\t\n\tdep\tgithub.com/moby/sys/userns\tv0.2.1\t\n\tdep\tgithub.com/morikuni/aec\tv1.1.0\t\n\tdep\tgithub.com/opencontainers/go-digest\tv1.0.0\t\n\tdep\tgithub.com/opencontainers/image-spec\tv1.1.1\t\n\tdep\tgithub.com/opencontainers/runtime-spec\tv1.3.0\t\n\tdep\tgithub.com/pkg/errors\tv0.9.1\t\n\tdep\tgithub.com/planetscale/vtprotobuf\tv0.6.1-0.20240319094008-0393e58bdf10\t\n\tdep\tgithub.com/secure-systems-lab/go-securesystemslib\tv0.11.0\t\n\tdep\tgithub.com/shibumi/go-pathspec\tv1.3.0\t\n\tdep\tgithub.com/sirupsen/logrus\tv1.10.2\t\n\tdep\tgithub.com/tonistiigi/dchapes-mode\tv0.0.0-20250318174251-73d941a28323\t\n\tdep\tgithub.com/tonistiigi/fsutil\tv0.0.0-20260819142231-83cac42c1c52\t\n\tdep\tgithub.com/tonistiigi/go-csvvalue\tv0.0.0-20240814133006-030d3b2625d0\t\n\tdep\tgithub.com/tonistiigi/units\tv0.0.0-20180711220420-6950e57a87ea\t\n\tdep\tgithub.com/tonistiigi/vt100\tv0.0.0-20240514184818-90bafcd6abab\t\n\tdep\tgithub.com/vbatts/tar-split\tv0.12.3\t\n\tdep\tgo.etcd.io/bbolt\tv1.5.0\t\n\tdep\tgo.opentelemetry.io/auto/sdk\tv1.2.1\t\n\tdep\tgo.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc\tv0.71.0\t\n\tdep\tgo.opentelemetry.io/contrib/instrumentation/net/http/httptrace/otelhttptrace\tv0.71.0\t\n\tdep\tgo.opentelemetry.io/contrib/instrumentation/net/http/otelhttp\tv0.71.0\t\n\tdep\tgo.opentelemetry.io/otel\tv1.46.0\t\n\tdep\tgo.opentelemetry.io/otel/exporters/otlp/otlptrace\tv1.46.0\t\n\tdep\tgo.opentelemetry.io/otel/metric\tv1.46.0\t\n\tdep\tgo.opentelemetry.io/otel/sdk\tv1.46.0\t\n\tdep\tgo.opentelemetry.io/otel/trace\tv1.46.0\t\n\tdep\tgo.opentelemetry.io/proto/otlp\tv1.11.0\t\n\tdep\tgolang.org/x/crypto\tv0.57.0\t\n\tdep\tgolang.org/x/net\tv0.59.0\t\n\tdep\tgolang.org/x/sync\tv0.23.0\t\n\tdep\tgolang.org/x/sys\tv0.48.0\t\n\tdep\tgolang.org/x/text\tv0.42.0\t\n\tdep\tgolang.org/x/time\tv0.16.0\t\n\tdep\tgoogle.golang.org/genproto/googleapis/api\tv0.0.0-20260825221802-da73d73af1c5\t\n\tdep\tgoogle.golang.org/genproto/googleapis/rpc\tv0.0.0-20260825221802-da73d73af1c5\t\n\tdep\tgoogle.golang.org/grpc\tv1.84.0\t\n\tdep\tgoogle.golang.org/protobuf\tv1.36.12\t\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\t-trimpath=true\n\tbuild\tCGO_ENABLED=0\n\tbuild\tGOARCH=amd64\n\tbuild\tGOOS=linux\n\tbuild\tGOAMD64=v1\n",
+    "buildkit_commit": "f5b59a1f2fb25a0cb7072c398cab9aed7835da4e",
+    "buildkit_source_sha256": "6608d2ee63bedf99e1e3fecbfa19868c36f34a402c410a9605529986632816c3",
+    "command": [
+      "/home/agent/builder-root-4w5yhawz/go-source/go/bin/go",
+      "build",
+      "-mod=vendor",
+      "-trimpath",
+      "-buildvcs=false",
+      "-ldflags",
+      "-s -w -X github.com/moby/buildkit/version.Version=v0.34.1 -X github.com/moby/buildkit/version.Revision=f5b59a1f2fb25a0cb7072c398cab9aed7835da4e",
+      "-o",
+      "/home/agent/builder-root-4w5yhawz/root/usr/local/bin/pinfold-discover",
+      "./cmd/pinfold-discover"
+    ],
+    "compiler": "go version go1.26.10 linux/amd64",
+    "environment": {
+      "CGO_ENABLED": "0",
+      "GOARCH": "amd64",
+      "GOCACHE": "/home/agent/builder-root-4w5yhawz/go-cache",
+      "GOENV": "off",
+      "GOMODCACHE": "/home/agent/builder-root-4w5yhawz/go-modcache",
+      "GOOS": "linux",
+      "GOPATH": "/home/agent/builder-root-4w5yhawz/go-path",
+      "GOPROXY": "off",
+      "GOSUMDB": "off",
+      "GOTOOLCHAIN": "local",
+      "GOWORK": "off",
+      "PATH": "/home/agent/builder-root-4w5yhawz/go-source/go/bin:/usr/bin:/bin",
+      "TMPDIR": "/home/agent/builder-root-4w5yhawz/go-tmp"
+    },
+    "source_files": {
+      "go.mod": "9114ace60db407b7b70eccc340cda6cc5ff3313400afbdd8e1f14849bc244fb3",
+      "go.sum": "35904aa6f9ae03717b2ee03ed55e6f026de822f556e37491801d13cf13fb9e46",
+      "vendor/modules.txt": "d7484cb1c241d6e6a52a2d79e3b96a6c67bae4f41b2a549396844aae7414bcea"
+    },
+    "source_sha256": "bd5fda8f957fdb9d887a85caffeb6e78ce5c96f380bd52122847b5d6d6ceb335",
+    "toolchain_sha256": "ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5"
+  },
+  "pins": {
+    "buildkit": {
+      "commit": "f5b59a1f2fb25a0cb7072c398cab9aed7835da4e",
+      "sha256": "a59539daf547fe0958efe2d07e41c0a6944e1112a66d7e519ec1cf5b673ef15b",
+      "source_files": {
+        "go.mod": "9114ace60db407b7b70eccc340cda6cc5ff3313400afbdd8e1f14849bc244fb3",
+        "go.sum": "35904aa6f9ae03717b2ee03ed55e6f026de822f556e37491801d13cf13fb9e46",
+        "vendor/modules.txt": "d7484cb1c241d6e6a52a2d79e3b96a6c67bae4f41b2a549396844aae7414bcea"
+      },
+      "source_sha256": "6608d2ee63bedf99e1e3fecbfa19868c36f34a402c410a9605529986632816c3",
+      "source_url": "https://codeload.github.com/moby/buildkit/tar.gz/f5b59a1f2fb25a0cb7072c398cab9aed7835da4e",
+      "url": "https://github.com/moby/buildkit/releases/download/v0.34.1/buildkit-v0.34.1.linux-amd64.tar.gz",
+      "version": "0.34.1"
+    },
+    "go": {
+      "published": "2026-10-19",
+      "sha256": "ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5",
+      "url": "https://go.dev/dl/go1.26.10.linux-amd64.tar.gz",
+      "version": "1.26.10"
+    },
+    "keyring_sha256": "312f12f3a3043d9aadc5ba532410dab2b45f91eb76230e7509bf6ced903738d4",
+    "packages_sha256": "7778d3e3f303b7ddb8ce0fe7c8d57473a076c6bf2e8f241f75421d2396352498",
+    "release_sha256": "ed56aac47e7911e65ee63aae8d67e29f20e023f840e49f8ed037043a33de138a",
+    "release_signature_sha256": "9f80d5c8e4f9fd918a8b4fedd35c00ecc6c1a3ca9eddbc981c83823d4a4b8dc4",
+    "snapshot": "https://snapshot.debian.org/archive/debian/20261020T000000Z"
+  },
+  "recipe_sha256": "d4fea170a1a33385e33951a981e649fc6b07053c5e965b99dc620719e744c30c",
+  "root": {
+    "bytes": 1073741824,
+    "sha256": "ef1aaa0fe1c6cafaa57bd4615ed6a077fe2cd27adc4a114792401bf6d1de1968"
+  },
+  "sources": {
+    "build.py": "ad434f7ca2686eb1c0a19e6ad721dfa82d859b6b1511b7aaeec91d6d77b34ac4",
+    "debian-archive.asc": "312f12f3a3043d9aadc5ba532410dab2b45f91eb76230e7509bf6ced903738d4",
+    "discover/main.go": "bd5fda8f957fdb9d887a85caffeb6e78ce5c96f380bd52122847b5d6d6ceb335",
+    "packages.tsv": "041d0dd2bb81bb7d9a73b335f6bbdf4d0160e6d2e682b802d6a5339927f18caf",
+    "pins.json": "9c3028025b6aa3ca8c31d02c3a26940ac3ddb97bfc5b5700ff6737ee0ece57ea"
+  },
+  "tools": {
+    "curl": "curl 8.14.1 (x86_64-pc-linux-gnu) libcurl/8.14.1 OpenSSL/3.5.7 zlib/1.3.1 brotli/1.1.0 zstd/1.5.7 libidn2/2.3.8 libpsl/0.21.2 libssh2/1.11.1 nghttp2/1.64.0 nghttp3/1.8.0 librtmp/2.3 OpenLDAP/2.6.10",
+    "debootstrap": "debootstrap\t1.0.141",
+    "e2fsprogs": "e2fsprogs\t1.47.2-3+b12",
+    "gpgv": "gpgv (GnuPG) 2.4.7",
+    "python": "3.13.5 (main, Aug 10 2026, 12:06:59) [GCC 14.2.0]",
+    "tar": "tar (GNU tar) 1.35"
+  }
+}

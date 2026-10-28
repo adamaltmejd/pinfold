@@ -16,12 +16,14 @@ HERE = Path(__file__).resolve().parent
 LIMIT = 512 * 1024 * 1024
 
 
-def run(*args, capture=False):
+def run(*args, capture=False, cwd=None, env=None):
     return subprocess.run(
         [str(arg) for arg in args],
         check=True,
         stdout=subprocess.PIPE if capture else None,
         text=True,
+        cwd=cwd,
+        env=env,
     ).stdout
 
 
@@ -62,11 +64,113 @@ def fetch(url, target, expected):
         raise ValueError(f"checksum/size mismatch: {url}")
 
 
+def extract_source(archive, directory, prefix):
+    if not hasattr(tarfile, "data_filter"):
+        raise ValueError("Python tarfile.data_filter is required for source extraction")
+    directory.mkdir()
+    with tarfile.open(archive) as source:
+        members = source.getmembers()
+        if sum(member.size for member in members) > LIMIT:
+            raise ValueError("expanded producer source exceeds 512 MiB")
+        for member in members:
+            parts = member.name.split("/")
+            if parts[0] != prefix or ".." in parts:
+                raise ValueError("producer source has an unexpected archive path")
+        # The stdlib data filter also checks link targets and symlink ancestors,
+        # rejects devices, strips special bits and ignores archived ownership.
+        source.extractall(directory, members=members, filter="data")
+    return directory / prefix
+
+
+def discovery_helper(pins, work, root, expected_source):
+    go_pin, bk = pins["go"], pins["buildkit"]
+    if not re.fullmatch("[0-9a-f]{40}", bk["commit"]):
+        raise ValueError("BuildKit source commit must be an exact lowercase object id")
+    go_archive = work / f"go{go_pin['version']}.linux-amd64.tar.gz"
+    source_archive = work / f"buildkit-source-{bk['commit']}.tar.gz"
+    fetch(go_pin["url"], go_archive, go_pin["sha256"])
+    fetch(bk["source_url"], source_archive, bk["source_sha256"])
+    go = extract_source(go_archive, work / "go-source", "go")
+    source = extract_source(
+        source_archive, work / "buildkit-source", f"buildkit-{bk['commit']}"
+    )
+    for name, expected in bk["source_files"].items():
+        if digest(source / name) != expected:
+            raise ValueError(f"BuildKit producer input checksum mismatch: {name}")
+    package = source / "cmd/pinfold-discover"
+    package.mkdir()
+    helper_source = package / "main.go"
+    shutil.copyfile(HERE / "discover/main.go", helper_source)
+    if digest(helper_source) != expected_source:
+        raise ValueError("discovery helper source changed during bootstrap preparation")
+    environment = {
+        "PATH": f"{go / 'bin'}:/usr/bin:/bin",
+        "TMPDIR": str(work / "go-tmp"),
+        "GOCACHE": str(work / "go-cache"),
+        "GOMODCACHE": str(work / "go-modcache"),
+        "GOPATH": str(work / "go-path"),
+        "GOENV": "off",
+        "GOWORK": "off",
+        "GOTOOLCHAIN": "local",
+        "GOPROXY": "off",
+        "GOSUMDB": "off",
+        "CGO_ENABLED": "0",
+        "GOOS": "linux",
+        "GOARCH": "amd64",
+    }
+    for name in ["TMPDIR", "GOCACHE", "GOMODCACHE", "GOPATH"]:
+        Path(environment[name]).mkdir()
+    compiler = run(go / "bin/go", "version", capture=True, env=environment).strip()
+    if compiler != f"go version go{go_pin['version']} linux/amd64":
+        raise ValueError("downloaded Go compiler version differs from its pin")
+    binary = root / "usr/local/bin/pinfold-discover"
+    command = [
+        str(go / "bin/go"),
+        "build",
+        "-mod=vendor",
+        "-trimpath",
+        "-buildvcs=false",
+        "-ldflags",
+        f"-s -w -X github.com/moby/buildkit/version.Version=v{bk['version']} "
+        f"-X github.com/moby/buildkit/version.Revision={bk['commit']}",
+        "-o",
+        str(binary),
+        "./cmd/pinfold-discover",
+    ]
+    run(*command, cwd=source, env=environment)
+    binary.chmod(0o755)
+    info = {
+        "source_sha256": expected_source,
+        "buildkit_commit": bk["commit"],
+        "buildkit_source_sha256": bk["source_sha256"],
+        "source_files": bk["source_files"],
+        "compiler": compiler,
+        "toolchain_sha256": go_pin["sha256"],
+        "binary": {
+            "path": "/usr/local/bin/pinfold-discover",
+            "bytes": binary.stat().st_size,
+            "sha256": digest(binary),
+        },
+        "command": command,
+        "environment": environment,
+        "build_info": run(
+            go / "bin/go", "version", "-m", binary, capture=True, env=environment
+        ),
+    }
+    return info, helper_source, [go_archive, source_archive]
+
+
 def build(out, work):
     pins = json.loads((HERE / "pins.json").read_text())
     sources = {
         name: digest(HERE / name)
-        for name in ["build.py", "pins.json", "packages.tsv", "debian-archive.asc"]
+        for name in [
+            "build.py",
+            "pins.json",
+            "packages.tsv",
+            "debian-archive.asc",
+            "discover/main.go",
+        ]
     }
     recipe = hashlib.sha256(json.dumps(sources, sort_keys=True).encode()).hexdigest()
     if sources["debian-archive.asc"] != pins["keyring_sha256"]:
@@ -139,6 +243,9 @@ def build(out, work):
             with source.extractfile(member) as reader, target.open("wb") as writer:
                 shutil.copyfileobj(reader, writer)
             target.chmod(0o755)
+    helper, helper_source, producer_archives = discovery_helper(
+        pins, work, root, sources["discover/main.go"]
+    )
     for path in ["debootstrap", "var/lib/apt/lists", "var/cache/apt", "var/log"]:
         shutil.rmtree(root / path, ignore_errors=True)
         if path != "debootstrap":
@@ -196,6 +303,7 @@ def build(out, work):
             "sha256": artifact_sha,
         },
         "bit_identical_filesystem": False,
+        "discovery_helper": helper,
         "tools": {
             "python": sys.version,
             "debootstrap": run("dpkg-query", "-W", "debootstrap", capture=True).strip(),
@@ -213,6 +321,12 @@ def build(out, work):
         shutil.copyfile(HERE / name, stage / name)
     for name in ["Release", "Release.gpg"]:
         shutil.copyfile(suite / name, stage / name)
+    shutil.copyfile(helper_source, stage / "discovery-main.go")
+    (stage / "discovery-build.json").write_text(
+        json.dumps(helper, indent=2, sort_keys=True) + "\n"
+    )
+    for archive in producer_archives:
+        shutil.copyfile(archive, stage / archive.name)
     (stage / "SHA256SUMS").write_text(
         "".join(f"{digest(path)}  {path.name}\n" for path in sorted(stage.iterdir()))
     )

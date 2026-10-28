@@ -1,0 +1,20 @@
+{
+  "archive": {
+    "bytes": 122578909,
+    "name": "pinfold-builder-linux-x64-09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4.tar.gz",
+    "sha256": "09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4"
+  },
+  "root": {
+    "bytes": 1073741824,
+    "sha256": "ef1aaa0fe1c6cafaa57bd4615ed6a077fe2cd27adc4a114792401bf6d1de1968"
+  },
+  "recipe_sha256": "d4fea170a1a33385e33951a981e649fc6b07053c5e965b99dc620719e744c30c",
+  "helper": {
+    "bytes": 22282402,
+    "path": "/usr/local/bin/pinfold-discover",
+    "sha256": "0b8927187764740c328a245e21c44a08cb419aa93911d3be624e4c943f2907d0"
+  },
+  "helper_source_sha256": "bd5fda8f957fdb9d887a85caffeb6e78ce5c96f380bd52122847b5d6d6ceb335",
+  "bundle_sha256": "f38ed6c8b82cbee9a361d09514337304e135e1897ae9827c4361105fec665127",
+  "directory": "/Users/adam/Code/pinfold/target/phase6b-builder-integration-2026-10-28/helper-artifact-09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4"
+}

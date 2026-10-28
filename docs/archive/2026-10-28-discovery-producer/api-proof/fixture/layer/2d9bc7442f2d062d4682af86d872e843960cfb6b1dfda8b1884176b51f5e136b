@@ -1,0 +1,1 @@
+{"architecture":"amd64","config":{"Env":["DISCOVERY_FIXTURE=layer"]},"history":[{"created_by":"independent registry marker fixture"}],"os":"linux","rootfs":{"diff_ids":["sha256:662bfd9d7e28cd036b4c9a5bb52657726fd6be474b427b4f8ebc2513a033075e"],"type":"layers"}}

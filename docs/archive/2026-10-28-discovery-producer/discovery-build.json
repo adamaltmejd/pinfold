@@ -1,0 +1,45 @@
+{
+  "binary": {
+    "bytes": 22282402,
+    "path": "/usr/local/bin/pinfold-discover",
+    "sha256": "0b8927187764740c328a245e21c44a08cb419aa93911d3be624e4c943f2907d0"
+  },
+  "build_info": "/home/agent/builder-root-4w5yhawz/root/usr/local/bin/pinfold-discover: go1.26.10\n\tpath\tgithub.com/moby/buildkit/cmd/pinfold-discover\n\tmod\tgithub.com/moby/buildkit\t(devel)\t\n\tdep\tgithub.com/agext/levenshtein\tv1.2.3\t\n\tdep\tgithub.com/cespare/xxhash/v2\tv2.3.0\t\n\tdep\tgithub.com/containerd/console\tv1.0.5\t\n\tdep\tgithub.com/containerd/containerd/api\tv1.12.0\t\n\tdep\tgithub.com/containerd/containerd/v2\tv2.4.1\t\n\tdep\tgithub.com/containerd/continuity\tv0.5.0\t\n\tdep\tgithub.com/containerd/errdefs\tv1.0.0\t\n\tdep\tgithub.com/containerd/errdefs/pkg\tv0.3.0\t\n\tdep\tgithub.com/containerd/log\tv0.2.0\t\n\tdep\tgithub.com/containerd/log/otel\tv0.1.0\t\n\tdep\tgithub.com/containerd/platforms\tv1.0.0-rc.5\t\n\tdep\tgithub.com/containerd/stargz-snapshotter/estargz\tv0.18.2\t\n\tdep\tgithub.com/containerd/ttrpc\tv1.2.10\t\n\tdep\tgithub.com/containerd/typeurl/v2\tv2.3.0\t\n\tdep\tgithub.com/cyphar/filepath-securejoin\tv0.7.0\t\n\tdep\tgithub.com/distribution/reference\tv0.6.0\t\n\tdep\tgithub.com/docker/cli\tv29.8.2+incompatible\t\n\tdep\tgithub.com/docker/docker-credential-helpers\tv0.9.9\t\n\tdep\tgithub.com/docker/go-units\tv0.5.0\t\n\tdep\tgithub.com/felixge/httpsnoop\tv1.1.0\t\n\tdep\tgithub.com/go-logr/logr\tv1.4.4\t\n\tdep\tgithub.com/go-logr/stdr\tv1.2.2\t\n\tdep\tgithub.com/gofrs/flock\tv0.13.1\t\n\tdep\tgithub.com/gohugoio/hashstructure\tv0.6.0\t\n\tdep\tgithub.com/google/shlex\tv0.0.0-20191202100458-e7afc7fbc510\t\n\tdep\tgithub.com/google/uuid\tv1.6.0\t\n\tdep\tgithub.com/grpc-ecosystem/grpc-gateway/v2\tv2.30.0\t\n\tdep\tgithub.com/hashicorp/go-cleanhttp\tv0.5.2\t\n\tdep\tgithub.com/in-toto/attestation\tv1.2.0\t\n\tdep\tgithub.com/in-toto/in-toto-golang\tv0.11.0\t\n\tdep\tgithub.com/klauspost/compress\tv1.20.1\t\n\tdep\tgithub.com/moby/docker-image-spec\tv1.3.1\t\n\tdep\tgithub.com/moby/go-archive\tv0.2.0\t\n\tdep\tgithub.com/moby/locker\tv1.0.1\t\n\tdep\tgithub.com/moby/patternmatcher\tv0.6.1\t\n\tdep\tgithub.com/moby/sys/mountinfo\tv0.7.2\t\n\tdep\tgithub.com/moby/sys/signal\tv0.7.1\t\n\tdep\tgithub.com/moby/sys/user\tv0.4.1\t\n\tdep\tgithub.com/moby/sys/userns\tv0.2.1\t\n\tdep\tgithub.com/morikuni/aec\tv1.1.0\t\n\tdep\tgithub.com/opencontainers/go-digest\tv1.0.0\t\n\tdep\tgithub.com/opencontainers/image-spec\tv1.1.1\t\n\tdep\tgithub.com/opencontainers/runtime-spec\tv1.3.0\t\n\tdep\tgithub.com/pkg/errors\tv0.9.1\t\n\tdep\tgithub.com/planetscale/vtprotobuf\tv0.6.1-0.20240319094008-0393e58bdf10\t\n\tdep\tgithub.com/secure-systems-lab/go-securesystemslib\tv0.11.0\t\n\tdep\tgithub.com/shibumi/go-pathspec\tv1.3.0\t\n\tdep\tgithub.com/sirupsen/logrus\tv1.10.2\t\n\tdep\tgithub.com/tonistiigi/dchapes-mode\tv0.0.0-20250318174251-73d941a28323\t\n\tdep\tgithub.com/tonistiigi/fsutil\tv0.0.0-20260819142231-83cac42c1c52\t\n\tdep\tgithub.com/tonistiigi/go-csvvalue\tv0.0.0-20240814133006-030d3b2625d0\t\n\tdep\tgithub.com/tonistiigi/units\tv0.0.0-20180711220420-6950e57a87ea\t\n\tdep\tgithub.com/tonistiigi/vt100\tv0.0.0-20240514184818-90bafcd6abab\t\n\tdep\tgithub.com/vbatts/tar-split\tv0.12.3\t\n\tdep\tgo.etcd.io/bbolt\tv1.5.0\t\n\tdep\tgo.opentelemetry.io/auto/sdk\tv1.2.1\t\n\tdep\tgo.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc\tv0.71.0\t\n\tdep\tgo.opentelemetry.io/contrib/instrumentation/net/http/httptrace/otelhttptrace\tv0.71.0\t\n\tdep\tgo.opentelemetry.io/contrib/instrumentation/net/http/otelhttp\tv0.71.0\t\n\tdep\tgo.opentelemetry.io/otel\tv1.46.0\t\n\tdep\tgo.opentelemetry.io/otel/exporters/otlp/otlptrace\tv1.46.0\t\n\tdep\tgo.opentelemetry.io/otel/metric\tv1.46.0\t\n\tdep\tgo.opentelemetry.io/otel/sdk\tv1.46.0\t\n\tdep\tgo.opentelemetry.io/otel/trace\tv1.46.0\t\n\tdep\tgo.opentelemetry.io/proto/otlp\tv1.11.0\t\n\tdep\tgolang.org/x/crypto\tv0.57.0\t\n\tdep\tgolang.org/x/net\tv0.59.0\t\n\tdep\tgolang.org/x/sync\tv0.23.0\t\n\tdep\tgolang.org/x/sys\tv0.48.0\t\n\tdep\tgolang.org/x/text\tv0.42.0\t\n\tdep\tgolang.org/x/time\tv0.16.0\t\n\tdep\tgoogle.golang.org/genproto/googleapis/api\tv0.0.0-20260825221802-da73d73af1c5\t\n\tdep\tgoogle.golang.org/genproto/googleapis/rpc\tv0.0.0-20260825221802-da73d73af1c5\t\n\tdep\tgoogle.golang.org/grpc\tv1.84.0\t\n\tdep\tgoogle.golang.org/protobuf\tv1.36.12\t\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\t-trimpath=true\n\tbuild\tCGO_ENABLED=0\n\tbuild\tGOARCH=amd64\n\tbuild\tGOOS=linux\n\tbuild\tGOAMD64=v1\n",
+  "buildkit_commit": "f5b59a1f2fb25a0cb7072c398cab9aed7835da4e",
+  "buildkit_source_sha256": "6608d2ee63bedf99e1e3fecbfa19868c36f34a402c410a9605529986632816c3",
+  "command": [
+    "/home/agent/builder-root-4w5yhawz/go-source/go/bin/go",
+    "build",
+    "-mod=vendor",
+    "-trimpath",
+    "-buildvcs=false",
+    "-ldflags",
+    "-s -w -X github.com/moby/buildkit/version.Version=v0.34.1 -X github.com/moby/buildkit/version.Revision=f5b59a1f2fb25a0cb7072c398cab9aed7835da4e",
+    "-o",
+    "/home/agent/builder-root-4w5yhawz/root/usr/local/bin/pinfold-discover",
+    "./cmd/pinfold-discover"
+  ],
+  "compiler": "go version go1.26.10 linux/amd64",
+  "environment": {
+    "CGO_ENABLED": "0",
+    "GOARCH": "amd64",
+    "GOCACHE": "/home/agent/builder-root-4w5yhawz/go-cache",
+    "GOENV": "off",
+    "GOMODCACHE": "/home/agent/builder-root-4w5yhawz/go-modcache",
+    "GOOS": "linux",
+    "GOPATH": "/home/agent/builder-root-4w5yhawz/go-path",
+    "GOPROXY": "off",
+    "GOSUMDB": "off",
+    "GOTOOLCHAIN": "local",
+    "GOWORK": "off",
+    "PATH": "/home/agent/builder-root-4w5yhawz/go-source/go/bin:/usr/bin:/bin",
+    "TMPDIR": "/home/agent/builder-root-4w5yhawz/go-tmp"
+  },
+  "source_files": {
+    "go.mod": "9114ace60db407b7b70eccc340cda6cc5ff3313400afbdd8e1f14849bc244fb3",
+    "go.sum": "35904aa6f9ae03717b2ee03ed55e6f026de822f556e37491801d13cf13fb9e46",
+    "vendor/modules.txt": "d7484cb1c241d6e6a52a2d79e3b96a6c67bae4f41b2a549396844aae7414bcea"
+  },
+  "source_sha256": "bd5fda8f957fdb9d887a85caffeb6e78ce5c96f380bd52122847b5d6d6ceb335",
+  "toolchain_sha256": "ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5"
+}
