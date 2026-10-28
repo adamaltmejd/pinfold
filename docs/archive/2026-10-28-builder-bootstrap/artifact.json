@@ -1,0 +1,40 @@
+{
+  "artifact": {
+    "bytes": 114456820,
+    "name": "pinfold-builder-linux-x64-e7dd1ab60072ee99ff387e21ac34791b1285c950f439f0d1ef0a5c54a41823e0.tar.gz",
+    "sha256": "e7dd1ab60072ee99ff387e21ac34791b1285c950f439f0d1ef0a5c54a41823e0"
+  },
+  "bit_identical_filesystem": false,
+  "debian_packages": 85,
+  "pins": {
+    "buildkit": {
+      "sha256": "a59539daf547fe0958efe2d07e41c0a6944e1112a66d7e519ec1cf5b673ef15b",
+      "url": "https://github.com/moby/buildkit/releases/download/v0.34.1/buildkit-v0.34.1.linux-amd64.tar.gz",
+      "version": "0.34.1"
+    },
+    "keyring_sha256": "312f12f3a3043d9aadc5ba532410dab2b45f91eb76230e7509bf6ced903738d4",
+    "packages_sha256": "7778d3e3f303b7ddb8ce0fe7c8d57473a076c6bf2e8f241f75421d2396352498",
+    "release_sha256": "ed56aac47e7911e65ee63aae8d67e29f20e023f840e49f8ed037043a33de138a",
+    "release_signature_sha256": "9f80d5c8e4f9fd918a8b4fedd35c00ecc6c1a3ca9eddbc981c83823d4a4b8dc4",
+    "snapshot": "https://snapshot.debian.org/archive/debian/20261020T000000Z"
+  },
+  "recipe_sha256": "d985bd63260afaedcbaf90c3fbfc95f5d077b03cd13407137c3b4c4724ac5e0f",
+  "root": {
+    "bytes": 1073741824,
+    "sha256": "710189b13d814e4026e1095bd393dad99465e4042ced5dae069c59fd79cbaa80"
+  },
+  "sources": {
+    "build.py": "7cc43cbb1f76a403606aa22e0d341212ca82a5f0027684ad4f8b36a8cfccbe6f",
+    "debian-archive.asc": "312f12f3a3043d9aadc5ba532410dab2b45f91eb76230e7509bf6ced903738d4",
+    "packages.tsv": "041d0dd2bb81bb7d9a73b335f6bbdf4d0160e6d2e682b802d6a5339927f18caf",
+    "pins.json": "437cd68c0e9b9c1dc8e779e74e0757332d720fb80d9a8bcff7fd5b94ea2f3687"
+  },
+  "tools": {
+    "curl": "curl 8.14.1 (x86_64-pc-linux-gnu) libcurl/8.14.1 OpenSSL/3.5.7 zlib/1.3.1 brotli/1.1.0 zstd/1.5.7 libidn2/2.3.8 libpsl/0.21.2 libssh2/1.11.1 nghttp2/1.64.0 nghttp3/1.8.0 librtmp/2.3 OpenLDAP/2.6.10",
+    "debootstrap": "debootstrap\t1.0.141",
+    "e2fsprogs": "e2fsprogs\t1.47.2-3+b12",
+    "gpgv": "gpgv (GnuPG) 2.4.7",
+    "python": "3.13.5 (main, Aug 10 2026, 12:06:59) [GCC 14.2.0]",
+    "tar": "tar (GNU tar) 1.35"
+  }
+}
