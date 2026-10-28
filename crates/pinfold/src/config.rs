@@ -31,9 +31,10 @@ const DEFAULT_ALLOW: [&str; 9] = [
 /// The merged configuration for one project run.
 pub struct Config {
     pub profile: Profile,
+    pub image: Option<String>,
     /// The project's Containerfile: its path from `.pinfold.toml`, relative
-    /// to the project root, and its bytes, read once at load time. `None`
-    /// means the profile's image. Trust hashes these bytes and the build
+    /// to the project root, and its bytes, read once at load time.
+    /// Trust hashes these bytes and the build
     /// uses them, so a live box cannot swap the file in between.
     pub containerfile: Option<(String, Vec<u8>)>,
     /// The raw bytes of the project's `.pinfold.toml` that were parsed,
@@ -49,6 +50,16 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn image_source(&self) -> &'static str {
+        if self.image.is_some() {
+            "explicit"
+        } else if self.containerfile.is_some() {
+            "project"
+        } else {
+            "profile"
+        }
+    }
+
     /// Load and merge the layers for the project rooted at `root`.
     pub fn load(root: &Path) -> io::Result<Config> {
         let (project, project_toml) = Layer::read(&root.join(".pinfold.toml"))?;
@@ -64,6 +75,25 @@ impl Config {
             ));
         }
         let merged = profile_layer.over(top);
+        if let Some(image) = &merged.image {
+            if image.is_empty() {
+                return Err(invalid(
+                    "configuration",
+                    "image-invalid: image must not be empty",
+                ));
+            }
+            if merged.containerfile.is_some() {
+                return Err(invalid(
+                    "configuration",
+                    "image-source-conflict: image and project containerfile cannot be combined",
+                ));
+            }
+        } else if merged.containerfile.is_none() && profile.containerfile.is_none() {
+            return Err(invalid(
+                "configuration",
+                "image-source-missing: select an image or supply a Containerfile",
+            ));
+        }
         let containerfile = match merged.containerfile {
             None => None,
             Some(path) => {
@@ -95,6 +125,7 @@ impl Config {
         };
         Ok(Config {
             profile,
+            image: merged.image,
             containerfile,
             project_toml,
             allow: merged
@@ -123,6 +154,7 @@ struct Layer {
     /// profile's own file is read after the selection, so its value is
     /// ignored.
     profile: Option<String>,
+    image: Option<String>,
     containerfile: Option<String>,
     allow: Option<Vec<String>>,
     routes: Option<BTreeMap<String, Route>>,
@@ -156,6 +188,7 @@ impl Layer {
     fn from_env() -> io::Result<Layer> {
         Ok(Layer {
             profile: override_value("PINFOLD_PROFILE")?,
+            image: None,
             containerfile: None,
             allow: override_value("PINFOLD_ALLOW")?.as_deref().map(split_list),
             routes: override_value("PINFOLD_ROUTES")?
@@ -176,6 +209,7 @@ impl Layer {
     /// `self` with `higher` applied over it.
     fn over(mut self, higher: Layer) -> Layer {
         self.profile = higher.profile.or(self.profile);
+        self.image = higher.image.or(self.image);
         self.containerfile = higher.containerfile.or(self.containerfile);
         self.cpus = higher.cpus.or(self.cpus);
         self.memory = higher.memory.or(self.memory);

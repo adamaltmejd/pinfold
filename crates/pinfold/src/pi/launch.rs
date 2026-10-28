@@ -31,10 +31,10 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     let config = Config::load(&root)?;
     trust::check(&root, &config)?;
     let id = project_id(&root);
-    let _project = ownership::project_lock(&id)?;
-    state::record_run(&root)?;
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
+    let _project = ownership::project_lock(&id)?;
+    state::record_run(&root)?;
     let plan = build_plan(&config, &id, &root, &image);
     run_box(&plan, &root, &cwd, args)
 }
@@ -292,10 +292,11 @@ pub(crate) fn project_root(cwd: &Path) -> io::Result<PathBuf> {
     Ok(root)
 }
 
-/// The image ref the box runs. A project Containerfile runs the project's
-/// image; otherwise the profile's. `doctor` reports it.
+/// The admitted image source, also reported without resolving the runtime.
 pub(crate) fn resolve_image(config: &Config, project: &str) -> String {
-    if config.containerfile.is_some() {
+    if let Some(image) = &config.image {
+        image.clone()
+    } else if config.containerfile.is_some() {
         format!("localhost/pinfold/project-{project}:latest")
     } else {
         config.profile.image_ref()
@@ -306,17 +307,36 @@ pub(crate) fn resolve_image(config: &Config, project: &str) -> String {
 /// Warn when its Containerfile or its profile base changed. `doctor`
 /// reports the same warnings.
 pub(crate) fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
+    if config.image.is_some() {
+        return match service().resolve_image(image)? {
+            Ok(_) => Ok(()),
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "image-missing: image {image} is not present locally; build or pull it explicitly"
+                ),
+            )),
+        };
+    }
     let profile_build = format!("pinfold build --profile {}", config.profile.name);
     let (base, build, containerfile) = match &config.containerfile {
         Some((_, bytes)) => (
-            Some(config.profile.image_ref()),
+            config
+                .profile
+                .containerfile
+                .as_ref()
+                .map(|_| config.profile.image_ref()),
             "pinfold build",
             bytes.as_slice(),
         ),
         None => (
             None,
             profile_build.as_str(),
-            config.profile.containerfile.as_slice(),
+            config
+                .profile
+                .containerfile
+                .as_deref()
+                .expect("config admitted a recipe"),
         ),
     };
     let Ok(built) = service().resolve_image(image)? else {
@@ -332,8 +352,10 @@ pub(crate) fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
             .get(clean::BASE_LABEL)
             .filter(|digest| !digest.is_empty());
         let current = service().resolve_image(&base)?.ok();
-        if let Some(profile) = &current {
-            warn_containerfile(profile, &config.profile.containerfile, &profile_build);
+        if let Some(profile) = &current
+            && let Some(bytes) = &config.profile.containerfile
+        {
+            warn_containerfile(profile, bytes, &profile_build);
         }
         let current = current.as_ref().map(|image| image.id.as_str());
         if recorded.map(String::as_str) != current {

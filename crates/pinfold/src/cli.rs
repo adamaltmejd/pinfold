@@ -972,9 +972,10 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
         "root": utf8(root, "project root")?,
         "profile": &config.profile.name,
         "image": image,
+        "image_source": config.image_source(),
         "image_built": image_built,
         "image_error": image_error,
-        "containerfile": config.containerfile.as_ref().map_or("profile", |(path, _)| path.as_str()),
+        "containerfile": if config.image.is_some() { None } else { Some(config.containerfile.as_ref().map_or("profile", |(path, _)| path.as_str())) },
         "egress": { "allow": &config.allow, "routes": &config.routes },
         "cpus": config.cpus,
         "memory": &config.memory,
@@ -1058,6 +1059,12 @@ pub fn build(args: &[String]) -> io::Result<i32> {
             // A project build is a run of its config: an untrusted change
             // stops it like it stops `pinfold pi`.
             trust::check(&root, &config)?;
+            if config.image.is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "image-no-recipe: an explicit image is selected; there is nothing to build",
+                ));
+            }
             let project = config
                 .containerfile
                 .map(|(_, bytes)| (crate::pi::state::project_id(&root), bytes));
@@ -1065,6 +1072,13 @@ pub fn build(args: &[String]) -> io::Result<i32> {
         }
         _ => return Err(usage("build", "build takes no arguments or --profile NAME")),
     };
+    let profile_recipe = profile.containerfile.as_deref();
+    if project.is_none() && profile_recipe.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "image-no-recipe: profile has no Containerfile; there is nothing to build",
+        ));
+    }
     let images = image::service();
     // A project image records the profile image it was built from, so
     // `pinfold pi` warns when the profile image moves past it; a profile
@@ -1073,18 +1087,25 @@ pub fn build(args: &[String]) -> io::Result<i32> {
         Some((id, bytes)) => (
             clean::PROJECT_LABEL,
             id,
-            bytes,
-            images
-                .resolve_image(&profile.image_ref())?
-                .ok()
-                .map(|image| image.id),
+            bytes.as_slice(),
+            if profile_recipe.is_some() {
+                images
+                    .resolve_image(&profile.image_ref())?
+                    .ok()
+                    .map(|image| image.id)
+            } else {
+                image::base_digest(images, bytes)?
+            },
         ),
-        None => (
-            clean::PROFILE_LABEL,
-            &profile.name,
-            &profile.containerfile,
-            image::base_digest(images, &profile.containerfile)?,
-        ),
+        None => {
+            let bytes = profile_recipe.expect("a profile build has a recipe");
+            (
+                clean::PROFILE_LABEL,
+                &profile.name,
+                bytes,
+                image::base_digest(images, bytes)?,
+            )
+        }
     };
     let built = image::build(
         images,
