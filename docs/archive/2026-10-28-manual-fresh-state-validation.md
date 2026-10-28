@@ -81,14 +81,21 @@ for wanted fetched commits. A remote ref alone is not permanent retention.
 
 ## Evidence and limits
 
-Local evidence, retained outside Git:
+Local evidence is preserved under `.local-evidence/phase5/` in the retained
+phase-five-fresh-workflow worktree. It is ignored by Git. These links are
+local; the evidence is not part of the PR.
 
-- Driver: `/tmp/pinfold-phase5-lifecycle.py`, SHA-256
+- [Driver](../../.local-evidence/phase5/pinfold-phase5-lifecycle.py), SHA-256
   `c3a4f415b013c9ba46443d910a8b85fd388993d2230df6496fac598316919803`.
-- Command transcript and observations:
-  `/private/tmp/pf5-p0x9zz_h/evidence.json`, SHA-256
-  `a17962f92e1e7f75654faeb85db95bff3ca0cb5244c218157ca4edc8ad6f9092`.
-- Build log: `/tmp/pinfold-phase5-build.log`.
+- [Command transcript and observations](../../.local-evidence/phase5/fixture/evidence.json),
+  SHA-256 `a17962f92e1e7f75654faeb85db95bff3ca0cb5244c218157ca4edc8ad6f9092`.
+- [Driver log](../../.local-evidence/phase5/pinfold-phase5-lifecycle.log) and
+  [build log](../../.local-evidence/phase5/pinfold-phase5-build.log).
+- [Manifest](../../.local-evidence/phase5/manifest.json) records each file's
+  original path, size and SHA-256. Copies were verified byte for byte.
+  `fixture/` also retains stderr logs and the disposable host project,
+  including its `retained-result` branch. Keep these until the operator
+  deliberately archives this worktree.
 
 The final driver exited 0. Cleanup used `pinfold disk rm` for both fixture
 disks. No state-file unlink or direct volume deletion was used. No fixture
