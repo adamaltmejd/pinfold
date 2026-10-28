@@ -531,8 +531,6 @@ before it execs Firecracker:
   and connecting to sockets (ABI 9's `RESOLVE_UNIX`), removing files and
   reading the directory in the vsock socket directory.
 
-Firecracker's own seccomp filters then apply.
-
 A compromised VMM reaches only that tree, as the user: no home, no other
 box's disks or socket, no host network or abstract socket, no host
 process. Getting further needs a host kernel bug.
@@ -845,7 +843,7 @@ dir under `$HOME`, seeded from `home/`, with packages from `share/`) and
 the project's own `.pi/` and `.agents/skills`.
 
 Every built-in seeds only `/opt/pinfold/profile/pi` as its pi package and
-sets `defaultProjectTrust: "always"`: the box is the boundary. It adds
+sets `defaultProjectTrust: "always"`. It adds
 pi's built-in `codemode` tool to the default tools; pi's built-in MCP is
 on by default: stdio servers run in the box, remote ones through the
 proxy. Every built-in includes the operating-context extension, which
@@ -981,7 +979,7 @@ checkout path and last run.
 
 Automatic, never prompting:
 - After a build: keep the newest two builds per source (a profile, a
-  project or a caller image name), the second for rollback, ordered by
+  project or a caller image name), ordered by
   their tags. Remove older builds' tags; an image goes with its last tag,
   and its dangling layers with it. An image a box still uses keeps its
   last tag, and pins only itself; which boxes use an image is read after
@@ -1227,7 +1225,7 @@ two that run apart. Testing policy is in `AGENTS.md`.
 | 38 | Each run's history is its own | Two `up`s of one name in sequence; the first makes an allowed and a refused request, and when `box down` returns, `inspect` already reports its terminal `signal`. The second's `ready.run_id` equals its `dev.pinfold.generation` label and differs from the first's, and its `ready.egress_log` is empty before its first request. Its 150 decisions, paged at the default limit while its box appends 50 more after the first page, return every line once, in order, across `next`; `events` for the first run still returns exactly its two decisions. Each `down` names its own run_id. A no-egress box SIGKILLed from the host (its init through Apple's runtime, its VMM on Linux) makes `up` exit 1 with `down` reason `exited`, and terminal `exited` whose detail names exit status 137. With no runtime on `PATH`, `inspect` and `events` answer for finished runs, and the no-egress run reports egress `not-applicable`. A malformed run id, `--limit 101` and another run's cursor exit 1; an unknown run id exits 3. |
 | 39 | The launch record is the applied policy | A pi box starts from a trusted `.pinfold.toml` with an allow list, cpus, memory, a host-service route and an injecting route whose header comes from a host variable, plus `PINFOLD_ENV_SECRET`, under environment overrides of the allow list, cpus and memory. Before `allow`, `config` reports the file's list, trust false, the built image and the home disk; the environment's `PINFOLD_ROUTES` replaces the file's routes; an invalid UTF-8 override fails without disclosing its bytes. The box attaches the reported home disk writable at `$HOME`; its kernel sees the environment's cpus and memory; SECRET arrives without entering host argv, and on Linux is in neither `/proc/cmdline`, the VM configuration, the init disk nor any disk image. While it runs, the file's allow list changes and is not re-allowed: `config` reports the change, but `inspect` still reports the started allow list, route kinds and targets, cpus and memory, equal to what the test wrote, plus env names that include `SECRET`; the started list decides, refusing the file's hosts as `not allowlisted`. No file under the state root holds the secret or the header value. When pi exits, the terminal record is `harness-exited`. |
 | 42 | Run records are retained within bounds | With inactive runs padded on the host past 128 MiB in valid decision lines, `clean` removes the oldest inactive run, keeps the newest, and leaves a live run's log unchanged. Once the newest is aged 15 days on the host, `clean` removes it (`inspect` exits 3), while a live run aged the same stays `available` and its log keeps appending. |
-| 43 | The VMM reaches only its own box | Linux only. With two boxes up, each VMM is a child of its `box up` and runs as the user with `CapBnd` 0 and `NoNewPrivs` 1; its user, mount, PID, network, IPC and UTS namespaces differ from `box up`'s; its root, read through `/proc/PID/root`, holds exactly its jail's list and not the other box's disks; none of its mount points is under the user's home; its fds 0–2 are `/dev/null` and none is under the home; SIGKILL of `box up` ends the VM. |
+| 43 | The VMM reaches only its own box | Linux only. With two boxes up, each VMM is a child of its `box up` and runs as the user with `CapBnd` 0 and `NoNewPrivs` 1; its user, mount, PID, network, IPC and UTS namespaces differ from `box up`'s; its root, read through `/proc/PID/root`, holds its own disk and not the other box's disk; none of its mount points is under the user's home; its fds 0–2 are `/dev/null` and none is under the home; SIGKILL of `box up` ends the VM. |
 
 ## Code
 

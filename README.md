@@ -108,7 +108,7 @@ you to merge; `pinfold push` sends your branches in as `host/*`. Each
 `pi` start pushes too, and fast-forwards the box's branch when it is
 clean and strictly behind.
 
-Optional profiles add tools to the default; only `full` adds egress. To
+Optional profiles add tools. `full` also allows `github.com` and `api.github.com`. To
 edit one, copy it with `pinfold profile new NAME --from full`:
 
 | Profile | Adds |
@@ -136,9 +136,6 @@ pinfold pi -p --continue "FOLLOW-UP" </dev/null
 pinfold fetch                                 # box branches as pinfold/*
 ```
 
-One box runs per project; a second start is refused as `disk-in-use`.
-Only committed branches reach the box; untracked and ignored files
-never do.
 Treat the box's output and branches as untrusted. The
 [pinfold-delegate](skills/pinfold-delegate/SKILL.md) skill teaches an
 agent this; copy its directory into the agent's skills directory.

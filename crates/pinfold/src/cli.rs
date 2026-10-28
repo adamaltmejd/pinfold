@@ -634,9 +634,7 @@ struct CleanPlan {
     /// Retired runs' directories.
     runs: Vec<PathBuf>,
     run_bytes: u64,
-    /// Projects `--unused` selected: their state dirs go with their disks.
-    idle_projects: BTreeSet<String>,
-    /// The disks of idle projects `--unused` removes, by project id.
+    /// Projects `--unused` selected and their disks, by project id.
     project_disks: BTreeMap<String, Vec<String>>,
     /// Every disk's allocated bytes, a category of its own.
     disk_bytes: u64,
@@ -662,7 +660,6 @@ impl CleanPlan {
         let runs = runs::retired()?;
 
         let disks = runtime.list_disks()?;
-        let mut idle_projects = BTreeSet::new();
         let mut project_disks = BTreeMap::new();
         let mut project_state = 0;
         let mut moved = Vec::new();
@@ -676,10 +673,7 @@ impl CleanPlan {
                     .into_iter()
                     .filter(|name| disks.iter().any(|disk| &disk.name == name))
                     .collect();
-                if !names.is_empty() {
-                    project_disks.insert(project.id.clone(), names);
-                }
-                idle_projects.insert(project.id);
+                project_disks.insert(project.id, names);
             }
         }
 
@@ -695,7 +689,6 @@ impl CleanPlan {
             automatic,
             run_bytes: runs.iter().map(|path| clean::path_bytes(path)).sum(),
             runs,
-            idle_projects,
             project_disks,
             disk_bytes: disks.iter().map(|disk| disk.allocated).sum(),
             moved,
@@ -737,7 +730,7 @@ impl CleanPlan {
         clean::remove_paths(self.automatic)?;
         clean::remove_paths(self.runs)?;
         let mut locks = BTreeMap::new();
-        for id in &self.idle_projects {
+        for id in self.project_disks.keys() {
             if let Some(lock) = crate::core::ownership::try_project_lock(id)? {
                 locks.insert(id.as_str(), lock);
             }
