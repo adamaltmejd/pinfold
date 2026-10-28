@@ -298,6 +298,41 @@ fn up_refuses_before_it_creates() {
     assert_eq!(refused["reason"], "image-missing");
     assert_left_nothing(&env, &name, label, "refused");
 
+    // A stale managed tag cannot supply an image for a recipe-less
+    // profile. Sabotage: infer its managed ref despite the absent recipe;
+    // the already-built tag would start. An explicit image on the same
+    // profile and box name is the allowed control.
+    let profile = format!("e2e-no-recipe-{}", std::process::id());
+    let _profile_images = ImageCleanup {
+        repository: format!("localhost/pinfold/profile-{profile}"),
+    };
+    let recipe = profile_containerfile(&env, &profile, &format!("FROM {}\n", default_image(&env)));
+    build_profile(&env, &profile);
+    fs::remove_file(recipe).unwrap();
+    let mut profile_spec = serde_json::json!({
+        "name": name,
+        "profile": profile,
+        "labels": { "dev.example.test": "refuses" },
+    });
+    let (code, refused) = box_up_refused(&env, &profile_spec, &[]);
+    assert_eq!(code, 1, "{refused}");
+    assert_eq!(refused["reason"], "profile", "{refused}");
+    assert!(
+        refused["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("image-source-missing")),
+        "{refused}"
+    );
+    assert_left_nothing(&env, &name, label, "refused");
+    profile_spec["image"] = serde_json::json!(default_image(&env));
+    let mut allowed = box_up(&env, &profile_spec, &name);
+    assert_ok(&box_exec(&env, &name, &["true"]), "explicit profile image");
+    allowed.down(&env);
+    assert!(
+        allowed.wait().success(),
+        "the explicit image control failed"
+    );
+
     // Sabotage: accept unknown fields inside an env `from` object. A valid
     // reference succeeds in the race's winner below; this nested misspelling
     // must be refused as spec, naming the key and the box, before runtime

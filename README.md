@@ -87,8 +87,9 @@ In a project:
 
 1. If it has a `.pinfold.toml`, run `pinfold allow`, and again after the
    file or the Containerfile it names changes.
-2. Build the image: `pinfold build`. Without a project Containerfile it
-   builds the selected profile's image; with one it builds the project's.
+2. Build the selected recipe: `pinfold build`. Without a project Containerfile
+   it builds the profile's recipe; with one it builds the project's.
+   An explicit `image` must already be present locally and needs no build.
    Building needs network. Rebuild when a run shows `image-outdated`;
    it keeps project settings, sessions and logins.
 3. Start pi: `pi`.
@@ -125,6 +126,25 @@ PINFOLD_PROFILE=documents pi
 
 Set `profile = "documents"` in the project's `.pinfold.toml` to keep the
 selection, then run `pinfold allow`.
+
+To keep a profile's settings and packages while using another local image:
+
+```toml
+profile = "documents"
+image = "localhost/research-tools:latest"
+```
+
+`image` can also be a profile default. A project `image` overrides it;
+there is no environment override. An explicit image cannot be combined with
+project `containerfile`. Pi never pulls or builds on launch. With an explicit
+image, `pinfold build` reports that there is no selected recipe to build.
+
+Custom profiles can omit `Containerfile` when an image or project recipe is
+selected. Keep Pi settings, extensions and skills in their native files under
+`home/` and `share/`. Home seeds fill missing files; changing profiles keeps
+saved settings, sessions and disks. Shared files are read-only at every start.
+`pinfold config` reports `image_source` and the selected recipe, even without
+a runtime installed. Run `pinfold allow` after changing the project's image.
 
 ## From another agent
 

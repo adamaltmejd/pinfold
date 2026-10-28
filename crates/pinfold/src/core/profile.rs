@@ -98,7 +98,7 @@ pub struct Seed {
 /// One profile, as much of it as pinfold uses.
 pub struct Profile {
     pub name: String,
-    pub containerfile: Vec<u8>,
+    pub containerfile: Option<Vec<u8>>,
     /// The profile's `pinfold.toml`. Core never reads it; `profile new`
     /// copies it.
     pub config: Vec<u8>,
@@ -144,7 +144,7 @@ impl Profile {
         };
         Ok(Profile {
             name: name.to_string(),
-            containerfile: fragments.concat(),
+            containerfile: Some(fragments.concat()),
             config: config.to_vec(),
             home: HOME
                 .iter()
@@ -192,7 +192,11 @@ fn load_dir(name: &str, root: &Path) -> io::Result<Profile> {
             )
         })
     };
-    let containerfile = read("Containerfile")?;
+    let containerfile = match read("Containerfile") {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
     let config = match read("pinfold.toml") {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
         config => config?,
@@ -261,7 +265,9 @@ pub fn check_name(what: &str, name: &str) -> io::Result<()> {
 }
 
 pub fn write_profile(source: &Profile, target: &Path) -> io::Result<()> {
-    fs::write(target.join("Containerfile"), &source.containerfile)?;
+    if let Some(bytes) = &source.containerfile {
+        fs::write(target.join("Containerfile"), bytes)?;
+    }
     fs::write(target.join("pinfold.toml"), &source.config)?;
     let seeds = source.home.iter().map(|seed| (&seed.path, &seed.contents));
     write_files(seeds, &target.join("home"))?;

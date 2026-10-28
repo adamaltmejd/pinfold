@@ -781,6 +781,12 @@ fn resolve_profile(plan: &mut Plan) -> io::Result<Option<Profile>> {
     };
     let profile = Profile::load(&name)?;
     if plan.image.is_none() {
+        if profile.containerfile.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "image-source-missing: profile has no Containerfile; select an image",
+            ));
+        }
         plan.image = Some(profile.image_ref());
     }
     if let Some(share) = &profile.share {
