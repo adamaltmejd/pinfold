@@ -25,13 +25,14 @@ use crate::core::ownership::{self, Claim};
 use crate::core::plan::{Egress, Plan};
 use crate::core::runtime::firecracker::{jail, vm};
 use crate::core::{artifacts, clean, pipe, proxy, runs, sha256_hex};
-use crate::init::firecracker::{BOOT, BOOT_PORT, FAILED, READY, read_frame, write_frame};
+use crate::init::firecracker::{BOOT, BOOT_PORT, FAILED, READY, write_frame};
 
 // Candidate allocations from the executed trial. Final policy is an admission gate.
 const CACHE_BYTES: u64 = 8 << 30;
 const WORK_BYTES: u64 = 3 << 30;
 const JOB_TIME: Duration = Duration::from_secs(300);
 const INPUT_BYTES: u64 = 512 << 20;
+const LOG_BYTES: usize = 64 << 10;
 const BUILD_HOSTS: &[&str] = &[
     "registry-1.docker.io",
     "auth.docker.io",
@@ -267,10 +268,14 @@ async fn run_transaction(
         &mut audit,
     )
     .await?;
-    let Received::Discovery(resolutions) = discovered else {
-        return Err(io::Error::other(
-            "image-output: unexpected discovery result",
-        ));
+    let resolutions = match discovered {
+        Received::Discovery(resolutions) => resolutions,
+        Received::Failed(detail) => return Err(io::Error::other(detail)),
+        _ => {
+            return Err(io::Error::other(
+                "image-output: unexpected discovery result",
+            ));
+        }
     };
     let selecting = {
         let cancel = cancel.clone();
@@ -296,8 +301,10 @@ async fn run_transaction(
         &mut audit,
     )
     .await?;
-    let Received::Oci(mut verified) = built else {
-        return Err(io::Error::other("image-output: unexpected root"));
+    let mut verified = match built {
+        Received::Oci(verified) => verified,
+        Received::Failed(detail) => return Err(io::Error::other(detail)),
+        _ => return Err(io::Error::other("image-output: unexpected root")),
     };
     verified.sources = prepared.sources.clone();
     let recipe = sha256_hex(
@@ -314,14 +321,7 @@ async fn run_transaction(
         let state = state.clone();
         let cancel = cancel.clone();
         let recipe = recipe.clone();
-        let cache_disk = prepared.cache_disk.clone();
-        let dirty = prepared.dirty.clone();
         tokio::task::spawn_blocking(move || {
-            // E/EOF follows guest unmount. Sync the backing file before
-            // advertising a clean cache, and keep the runtime responsive.
-            File::open(cache_disk)?.sync_all()?;
-            fs::remove_file(&dirty)?;
-            File::open(dirty.parent().expect("cache marker has a parent"))?.sync_all()?;
             check_cancel(&cancel)?;
             let cached = catalog::complete_root(&verified.id, &recipe)?;
             check_cancel(&cancel)?;
@@ -352,6 +352,7 @@ async fn run_transaction(
         .await?
         {
             Received::Root(sha, bytes) => (root_file, sha, bytes),
+            Received::Failed(detail) => return Err(io::Error::other(detail)),
             _ => return Err(io::Error::other("image-output: unexpected OCI")),
         }
     };
@@ -396,10 +397,7 @@ fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<P
     if dirty.exists() {
         crate::core::absent_ok(fs::remove_file(&cache_disk))?;
     }
-    let mut marker = File::create(&dirty)?;
-    marker.write_all(b"in-use\n")?;
-    marker.sync_all()?;
-    File::open(&cache)?.sync_all()?;
+    mark_unclean(&dirty)?;
     if !cache_disk.exists() {
         empty_disk(&cache_disk, CACHE_BYTES, cancel)?;
     }
@@ -772,6 +770,7 @@ enum Received {
     Discovery(Vec<catalog::Resolution>),
     Oci(Verified),
     Root(String, u64),
+    Failed(String),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -862,10 +861,26 @@ async fn run_job(
             }
             request.extend(0u32.to_be_bytes());
             write_frame(&mut reader, BOOT, &request)?;
-            let (kind, payload) = read_frame(&mut reader)?;
+            let mut prefix = [0; 5];
+            reader.read_exact(&mut prefix)?;
+            let length = u32::from_be_bytes(prefix[1..].try_into().unwrap()) as usize;
+            if length > LOG_BYTES {
+                return Err(io::Error::other("image-output: job reply limit"));
+            }
+            let kind = prefix[0];
+            let mut payload = vec![0; length];
+            reader.read_exact(&mut payload)?;
             match kind {
                 READY if payload.is_empty() => {},
-                FAILED => return Err(io::Error::other(String::from_utf8_lossy(&payload).into_owned())),
+                FAILED => {
+                    let detail = String::from_utf8(payload)
+                        .map_err(|_| io::Error::other("image-output: invalid failure diagnostic"))?;
+                    // A bare F still reports its bounded diagnostic, but proves
+                    // nothing about the writable cache's shutdown.
+                    catalog::receive_failure_end(&mut reader)
+                        .map_err(|_| io::Error::other(detail.clone()))?;
+                    return Ok(Received::Failed(detail));
+                },
                 _ => return Err(io::Error::other("image-output: missing successful job handshake")),
             }
             match phase {
@@ -895,7 +910,58 @@ async fn run_job(
     let reaped = child.wait().await;
     killed?;
     reaped?;
-    received
+    let received = received?;
+    if phase.egress() && matches!(&received, Received::Oci(_) | Received::Failed(_)) {
+        clean_cache(prepared, cancel, claim, audit).await?;
+    }
+    Ok(received)
+}
+
+fn mark_unclean(dirty: &Path) -> io::Result<()> {
+    let mut marker = File::create(dirty)?;
+    marker.write_all(b"in-use\n")?;
+    marker.sync_all()?;
+    File::open(dirty.parent().expect("cache marker has a parent"))?.sync_all()
+}
+
+async fn clean_cache(
+    prepared: &Prepared,
+    cancel: &Arc<AtomicBool>,
+    claim: &mut Claim,
+    audit: &mut tokio::sync::oneshot::Receiver<()>,
+) -> io::Result<()> {
+    let cache_disk = prepared.cache_disk.clone();
+    let dirty = prepared.dirty.clone();
+    let worker_cancel = cancel.clone();
+    let cleaning = tokio::task::spawn_blocking(move || {
+        check_cancel(&worker_cancel)?;
+        File::open(cache_disk)?.sync_all()?;
+        check_cancel(&worker_cancel)?;
+        fs::remove_file(&dirty)?;
+        File::open(dirty.parent().expect("cache marker has a parent"))?.sync_all()
+    });
+    let result = watch_worker(cleaning, cancel, claim, Some(audit))
+        .await
+        .and_then(|()| check_cancel(cancel));
+    if let Err(error) = result {
+        // The watcher joined the cleaner. A stop can win after unlink, so
+        // restore the marker before ownership can be released.
+        let dirty = prepared.dirty.clone();
+        let cache_disk = prepared.cache_disk.clone();
+        tokio::task::spawn_blocking(move || {
+            mark_unclean(&dirty).or_else(|marker_error| {
+                crate::core::absent_ok(fs::remove_file(cache_disk))?;
+                File::open(dirty.parent().expect("cache marker has a parent"))?.sync_all()?;
+                Err(marker_error)
+            })
+        })
+        .await
+        .map_err(io::Error::other)??;
+        return Err(error);
+    }
+    // This watched transition is complete. A later stop need not dirty a
+    // cache that no subsequent job has attached writable.
+    Ok(())
 }
 
 fn put(output: &mut Vec<u8>, bytes: &[u8]) {

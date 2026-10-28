@@ -100,6 +100,15 @@ fn success(stream: &mut impl Read, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// A handled job failure is clean only after its final empty end frame and EOF.
+pub(super) fn receive_failure_end(stream: &mut impl Read) -> io::Result<()> {
+    let (kind, bytes) = frame_header(stream)?;
+    if kind != b'E' || bytes.as_slice() != b"{}" {
+        return Err(invalid("image-output: missing clean failure end"));
+    }
+    success(stream, &bytes)
+}
+
 /// Native frontend discovery returns one bounded JSON receipt, then success.
 pub fn receive_discovery(stream: &mut impl Read) -> io::Result<Vec<Resolution>> {
     #[derive(Deserialize)]

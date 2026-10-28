@@ -1491,10 +1491,17 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     // as a failed build; the first build reports failure after the kernel EIO.
     // Sabotage: refuse zero-layer local profiles or drop their image config;
     // preparation or the fixture's PROFILE_PHASE=two RUN check fails.
+    // Sabotage: ignore COPY from the nonempty local image; /local-base-version
+    // is absent and the caller's RUN check fails.
     let env = TestEnv::new("image-build");
     let other = cfg!(target_os = "macos").then(|| TestEnv::new("image-colors"));
-    let base = default_image(&env);
-    let freshness_profile = crate::pi::selected_profile_freshness(&env, base);
+    let default_base = default_image(&env);
+    let freshness_profile = crate::pi::selected_profile_freshness(&env, default_base);
+    let base = if cfg!(target_os = "linux") {
+        "docker.io/library/debian@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4"
+    } else {
+        default_base
+    };
 
     let name = format!("pinfold-e2e-{}", std::process::id());
     let repository = format!("localhost/pinfold/image-{name}");
@@ -1513,7 +1520,9 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     };
     let from = if cfg!(target_os = "linux") {
         format!(
-            "FROM {}:latest\nCOPY --from={base} / /\nRUN test \"$PROFILE_PHASE\" = two\n",
+            "FROM {}:latest\nCOPY --from={base} / /\n\
+             COPY --from={default_base} /etc/debian_version /local-base-version\n\
+             RUN test \"$PROFILE_PHASE\" = two && test -s /local-base-version\n",
             freshness_profile.repository,
         )
     } else {
@@ -1562,6 +1571,7 @@ fn a_caller_builds_an_image_from_its_own_tree() {
             let injected: serde_json::Value =
                 serde_json::from_slice(&fs::read(&receipt).expect("read kernel fault receipt"))
                     .expect("parse kernel fault receipt");
+            eprintln!("post-commit sync fault: {injected}");
             assert_eq!(injected["supervisor_errno"], 0, "{injected}");
             assert_eq!(injected["injections"], 1, "{injected}");
             assert_eq!(injected["injected_errno"], nix::libc::EIO, "{injected}");

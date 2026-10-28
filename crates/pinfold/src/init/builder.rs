@@ -68,9 +68,7 @@ pub(super) fn boot() -> ! {
     if let Err(error) = result {
         let _ = fs::write("/sys/fs/cgroup/work/cgroup.kill", "1");
         nix::unistd::sync();
-        let mut detail = error.to_string();
-        let start = detail.ceil_char_boundary(detail.len().saturating_sub(LOG_BYTES));
-        detail.drain(..start);
+        let detail = failure_text(error);
         let _ = write_frame(&mut host, FAILED, detail.as_bytes());
         process::exit(1);
     }
@@ -106,8 +104,11 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
         Daemon::start(&job, Arc::clone(&daemon_log)).map_err(|error| failed(error, &daemon_log))?;
     let built = build(&job, Arc::clone(&log));
     let stopped = daemon.stop();
-    built.map_err(|error| failed(error, &log))?;
     stopped.map_err(|error| failed(error, &daemon_log))?;
+    if let Err(error) = built {
+        let detail = failure_text(failed(error, &log));
+        return finish(host, Some(&detail));
+    }
     let output = match job.phase {
         Phase::Discover => Path::new("/work/discovery.json"),
         Phase::Build => Path::new("/work/oci"),
@@ -137,11 +138,26 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
             fs::remove_dir_all(output)?;
         }
     }
+    finish(host, None)
+}
+
+fn finish(host: &mut UnixStream, failure: Option<&str>) -> io::Result<()> {
+    stop_work()?;
     nix::unistd::sync();
     nix::mount::umount("/input")?;
     nix::mount::umount("/work")?;
+    if let Some(detail) = failure {
+        write_frame(host, FAILED, detail.as_bytes())?;
+    }
     write_frame(host, b'E', b"{}")?;
     host.flush()
+}
+
+fn failure_text(error: io::Error) -> String {
+    let mut detail = error.to_string();
+    let start = detail.ceil_char_boundary(detail.len().saturating_sub(LOG_BYTES));
+    detail.drain(..start);
+    detail
 }
 
 fn capabilities() -> io::Result<()> {
