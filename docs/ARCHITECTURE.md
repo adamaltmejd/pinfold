@@ -69,7 +69,8 @@ Not protected:
 - CDN fronting beyond the SNI check (Host-header fronting needs TLS
   interception).
 - Allowlisted services that accept writes (GitHub with a token, registries).
-- Image builds: user- or caller-run, trusted, unrestricted egress.
+- Image recipes are caller-trusted software. Apple builds have unrestricted
+  egress. Linux builds use the separate image-preparation role below.
 
 ## Runtimes
 
@@ -83,8 +84,8 @@ One runtime per OS, not configurable:
 Anything else is refused: podman or docker as a box runtime, Firecracker
 under its own jailer or outside pinfold's VMM jail. Nothing warns at run
 time; `doctor` reports the runtime. Image operations use Apple `container`
-on macOS and rootless podman 6.1.4+ on Linux, independently of the box
-execution interface. Common core owns image retention and in-use protection.
+on macOS and a pinned BuildKit builder/converter on Firecracker on Linux,
+independently of the box execution interface. Common core owns image retention and in-use protection.
 Execution backends own native disk creation and ownership mechanics. Common
 core owns disk claims, exclusivity, recovery and cleanup policy.
 Backends complete guest initialization through readiness. The common box
@@ -96,7 +97,7 @@ versions. Inventory and cleanup remain available on older versions.
 Linux is x64 only. Preflight requires a user other than root, `/dev/kvm`
 readable and writable by the user (the `kvm` group), unprivileged user
 namespaces, Landlock ABI 5 or later (Linux 6.10+), `mkfs.ext4`
-(e2fsprogs), and podman with `rootless=true`. Without user
+(e2fsprogs). Without user
 namespaces or Landlock ABI 5, `up` is refused as `runtime`, naming the missing requirement's token
 (below); there is no unjailed fallback.
 
@@ -170,7 +171,7 @@ pinfold box events RUN [--limit N] [--after CURSOR]   # one JSON object: a page 
 pinfold box fetch BOX --repo GUEST_REPO --into REPO   # box branches into REPO; one JSON line
 pinfold disk list                 # JSON lines
 pinfold disk rm NAME              # one JSON line
-pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache]   # one JSON line
+pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]…   # one JSON line
 pinfold image rm NAME             # one JSON line
 ```
 
@@ -181,7 +182,8 @@ stdout; the build's progress never reaches stdout. On success, exit 0:
 {"event":"built","image":NAME,"ref":"localhost/pinfold/image-<NAME>:<build>","latest":"localhost/pinfold/image-<NAME>:latest","id":ID,"labels":{…},"base":DIGEST|null}
 ```
 
-`id` is the image's runtime id, the same value a box's `ready` and `list`
+On Linux `id` is the runnable OCI manifest SHA-256; converter recipe,
+bootstrap identity and raw-root hash are separate. On Apple `id` is the image's runtime id, the same value a box's `ready` and `list`
 report as `image.id`; it is null when the runtime cannot resolve the built
 ref after a successful build. `labels` is every label the build put on the
 image. A failed build exits 1 with the last 40 lines of the runtime's
@@ -729,9 +731,9 @@ A project recipe typically `FROM`s the profile image.
 
   | Build | Repo | `profile` | `project` | `base` |
   |---|---|---|---|---|
-  | profile | `localhost/pinfold/profile-<name>` | `<name>` | | resolved base digest |
-  | project | `localhost/pinfold/project-<id>`, the project's state id | | `<id>` | digest of the profile image; without a profile recipe, first `FROM`'s digest |
-  | caller | `localhost/pinfold/image-<NAME>` | | | first `FROM`'s digest when it resolves to one; a base pinfold built is read from local storage, never pulled |
+  | profile | `localhost/pinfold/profile-<name>` | `<name>` | | |
+  | project | `localhost/pinfold/project-<id>`, the project's state id | | `<id>` | selected local profile image id, when it has a recipe |
+  | caller | `localhost/pinfold/image-<NAME>` | | | |
 
 - A profile build's stable ref is what a project Containerfile `FROM`s
   and what `doctor` compares against.
@@ -742,8 +744,7 @@ A project recipe typically `FROM`s the profile image.
   either tag.
   Identical inputs under two names build one image. It carries the
   caller's `--label`s, none of which may start with `dev.pinfold.`. It uses
-  the runtime's layer cache unless the caller passes `--no-cache`; podman
-  labels the cache's intermediate images `dev.pinfold.layer`.
+  the builder's layer cache unless the caller passes `--no-cache`.
 - A build never touches project homes.
 - Profile and project images record their Containerfile's SHA-256 as
   `dev.pinfold.containerfile-sha256`. Before a pi launch, and in doctor,
@@ -759,14 +760,83 @@ A project recipe typically `FROM`s the profile image.
   names an explicit platform. An unresolved platform is not pulled.
   The empty `scratch` base has no digest and is not pulled.
 
-Firecracker preparation derives a read-only ext4 boot root from the image:
-podman exports the image and `mkfs.ext4 -d` writes it, inside podman's user
-namespace so files keep their image owners. The disk is made at the first
-`up` of an image id, at `~/.cache/pinfold/root/<id>.ext4`, and goes when
-the image goes.
+### Linux image preparation
+
+This is a separate internal role, never a box-spec option. Agent Always
+applied and outer VMM jail, parent lifetime, seccomp and vsock controls
+stay exact. The trusted guest service runs as root with no_new_privs and
+capability bound `0xa82425fb`, including mount privilege. RUN uses pinned
+BuildKit's ordinary OCI capabilities without SYS_ADMIN; user namespaces
+and insecure entitlements are disabled. There is no NIC or direct route.
+
+Attach only the pinned immutable bootstrap, this binary's read-only init,
+host-written read-only inputs and owned writable storage. No host bind,
+agent home, host auth, registry credential, agent disk or unrelated device
+enters either role. A builder exclusively owns one version-keyed cache;
+a converter gets a fresh separate work disk and never attaches that cache.
+Ownership, cancellation, audit failure and recovery remain host authority.
+A job must stop and reap its VMM before releasing ownership. Discard the
+derivable cache after unclean work; completed images survive cache removal.
+
+Daemon and RUN use the production proxy and audit. Initial build hosts are
+`registry-1.docker.io`, `auth.docker.io`, `production.cloudfront.docker.com`,
+`deb.debian.org`, `github.com`, `release-assets.githubusercontent.com`,
+`registry.npmjs.org` and `cli.github.com`. Linux `build` and `image build`
+accept repeatable `--allow HOST` exact DNS additions, independently of agent
+policy. A recipe grants no network authority. Denials retain the proxy's
+stable reasons. Apple rejects `--allow` additions and retains its existing
+build egress policy. Build records name their audit log on stderr and use
+normal retained run records; no credential values enter argv or files.
+
+Snapshot local image refs to immutable leased identities for the whole
+transaction. Supply them as BuildKit OCI contexts, including normalized
+`:latest` names. A source policy refuses managed-image registry fallback.
+The selected profile dependency is frozen to the identity recorded in
+`dev.pinfold.base`; a changed or missing dependency is `image-base-changed`.
+On both platforms that public label is empty for caller/profile builds;
+only managed project builds record the selected local profile identity.
+Other source digests are internal provenance, never user configuration.
+Linux records BuildKit's actually used image digests, not a parsed FROM.
+
+Guest output is a bounded framed stream. The host creates only fixed-mode
+staging paths derived from validated kinds and SHA-256 values, ignoring
+all guest path, owner and link metadata. It never extracts a guest archive
+on the host or reads/mounts a guest-writable disk. Validate sizes, hashes,
+media, linux/amd64 config, expected labels and the complete local descriptor
+graph. No external descriptor URL or unreferenced object is admitted.
+Select one runnable manifest; a recognized provenance attestation must bind
+to that manifest and cannot become the runnable image identity.
+
+The converter receives only the host's validated read-only OCI layout,
+has no egress, and uses pinned BuildKit flattening plus guest tar and
+mkfs.ext4. Ownership, modes, links, whiteouts, capabilities and ACL metadata
+must survive conversion. Receive the raw root as opaque bounded hashed
+bytes. Reuse only a completed representation with matching manifest,
+converter recipe/bootstrap and verified raw-root size/hash.
+
+Publish immutable OCI objects and completed root before one atomic catalog
+generation containing the unique ref and latest together. Failure,
+truncation, deadline or interruption changes neither ref. Running-image and
+build-input leases prevent removal through concurrent clean/rm/publication.
+Launch reads only the catalog and completed root/config; it never builds or
+converts, and works with the builder absent. Missing/damaged preparation
+requires an explicit rebuild; partial roots are never reusable.
+
+The cache is `$XDG_CACHE_HOME/pinfold/images/`: `catalog.json` maps refs to
+immutable manifests and records labels, config environment, internal source
+provenance and completed root derivation. There is no registry or resident
+daemon. Old Podman-only refs no longer resolve: rebuild profiles/projects
+with `build` and caller images with `image build`. The old Podman store,
+old derived-root cache and managed agent disks are left untouched.
+
+Image jobs use two vCPUs, 2560 MiB RAM, an 8 GiB cache and a fresh 3 GiB
+converter disk. Each VM job is bounded to five minutes. Input snapshots,
+OCI payload and raw-root output each cap at 512 MiB, JSON at 1 MiB, headers
+at 8 KiB and objects at 4096; excess is a `resource` failure. Artifact
+installation retains its separate 512 MiB/five-minute contract.
 
 Built-in images use `debian:trixie-slim`, upgrade Debian packages at each
-build, record the resolved base digest and strip setuid/setgid bits.
+build and strip setuid/setgid bits.
 
 | Profile | Tools |
 |---|---|
@@ -825,7 +895,19 @@ names Firecracker's and the kernel's, on the first `up`.
 snapshot, an exact package closure and pinned BuildKit binaries. It emits
 a tar.gz ext4 root, manifest and SHA256SUMS; the workflow only builds.
 It requires Linux root, Python 3.11+, debootstrap, GnuPG, curl 8.4+,
-e2fsprogs and GNU tar. The installed CLI does not consume it.
+e2fsprogs and GNU tar. `crates/pinfold/builder.toml` embeds the reviewed
+archive, raw-root and recipe identities. The draft consumer has no public
+download URL: a cache miss fails with `builder-unavailable` until separate
+distribution approval. The documented offline archive cache is
+`~/.cache/pinfold/artifacts/builder/<archive-sha256>/`; the completed root
+installs atomically under its `linux-x64/`. Installation verifies a staged
+archive copy against its pinned size and SHA-256 before streaming only
+`root.ext4` into a fixed 0600 file. It retains the 512 MiB archive cap and
+five-minute deadline, with cancellation. The raw-root size and SHA-256 are
+verified before publication and on every use; a mismatch fails with
+`builder-integrity`. The sidecar manifest supplies no authority. `artifacts`
+and `doctor` report the builder pin, recipe SHA-256 and verified cache state;
+its asset has `sha256` and `bytes`, and no `url` until one is pinned.
 
 codex also pins a host helper, `codex-app-server`, per host `os-arch`
 (`darwin-arm64`, `linux-x64`), installed the same way into
@@ -1030,9 +1112,9 @@ of NAME, whatever its age, and no other name's.
 
 `pinfold clean` lists sizes, then removes:
 - everything automatic, now
-- the runtime's unused build cache (Apple: prune BuildKit records, keeping
-  the shared builder and active builds; podman: the
-  `dev.pinfold.layer` intermediate images no image builds on)
+- the unused build cache (Apple: prune BuildKit records, keeping the
+  shared builder and active builds; Linux: remove only an exclusively
+  claimed idle owned builder cache)
 - with `--unused AGE`, state and disks of projects not run for that long,
   except a project's with a live box. Never automatic: a project disk
   holds unfetched work, and a home disk sessions and logins.
@@ -1044,15 +1126,15 @@ disk and not cleaned.
 
 `--dry-run` only lists. Run records are a category of their own. `doctor` shows disk use per category and suggests
 `clean` above 20 GB. `doctor` runs no maintenance and changes no pinfold
-state or artifacts. Podman's build cache is unmeasured.
+state or artifacts. Linux reports allocated backing-file bytes without
+booting or reading a cache filesystem; catalog inspection needs no runtime.
 When runtime checks fail, it skips runtime-dependent image and disk
 probes. On Linux, failed preflight also reports missing host requirements
 independently of each other: `root` names a run as uid 0, `kvm` an
 inaccessible `/dev/kvm`, `mkfs` a missing `mkfs.ext4`, `userns`
 unprivileged user namespaces turned off, `userns-apparmor` them restricted
 by AppArmor without pinfold's profile, `landlock` no Landlock or an ABI
-below 5, and `runtime-dir` the selected
-`$XDG_RUNTIME_DIR` or `/run/user/<uid>` that podman builds need.
+below 5.
 
 A launch holds shared project ownership before recording its run, through
 box teardown. Deleting project state or caches requires exclusive project
@@ -1208,10 +1290,12 @@ pinfold init                     PID 1 in the box (Linux builds)
 ```
 
 `artifacts` prints one JSON array, an object per harness, then on Linux
-one named `vmm`: `name`, `version`, `path` (the host directory mounted at
+entries named `vmm` and `builder`: `name`, `version`, `path` (the host directory mounted at
 `/opt/pinfold/<name>`; for `vmm`, its install directory), `cached`, and
 `assets`, a list of `{url, sha256}` for this host's `os-arch`. Nothing is
-downloaded. `doctor` reports the same list.
+downloaded. The builder reports pinned compressed bytes/size and recipe
+identity, without a URL while public distribution is unavailable. `doctor`
+reports the same list.
 
 `pinfold --version` (`-V`) and `pinfold --help` (`-h`) answer without
 touching the runtime or the state dir; `--help` or `-h` after a subcommand, before any `--`,
@@ -1243,15 +1327,15 @@ two that run apart. Testing policy is in `AGENTS.md`.
 | 11 | Disks persist and attach exclusively | A disk created with `from` holds the host tree's files, exec bits and symlink; after its owner is SIGKILLed during the copy and its box pruned, the next `up` naming it holds the whole tree. A file one box writes is read by the next box that attaches it; another state root naming the same disk gets its own. While a box attaches a disk writable, another `up` naming it and `disk rm` are refused as `disk-in-use` and create nothing; of two writable `up`s racing for one new disk exactly one runs and the other is refused as `disk-in-use`; two read-only boxes at once can write neither the disk nor a mount. A sparse `from` past the disk's `size` is refused as `limit`. After the runtime kills a writer's box, or the writer's owner is SIGKILLed, a read-only attachment is refused as `disk-unclean` until a writable one has run, and then reads the disk. On macOS, a dead owner's box the runtime created but never started holds its disk. `disk rm ../escape` is refused as `spec`. On Linux, a nested disk whose mount point is a symlink the box planted ends the start `failed` and leaves nothing at the link's target. |
 | 12 | A changed project file stops the run | A domain added to `.pinfold.toml` by a box commit, fetched and merged on the host, an explicit image added even with the same effective reference, or a changed project Containerfile, makes the next run, `pinfold fetch` and `pinfold build` refuse as `untrusted` until `pinfold allow`. After approval, an explicit image runs but `build` refuses as `image-no-recipe`; the project recipe builds and runs with a recipe-less profile. State, config or cache roots inside the project, reached through a symlinked ancestor whose suffix does not exist, make `allow`, build and pi refuse as `host-path-in-project`; with external roots the same project runs. With no identity in the repository or home, the box's commits arrive authored `pi <pi@pinfold.invalid>`. A start pushes host commits in: a clean box branch strictly behind is fast-forwarded to the host's commit; a dirty tracked file or a local box commit leaves the box's HEAD where it was while `host/main` still moves; an untracked box file the fast-forward would overwrite prints `sync-failed` and pi still runs. |
 | 13 | Project state persists and stays separate | Guest writes in two same-named projects remain separate on A/B/A runs. The first start's box repository is checked out clean at the host's HEAD commit, on a branch two tags shadow by its short and its full name, holding its committed file, and holds none of the host's untracked `.env`, unstaged blob, stash, remote URL or hook. A root without `.git` refuses as `not-git` and creates no state; after `git init` and a commit it runs. A long valid project basename launches. |
-| 15 | Cleanup removes only pinfold's garbage | Of three builds of one source two images remain, never dropping one a box still uses. A live box, its project's state and disks, and on Apple a container the runtime's CLI started from a pinfold-built image, survive `pinfold clean --unused 0s`, which removes an idle project's state and disks; `--dry-run` removes nothing. An unlabeled image survives `clean`, and plain `clean` keeps every disk; a dead box is removed and protects nothing. `image rm` of a name removes its tags and no other name's, even on an image a twin name's running box shares, and keeps an image's last tag while a box uses it, reporting it `in_use`; on Linux the image's root disk goes with it. |
+| 15 | Cleanup removes only pinfold's garbage | Of three builds of one source two images remain, never dropping one a box still uses. A live box, its project's state and disks, and on Apple a container the runtime's CLI started from a pinfold-built image, survive `pinfold clean --unused 0s`, which removes an idle project's state and disks; `--dry-run` removes nothing. On Apple an unlabeled external image survives `clean`, and plain `clean` keeps every disk; a dead box is removed and protects nothing. `image rm` of a name removes its tags and no other name's, even on an image a twin name's running box shares, and keeps an image's last tag while a box uses it, reporting it `in_use`; on Linux the image's root disk goes with it. |
 | 17 | up refuses before it creates | A missing image, a misspelled nested spec key, a bad env name, a `dev.pinfold.` label, a suffix allow entry on or above a public suffix, a mount or disk `from` path with a comma, a disk at or below `/proc`, `/sys` or `/dev` or at `/`, `/tmp`, `/etc` or `/etc/resolv.conf`, each reached through `..` or `.`, a flag- or path-like disk name and a live name are refused as data, naming the cause; the misspelled key's refusal also names the box; each leaves no box and no state dir. A recipe-less profile refuses with `image-source-missing` even when its old managed tag exists; the same profile with an explicit image runs. Of two `up`s racing for one name exactly one wins, and the winner answers exec. |
 | 18 | A caller reads the effective configuration as data | Without a runtime, config reports host policy, image_built null and image_error without creating state/cache/config files. Unknown project/profile TOML keys and a profile's containerfile are refused with the source and key; correcting the same file restores the fixture policy. With `PINFOLD_PROFILE=full` and no project `allow`, config reports the default list plus `github.com` and `api.github.com`. Layered image defaults and project overrides report `image_source` and null recipe for explicit images; a project recipe works with a recipe-less profile. Conflicting, missing and empty sources refuse with their tokens before box/project/disk/run state; correcting the fixture succeeds. Guarantee 39 shows the live report. |
 | 19 | A caller-owned box launches the pinned harness | A pi spec runs `/opt/pinfold/pi/pi --version` at the version `pinfold artifacts` pins, and the box's PINFOLD_ALLOW is the spec's allow list. |
 | 20 | A caller can tell an OOM kill from a failure | On Linux, the guest kernel's `MemTotal` is within 64 MiB under the box's memory, and a command that exceeds it is killed and stat's oom_kills rises; on both runtimes stat reports the limits in force, every field is present, and `exec`'d processes carry `oom_score_adj` 1000, so init is never the victim. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
-| 23 | A caller builds an image from its own tree | A build from a caller's context reaches a box with its COPYed file, and the built line carries the unique ref, the image's id and the labels. After three builds of one name, latest has moved and the first build's ref still comes up, on Linux with the build's labels in `ready`. Two builds of unchanged inputs make one image under two refs; `--no-cache` changes a RUN-generated random stamp, and so does every profile build, which on Podman leaves no new fixture-labeled dangling image. A failed build prints a bounded tail even after a 200,000-byte unterminated line, keeps its final marker and makes no image. On Apple, builds from two state directories with different `NO_COLOR` and `BUILDKIT_COLORS` both succeed while one is held in RUN. |
+| 23 | A caller builds an image from its own tree | A build from a caller's context reaches a box with its COPYed file, and the built line carries the unique ref, the image's id and the labels. After three builds of one name, latest has moved and the first build's ref still comes up, on Linux with the build's labels in `ready`. Two builds of unchanged inputs make one image under two refs; `--no-cache` changes a RUN-generated random stamp, and so does every profile build, without requiring native intermediate images. A failed build prints a bounded tail even after a 200,000-byte unterminated line, keeps its final marker and makes no image. On Apple, builds from two state directories with different `NO_COLOR` and `BUILDKIT_COLORS` both succeed while one is held in RUN. |
 | 26 | A login route keeps the login on the host | Each login route's fixture receives exactly the host credential and none the box sent, in any case or number: claude's `from` token as Bearer; codex's login refreshed on the host when it lapses within 5 minutes, once across two XDG roots on one `CODEX_HOME`, the second reporting `login-busy`; pi's `openrouter`, `anthropic`, `anthropic-subscription` and `openai-codex` routes. Cancelling `up` during a stalled codex refresh reaps the helper and closes its refresh connection. `pi -p` through the `pi` shim and the `openrouter` route sends the profile's and the project's skills and the profile's allowlist. No token, key or account id is in the box's environment or files, its home disk, the state root or the egress log. Misconfigured routes are refused as `spec` or `login`. On macOS only, with a real login, codex completes one tool round trip through a route with no `to`. |
-| 27 | Doctor reports without changing state | With and without a runtime, doctor leaves complete Pinfold-owned state/config/cache trees unchanged, including absent roots, and reports host configuration; so do `pinfold --version`, which prints the version, and `pinfold box list --help` with no runtime. Native runtime bookkeeping is outside those trees. Linux runtime-dir and missing-kvm diagnostics use real failures. The Linux host keeps AppArmor's unprivileged user-namespace restriction on (`kernel.apparmor_restrict_unprivileged_userns` is 1); there a copy of pinfold outside its profile's path reports `userns-apparmor` and is refused as `runtime`; the profiled executable starts a box. |
+| 27 | Doctor reports without changing state | With and without a runtime, doctor leaves complete Pinfold-owned state/config/cache trees unchanged, including absent roots, and reports host configuration; so do `pinfold --version`, which prints the version, and `pinfold box list --help` with no runtime. Native runtime bookkeeping is outside those trees. Linux missing-kvm diagnostics use real failures. The Linux host keeps AppArmor's unprivileged user-namespace restriction on (`kernel.apparmor_restrict_unprivileged_userns` is 1); there a copy of pinfold outside its profile's path reports `userns-apparmor` and is refused as `runtime`; the profiled executable starts a box. |
 | 28 | Host updates are verified and atomic | A host HTTPS release fixture supplies a different valid executable. Wrong checksums preserve the original bytes/inode; a working command started during a held asset transfer also prevents replacement. After teardown the verified bytes replace the inode and preserve the invoked command symlink. |
 | 34 | Blocked route responses release the upstream | A normal routed response succeeds. A guest that keeps its upload open but stops reading causes the host fixture connection to close after the production write deadline, while the guest holder remains alive. |
 | 36 | CONNECT tunnels share activity | Initially idle TLS tunnels start at staggered times and expire after the production idle interval. Real TLS tunnels carry upload-only and download-only traffic for longer than the production idle deadline. Neither closes while bytes flow; both then close after a full idle interval with `idle timeout` in the egress log while the guest holders remain alive. |
@@ -1259,6 +1343,8 @@ two that run apart. Testing policy is in `AGENTS.md`.
 | 39 | The launch record is the applied policy | A pi box starts with an explicit local image and a recipe-less profile, from a trusted `.pinfold.toml` with an allow list, cpus, memory, a host-service route and an injecting route whose header comes from a host variable, plus `PINFOLD_ENV_SECRET`, under environment overrides of the allow list, cpus and memory. Before `allow`, `config` reports the file's list, trust false, the built image and the home disk; the environment's `PINFOLD_ROUTES` replaces the file's routes; an invalid UTF-8 override fails without disclosing its bytes. The box attaches the reported home disk writable at `$HOME`; its kernel sees the environment's cpus and memory; SECRET arrives without entering host argv, and on Linux is in neither `/proc/cmdline`, the VM configuration, the init disk nor any disk image. Its seeds are readable and its share refuses guest writes without changing host bytes. While it runs, the file's image and allow list change and are not re-allowed: `config` reports the change, but `inspect` still reports the started allow list, route kinds and targets, cpus and memory, equal to what the test wrote, plus env names that include `SECRET` and the started image reference and runtime-observed id; the started list decides, refusing the file's hosts as `not allowlisted`. No file under the state root holds the secret or the header value. When pi exits, the terminal record is `harness-exited`. On a second start, host profile edits need no project reapproval, the guest-edited seed survives and current shared bytes appear. |
 | 42 | Run records are retained within bounds | With inactive runs padded on the host past 128 MiB in valid decision lines, `clean` removes the oldest inactive run, keeps the newest, and leaves a live run's log unchanged. Once the newest is aged 15 days on the host, `clean` removes it (`inspect` exits 3), while a live run aged the same stays `available` and its log keeps appending. |
 | 43 | The VMM reaches only its own box | Linux only. With two boxes up, each VMM is a child of its `box up` and runs as the user with `CapBnd` 0 and `NoNewPrivs` 1; its user, mount, PID, network, IPC and UTS namespaces differ from `box up`'s; its root, read through `/proc/PID/root`, holds its own disk and not the other box's disk; none of its mount points is under the user's home; its fds 0–2 are `/dev/null` and none is under the home; SIGKILL of `box up` ends the VM. |
+
+| 44 | Linux image work stays in its own VM | Real RUN observes the approved rootful OCI role, no_new_privs, disabled user namespaces and only loopback. In the same build, an explicit api.github.com addition succeeds and example.com gets proxy 403 with its denial audited. After clean removes the idle cache and the pinned builder is unavailable, the completed image still launches and reads its fixture. |
 
 ## Code
 

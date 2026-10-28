@@ -1,0 +1,7 @@
+# Reviewed phase 6a bytes, preserved in the bootstrap evidence bundle.
+# Public distribution is awaiting approval. No download URL is pinned.
+archive_sha256 = "e7dd1ab60072ee99ff387e21ac34791b1285c950f439f0d1ef0a5c54a41823e0"
+archive_bytes = 114456820
+root_sha256 = "710189b13d814e4026e1095bd393dad99465e4042ced5dae069c59fd79cbaa80"
+root_bytes = 1073741824
+recipe_sha256 = "d985bd63260afaedcbaf90c3fbfc95f5d077b03cd13407137c3b4c4724ac5e0f"

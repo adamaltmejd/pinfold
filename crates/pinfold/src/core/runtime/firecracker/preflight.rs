@@ -1,4 +1,4 @@
-//! Linux host requirements for Firecracker boxes and podman builds
+//! Linux host requirements for Firecracker boxes and image jobs
 //! (Runtimes), each named by its token. None changes the host.
 
 use std::fs;
@@ -47,37 +47,7 @@ pub fn host_requirements() -> Vec<String> {
             "landlock: Landlock is unavailable: {error}; the VMM jail needs ABI 5 or later (Linux 6.10+)"
         )),
     }
-    if let Err(error) = runtime_dir() {
-        missing.push(error);
-    }
     missing
-}
-
-/// The user runtime directory rootless podman builds need, checked without
-/// `podman info`.
-fn runtime_dir() -> Result<(), String> {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", nix::unistd::getuid())));
-    fs::metadata(&dir)
-        .and_then(|metadata| {
-            if !metadata.is_dir() {
-                return Err(io::Error::other("not a directory"));
-            }
-            nix::unistd::access(
-                &dir,
-                nix::unistd::AccessFlags::R_OK
-                    | nix::unistd::AccessFlags::W_OK
-                    | nix::unistd::AccessFlags::X_OK,
-            )
-            .map_err(io::Error::from)
-        })
-        .map_err(|error| {
-            format!(
-                "runtime-dir: {}: {error}; rootless podman needs an accessible user runtime directory (XDG_RUNTIME_DIR or /run/user/<uid>)",
-                dir.display()
-            )
-        })
 }
 
 /// Open `/dev/kvm` and use it: access, not group membership.

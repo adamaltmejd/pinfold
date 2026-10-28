@@ -13,12 +13,11 @@ use tokio::net::UnixListener;
 
 use super::vsock::{self, put};
 use super::{Firecracker, jail};
+use crate::core::artifacts;
 use crate::core::disk::{self, Fill, Seeding};
-use crate::core::image::{ImageService, podman};
+use crate::core::image::{ImageService, linux};
 use crate::core::plan::Plan;
 use crate::core::runtime::output;
-use crate::core::{artifacts, clean};
-use crate::dirs;
 use crate::init::firecracker::{BOOT, BOOT_PORT, FAILED, READY, read_frame, write_frame};
 
 /// Exactly these: no secret ever reaches a kernel command line.
@@ -73,7 +72,7 @@ pub fn prepare(
         .image
         .as_deref()
         .expect("box up resolves the profile's image before the runtime runs");
-    if !podman::Podman
+    if !linux::Linux
         .resolve_image(reference)?
         .is_ok_and(|image| image.id == image_id)
     {
@@ -82,7 +81,7 @@ pub fn prepare(
         ));
     }
     cancelled()?;
-    let root_disk = root_disk(image_id)?;
+    let (root_disk, image_env) = linux::catalog::root(image_id)?;
     cancelled()?;
     let init_disk = state_dir.join("init.ext4");
     write_init_disk(&init_disk)?;
@@ -99,80 +98,17 @@ pub fn prepare(
         root_disk,
         init_disk,
         mounts,
-        image_env: image_env(image_id)?,
+        image_env: image_env
+            .into_iter()
+            .map(|(key, value)| (key.into(), value.into()))
+            .collect(),
     })
-}
-
-/// The read-only ext4 root disk a Linux box boots for image `id`, at
-/// `~/.cache/pinfold/root/<id>.ext4`, made at the image's first use. It goes
-/// when the image goes ([`clean::prune_root_disks`]).
-fn root_disk(id: &str) -> io::Result<PathBuf> {
-    let dir = dirs::root_disks_dir()?;
-    let disk = dir.join(format!("{id}.ext4"));
-    if disk.is_file() {
-        return Ok(disk);
-    }
-    let mkfs = super::preflight::mkfs_ext4()?;
-    fs::create_dir_all(&dir)?;
-    // One first use writes the disk; a concurrent one waits, then uses it.
-    let lock = fs::File::options()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(dir.join(".lock"))?;
-    let _lock = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusive)
-        .map_err(|(_, error)| io::Error::from(error))?;
-    if disk.is_file() {
-        return Ok(disk);
-    }
-    let staging = dir.join(format!("{}{}", clean::ROOT_STAGING, std::process::id()));
-    let file = staging.join("disk");
-    // The container is never started; it only gives `export` the image's
-    // filesystem.
-    let container =
-        String::from_utf8_lossy(&output(&["podman", "create", "--pull=never", id, "true"])?)
-            .trim()
-            .to_string();
-    // Extraction, mkfs and removal of the tree run in podman's user
-    // namespace, so files keep their image owners and the host user can
-    // still remove what the namespace wrote. The image is never larger
-    // than its tree: allow 10% and 16 MiB for metadata, an inode per entry.
-    // The export goes to a file: in a pipe, a failed export could still
-    // leave tar a short archive to extract and cache.
-    const SCRIPT: &str = r#"set -eu
-trap 'rm -rf "$1/tree" "$1/export.tar"' EXIT
-rm -rf "$1/tree" "$1/export.tar" "$1/disk"
-mkdir -p "$1/tree"
-podman export -o "$1/export.tar" "$2"
-tar -xpf "$1/export.tar" -C "$1/tree"
-rm "$1/export.tar"
-kib=$(du -sk "$1/tree" | cut -f1)
-entries=$(find "$1/tree" -print0 | tr -dc '\0' | wc -c)
-"$3" -q -F -m 0 -O ^has_journal -N $((entries + 1024)) -d "$1/tree" \
-  "$1/disk" $((kib + kib / 10 + entries / 4 + 16384))k
-"#;
-    let staging_arg = staging.to_string_lossy();
-    let made = output(&[
-        "podman",
-        "unshare",
-        "sh",
-        "-c",
-        SCRIPT,
-        "sh",
-        &staging_arg,
-        &container,
-        &mkfs.to_string_lossy(),
-    ]);
-    let _ = output(&["podman", "rm", "--force", &container]);
-    let result = made.and_then(|_| fs::rename(&file, &disk));
-    clean::remove_root_staging(&staging);
-    result.map(|()| disk)
 }
 
 /// Write a read-only ext4 init disk at `disk` holding this executable as
 /// `/pinfold`, and the empty `/dev` and `/mnt` PID 1 mounts on: a Linux
 /// CLI's init for a box, and the guest kernel's root.
-fn write_init_disk(disk: &Path) -> io::Result<()> {
+pub(crate) fn write_init_disk(disk: &Path) -> io::Result<()> {
     let tree = disk.with_extension("tree");
     let _ = fs::remove_dir_all(&tree);
     fs::create_dir(&tree)?;
@@ -190,7 +126,7 @@ fn write_init_disk(disk: &Path) -> io::Result<()> {
 
 /// Copy the host directory `host` into a new read-only ext4 image at
 /// `disk`, sized to the tree.
-fn mount_image(host: &Path, disk: &Path) -> io::Result<()> {
+pub(crate) fn mount_image(host: &Path, disk: &Path) -> io::Result<()> {
     let (kib, entries) = tree_size(host)?;
     let _ = fs::remove_file(disk);
     // 10% and 16 MiB for metadata, an inode per entry, as the root disk.
@@ -228,28 +164,6 @@ fn tree_size(dir: &Path) -> io::Result<(u64, u64)> {
         }
     }
     Ok((kib, entries))
-}
-
-/// The image's config `Env`.
-fn image_env(image_id: &str) -> io::Result<Vec<(OsString, OsString)>> {
-    let json = output(&[
-        "podman",
-        "image",
-        "inspect",
-        "--format",
-        "{{json .Config.Env}}",
-        image_id,
-    ])?;
-    let env: Option<Vec<String>> = serde_json::from_slice(&json)
-        .map_err(|error| io::Error::other(format!("podman image inspect: {error}")))?;
-    Ok(env
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|pair| {
-            let (name, value) = pair.split_once('=')?;
-            Some((name.into(), value.into()))
-        })
-        .collect())
 }
 
 /// A box's VM, owned by its `box up`.
@@ -446,7 +360,7 @@ impl Boot {
 
 /// The VM configuration, read by Firecracker inside the jail: paths are
 /// the jail's.
-fn config(plan: &Plan, drives: &[(PathBuf, bool)]) -> serde_json::Value {
+pub(crate) fn config(plan: &Plan, drives: &[(PathBuf, bool)]) -> serde_json::Value {
     let drive = |id: String, path: &str, root: bool, read_only: bool| {
         serde_json::json!({
             "drive_id": id,

@@ -339,6 +339,54 @@ fn prepare(host: &mut UnixStream) -> io::Result<(Request, OwnedFd)> {
     Ok((request, control))
 }
 
+/// The trusted image job uses the same mount setup, with fixed devices and
+/// no agent state or execution service. The agent entry point stays separate.
+#[cfg(target_arch = "x86_64")]
+pub(super) fn prepare_builder(host: &mut UnixStream) -> io::Result<bool> {
+    let (request, control) = prepare(host)?;
+    drop(control);
+    if request.uid != 0
+        || request.gid != 0
+        || request.root != "/dev/vdb"
+        || !request.fills.is_empty()
+        || request.attachments.len() != 2
+        || !request.attachments.iter().any(|attachment| {
+            attachment.device == "/dev/vdc"
+                && attachment.guest == Path::new("/work")
+                && attachment.writable
+        })
+        || !request.attachments.iter().any(|attachment| {
+            attachment.device == "/dev/vdd"
+                && attachment.guest == Path::new("/input")
+                && !attachment.writable
+        })
+    {
+        return Err(io::Error::other("invalid builder devices"));
+    }
+    mount(
+        "tmpfs",
+        Path::new("/run"),
+        "tmpfs",
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
+        Some("mode=0755"),
+    )?;
+    fs::write(format!("{WORK}/cgroup.subtree_control"), "+pids +memory")?;
+    fs::create_dir(format!("{WORK}/service"))?;
+    fs::create_dir(format!("{WORK}/jobs"))?;
+    Ok(request.relay)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(super) fn connect_builder() -> io::Result<UnixStream> {
+    vsock_connect(BOOT_PORT)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(super) fn relay_builder() -> io::Result<()> {
+    let relay = TcpListener::bind(super::RELAY_LISTEN)?;
+    super::serve_relay(relay, || vsock_connect(PROXY_PORT))
+}
+
 fn mount(
     source: &str,
     target: &Path,

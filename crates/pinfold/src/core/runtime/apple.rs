@@ -662,18 +662,16 @@ struct ListedImageConfiguration {
 struct ListedImageDescriptor {
     #[serde(default)]
     annotations: BTreeMap<String, String>,
-    /// `sha256:<hex>`.
-    digest: Option<String>,
 }
 
-/// One image entry, with its descriptor's digest.
+/// One image entry and its recorded labels.
 fn image_info(image: ListedImage) -> io::Result<ImageInfo> {
     // Build labels are OCI image config labels; a locally built image also
     // carries name annotations on its index descriptor.
-    let (mut labels, digest) = image
+    let mut labels = image
         .configuration
         .descriptor
-        .map(|descriptor| (descriptor.annotations, descriptor.digest))
+        .map(|descriptor| descriptor.annotations)
         .unwrap_or_default();
     for variant in &image.variants {
         if let Some(found) = variant.pointer("/config/config/Labels") {
@@ -688,7 +686,6 @@ fn image_info(image: ListedImage) -> io::Result<ImageInfo> {
         id: image.id,
         reference: image.configuration.name,
         labels,
-        digest,
     })
 }
 
@@ -761,6 +758,8 @@ impl ImageService for Apple {
     }
 
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
+        crate::core::image::check_build_allow(request.allow)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let cache_flags: &[&str] = if request.cache { &[] } else { &["--no-cache"] };
         crate::core::image::service::build("container", cache_flags, request)
     }

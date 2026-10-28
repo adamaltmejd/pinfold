@@ -16,7 +16,7 @@ const BUILD_LOG_BYTES: usize = 64 * 1024;
 /// The image service for this OS.
 pub fn service() -> &'static dyn ImageService {
     #[cfg(target_os = "linux")]
-    return &super::podman::Podman;
+    return &super::linux::Linux;
     #[cfg(not(target_os = "linux"))]
     return &apple::Apple;
 }
@@ -37,9 +37,6 @@ pub struct ImageInfo {
     pub reference: String,
     /// The labels recorded on the image.
     pub labels: BTreeMap<String, String>,
-    /// The digest the runtime records for the image, `sha256:<hex>`. Only
-    /// [`ImageService::resolve_image`] fills it on podman.
-    pub digest: Option<String>,
 }
 
 /// One image build: a context, a Containerfile, the names to tag the result
@@ -56,6 +53,8 @@ pub struct BuildRequest<'a> {
     /// Whether the runtime may reuse its layer cache. Without it every step
     /// reruns.
     pub cache: bool,
+    /// Additional explicit build-egress hosts; independent of agent egress.
+    pub allow: &'a [String],
 }
 
 /// Native image build, resolution, inventory and cache operations.

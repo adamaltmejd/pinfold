@@ -264,6 +264,9 @@ name = "pinfold-init"
 version = "0.3.3"
 dependencies = [
  "nix",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

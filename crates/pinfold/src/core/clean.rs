@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use nix::fcntl::Flock;
 
 use crate::core::image::{ImageInfo, ImageService, service};
-use crate::core::runtime::{BoxInfo, Runtime, output, runtime};
+use crate::core::runtime::{BoxInfo, Runtime, runtime};
 use crate::core::{artifacts, ownership, runs};
 use crate::dirs;
 
@@ -22,9 +22,6 @@ pub const FAMILY_LABELS: [&str; 2] = [PROFILE_LABEL, PROJECT_LABEL];
 /// The label recording the digest of the image an image was built from.
 pub const BASE_LABEL: &str = "dev.pinfold.base";
 pub const OWNER_LABEL: &str = "dev.pinfold.owner";
-/// The prefix of a root disk's staging directory, then the writer's pid.
-pub const ROOT_STAGING: &str = ".tmp-root-";
-
 const PASS_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// A caller build tag made within this window is never removed: the ref its
 /// `built` line named must still come up when the caller uses it later.
@@ -255,8 +252,7 @@ pub fn path_bytes(path: &Path) -> u64 {
 /// non-empty family label, and every caller name a `localhost/pinfold/image-<NAME>`
 /// tag names. `only` limits the pass to one `(label, source)`, the one a
 /// build just made. One image listing and one box listing serve every source;
-/// [`prune_root_disks`] adds a second image listing when root disks exist,
-/// however many sources the pass has. Call it
+/// Call it
 /// after dead boxes are pruned: its box listing is retention's one in-use
 /// rule. A failing source is reported and the rest continue.
 pub fn keep_two_images(
@@ -287,18 +283,30 @@ pub fn keep_two_images(
             eprintln!("pinfold: maintenance: images: {source}: {error}");
         }
     }
-    prune_root_disks(service)
+    Ok(())
 }
 
 /// The ids of the images every listed box runs: the one in-use rule
 /// [`keep_two_images`] and [`remove_images`] share. Dead or alive, every
 /// listed box counts.
 fn in_use_images(runtime: &dyn Runtime) -> io::Result<BTreeSet<String>> {
-    Ok(runtime
+    let ids: BTreeSet<String> = runtime
         .list()?
         .into_iter()
         .map(|box_| box_.image_id)
-        .collect())
+        .collect();
+    #[cfg(target_os = "linux")]
+    {
+        let mut ids = ids;
+        for image in crate::core::image::linux::catalog::list()? {
+            if crate::core::image::linux::catalog::leased(&image.id)? {
+                ids.insert(image.id);
+            }
+        }
+        Ok(ids)
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(ids)
 }
 
 /// The caller image name a reference tags, `localhost/pinfold/image-<NAME>:<tag>`.
@@ -416,56 +424,10 @@ pub fn remove_images(service: &dyn ImageService, source: &str) -> io::Result<Rem
         *count -= 1;
         untagged.insert(image.id.clone());
     }
-    // The images are gone already; a failed prune is the next one's.
-    if let Err(error) = prune_root_disks(service) {
-        eprintln!("pinfold: maintenance: root disks: {error}");
-    }
     Ok(Removed {
         ids: untagged.difference(&kept).cloned().collect(),
         in_use: kept.into_iter().collect(),
     })
-}
-
-/// Remove the root disks of images the runtime no longer lists, and the
-/// staging a killed Firecracker root conversion left. Every path that
-/// removes images ends here, so a root disk goes with its image.
-pub fn prune_root_disks(service: &dyn ImageService) -> io::Result<()> {
-    let entries = dirs::entries(&dirs::root_disks_dir()?)?;
-    if entries.is_empty() {
-        return Ok(());
-    }
-    let ids: BTreeSet<String> = service
-        .list_images()?
-        .into_iter()
-        .map(|image| image.id)
-        .collect();
-    for entry in entries {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if let Some(pid) = name.strip_prefix(ROOT_STAGING) {
-            let alive = pid.parse().is_ok_and(|pid| {
-                nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
-            });
-            if !alive {
-                remove_root_staging(&entry.path());
-            }
-        } else if name
-            .strip_suffix(".ext4")
-            .is_some_and(|id| !ids.contains(id))
-        {
-            remove_paths(vec![entry.path()])?;
-        }
-    }
-    Ok(())
-}
-
-/// Remove a root disk's staging. Its tree holds files podman's user
-/// namespace owns, so the removal runs there.
-pub fn remove_root_staging(staging: &Path) {
-    let staging = staging.to_string_lossy();
-    if let Err(error) = output(&["podman", "unshare", "rm", "-rf", &staging]) {
-        eprintln!("pinfold: root disk staging: {error}");
-    }
 }
 
 /// A build tag's time: its `<build>` starts with the build's nanoseconds

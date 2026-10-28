@@ -1,0 +1,1115 @@
+//! Verified OCI receipt and the Linux image store. Guest bytes supply no host paths.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use nix::fcntl::{Flock, FlockArg};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::core::image::ImageInfo;
+use crate::core::{hex, ownership, sha256_hex};
+use crate::dirs;
+
+// Candidate resource policy; final admission requires the boundary evidence.
+const HEADER_MAX: usize = 8 << 10;
+const JSON_MAX: u64 = 1 << 20;
+const OBJECT_MAX: usize = 4096;
+const PAYLOAD_MAX: u64 = 512 << 20;
+const INDEX: &str = "application/vnd.oci.image.index.v1+json";
+const MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
+const CONFIG: &str = "application/vnd.oci.image.config.v1+json";
+const ATTESTATION: &str = "application/vnd.docker.attestation.manifest.v1+json";
+const IN_TOTO: &str = "application/vnd.in-toto+json";
+const SLSA: &str = "https://slsa.dev/provenance/v1";
+const EMPTY_JSON: &str = "application/vnd.oci.empty.v1+json";
+const EMPTY_SHA: &str = "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
+
+fn check_cancel(cancel: Option<&AtomicBool>) -> io::Result<()> {
+    if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "build cancelled",
+        ));
+    }
+    Ok(())
+}
+
+fn invalid(detail: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, detail.into())
+}
+
+fn digest_hex(digest: &str) -> io::Result<&str> {
+    digest
+        .strip_prefix("sha256:")
+        .filter(|value| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .ok_or_else(|| invalid("image-output: invalid sha256 digest"))
+}
+
+fn new_file(path: &Path) -> io::Result<File> {
+    File::options()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(nix::libc::O_NOFOLLOW)
+        .open(path)
+}
+
+fn directory(path: &Path) -> io::Result<()> {
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .recursive(true)
+        .create(path)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Header {
+    digest: String,
+    size: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Success {}
+
+fn frame_header(stream: &mut impl Read) -> io::Result<(u8, Vec<u8>)> {
+    let mut prefix = [0u8; 5];
+    stream.read_exact(&mut prefix)?;
+    let length = u32::from_be_bytes(prefix[1..].try_into().unwrap()) as usize;
+    if length > HEADER_MAX {
+        return Err(invalid("image-output: header limit"));
+    }
+    let mut bytes = vec![0; length];
+    stream.read_exact(&mut bytes)?;
+    Ok((prefix[0], bytes))
+}
+
+fn success(stream: &mut impl Read, bytes: &[u8]) -> io::Result<()> {
+    serde_json::from_slice::<Success>(bytes).map_err(invalid_json)?;
+    let mut trailing = [0];
+    if stream.read(&mut trailing)? != 0 {
+        return Err(invalid("image-output: trailing bytes"));
+    }
+    Ok(())
+}
+
+/// A converter emits one `D` frame with digest/size and opaque root bytes,
+/// then `E {}` and EOF. No guest filesystem is read or mounted on the host.
+pub fn receive_root(stream: &mut impl Read, path: &Path) -> io::Result<(String, u64)> {
+    let mut file = new_file(path)?;
+    let received = (|| {
+        let (kind, bytes) = frame_header(stream)?;
+        let header: Header = serde_json::from_slice(&bytes).map_err(invalid_json)?;
+        if kind != b'D' || header.size == 0 || header.size > PAYLOAD_MAX {
+            return Err(invalid("image-output: root frame or size limit"));
+        }
+        copy_checked(stream, &mut file, header.size, &header.digest, None)?;
+        let (kind, bytes) = frame_header(stream)?;
+        if kind != b'E' {
+            return Err(invalid("image-output: missing root success"));
+        }
+        success(stream, &bytes)?;
+        file.sync_all()?;
+        Ok((header.digest, header.size))
+    })();
+    if received.is_err() {
+        let _ = fs::remove_file(path);
+    }
+    received
+}
+
+/// An admitted single linux/amd64 runnable manifest and its complete OCI layout.
+pub struct Verified {
+    pub id: String,
+    pub labels: BTreeMap<String, String>,
+    pub env: Vec<(String, String)>,
+    pub directory: PathBuf,
+    pub sources: Vec<Source>,
+}
+
+/// Informational BuildKit image inputs, independent of runnable identity.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Source {
+    uri: String,
+    digest: String,
+}
+
+/// Frames: kind byte (`I`, `B`, `E`), big-endian u32 JSON-header length,
+/// header, then the declared raw payload. I/B headers contain only digest
+/// and size. E is `{}` without payload, followed by EOF. I must be first.
+pub fn receive(
+    stream: &mut impl Read,
+    staging: &Path,
+    expected: &BTreeMap<String, String>,
+) -> io::Result<Verified> {
+    fs::DirBuilder::new().mode(0o700).create(staging)?;
+    let received = (|| {
+        directory(&staging.join("blobs/sha256"))?;
+        let mut objects = BTreeMap::new();
+        let mut total = 0u64;
+        let mut indexed = false;
+        loop {
+            let (kind, bytes) = frame_header(stream)?;
+            if kind == b'E' {
+                success(stream, &bytes)?;
+                break;
+            }
+            let header: Header = serde_json::from_slice(&bytes).map_err(invalid_json)?;
+            let digest = digest_hex(&header.digest)?;
+            total = total
+                .checked_add(header.size)
+                .filter(|total| *total <= PAYLOAD_MAX)
+                .ok_or_else(|| invalid("image-output: payload limit"))?;
+            let path = match kind {
+                b'I' if !indexed && objects.is_empty() => {
+                    if header.size > JSON_MAX {
+                        return Err(invalid("image-output: index limit"));
+                    }
+                    indexed = true;
+                    staging.join("index.json")
+                }
+                b'B' if indexed => {
+                    if objects.len() >= OBJECT_MAX
+                        || objects.insert(header.digest.clone(), header.size).is_some()
+                    {
+                        return Err(invalid("image-output: duplicate object or object limit"));
+                    }
+                    staging.join("blobs/sha256").join(digest)
+                }
+                _ => return Err(invalid("image-output: unexpected frame")),
+            };
+            let mut file = new_file(&path)?;
+            copy_checked(stream, &mut file, header.size, &header.digest, None)?;
+            file.sync_all()?;
+        }
+        if !indexed {
+            return Err(invalid("image-output: missing index"));
+        }
+        let verified = validate(staging, &objects, expected, true, None)?;
+        let mut layout = new_file(&staging.join("oci-layout"))?;
+        layout.write_all(b"{\"imageLayoutVersion\":\"1.0.0\"}")?;
+        layout.sync_all()?;
+        File::open(staging.join("blobs/sha256"))?.sync_all()?;
+        File::open(staging.join("blobs"))?.sync_all()?;
+        File::open(staging)?.sync_all()?;
+        Ok(verified)
+    })();
+    if received.is_err() {
+        let _ = fs::remove_dir_all(staging);
+    }
+    received
+}
+
+fn invalid_json(error: serde_json::Error) -> io::Error {
+    invalid(format!("image-output: invalid JSON: {error}"))
+}
+
+fn copy_checked(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+    size: u64,
+    digest: &str,
+    cancel: Option<&AtomicBool>,
+) -> io::Result<()> {
+    digest_hex(digest)?;
+    let mut hash = Sha256::new();
+    let mut remaining = size;
+    let mut buffer = [0u8; 64 << 10];
+    while remaining != 0 {
+        check_cancel(cancel)?;
+        let take = remaining.min(buffer.len() as u64) as usize;
+        source.read_exact(&mut buffer[..take])?;
+        destination.write_all(&buffer[..take])?;
+        hash.update(&buffer[..take]);
+        remaining -= take as u64;
+    }
+    if hex(&hash.finalize()) != digest_hex(digest)? {
+        return Err(invalid("image-output: digest mismatch"));
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Descriptor {
+    media_type: String,
+    digest: String,
+    size: u64,
+    #[serde(default)]
+    urls: Vec<String>,
+    platform: Option<Platform>,
+    artifact_type: Option<String>,
+    #[serde(default)]
+    annotations: BTreeMap<String, String>,
+    data: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct Platform {
+    architecture: String,
+    os: String,
+    variant: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Index {
+    schema_version: u32,
+    media_type: Option<String>,
+    manifests: Vec<Descriptor>,
+    subject: Option<serde_json::Value>,
+    artifact_type: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Manifest {
+    schema_version: u32,
+    media_type: Option<String>,
+    config: Descriptor,
+    layers: Vec<Descriptor>,
+    subject: Option<Descriptor>,
+    artifact_type: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ImageConfig {
+    architecture: String,
+    os: String,
+    variant: Option<String>,
+    config: Option<ContainerConfig>,
+    rootfs: Rootfs,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct ContainerConfig {
+    #[serde(default)]
+    labels: BTreeMap<String, String>,
+    #[serde(default)]
+    env: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Rootfs {
+    #[serde(rename = "type")]
+    kind: String,
+    diff_ids: Vec<String>,
+}
+
+fn native(platform: &Platform) -> bool {
+    platform.os == "linux"
+        && platform.architecture == "amd64"
+        && platform.variant.as_deref().is_none_or(str::is_empty)
+}
+
+fn descriptor(
+    descriptor: &Descriptor,
+    objects: &BTreeMap<String, u64>,
+    referenced: &mut BTreeSet<String>,
+) -> io::Result<()> {
+    if descriptor.data.is_some()
+        || descriptor.artifact_type.is_some()
+        || descriptor
+            .annotations
+            .contains_key("vnd.docker.reference.type")
+        || descriptor
+            .annotations
+            .contains_key("vnd.docker.reference.digest")
+        || descriptor.platform.as_ref().is_some_and(|p| !native(p))
+    {
+        return Err(invalid("image-output: invalid local descriptor"));
+    }
+    local_descriptor(descriptor, objects, referenced)
+}
+
+fn local_descriptor(
+    descriptor: &Descriptor,
+    objects: &BTreeMap<String, u64>,
+    referenced: &mut BTreeSet<String>,
+) -> io::Result<()> {
+    digest_hex(&descriptor.digest)?;
+    if !descriptor.urls.is_empty() || objects.get(&descriptor.digest) != Some(&descriptor.size) {
+        return Err(invalid("image-output: invalid local descriptor"));
+    }
+    referenced.insert(descriptor.digest.clone());
+    Ok(())
+}
+
+fn json_object<T: serde::de::DeserializeOwned>(
+    directory: &Path,
+    descriptor: &Descriptor,
+    json_bytes: &mut u64,
+) -> io::Result<T> {
+    *json_bytes = json_bytes
+        .checked_add(descriptor.size)
+        .filter(|size| *size <= JSON_MAX)
+        .ok_or_else(|| invalid("image-output: JSON limit"))?;
+    let path = directory
+        .join("blobs/sha256")
+        .join(digest_hex(&descriptor.digest)?);
+    serde_json::from_slice(&fs::read(path)?).map_err(invalid_json)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Statement {
+    #[serde(rename = "_type")]
+    kind: String,
+    subject: Vec<StatementSubject>,
+    predicate_type: String,
+    predicate: Provenance,
+}
+
+#[derive(Deserialize)]
+struct StatementSubject {
+    digest: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Provenance {
+    build_definition: BuildDefinition,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BuildDefinition {
+    build_type: String,
+    #[serde(default)]
+    resolved_dependencies: Vec<Material>,
+}
+
+#[derive(Deserialize)]
+struct Material {
+    uri: String,
+    #[serde(default)]
+    digest: BTreeMap<String, String>,
+}
+
+fn source(material: Material) -> io::Result<Option<Source>> {
+    if !material.uri.starts_with("pkg:docker/") && !material.uri.starts_with("pkg:oci/") {
+        return Ok(None);
+    }
+    let sha = material
+        .digest
+        .get("sha256")
+        .filter(|_| material.digest.len() == 1)
+        .ok_or_else(|| invalid("image-output: invalid image source digest"))?;
+    let digest = format!("sha256:{sha}");
+    digest_hex(&digest)?;
+    let reference = material.uri.split_once('/').unwrap().1;
+    if reference.is_empty()
+        || !reference.is_ascii()
+        || reference
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+    {
+        return Err(invalid("image-output: invalid image source URI"));
+    }
+    Ok(Some(Source {
+        uri: material.uri,
+        digest,
+    }))
+}
+
+// This is the pinned BuildKit OCI artifact form, not an arbitrary attachment.
+// See v0.34.1 exporter/containerimage/writer.go:commitAttestationsManifest.
+fn attestation(
+    directory: &Path,
+    attachment: &Descriptor,
+    runnable: &Descriptor,
+    objects: &BTreeMap<String, u64>,
+    referenced: &mut BTreeSet<String>,
+    json_bytes: &mut u64,
+    cancel: Option<&AtomicBool>,
+) -> io::Result<Vec<Source>> {
+    check_cancel(cancel)?;
+    if attachment.media_type != MANIFEST
+        || attachment.artifact_type.is_some()
+        || attachment.data.is_some()
+        || attachment
+            .annotations
+            .get("vnd.docker.reference.type")
+            .map(String::as_str)
+            != Some("attestation-manifest")
+        || attachment.annotations.get("vnd.docker.reference.digest") != Some(&runnable.digest)
+        || !attachment.platform.as_ref().is_some_and(|platform| {
+            platform.os == "unknown"
+                && platform.architecture == "unknown"
+                && platform.variant.is_none()
+        })
+    {
+        return Err(invalid("image-output: invalid attestation descriptor"));
+    }
+    local_descriptor(attachment, objects, referenced)?;
+    let manifest: Manifest = json_object(directory, attachment, json_bytes)?;
+    let subject = manifest
+        .subject
+        .as_ref()
+        .ok_or_else(|| invalid("image-output: missing attestation subject"))?;
+    if manifest.schema_version != 2
+        || manifest.media_type.as_deref() != Some(MANIFEST)
+        || manifest.artifact_type.as_deref() != Some(ATTESTATION)
+        || subject.digest != runnable.digest
+        || subject.size != runnable.size
+        || subject.media_type != MANIFEST
+        || subject.platform.is_some()
+        || !subject.annotations.is_empty()
+        || manifest.layers.len() != 1
+        || manifest.config.media_type != EMPTY_JSON
+        || manifest.config.digest != EMPTY_SHA
+        || manifest.config.size != 2
+        || manifest
+            .config
+            .data
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            != Some("e30=")
+        || manifest.config.artifact_type.is_some()
+        || manifest.config.platform.is_some()
+        || !manifest.config.annotations.is_empty()
+    {
+        return Err(invalid("image-output: unsupported attestation manifest"));
+    }
+    descriptor(subject, objects, referenced)?;
+    local_descriptor(&manifest.config, objects, referenced)?;
+    let empty: serde_json::Value = json_object(directory, &manifest.config, json_bytes)?;
+    if empty != serde_json::json!({}) {
+        return Err(invalid("image-output: invalid empty attestation config"));
+    }
+    let layer = &manifest.layers[0];
+    if layer.media_type != IN_TOTO
+        || layer
+            .annotations
+            .get("in-toto.io/predicate-type")
+            .map(String::as_str)
+            != Some(SLSA)
+    {
+        return Err(invalid("image-output: unsupported attestation layer"));
+    }
+    descriptor(layer, objects, referenced)?;
+    let statement: Statement = json_object(directory, layer, json_bytes)?;
+    let expected_sha = digest_hex(&runnable.digest)?;
+    if statement.kind != "https://in-toto.io/Statement/v1"
+        || statement.predicate_type != SLSA
+        || statement.subject.is_empty()
+        || statement.subject.len() > OBJECT_MAX
+        || statement.subject.iter().any(|subject| {
+            subject.digest.len() != 1
+                || subject.digest.get("sha256").map(String::as_str) != Some(expected_sha)
+        })
+        || statement.predicate.build_definition.build_type
+            != "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md"
+        || statement
+            .predicate
+            .build_definition
+            .resolved_dependencies
+            .len()
+            > OBJECT_MAX
+    {
+        return Err(invalid("image-output: invalid provenance statement"));
+    }
+    let mut sources = BTreeSet::new();
+    for material in statement.predicate.build_definition.resolved_dependencies {
+        check_cancel(cancel)?;
+        if let Some(source) = source(material)? {
+            sources.insert((source.uri, source.digest));
+        }
+    }
+    Ok(sources
+        .into_iter()
+        .map(|(uri, digest)| Source { uri, digest })
+        .collect())
+}
+
+fn validate(
+    directory: &Path,
+    objects: &BTreeMap<String, u64>,
+    expected: &BTreeMap<String, String>,
+    admit_provenance: bool,
+    cancel: Option<&AtomicBool>,
+) -> io::Result<Verified> {
+    check_cancel(cancel)?;
+    if fs::symlink_metadata(directory.join("index.json"))?.len() > JSON_MAX {
+        return Err(invalid("image-output: index limit"));
+    }
+    let index_bytes = fs::read(directory.join("index.json"))?;
+    let mut json_bytes = index_bytes.len() as u64;
+    let index: Index = serde_json::from_slice(&index_bytes).map_err(invalid_json)?;
+    if index.schema_version != 2
+        || index
+            .media_type
+            .as_deref()
+            .is_some_and(|media| media != INDEX)
+        || index.manifests.len() != if admit_provenance { 2 } else { 1 }
+        || index.subject.is_some()
+        || index.artifact_type.is_some()
+    {
+        return Err(invalid("image-output: expected one runnable OCI image"));
+    }
+    let mut runnables = index.manifests.iter().filter(|descriptor| {
+        !descriptor
+            .annotations
+            .contains_key("vnd.docker.reference.type")
+    });
+    let runnable = runnables
+        .next()
+        .ok_or_else(|| invalid("image-output: missing runnable manifest"))?;
+    if runnables.next().is_some()
+        || runnable.media_type != MANIFEST
+        || !runnable.platform.as_ref().is_some_and(native)
+    {
+        return Err(invalid("image-output: unsupported manifest media"));
+    }
+    let mut referenced = BTreeSet::new();
+    descriptor(runnable, objects, &mut referenced)?;
+    let manifest: Manifest = json_object(directory, runnable, &mut json_bytes)?;
+    if manifest.schema_version != 2
+        || manifest
+            .media_type
+            .as_deref()
+            .is_some_and(|media| media != MANIFEST)
+        || manifest.subject.is_some()
+        || manifest.artifact_type.is_some()
+        || manifest.layers.len() > OBJECT_MAX - 2
+        || manifest.config.media_type != CONFIG
+    {
+        return Err(invalid("image-output: unsupported runnable manifest"));
+    }
+    descriptor(&manifest.config, objects, &mut referenced)?;
+    let config: ImageConfig = json_object(directory, &manifest.config, &mut json_bytes)?;
+    if !native(&Platform {
+        architecture: config.architecture,
+        os: config.os,
+        variant: config.variant,
+    }) || config.rootfs.kind != "layers"
+        || config.rootfs.diff_ids.len() != manifest.layers.len()
+    {
+        return Err(invalid("image-output: invalid image configuration"));
+    }
+    for (layer, diff_id) in manifest.layers.iter().zip(&config.rootfs.diff_ids) {
+        check_cancel(cancel)?;
+        if !matches!(
+            layer.media_type.as_str(),
+            "application/vnd.oci.image.layer.v1.tar"
+                | "application/vnd.oci.image.layer.v1.tar+gzip"
+                | "application/vnd.oci.image.layer.v1.tar+zstd"
+        ) {
+            return Err(invalid("image-output: unsupported layer media"));
+        }
+        digest_hex(diff_id)?;
+        descriptor(layer, objects, &mut referenced)?;
+    }
+    let retained = referenced.clone();
+    let sources = if admit_provenance {
+        let attachment = index
+            .manifests
+            .iter()
+            .find(|descriptor| descriptor.digest != runnable.digest)
+            .ok_or_else(|| invalid("image-output: missing attestation manifest"))?;
+        attestation(
+            directory,
+            attachment,
+            runnable,
+            objects,
+            &mut referenced,
+            &mut json_bytes,
+            cancel,
+        )?
+    } else {
+        Vec::new()
+    };
+    if referenced.len() != objects.len() {
+        return Err(invalid("image-output: unreferenced object"));
+    }
+    let config = config.config.unwrap_or_default();
+    if expected
+        .iter()
+        .any(|(key, value)| config.labels.get(key) != Some(value))
+    {
+        return Err(invalid("image-output: expected label mismatch"));
+    }
+    let env = config
+        .env
+        .into_iter()
+        .map(|entry| {
+            let (name, value) = entry
+                .split_once('=')
+                .filter(|(name, value)| {
+                    !name.is_empty() && !name.contains('\0') && !value.contains('\0')
+                })
+                .ok_or_else(|| invalid("image-output: invalid image environment"))?;
+            Ok((name.to_string(), value.to_string()))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    if admit_provenance {
+        // Changing timestamps and attestation digests cannot change stored
+        // runnable bytes or collide with another build of this same manifest.
+        let canonical = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": INDEX,
+            "manifests": [{
+                "mediaType": MANIFEST, "digest": runnable.digest, "size": runnable.size,
+                "platform": { "os": "linux", "architecture": "amd64" }
+            }]
+        }))?;
+        check_cancel(cancel)?;
+        let mut index_file = File::options()
+            .write(true)
+            .truncate(true)
+            .open(directory.join("index.json"))?;
+        index_file.write_all(&canonical)?;
+        index_file.sync_all()?;
+        for digest in objects.keys().filter(|digest| !retained.contains(*digest)) {
+            check_cancel(cancel)?;
+            fs::remove_file(directory.join("blobs/sha256").join(digest_hex(digest)?))?;
+        }
+    }
+    Ok(Verified {
+        id: runnable.digest.clone(),
+        labels: config.labels,
+        env,
+        directory: directory.to_path_buf(),
+        sources,
+    })
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Catalog {
+    references: BTreeMap<String, String>,
+    images: BTreeMap<String, Image>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Image {
+    labels: BTreeMap<String, String>,
+    env: Vec<(String, String)>,
+    recipe: String,
+    root_sha: String,
+    root_bytes: u64,
+    sources: Vec<Source>,
+}
+
+fn store() -> io::Result<PathBuf> {
+    Ok(dirs::cache_dir()?.join("images"))
+}
+
+fn key(suffix: &str) -> io::Result<String> {
+    let canonical = dirs::resolve_host_path(&store()?)?;
+    Ok(format!(
+        "images:{}:{suffix}",
+        sha256_hex(canonical.as_os_str().as_bytes())
+    ))
+}
+
+fn catalog_lock() -> io::Result<Flock<File>> {
+    Flock::lock(
+        ownership::open_lock(&key("catalog")?)?,
+        FlockArg::LockExclusive,
+    )
+    .map_err(|(_, error)| error.into())
+}
+
+fn shared_lease(id: &str) -> io::Result<Flock<File>> {
+    digest_hex(id)?;
+    Flock::lock(ownership::open_lock(&key(id)?)?, FlockArg::LockShared)
+        .map_err(|(_, error)| error.into())
+}
+
+/// Whether an image has a live reader. The catalog lock prevents new snapshots
+/// while a removal uses this answer.
+pub fn leased(id: &str) -> io::Result<bool> {
+    digest_hex(id)?;
+    match Flock::lock(
+        ownership::open_lock(&key(id)?)?,
+        FlockArg::LockExclusiveNonblock,
+    ) {
+        Ok(lock) => {
+            drop(lock);
+            Ok(false)
+        }
+        Err((_, nix::errno::Errno::EWOULDBLOCK)) => Ok(true),
+        Err((_, error)) => Err(error.into()),
+    }
+}
+
+fn read_catalog() -> io::Result<Catalog> {
+    let bytes = match fs::read(store()?.join("catalog.json")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Catalog::default()),
+        Err(error) => return Err(error),
+    };
+    let catalog: Catalog = serde_json::from_slice(&bytes).map_err(invalid_json)?;
+    for (id, image) in &catalog.images {
+        digest_hex(id)?;
+        digest_hex(&image.root_sha)?;
+        for input in &image.sources {
+            digest_hex(&input.digest)?;
+        }
+    }
+    if catalog
+        .references
+        .values()
+        .any(|id| !catalog.images.contains_key(id))
+    {
+        return Err(invalid("image-store: dangling reference"));
+    }
+    Ok(catalog)
+}
+
+fn image_dir(id: &str) -> io::Result<PathBuf> {
+    Ok(store()?.join(digest_hex(id)?))
+}
+
+fn root_path(id: &str, image: &Image) -> io::Result<PathBuf> {
+    let derivation = sha256_hex(format!("{id}\n{}\n", image.recipe));
+    Ok(image_dir(id)?.join(format!(
+        "{derivation}-{}.ext4",
+        digest_hex(&image.root_sha)?
+    )))
+}
+
+fn info(id: &str, reference: &str, image: &Image) -> ImageInfo {
+    ImageInfo {
+        id: id.to_string(),
+        reference: reference.to_string(),
+        labels: image.labels.clone(),
+    }
+}
+
+/// A read-only atomic generation snapshot. No cache or lock is created.
+pub fn list() -> io::Result<Vec<ImageInfo>> {
+    let catalog = read_catalog()?;
+    Ok(catalog
+        .references
+        .iter()
+        .map(|(reference, id)| info(id, reference, &catalog.images[id]))
+        .collect())
+}
+
+/// Resolve tags or an admitted runnable manifest digest locally.
+pub fn resolve(reference: &str) -> io::Result<Result<ImageInfo, String>> {
+    let catalog = read_catalog()?;
+    let id = catalog
+        .references
+        .get(reference)
+        .map(String::as_str)
+        .unwrap_or(reference);
+    Ok(match catalog.images.get(id) {
+        Some(image) => Ok(info(id, reference, image)),
+        None => Err(
+            "image-missing: rebuild this image with pinfold build or pinfold image build"
+                .to_string(),
+        ),
+    })
+}
+
+/// Resolve and protect the same generation before starting a box.
+pub fn resolve_leased(reference: &str) -> io::Result<Result<(ImageInfo, Flock<File>), String>> {
+    let _lock = catalog_lock()?;
+    let catalog = read_catalog()?;
+    let id = catalog
+        .references
+        .get(reference)
+        .map(String::as_str)
+        .unwrap_or(reference);
+    Ok(match catalog.images.get(id) {
+        Some(image) => Ok((info(id, reference, image), shared_lease(id)?)),
+        None => Err(
+            "image-missing: rebuild this image with pinfold build or pinfold image build"
+                .to_string(),
+        ),
+    })
+}
+
+/// The completed opaque root and image environment. This never converts.
+pub fn root(id: &str) -> io::Result<(PathBuf, Vec<(String, String)>)> {
+    let catalog = read_catalog()?;
+    let image = catalog
+        .images
+        .get(id)
+        .ok_or_else(|| invalid("image-missing: rebuild image"))?;
+    Ok((verify_root(id, image)?, image.env.clone()))
+}
+
+fn verify_root(id: &str, image: &Image) -> io::Result<PathBuf> {
+    let path = root_path(id, image)?;
+    let metadata = fs::symlink_metadata(&path)?;
+    if !metadata.is_file() || metadata.len() != image.root_bytes {
+        return Err(invalid(
+            "image-root: completed root missing or damaged; rebuild image",
+        ));
+    }
+    let mut file = File::open(&path)?;
+    copy_checked(
+        &mut file,
+        &mut io::sink(),
+        image.root_bytes,
+        &image.root_sha,
+        None,
+    )?;
+    Ok(path)
+}
+
+/// Reuse only a complete verified representation of this manifest and exact
+/// converter recipe. Missing or damaged output requires a fresh conversion.
+pub fn complete_root(id: &str, recipe: &str) -> io::Result<Option<(PathBuf, String, u64)>> {
+    let catalog = read_catalog()?;
+    let Some(image) = catalog
+        .images
+        .get(id)
+        .filter(|image| image.recipe == recipe)
+    else {
+        return Ok(None);
+    };
+    match verify_root(id, image) {
+        Ok(path) => Ok(Some((path, image.root_sha.clone(), image.root_bytes))),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::InvalidData
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn commit(catalog: &Catalog, cancel: Option<&AtomicBool>) -> io::Result<()> {
+    let directory = store()?;
+    let bytes = serde_json::to_vec(catalog)?;
+    check_cancel(cancel)?;
+    let path = directory.join("catalog.json");
+    let staging = path.with_extension(format!("tmp-{}", std::process::id()));
+    crate::core::absent_ok(fs::remove_file(&staging))?;
+    let written = (|| {
+        let mut file = new_file(&staging)?;
+        for chunk in bytes.chunks(64 << 10) {
+            check_cancel(cancel)?;
+            file.write_all(chunk)?;
+        }
+        file.sync_all()?;
+        // Cancellation must still preserve the prior generation after the
+        // potentially slow staging write and sync, immediately before rename.
+        check_cancel(cancel)?;
+        fs::rename(&staging, &path)
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(staging);
+    }
+    written?;
+    File::open(directory)?.sync_all()
+}
+
+fn verify_layout(
+    path: &Path,
+    expected: &BTreeMap<String, String>,
+    cancel: Option<&AtomicBool>,
+) -> io::Result<Verified> {
+    check_cancel(cancel)?;
+    let layout_path = path.join("oci-layout");
+    if fs::symlink_metadata(&layout_path)?.len() > HEADER_MAX as u64
+        || fs::read(layout_path)? != b"{\"imageLayoutVersion\":\"1.0.0\"}"
+    {
+        return Err(invalid("image-store: invalid OCI layout version"));
+    }
+    let mut objects = BTreeMap::new();
+    let mut total = 0u64;
+    for entry in fs::read_dir(path.join("blobs/sha256"))? {
+        check_cancel(cancel)?;
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| invalid("image-store: invalid object name"))?;
+        let digest = format!("sha256:{name}");
+        digest_hex(&digest)?;
+        let metadata = fs::symlink_metadata(entry.path())?;
+        total = total
+            .checked_add(metadata.len())
+            .filter(|total| *total <= PAYLOAD_MAX)
+            .ok_or_else(|| invalid("image-store: payload limit"))?;
+        if !metadata.is_file() || objects.len() >= OBJECT_MAX {
+            return Err(invalid("image-store: invalid object or object limit"));
+        }
+        copy_checked(
+            &mut File::open(entry.path())?,
+            &mut io::sink(),
+            metadata.len(),
+            &digest,
+            cancel,
+        )?;
+        objects.insert(digest, metadata.len());
+    }
+    validate(path, &objects, expected, false, cancel)
+}
+
+/// Install immutable verified OCI bytes and a completed conversion before
+/// publishing every build ref in one atomic catalog generation.
+#[allow(clippy::too_many_arguments)]
+pub fn publish(
+    verified: Verified,
+    root_source: &Path,
+    root_sha: &str,
+    root_bytes: u64,
+    recipe: &str,
+    tags: &[String],
+    cancel: &AtomicBool,
+) -> io::Result<()> {
+    check_cancel(Some(cancel))?;
+    digest_hex(&verified.id)?;
+    digest_hex(root_sha)?;
+    if root_bytes > PAYLOAD_MAX
+        || tags.is_empty()
+        || tags.iter().any(|tag| {
+            !tag.starts_with("localhost/pinfold/") || tag.chars().any(char::is_whitespace)
+        })
+    {
+        return Err(invalid("image-store: invalid publication"));
+    }
+    let _lock = catalog_lock()?;
+    check_cancel(Some(cancel))?;
+    directory(&store()?)?;
+    let mut catalog = read_catalog()?;
+    let image = Image {
+        labels: verified.labels,
+        env: verified.env,
+        recipe: recipe.to_string(),
+        root_sha: root_sha.to_string(),
+        root_bytes,
+        sources: verified.sources,
+    };
+    let target = image_dir(&verified.id)?;
+    directory(&target)?;
+    let layout = target.join("oci");
+    if !layout.exists() {
+        // The receipt's layout contains only host-created fixed names.
+        fs::rename(&verified.directory, &layout)?;
+        File::open(&target)?.sync_all()?;
+    } else {
+        let existing = verify_layout(&layout, &image.labels, Some(cancel))?;
+        if existing.id != verified.id
+            || existing.labels != image.labels
+            || existing.env != image.env
+        {
+            return Err(invalid("image-store: existing OCI identity mismatch"));
+        }
+        if verified.directory != layout {
+            fs::remove_dir_all(&verified.directory)?;
+        }
+    }
+    let root = root_path(&verified.id, &image)?;
+    let complete = (|| {
+        let mut existing = File::open(&root)?;
+        if existing.metadata()?.len() != root_bytes {
+            return Err(invalid("image-store: existing root size mismatch"));
+        }
+        copy_checked(
+            &mut existing,
+            &mut io::sink(),
+            root_bytes,
+            root_sha,
+            Some(cancel),
+        )
+    })();
+    if let Err(error) = complete {
+        if !matches!(
+            error.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::InvalidData
+        ) {
+            return Err(error);
+        }
+        let staging = target.join(format!(".root-{}", std::process::id()));
+        crate::core::absent_ok(fs::remove_file(&staging))?;
+        let result = (|| {
+            let mut source = File::open(root_source)?;
+            if source.metadata()?.len() != root_bytes {
+                return Err(invalid("image-output: root size mismatch"));
+            }
+            let mut destination = new_file(&staging)?;
+            copy_checked(
+                &mut source,
+                &mut destination,
+                root_bytes,
+                root_sha,
+                Some(cancel),
+            )?;
+            destination.sync_all()?;
+            check_cancel(Some(cancel))?;
+            fs::rename(&staging, &root)?;
+            File::open(&target)?.sync_all()
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&staging);
+        }
+        result?;
+    }
+    for tag in tags {
+        catalog.references.insert(tag.clone(), verified.id.clone());
+    }
+    catalog.images.insert(verified.id, image);
+    commit(&catalog, Some(cancel))
+}
+
+/// Freeze all local base references and their immutable layouts while the
+/// catalog generation is locked. The leases protect inputs until the job ends.
+pub fn bases() -> io::Result<Vec<(ImageInfo, PathBuf, Flock<File>)>> {
+    if !store()?.join("catalog.json").exists() {
+        return Ok(Vec::new());
+    }
+    let _lock = catalog_lock()?;
+    let catalog = read_catalog()?;
+    catalog
+        .references
+        .iter()
+        .map(|(reference, id)| {
+            let guard = shared_lease(id)?;
+            let layout = image_dir(id)?.join("oci");
+            Ok((info(id, reference, &catalog.images[id]), layout, guard))
+        })
+        .collect()
+}
+
+/// Remove a reference; a last reference is retained while a box or build owns
+/// its image. Catalog replacement precedes removal of immutable bytes.
+pub fn remove(reference: &str) -> io::Result<()> {
+    let _lock = catalog_lock()?;
+    let mut catalog = read_catalog()?;
+    let Some(id) = catalog.references.get(reference).cloned() else {
+        return Ok(());
+    };
+    let last = catalog
+        .references
+        .values()
+        .filter(|candidate| **candidate == id)
+        .count()
+        == 1;
+    if last && leased(&id)? {
+        return Err(io::Error::new(io::ErrorKind::WouldBlock, "image-in-use"));
+    }
+    catalog.references.remove(reference);
+    if last {
+        catalog.images.remove(&id);
+    }
+    commit(&catalog, None)?;
+    if last {
+        crate::core::absent_ok(fs::remove_dir_all(image_dir(&id)?))?;
+    }
+    Ok(())
+}

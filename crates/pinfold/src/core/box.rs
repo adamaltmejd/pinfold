@@ -34,6 +34,8 @@ pub struct Box {
     /// The box's generation, which names its run records.
     pub run_id: String,
     ownership: ownership::Claim,
+    #[cfg(target_os = "linux")]
+    _image_lease: nix::fcntl::Flock<std::fs::File>,
     /// The spec's disks, recorded clean once `down` removes the box.
     disks: Vec<Disk>,
     _project: Option<nix::fcntl::Flock<std::fs::File>>,
@@ -224,6 +226,7 @@ impl Box {
             .expect("a validated spec has an image after profile resolution");
         // The runtime resolves the reference, so every spelling it resolves
         // locally is accepted. It is still given `image`, not the id.
+        #[cfg(not(target_os = "linux"))]
         let identity = crate::core::image::service()
             .resolve_image(&image)?
             .map_err(|message| {
@@ -235,6 +238,10 @@ impl Box {
                     ),
                 )
             })?;
+        #[cfg(target_os = "linux")]
+        let (identity, image_lease) =
+            crate::core::image::linux::catalog::resolve_leased(&image)?
+                .map_err(|detail| refused(&plan, RefusalReason::ImageMissing, detail))?;
         let seeding = seeds
             .map(|seeds| home_disk(&plan, seeds))
             .transpose()
@@ -401,6 +408,8 @@ impl Box {
             egress_log,
             run_id,
             ownership: claim,
+            #[cfg(target_os = "linux")]
+            _image_lease: image_lease,
             disks: plan.disks.clone(),
             _project: project,
             audit: progress.audit,
