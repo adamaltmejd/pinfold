@@ -18,8 +18,8 @@ commits back as branches.
 | macOS 26+ | Apple `container` 1.6.0+ (stable) |
 | Linux x64, kernel 6.10+ | `/dev/kvm` for the user (the `kvm` group), unprivileged user namespaces and Landlock, e2fsprogs, and rootless podman 6.1.4+ (stable) for image builds; pinfold fetches its pinned Firecracker |
 
-On Ubuntu 24.04+, AppArmor restricts user namespaces, and `box up` is
-refused as `runtime` naming `userns-apparmor`. Load pinfold's profile
+On Ubuntu 24.04+, AppArmor may restrict user namespaces. If `box up` is
+refused as `runtime` naming `userns-apparmor`, load pinfold's profile
 once, as root. It attaches to the path of the executable that prints it,
 so run these with the installed binary, and again after moving it:
 
@@ -109,8 +109,8 @@ you to merge; `pinfold push` sends your branches in as `host/*`. Each
 `pi` start pushes too, and fast-forwards the box's branch when it is
 clean and strictly behind.
 
-Optional profiles add tools. `full` also allows `github.com` and `api.github.com`. To
-edit one, copy it with `pinfold profile new NAME --from full`:
+Optional profiles add tools. To edit one, copy it with
+`pinfold profile new NAME --from full`:
 
 | Profile | Adds |
 |---|---|
