@@ -251,8 +251,12 @@ The trial's 512 MiB protocol cap fit built-ins, not arbitrary caller
 images. Propose initial 8 GiB stream/root caps, 1 MiB JSON, 4,096
 descriptors, 8 KiB headers, a 15-minute job deadline and five-minute
 stream deadline, with resource refusal.
-Larger limits are untested and need approval/boundary checks. Bootstrap
-downloads retain the existing 512 MiB/five-minute contract.
+Only the 512 MiB model cap was executed. The 8 GiB stream/root cap is an
+untested policy choice, not a measured need or demonstrated capacity. In
+particular, the tested 3 GiB converter work disk does not establish capacity
+for an 8 GiB image. Approve limits explicitly and test their boundaries
+before implementation admission. Bootstrap downloads retain the existing
+512 MiB/five-minute contract.
 
 Distro Podman 5.4.2 was below the required 6.1.4. No fair current-Podman or
 replacement-CLI timing was measured; infer no speedup. The actual integrated

@@ -124,3 +124,10 @@ All VM processes started by trial.py are terminated in its finally block.
 The trial synced cache data before termination, not a complete production
 graceful shutdown protocol. Production recovery/concurrency is an explicit
 remaining gate.
+
+Final preservation/lease result: preservation-and-cleanup.json. All 23 raw
+members matched their recorded sizes and SHA-256, gzip integrity and EOF
+were checked, and the completed archive was atomically named before the
+lease release returned idle. verify_artifacts.py replays the local
+verification without extracting or mounting any disk. The local file
+verification.json also retains the result.
