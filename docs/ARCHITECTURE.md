@@ -902,13 +902,18 @@ builds it. Both install like a harness, into
 names Firecracker's and the kernel's, on the first `up`.
 
 `builder-root/` separately builds a Linux x64 bootstrap from a signed Debian
-snapshot, an exact package closure and pinned BuildKit binaries. It compiles
-the discovery helper from that BuildKit source and vendor tree using a
-pinned Go compiler, with module downloads disabled. Go is a producer input;
-the consumer needs no host Go installation. It emits
-a tar.gz ext4 root, manifest and SHA256SUMS; the workflow only builds.
-It requires Linux root, Python 3.11.4+, debootstrap, GnuPG, curl 8.4+,
-e2fsprogs and GNU tar. `crates/pinfold/builder.toml` embeds the reviewed
+snapshot, an exact package closure and pinned BuildKit binaries. Pinned Go
+compiles its metadata helper offline against an exact BuildKit source/vendor
+tree, with local toolchain selection and module downloads disabled. Go and
+that tree are producer dependencies for resolving configuration-only bases.
+The source archive has a measured SHA-256 pin and the publisher's verified
+signed-tag/commit record; Go has its publisher's checksum. The helper source
+joins the recipe identity. The tar.gz contains only the ext4 root; the
+manifest and SHA256SUMS cover build metadata and retained producer inputs.
+The workflow only builds. It requires Linux root, Python 3.11.4+ with
+`tarfile.data_filter`, debootstrap, GnuPG, curl 8.4+, e2fsprogs and GNU tar.
+The consumer needs no host Go installation.
+`crates/pinfold/builder.toml` embeds the reviewed
 archive, raw-root and recipe identities. The draft consumer has no public
 download URL: a cache miss fails with `builder-unavailable` until separate
 distribution approval. The documented offline archive cache is

@@ -1,0 +1,1 @@
+{"resolutions":[{"requested":"docker-image://127.0.0.1:46265/fixture/zero:latest","effective":"docker-image://127.0.0.1:46265/fixture/zero:latest","digest":"sha256:23cdde30767e7c29b61249cac0a941c20d4a1acc1581d8e3a694d1b980b95abc"}]}

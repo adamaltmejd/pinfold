@@ -1,0 +1,1 @@
+{"architecture":"amd64","config":{"Env":["DISCOVERY_FIXTURE=zero"],"OnBuild":["RUN false"]},"history":[],"os":"linux","rootfs":{"diff_ids":[],"type":"layers"}}

@@ -1,0 +1,40 @@
+{
+  "sha": "f5b59a1f2fb25a0cb7072c398cab9aed7835da4e",
+  "node_id": "C_kwDOBYqZiNoAKGY1YjU5YTFmMmZiMjVhMGNiNzA3MmMzOThjYWI5YWVkNzgzNWRhNGU",
+  "url": "https://api.github.com/repos/moby/buildkit/git/commits/f5b59a1f2fb25a0cb7072c398cab9aed7835da4e",
+  "html_url": "https://github.com/moby/buildkit/commit/f5b59a1f2fb25a0cb7072c398cab9aed7835da4e",
+  "author": {
+    "name": "Tõnis Tiigi",
+    "email": "tonistiigi@gmail.com",
+    "date": "2026-10-07T19:18:19Z"
+  },
+  "committer": {
+    "name": "GitHub",
+    "email": "noreply@github.com",
+    "date": "2026-10-07T19:18:19Z"
+  },
+  "tree": {
+    "sha": "7cb3b9b2864994a620bfdb04c87f56ca8f2f518c",
+    "url": "https://api.github.com/repos/moby/buildkit/git/trees/7cb3b9b2864994a620bfdb04c87f56ca8f2f518c"
+  },
+  "message": "Merge pull request #7257 from crazy-max/v0.34_pick_0.34.0\n\n[v0.34 backport] flightcontrol: fix the progress cleanup race",
+  "parents": [
+    {
+      "sha": "6fca43392d9f5ddfde931028f76129e81e0c342f",
+      "url": "https://api.github.com/repos/moby/buildkit/git/commits/6fca43392d9f5ddfde931028f76129e81e0c342f",
+      "html_url": "https://github.com/moby/buildkit/commit/6fca43392d9f5ddfde931028f76129e81e0c342f"
+    },
+    {
+      "sha": "0505d9f5228f384b3ac3b272569e9a25dc75542e",
+      "url": "https://api.github.com/repos/moby/buildkit/git/commits/0505d9f5228f384b3ac3b272569e9a25dc75542e",
+      "html_url": "https://github.com/moby/buildkit/commit/0505d9f5228f384b3ac3b272569e9a25dc75542e"
+    }
+  ],
+  "verification": {
+    "verified": true,
+    "reason": "valid",
+    "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqxpr7CRC1aQ7uu5UhlAAAmR8QAENSBr98W5wLZdhMOu+dBIkv\nR1eQuXbFCLeZsLrMqKUFuYBKbwh6Vk7kw6AabprGaYwRtl/6bfQCUcm8hk42uMRE\nfHPZpA/fDTr1PBNqTTLn/tdcTfUqAatQaIqi2SsxakDX6CTJj9EPdpr5nTbvtK8U\n0fga0JBJDikYMtPuOX356z1xcT5iVldxcIFJ0izNUHu5LsyvnJ6lr0LbvEay4ijC\n+1ZUXWqQoW7GVPCxKyevKKCR2Lx+8fwXpXHkIXIydNqNt650aLEPwW3YhvRcsGbs\nfIALd2W7eeZV+3npb5XO/UplEiE9c/xMLWwyLvFYs7PbFvE06o3fUk82UIUwlhFL\nUjy3gZy1bxVkDvhNB4E1semR7FuSHXrpH33Zu5W44VuyiOLjdqwu5aTo/2RQfDi+\nhmg6FyLEF7DfboQOiMw+SohP2uqtcsoU8vvssCTeKMx8zJX09zunJNHbNi7Xqqsy\nrnLgicfa1D7VXFL2q8tYFtIDE16SnCpQdqYX4e6ofR+CFWvE9ZtX5fN6xPD6Vm3K\nVs08w30X3+68HBg4CiORCNeDzldxYmo+eoLz40D/LbF4cfEwm7A6alSq/JRpEfux\n0d3GkvkS2pZ1hMWpmt3ewMN9BGOEGo0owMBys6sNVzLL2r0f7AQUxr5QjCok3+TR\nzPeO0FHdxjWdCZlm5kTE\n=G6Q3\n-----END PGP SIGNATURE-----\n",
+    "payload": "tree 7cb3b9b2864994a620bfdb04c87f56ca8f2f518c\nparent 6fca43392d9f5ddfde931028f76129e81e0c342f\nparent 0505d9f5228f384b3ac3b272569e9a25dc75542e\nauthor Tõnis Tiigi <tonistiigi@gmail.com> 1791400699 -0700\ncommitter GitHub <noreply@github.com> 1791400699 -0700\n\nMerge pull request #7257 from crazy-max/v0.34_pick_0.34.0\n\n[v0.34 backport] flightcontrol: fix the progress cleanup race",
+    "verified_at": "2026-10-07T19:18:20Z"
+  }
+}

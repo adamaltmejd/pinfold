@@ -1,7 +1,8 @@
 # Builder bootstrap
 
 On Linux x64, install debootstrap, GnuPG, curl 8.4+, ca-certificates,
-e2fsprogs, GNU tar and Python 3.11.4+ with `tarfile.data_filter`. Build into a new directory:
+e2fsprogs, GNU tar and Python 3.11.4+ with `tarfile.data_filter`.
+Build into a new directory:
 
 ```sh
 sudo python3 builder-root/build.py target/builder-root
@@ -60,11 +61,9 @@ The workflow uploads build artifacts only. Public immutable distribution
 awaits separate approval. The draft CLI has no builder download URL and
 refuses a missing offline cache with `builder-unavailable`.
 
-`crates/pinfold/builder.toml` embeds the candidate helper archive and raw
-root identities. This producer's helper-bearing output needs separately
-reviewed artifact pins before that CLI can consume it. A rebuild is not
-expected to reproduce the phase 6a bytes.
-The normal offline cache accepts that exact preserved archive, independently
+`crates/pinfold/builder.toml` embeds the reviewed helper archive and raw
+root identities. A rebuild is not expected to reproduce those bytes.
+The normal offline cache accepts the exact preserved archive, independently
 of its sidecar manifest. With `archive` naming the preserved tar.gz:
 
 ```sh
