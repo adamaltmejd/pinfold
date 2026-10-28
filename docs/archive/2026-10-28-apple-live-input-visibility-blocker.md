@@ -35,7 +35,8 @@ commit or binding-spec/README change was made. Phase 5 was not started.
 - Initial phase 4 candidate binary SHA-256:
   `21d5d054be3cf5e51f5387685d6bd0124f48ef68baf29456dc53d8335a631581`.
   Its source was uncommitted on the base above. The candidate patch is
-  retained locally as `/tmp/pinfold-phase4-incomplete-candidate.patch`.
+  retained locally under the evidence root below as
+  `candidate/incomplete-candidate.patch`.
 
 ## Method and observations
 
@@ -90,8 +91,8 @@ Error: unknown directive cache when parsing mount type=bind,source=SOURCE,target
 
 The version-pinned [1.6.1 volumes documentation](https://github.com/apple/container/blob/1.6.1/docs/volumes.md)
 lists bind/volume/tmpfs, source, destination, readonly, and tmpfs size/mode.
-The [1.6.1 parser](https://github.com/apple/container/blob/1.6.1/Sources/Services/ContainerAPIService/Client/Parser.swift#L432)
-rejects other directives. The [pinned Containerization 0.53.0 VZ implementation](https://github.com/apple/containerization/blob/0.53.0/Sources/Containerization/VZVirtualMachineInstance.swift#L494)
+The [1.6.1 parser](https://github.com/apple/container/blob/1.6.1/Sources/Services/ContainerAPIService/Client/Parser.swift#L442-L454)
+rejects other directives. The [pinned Containerization 0.53.0 VZ implementation](https://github.com/apple/containerization/blob/0.53.0/Sources/Containerization/VZVirtualMachineInstance.swift#L504-L513)
 constructs shared directories from a URL and read-only flag, with no cache
 setting in this path. No supported setting meeting the contract was found.
 No custom kernel, runtime replacement or filesystem service was attempted.
@@ -100,14 +101,18 @@ No custom kernel, runtime replacement or filesystem service was attempted.
 
 The full diagnostic scripts record specs, exact argv, exit codes,
 stdout/stderr, elapsed time, and host paths/inodes/bytes. They are local
-scratch artifacts, not durable repository dependencies:
+artifacts preserved outside Git in this worktree at
+`/Users/adam/.codex/worktrees/phase-four-live-inputs/pinfold/.local-evidence/phase-four-live-inputs/`.
+Paths below are relative to that evidence root:
 
-- Candidate: `/private/tmp/pf-live-diagnostic-cljg75wx/evidence.json`;
-  script `/tmp/pinfold-phase4-live-diagnostic.py`.
-- Clean phase 3: `/private/tmp/pf-live-diagnostic-9foqb2sj/evidence.json`;
-  script `/tmp/pinfold-phase4-baseline-diagnostic.py`.
-- Logs: `/tmp/pinfold-phase4-live-diagnostic.log` and
-  `/tmp/pinfold-phase4-baseline-diagnostic.log`.
+- Candidate: `candidate/evidence.json`, `candidate/reproduce.py` and
+  `candidate/diagnostic.log`.
+- Clean phase 3: `baseline/evidence.json`, `baseline/reproduce.py` and
+  `baseline/diagnostic.log`.
+- Inspected upstream sources: `sources/`.
+- Post-cleanup inventory: `runtime-after.json`.
+- `manifest.json` records original scratch paths, sizes and SHA-256 hashes.
+  Each preserved copy was checked against its scratch original.
 
 The initial real e2e visibility test failed after rename (20.43 s).
 Clippy with all targets, locked dependencies and warnings denied passed
