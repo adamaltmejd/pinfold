@@ -1,7 +1,7 @@
 # Builder bootstrap
 
 This private candidate uses the
-[digest-pinned archive](https://github.com/adamaltmejd/pinfold/releases/download/builder-root-fa46484cbcf7ce04eabecd31f6a6fc06dc6a7389390276aadc3f22866c731ffb/pinfold-builder-linux-x64-fa46484cbcf7ce04eabecd31f6a6fc06dc6a7389390276aadc3f22866c731ffb.tar.gz)
+[digest-pinned archive](https://github.com/adamaltmejd/pinfold/releases/download/builder-root-1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd/pinfold-builder-linux-x64-1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd.tar.gz)
 through the verified offline cache. That intended public URL is not published.
 Publication and public adoption require separate approval.
 
@@ -23,7 +23,8 @@ and snapshot path. Downloads are HTTPS-only, at most 512 MiB and five
 minutes each. Debootstrap runs against the downloaded file mirror with
 signature verification required, then its installed closure is checked.
 
-The artifact contains only `root.ext4`. It includes Debian minbase,
+The artifact contains only a 512 MiB read-only `root.ext4`.
+It includes Debian minbase,
 CA certificates, e2fsprogs, util-linux and BuildKit's buildctl, buildkitd
 and buildkit-runc, plus the compiled `pinfold-discover` native metadata helper.
 Go and the upstream source/vendor tree remain producer inputs outside the root.
@@ -71,7 +72,7 @@ those bytes. The optional offline cache accepts the same exact archive,
 independently of its sidecar manifest. With `archive` naming the tar.gz:
 
 ```sh
-digest=fa46484cbcf7ce04eabecd31f6a6fc06dc6a7389390276aadc3f22866c731ffb
+digest=1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd
 printf '%s  %s\n' "$digest" "$archive" | sha256sum -c -
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/pinfold/artifacts/builder/$digest"
 mkdir -p "$cache"
@@ -80,7 +81,7 @@ install -m 600 "$archive" "$cache/pinfold-builder-linux-x64-$digest.tar.gz"
 
 The CLI copies the offline archive into install staging when present;
 otherwise it downloads the pinned URL over HTTPS into that staging area.
-The archive copy or download is bounded to its pinned 122,592,271 bytes,
+The archive copy or download is bounded to its pinned 122,074,383 bytes,
 below the shared 512 MiB transfer cap, and checked against its embedded
 size and SHA-256. The CLI streams only `root.ext4` into a fixed 0600 file,
 checks its embedded raw size and SHA-256, and publishes the complete

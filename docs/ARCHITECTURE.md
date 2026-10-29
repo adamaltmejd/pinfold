@@ -926,8 +926,8 @@ tree, with local toolchain selection and module downloads disabled. Go and
 that tree are producer dependencies for resolving configuration-only bases.
 The source archive has a measured SHA-256 pin and the publisher's verified
 signed-tag/commit record; Go has its publisher's checksum. The helper source
-joins the recipe identity. The tar.gz contains only the ext4 root; the
-manifest and SHA256SUMS cover build metadata and retained producer inputs.
+joins the recipe identity. The tar.gz contains only the 512 MiB read-only ext4
+root; the manifest and SHA256SUMS cover build metadata and retained producer inputs.
 The workflow only builds. It requires Linux root, Python 3.11.4+ with
 `tarfile.data_filter`, debootstrap, GnuPG, curl 8.4+, e2fsprogs and GNU tar.
 The consumer needs no host Go installation.
@@ -937,7 +937,7 @@ unpublished; proof uses the verified offline archive. Without that archive,
 pinfold attempts HTTPS acquisition into install staging. The offline archive cache
 is `~/.cache/pinfold/artifacts/builder/<archive-sha256>/`; when present, its
 archive is copied into that staging area instead. The pinned archive bound
-is 122,592,271 bytes, below the shared 512 MiB transfer cap. Acquisition,
+is 122,074,383 bytes, below the shared 512 MiB transfer cap. Acquisition,
 verification and installation share one cancellable 300-second deadline.
 Installation verifies the staged archive's pinned size and SHA-256 before
 streaming only `root.ext4` into a fixed 0600 file and atomically publishing
