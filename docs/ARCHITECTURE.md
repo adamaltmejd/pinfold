@@ -922,8 +922,8 @@ The workflow only builds. It requires Linux root, Python 3.11.4+ with
 `tarfile.data_filter`, debootstrap, GnuPG, curl 8.4+, e2fsprogs and GNU tar.
 The consumer needs no host Go installation.
 `crates/pinfold/builder.toml` embeds the public archive URL and reviewed
-archive, raw-root and recipe identities. An absent cache downloads the
-archive over HTTPS into private staging. The optional offline archive cache
+archive, raw-root and recipe identities. On a cache miss, pinfold downloads
+the archive over HTTPS into install staging. The optional offline archive cache
 is `~/.cache/pinfold/artifacts/builder/<archive-sha256>/`; when present, its
 archive is copied into that staging area instead. The pinned archive bound
 is 122,578,909 bytes, below the shared 512 MiB transfer cap. Acquisition,

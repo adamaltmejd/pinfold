@@ -4,8 +4,8 @@ Linux image builds automatically download the
 [digest-pinned public archive](https://github.com/adamaltmejd/pinfold/releases/download/builder-root-09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4/pinfold-builder-linux-x64-09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4.tar.gz)
 on a cache miss. A verified offline archive is also accepted.
 
-To produce a bootstrap on Linux x64, install debootstrap, GnuPG, curl 8.4+, ca-certificates,
-e2fsprogs, GNU tar and Python 3.11.4+ with `tarfile.data_filter`.
+To produce a bootstrap on Linux x64, install debootstrap, GnuPG, curl 8.4+,
+ca-certificates, e2fsprogs, GNU tar and Python 3.11.4+ with `tarfile.data_filter`.
 Build into a new directory:
 
 ```sh
@@ -27,8 +27,6 @@ CA certificates, e2fsprogs, util-linux and BuildKit's buildctl, buildkitd
 and buildkit-runc, plus the compiled `pinfold-discover` native metadata helper.
 Go and the upstream source/vendor tree remain producer inputs outside the root.
 It includes no bootstrap init or transport service.
-The manual boot/build/conversion consumer is recorded under
-`docs/archive/2026-10-28-builder-bootstrap/`.
 
 The manifest separates recipe identity, raw root digest and compressed
 artifact digest. Filesystem bytes are not claimed to be bit-identical
@@ -76,7 +74,7 @@ mkdir -p "$cache"
 install -m 600 "$archive" "$cache/pinfold-builder-linux-x64-$digest.tar.gz"
 ```
 
-The CLI copies the offline archive into private staging when present;
+The CLI copies the offline archive into install staging when present;
 otherwise it downloads the pinned URL over HTTPS into that staging area.
 The archive copy or download is bounded to its pinned 122,578,909 bytes,
 below the shared 512 MiB transfer cap, and checked against its embedded

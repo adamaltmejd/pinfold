@@ -309,31 +309,6 @@ pub fn default_image(env: &TestEnv) -> &'static str {
     if cfg!(target_os = "linux") {
         let mut built = LINUX.get_or_init(Mutex::default).lock().unwrap();
         if !built.contains(&env.cache) {
-            // A private image store needs a real build too. Populate only the
-            // documented offline archive cache; the binary checks its pin.
-            if env.cache != suite_cache() {
-                let source = suite_cache().join("pinfold/artifacts/builder");
-                for version in fs::read_dir(&source).expect("suite builder archive cache") {
-                    let version = version.unwrap();
-                    for artifact in fs::read_dir(version.path()).unwrap() {
-                        let artifact = artifact.unwrap();
-                        if artifact.file_type().unwrap().is_file()
-                            && artifact
-                                .path()
-                                .extension()
-                                .is_some_and(|suffix| suffix == "gz")
-                        {
-                            let target = env
-                                .cache
-                                .join("pinfold/artifacts/builder")
-                                .join(version.file_name())
-                                .join(artifact.file_name());
-                            fs::create_dir_all(target.parent().unwrap()).unwrap();
-                            fs::copy(artifact.path(), target).unwrap();
-                        }
-                    }
-                }
-            }
             build_profile(env, "default");
             built.insert(env.cache.clone());
         }

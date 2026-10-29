@@ -1835,7 +1835,8 @@ fn linux_build_steps_stay_inside_the_builder_role() {
     // API request fails. Bypass the proxy policy/audit; the denied request's
     // 403 or its exact refusal reason disappears. The same RUN's successful
     // API request is the allowed control. Resolve a root by bootstrapping a
-    // builder at launch; the launch fails after its artifact is moved away.
+    // builder at launch; the launch fails when a file blocks the artifact
+    // directory, including a fresh installation from the public download.
     // Expected values come from the approved role, the guest kernel and the
     // HTTP endpoint/status; expected file bytes are this caller's fixture.
     // Sabotage: remove JobReader::error's cancellation mapping; read_exact
@@ -2034,14 +2035,13 @@ RUN set -eu; {{ \
     assert_eq!(code, 0, "the full cache poisoned the next build: {built}");
     assert_eq!(built["event"], "built", "{built}");
 
-    // Remove the idle cache through the public operation, then make the
-    // bootstrap unavailable in this private cache before launching the result.
+    // Remove the idle cache through the public operation, then block the
+    // builder's install directory in this fixture's private cache.
     run_ok(env.command(pinfold()).arg("clean"));
-    fs::rename(
-        env.cache.join("pinfold/artifacts/builder"),
-        env.root.join("saved-builder"),
-    )
-    .unwrap();
+    let builder = env.cache.join("pinfold/artifacts/builder");
+    let saved = env.root.join("saved-builder");
+    fs::rename(&builder, &saved).unwrap();
+    fs::write(&builder, b"builder unavailable\n").unwrap();
     let box_name = box_name("builder-result");
     let up = box_up(
         &env,
@@ -2058,6 +2058,8 @@ RUN set -eu; {{ \
         "uid=0\ncaps=00000000a80425fb\nnnp=1\nuserns=0\ninterfaces=lo\nallowed=yes\ndenied=403\n"
     );
     up.down(&env);
+    fs::remove_file(&builder).unwrap();
+    fs::rename(&saved, &builder).unwrap();
     let (code, removed) = image_rm(&env, &name);
     assert_eq!(code, 0, "remove the completed image: {removed}");
 }
