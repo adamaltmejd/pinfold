@@ -309,7 +309,12 @@ fn up_refuses_before_it_creates() {
     let _profile_images = ImageCleanup {
         repository: format!("localhost/pinfold/profile-{profile}"),
     };
-    let recipe = profile_containerfile(&env, &profile, &format!("FROM {}\n", default_image(&env)));
+    let profile_base = if cfg!(target_os = "linux") {
+        "scratch"
+    } else {
+        default_image(&env)
+    };
+    let recipe = profile_containerfile(&env, &profile, &format!("FROM {profile_base}\n"));
     build_profile(&env, &profile);
     fs::remove_file(recipe).unwrap();
     let mut profile_spec = serde_json::json!({
@@ -2805,9 +2810,6 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
 
 #[test]
 fn a_login_route_keeps_the_login_on_the_host() {
-    #[cfg(target_os = "linux")]
-    let _runtime = crate::exclusive_runtime();
-    #[cfg(not(target_os = "linux"))]
     let _runtime = crate::shared_runtime();
     // Guarantee 26, pi half, first. Sabotage: in `forward`, keep a box-sent
     // header that shares an injected header's name; pi's stored auth.json
@@ -2829,6 +2831,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     // project marker is absent. Sabotage: omit the operating-context
     // extension; the profile's allowlist never reaches the model.
     let env = TestEnv::new("login");
+    let image = default_image(&env);
     let openrouter = HttpFixture::start(Some((
         "text/event-stream",
         concat!(
@@ -2856,7 +2859,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     fs::write(
         profile_dir.join("pinfold.toml"),
         format!(
-            "allow = [\"login-allow.invalid\"]\n\
+            "image = {image:?}\nallow = [\"login-allow.invalid\"]\n\
              [routes]\n\
              \"openrouter.login\" = {{ login = \"pi\", provider = \"openrouter\", from = \"PINFOLD_E2E_OPENROUTER_KEY\", to = \"http://{}\" }}\n\
              \"anthropic.login\" = {{ login = \"pi\", provider = \"anthropic\", from = \"PINFOLD_E2E_ANTHROPIC_KEY\", to = \"http://{}\" }}\n",
@@ -2873,15 +2876,6 @@ fn a_login_route_keeps_the_login_on_the_host() {
         serde_json::json!({ "openrouter": { "type": "api_key", "key": stored } }).to_string(),
     )
     .expect("write the stored key");
-    fs::write(
-        profile_dir.join("Containerfile"),
-        format!("FROM {}\n", default_image(&env)),
-    )
-    .expect("write the profile's Containerfile");
-    build_profile(&env, profile);
-    let _image = ImageCleanup {
-        repository: format!("localhost/pinfold/profile-{profile}"),
-    };
     let project = test_dir(&env, "pi-login");
     git(project.as_path(), &["init", "-q"]);
     // Both pi config levels load: a skill in the profile's share/pi package
@@ -3704,7 +3698,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     fs::write(
         profile_dir.join("pinfold.toml"),
         format!(
-            "allow = [\"login-allow.invalid\"]\n\
+            "image = {image:?}\nallow = [\"login-allow.invalid\"]\n\
              [routes]\n\
              \"subscription.login\" = {{ login = \"pi\", provider = \"anthropic-subscription\", from = \"PINFOLD_E2E_SUBSCRIPTION\", to = \"http://{}\" }}\n\
              \"codex.login\" = {{ login = \"pi\", provider = \"openai-codex\", to = \"http://{}\" }}\n",
