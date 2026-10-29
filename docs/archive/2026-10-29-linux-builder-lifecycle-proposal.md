@@ -11,36 +11,31 @@ and the observed failure of the five-minute CI budget. The objective is
 fewer repeated role starts while retaining host authority and the separate
 converter. It is not permission to replace the current isolation model.
 
-## Recommendation and the decision needed
+## Recommendation and remaining hold
 
-The smallest lifecycle candidate is **one finite builder VM per CLI build,
-running discovery then build, followed by a fresh converter VM when
-needed**. Keep the current BuildKit binaries and native frontend. Use the
-existing vsock transport for a bounded host-authorized input handoff.
-Keep the VMM API disabled. No guest or service survives the CLI request.
-The converter remains separate, cache-free and without egress.
+**Retain the current draft with implementation and runtime admission
+blocked.** The 300-second CI budget is already binding. This evidence
+does not establish a credible path to that budget through the finite
+candidate below. Its added transfer/state machinery may cost more than
+it saves. This review supports no implementation approval request.
 
-This candidate removes one VMM start per build. It requires explicit
-approval for three changes: discovery and build share a guest kernel,
-and selected local OCI input enters an already-running guest instead of
-arriving on a new host-written read-only disk, and the live host handoff
-is charged to the existing build-phase deadline. Guest-side sealing is
-not equivalent to the current physical read-only device. These changes
-need Adam's approval before any implementation, including an experimental
-one.
+Keep **one finite builder VM per CLI build, running discovery then build,
+followed by a fresh converter VM when needed** as a future comparator.
+It is narrower than resident service or snapshot alternatives: retain
+the pinned BuildKit binaries/native frontend and disabled VMM API, use a
+bounded host-authorized vsock handoff, and end every guest with its CLI
+request. The converter stays separate, cache-free and without egress.
 
-It is the preferred comparator if Adam elects to pursue a lifecycle
-change, rather than a resident service or snapshot system. **It is not a
-demonstrated solution to 300 seconds.** Do not adopt it or reopen runtime
-admission on the basis of this review. Its new transfer/state machinery
-may cost more than it saves. If a credible path to the full budget is a
-prerequisite for further implementation, retain the current draft and
-block; the measurements do not establish that path.
-
-The substantive decision is whether the bounded implementation/proof of
-this exact finite candidate merits those changes. That decision
-does not authorize cross-build reuse, merged conversion, snapshots, a
-daemon, wider privileges, a larger budget or final runtime adoption.
+That comparator would remove one VMM start per build but requires three
+explicit changes: discovery/build share a guest kernel; selected OCI
+data and host-generated source policy, store bindings and Job authority
+metadata enter guest-staged storage instead of a new host-written
+read-only disk; and the live handoff is charged to build's existing
+deadline. Guest-side sealing is not equivalent to the physical read-only
+device. Any future implementation, including an experiment, would need
+separate approval for those changes after evidence justifies revisiting
+the hold. Cross-build reuse, merged conversion, snapshots, a daemon,
+wider privileges or a budget waiver are outside this comparator.
 
 ## Current mechanism and pinned sources
 
@@ -68,7 +63,10 @@ Host `image/linux/job.rs` prepares the bootstrap/init once per transaction,
 then calls separate discovery, build and optional conversion VMMs. After
 discovery it validates exact resolver bindings, leases selected catalog
 identities, copies only those complete layouts and pins external digests.
-Each call receives a newly formatted read-only input disk. The guest
+The selected layouts, host-generated source-policy.json and Job metadata
+(phase, cache mode, labels and base/store bindings) all enter the new
+read-only input disk; the guest reads its authority metadata there.
+Each call receives its own such disk. The guest
 `init/builder.rs` reads one job, starts one temporary BuildKit daemon,
 completes that phase, stops work, syncs/unmounts and exits. Host receipt
 validation, VMM reaping and backing-file sync precede cache-clean marking.
@@ -120,12 +118,16 @@ The shared public base/profile rule and macOS behavior stay unchanged.
    exact OCI store/image binding, selected profile checks, source-policy
    pinning and leases. Missing selected identities fail; retags do not
    redirect them. Only the host authorizes continuation. Transfer only
-   the selected validated layouts and host-generated build policy through
-   the existing bidirectional vsock connection.
+   the selected validated layouts, host-generated source policy, exact
+   store bindings and build Job metadata (phase, cache mode, labels and
+   bases) through the existing bidirectional vsock connection.
 4. **Seal and build.** The trusted guest service receives fixed object
    kinds, store slots, lengths and digests into a fresh per-request staging
-   directory on its owned writable work storage. No guest-chosen path,
-   owner, link or external URL is a host input. Reuse the current aligned
+   directory on its owned writable work storage. The policy, store
+   bindings and Job authority metadata are staged there with the OCI
+   objects; they no longer arrive on a physical read-only build-input
+   device. No guest-chosen path, owner, link or external URL is a host
+   input. Reuse the current aligned
    input accounting and candidate object/JSON/frame bounds; charge context,
    recipe, metadata and selected content together. Verify complete receipt
    before starting build. Make the staging view read-only to normal
@@ -135,7 +137,11 @@ The shared public base/profile rule and macOS behavior stay unchanged.
    metadata-only store map as build authority. The initial metadata disk
    remains physically attached; changing call/session options does not
    revoke it. Only selected layers are added. This sealing remains
-   guest-enforced and is the explicit immutable-input mechanism change.
+   guest-enforced and is the explicit immutable-input mechanism change,
+   covering authority metadata as well as selected OCI bytes. Source
+   pinning now depends on the guest protecting and consuming the staged
+   policy and store bindings. Independent host proxy and output checks
+   remain, but neither proves that the guest enforced those source pins.
 5. **End the builder.** Stop/reap the daemon and all work, then sync,
    before declaring OCI ready or streaming output. The host still
    validates the ordinary stream's bounded graph, hashes, platform, labels
@@ -164,10 +170,10 @@ framing, integrity or phase-state protocol for Pinfold.
 
 | Concern | Required behavior in the finite candidate |
 |---|---|
-| Request identity | Existing fresh generation plus a host-tracked expected phase binds every checkpoint, authorization and object to the frozen request. Reject stale, duplicate, reordered, skipped or unsolicited phases/results. Never put request identity in OCI labels: identical images must still share an ID. Guest output cannot select a different host request or advance host authority. |
+| Request identity | Existing fresh generation plus a host-tracked expected phase binds every checkpoint, authorization, object and authority metadata to the frozen request. Reject stale, duplicate, reordered, skipped or unsolicited phases/results. Never put request identity in OCI labels: identical images must still share an ID. Guest output cannot select a different host request or advance host authority. |
 | Reset/isolation | A fresh guest begins and ends with each CLI build. No cross-request process, credentials, live connection or kernel survives. Discovery and build deliberately share a kernel and daemon; only existing persistent cache crossed that boundary before. A guest-side process reset is not claimed to recreate the former fresh-kernel boundary. |
 | Privileges/devices | Keep the present jailed unprivileged host VMM and trusted rootful guest capability bound; RUN remains without SYS_ADMIN, user namespaces or insecure entitlements. No API, NIC, host bind, agent disk or credential is added. Converter uses the same trusted numeric capability bound today; its protection is separate kernel/storage/transport, not a claimed lower mask. |
-| Input storage | Initial context/recipe remain on the frozen read-only input disk. Selected OCI bytes arrive after authorization into guest-owned storage and are sealed for consumers. This changes the current host-written physical read-only selected-input guarantee. Their staging consumes existing cache/work capacity; no new disk, tmpfs RAM reservation or capacity increase is assumed. Transfer/copy costs and ENOSPC effects must be measured. |
+| Input storage and authority | Initial context/recipe remain on the frozen read-only discovery disk. Selected OCI bytes, host-generated source policy, exact store bindings and build Job metadata (phase, cache mode, labels and bases) arrive after authorization into guest-owned storage and are sealed there. This replaces physical read-only protection for both data and authority metadata with guest enforcement. Source-policy pinning and correct consumption of those settings therefore depend on that guest protection; independent host proxy/output checks do not prove source-pin enforcement. Staging consumes existing cache/work capacity; no new disk, tmpfs RAM reservation or capacity increase is assumed. Transfer/copy costs and ENOSPC effects must be measured. |
 | Egress/audit | Discovery and build retain the same exact request-local host allowlist and production audit. No recipe can widen it. No host auth/registry credentials are introduced. An audit failure during admission, transfer, waiting or build ends the whole request. Converter retains its separate socket directory and no relay. |
 | Cancellation/owner loss | Stop advances no phase. Cancel all handoff and receipt workers, close transfer, kill/reap the owned VMM, join workers and finish cleanup before releasing ownership. Parent-death enforcement remains. No guest heartbeat or delayed result can resurrect a cancelled generation. Pre-commit refs stay unchanged. |
 | Deadlines | Preserve finite host-controlled discovery and build phase counts and the current candidate values. Charge the newly live admission/transfer wait to build's existing deadline, beginning when the host accepts discovery, rather than leave an idle live guest unbounded. Never extend it on guest traffic. Converter retains its separate deadline. This tightens the old host-preparation scope and requires an explicit decision; it is not a numeric-policy approval. |
@@ -238,9 +244,11 @@ They are excluded from this recommendation.
 
 ## Failure cases and proof/admission plan
 
-Before implementation, reviewers must resolve the two input/kernel
-deviations and the proposed deadline scope. Any adopted design updates
-ARCHITECTURE.md in the same implementation commit. A written proposal
+Implementation remains blocked on the binding budget and lacks support
+from this evidence. If future evidence justifies revisiting it, reviewers
+must resolve the shared kernel, guest-staged data/authority metadata and
+deadline scope before seeking separate implementation approval. Any
+adopted design updates ARCHITECTURE.md in the same implementation commit. A written proposal
 does not change today's guarantee or make guest-side sealing equivalent
 to the current disk control.
 
