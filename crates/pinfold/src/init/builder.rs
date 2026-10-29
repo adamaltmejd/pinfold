@@ -103,10 +103,22 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
     let mut daemon =
         Daemon::start(&job, Arc::clone(&daemon_log)).map_err(|error| failed(error, &daemon_log))?;
     let built = build(&job, Arc::clone(&log));
+    let pruning = if built.is_err() && job.phase != Phase::Convert {
+        let mut prune = command("buildctl", false);
+        prune.args(["prune", "--filter", "type==exec.cachemount"]);
+        logged(prune, Arc::clone(&daemon_log))
+    } else {
+        Ok(())
+    };
     let stopped = daemon.stop();
     stopped.map_err(|error| failed(error, &daemon_log))?;
     if let Err(error) = built {
         let detail = failure_text(failed(error, &log));
+        if let Err(error) = pruning {
+            return Err(io::Error::other(format!(
+                "{detail}\ncache cleanup failed: {error}"
+            )));
+        }
         return finish(host, Some(&detail));
     }
     let output = match job.phase {

@@ -777,10 +777,13 @@ a converter gets a fresh separate work disk and never attaches that cache.
 Ownership, cancellation, audit failure and recovery remain host authority.
 A job must stop and reap its VMM before releasing ownership. Discard the
 derivable cache after unclean work; completed images survive cache removal.
-A handled recipe failure may retain the cache only after daemon/work teardown,
-sync and unmount, a complete failure/end/EOF receipt, VMM reaping and a successful
-host backing-file sync. A stop during clean-marker updates attempts to restore
-the marker, then retire the backing file if restoration fails; errors propagate.
+A failed cache job prunes unused mutable cache mounts through pinned BuildKit,
+preserving regular image-layer cache. Cleanup failure omits the clean end receipt;
+the next build recreates the cache. A handled recipe failure may retain the cache
+only after daemon/work teardown, sync and unmount, a complete failure/end/EOF
+receipt, VMM reaping and a successful host backing-file sync. A stop during
+clean-marker updates attempts to restore the marker, then retire the backing file
+if restoration fails; errors propagate.
 A stop after those physical barriers does not make the cache unclean again.
 
 Daemon and RUN use the production proxy and audit. Initial build hosts are
@@ -1367,7 +1370,7 @@ two that run apart. Testing policy is in `AGENTS.md`.
 | 42 | Run records are retained within bounds | With inactive runs padded on the host past 128 MiB in valid decision lines, `clean` removes the oldest inactive run, keeps the newest, and leaves a live run's log unchanged. Once the newest is aged 15 days on the host, `clean` removes it (`inspect` exits 3), while a live run aged the same stays `available` and its log keeps appending. |
 | 43 | The VMM reaches only its own box | Linux only. With two boxes up, each VMM is a child of its `box up` and runs as the user with `CapBnd` 0 and `NoNewPrivs` 1; its user, mount, PID, network, IPC and UTS namespaces differ from `box up`'s; its root, read through `/proc/PID/root`, holds its own disk and not the other box's disk; none of its mount points is under the user's home; its fds 0–2 are `/dev/null` and none is under the home; SIGKILL of `box up` ends the VM. |
 
-| 44 | Linux image work stays in its own VM | During an audited RUN, SIGINT ends the build with exit 1 and one failed line whose log names `cancelled`; its VMM ends and public refs stay unchanged. The next ordinary build succeeds in the same cache. Real RUN observes the approved rootful OCI role, no_new_privs, disabled user namespaces and only loopback. In the same build, an explicit api.github.com addition succeeds and example.com gets proxy 403 with its denial audited. After clean removes the idle cache and the pinned builder is unavailable, the completed image still launches and reads its fixture. |
+| 44 | Linux image work stays in its own VM | During an audited RUN, SIGINT ends the build with exit 1 and one failed line whose log names `cancelled`; its VMM ends and public refs stay unchanged. The next ordinary build succeeds in the same cache. Real RUN observes the approved rootful OCI role, no_new_privs, disabled user namespaces and only loopback. In the same build, an explicit api.github.com addition succeeds and example.com gets proxy 403 with its denial audited. Cache-mount exhaustion fails with unchanged public refs; its next ordinary build succeeds without manual cache cleanup. After clean removes the idle cache and the pinned builder is unavailable, the completed image still launches and reads its fixture. |
 
 ## Code
 

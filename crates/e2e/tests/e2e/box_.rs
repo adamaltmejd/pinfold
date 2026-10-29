@@ -1674,11 +1674,19 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     let failing = env.root.join("Containerfile.fail");
     let final_marker = "pinfold-final-build-diagnostic";
     fs::write(context.join("diagnostic-marker.txt"), final_marker).unwrap();
+    // A real Linux cache-mount record makes this exercise selective cleanup.
+    // Sabotage: prune all BuildKit records after failure; the unchanged-input
+    // build below loses its cached RUN layer and therefore its image id.
+    let failure_cache_mount = if cfg!(target_os = "linux") {
+        "--mount=type=cache,target=/caller-cache "
+    } else {
+        ""
+    };
     fs::write(
         &failing,
         format!(
             "FROM {base}\nCOPY diagnostic-marker.txt /diagnostic-marker\n\
-             RUN head -c 200000 /dev/zero | tr '\\0' '\\377'; printf '\\n'; cat /diagnostic-marker; false\n"
+             RUN {failure_cache_mount}head -c 200000 /dev/zero | tr '\\0' '\\377'; printf '\\n'; cat /diagnostic-marker; false\n"
         ),
     )
     .unwrap();
@@ -1835,6 +1843,10 @@ fn linux_build_steps_stay_inside_the_builder_role() {
     // times out. Skip VMM teardown or publish the interrupted output; the
     // pidfd or unchanged-reference assertion fails. The following normal
     // build is the same-cache recovery control.
+    // Sabotage: skip pruning exec.cachemount records after a failed job;
+    // the next ordinary build reuses the full filesystem and fails. SIGINT
+    // cannot cover this path: it already makes the cache unclean, while a
+    // completed RUN failure can retain exhausted cache-mount data.
     let env = TestEnv::with_private_cache("builder-role");
     let base = default_image(&env);
     let name = format!("e2e-builder-role-{}", std::process::id());
@@ -1983,6 +1995,44 @@ RUN set -eu; {{ \
         audited,
         "the build lacks its allowed/denied proxy decisions"
     );
+
+    let completed = references();
+    run_ok(
+        Command::new("musl-gcc")
+            .args(["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-static"])
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/e2e/fill_cache.c"))
+            .arg("-o")
+            .arg(context.join("cache-fill")),
+    );
+    let full = context.join("Full.Containerfile");
+    fs::write(
+        &full,
+        format!(
+            "FROM {base}\nCOPY cache-fill /cache-fill\nRUN --mount=type=cache,id=full-cache-recovery,target=/capacity /cache-fill\n"
+        ),
+    )
+    .unwrap();
+    let (code, failed) = one_json_line(&mut build(&full));
+    assert_eq!(code, 1, "the full-cache build did not fail: {failed}");
+    assert_eq!(failed["event"], "failed", "{failed}");
+    assert!(
+        failed["log"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line.as_str().unwrap().ends_with("cache-space-exhausted")),
+        "the cache fixture did not observe ENOSPC: {failed}"
+    );
+    assert_eq!(
+        references(),
+        completed,
+        "the full-cache failure changed public refs"
+    );
+    // Keep this control separate from the SIGINT recovery above: another
+    // cancellation could discard the full cache and hide its reuse bug.
+    let (code, built) = one_json_line(&mut build(&recipe));
+    assert_eq!(code, 0, "the full cache poisoned the next build: {built}");
+    assert_eq!(built["event"], "built", "{built}");
 
     // Remove the idle cache through the public operation, then make the
     // bootstrap unavailable in this private cache before launching the result.
