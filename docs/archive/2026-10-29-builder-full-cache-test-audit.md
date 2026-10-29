@@ -30,7 +30,7 @@ the builder unavailable.
 
 | Test lines | Block | Outside source |
 |---|---|---|
-| `box_.rs:1999-2030` | An ordinary cache-mount RUN fails with exit 1, event failed, actual fixture ENOSPC output, and unchanged public references. | The finite workload writes up to 8 GiB into the spec's 8 GiB cache, which also contains metadata and base data. It emits `cache-space-exhausted` only when an actual filesystem operation returns kernel errno ENOSPC. The before/after reference comparison observes host-written public state. |
+| `box_.rs:1999-2030` | An ordinary cache-mount RUN fails with exit 1, event failed, actual fixture ENOSPC output, and unchanged public references. | The finite workload writes up to 8 GiB into the candidate's 8 GiB cache, which also contains metadata and base data. It emits `cache-space-exhausted` only when an actual filesystem operation returns kernel errno ENOSPC. The before/after reference comparison observes host-written public state. |
 | `box_.rs:2031-2035` | The following ordinary role recipe builds successfully without cache-mount cleanup, host cache deletion or another interruption. | The guarantee requires recovery for this known-valid caller recipe. Its kernel/HTTP/file expectations come from the approved role, endpoint policy and fixture. The final existing box launch reads the second completed image. |
 
 The reason assertion does not inspect BuildKit's native ENOSPC wording or
