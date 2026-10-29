@@ -99,7 +99,6 @@ pub fn validate_host_paths(root: &Path, config: &Config) -> io::Result<()> {
     Ok(())
 }
 
-/// The hashes of the project's config inputs as they are now.
 fn current(config: &Config) -> Trust {
     Trust {
         toml: config.project_toml.as_deref().map(sha256_hex),
