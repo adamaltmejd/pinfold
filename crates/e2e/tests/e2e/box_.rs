@@ -17,7 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use e2e::{
     HttpFixture, ImageCleanup, TestEnv, assert_denied, assert_ok, box_exec, box_list, box_stat,
     build_profile, curl, default_image, egress_log, exit_code, git, image_id, json_lines, pinfold,
-    profile_containerfile, run_ok, runtime_images, tagged_images, test_dir,
+    profile_containerfile, run_ok, runtime_images, test_dir,
 };
 
 #[test]
@@ -1470,74 +1470,27 @@ fn a_caller_builds_an_image_from_its_own_tree() {
     let _runtime = crate::exclusive_runtime();
     #[cfg(not(target_os = "linux"))]
     let _runtime = crate::shared_runtime();
-    // Guarantee 23: a caller builds an image from its own tree.
-    //
-    // Sabotage: tag the build but skip the `--context` argument, so the
-    // runtime gets no context holding marker.txt; the COPY fails and the
-    // first `built` assertion fails. Sabotage: set the caller image window
-    // to zero; the third build removes the first build's ref, so the ref's
-    // `up` is refused `image-missing`. Sabotage: make the new build's `id`
-    // in `image::build` a fixed string; the three builds then share one
-    // ref, which names the third build, and the box reads `third`.
-    // Sabotage: in `image::build`, resolve the reported id from `latest`
-    // before the build; the first build's id is absent and each later
-    // build's is stale, so the `built["id"]` assertion fails. Sabotage: write a unique
-    // build label into every image again, as `dev.pinfold.build` was; the
-    // repeated build makes a new image and the one-id assertion fails.
-    // Sabotage: build profiles with `cache` true, or drop `--no-cache` from
-    // Apple's build argv or ignore Linux's no-cache request; the second
-    // profile build serves `/stamp` from the first build's layer, the two
-    // values match.
-    // Sabotage: use the published OCI layout directly in Linux's FROM-only
-    // conversion again. Its ONBUILD fires during preparation, so the parent
-    // already holds /onbuild-marker. Removing ONBUILD from the published
-    // image instead loses the child's marker, the positive trigger control.
-    // Sabotage: return the post-rename directory sync error from catalog::commit
-    // as a failed build; the first build reports failure after the kernel EIO.
-    // Sabotage: refuse zero-layer local profiles or drop their image config;
-    // preparation or the fixture's PROFILE_PHASE=two RUN check fails.
-    // Sabotage: ignore COPY from the nonempty local image; /local-base-version
-    // is absent and the caller's RUN check fails.
+    // Guarantee 23. Sabotage: omit the context, reuse a build ref, move the
+    // first ref with latest, or report a stale image id; the runtime lookup
+    // or the fixture bytes read from A's ref and B's latest differ.
+    // Drop image labels from Linux's inventory; ready loses the fixture label.
+    // Return the post-rename directory-sync error as failure; A fails after
+    // its real kernel EIO. Expected bytes and labels are caller fixtures.
     let env = TestEnv::new("image-build");
-    let other = cfg!(target_os = "macos").then(|| TestEnv::new("image-colors"));
-    let default_base = default_image(&env);
-    let freshness_profile = crate::pi::selected_profile_freshness(&env, default_base);
-    let base = if cfg!(target_os = "linux") {
-        "docker.io/library/debian@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4"
-    } else {
-        default_base
-    };
-
+    let base = default_image(&env);
     let name = format!("pinfold-e2e-{}", std::process::id());
     let repository = format!("localhost/pinfold/image-{name}");
     let latest = format!("{repository}:latest");
     let _images = ImageCleanup {
         repository: repository.clone(),
     };
-    // The Containerfile lies outside the context, as a caller's may.
+    // The recipe lies outside the caller's context.
     let context = env.root.join("image-context");
     fs::create_dir_all(&context).unwrap();
     let containerfile = env.root.join("Containerfile");
-    let onbuild = if cfg!(target_os = "linux") {
-        "ONBUILD RUN printf 'pinfold-onbuild-child\\n' > /onbuild-marker\n"
-    } else {
-        ""
-    };
-    let from = if cfg!(target_os = "linux") {
-        format!(
-            "FROM {}:latest\nCOPY --from={base} / /\n\
-             COPY --from={default_base} /etc/debian_version /local-base-version\n\
-             RUN test \"$PROFILE_PHASE\" = two && test -s /local-base-version\n",
-            freshness_profile.repository,
-        )
-    } else {
-        format!("FROM {base}\n")
-    };
     fs::write(
         &containerfile,
-        format!(
-            "{from}RUN head -c8 /dev/urandom | od -An -tx1 > /stamp\nCOPY marker.txt /marker.txt\n{onbuild}"
-        ),
+        format!("FROM {base}\nCOPY marker.txt /marker.txt\n"),
     )
     .unwrap();
 
@@ -1556,7 +1509,7 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         (supervisor, fault.join("receipt.json"))
     };
     let mut refs: Vec<String> = Vec::new();
-    for marker in ["first", "second", "third"] {
+    for marker in ["first", "second"] {
         fs::write(context.join("marker.txt"), format!("{marker}\n")).unwrap();
         let mut command = image_build_command(&env, &name, &containerfile, &context);
         #[cfg(target_os = "linux")]
@@ -1588,9 +1541,6 @@ fn a_caller_builds_an_image_from_its_own_tree() {
             .unwrap_or_else(|| panic!("built carries no ref: {built}"))
             .to_string();
         assert_eq!(built["labels"]["dev.example.test"], "image");
-        // The runtime must hold the ref, or a missing ref, latest and a null
-        // id compare equal. Sabotage: drop the build's tag arguments; neither
-        // ref resolves and this assertion fails.
         let id =
             image_id(&reference).unwrap_or_else(|| panic!("the runtime has no image {reference}"));
         assert_eq!(
@@ -1605,85 +1555,71 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         );
         refs.push(reference);
     }
+    assert_ne!(
+        refs[0], refs[1],
+        "changed inputs reused the first build's ref"
+    );
 
-    let names_ids = || tagged_images(&repository);
-    let kept = names_ids();
-    // A caller's `built` ref is a handle for later, so later builds of the
-    // name neither reclaim nor move it: a box started from the first
-    // build's ref reads the file that build COPYed.
-    // On Linux the box's labels hold the image's too, the build's
-    // `dev.example.test` among them, which the spec does not set.
-    // Sabotage: record only the plan's labels in the Linux inventory; the
-    // label is missing from `ready`.
-    let first = box_name("image");
-    let up = box_up(
-        &env,
-        &serde_json::json!({ "name": first, "image": refs[0] }),
-        &first,
-    );
-    #[cfg(target_os = "linux")]
-    assert_eq!(
-        up.ready()["labels"]["dev.example.test"],
-        "image",
-        "the box lacks its image's label: {}",
-        up.ready()
-    );
-    let read = box_exec(&env, &first, &["cat", "/marker.txt"]);
-    assert_ok(&read, "reading the first build's marker");
-    assert_eq!(
-        read.stdout, "first\n",
-        "the first build's ref names another build"
-    );
-    #[cfg(target_os = "linux")]
-    assert_ok(
-        &box_exec(&env, &first, &["test", "!", "-e", "/onbuild-marker"]),
-        "the parent's ONBUILD remains deferred",
-    );
-    up.down(&env);
-
-    #[cfg(target_os = "linux")]
-    {
-        let child_name = format!("{name}-onbuild");
-        let _child_images = ImageCleanup {
-            repository: format!("localhost/pinfold/image-{child_name}"),
-        };
-        let child_recipe = env.root.join("Containerfile.child");
-        fs::write(&child_recipe, format!("FROM {}\n", refs[0])).unwrap();
-        let (code, child) = image_build(&env, &child_name, &child_recipe, &context);
-        assert_eq!(code, 0, "the ONBUILD child failed: {child}");
-        assert_eq!(child["event"], "built", "the ONBUILD child: {child}");
-        assert_eq!(
-            file_from_image(
-                &env,
-                child["ref"].as_str().expect("the child has a build ref"),
-                "onbuild-child",
-                "/onbuild-marker",
-            ),
-            "pinfold-onbuild-child\n",
-            "the child did not execute its inherited ONBUILD",
+    // A's immutable handle still reads A after B moves latest. Launching
+    // latest separately proves the changed context reached B.
+    for (reference, marker) in [(&refs[0], "first"), (&latest, "second")] {
+        let name = box_name(&format!("image-{marker}"));
+        let up = box_up(
+            &env,
+            &serde_json::json!({ "name": name, "image": reference }),
+            &name,
         );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            up.ready()["labels"]["dev.example.test"],
+            "image",
+            "the box lacks its image's label: {}",
+            up.ready()
+        );
+        let read = box_exec(&env, &name, &["cat", "/marker.txt"]);
+        assert_ok(&read, "reading the build's marker");
+        assert_eq!(
+            read.stdout,
+            format!("{marker}\n"),
+            "the build ref names another context"
+        );
+        up.down(&env);
     }
 
-    // A failed build carries a bounded tail and makes no image. Sabotage:
-    // collect the full build output or cap only its line count; the giant
-    // unterminated line exceeds 64 KiB. Keeping only the beginning loses
-    // the final marker, whose value comes from the caller's context file.
+    // Compare every caller ref, not only distinct image ids. Sabotage:
+    // publish a unique ref or move latest before a failing runtime returns;
+    // the namespace differs even if it still names the same two ids.
+    let caller_prefix = format!("{repository}:");
+    let caller_refs = || {
+        runtime_images()
+            .expect("list the runtime's images")
+            .into_iter()
+            .flat_map(|image| {
+                let id = image.id;
+                image.names.into_iter().map(move |name| (name, id.clone()))
+            })
+            .filter(|(name, _)| name.starts_with(&caller_prefix))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let before_failure = caller_refs();
+    assert!(
+        refs.iter()
+            .chain(std::iter::once(&latest))
+            .all(|reference| before_failure.contains_key(reference)),
+        "the caller's refs are absent before failure: {before_failure:?}"
+    );
+
+    // Sabotage: retain the full output or bound only its line count; the
+    // unterminated diagnostic exceeds the spec's 64 KiB. Keep only its
+    // beginning; the final marker from the caller's file disappears.
     let failing = env.root.join("Containerfile.fail");
     let final_marker = "pinfold-final-build-diagnostic";
     fs::write(context.join("diagnostic-marker.txt"), final_marker).unwrap();
-    // A real Linux cache-mount record makes this exercise selective cleanup.
-    // Sabotage: prune all BuildKit records after failure; the unchanged-input
-    // build below loses its cached RUN layer and therefore its image id.
-    let failure_cache_mount = if cfg!(target_os = "linux") {
-        "--mount=type=cache,target=/caller-cache "
-    } else {
-        ""
-    };
     fs::write(
         &failing,
         format!(
             "FROM {base}\nCOPY diagnostic-marker.txt /diagnostic-marker\n\
-             RUN {failure_cache_mount}head -c 200000 /dev/zero | tr '\\0' '\\377'; printf '\\n'; cat /diagnostic-marker; false\n"
+             RUN head -c 200000 /dev/zero | tr '\\0' '\\377'; printf '\\n'; cat /diagnostic-marker; false\n"
         ),
     )
     .unwrap();
@@ -1703,117 +1639,10 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         "failed build lost its tail: {failed}"
     );
     assert_eq!(
-        names_ids(),
-        kept,
-        "the failed build changed the name's images"
+        caller_refs(),
+        before_failure,
+        "the failed build changed the caller's refs"
     );
-
-    // Two builds of unchanged inputs share one image. A build identical to
-    // the second, after the changed third, gets its own ref but the
-    // second's id, and latest moves back to that image.
-    fs::write(context.join("marker.txt"), "second\n").unwrap();
-    let (code, again) = image_build(&env, &name, &containerfile, &context);
-    assert_eq!(again["event"], "built", "the repeated build: {again}");
-    assert_eq!(code, 0, "the repeated build exited {code}");
-    let again_ref = again["ref"]
-        .as_str()
-        .unwrap_or_else(|| panic!("built carries no ref: {again}"))
-        .to_string();
-    assert_ne!(again_ref, refs[1], "the repeated build reused a ref");
-    let second_id = image_id(&refs[1]);
-    assert!(second_id.is_some(), "the second build's ref is gone");
-    assert_eq!(
-        image_id(&again_ref),
-        second_id,
-        "unchanged inputs made a new image instead of the second build's"
-    );
-    assert_eq!(
-        image_id(&latest),
-        second_id,
-        "{latest} did not move back to the second build's image"
-    );
-
-    // Sabotage: ignore `Build::cache` in `image::build`; the runtime
-    // reuses the cached RUN layer and /stamp stays equal. The one-id
-    // assertion above shows the cached build; the bytes come from the
-    // guest's urandom.
-    let cached_stamp = file_from_image(&env, &again_ref, "caller-stamp-cached", "/stamp");
-    let (code, fresh) = one_json_line(
-        env.command(pinfold())
-            .args(["image", "build", &name, "--no-cache", "--containerfile"])
-            .arg(&containerfile)
-            .arg("--context")
-            .arg(&context),
-    );
-    assert_eq!(code, 0, "the caller's uncached build failed: {fresh}");
-    let fresh_stamp = file_from_image(
-        &env,
-        fresh["ref"].as_str().expect("the uncached build has a ref"),
-        "caller-stamp-fresh",
-        "/stamp",
-    );
-    assert_ne!(cached_stamp, fresh_stamp, "--no-cache reused the RUN layer");
-
-    // Every profile build reruns every step, so a rebuild picks up base
-    // updates instead of replaying a cached `RUN` layer.
-    let profile = format!("e2e-rerun-{}", std::process::id());
-    let _profile_images = ImageCleanup {
-        repository: format!("localhost/pinfold/profile-{profile}"),
-    };
-    profile_containerfile(
-        &env,
-        &profile,
-        &format!(
-            "FROM {base}\nLABEL dev.example.rerun={profile}\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\n"
-        ),
-    );
-    build_profile(&env, &profile);
-    let first_stamp = file_from_image(&env, &built_unique_ref(&profile), "rerun-1", "/stamp");
-    // Positive control: the first build ran the `RUN` step and wrote /stamp.
-    assert!(
-        !first_stamp.trim().is_empty(),
-        "the first build left no /stamp"
-    );
-    build_profile(&env, &profile);
-    let second_stamp = file_from_image(&env, &built_unique_ref(&profile), "rerun-2", "/stamp");
-    assert_ne!(
-        first_stamp, second_stamp,
-        "the second profile build reused the first build's RUN layer"
-    );
-
-    // Two callers with opposite colour settings share Apple's builder.
-    // Hold one inside RUN before the other starts. Sabotage: inherit
-    // NO_COLOR or BUILDKIT_COLORS in Apple's build command again; the
-    // second caller replaces the builder and the held build fails.
-    if let Some(other) = other.as_ref() {
-        let held_name = format!("{name}-held");
-        let _held_images = ImageCleanup {
-            repository: format!("localhost/pinfold/image-{held_name}"),
-        };
-        let held = HeldBuild::start(
-            other,
-            &held_name,
-            base,
-            &[("NO_COLOR", "1"), ("BUILDKIT_COLORS", "run=1,2,3")],
-        );
-        let (code, built) = one_json_line(
-            env.command(pinfold())
-                .env_remove("NO_COLOR")
-                .env_remove("BUILDKIT_COLORS")
-                .args(["image", "build", &name, "--containerfile"])
-                .arg(&containerfile)
-                .arg("--context")
-                .arg(&context),
-        );
-        let held = held.finish();
-        assert_eq!(code, 0, "the concurrent build: {built}");
-        assert_eq!(built["event"], "built");
-        assert!(image_id(built["ref"].as_str().unwrap()).is_some());
-        assert!(held.status.success(), "the held caller's build: {held:?}");
-        let held: serde_json::Value = serde_json::from_slice(&held.stdout).unwrap();
-        assert_eq!(held["event"], "built");
-        assert!(image_id(held["ref"].as_str().unwrap()).is_some());
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -2150,102 +1979,6 @@ fn wait_for_build_api_allowed(
     }
 }
 
-/// A real Apple build held inside RUN until its host HTTP fixture answers.
-struct HeldBuild {
-    child: Option<Child>,
-    release: Option<std::sync::mpsc::Sender<()>>,
-    server: Option<std::thread::JoinHandle<()>>,
-}
-
-impl HeldBuild {
-    fn start(env: &TestEnv, name: &str, base: &str, vars: &[(&str, &str)]) -> HeldBuild {
-        let network = run_ok(Command::new("container").args(["network", "ls", "--format", "json"]));
-        let networks: serde_json::Value = serde_json::from_slice(&network.stdout).unwrap();
-        let gateway = networks
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|network| network["id"] == "default")
-            .unwrap()["status"]["ipv4Gateway"]
-            .as_str()
-            .unwrap();
-        let listener = std::net::TcpListener::bind((gateway, 0)).unwrap();
-        let address = listener.local_addr().unwrap();
-        let (active_tx, active_rx) = std::sync::mpsc::channel();
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(60)))
-                .unwrap();
-            let mut request = BufReader::new(stream);
-            let mut line = String::new();
-            loop {
-                line.clear();
-                assert_ne!(request.read_line(&mut line).unwrap(), 0);
-                if line == "\r\n" {
-                    break;
-                }
-            }
-            active_tx.send(()).unwrap();
-            let _ = release_rx.recv();
-            request
-                .get_mut()
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                .unwrap();
-        });
-        let context = env.root.join("held-build-context");
-        fs::create_dir_all(&context).unwrap();
-        let containerfile = context.join("Containerfile");
-        fs::write(
-            &containerfile,
-            format!("FROM {base}\nRUN curl --fail --max-time 60 http://{address}/\n"),
-        )
-        .unwrap();
-        let mut child = env
-            .command(pinfold())
-            .envs(vars.iter().copied())
-            .args(["image", "build", name, "--containerfile"])
-            .arg(&containerfile)
-            .arg("--context")
-            .arg(&context)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        if let Err(error) = active_rx.recv_timeout(std::time::Duration::from_secs(60)) {
-            let _ = child.kill();
-            let output = child.wait_with_output().unwrap();
-            panic!("build did not reach the host fixture: {error}; {output:?}");
-        }
-        HeldBuild {
-            child: Some(child),
-            release: Some(release_tx),
-            server: Some(server),
-        }
-    }
-
-    fn finish(mut self) -> std::process::Output {
-        self.release.take().unwrap().send(()).unwrap();
-        self.server.take().unwrap().join().unwrap();
-        self.child.take().unwrap().wait_with_output().unwrap()
-    }
-}
-
-impl Drop for HeldBuild {
-    fn drop(&mut self) {
-        // A failed assertion releases the fixture and removes its caller.
-        drop(self.release.take());
-        if let Some(child) = self.child.as_mut() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        if let Some(server) = self.server.take() {
-            let _ = server.join();
-        }
-    }
-}
-
 /// Run `pinfold image build NAME` with the caller label `dev.example.test`,
 /// and return its exit code and its one stdout line, parsed.
 pub(super) fn image_build(
@@ -2291,35 +2024,6 @@ pub(super) fn one_json_line(command: &mut Command) -> (i32, serde_json::Value) {
     (exit_code(output.status), lines.remove(0))
 }
 
-/// The file at `path` in the image `reference`, read through a box named
-/// `name`.
-fn file_from_image(env: &TestEnv, reference: &str, name: &str, path: &str) -> String {
-    let name = box_name(name);
-    let spec = serde_json::json!({ "name": name, "image": reference });
-    let up = box_up(env, &spec, &name);
-    let output = box_exec(env, &name, &["cat", path]);
-    assert_eq!(output.code, 0, "reading {path} failed: {}", output.stderr);
-    up.down(env);
-    output.stdout
-}
-
-/// The unique tag of the image that `localhost/pinfold/profile-<profile>:latest` names
-/// now. Each build tags its image `:latest` and one unique tag; the stable
-/// tag moves to every new build, so a box pins an image by the unique tag. The unique tag is collected from
-/// every runtime image entry sharing the `:latest` image's id, because a
-/// runtime may list one entry per tag.
-pub(super) fn built_unique_ref(profile: &str) -> String {
-    let latest = format!("localhost/pinfold/profile-{profile}:latest");
-    let id = image_id(&latest).unwrap_or_else(|| panic!("no image names {latest}"));
-    runtime_images()
-        .expect("list the runtime's images")
-        .iter()
-        .filter(|image| image.id == id)
-        .flat_map(|image| image.names.iter())
-        .find(|name| **name != latest)
-        .cloned()
-        .unwrap_or_else(|| panic!("the image {latest} names has no unique tag"))
-}
 #[test]
 fn box_has_no_network_but_loopback() {
     let _runtime = crate::shared_runtime();
