@@ -4,6 +4,8 @@
 
 use std::fs::{self, File};
 use std::io::Write;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
@@ -148,7 +150,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
     up.down(&env);
     assert!(up.wait().success(), "the disk's box did not exit cleanly");
     #[cfg(target_os = "macos")]
-    let unlabeled_repository = format!("e2e-cleanup-unlabeled-{}", std::process::id());
+    let unlabeled_repository =
+        format!("localhost/pinfold/e2e-cleanup-unlabeled-{}", std::process::id());
     #[cfg(target_os = "macos")]
     let _unlabeled_images = ImageCleanup {
         repository: unlabeled_repository.clone(),
@@ -253,19 +256,42 @@ fn cleanup_removes_only_pinfolds_garbage() {
         &pinned,
     );
     #[cfg(target_os = "linux")]
-    let root_disk = fs::read_dir(
-        env.cache
-            .join("pinfold/images")
-            .join(id.strip_prefix("sha256:").unwrap()),
-    )
-    .unwrap()
-    .map(Result::unwrap)
-    .map(|entry| entry.path())
-    .find(|path| {
-        path.extension()
-            .is_some_and(|extension| extension == "ext4")
-    })
-    .expect("the live image has a completed backing file");
+    let (root_disk, root_identity) = {
+        // Observe the open root, not an older completed representation.
+        let vmm = vmm_pid(up.pid());
+        let opened: std::collections::BTreeSet<_> = fs::read_dir(format!("/proc/{vmm}/fd"))
+            .expect("read the VMM's descriptors")
+            .filter_map(|entry| {
+                let path = entry.expect("read a VMM descriptor").path();
+                match fs::metadata(&path) {
+                    Ok(metadata) => Some((metadata.dev(), metadata.ino())),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => panic!("stat VMM descriptor {}: {error}", path.display()),
+                }
+            })
+            .collect();
+        let mut roots: Vec<_> = fs::read_dir(
+            env.cache
+                .join("pinfold/images")
+                .join(id.strip_prefix("sha256:").unwrap()),
+        )
+        .expect("read the caller image's files")
+        .filter_map(|entry| {
+            let path = entry.expect("read an image file").path();
+            let metadata = fs::symlink_metadata(&path).expect("stat an image file");
+            metadata
+                .is_file()
+                .then_some((path, (metadata.dev(), metadata.ino())))
+        })
+        .filter(|(_, identity)| opened.contains(identity))
+        .collect();
+        assert_eq!(
+            roots.len(),
+            1,
+            "the VMM must open exactly one caller-image backing file: {roots:?}"
+        );
+        roots.pop().unwrap()
+    };
     let (code, removed) = image_rm(&env, &name);
     assert_eq!(code, 0, "{removed}");
     assert_eq!(removed["event"], "removed", "{removed}");
@@ -276,7 +302,14 @@ fn cleanup_removes_only_pinfolds_garbage() {
     );
     // Sabotage: remove a completed root despite its live image lease.
     #[cfg(target_os = "linux")]
-    assert!(root_disk.is_file(), "rm removed the live root disk");
+    {
+        let metadata = fs::metadata(&root_disk).expect("rm removed the live root disk");
+        assert_eq!(
+            (metadata.dev(), metadata.ino()),
+            root_identity,
+            "rm replaced the VMM's live root disk"
+        );
+    }
     let observed = box_exec(&env, &pinned, &["cat", "/marker.txt"]);
     assert_ok(&observed, "the caller box after image rm");
     assert_eq!(observed.stdout, "retire\n");
