@@ -10,6 +10,7 @@ use std::sync::LazyLock;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
+use ring::digest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -183,7 +184,7 @@ fn builder_file(
                 .open(path)
         })
         .transpose()?;
-    let mut hash = Sha256::new();
+    let mut hash = digest::Context::new(&digest::SHA256);
     let mut total = 0;
     let mut buffer = [0_u8; 64 * 1024];
     loop {
@@ -201,7 +202,7 @@ fn builder_file(
             output.write_all(&buffer[..read])?;
         }
     }
-    if total != bytes || super::hex(&hash.finalize()) != expected {
+    if total != bytes || super::hex(hash.finish().as_ref()) != expected {
         return Err(io::Error::other("builder-integrity: checksum mismatch"));
     }
     Ok(())

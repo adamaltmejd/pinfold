@@ -250,6 +250,7 @@ version = "0.3.3"
 dependencies = [
  "httparse",
  "nix",
+ "ring",
  "rustls",
  "rustls-native-certs",
  "serde",

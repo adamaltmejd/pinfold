@@ -1390,8 +1390,8 @@ lives in `cli.rs`.
 Dependencies: `tokio`, `httparse`, `serde`, `serde_json`, `sha2`, `toml`, `nix`
 (with `socket` for vsock, `sched` and `mount` for the VMM jail; Landlock
 through nix's `libc` syscalls),
-and the TLS client for injecting routes: `rustls` (ring) with
-`rustls-native-certs` for the host's roots.
+`ring` for host builder-file SHA-256, and the TLS client for injecting
+routes: `rustls` (ring) with `rustls-native-certs` for the host's roots.
 SNI comes from rustls's ClientHello acceptor. The Public Suffix List is
 data, `crates/pinfold/public_suffix_list.dat`, embedded with `include_str!`.
 
