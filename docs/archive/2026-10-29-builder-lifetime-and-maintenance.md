@@ -4,6 +4,12 @@ Date: 2026-10-29 local time. Raw timestamps are UTC on 28 October.
 The production source is `c4bcd4d`; later commits add evidence only.
 The actual executable was rehashed after both existing test runs:
 `fdefe37d46cade9d2e4b85c55b2f48ba63b0ad0e94cbd84fcd68090779e602b7`.
+The raw `linux-final-binary.sha256` was collected at 23:44:26 UTC after
+these runs, before the base trial. Its file SHA-256 is
+`5a5b2533a0ba0b3ba7bf2c67850c3dc2089e30af187ac3dece20082dea26cb21`.
+The two test logs contain no per-invocation executable hash or source
+snapshot. The post-run check corroborates the retained executable but is
+not independent attestation of each earlier invocation's bytes.
 
 | Existing test | Actual result |
 |---|---|
