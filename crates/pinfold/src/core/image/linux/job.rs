@@ -2,20 +2,20 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use nix::fcntl::{Flock, OFlag};
 use nix::poll::PollFlags;
 use nix::sys::stat::Mode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -32,6 +32,7 @@ const CACHE_BYTES: u64 = 8 << 30;
 const WORK_BYTES: u64 = 3 << 30;
 const JOB_TIME: Duration = Duration::from_secs(300);
 const INPUT_BYTES: u64 = 512 << 20;
+const JSON_BYTES: usize = 1 << 20;
 const LOG_BYTES: usize = 64 << 10;
 const BUILD_HOSTS: &[&str] = &[
     "registry-1.docker.io",
@@ -54,7 +55,6 @@ struct Base {
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum Phase {
-    Discover,
     Build,
     Convert,
 }
@@ -89,11 +89,82 @@ struct Prepared {
     cache_disk: PathBuf,
     input: PathBuf,
     dirty: PathBuf,
+    cache: bool,
+    input_bytes: u64,
+    inputs: Arc<Mutex<Inputs>>,
+}
+
+#[derive(Default)]
+struct Inputs {
     contexts: Vec<Base>,
-    context_bytes: u64,
+    metadata: Vec<catalog::BaseMetadata>,
+    served: BTreeSet<usize>,
     sources: Vec<catalog::Source>,
     // Only native discovery's actual local inputs remain leased to publication.
-    _bases: Vec<(String, PathBuf, Flock<File>)>,
+    leases: Vec<(String, PathBuf, Flock<File>)>,
+}
+
+impl Inputs {
+    fn local_resolutions(&self) -> Vec<catalog::Resolution> {
+        self.served
+            .iter()
+            .map(|index| {
+                let base = &self.contexts[*index];
+                let identifier = format!("oci-layout://{}@{}", base.reference, base.digest);
+                catalog::Resolution {
+                    requested: identifier.clone(),
+                    effective: identifier,
+                    digest: base.digest.clone(),
+                    store: Some(format!("base{index}")),
+                }
+            })
+            .collect()
+    }
+
+    fn config(&mut self, bytes: &[u8], input_bytes: u64) -> io::Result<&[u8]> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Query {
+            store: String,
+            reference: String,
+        }
+        let query: Query = serde_json::from_slice(bytes).map_err(io::Error::other)?;
+        let index = query
+            .store
+            .strip_prefix("base")
+            .and_then(|index| index.parse::<usize>().ok())
+            .filter(|index| query.store == format!("base{index}"))
+            .ok_or_else(|| io::Error::other("image-output: invalid metadata store"))?;
+        let base = self
+            .contexts
+            .get(index)
+            .filter(|base| query.reference == format!("{}@{}", base.reference, base.digest))
+            .ok_or_else(|| io::Error::other("image-output: unknown metadata binding"))?;
+        let id = base.digest.clone();
+        // Selection is host authority, recorded before any configuration byte is sent.
+        self.served.insert(index);
+        catalog::discovery(&serde_json::to_vec(&serde_json::json!({
+            "resolutions": self.local_resolutions()
+        }))?)?;
+        let ids: BTreeSet<_> = self
+            .served
+            .iter()
+            .map(|index| self.contexts[*index].digest.as_str())
+            .collect();
+        let mut budget = InputBudget { bytes: input_bytes };
+        for image in self
+            .metadata
+            .iter()
+            .filter(|image| ids.contains(image.id.as_str()))
+        {
+            budget.charge(image.config.len() as u64)?;
+        }
+        self.metadata
+            .iter()
+            .find(|image| image.id == id)
+            .map(|image| image.config.as_slice())
+            .ok_or_else(|| io::Error::other("image-base-changed: frozen metadata missing"))
+    }
 }
 
 #[derive(Default)]
@@ -255,39 +326,6 @@ async fn run_transaction(
         egress_log.display()
     );
     fs::set_permissions(proxy_socket, fs::Permissions::from_mode(0o600))?;
-    let discovered = run_job(
-        &state.join("discover"),
-        &prepared,
-        &prepared.cache_disk,
-        &prepared.input,
-        Phase::Discover,
-        &request.labels,
-        &state.join("discovery.json"),
-        &cancel,
-        claim,
-        &mut audit,
-    )
-    .await?;
-    let resolutions = match discovered {
-        Received::Discovery(resolutions) => resolutions,
-        Received::Failed(detail) => return Err(io::Error::other(detail)),
-        _ => {
-            return Err(io::Error::other(
-                "image-output: unexpected discovery result",
-            ));
-        }
-    };
-    let selecting = {
-        let cancel = cancel.clone();
-        let labels = request.labels.clone();
-        let cache = request.cache;
-        tokio::task::spawn_blocking(move || {
-            let mut prepared = prepared;
-            select_bases(&mut prepared, resolutions, &labels, cache, &cancel)?;
-            Ok(prepared)
-        })
-    };
-    let prepared = watch_worker(selecting, &cancel, claim, Some(&mut audit)).await?;
     let built = run_job(
         &state.join("build"),
         &prepared,
@@ -306,7 +344,12 @@ async fn run_transaction(
         Received::Failed(detail) => return Err(io::Error::other(detail)),
         _ => return Err(io::Error::other("image-output: unexpected root")),
     };
-    verified.sources = prepared.sources.clone();
+    verified.sources = prepared
+        .inputs
+        .lock()
+        .map_err(|_| io::Error::other("builder inputs poisoned"))?
+        .sources
+        .clone();
     let recipe = sha256_hex(
         [
             include_bytes!("../../../../builder.toml").as_slice(),
@@ -458,61 +501,22 @@ fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<P
         return Err(io::Error::other("resource: local base metadata count"));
     }
     let mut contexts = BTreeMap::new();
-    for (index, image) in bases.iter().enumerate() {
+    for image in &bases {
         check_cancel(cancel)?;
-        let relative = format!("bases/{index}");
-        let target = input.join(&relative);
-        private_dir(&target.join("blobs/sha256"))?;
-        for (name, bytes) in [
-            (
-                "oci-layout".to_string(),
-                b"{\"imageLayoutVersion\":\"1.0.0\"}".to_vec(),
-            ),
-            (
-                "index.json".to_string(),
-                serde_json::to_vec(&serde_json::json!({
-                    "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
-                    "manifests": [{"mediaType":"application/vnd.oci.image.manifest.v1+json",
-                        "digest":image.id,"size":image.manifest.len(),
-                        "platform":{"os":"linux","architecture":"amd64"}}]
-                }))?,
-            ),
-            (
-                format!("blobs/sha256/{}", catalog::digest_hex(&image.id)?),
-                image.manifest.clone(),
-            ),
-            (
-                format!(
-                    "blobs/sha256/{}",
-                    catalog::digest_hex(&image.config_digest)?
-                ),
-                image.config.clone(),
-            ),
-        ] {
-            budget.charge(bytes.len() as u64)?;
-            fs::write(target.join(name), bytes)?;
-        }
         for reference in &image.references {
             let reference = reference.strip_suffix(":latest").unwrap_or(reference);
             let selected = selected_reference.as_deref() == Some(reference);
-            let (selected_image, selected_index) = if selected {
-                let selected = selected_base.expect("a selected reference has a selected base");
-                (
-                    selected,
-                    bases
-                        .iter()
-                        .position(|base| base.id == selected.id)
-                        .unwrap(),
-                )
+            let selected_image = if selected {
+                selected_base.expect("a selected reference has a selected base")
             } else {
-                (image, index)
+                image
             };
             contexts.insert(
                 reference.to_string(),
                 Base {
                     reference: reference.to_string(),
                     digest: selected_image.id.clone(),
-                    directory: format!("/input/bases/{selected_index}"),
+                    directory: String::new(),
                 },
             );
         }
@@ -521,9 +525,9 @@ fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<P
     write_job(
         &input,
         &Job {
-            phase: Phase::Discover,
+            phase: Phase::Build,
             cache: request.cache,
-            labels: &request.labels,
+            labels: &BTreeMap::new(),
             bases: contexts.clone(),
         },
         &mut budget,
@@ -542,56 +546,51 @@ fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<P
         cache_disk,
         input,
         dirty,
-        contexts,
-        context_bytes,
-        sources: Vec::new(),
-        _bases: Vec::new(),
+        cache: request.cache,
+        input_bytes: context_bytes,
+        inputs: Arc::new(Mutex::new(Inputs {
+            contexts,
+            metadata: bases,
+            ..Inputs::default()
+        })),
     })
 }
 
 fn select_bases(
-    prepared: &mut Prepared,
-    resolutions: Vec<catalog::Resolution>,
+    inputs: &mut Inputs,
+    input: &Path,
+    input_bytes: u64,
+    mut resolutions: Vec<catalog::Resolution>,
     labels: &BTreeMap<String, String>,
     cache: bool,
     cancel: &AtomicBool,
 ) -> io::Result<()> {
-    let mut selected = BTreeMap::new();
+    if resolutions.iter().any(|resolution| {
+        resolution.store.is_some() || resolution.requested.starts_with("oci-layout://")
+    }) {
+        return Err(io::Error::other(
+            "image-output: guest selected local metadata",
+        ));
+    }
+    resolutions.extend(inputs.local_resolutions());
+    catalog::discovery(&serde_json::to_vec(
+        &serde_json::json!({"resolutions": resolutions}),
+    )?)?;
+    let selected: BTreeMap<_, _> = inputs
+        .served
+        .iter()
+        .map(|index| {
+            let base = &inputs.contexts[*index];
+            (base.reference.clone(), base.clone())
+        })
+        .collect();
     let mut remote = BTreeMap::new();
     let mut resolved = BTreeMap::new();
     for resolution in resolutions {
         check_cancel(cancel)?;
-        if resolution.requested.starts_with("oci-layout://") {
-            let index = resolution
-                .store
-                .as_deref()
-                .and_then(|store| store.strip_prefix("base"))
-                .and_then(|index| index.parse::<usize>().ok())
-                .filter(|index| {
-                    resolution.store.as_deref() == Some(format!("base{index}").as_str())
-                })
-                .ok_or_else(|| io::Error::other("image-output: invalid discovered local store"))?;
-            let base = prepared
-                .contexts
-                .get(index)
-                .ok_or_else(|| io::Error::other("image-output: unknown discovered local base"))?;
-            let identifier = format!("oci-layout://{}@{}", base.reference, base.digest);
-            if resolution.requested != identifier
-                || resolution.effective != identifier
-                || resolution.digest != base.digest
-            {
-                return Err(io::Error::other(
-                    "image-output: local resolution identity mismatch",
-                ));
-            }
-            resolved.insert(identifier, resolution.digest);
-            selected.insert(base.reference.clone(), base.clone());
+        if resolution.store.is_some() {
+            resolved.insert(resolution.requested, resolution.digest);
         } else {
-            if resolution.store.is_some() {
-                return Err(io::Error::other(
-                    "image-output: external resolution has local store",
-                ));
-            }
             let pinned = |identifier: &str| -> io::Result<String> {
                 let image = identifier
                     .strip_prefix("docker-image://")
@@ -626,19 +625,16 @@ fn select_bases(
     }
     let ids: BTreeSet<_> = selected.values().map(|base| base.digest.clone()).collect();
     let bases = catalog::lease_bases(&ids, cancel)?;
-    crate::core::absent_ok(fs::remove_dir_all(prepared.input.join("bases")))?;
-    private_dir(&prepared.input.join("bases"))?;
-    let mut budget = InputBudget {
-        bytes: prepared.context_bytes,
-    };
+    private_dir(&input.join("bases"))?;
+    let mut budget = InputBudget { bytes: input_bytes };
     let mut layouts = BTreeMap::new();
     for (index, (id, path, _lease)) in bases.iter().enumerate() {
         check_cancel(cancel)?;
         let relative = format!("bases/{index}");
-        let target = prepared.input.join(&relative);
+        let target = input.join(&relative);
         private_dir(&target)?;
         copy_tree(path, &target, cancel, &mut budget)?;
-        layouts.insert(id.clone(), format!("/input/{relative}"));
+        layouts.insert(id.clone(), format!("/selected/{relative}"));
     }
     let mut contexts = Vec::new();
     for mut base in selected.into_values() {
@@ -646,7 +642,7 @@ fn select_bases(
         contexts.push(base);
     }
     write_job(
-        &prepared.input,
+        input,
         &Job {
             phase: Phase::Build,
             cache,
@@ -655,9 +651,9 @@ fn select_bases(
         },
         &mut budget,
     )?;
-    source_policy(&prepared.input, "docker-image://*", &remote, &mut budget)?;
-    prepared._bases = bases;
-    prepared.sources = resolved
+    source_policy(input, "docker-image://*", &remote, &mut budget)?;
+    inputs.leases = bases;
+    inputs.sources = resolved
         .into_iter()
         .map(|(uri, digest)| catalog::Source { uri, digest })
         .collect();
@@ -767,7 +763,6 @@ fn conversion_base(
 }
 
 enum Received {
-    Discovery(Vec<catalog::Resolution>),
     Oci(Verified),
     Root(String, u64),
     Failed(String),
@@ -791,21 +786,38 @@ async fn run_job(
     let vsock = socket_dir(claim.generation(), phase.egress())?;
     private_dir(&vsock)?;
     let disk = state.join("input.ext4");
+    let selected_disk = state.join("selected.ext4");
     let formatting = {
         let input = input.to_path_buf();
         let disk = disk.clone();
+        let selected_disk = selected_disk.clone();
         let cancel = cancel.clone();
-        tokio::task::spawn_blocking(move || input_disk(&input, &disk, &cancel))
+        tokio::task::spawn_blocking(move || {
+            input_disk(&input, &disk, &cancel)?;
+            if matches!(phase, Phase::Build) {
+                let file = File::options()
+                    .create_new(true)
+                    .write(true)
+                    .mode(0o600)
+                    .open(selected_disk)?;
+                file.set_len(selected_bytes()?)?;
+                Ok(Some(file))
+            } else {
+                Ok(None)
+            }
+        })
     };
-    watch_worker(formatting, cancel, claim, Some(&mut *audit)).await?;
+    let handoff = watch_worker(formatting, cancel, claim, Some(&mut *audit)).await?;
     check_cancel(cancel)?;
-    // Discovery and build use the same audited relay sequentially. Their VMM
-    // and boot listener are gone before these two endpoint names are reused.
+    // These endpoints belong only to the current claimed finite job.
     for name in ["v.sock".to_string(), format!("v.sock_{BOOT_PORT}")] {
         crate::core::absent_ok(fs::remove_file(vsock.join(name)))?;
     }
     let listener = UnixListener::bind(vsock.join(format!("v.sock_{BOOT_PORT}")))?;
-    let drives = vec![(work.to_path_buf(), true), (disk, false)];
+    let mut drives = vec![(work.to_path_buf(), true), (disk, false)];
+    if handoff.is_some() {
+        drives.push((selected_disk.clone(), false));
+    }
     let plan = Plan {
         cpus: Some(2.0),
         memory: Some("2560M".into()),
@@ -846,32 +858,59 @@ async fn run_job(
         let cancellation = cancel.clone();
         let expected = expected.clone();
         let destination = output_path.to_path_buf();
+        let selected = state.join("selected");
+        let staging = state.join("selected.staging.ext4");
+        let inputs = prepared.inputs.clone();
+        let input_bytes = prepared.input_bytes;
+        let cache = prepared.cache;
         let reader = tokio::task::spawn_blocking(move || {
             let mut reader = JobReader { stream, deadline, cancel: cancellation };
             let mut request = vec![0; 8];
             request.push(u8::from(phase.egress()));
             put(&mut request, b"vdb");
-            request.extend(2u32.to_be_bytes());
-            for (device, path, writable) in [
+            let mut attachments = vec![
                 (b"vdc".as_slice(), b"/work".as_slice(), true),
                 (b"vdd".as_slice(), b"/input".as_slice(), false),
-            ] {
+            ];
+            if matches!(phase, Phase::Build) {
+                attachments.push((b"vde", b"/selected", false));
+            }
+            request.extend((attachments.len() as u32).to_be_bytes());
+            for (device, path, writable) in attachments {
                 put(&mut request, device); put(&mut request, path);
                 request.push(u8::from(writable));
             }
             request.extend(0u32.to_be_bytes());
             write_frame(&mut reader, BOOT, &request)?;
-            let mut prefix = [0; 5];
-            reader.read_exact(&mut prefix)?;
-            let length = u32::from_be_bytes(prefix[1..].try_into().unwrap()) as usize;
-            if length > LOG_BYTES {
-                return Err(io::Error::other("image-output: job reply limit"));
-            }
-            let kind = prefix[0];
-            let mut payload = vec![0; length];
-            reader.read_exact(&mut payload)?;
-            match kind {
-                READY if payload.is_empty() => {},
+            let mut handoff = handoff;
+            let mut lookup_open = matches!(phase, Phase::Build);
+            loop {
+                let mut prefix = [0; 5];
+                reader.read_exact(&mut prefix)?;
+                let length = u32::from_be_bytes(prefix[1..].try_into().unwrap()) as usize;
+                let kind = prefix[0];
+                if length > if matches!(kind, b'Q' | b'L') { JSON_BYTES } else { LOG_BYTES } {
+                    return Err(io::Error::other("image-output: job reply limit"));
+                }
+                let mut payload = vec![0; length];
+                reader.read_exact(&mut payload)?;
+                match kind {
+                b'Q' if lookup_open => {
+                    let mut inputs = inputs.lock().map_err(|_| io::Error::other("builder inputs poisoned"))?;
+                    let config = inputs.config(&payload, input_bytes)?;
+                    write_frame(&mut reader, b'R', config)?;
+                },
+                b'L' if lookup_open => {
+                    lookup_open = false;
+                    let resolutions = catalog::discovery(&payload)?;
+                    let mut inputs = inputs.lock().map_err(|_| io::Error::other("builder inputs poisoned"))?;
+                    select_bases(&mut inputs, &selected, input_bytes, resolutions, &expected, cache, &reader.cancel)?;
+                    input_disk(&selected, &staging, &reader.cancel)?;
+                    populate(handoff.take().ok_or_else(|| io::Error::other("image-output: missing input slot"))?,
+                        &staging, &selected_disk, deadline, &reader.cancel)?;
+                    write_frame(&mut reader, b'G', &[])?;
+                },
+                READY if payload.is_empty() && !lookup_open => break,
                 FAILED => {
                     let detail = String::from_utf8(payload)
                         .map_err(|_| io::Error::other("image-output: invalid failure diagnostic"))?;
@@ -882,9 +921,9 @@ async fn run_job(
                     return Ok(Received::Failed(detail));
                 },
                 _ => return Err(io::Error::other("image-output: missing successful job handshake")),
+                }
             }
             match phase {
-                Phase::Discover => catalog::receive_discovery(&mut reader).map(Received::Discovery),
                 Phase::Build => catalog::receive(&mut reader, &destination, &expected).map(Received::Oci),
                 Phase::Convert => catalog::receive_root(&mut reader, &destination).map(|(sha,size)| Received::Root(sha,size)),
             }
@@ -1198,6 +1237,84 @@ fn input_disk(input: &Path, disk: &Path, cancel: &AtomicBool) -> io::Result<()> 
         .arg(disk)
         .arg(format!("{}k", kib + kib / 10 + entries / 4 + 16384));
     run_process(command, cancel)
+}
+
+fn selected_bytes() -> io::Result<u64> {
+    // Each charged entry costs at least 4 KiB. Include three uncharged tree
+    // roots, then apply input_disk's existing filesystem/inode overhead.
+    let overflow = || io::Error::other("resource: build input reservation");
+    let entries = (INPUT_BYTES / 4096).checked_add(3).ok_or_else(overflow)?;
+    let kib = entries.checked_mul(4).ok_or_else(overflow)?;
+    kib.checked_add(kib / 10)
+        .and_then(|kib| kib.checked_add(entries / 4))
+        .and_then(|kib| kib.checked_add(16384))
+        .and_then(|kib| kib.checked_add(3))
+        .and_then(|kib| (kib / 4).checked_mul(4096))
+        .ok_or_else(overflow)
+}
+
+fn populate(
+    mut destination: File,
+    staging: &Path,
+    backing: &Path,
+    deadline: Instant,
+    cancel: &AtomicBool,
+) -> io::Result<()> {
+    let capacity = selected_bytes()?;
+    let original = destination.metadata()?;
+    let same_backing = || -> io::Result<()> {
+        let named = fs::symlink_metadata(backing)?;
+        if !named.is_file()
+            || named.dev() != original.dev()
+            || named.ino() != original.ino()
+            || named.len() != capacity
+        {
+            return Err(io::Error::other("image-input: handoff backing changed"));
+        }
+        Ok(())
+    };
+    if !original.is_file() || original.len() != capacity {
+        return Err(io::Error::other("image-input: invalid handoff backing"));
+    }
+    same_backing()?;
+    let mut source = File::options()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(staging)?;
+    let metadata = source.metadata()?;
+    if !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > capacity
+        || !metadata.len().is_multiple_of(512)
+    {
+        return Err(io::Error::other("resource: handoff staging size"));
+    }
+    // The formatter has exited and was reaped. Only this retained FD ever
+    // writes the live backing inode; its fresh zero tail is left untouched.
+    destination.seek(SeekFrom::Start(0))?;
+    let mut remaining = metadata.len();
+    let mut buffer = [0; 64 << 10];
+    while remaining != 0 {
+        check_cancel(cancel)?;
+        if Instant::now() >= deadline {
+            return Err(io::Error::other("resource: builder job deadline"));
+        }
+        let size = remaining.min(buffer.len() as u64) as usize;
+        source.read_exact(&mut buffer[..size])?;
+        destination.write_all(&buffer[..size])?;
+        remaining -= size as u64;
+    }
+    if source.read(&mut [0])? != 0 || source.metadata()?.len() != metadata.len() {
+        return Err(io::Error::other("image-input: handoff staging changed"));
+    }
+    same_backing()?;
+    destination.sync_all()?;
+    drop(destination);
+    check_cancel(cancel)?;
+    if Instant::now() >= deadline {
+        return Err(io::Error::other("resource: builder job deadline"));
+    }
+    Ok(())
 }
 
 fn run_process(mut command: Command, cancel: &AtomicBool) -> io::Result<()> {

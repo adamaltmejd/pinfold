@@ -1,8 +1,9 @@
 # Builder bootstrap
 
-Linux image builds automatically download the
-[digest-pinned public archive](https://github.com/adamaltmejd/pinfold/releases/download/builder-root-09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4/pinfold-builder-linux-x64-09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4.tar.gz)
-on a cache miss. A verified offline archive is also accepted.
+This private candidate uses the
+[digest-pinned archive](https://github.com/adamaltmejd/pinfold/releases/download/builder-root-fa46484cbcf7ce04eabecd31f6a6fc06dc6a7389390276aadc3f22866c731ffb/pinfold-builder-linux-x64-fa46484cbcf7ce04eabecd31f6a6fc06dc6a7389390276aadc3f22866c731ffb.tar.gz)
+through the verified offline cache. That intended public URL is not published.
+Publication and public adoption require separate approval.
 
 To produce a bootstrap on Linux x64, install debootstrap, GnuPG, curl 8.4+,
 ca-certificates, e2fsprogs, GNU tar and Python 3.11.4+ with `tarfile.data_filter`.
@@ -27,6 +28,9 @@ CA certificates, e2fsprogs, util-linux and BuildKit's buildctl, buildkitd
 and buildkit-runc, plus the compiled `pinfold-discover` native metadata helper.
 Go and the upstream source/vendor tree remain producer inputs outside the root.
 It includes no bootstrap init or transport service.
+
+One finite builder VM queries host-frozen local configs on demand, then builds
+with host-selected read-only OCI inputs. Conversion uses a fresh independent VM.
 
 The manifest separates recipe identity, raw root digest and compressed
 artifact digest. Filesystem bytes are not claimed to be bit-identical
@@ -61,13 +65,13 @@ stable key for 13, from `https://ftp-master.debian.org/keys.html`:
 
 The workflow uploads build artifacts only.
 
-`crates/pinfold/builder.toml` embeds the public URL and reviewed archive,
+`crates/pinfold/builder.toml` embeds the intended URL and reviewed archive,
 raw-root and recipe identities. A rebuild is not expected to reproduce
 those bytes. The optional offline cache accepts the same exact archive,
 independently of its sidecar manifest. With `archive` naming the tar.gz:
 
 ```sh
-digest=09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4
+digest=fa46484cbcf7ce04eabecd31f6a6fc06dc6a7389390276aadc3f22866c731ffb
 printf '%s  %s\n' "$digest" "$archive" | sha256sum -c -
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/pinfold/artifacts/builder/$digest"
 mkdir -p "$cache"
@@ -76,7 +80,7 @@ install -m 600 "$archive" "$cache/pinfold-builder-linux-x64-$digest.tar.gz"
 
 The CLI copies the offline archive into install staging when present;
 otherwise it downloads the pinned URL over HTTPS into that staging area.
-The archive copy or download is bounded to its pinned 122,578,909 bytes,
+The archive copy or download is bounded to its pinned 122,592,271 bytes,
 below the shared 512 MiB transfer cap, and checked against its embedded
 size and SHA-256. The CLI streams only `root.ext4` into a fixed 0600 file,
 checks its embedded raw size and SHA-256, and publishes the complete

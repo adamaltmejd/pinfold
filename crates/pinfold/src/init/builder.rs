@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
@@ -39,7 +39,6 @@ struct Job {
 #[derive(Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Phase {
-    Discover,
     Build,
     Convert,
 }
@@ -77,14 +76,7 @@ pub(super) fn boot() -> ! {
 
 fn run(host: &mut UnixStream) -> io::Result<()> {
     let relay = firecracker::prepare_builder(host)?;
-    let mut bytes = Vec::new();
-    File::open("/input/job.json")?
-        .take(1024 * 1024 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > 1024 * 1024 {
-        return Err(io::Error::other("resource: builder job metadata"));
-    }
-    let job: Job = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    let mut job = read_job("/input/job.json")?;
     if relay == (job.phase == Phase::Convert) {
         return Err(io::Error::other("invalid builder egress role"));
     }
@@ -102,8 +94,36 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
     let daemon_log = Arc::new(Mutex::new(Tail::default()));
     let mut daemon =
         Daemon::start(&job, Arc::clone(&daemon_log)).map_err(|error| failed(error, &daemon_log))?;
-    let built = build(&job, Arc::clone(&log));
-    let pruning = if built.is_err() && job.phase != Phase::Convert {
+    let mut selected_mounted = false;
+    let built = (|| {
+        let input = if relay {
+            discover(&job, host, Arc::clone(&log))?;
+            let mut bytes = Vec::new();
+            File::open("/work/discovery.json")?
+                .take(JSON_BYTES + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > JSON_BYTES {
+                return Err(io::Error::other("resource: discovery JSON"));
+            }
+            fs::remove_file("/work/discovery.json")?;
+            write_frame(host, b'L', &bytes)?;
+            let (kind, payload) = firecracker::read_frame(host)?;
+            if kind != b'G' || !payload.is_empty() {
+                return Err(io::Error::other("invalid builder handoff"));
+            }
+            firecracker::mount_builder_input()?;
+            selected_mounted = true;
+            job = read_job("/selected/job.json")?;
+            if job.phase != Phase::Build {
+                return Err(io::Error::other("invalid selected builder role"));
+            }
+            "/selected"
+        } else {
+            "/input"
+        };
+        build(&job, input, Arc::clone(&log))
+    })();
+    let pruning = if built.is_err() && relay {
         let mut prune = command("buildctl", false);
         prune.args(["prune", "--filter", "type==exec.cachemount"]);
         logged(prune, Arc::clone(&daemon_log))
@@ -119,10 +139,9 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
                 "{detail}\ncache cleanup failed: {error}"
             )));
         }
-        return finish(host, Some(&detail));
+        return finish(host, Some(&detail), selected_mounted);
     }
     let output = match job.phase {
-        Phase::Discover => Path::new("/work/discovery.json"),
         Phase::Build => Path::new("/work/oci"),
         Phase::Convert => {
             convert(Arc::clone(&log)).map_err(|error| failed(error, &log))?;
@@ -134,10 +153,6 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
     nix::unistd::sync();
     write_frame(host, READY, &[])?;
     match job.phase {
-        Phase::Discover => {
-            send(host, b'I', output)?;
-            fs::remove_file(output)?;
-        }
         Phase::Convert => send(host, b'D', output)?,
         Phase::Build => {
             send(host, b'I', &output.join("index.json"))?;
@@ -150,12 +165,26 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
             fs::remove_dir_all(output)?;
         }
     }
-    finish(host, None)
+    finish(host, None, selected_mounted)
 }
 
-fn finish(host: &mut UnixStream, failure: Option<&str>) -> io::Result<()> {
+fn read_job(path: &str) -> io::Result<Job> {
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take(JSON_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > JSON_BYTES {
+        return Err(io::Error::other("resource: builder job metadata"));
+    }
+    serde_json::from_slice(&bytes).map_err(io::Error::other)
+}
+
+fn finish(host: &mut UnixStream, failure: Option<&str>, selected_mounted: bool) -> io::Result<()> {
     stop_work()?;
     nix::unistd::sync();
+    if selected_mounted {
+        nix::mount::umount("/selected")?;
+    }
     nix::mount::umount("/input")?;
     nix::mount::umount("/work")?;
     if let Some(detail) = failure {
@@ -468,17 +497,20 @@ fn stop_work() -> io::Result<()> {
     }
 }
 
-fn build(job: &Job, log: Arc<Mutex<Tail>>) -> io::Result<()> {
+fn frontend_command(job: &Job, input: &str, discovery: bool) -> io::Result<Command> {
+    if discovery && !job.labels.is_empty() {
+        return Err(io::Error::other("discovery contains build labels"));
+    }
     let mut build = command(
-        if job.phase == Phase::Discover {
+        if discovery {
             "pinfold-discover"
         } else {
             "buildctl"
         },
         job.phase != Phase::Convert,
     );
-    if job.phase == Phase::Discover {
-        build.args(["--addr", SOCKET]);
+    if discovery {
+        build.args(["--addr", SOCKET, "--output", "/work/discovery.json"]);
     } else {
         build.args([
             "build",
@@ -492,9 +524,10 @@ fn build(job: &Job, log: Arc<Mutex<Tail>>) -> io::Result<()> {
             build.arg("--no-cache");
         }
     }
+    build
+        .arg("--source-policy-file")
+        .arg(format!("{input}/source-policy.json"));
     build.args([
-        "--source-policy-file",
-        "/input/source-policy.json",
         "--local",
         "context=/input/context",
         "--local",
@@ -518,30 +551,38 @@ fn build(job: &Job, log: Arc<Mutex<Tail>>) -> io::Result<()> {
     for (key, value) in &job.labels {
         build.arg("--opt").arg(format!("label:{key}={value}"));
     }
+    let base_prefix = format!("{input}/bases/");
     for (index, base) in job.bases.iter().enumerate() {
-        if !base
-            .directory
-            .strip_prefix("/input/bases/")
-            .is_some_and(|value| {
-                !value.is_empty()
-                    && value.len() <= 4
-                    && value.bytes().all(|byte| byte.is_ascii_digit())
-            })
-        {
-            return Err(io::Error::other("invalid local base directory"));
+        if discovery {
+            if !base.directory.is_empty() {
+                return Err(io::Error::other("discovery contains local image content"));
+            }
+        } else {
+            if !base
+                .directory
+                .strip_prefix(base_prefix.as_str())
+                .is_some_and(|value| {
+                    !value.is_empty()
+                        && value.len() <= 4
+                        && value.bytes().all(|byte| byte.is_ascii_digit())
+                })
+            {
+                return Err(io::Error::other("invalid local base directory"));
+            }
+            build
+                .arg("--oci-layout")
+                .arg(format!("base{index}={}", base.directory));
         }
-        build
-            .arg("--oci-layout")
-            .arg(format!("base{index}={}", base.directory));
         build.arg("--opt").arg(format!(
             "context:{}=oci-layout://base{index}@{}",
             base.reference, base.digest
         ));
     }
-    if job.phase == Phase::Discover {
-        let bytes = capture_discovery(build, log)?;
-        return fs::write("/work/discovery.json", bytes);
-    }
+    Ok(build)
+}
+
+fn build(job: &Job, input: &str, log: Arc<Mutex<Tail>>) -> io::Result<()> {
+    let mut build = frontend_command(job, input, false)?;
     build.arg("--output").arg(if job.phase == Phase::Convert {
         "type=tar,dest=/work/root.tar"
     } else {
@@ -550,9 +591,18 @@ fn build(job: &Job, log: Arc<Mutex<Tail>>) -> io::Result<()> {
     logged(build, log)
 }
 
-fn capture_discovery(mut command: Command, log: Arc<Mutex<Tail>>) -> io::Result<Vec<u8>> {
+fn discover(job: &Job, host: &mut UnixStream, log: Arc<Mutex<Tail>>) -> io::Result<()> {
+    match fs::remove_file("/work/discovery.json") {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let mut command = frontend_command(job, "/input", true)?;
     let (mut reader, writer) = io::pipe()?;
-    command.stdout(Stdio::piped()).stderr(writer);
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(writer);
     let child = command.spawn();
     drop(command);
     let mut child = child?;
@@ -568,19 +618,36 @@ fn capture_discovery(mut command: Command, log: Arc<Mutex<Tail>>) -> io::Result<
                 .push(&buffer[..count]);
         }
     });
-    let mut bytes = Vec::new();
-    let read = child
-        .stdout
-        .take()
-        .expect("discovery stdout is piped")
-        .take(JSON_BYTES + 1)
-        .read_to_end(&mut bytes);
-    if read.is_err() || bytes.len() as u64 > JSON_BYTES {
+    let queries = (|| {
+        let mut output = BufReader::new(child.stdout.take().expect("discovery stdout is piped"));
+        let mut input = child.stdin.take().expect("discovery stdin is piped");
+        loop {
+            let mut query = Vec::new();
+            let count = output
+                .by_ref()
+                .take(JSON_BYTES + 1)
+                .read_until(b'\n', &mut query)?;
+            if count == 0 {
+                return Ok(());
+            }
+            if query.len() as u64 > JSON_BYTES || query.pop() != Some(b'\n') {
+                return Err(io::Error::other("resource: discovery query"));
+            }
+            write_frame(host, b'Q', &query)?;
+            let (kind, bytes) = firecracker::read_frame(host)?;
+            if kind != b'R' || bytes.len() as u64 > JSON_BYTES {
+                return Err(io::Error::other("invalid discovery reply"));
+            }
+            input.write_all(&(bytes.len() as u32).to_be_bytes())?;
+            input.write_all(&bytes)?;
+            input.flush()?;
+        }
+    })();
+    if let Err(error) = queries {
         let _ = child.kill();
         let _ = child.wait();
         let _ = errors.join();
-        read?;
-        return Err(io::Error::other("resource: discovery JSON"));
+        return Err(error);
     }
     let status = child.wait()?;
     errors
@@ -589,7 +656,7 @@ fn capture_discovery(mut command: Command, log: Arc<Mutex<Tail>>) -> io::Result<
     if !status.success() {
         return Err(io::Error::other(format!("discovery: {status}")));
     }
-    Ok(bytes)
+    Ok(())
 }
 
 fn convert(log: Arc<Mutex<Tail>>) -> io::Result<()> {

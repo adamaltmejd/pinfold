@@ -796,17 +796,27 @@ stable reasons. Apple rejects `--allow` additions and retains its existing
 build egress policy. Build records name their audit log on stderr and use
 normal retained run records; no credential values enter argv or files.
 
-Freeze caller context and local image metadata. A finite discovery guest
-uses pinned BuildKit's native Dockerfile frontend to resolve the reachable
-sources, including arguments, stages and COPY sources. A helper compiled
-from that BuildKit version records resolver replies before empty-rootfs
-optimization. Local replies bind to the frozen request's exact OCI store
-and image identity. It receives no
-unrelated image layers. Lease and validate only the local identities it
-selects, then supply those complete OCI contexts to the build guest,
+Freeze caller context and local image metadata. One finite builder guest
+uses pinned BuildKit's native Dockerfile frontend for discovery and build.
+Initially it receives local aliases and opaque identities, without local
+image configurations or layers. Its helper requests exact frozen configs
+on demand; the host records each consulted local identity before replying.
+Every consultation counts, including empty-rootfs and other optimized-out
+inputs. Later native metadata calls may only reuse an already served local
+binding. Metadata lookup closes permanently before RUN.
+
+Lease and validate those identities, then supply their complete OCI contexts,
 including normalized `:latest` names. Deleted identities fail preparation;
-they are never retargeted. A source policy refuses managed-image registry
-fallback and pins discovered external image digests for the build pass.
+they are never retargeted. The selected job and source policy are host-written
+on a separate physical read-only device attached blank at boot. The host
+formats private staging, copies its bounded bytes through the retained backing
+FD without resizing or replacing it, syncs and closes writers before authorizing
+use. The backing reservation derives from the existing input and filesystem
+overhead bounds. Init leaves that device unopened until authorization, then
+invalidates its quiescent block cache and mounts it read-only. An acknowledgement
+does not establish host completion. A new native build session uses only the
+selected OCI contexts. A source policy refuses managed-image registry fallback
+and pins discovered external image digests for the build pass.
 Linux uses the pinned native frontend; `#syntax` cannot select another one.
 The selected profile dependency is frozen to the identity recorded in
 `dev.pinfold.base`; a changed or missing dependency is `image-base-changed`.
@@ -826,7 +836,7 @@ graph. No external descriptor URL or unreferenced object is admitted.
 Admit one direct runnable manifest. Attachments, attestation manifests,
 nested indexes and unsupported media are refused rather than ignored.
 
-The converter receives only the host's validated read-only OCI layout,
+The fresh independent converter receives only the host's validated read-only OCI layout,
 has no egress, and uses pinned BuildKit flattening plus guest tar and
 mkfs.ext4. Conversion uses the admitted layers without executing inherited
 image triggers; the original OCI configuration stays unchanged. Ownership,
@@ -921,12 +931,13 @@ manifest and SHA256SUMS cover build metadata and retained producer inputs.
 The workflow only builds. It requires Linux root, Python 3.11.4+ with
 `tarfile.data_filter`, debootstrap, GnuPG, curl 8.4+, e2fsprogs and GNU tar.
 The consumer needs no host Go installation.
-`crates/pinfold/builder.toml` embeds the public archive URL and reviewed
-archive, raw-root and recipe identities. On a cache miss, pinfold downloads
-the archive over HTTPS into install staging. The optional offline archive cache
+`crates/pinfold/builder.toml` embeds the intended archive URL and reviewed
+archive, raw-root and recipe identities. This private candidate's URL is
+unpublished; proof uses the verified offline archive. Without that archive,
+pinfold attempts HTTPS acquisition into install staging. The offline archive cache
 is `~/.cache/pinfold/artifacts/builder/<archive-sha256>/`; when present, its
 archive is copied into that staging area instead. The pinned archive bound
-is 122,578,909 bytes, below the shared 512 MiB transfer cap. Acquisition,
+is 122,592,271 bytes, below the shared 512 MiB transfer cap. Acquisition,
 verification and installation share one cancellable 300-second deadline.
 Installation verifies the staged archive's pinned size and SHA-256 before
 streaming only `root.ext4` into a fixed 0600 file and atomically publishing

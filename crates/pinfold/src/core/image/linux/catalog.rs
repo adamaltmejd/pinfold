@@ -109,26 +109,17 @@ pub(super) fn receive_failure_end(stream: &mut impl Read) -> io::Result<()> {
     success(stream, &bytes)
 }
 
-/// Native frontend discovery returns one bounded JSON receipt, then success.
-pub fn receive_discovery(stream: &mut impl Read) -> io::Result<Vec<Resolution>> {
+/// The native frontend's external metadata receipt has the original JSON bounds.
+pub(super) fn discovery(payload: &[u8]) -> io::Result<Vec<Resolution>> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Discovery {
         resolutions: Vec<Resolution>,
     }
-    let (kind, bytes) = frame_header(stream)?;
-    let header: Header = serde_json::from_slice(&bytes).map_err(invalid_json)?;
-    if kind != b'I' || header.size > JSON_MAX {
-        return Err(invalid("image-output: invalid discovery frame"));
+    if payload.len() as u64 > JSON_MAX {
+        return Err(invalid("image-output: discovery JSON limit"));
     }
-    let mut payload = Vec::with_capacity(header.size as usize);
-    copy_checked(stream, &mut payload, header.size, &header.digest, None)?;
-    let (kind, bytes) = frame_header(stream)?;
-    if kind != b'E' {
-        return Err(invalid("image-output: missing discovery success"));
-    }
-    success(stream, &bytes)?;
-    let discovery: Discovery = serde_json::from_slice(&payload).map_err(invalid_json)?;
+    let discovery: Discovery = serde_json::from_slice(payload).map_err(invalid_json)?;
     if discovery.resolutions.len() > OBJECT_MAX {
         return Err(invalid("image-output: discovery resolution limit"));
     }
@@ -156,12 +147,13 @@ pub fn receive_discovery(stream: &mut impl Read) -> io::Result<Vec<Resolution>> 
     Ok(discovery.resolutions)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Resolution {
     pub(super) requested: String,
     pub(super) effective: String,
     pub(super) digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) store: Option<String>,
 }
 
@@ -952,8 +944,6 @@ pub struct BaseMetadata {
     pub id: String,
     pub references: Vec<String>,
     pub labels: BTreeMap<String, String>,
-    pub manifest: Vec<u8>,
-    pub config_digest: String,
     pub config: Vec<u8>,
 }
 
@@ -1014,8 +1004,6 @@ pub fn base_metadata(cancel: &AtomicBool) -> io::Result<Vec<BaseMetadata>> {
             id: id.to_string(),
             references,
             labels: catalog.images[id].labels.clone(),
-            manifest,
-            config_digest: parsed.config.digest,
             config,
         });
     }

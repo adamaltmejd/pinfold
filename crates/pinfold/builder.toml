@@ -1,7 +1,7 @@
-# Published helper bootstrap bytes.
-url = "https://github.com/adamaltmejd/pinfold/releases/download/builder-root-09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4/pinfold-builder-linux-x64-09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4.tar.gz"
-archive_sha256 = "09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4"
-archive_bytes = 122578909
-root_sha256 = "ef1aaa0fe1c6cafaa57bd4615ed6a077fe2cd27adc4a114792401bf6d1de1968"
+# Private candidate factory bytes. Public URL not published; offline proof only.
+url = "https://github.com/adamaltmejd/pinfold/releases/download/builder-root-fa46484cbcf7ce04eabecd31f6a6fc06dc6a7389390276aadc3f22866c731ffb/pinfold-builder-linux-x64-fa46484cbcf7ce04eabecd31f6a6fc06dc6a7389390276aadc3f22866c731ffb.tar.gz"
+archive_sha256 = "fa46484cbcf7ce04eabecd31f6a6fc06dc6a7389390276aadc3f22866c731ffb"
+archive_bytes = 122592271
+root_sha256 = "a245c096e2025502c5fe15eeb8fae391503c440edaa53e0d85e4042ec62aeb01"
 root_bytes = 1073741824
-recipe_sha256 = "d4fea170a1a33385e33951a981e649fc6b07053c5e965b99dc620719e744c30c"
+recipe_sha256 = "7e5e5778257eb26d5b768801d0b68b6f151cae8a4eef11df692f411f7b39d049"

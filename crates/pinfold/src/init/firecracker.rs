@@ -102,7 +102,7 @@ pub fn boot() -> ! {
     }
     let mut host = vsock_connect(BOOT_PORT)
         .unwrap_or_else(|error| die(&format!("connect to the host: {error}")));
-    let (request, control) = match prepare(&mut host) {
+    let (request, control) = match prepare(&mut host, false) {
         Ok(prepared) => prepared,
         Err(error) => fail(&mut host, &error),
     };
@@ -223,12 +223,37 @@ fn guest_path(fields: &mut Fields) -> io::Result<PathBuf> {
 
 /// Read BOOT, mount the box's tree, enter it and make the work cgroup.
 /// Runs as root with every capability.
-fn prepare(host: &mut UnixStream) -> io::Result<(Request, OwnedFd)> {
+fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd)> {
     let (kind, payload) = read_frame(host)?;
     if kind != BOOT {
         return Err(io::Error::other(format!("expected BOOT, got frame {kind}")));
     }
     let request = parse_request(&payload)?;
+    if builder
+        && (request.uid != 0
+            || request.gid != 0
+            || request.root != "/dev/vdb"
+            || !request.fills.is_empty()
+            || request.attachments.len() != if request.relay { 3 } else { 2 }
+            || !request.attachments.iter().any(|attachment| {
+                attachment.device == "/dev/vdc"
+                    && attachment.guest == Path::new("/work")
+                    && attachment.writable
+            })
+            || !request.attachments.iter().any(|attachment| {
+                attachment.device == "/dev/vdd"
+                    && attachment.guest == Path::new("/input")
+                    && !attachment.writable
+            })
+            || (request.relay
+                && !request.attachments.iter().any(|attachment| {
+                    attachment.device == "/dev/vde"
+                        && attachment.guest == Path::new("/selected")
+                        && !attachment.writable
+                })))
+    {
+        return Err(io::Error::other("invalid builder devices"));
+    }
 
     let nodev = MsFlags::MS_NOSUID | MsFlags::MS_NODEV;
     let stage = Path::new(STAGE);
@@ -291,6 +316,12 @@ fn prepare(host: &mut UnixStream) -> io::Result<(Request, OwnedFd)> {
     mount_at(root, "/dev/shm", "tmpfs", "tmpfs", nodev, Some("mode=1777"))?;
     mount_at(root, "/tmp", "tmpfs", "tmpfs", nodev, Some("mode=1777"))?;
     for attachment in &request.attachments {
+        if builder && attachment.guest == Path::new("/selected") {
+            // The host populates this fixed read-only device after discovery.
+            // Do not probe it before that host-authorized transition.
+            fs::create_dir(root.join("selected"))?;
+            continue;
+        }
         let flags = if attachment.writable {
             nodev
         } else {
@@ -343,26 +374,8 @@ fn prepare(host: &mut UnixStream) -> io::Result<(Request, OwnedFd)> {
 /// no agent state or execution service. The agent entry point stays separate.
 #[cfg(target_arch = "x86_64")]
 pub(super) fn prepare_builder(host: &mut UnixStream) -> io::Result<bool> {
-    let (request, control) = prepare(host)?;
+    let (request, control) = prepare(host, true)?;
     drop(control);
-    if request.uid != 0
-        || request.gid != 0
-        || request.root != "/dev/vdb"
-        || !request.fills.is_empty()
-        || request.attachments.len() != 2
-        || !request.attachments.iter().any(|attachment| {
-            attachment.device == "/dev/vdc"
-                && attachment.guest == Path::new("/work")
-                && attachment.writable
-        })
-        || !request.attachments.iter().any(|attachment| {
-            attachment.device == "/dev/vdd"
-                && attachment.guest == Path::new("/input")
-                && !attachment.writable
-        })
-    {
-        return Err(io::Error::other("invalid builder devices"));
-    }
     mount(
         "tmpfs",
         Path::new("/run"),
@@ -374,6 +387,25 @@ pub(super) fn prepare_builder(host: &mut UnixStream) -> io::Result<bool> {
     fs::create_dir(format!("{WORK}/service"))?;
     fs::create_dir(format!("{WORK}/jobs"))?;
     Ok(request.relay)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(super) fn mount_builder_input() -> io::Result<()> {
+    let device = File::open("/dev/vde")?;
+    // BLKFLSBUF is permitted on a read-only FD with the trusted service's
+    // existing SYS_ADMIN. Init leaves this device unopened until host handoff.
+    // SAFETY: this no-argument block-device ioctl reads no userspace memory.
+    if unsafe { libc::ioctl(device.as_raw_fd(), 0x1261) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    drop(device);
+    mount(
+        "/dev/vde",
+        Path::new("/selected"),
+        "ext4",
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_RDONLY,
+        Some("noinit_itable"),
+    )
 }
 
 #[cfg(target_arch = "x86_64")]
