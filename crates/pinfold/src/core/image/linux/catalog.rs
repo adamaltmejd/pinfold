@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use nix::fcntl::{Flock, FlockArg};
+use ring::digest;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::core::image::ImageInfo;
 use crate::core::{hex, ownership, sha256_hex};
@@ -277,7 +277,7 @@ fn copy_checked(
     cancel: Option<&AtomicBool>,
 ) -> io::Result<()> {
     digest_hex(digest)?;
-    let mut hash = Sha256::new();
+    let mut hash = digest::Context::new(&digest::SHA256);
     let mut remaining = size;
     let mut buffer = [0u8; 64 << 10];
     while remaining != 0 {
@@ -288,7 +288,7 @@ fn copy_checked(
         hash.update(&buffer[..take]);
         remaining -= take as u64;
     }
-    if hex(&hash.finalize()) != digest_hex(digest)? {
+    if hex(hash.finish().as_ref()) != digest_hex(digest)? {
         return Err(invalid("image-output: digest mismatch"));
     }
     Ok(())
