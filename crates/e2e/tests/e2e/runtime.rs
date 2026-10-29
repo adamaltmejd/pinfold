@@ -150,8 +150,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
     up.down(&env);
     assert!(up.wait().success(), "the disk's box did not exit cleanly");
     #[cfg(target_os = "macos")]
-    let unlabeled_repository =
-        format!("localhost/pinfold/e2e-cleanup-unlabeled-{}", std::process::id());
+    let unlabeled_repository = format!(
+        "localhost/pinfold/e2e-cleanup-unlabeled-{}",
+        std::process::id()
+    );
     #[cfg(target_os = "macos")]
     let _unlabeled_images = ImageCleanup {
         repository: unlabeled_repository.clone(),
