@@ -343,6 +343,9 @@ fn project_state_persists_and_stays_separate() {
 
 #[test]
 fn a_changed_project_file_stops_the_run() {
+    #[cfg(target_os = "linux")]
+    let _runtime = crate::exclusive_runtime();
+    #[cfg(not(target_os = "linux"))]
     let _runtime = crate::shared_runtime();
     // Sabotage: drop the trust::check call from pi::launch::run; the fetched
     // and merged `.pinfold.toml` then runs and both refusal assertions fail.

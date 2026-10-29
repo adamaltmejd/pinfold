@@ -260,6 +260,9 @@ fn box_lifecycle_works_for_a_caller() {
 
 #[test]
 fn up_refuses_before_it_creates() {
+    #[cfg(target_os = "linux")]
+    let _runtime = crate::exclusive_runtime();
+    #[cfg(not(target_os = "linux"))]
     let _runtime = crate::shared_runtime();
     // Guarantee 17: up refuses before it creates.
     // Sabotage: parse the first JSON value straight into `Plan` again; the
@@ -1459,10 +1462,7 @@ fn only_allowlisted_hosts_get_through() {
 #[test]
 fn a_caller_builds_an_image_from_its_own_tree() {
     #[cfg(target_os = "linux")]
-    let mut exclusive_runtime = Some(crate::exclusive_runtime());
-    // Keep the downgraded guard's drop slot ahead of every fixture.
-    #[cfg(target_os = "linux")]
-    let mut _runtime = None;
+    let _runtime = crate::exclusive_runtime();
     #[cfg(not(target_os = "linux"))]
     let _runtime = crate::shared_runtime();
     // Guarantee 23: a caller builds an image from its own tree.
@@ -1599,14 +1599,6 @@ fn a_caller_builds_an_image_from_its_own_tree() {
             "the {marker} built line names another image id"
         );
         refs.push(reference);
-        #[cfg(target_os = "linux")]
-        if marker == "first" {
-            _runtime = Some(tokio::sync::RwLockWriteGuard::downgrade(
-                exclusive_runtime
-                    .take()
-                    .expect("the first build holds the exclusive runtime guard"),
-            ));
-        }
     }
 
     let names_ids = || tagged_images(&repository);
@@ -2813,6 +2805,9 @@ fn an_injecting_route_keeps_the_credential_on_the_host() {
 
 #[test]
 fn a_login_route_keeps_the_login_on_the_host() {
+    #[cfg(target_os = "linux")]
+    let _runtime = crate::exclusive_runtime();
+    #[cfg(not(target_os = "linux"))]
     let _runtime = crate::shared_runtime();
     // Guarantee 26, pi half, first. Sabotage: in `forward`, keep a box-sent
     // header that shares an injected header's name; pi's stored auth.json
