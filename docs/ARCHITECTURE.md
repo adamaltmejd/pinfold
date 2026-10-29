@@ -720,8 +720,9 @@ A project recipe typically `FROM`s the profile image.
   or refuses as `image-no-recipe` when it has none.
 - A profile or project build gets an empty context: the Containerfile
   alone. Files come in
-  by `ADD --checksum` or from the profile image. Every step reruns at every
-  build (no layer cache).
+  by `ADD --checksum` or from the profile image. Builds reuse the layer cache
+  by default. `pinfold build --no-cache` reruns RUN steps, including package
+  updates.
 - A build's identity is its unique tag, never an image label. Every
   build is tagged `<repo>:<build>` and moves the stable `<repo>:latest` to
   it. A caller build whose layers and labels are unchanged returns the
@@ -863,8 +864,9 @@ daemon. Old Podman-only refs no longer resolve: rebuild profiles/projects
 with `build` and caller images with `image build`. The old Podman store,
 old derived-root cache and managed agent disks are left untouched.
 
-Built-in images use `debian:trixie-slim`, upgrade Debian packages at each
-build and strip setuid/setgid bits.
+Built-in images use `debian:trixie-slim` and strip setuid/setgid bits.
+Their package-update RUN steps may be cached; `pinfold build --no-cache`
+forces them to run again.
 
 | Profile | Tools |
 |---|---|
@@ -1313,7 +1315,7 @@ pinfold pi [pi args…]            pi in a box for this project; `pi` is a symli
 pinfold attach [cmd…]            bash (or cmd) in this project's running pi box
 pinfold push                     this checkout's branches into its pi box as refs/remotes/host/*
 pinfold fetch                    its pi box's branches into refs/remotes/pinfold/*
-pinfold build [--profile NAME]   build this project's image, or a profile's; prints the ref
+pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this project's image, or a profile's; prints the ref
 pinfold image build|rm NAME …    a caller's image, built from its own context, or retired (Process interface)
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
 pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files

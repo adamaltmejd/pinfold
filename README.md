@@ -105,6 +105,10 @@ In a project:
    Using a Claude subscription through pi is subject to Anthropic's terms:
    pi presents the token as Claude Code and may bill it as extra usage.
 
+Profile and project builds reuse cached layers by default. Package-update RUN
+steps can remain cached. Use `pinfold build --no-cache` or
+`pinfold build --profile NAME --no-cache` to run them again.
+
 Linux build egress has its own allowlist. Add exact hosts with
 `pinfold build --allow HOST` or `pinfold image build … --allow HOST`.
 Apple builds reject `--allow` additions.
