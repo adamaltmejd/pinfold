@@ -303,8 +303,8 @@ fn up_refuses_before_it_creates() {
 
     // A stale managed tag cannot supply an image for a recipe-less
     // profile. Sabotage: infer its managed ref despite the absent recipe;
-    // the already-built tag would start. An explicit image on the same
-    // profile and box name is the allowed control.
+    // the already-built tag would be selected for launch. An explicit image
+    // on the same profile and box name is the allowed control.
     let profile = format!("e2e-no-recipe-{}", std::process::id());
     let _profile_images = ImageCleanup {
         repository: format!("localhost/pinfold/profile-{profile}"),
