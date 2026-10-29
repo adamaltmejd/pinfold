@@ -40,6 +40,7 @@ pub static VMM: LazyLock<Harness> = LazyLock::new(|| {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Builder {
+    url: String,
     archive_sha256: String,
     archive_bytes: u64,
     root_sha256: String,
@@ -62,8 +63,7 @@ fn builder_dir() -> io::Result<PathBuf> {
         .join(&BUILDER.archive_sha256))
 }
 
-/// Install the pinned builder from its normal offline archive cache. A
-/// fresh cache remains unavailable until public distribution is approved.
+/// Install the pinned builder from its archive cache or public download.
 #[cfg(target_os = "linux")]
 pub fn builder(cancel: Option<&AtomicBool>) -> io::Result<PathBuf> {
     let version = builder_dir()?;
@@ -74,20 +74,34 @@ pub fn builder(cancel: Option<&AtomicBool>) -> io::Result<PathBuf> {
             "pinfold-builder-linux-x64-{}.tar.gz",
             BUILDER.archive_sha256
         ));
-        if !archive.is_file() {
-            return Err(io::Error::other(
-                "builder-unavailable: populate the verified offline archive cache; public distribution awaits approval",
-            ));
-        }
         let snapshot = staging.join(".archive");
-        builder_file(
-            &archive,
-            BUILDER.archive_bytes.min(DOWNLOAD_LIMIT),
-            &BUILDER.archive_sha256,
-            Some(&snapshot),
-            deadline,
-            cancel,
-        )?;
+        let limit = BUILDER.archive_bytes.min(DOWNLOAD_LIMIT);
+        if archive.is_file() {
+            builder_file(
+                &archive,
+                limit,
+                &BUILDER.archive_sha256,
+                Some(&snapshot),
+                deadline,
+                cancel,
+            )?;
+        } else {
+            super::download::file(
+                &BUILDER.url,
+                &snapshot,
+                super::pipe::remaining(deadline, cancel, "builder install")?,
+                limit,
+                cancel,
+            )?;
+            builder_file(
+                &snapshot,
+                limit,
+                &BUILDER.archive_sha256,
+                None,
+                deadline,
+                cancel,
+            )?;
+        }
         let root = staging.join("root.ext4");
         let output = fs::File::options()
             .write(true)
@@ -457,7 +471,7 @@ pub fn pins() -> io::Result<Vec<Pin>> {
                 .is_ok(),
             path,
             assets: vec![PinAsset {
-                url: None,
+                url: Some(&BUILDER.url),
                 sha256: &BUILDER.archive_sha256,
                 bytes: Some(BUILDER.archive_bytes),
             }],

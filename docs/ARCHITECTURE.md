@@ -921,19 +921,20 @@ manifest and SHA256SUMS cover build metadata and retained producer inputs.
 The workflow only builds. It requires Linux root, Python 3.11.4+ with
 `tarfile.data_filter`, debootstrap, GnuPG, curl 8.4+, e2fsprogs and GNU tar.
 The consumer needs no host Go installation.
-`crates/pinfold/builder.toml` embeds the reviewed
-archive, raw-root and recipe identities. The draft consumer has no public
-download URL: a cache miss fails with `builder-unavailable` until separate
-distribution approval. The documented offline archive cache is
-`~/.cache/pinfold/artifacts/builder/<archive-sha256>/`; the completed root
-installs atomically under its `linux-x64/`. Installation verifies a staged
-archive copy against its pinned size and SHA-256 before streaming only
-`root.ext4` into a fixed 0600 file. It retains the 512 MiB archive cap and
-five-minute deadline, with cancellation. The raw-root size and SHA-256 are
-verified before publication and on every use; a mismatch fails with
-`builder-integrity`. The sidecar manifest supplies no authority. `artifacts`
-and `doctor` report the builder pin, recipe SHA-256 and verified cache state;
-its asset has `sha256` and `bytes`, and no `url` until one is pinned.
+`crates/pinfold/builder.toml` embeds the public archive URL and reviewed
+archive, raw-root and recipe identities. An absent cache downloads the
+archive over HTTPS into private staging. The optional offline archive cache
+is `~/.cache/pinfold/artifacts/builder/<archive-sha256>/`; when present, its
+archive is copied into that staging area instead. The pinned archive bound
+is 122,578,909 bytes, below the shared 512 MiB transfer cap. Acquisition,
+verification and installation share one cancellable 300-second deadline.
+Installation verifies the staged archive's pinned size and SHA-256 before
+streaming only `root.ext4` into a fixed 0600 file and atomically publishing
+the complete `linux-x64/` install. The raw-root size and SHA-256 are verified
+before publication and on every use; a mismatch fails with
+`builder-integrity`. Embedded digests remain authority if public bytes
+change; the sidecar manifest supplies none. `artifacts` and `doctor` report
+the builder URL, archive pin/size, recipe SHA-256 and verified cache state.
 
 codex also pins a host helper, `codex-app-server`, per host `os-arch`
 (`darwin-arm64`, `linux-x64`), installed the same way into
@@ -1319,9 +1320,8 @@ pinfold init                     PID 1 in the box (Linux builds)
 entries named `vmm` and `builder`: `name`, `version`, `path` (the host directory mounted at
 `/opt/pinfold/<name>`; for `vmm`, its install directory), `cached`, and
 `assets`, a list of `{url, sha256}` for this host's `os-arch`. Nothing is
-downloaded. The builder reports pinned compressed bytes/size and recipe
-identity, without a URL while public distribution is unavailable. `doctor`
-reports the same list.
+downloaded. The builder asset includes `url`, `sha256` and `bytes`; its
+entry also reports the recipe identity. `doctor` reports the same list.
 
 `pinfold --version` (`-V`) and `pinfold --help` (`-h`) answer without
 touching the runtime or the state dir; `--help` or `-h` after a subcommand, before any `--`,

@@ -1,6 +1,10 @@
 # Builder bootstrap
 
-On Linux x64, install debootstrap, GnuPG, curl 8.4+, ca-certificates,
+Linux image builds automatically download the
+[digest-pinned public archive](https://github.com/adamaltmejd/pinfold/releases/download/builder-root-09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4/pinfold-builder-linux-x64-09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4.tar.gz)
+on a cache miss. A verified offline archive is also accepted.
+
+To produce a bootstrap on Linux x64, install debootstrap, GnuPG, curl 8.4+, ca-certificates,
 e2fsprogs, GNU tar and Python 3.11.4+ with `tarfile.data_filter`.
 Build into a new directory:
 
@@ -57,14 +61,12 @@ stable key for 13, from `https://ftp-master.debian.org/keys.html`:
 - `04B54C3CDCA79751B16BC6B5225629DF75B188BD`
 - `41587F7DB8C774BCCF131416762F67A0B2C39DE4`
 
-The workflow uploads build artifacts only. Public immutable distribution
-awaits separate approval. The draft CLI has no builder download URL and
-refuses a missing offline cache with `builder-unavailable`.
+The workflow uploads build artifacts only.
 
-`crates/pinfold/builder.toml` embeds the reviewed helper archive and raw
-root identities. A rebuild is not expected to reproduce those bytes.
-The normal offline cache accepts the exact preserved archive, independently
-of its sidecar manifest. With `archive` naming the preserved tar.gz:
+`crates/pinfold/builder.toml` embeds the public URL and reviewed archive,
+raw-root and recipe identities. A rebuild is not expected to reproduce
+those bytes. The optional offline cache accepts the same exact archive,
+independently of its sidecar manifest. With `archive` naming the tar.gz:
 
 ```sh
 digest=09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4
@@ -74,14 +76,15 @@ mkdir -p "$cache"
 install -m 600 "$archive" "$cache/pinfold-builder-linux-x64-$digest.tar.gz"
 ```
 
-The archive is retained in the integration evidence bundle recorded in
-`docs/archive/2026-10-28-builder-helper-integration.md`. Before extraction, the CLI
-copies at most 512 MiB into its own staging directory and checks the
-embedded size and SHA-256. It streams only `root.ext4` into a fixed 0600
-file, checks the embedded raw size and SHA-256, and publishes the complete
-`linux-x64/` install atomically. Verification and installation have a
-five-minute deadline and support cancellation. Every use verifies the raw
-root again. Damaged installed bytes are refused with `builder-integrity`;
-remove the `linux-x64/` install to reinstall from the retained archive.
-
-No tag, release or asset publication is implied by this cache contract.
+The CLI copies the offline archive into private staging when present;
+otherwise it downloads the pinned URL over HTTPS into that staging area.
+The archive copy or download is bounded to its pinned 122,578,909 bytes,
+below the shared 512 MiB transfer cap, and checked against its embedded
+size and SHA-256. The CLI streams only `root.ext4` into a fixed 0600 file,
+checks its embedded raw size and SHA-256, and publishes the complete
+`linux-x64/` install atomically. Acquisition, verification and installation
+share one 300-second deadline and support cancellation. Every use verifies
+the raw root again. Damaged installed bytes are refused with
+`builder-integrity`; remove the `linux-x64/` install to reinstall. Embedded
+digests remain authority if bytes at the public URL change. Completed
+images launch without this bootstrap.

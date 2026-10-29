@@ -18,8 +18,8 @@ commits back as branches.
 | macOS 26+ | Apple `container` 1.6.0+ (stable) |
 | Linux x64, kernel 6.10+ | `/dev/kvm` for the user (the `kvm` group), unprivileged user namespaces, Landlock and e2fsprogs; pinned Firecracker and isolated BuildKit image jobs |
 
-Linux builds require the [verified offline builder cache](builder-root/README.md).
-There is no public builder download.
+Linux image builds download the [pinned builder bootstrap](builder-root/README.md)
+when it is not cached. Verified offline archives are also supported.
 
 On Ubuntu 24.04+, AppArmor may restrict user namespaces. If `box up` is
 refused as `runtime` naming `userns-apparmor`, load pinfold's profile

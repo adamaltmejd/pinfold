@@ -1,5 +1,5 @@
-# Candidate helper bootstrap bytes, preserved in the integration evidence bundle.
-# Public distribution is awaiting approval. No download URL is pinned.
+# Published helper bootstrap bytes.
+url = "https://github.com/adamaltmejd/pinfold/releases/download/builder-root-09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4/pinfold-builder-linux-x64-09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4.tar.gz"
 archive_sha256 = "09393a02ccfa5c05cee4689e3792e2ec240677d9269a1cbbc4b247f697acffc4"
 archive_bytes = 122578909
 root_sha256 = "ef1aaa0fe1c6cafaa57bd4615ed6a077fe2cd27adc4a114792401bf6d1de1968"
