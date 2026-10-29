@@ -10,8 +10,9 @@ The owned disposable VM built the ordinary debug and release profiles:
 | release musl | 7,037,360 | `ea636094c4a03182737a5d9c066a583fd8cf498fefcd275d4381d3275b07f73e` |
 
 No production limit, cache policy or verification control changed for
-these observations. Every successful sample records matching executable
-hashes before and after its command.
+these observations. The phase, A/B and targeted platform receipts record
+matching before/after executable hashes. The derived-profile timing
+receipt records only its pre-invocation executable hash.
 
 ## Unchanged-suite result
 
