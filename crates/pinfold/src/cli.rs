@@ -39,6 +39,8 @@ pinfold apparmor-profile         the AppArmor profile for this executable (Linux
 pinfold update [--check]         check for a release, or download and install it
 pinfold config [ROOT]            effective configuration and project facts as JSON
 pinfold box …                    the process interface
+pinfold disk list                list managed disks as JSON lines
+pinfold disk rm NAME             remove an unattached disk; one JSON line
 pinfold --version                print the version
 pinfold --help                   print this usage";
 
@@ -52,9 +54,7 @@ pinfold box list --label KEY[=VALUE]…
 pinfold box prune
 pinfold box inspect RUN
 pinfold box events RUN [--limit N] [--after CURSOR]
-pinfold box fetch BOX --repo GUEST_REPO --into REPO
-pinfold disk list
-pinfold disk rm NAME";
+pinfold box fetch BOX --repo GUEST_REPO --into REPO";
 
 pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
     result.unwrap_or_else(|error| {
@@ -352,8 +352,6 @@ fn fetch(args: &[String]) -> io::Result<i32> {
     Ok(report_crossing("fetch", &name, &name, result))
 }
 
-/// Print a crossing's one JSON line and return its exit code, for `box
-/// fetch` and the top-level `push` and `fetch`.
 pub(crate) fn report_crossing(
     verb: &str,
     name: &str,
@@ -477,8 +475,6 @@ fn prune(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// `box inspect RUN`: one JSON object of the run's records; exit 3 for a
-/// run with none.
 fn inspect(args: &[String]) -> io::Result<i32> {
     let [run_id] = args else {
         return Err(usage("box", "inspect needs exactly one run id"));
@@ -532,7 +528,6 @@ fn parse_run_id(run_id: &str) -> io::Result<&str> {
     }
 }
 
-/// Print a query's object, or exit 3 for a run with no records.
 fn answer(verb: &str, run_id: &str, answer: Option<serde_json::Value>) -> io::Result<i32> {
     match answer {
         Some(answer) => {
@@ -794,7 +789,6 @@ fn parse_clean(args: &[String]) -> io::Result<(bool, Option<Duration>)> {
     Ok((dry_run, unused))
 }
 
-/// `AGE` is a whole number and one unit: `s`, `m`, `h` or `d`.
 fn parse_age(value: &str) -> io::Result<Duration> {
     let invalid = || {
         usage(

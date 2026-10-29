@@ -60,7 +60,6 @@ impl Config {
         }
     }
 
-    /// Load and merge the layers for the project rooted at `root`.
     pub fn load(root: &Path) -> io::Result<Config> {
         let (project, project_toml) = Layer::read(&root.join(".pinfold.toml"))?;
         let top = project.over(Layer::from_env()?);

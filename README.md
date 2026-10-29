@@ -21,8 +21,8 @@ commits back as branches.
 Linux builds require the [verified offline builder cache](builder-root/README.md).
 There is no public builder download.
 
-On Ubuntu 24.04+, AppArmor restricts user namespaces, and `box up` is
-refused as `runtime` naming `userns-apparmor`. Load pinfold's profile
+On Ubuntu 24.04+, AppArmor may restrict user namespaces. If `box up` is
+refused as `runtime` naming `userns-apparmor`, load pinfold's profile
 once, as root. It attaches to the path of the executable that prints it,
 so run these with the installed binary, and again after moving it:
 
@@ -110,17 +110,17 @@ Apple builds reject `--allow` additions.
 Rebuild old Podman-only Linux images explicitly with `build` or `image build`.
 Old Podman storage, derived roots and managed agent disks remain untouched.
 
-The project must be a git repository; a plain folder needs `git init`
-and a commit. Only committed branches enter the box, which keeps its
-own repository. Commit uncommitted work (a WIP commit on a branch will
+The project must be a git repository; run `git init` in a plain folder.
+Only committed branches enter the box, which keeps its own repository.
+Commit uncommitted work (a WIP commit on a branch will
 do) to give it to the box.
 `pinfold fetch` brings the box's commits back as `pinfold/*` branches for
 you to merge; `pinfold push` sends your branches in as `host/*`. Each
 `pi` start pushes too, and fast-forwards the box's branch when it is
 clean and strictly behind.
 
-Optional profiles add tools. `full` also allows `github.com` and `api.github.com`. To
-edit one, copy it with `pinfold profile new NAME --from full`:
+Optional profiles add tools. To edit one, copy it with
+`pinfold profile new NAME --from full`:
 
 | Profile | Adds |
 |---|---|
