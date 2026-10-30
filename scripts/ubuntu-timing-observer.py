@@ -19,12 +19,14 @@ EVENTS = ('fork', 'exec', 'exit')
 LOSS_FIELDS = ('overrun', 'commit overrun', 'dropped events')
 RAW_LIMIT = 7 * 1024 * 1024
 PUBLIC_LIMIT = 8 * 1024 * 1024
+TOTAL_BUFFER_KIB = 4096
 REFUSAL_STAGES = frozenset((
     'observer-check', 'observer-setup', 'control-user', 'control-name', 'control-instance',
     'tracefs-mounted', 'create-instance', 'create-stop', 'create-clock', 'create-buffer',
     'config', 'config-tracer', 'config-clock', 'config-stacks', 'config-events',
     'config-filters', 'config-triggers', 'config-fork', 'config-exec', 'config-exit',
     'config-pids', 'config-buffer', 'runner-user', 'runner-temp', 'runner-private',
+    'buffer-cpus', 'buffer-unit', 'buffer-share', 'buffer-readback',
 ))
 EXECUTABLES = frozenset((
     'pinfold', 'firecracker', 'mkfs.ext4', 'mke2fs', 'cargo', 'rustc',
@@ -74,6 +76,83 @@ def private_file(path):
     return os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb')
 
 
+def bounded_integer(text, stage):
+    text = text.strip()
+    require(re.fullmatch(r'[0-9]{1,10}', text) is not None, stage)
+    value = int(text)
+    require(value <= 2_147_483_647, stage)
+    return value
+
+
+def cpu_ids(value):
+    require(type(value) is list and 0 < len(value) <= TOTAL_BUFFER_KIB, 'buffer-cpus')
+    require(all(type(cpu) is int and 0 <= cpu <= 2_147_483_647 for cpu in value), 'buffer-cpus')
+    require(len(set(value)) == len(value), 'buffer-cpus')
+    return tuple(sorted(value))
+
+
+def buffer_cpus(instance):
+    cpus = []
+    try:
+        for path in (instance / 'per_cpu').iterdir():
+            if re.fullmatch(r'cpu[0-9]+', path.name):
+                cpu = bounded_integer(path.name[3:], 'buffer-cpus')
+                require(path.is_dir() and path.name == f'cpu{cpu}', 'buffer-cpus')
+                cpus.append(cpu)
+                require(len(cpus) <= TOTAL_BUFFER_KIB, 'buffer-cpus')
+    except OSError as error:
+        raise Refusal('buffer-cpus', error.errno) from None
+    return cpu_ids(cpus)
+
+
+def buffer_unit(instance):
+    page_bytes = os.sysconf('SC_PAGE_SIZE')
+    require(type(page_bytes) is int and 1024 <= page_bytes <= TOTAL_BUFFER_KIB * 1024, 'buffer-unit')
+    require(page_bytes % 1024 == 0 and page_bytes & (page_bytes - 1) == 0, 'buffer-unit')
+    unit = bounded_integer(checked_read(instance / 'buffer_subbuf_size_kb', 'buffer-unit'), 'buffer-unit')
+    require(0 < unit <= TOTAL_BUFFER_KIB and unit & (unit - 1) == 0, 'buffer-unit')
+    require(unit % (page_bytes // 1024) == 0, 'buffer-unit')
+    return unit
+
+
+def buffer_readback(instance, expected_cpus, expected_unit=None, diagnostics=None):
+    require(checked_read(instance / 'tracing_on', 'buffer-readback').strip() == '0', 'buffer-readback')
+    cpus = buffer_cpus(instance)
+    require(cpus == expected_cpus, 'buffer-cpus')
+    unit = buffer_unit(instance)
+    require(expected_unit is None or unit == expected_unit, 'buffer-unit')
+    total = bounded_integer(checked_read(instance / 'buffer_total_size_kb', 'config-buffer'), 'config-buffer')
+    result = {'cpu_count': len(cpus), 'reported_total_kib': total}
+    if diagnostics is not None:
+        diagnostics.update(result)
+    require(0 < total <= TOTAL_BUFFER_KIB, 'config-buffer')
+    for cpu in cpus:
+        size = bounded_integer(checked_read(
+            instance / 'per_cpu' / f'cpu{cpu}/buffer_size_kb', 'buffer-readback'
+        ), 'buffer-readback')
+        require(0 < size <= TOTAL_BUFFER_KIB // len(cpus), 'buffer-readback')
+    require(buffer_cpus(instance) == cpus, 'buffer-cpus')
+    require(buffer_unit(instance) == unit, 'buffer-unit')
+    return result
+
+
+def allocate_buffer(instance, diagnostics):
+    require(checked_read(instance / 'tracing_on', 'buffer-readback').strip() == '0', 'buffer-readback')
+    cpus = buffer_cpus(instance)
+    diagnostics['cpu_count'] = len(cpus)
+    unit = buffer_unit(instance)
+    # One native subbuffer per CPU is left for kernel rounding. Reported
+    # total/per-CPU sizes, rather than this request, remain authoritative.
+    requested = (TOTAL_BUFFER_KIB // len(cpus) // unit - 1) * unit
+    require(requested > 0, 'buffer-share')
+    diagnostics['requested_per_cpu_kib'] = requested
+    require(buffer_cpus(instance) == cpus, 'buffer-cpus')
+    require(buffer_unit(instance) == unit, 'buffer-unit')
+    (instance / 'buffer_size_kb').write_text(str(requested))
+    buffer_readback(instance, cpus, unit, diagnostics)
+    return cpus
+
+
 def stats(instance):
     result = {}
     for path in sorted((instance / 'per_cpu').glob('cpu[0-9]*/stats')):
@@ -86,7 +165,7 @@ def stats(instance):
     return result
 
 
-def configuration(instance, enabled):
+def configuration(instance, enabled, expected_cpus):
     require(checked_read(instance / 'current_tracer', 'config-tracer').strip() == 'nop', 'config-tracer')
     require('[mono]' in checked_read(instance / 'trace_clock', 'config-clock').split(), 'config-clock')
     options = set(checked_read(instance / 'trace_options', 'config-stacks').split())
@@ -146,10 +225,9 @@ def configuration(instance, enabled):
         }
     require(checked_read(instance / 'set_event_pid', 'config-pids').strip() == '', 'config-pids')
     require(checked_read(instance / 'set_event_notrace_pid', 'config-pids').strip() == '', 'config-pids')
-    total_kib = int(checked_read(instance / 'buffer_total_size_kb', 'config-buffer'))
-    require(0 < total_kib <= 4096, 'config-buffer')
+    sizing = buffer_readback(instance, expected_cpus)
     return {'nop': True, 'mono': True, 'only_three_events': True,
-            'no_stacks_triggers_filters': True, 'buffer_total_kib': total_kib,
+            'no_stacks_triggers_filters': True, **sizing,
             'formats': schemas}
 
 
@@ -168,12 +246,13 @@ def remove(instance):
     return result
 
 
-def control(operation, name):
+def control(operation, name, expected_cpus):
     require(os.geteuid() == 0, 'control-user')
     require(re.fullmatch(r'pinfold-timing-\d+-[a-f0-9]{12}', name) is not None, 'control-name')
     instance = TRACEFS / 'instances' / name
     if operation == 'create':
         created = False
+        sizing = {}
         stage = 'tracefs-mounted'
         try:
             mounted = any(
@@ -190,22 +269,28 @@ def control(operation, name):
             stage = 'create-clock'
             (instance / 'trace_clock').write_text('mono')
             stage = 'create-buffer'
-            (instance / 'buffer_size_kb').write_text('1024')
+            cpus = allocate_buffer(instance, sizing)
             stage = 'config'
-            return {'ok': True, 'created': True, 'configuration': configuration(instance, False)}
+            return {'ok': True, 'created': True, 'buffer': sizing, '_cpu_ids': cpus,
+                    'configuration': configuration(instance, False, cpus)}
         except BaseException as error:
             result = {'ok': False, 'created': created, **refusal(error, stage)}
+            if sizing:
+                result['buffer'] = sizing
             if created:
                 result['cleanup'] = remove(instance)
             return result
     require(instance.is_dir(), 'control-instance')
     if operation == 'start':
+        require(expected_cpus is not None, 'buffer-cpus')
         require((instance / 'tracing_on').read_text().strip() == '0')
         (instance / 'trace').write_text('')
         for event in EVENTS:
             (instance / 'events/sched' / f'sched_process_{event}/enable').write_text('1')
-        checked = configuration(instance, True)
+        checked = configuration(instance, True, expected_cpus)
         before = stats(instance)
+        require(set(before) == set(expected_cpus), 'buffer-cpus')
+        require(buffer_cpus(instance) == expected_cpus, 'buffer-cpus')
         (instance / 'tracing_on').write_text('1')
         require((instance / 'tracing_on').read_text().strip() == '1')
         return {'ok': True, 'configuration': checked, 'stats': before}
@@ -395,6 +480,7 @@ def main():
                'suite_exit': None, 'capture_complete': False, 'attribution_complete': False,
                'hard_kill_has_no_cleanup_receipt': True, 'cleanup': {}}
     created = False
+    frozen_cpus = None
     child = cancelled = None
     timeline = directory / 'sanitized.jsonl'
     names = test_names()
@@ -402,7 +488,7 @@ def main():
     def call(operation, output=None):
         completed = subprocess.run(
             ['sudo', '-n', sys.executable, str(Path(__file__).resolve()), '--control', operation, name],
-            stdin=subprocess.DEVNULL,
+            input=json.dumps(frozen_cpus).encode(),
             stdout=output if output is not None else subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
@@ -434,11 +520,14 @@ def main():
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, cancelled_by)
     try:
-        receipt['preflight'] = call('create')
+        setup = call('create')
+        private_cpus = setup.pop('_cpu_ids', None)
+        receipt['preflight'] = setup
         created = receipt['preflight'].get('created', False) and not receipt['preflight'].get(
             'cleanup', {}
         ).get('removed', False)
         require(receipt['preflight']['ok'] and not cancelled)
+        frozen_cpus = cpu_ids(private_cpus)
         empty, overflow = read_trace('empty')
         require(not overflow)
         header = header_lines(empty)
@@ -561,7 +650,14 @@ if __name__ == '__main__':
 
             signal.signal(signal.SIGINT, interrupted)
             signal.signal(signal.SIGTERM, interrupted)
-            result = control(sys.argv[2], sys.argv[3])
+            request = sys.stdin.buffer.read(65537)
+            require(len(request) <= 65536, 'buffer-cpus')
+            try:
+                expected_cpus = json.loads(request)
+            except (ValueError, UnicodeError):
+                raise Refusal('buffer-cpus') from None
+            expected_cpus = cpu_ids(expected_cpus) if expected_cpus is not None else None
+            result = control(sys.argv[2], sys.argv[3], expected_cpus)
             if control_cancelled:
                 if result is None:
                     raise SystemExit(1)
