@@ -37,7 +37,7 @@ pub fn pinfold() -> &'static Path {
         }
         if cfg!(target_os = "linux") {
             let triple = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
-            command.args(["--target", &triple]);
+            command.args(["--release", "--target", &triple]);
         }
         let output = command
             .stderr(Stdio::inherit())
