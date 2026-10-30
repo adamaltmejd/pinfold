@@ -250,6 +250,7 @@ version = "0.3.3"
 dependencies = [
  "httparse",
  "nix",
+ "ring",
  "rustls",
  "rustls-native-certs",
  "serde",
@@ -264,6 +265,9 @@ name = "pinfold-init"
 version = "0.3.3"
 dependencies = [
  "nix",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

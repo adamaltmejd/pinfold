@@ -1,9 +1,9 @@
 //! Firecracker on Linux: one VM per box, its VMM in the jail `box up`
-//! builds. Rootless podman builds the images and holds them.
+//! builds. Completed image roots come from the isolated image service.
 
 pub mod jail;
 pub mod preflight;
-mod vm;
+pub(crate) mod vm;
 mod vsock;
 
 use std::fs;
@@ -19,7 +19,6 @@ pub use vm::{Prepared, Vm, prepare};
 
 use crate::core::artifacts::VMM;
 use crate::core::disk::{Fill, Seeding};
-use crate::core::image::podman;
 use crate::core::ownership;
 use crate::core::plan::Plan;
 use crate::core::runtime::{BoxInfo, BoxStat, DiskInfo, MemoryStat, PidsStat, Runtime, output};
@@ -51,7 +50,7 @@ impl Runtime for Firecracker {
         if !missing.is_empty() {
             return Err(io::Error::other(missing.join("; ")));
         }
-        podman::preflight()
+        Ok(())
     }
 
     fn proxy_socket(&self, state_dir: &Path) -> io::Result<PathBuf> {

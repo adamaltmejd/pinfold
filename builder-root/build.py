@@ -270,7 +270,7 @@ def build(out, work):
     disk = stage / "root.ext4"
     # This is the trial's tested bootstrap size, not a build/cache/output limit.
     with disk.open("wb") as target:
-        target.truncate(1024 * 1024 * 1024)
+        target.truncate(512 * 1024 * 1024)
     run("/usr/sbin/mkfs.ext4", "-q", "-F", "-d", root, disk)
     root_info = {"bytes": disk.stat().st_size, "sha256": digest(disk)}
     asset = stage / "bootstrap.tar.gz"

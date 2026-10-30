@@ -24,6 +24,9 @@ use std::time::{Duration, Instant};
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::signal::{SigHandler, SigSet, Signal};
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[path = "init/builder.rs"]
+mod builder;
 #[cfg(target_os = "linux")]
 #[path = "init/firecracker.rs"]
 pub(crate) mod firecracker;
@@ -43,6 +46,8 @@ pub fn run(args: &[String]) -> ! {
         Some("receive") => exit_with("receive", receive(&args[1..])),
         #[cfg(target_os = "linux")]
         Some("boot") => firecracker::boot(),
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        Some("builder") => builder::boot(),
         _ => {}
     }
 

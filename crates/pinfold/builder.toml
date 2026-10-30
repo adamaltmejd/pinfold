@@ -1,0 +1,6 @@
+url = "https://github.com/adamaltmejd/pinfold/releases/download/builder-root-1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd/pinfold-builder-linux-x64-1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd.tar.gz"
+archive_sha256 = "1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd"
+archive_bytes = 122074383
+root_sha256 = "1ba38d2c1835623c36479387f60101529848ee8575fe1f5caef164e3a48d89a2"
+root_bytes = 536870912
+recipe_sha256 = "edac709b3e4c4dcac3d4edeb80272fc2f052fe19d1370e245e61f1d4a79daa07"

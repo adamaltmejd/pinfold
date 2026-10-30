@@ -39,9 +39,9 @@ fn each_runs_history_is_its_own() {
     // `inspect` wins the race: the owner waits on nothing after the ack, so
     // no outside observer can hold it there. Sabotage: drop `detail` from
     // the terminal record; the 137 assertion fails. Sabotage: list the
-    // runtime's images in `inspect`; with no `podman` or `container` on
-    // PATH it exits 1. (Listing boxes runs no program on Linux, so it would
-    // pass there.) Sabotage: resume after the cursor's line rather than at
+    // Apple runtime's images in `inspect`; with no `container` on PATH it
+    // exits 1. Linux catalog reads need no helper. Sabotage: resume after
+    // the cursor's line rather than at
     // it; each page boundary skips a line and the order assertion fails.
     // Sabotage: drop the run from the cursor; another run's cursor
     // exits 0. Sabotage: report a no-egress run's log `unavailable`; the

@@ -2,14 +2,15 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::io::{self, Read, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use ring::digest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -36,6 +37,176 @@ pub static HARNESSES: LazyLock<Vec<Harness>> = LazyLock::new(|| {
 pub static VMM: LazyLock<Harness> = LazyLock::new(|| {
     toml::from_str(include_str!("../../vmm.toml")).expect("the embedded vmm.toml parses")
 });
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Builder {
+    url: String,
+    archive_sha256: String,
+    archive_bytes: u64,
+    root_sha256: String,
+    root_bytes: u64,
+    recipe_sha256: String,
+}
+
+static BUILDER: LazyLock<Builder> = LazyLock::new(|| {
+    toml::from_str(include_str!("../../builder.toml")).expect("the embedded builder.toml parses")
+});
+
+#[cfg(target_os = "linux")]
+pub fn builder_identity() -> &'static str {
+    &BUILDER.archive_sha256
+}
+
+fn builder_dir() -> io::Result<PathBuf> {
+    Ok(dirs::artifacts_dir()?
+        .join("builder")
+        .join(&BUILDER.archive_sha256))
+}
+
+/// Install the pinned builder from its archive cache or public download.
+#[cfg(target_os = "linux")]
+pub fn builder(cancel: Option<&AtomicBool>) -> io::Result<PathBuf> {
+    let version = builder_dir()?;
+    let installed = version.join("linux-x64");
+    let deadline = Instant::now() + DOWNLOAD_TIMEOUT;
+    dirs::install_dir(&installed, |staging| {
+        let archive = version.join(format!(
+            "pinfold-builder-linux-x64-{}.tar.gz",
+            BUILDER.archive_sha256
+        ));
+        let snapshot = staging.join(".archive");
+        let limit = BUILDER.archive_bytes.min(DOWNLOAD_LIMIT);
+        if archive.is_file() {
+            builder_file(
+                &archive,
+                limit,
+                &BUILDER.archive_sha256,
+                Some(&snapshot),
+                deadline,
+                cancel,
+            )?;
+        } else {
+            super::download::file(
+                &BUILDER.url,
+                &snapshot,
+                super::pipe::remaining(deadline, cancel, "builder install")?,
+                limit,
+                cancel,
+            )?;
+            builder_file(
+                &snapshot,
+                limit,
+                &BUILDER.archive_sha256,
+                None,
+                deadline,
+                cancel,
+            )?;
+        }
+        let root = staging.join("root.ext4");
+        let output = fs::File::options()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&root)?;
+        // Bootstrap bytes are publisher-pinned. Only their named root is
+        // streamed to our fixed path; archive ownership and paths are not applied.
+        let mut child = Command::new("tar")
+            .arg("-xOzf")
+            .arg(&snapshot)
+            .arg("root.ext4")
+            .stdin(std::process::Stdio::null())
+            .stdout(output)
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        let unpacked = (|| {
+            loop {
+                super::pipe::remaining(deadline, cancel, "builder install")?;
+                if let Some(status) = child.try_wait()? {
+                    return if status.success() {
+                        Ok(())
+                    } else {
+                        Err(io::Error::other("builder archive extraction failed"))
+                    };
+                }
+                super::pipe::wait_ready(
+                    None,
+                    nix::poll::PollFlags::empty(),
+                    deadline,
+                    cancel,
+                    "builder install",
+                )?;
+            }
+        })();
+        if unpacked.is_err() {
+            let _ = child.kill();
+        }
+        let _ = child.wait();
+        unpacked?;
+        builder_root(&root, deadline, cancel)?;
+        fs::remove_file(snapshot)
+    })?;
+    let root = installed.join("root.ext4");
+    builder_root(&root, deadline, cancel)?;
+    Ok(root)
+}
+
+fn builder_root(path: &Path, deadline: Instant, cancel: Option<&AtomicBool>) -> io::Result<()> {
+    builder_file(
+        path,
+        BUILDER.root_bytes,
+        &BUILDER.root_sha256,
+        None,
+        deadline,
+        cancel,
+    )
+}
+
+fn builder_file(
+    path: &Path,
+    bytes: u64,
+    expected: &str,
+    copy: Option<&Path>,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+) -> io::Result<()> {
+    let mut input = fs::File::open(path)?;
+    let metadata = input.metadata()?;
+    if !metadata.is_file() || metadata.len() != bytes {
+        return Err(io::Error::other("builder-integrity: size mismatch"));
+    }
+    let mut output = copy
+        .map(|path| {
+            fs::File::options()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(path)
+        })
+        .transpose()?;
+    let mut hash = digest::Context::new(&digest::SHA256);
+    let mut total = 0;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        super::pipe::remaining(deadline, cancel, "builder verification")?;
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        total += read as u64;
+        if total > bytes {
+            return Err(io::Error::other("builder-integrity: size mismatch"));
+        }
+        hash.update(&buffer[..read]);
+        if let Some(output) = &mut output {
+            output.write_all(&buffer[..read])?;
+        }
+    }
+    if total != bytes || super::hex(hash.finish().as_ref()) != expected {
+        return Err(io::Error::other("builder-integrity: checksum mismatch"));
+    }
+    Ok(())
+}
 
 /// One pinned harness, a row of `harnesses.toml`, or the VMM.
 #[derive(Deserialize)]
@@ -246,7 +417,18 @@ pub struct Pin {
     /// Whether the cache holds this host's assets.
     pub cached: bool,
     /// This host's assets.
-    assets: Vec<&'static Asset>,
+    assets: Vec<PinAsset>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recipe_sha256: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+struct PinAsset {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<&'static str>,
+    sha256: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bytes: Option<u64>,
 }
 
 /// Every pinned harness, then on Linux x64 the VMM, and whether the cache holds
@@ -259,7 +441,16 @@ pub fn pins() -> io::Result<Vec<Pin>> {
             version: &harness.version,
             path: path(dir.clone(), &harness.name),
             cached: dirs::installed(&dir)?,
-            assets: harness.assets(OS_ARCH),
+            assets: harness
+                .assets(OS_ARCH)
+                .into_iter()
+                .map(|asset| PinAsset {
+                    url: Some(&asset.url),
+                    sha256: &asset.sha256,
+                    bytes: None,
+                })
+                .collect(),
+            recipe_sha256: None,
         })
     };
     let mut pins = HARNESSES
@@ -268,6 +459,25 @@ pub fn pins() -> io::Result<Vec<Pin>> {
         .collect::<io::Result<Vec<_>>>()?;
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         pins.push(pin(&VMM, |dir, _| dir)?);
+        let path = builder_dir()?.join("linux-x64");
+        pins.push(Pin {
+            name: "builder",
+            version: &BUILDER.archive_sha256,
+            cached: dirs::installed(&path)?
+                && builder_root(
+                    &path.join("root.ext4"),
+                    Instant::now() + DOWNLOAD_TIMEOUT,
+                    None,
+                )
+                .is_ok(),
+            path,
+            assets: vec![PinAsset {
+                url: Some(&BUILDER.url),
+                sha256: &BUILDER.archive_sha256,
+                bytes: Some(BUILDER.archive_bytes),
+            }],
+            recipe_sha256: Some(&BUILDER.recipe_sha256),
+        });
     }
     Ok(pins)
 }
@@ -286,7 +496,9 @@ pub fn unpinned_versions() -> io::Result<Vec<PathBuf>> {
                 name.file_name() == harness.name.as_str()
                     && version.file_name() == harness.version.as_str()
             });
-            if !pinned {
+            let builder = name.file_name() == "builder"
+                && version.file_name() == BUILDER.archive_sha256.as_str();
+            if !pinned && !builder {
                 unpinned.push(version.path());
             }
         }

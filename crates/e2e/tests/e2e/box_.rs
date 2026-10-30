@@ -1,7 +1,7 @@
 //! End-to-end tests for the guarantees in docs/ARCHITECTURE.md.
 //!
 //! They run on a macOS host with the Apple `container` CLI, or a Linux host
-//! with Firecracker and rootless podman for images. The harness builds the `pinfold` binary, builds the
+//! with Firecracker and its isolated BuildKit jobs. The harness builds the `pinfold` binary, builds the
 //! default profile image once, and drives pinfold as a user would: the CLI,
 //! environment variables and the box spec are its only seams.
 
@@ -16,8 +16,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use e2e::{
     HttpFixture, ImageCleanup, TestEnv, assert_denied, assert_ok, box_exec, box_list, box_stat,
-    build_profile, curl, default_image, egress_log, exit_code, git, image_id, json_lines, pinfold,
-    profile_containerfile, run_ok, runtime_images, tagged_images, test_dir,
+    curl, default_image, egress_log, exit_code, git, image_id, json_lines, pinfold, run_ok,
+    runtime_images, test_dir,
 };
 
 #[test]
@@ -300,15 +300,11 @@ fn up_refuses_before_it_creates() {
 
     // A stale managed tag cannot supply an image for a recipe-less
     // profile. Sabotage: infer its managed ref despite the absent recipe;
-    // the already-built tag would start. An explicit image on the same
-    // profile and box name is the allowed control.
-    let profile = format!("e2e-no-recipe-{}", std::process::id());
-    let _profile_images = ImageCleanup {
-        repository: format!("localhost/pinfold/profile-{profile}"),
-    };
-    let recipe = profile_containerfile(&env, &profile, &format!("FROM {}\n", default_image(&env)));
-    build_profile(&env, &profile);
-    fs::remove_file(recipe).unwrap();
+    // the already-built tag would be selected for launch. An explicit image
+    // on the same profile and box name is the allowed control.
+    let profile = "default";
+    let profile_image = default_image(&env);
+    fs::create_dir_all(env.config.join("pinfold/profiles").join(profile)).unwrap();
     let mut profile_spec = serde_json::json!({
         "name": name,
         "profile": profile,
@@ -324,7 +320,7 @@ fn up_refuses_before_it_creates() {
         "{refused}"
     );
     assert_left_nothing(&env, &name, label, "refused");
-    profile_spec["image"] = serde_json::json!(default_image(&env));
+    profile_spec["image"] = serde_json::json!(profile_image);
     let mut allowed = box_up(&env, &profile_spec, &name);
     assert_ok(&box_exec(&env, &name, &["true"]), "explicit profile image");
     allowed.down(&env);
@@ -1458,51 +1454,74 @@ fn only_allowlisted_hosts_get_through() {
 
 #[test]
 fn a_caller_builds_an_image_from_its_own_tree() {
+    #[cfg(target_os = "linux")]
+    let _runtime = crate::exclusive_runtime();
+    #[cfg(not(target_os = "linux"))]
     let _runtime = crate::shared_runtime();
-    // Guarantee 23: a caller builds an image from its own tree.
-    //
-    // Sabotage: tag the build but skip the `--context` argument, so the
-    // runtime gets no context holding marker.txt; the COPY fails and the
-    // first `built` assertion fails. Sabotage: set the caller image window
-    // to zero; the third build removes the first build's ref, so the ref's
-    // `up` is refused `image-missing`. Sabotage: make the new build's `id`
-    // in `image::build` a fixed string; the three builds then share one
-    // ref, which names the third build, and the box reads `third`.
-    // Sabotage: in `image::build`, resolve the reported id from `latest`
-    // before the build; the first build's id is absent and each later
-    // build's is stale, so the `built["id"]` assertion fails. Sabotage: write a unique
-    // build label into every image again, as `dev.pinfold.build` was; the
-    // repeated build makes a new image and the one-id assertion fails.
-    // Sabotage: build profiles with `cache` true, or drop `--no-cache` from
-    // Apple's build argv or `--layers=false` from podman's; the second
-    // profile build serves `/stamp` from the first build's layer, the two
-    // values match, and podman's untagged-image assertion fails.
+    // Guarantee 23. Sabotage: omit the context, reuse a build ref, move the
+    // first ref with latest, or report a stale image id; the runtime lookup
+    // or the fixture bytes read from A's ref and B's latest differ.
+    // Drop image labels from Linux's inventory; ready loses the fixture label.
+    // Return the post-rename directory-sync error as failure; A fails after
+    // its real kernel EIO. Expected bytes and labels are caller fixtures.
     let env = TestEnv::new("image-build");
-    let other = cfg!(target_os = "macos").then(|| TestEnv::new("image-colors"));
     let base = default_image(&env);
-
     let name = format!("pinfold-e2e-{}", std::process::id());
     let repository = format!("localhost/pinfold/image-{name}");
     let latest = format!("{repository}:latest");
     let _images = ImageCleanup {
         repository: repository.clone(),
     };
-    // The Containerfile lies outside the context, as a caller's may.
+    // The recipe lies outside the caller's context.
     let context = env.root.join("image-context");
     fs::create_dir_all(&context).unwrap();
     let containerfile = env.root.join("Containerfile");
     fs::write(
         &containerfile,
-        format!(
-            "FROM {base}\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\nCOPY marker.txt /marker.txt\n"
-        ),
+        format!("FROM {base}\nCOPY marker.txt /marker.txt\n"),
     )
     .unwrap();
 
+    #[cfg(target_os = "linux")]
+    let (supervisor, receipt) = {
+        let fault = test_dir(&env, "fsync-eio");
+        fs::set_permissions(&fault, fs::Permissions::from_mode(0o700)).unwrap();
+        let supervisor = fault.join("supervise");
+        run_ok(
+            Command::new("cc")
+                .args(["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror"])
+                .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/e2e/fsync_eio.c"))
+                .arg("-o")
+                .arg(&supervisor),
+        );
+        (supervisor, fault.join("receipt.json"))
+    };
     let mut refs: Vec<String> = Vec::new();
-    for marker in ["first", "second", "third"] {
+    for marker in ["first", "second"] {
         fs::write(context.join("marker.txt"), format!("{marker}\n")).unwrap();
-        let (code, built) = image_build(&env, &name, &containerfile, &context);
+        let mut command = image_build_command(&env, &name, &containerfile, &context);
+        #[cfg(target_os = "linux")]
+        if marker == "first" {
+            let cli = command;
+            command = env.command(&supervisor);
+            command
+                .arg(env.cache.join("pinfold/images"))
+                .arg(&receipt)
+                .arg("--")
+                .arg(cli.get_program())
+                .args(cli.get_args());
+        }
+        let (code, built) = one_json_line(&mut command);
+        #[cfg(target_os = "linux")]
+        if marker == "first" {
+            let injected: serde_json::Value =
+                serde_json::from_slice(&fs::read(&receipt).expect("read kernel fault receipt"))
+                    .expect("parse kernel fault receipt");
+            eprintln!("post-commit sync fault: {injected}");
+            assert_eq!(injected["supervisor_errno"], 0, "{injected}");
+            assert_eq!(injected["injections"], 1, "{injected}");
+            assert_eq!(injected["injected_errno"], nix::libc::EIO, "{injected}");
+        }
         assert_eq!(built["event"], "built", "the {marker} build: {built}");
         assert_eq!(code, 0, "the {marker} build exited {code}");
         let reference = built["ref"]
@@ -1510,9 +1529,6 @@ fn a_caller_builds_an_image_from_its_own_tree() {
             .unwrap_or_else(|| panic!("built carries no ref: {built}"))
             .to_string();
         assert_eq!(built["labels"]["dev.example.test"], "image");
-        // The runtime must hold the ref, or a missing ref, latest and a null
-        // id compare equal. Sabotage: drop the build's tag arguments; neither
-        // ref resolves and this assertion fails.
         let id =
             image_id(&reference).unwrap_or_else(|| panic!("the runtime has no image {reference}"));
         assert_eq!(
@@ -1527,41 +1543,63 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         );
         refs.push(reference);
     }
+    assert_ne!(
+        refs[0], refs[1],
+        "changed inputs reused the first build's ref"
+    );
 
-    let names_ids = || tagged_images(&repository);
-    let kept = names_ids();
-    // A caller's `built` ref is a handle for later, so later builds of the
-    // name neither reclaim nor move it: a box started from the first
-    // build's ref reads the file that build COPYed.
-    // On Linux the box's labels hold the image's too, the build's
-    // `dev.example.test` among them, which the spec does not set.
-    // Sabotage: record only the plan's labels in the Linux inventory; the
-    // label is missing from `ready`.
-    let first = box_name("image");
-    let up = box_up(
-        &env,
-        &serde_json::json!({ "name": first, "image": refs[0] }),
-        &first,
-    );
-    #[cfg(target_os = "linux")]
-    assert_eq!(
-        up.ready()["labels"]["dev.example.test"],
-        "image",
-        "the box lacks its image's label: {}",
-        up.ready()
-    );
-    let read = box_exec(&env, &first, &["cat", "/marker.txt"]);
-    assert_ok(&read, "reading the first build's marker");
-    assert_eq!(
-        read.stdout, "first\n",
-        "the first build's ref names another build"
-    );
-    up.down(&env);
+    // A's immutable handle still reads A after B moves latest. Launching
+    // latest separately proves the changed context reached B.
+    for (reference, marker) in [(&refs[0], "first"), (&latest, "second")] {
+        let name = box_name(&format!("image-{marker}"));
+        let up = box_up(
+            &env,
+            &serde_json::json!({ "name": name, "image": reference }),
+            &name,
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            up.ready()["labels"]["dev.example.test"],
+            "image",
+            "the box lacks its image's label: {}",
+            up.ready()
+        );
+        let read = box_exec(&env, &name, &["cat", "/marker.txt"]);
+        assert_ok(&read, "reading the build's marker");
+        assert_eq!(
+            read.stdout,
+            format!("{marker}\n"),
+            "the build ref names another context"
+        );
+        up.down(&env);
+    }
 
-    // A failed build carries a bounded tail and makes no image. Sabotage:
-    // collect the full build output or cap only its line count; the giant
-    // unterminated line exceeds 64 KiB. Keeping only the beginning loses
-    // the final marker, whose value comes from the caller's context file.
+    // Compare every caller ref, not only distinct image ids. Sabotage:
+    // publish a unique ref or move latest before a failing runtime returns;
+    // the namespace differs even if it still names the same two ids.
+    let caller_prefix = format!("{repository}:");
+    let caller_refs = || {
+        runtime_images()
+            .expect("list the runtime's images")
+            .into_iter()
+            .flat_map(|image| {
+                let id = image.id;
+                image.names.into_iter().map(move |name| (name, id.clone()))
+            })
+            .filter(|(name, _)| name.starts_with(&caller_prefix))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let before_failure = caller_refs();
+    assert!(
+        refs.iter()
+            .chain(std::iter::once(&latest))
+            .all(|reference| before_failure.contains_key(reference)),
+        "the caller's refs are absent before failure: {before_failure:?}"
+    );
+
+    // Sabotage: retain the full output or bound only its line count; the
+    // unterminated diagnostic exceeds the spec's 64 KiB. Keep only its
+    // beginning; the final marker from the caller's file disappears.
     let failing = env.root.join("Containerfile.fail");
     let final_marker = "pinfold-final-build-diagnostic";
     fs::write(context.join("diagnostic-marker.txt"), final_marker).unwrap();
@@ -1589,226 +1627,367 @@ fn a_caller_builds_an_image_from_its_own_tree() {
         "failed build lost its tail: {failed}"
     );
     assert_eq!(
-        names_ids(),
-        kept,
-        "the failed build changed the name's images"
+        caller_refs(),
+        before_failure,
+        "the failed build changed the caller's refs"
     );
+}
 
-    // Two builds of unchanged inputs share one image. A build identical to
-    // the second, after the changed third, gets its own ref but the
-    // second's id, and latest moves back to that image.
-    fs::write(context.join("marker.txt"), "second\n").unwrap();
-    let (code, again) = image_build(&env, &name, &containerfile, &context);
-    assert_eq!(again["event"], "built", "the repeated build: {again}");
-    assert_eq!(code, 0, "the repeated build exited {code}");
-    let again_ref = again["ref"]
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_build_steps_stay_inside_the_builder_role() {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
+
+    let _runtime = crate::shared_runtime();
+    // Guarantee 44. Sabotage: run the recipe on the host again; its uid,
+    // capabilities, user-namespace knob or interfaces differ from the role.
+    // Drop no_new_privs or restore user namespaces; the kernel observations
+    // below differ. Give the VM a NIC; its interface list is no longer lo.
+    // Reuse the agent allowlist or omit explicit build additions; the allowed
+    // API request fails. Bypass the proxy policy/audit; the denied request's
+    // 403 or its exact refusal reason disappears. The same RUN's successful
+    // API request is the allowed control. Resolve a root by bootstrapping a
+    // builder at launch; the launch fails when a file blocks the artifact
+    // directory, including a fresh installation from the public download.
+    // Expected values come from the approved role, the guest kernel and the
+    // HTTP endpoint/status; expected file bytes are this caller's fixture.
+    // Sabotage: remove JobReader::error's cancellation mapping; read_exact
+    // retries semantic Interrupted forever and the bounded failed-line read
+    // times out. Skip VMM teardown or publish the interrupted output; the
+    // pidfd or unchanged-reference assertion fails. The following normal
+    // build is the same-cache recovery control.
+    // Sabotage: skip pruning exec.cachemount records after a failed job;
+    // the next ordinary build reuses the full filesystem and fails. SIGINT
+    // cannot cover this path: it already makes the cache unclean, while a
+    // completed RUN failure can retain exhausted cache-mount data.
+    let env = TestEnv::with_private_cache("builder-role");
+    let name = format!("e2e-builder-role-{}", std::process::id());
+    let base_context = test_dir(&env, "base");
+    let base_recipe = base_context.join("Containerfile");
+    fs::write(
+        &base_recipe,
+        r#"FROM debian:trixie-slim
+RUN set -eu; \
+    export DEBIAN_FRONTEND=noninteractive; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates coreutils curl dash mawk sed; \
+    rm -rf /var/lib/apt/lists/*
+"#,
+    )
+    .unwrap();
+    let prepared = run_ok(&mut image_build_command(
+        &env,
+        &format!("{name}-base"),
+        &base_recipe,
+        &base_context,
+    ));
+    let prepared: serde_json::Value =
+        serde_json::from_slice(&prepared.stdout).expect("base image build reports JSON");
+    let base = prepared["ref"]
         .as_str()
-        .unwrap_or_else(|| panic!("built carries no ref: {again}"))
-        .to_string();
-    assert_ne!(again_ref, refs[1], "the repeated build reused a ref");
-    let second_id = image_id(&refs[1]);
-    assert!(second_id.is_some(), "the second build's ref is gone");
-    assert_eq!(
-        image_id(&again_ref),
-        second_id,
-        "unchanged inputs made a new image instead of the second build's"
-    );
-    assert_eq!(
-        image_id(&latest),
-        second_id,
-        "{latest} did not move back to the second build's image"
-    );
-
-    // Sabotage: ignore `Build::cache` in `image::build`; the runtime
-    // reuses the cached RUN layer and /stamp stays equal. The one-id
-    // assertion above shows the cached build; the bytes come from the
-    // guest's urandom.
-    let cached_stamp = file_from_image(&env, &again_ref, "caller-stamp-cached", "/stamp");
-    let (code, fresh) = one_json_line(
-        env.command(pinfold())
-            .args(["image", "build", &name, "--no-cache", "--containerfile"])
-            .arg(&containerfile)
-            .arg("--context")
-            .arg(&context),
-    );
-    assert_eq!(code, 0, "the caller's uncached build failed: {fresh}");
-    let fresh_stamp = file_from_image(
-        &env,
-        fresh["ref"].as_str().expect("the uncached build has a ref"),
-        "caller-stamp-fresh",
-        "/stamp",
-    );
-    assert_ne!(cached_stamp, fresh_stamp, "--no-cache reused the RUN layer");
-
-    // Every profile build reruns every step, so a rebuild picks up base
-    // updates instead of replaying a cached `RUN` layer.
-    let profile = format!("e2e-rerun-{}", std::process::id());
-    let layer_label = format!("dev.example.rerun={profile}");
-    let _profile_images = ImageCleanup {
-        repository: format!("localhost/pinfold/profile-{profile}"),
-    };
-    profile_containerfile(
-        &env,
-        &profile,
-        &format!(
-            "FROM {base}\nLABEL dev.example.rerun={profile}\nRUN head -c8 /dev/urandom | od -An -tx1 > /stamp\n"
+        .expect("base image build has a ref");
+    let context = test_dir(&env, "context");
+    let recipe = context.join("Containerfile");
+    fs::write(
+        &recipe,
+        format!(
+            r#"FROM {base}
+RUN set -eu; {{ \
+    printf 'uid='; id -u; \
+    printf 'caps='; awk '/^CapBnd:/ {{print $2}}' /proc/self/status; \
+    printf 'nnp='; awk '/^NoNewPrivs:/ {{print $2}}' /proc/self/status; \
+    printf 'userns='; cat /proc/sys/user/max_user_namespaces; \
+    printf 'interfaces='; printf '%s\n' /sys/class/net/* | sed 's,.*/,,'; \
+    curl -sS --max-time 30 https://api.github.com >/dev/null; printf 'allowed=yes\n'; \
+    printf 'denied='; curl -sS --max-time 5 -o /dev/null -w '%{{http_code}}\n' http://example.com; \
+    }} >/builder-observed
+"#
         ),
+    )
+    .unwrap();
+    let build = |recipe: &Path| {
+        let mut command = env.command(pinfold());
+        command
+            .args([
+                "image",
+                "build",
+                &name,
+                "--allow",
+                "api.github.com",
+                "--containerfile",
+            ])
+            .arg(recipe)
+            .arg("--context")
+            .arg(&context);
+        command
+    };
+    let references = || {
+        let catalog: serde_json::Value = serde_json::from_slice(
+            &fs::read(env.cache.join("pinfold/images/catalog.json")).expect("read private catalog"),
+        )
+        .expect("parse private catalog");
+        catalog["references"]
+            .as_object()
+            .expect("catalog public references")
+            .clone()
+    };
+    let before = references();
+    let blocked = context.join("Blocked.Containerfile");
+    fs::write(
+        &blocked,
+        format!(
+            "FROM {base}\nRUN curl -fsS --max-time 30 https://api.github.com >/dev/null; mkfifo /blocked; cat /blocked\n"
+        ),
+    )
+    .unwrap();
+    let runs = env.state.join("pinfold/runs");
+    let watcher = Inotify::init(InitFlags::IN_CLOEXEC | InitFlags::IN_NONBLOCK).unwrap();
+    watcher
+        .add_watch(&runs, AddWatchFlags::IN_CREATE | AddWatchFlags::IN_MOVED_TO)
+        .expect("watch the private run root before starting the build");
+    let previous = fs::read_dir(&runs)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    let mut interrupted = ChildOwner::new(
+        build(&blocked)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("start the blocked real build"),
+        &env,
+        None,
     );
-    // Podman's cached intermediates inherit the Containerfile's first
-    // label. Scope to this source so another test's cached caller build
-    // cannot look like our leak. Compare IDs so removing old layers cannot
-    // hide a newly leaked layer.
-    let before = cfg!(target_os = "linux").then(|| untagged_images(&layer_label));
-    build_profile(&env, &profile);
-    let first_stamp = file_from_image(&env, &built_unique_ref(&profile), "rerun-1", "/stamp");
-    // Positive control: the first build ran the `RUN` step and wrote /stamp.
+    let mut stdout = BufReader::new(interrupted.stdout.take().unwrap());
+    wait_for_build_api_allowed(&watcher, &runs, &previous, stdout.get_ref());
+    let vmm = vmm_pid(interrupted.id());
+    // SAFETY: pidfd_open returns a new descriptor or -1.
+    let pidfd = unsafe { nix::libc::syscall(nix::libc::SYS_pidfd_open, vmm as i32, 0u32) };
     assert!(
-        !first_stamp.trim().is_empty(),
-        "the first build left no /stamp"
+        pidfd >= 0,
+        "pidfd_open the blocked build's VMM: {}",
+        std::io::Error::last_os_error()
     );
-    build_profile(&env, &profile);
-    let second_stamp = file_from_image(&env, &built_unique_ref(&profile), "rerun-2", "/stamp");
-    assert_ne!(
-        first_stamp, second_stamp,
-        "the second profile build reused the first build's RUN layer"
+    // SAFETY: a new descriptor, owned here alone.
+    let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd as i32) };
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(interrupted.id() as i32),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .expect("SIGINT the build owner during RUN");
+    let output = read_bounded(
+        &mut interrupted,
+        &mut stdout,
+        std::time::Duration::from_secs(60),
+        true,
+    )
+    .expect("read the interrupted build to EOF");
+    assert_eq!(interrupted.wait_bounded().code(), Some(1), "{output}");
+    let failed = json_lines(&output);
+    assert_eq!(failed.len(), 1, "interrupted build output: {output}");
+    assert_eq!(failed[0]["event"], "failed", "{output}");
+    assert!(
+        failed[0]["log"].as_array().unwrap().iter().any(|line| {
+            line.as_str()
+                .unwrap()
+                .split_whitespace()
+                .any(|token| token == "cancelled")
+        }),
+        "the interrupted build lacks its cancellation token: {output}"
     );
-    if let Some(before) = before {
-        let after = untagged_images(&layer_label);
-        assert!(
-            after.is_subset(&before),
-            "the builds left new untagged images: {:?}",
-            after.difference(&before).collect::<Vec<_>>()
-        );
-    }
+    let mut ended = [nix::libc::pollfd {
+        fd: pidfd.as_raw_fd(),
+        events: nix::libc::POLLIN,
+        revents: 0,
+    }];
+    // SAFETY: poll on one owned descriptor.
+    let ready = unsafe { nix::libc::poll(ended.as_mut_ptr(), 1, 10_000) };
+    assert_eq!(ready, 1, "the interrupted build left its VMM alive");
+    assert_eq!(
+        references(),
+        before,
+        "the interrupted build changed public refs"
+    );
 
-    // Two callers with opposite colour settings share Apple's builder.
-    // Hold one inside RUN before the other starts. Sabotage: inherit
-    // NO_COLOR or BUILDKIT_COLORS in Apple's build command again; the
-    // second caller replaces the builder and the held build fails.
-    if let Some(other) = other.as_ref() {
-        let held_name = format!("{name}-held");
-        let _held_images = ImageCleanup {
-            repository: format!("localhost/pinfold/image-{held_name}"),
-        };
-        let held = HeldBuild::start(
-            other,
-            &held_name,
-            base,
-            &[("NO_COLOR", "1"), ("BUILDKIT_COLORS", "run=1,2,3")],
-        );
-        let (code, built) = one_json_line(
-            env.command(pinfold())
-                .env_remove("NO_COLOR")
-                .env_remove("BUILDKIT_COLORS")
-                .args(["image", "build", &name, "--containerfile"])
-                .arg(&containerfile)
-                .arg("--context")
-                .arg(&context),
-        );
-        let held = held.finish();
-        assert_eq!(code, 0, "the concurrent build: {built}");
-        assert_eq!(built["event"], "built");
-        assert!(image_id(built["ref"].as_str().unwrap()).is_some());
-        assert!(held.status.success(), "the held caller's build: {held:?}");
-        let held: serde_json::Value = serde_json::from_slice(&held.stdout).unwrap();
-        assert_eq!(held["event"], "built");
-        assert!(image_id(held["ref"].as_str().unwrap()).is_some());
-    }
-}
+    let (code, built) = one_json_line(&mut build(&recipe));
+    assert_eq!(code, 0, "the isolated build failed: {built}");
+    assert_eq!(built["event"], "built", "{built}");
+    let audited = fs::read_dir(env.state.join("pinfold/runs"))
+        .unwrap()
+        .map(Result::unwrap)
+        .filter_map(|entry| fs::read_to_string(entry.path().join("egress.jsonl")).ok())
+        .any(|text| {
+            let lines = json_lines(&text);
+            lines
+                .iter()
+                .any(|line| line["host"] == "api.github.com" && line["decision"] == "allowed")
+                && lines.iter().any(|line| {
+                    line["host"] == "example.com"
+                        && line["decision"] == "refused"
+                        && line["reason"] == "not allowlisted"
+                })
+        });
+    assert!(
+        audited,
+        "the build lacks its allowed/denied proxy decisions"
+    );
 
-/// A real Apple build held inside RUN until its host HTTP fixture answers.
-struct HeldBuild {
-    child: Option<Child>,
-    release: Option<std::sync::mpsc::Sender<()>>,
-    server: Option<std::thread::JoinHandle<()>>,
-}
-
-impl HeldBuild {
-    fn start(env: &TestEnv, name: &str, base: &str, vars: &[(&str, &str)]) -> HeldBuild {
-        let network = run_ok(Command::new("container").args(["network", "ls", "--format", "json"]));
-        let networks: serde_json::Value = serde_json::from_slice(&network.stdout).unwrap();
-        let gateway = networks
+    let completed = references();
+    run_ok(
+        Command::new("musl-gcc")
+            .args(["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-static"])
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/e2e/fill_cache.c"))
+            .arg("-o")
+            .arg(context.join("cache-fill")),
+    );
+    let full = context.join("Full.Containerfile");
+    fs::write(
+        &full,
+        format!(
+            "FROM {base}\nCOPY cache-fill /cache-fill\nRUN --mount=type=cache,id=full-cache-recovery,target=/capacity /cache-fill\n"
+        ),
+    )
+    .unwrap();
+    let (code, failed) = one_json_line(&mut build(&full));
+    assert_eq!(code, 1, "the full-cache build did not fail: {failed}");
+    assert_eq!(failed["event"], "failed", "{failed}");
+    assert!(
+        failed["log"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|network| network["id"] == "default")
-            .unwrap()["status"]["ipv4Gateway"]
-            .as_str()
-            .unwrap();
-        let listener = std::net::TcpListener::bind((gateway, 0)).unwrap();
-        let address = listener.local_addr().unwrap();
-        let (active_tx, active_rx) = std::sync::mpsc::channel();
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(60)))
-                .unwrap();
-            let mut request = BufReader::new(stream);
-            let mut line = String::new();
-            loop {
-                line.clear();
-                assert_ne!(request.read_line(&mut line).unwrap(), 0);
-                if line == "\r\n" {
-                    break;
-                }
-            }
-            active_tx.send(()).unwrap();
-            let _ = release_rx.recv();
-            request
-                .get_mut()
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                .unwrap();
-        });
-        let context = env.root.join("held-build-context");
-        fs::create_dir_all(&context).unwrap();
-        let containerfile = context.join("Containerfile");
-        fs::write(
-            &containerfile,
-            format!("FROM {base}\nRUN curl --fail --max-time 60 http://{address}/\n"),
-        )
-        .unwrap();
-        let mut child = env
-            .command(pinfold())
-            .envs(vars.iter().copied())
-            .args(["image", "build", name, "--containerfile"])
-            .arg(&containerfile)
-            .arg("--context")
-            .arg(&context)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        if let Err(error) = active_rx.recv_timeout(std::time::Duration::from_secs(60)) {
-            let _ = child.kill();
-            let output = child.wait_with_output().unwrap();
-            panic!("build did not reach the host fixture: {error}; {output:?}");
-        }
-        HeldBuild {
-            child: Some(child),
-            release: Some(release_tx),
-            server: Some(server),
-        }
-    }
+            .any(|line| line.as_str().unwrap().ends_with("cache-space-exhausted")),
+        "the cache fixture did not observe ENOSPC: {failed}"
+    );
+    assert_eq!(
+        references(),
+        completed,
+        "the full-cache failure changed public refs"
+    );
+    // Keep this control separate from the SIGINT recovery above: another
+    // cancellation could discard the full cache and hide its reuse bug.
+    let (code, built) = one_json_line(&mut build(&recipe));
+    assert_eq!(code, 0, "the full cache poisoned the next build: {built}");
+    assert_eq!(built["event"], "built", "{built}");
 
-    fn finish(mut self) -> std::process::Output {
-        self.release.take().unwrap().send(()).unwrap();
-        self.server.take().unwrap().join().unwrap();
-        self.child.take().unwrap().wait_with_output().unwrap()
-    }
+    // Remove the idle cache through the public operation, then block the
+    // builder's install directory in this fixture's private cache.
+    run_ok(env.command(pinfold()).arg("clean"));
+    let builder = env.cache.join("pinfold/artifacts/builder");
+    let saved = env.root.join("saved-builder");
+    fs::rename(&builder, &saved).unwrap();
+    fs::write(&builder, b"builder unavailable\n").unwrap();
+    let box_name = box_name("builder-result");
+    let up = box_up(
+        &env,
+        &serde_json::json!({"name": box_name, "image": built["ref"]}),
+        &box_name,
+    );
+    let observed = box_exec(&env, &box_name, &["cat", "/builder-observed"]);
+    assert_ok(
+        &observed,
+        "read the actual RUN's kernel and egress observations",
+    );
+    assert_eq!(
+        observed.stdout,
+        "uid=0\ncaps=00000000a80425fb\nnnp=1\nuserns=0\ninterfaces=lo\nallowed=yes\ndenied=403\n"
+    );
+    up.down(&env);
+    fs::remove_file(&builder).unwrap();
+    fs::rename(&saved, &builder).unwrap();
+    let (code, removed) = image_rm(&env, &name);
+    assert_eq!(code, 0, "remove the completed image: {removed}");
 }
 
-impl Drop for HeldBuild {
-    fn drop(&mut self) {
-        // A failed assertion releases the fixture and removes its caller.
-        drop(self.release.take());
-        if let Some(child) = self.child.as_mut() {
-            let _ = child.kill();
-            let _ = child.wait();
+#[cfg(target_os = "linux")]
+fn wait_for_build_api_allowed(
+    watcher: &nix::sys::inotify::Inotify,
+    runs: &Path,
+    previous: &std::collections::BTreeSet<PathBuf>,
+    stdout: &ChildStdout,
+) {
+    use nix::poll::{PollFd, PollFlags, poll};
+    use nix::sys::inotify::AddWatchFlags;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    let mut watched = std::collections::BTreeSet::new();
+    loop {
+        for entry in fs::read_dir(runs).expect("read private run directories") {
+            let path = entry.unwrap().path();
+            if previous.contains(&path) || !path.is_dir() {
+                continue;
+            }
+            if watched.insert(path.clone()) {
+                watcher
+                    .add_watch(&path, AddWatchFlags::IN_CREATE | AddWatchFlags::IN_MOVED_TO)
+                    .expect("watch the new run before looking for its log");
+            }
+            let log = path.join("egress.jsonl");
+            if !log.is_file() {
+                continue;
+            }
+            if watched.insert(log.clone()) {
+                watcher
+                    .add_watch(
+                        &log,
+                        AddWatchFlags::IN_MODIFY | AddWatchFlags::IN_CLOSE_WRITE,
+                    )
+                    .expect("watch the egress log before reading existing records");
+            }
+            let mut bytes = Vec::new();
+            fs::File::open(&log)
+                .expect("open the new build's egress log")
+                .take(HARNESS_OUTPUT_LIMIT as u64 + 1)
+                .read_to_end(&mut bytes)
+                .expect("read the new build's egress log");
+            assert!(
+                bytes.len() <= HARNESS_OUTPUT_LIMIT,
+                "build readiness log exceeds 1 MiB"
+            );
+            for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+                if line.last() != Some(&b'\n') {
+                    continue;
+                }
+                let event: serde_json::Value =
+                    serde_json::from_slice(line).expect("parse a complete egress record");
+                if event["host"] == "api.github.com" && event["decision"] == "allowed" {
+                    return;
+                }
+            }
         }
-        if let Some(server) = self.server.take() {
-            let _ = server.join();
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "build did not reach its audited API request"
+        );
+        let millis = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+        let mut fds = [
+            PollFd::new(watcher.as_fd(), PollFlags::POLLIN),
+            PollFd::new(stdout.as_fd(), PollFlags::POLLIN),
+        ];
+        match poll(&mut fds, nix::poll::PollTimeout::try_from(millis).unwrap()) {
+            Err(nix::errno::Errno::EINTR) => continue,
+            result => assert!(
+                result.expect("poll build readiness") > 0,
+                "build readiness deadline"
+            ),
         }
+        assert!(
+            fds[1].revents().unwrap().is_empty(),
+            "build ended before its audited RUN request"
+        );
+        let events = watcher
+            .read_events()
+            .expect("read build readiness notifications");
+        assert!(
+            events
+                .iter()
+                .all(|event| !event.mask.contains(AddWatchFlags::IN_Q_OVERFLOW)),
+            "build readiness notifications overflowed"
+        );
     }
 }
 
@@ -1820,14 +1999,18 @@ pub(super) fn image_build(
     containerfile: &Path,
     context: &Path,
 ) -> (i32, serde_json::Value) {
-    one_json_line(
-        env.command(pinfold())
-            .args(["image", "build", name, "--containerfile"])
-            .arg(containerfile)
-            .arg("--context")
-            .arg(context)
-            .args(["--label", "dev.example.test=image"]),
-    )
+    one_json_line(&mut image_build_command(env, name, containerfile, context))
+}
+
+fn image_build_command(env: &TestEnv, name: &str, containerfile: &Path, context: &Path) -> Command {
+    let mut command = env.command(pinfold());
+    command
+        .args(["image", "build", name, "--containerfile"])
+        .arg(containerfile)
+        .arg("--context")
+        .arg(context)
+        .args(["--label", "dev.example.test=image"]);
+    command
 }
 
 /// Run `pinfold image rm NAME` and return its exit code and its one stdout
@@ -1853,35 +2036,6 @@ pub(super) fn one_json_line(command: &mut Command) -> (i32, serde_json::Value) {
     (exit_code(output.status), lines.remove(0))
 }
 
-/// The file at `path` in the image `reference`, read through a box named
-/// `name`.
-fn file_from_image(env: &TestEnv, reference: &str, name: &str, path: &str) -> String {
-    let name = box_name(name);
-    let spec = serde_json::json!({ "name": name, "image": reference });
-    let up = box_up(env, &spec, &name);
-    let output = box_exec(env, &name, &["cat", path]);
-    assert_eq!(output.code, 0, "reading {path} failed: {}", output.stderr);
-    up.down(env);
-    output.stdout
-}
-
-/// The unique tag of the image that `localhost/pinfold/profile-<profile>:latest` names
-/// now. Each build tags its image `:latest` and one unique tag; the stable
-/// tag moves to every new build, so a box pins an image by the unique tag. The unique tag is collected from
-/// every runtime image entry sharing the `:latest` image's id, because a
-/// runtime may list one entry per tag.
-pub(super) fn built_unique_ref(profile: &str) -> String {
-    let latest = format!("localhost/pinfold/profile-{profile}:latest");
-    let id = image_id(&latest).unwrap_or_else(|| panic!("no image names {latest}"));
-    runtime_images()
-        .expect("list the runtime's images")
-        .iter()
-        .filter(|image| image.id == id)
-        .flat_map(|image| image.names.iter())
-        .find(|name| **name != latest)
-        .cloned()
-        .unwrap_or_else(|| panic!("the image {latest} names has no unique tag"))
-}
 #[test]
 fn box_has_no_network_but_loopback() {
     let _runtime = crate::shared_runtime();
@@ -2393,6 +2547,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     // project marker is absent. Sabotage: omit the operating-context
     // extension; the profile's allowlist never reaches the model.
     let env = TestEnv::new("login");
+    let image = default_image(&env);
     let openrouter = HttpFixture::start(Some((
         "text/event-stream",
         concat!(
@@ -2420,7 +2575,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     fs::write(
         profile_dir.join("pinfold.toml"),
         format!(
-            "allow = [\"login-allow.invalid\"]\n\
+            "image = {image:?}\nallow = [\"login-allow.invalid\"]\n\
              [routes]\n\
              \"openrouter.login\" = {{ login = \"pi\", provider = \"openrouter\", from = \"PINFOLD_E2E_OPENROUTER_KEY\", to = \"http://{}\" }}\n\
              \"anthropic.login\" = {{ login = \"pi\", provider = \"anthropic\", from = \"PINFOLD_E2E_ANTHROPIC_KEY\", to = \"http://{}\" }}\n",
@@ -2437,15 +2592,6 @@ fn a_login_route_keeps_the_login_on_the_host() {
         serde_json::json!({ "openrouter": { "type": "api_key", "key": stored } }).to_string(),
     )
     .expect("write the stored key");
-    fs::write(
-        profile_dir.join("Containerfile"),
-        format!("FROM {}\n", default_image(&env)),
-    )
-    .expect("write the profile's Containerfile");
-    build_profile(&env, profile);
-    let _image = ImageCleanup {
-        repository: format!("localhost/pinfold/profile-{profile}"),
-    };
     let project = test_dir(&env, "pi-login");
     git(project.as_path(), &["init", "-q"]);
     // Both pi config levels load: a skill in the profile's share/pi package
@@ -3268,7 +3414,7 @@ fn a_login_route_keeps_the_login_on_the_host() {
     fs::write(
         profile_dir.join("pinfold.toml"),
         format!(
-            "allow = [\"login-allow.invalid\"]\n\
+            "image = {image:?}\nallow = [\"login-allow.invalid\"]\n\
              [routes]\n\
              \"subscription.login\" = {{ login = \"pi\", provider = \"anthropic-subscription\", from = \"PINFOLD_E2E_SUBSCRIPTION\", to = \"http://{}\" }}\n\
              \"codex.login\" = {{ login = \"pi\", provider = \"openai-codex\", to = \"http://{}\" }}\n",
@@ -4335,24 +4481,6 @@ fn box_down(env: &TestEnv, name: &str) -> ExitStatus {
         .stdin(Stdio::null())
         .status()
         .expect("run pinfold box down")
-}
-
-/// The IDs of untagged images with the caller's label, including the
-/// intermediate layers a cached build leaves behind. Linux only.
-fn untagged_images(label: &str) -> std::collections::BTreeSet<String> {
-    let output = run_ok(Command::new("podman").args([
-        "images",
-        "-a",
-        "-q",
-        "--filter",
-        "dangling=true",
-        "--filter",
-        &format!("label={label}"),
-    ]));
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::to_owned)
-        .collect()
 }
 
 /// Write one discoverable skill whose description carries `marker`.

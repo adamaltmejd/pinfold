@@ -12,11 +12,13 @@ use crate::core::clean;
 use crate::core::plan;
 use crate::core::profile;
 #[cfg(target_os = "linux")]
-pub mod podman;
+pub(crate) mod linux;
 pub(crate) mod service;
 
+#[cfg(not(target_os = "linux"))]
 use crate::core::runtime::output;
 use crate::dirs;
+#[cfg(not(target_os = "linux"))]
 use service::TARGET_ARCH;
 pub use service::{BuildRequest, ImageInfo, ImageService, service};
 
@@ -26,14 +28,13 @@ pub const CONTAINERFILE_LABEL: &str = "dev.pinfold.containerfile-sha256";
 /// Where a build's files come from.
 pub enum Context<'a> {
     /// A fresh, empty context holding only these Containerfile bytes, so
-    /// the Containerfile is the build's only input. Every step reruns.
+    /// the Containerfile is the build's only input.
     Alone(&'a [u8]),
     /// A directory the caller vouches for, and a Containerfile that may lie
-    /// outside it. `cache` lets the runtime reuse its layer cache.
+    /// outside it.
     Dir {
         dir: &'a Path,
         containerfile: &'a Path,
-        cache: bool,
     },
 }
 
@@ -46,8 +47,11 @@ pub struct Build<'a> {
     /// The source: a profile name, a project id or a caller image name.
     pub source: &'a str,
     pub context: Context<'a>,
+    /// Whether the runtime may reuse its layer cache.
+    pub cache: bool,
     /// Labels beyond the family and base labels.
     pub labels: BTreeMap<String, String>,
+    pub allow: Vec<String>,
 }
 
 /// The image one build made.
@@ -68,6 +72,8 @@ pub struct Built {
 /// then run retention for the source's images. The inner `Err` is the
 /// build's output when the build ran and failed.
 pub fn build(images: &dyn ImageService, build: Build) -> io::Result<Result<Built, String>> {
+    check_build_allow(&build.allow)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     // A new build's id, the `<build>` of its unique tag. It starts with the
     // build's nanoseconds since the epoch in hex, which retention orders
     // builds by. It is never a label, so a cached build of unchanged inputs
@@ -111,13 +117,14 @@ pub fn build(images: &dyn ImageService, build: Build) -> io::Result<Result<Built
     let latest = format!("{repository}:latest");
     let reference = format!("{repository}:{id}");
     let tags = [latest.clone(), reference.clone()];
-    let request = |context: &Path, containerfile: &Path, cache: bool| {
+    let request = |context: &Path, containerfile: &Path| {
         images.build(&BuildRequest {
             context,
             containerfile,
             tags: &tags,
             labels: &labels,
-            cache,
+            cache: build.cache,
+            allow: &build.allow,
         })
     };
     let result = match build.context {
@@ -125,16 +132,12 @@ pub fn build(images: &dyn ImageService, build: Build) -> io::Result<Result<Built
             let context = dirs::cache_dir()?.join("build").join(&id);
             fs::create_dir_all(&context)?;
             let containerfile = context.join("Containerfile");
-            let result = fs::write(&containerfile, bytes)
-                .and_then(|()| request(&context, &containerfile, false));
+            let result =
+                fs::write(&containerfile, bytes).and_then(|()| request(&context, &containerfile));
             let _ = fs::remove_dir_all(&context);
             result?
         }
-        Context::Dir {
-            dir,
-            containerfile,
-            cache,
-        } => request(dir, containerfile, cache)?,
+        Context::Dir { dir, containerfile } => request(dir, containerfile)?,
     };
     if let Err(output) = result {
         return Ok(Err(output));
@@ -169,6 +172,7 @@ pub struct ImageRequest {
     pub labels: BTreeMap<String, String>,
     /// Whether the runtime may reuse its layer cache.
     pub cache: bool,
+    pub allow: Vec<String>,
 }
 
 /// Why a caller build made no image.
@@ -185,6 +189,7 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
     let spec = |detail: String| ImageError::Refused(RefusalReason::Spec, detail);
     profile::check_name("image", &request.name).map_err(|error| spec(error.to_string()))?;
     plan::check_reserved_labels(&request.labels).map_err(spec)?;
+    check_build_allow(&request.allow).map_err(spec)?;
     if !request.context.is_dir() {
         return Err(spec(format!(
             "context {} is not a directory",
@@ -198,18 +203,17 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
         ))
     })?;
     let images = service();
-    // A missing runtime binary shows first as a failed spawn; nothing ran.
+    // Linux's outer error is admission; running job errors are inner results.
+    // A missing Apple runtime binary shows first as a failed spawn.
     let failed = |error: io::Error| {
-        if error.kind() == io::ErrorKind::NotFound {
+        if cfg!(target_os = "linux") || error.kind() == io::ErrorKind::NotFound {
             ImageError::Refused(RefusalReason::Runtime, error.to_string())
         } else {
             ImageError::Failed(error.to_string())
         }
     };
-    let mut labels = request.labels;
-    if let Some(digest) = base_digest(images, &containerfile).map_err(failed)? {
-        labels.insert(clean::BASE_LABEL.to_string(), digest);
-    }
+    let labels = request.labels;
+    refresh_base(images, &containerfile).map_err(failed)?;
     build(
         images,
         Build {
@@ -218,23 +222,43 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
             context: Context::Dir {
                 dir: &request.context,
                 containerfile: &request.containerfile,
-                cache: request.cache,
             },
+            cache: request.cache,
             labels,
+            allow: request.allow,
         },
     )
     .map_err(failed)?
     .map_err(ImageError::Failed)
 }
 
-/// The digest of the image a Containerfile's first `FROM` names, when the
-/// runtime can resolve it. A pinfold-built base has no registry, so its
-/// digest is read from local storage and nothing is pulled; any other base
-/// is pulled first, so a floating tag's digest is current. A `FROM` that
-/// names a variable or the empty `scratch` base has none.
-pub fn base_digest(images: &dyn ImageService, containerfile: &[u8]) -> io::Result<Option<String>> {
+/// Build egress has exact DNS hosts only, independently of box egress.
+pub(crate) fn check_build_allow(hosts: &[String]) -> Result<(), String> {
+    if cfg!(target_os = "macos") && !hosts.is_empty() {
+        return Err("build-allow-unsupported: --allow is supported only for Linux builds".into());
+    }
+    for host in hosts {
+        if host.starts_with('.') || rustls::pki_types::DnsName::try_from(host.as_str()).is_err() {
+            return Err(format!(
+                "build --allow {host:?} must name an exact DNS host, without a scheme, port or suffix"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub fn refresh_base(_images: &dyn ImageService, _containerfile: &[u8]) -> io::Result<()> {
+    // BuildKit resolves sources inside the isolated builder.
+    Ok(())
+}
+
+/// Refresh Apple's external base on the requested platform before building.
+/// Local pinfold bases and unresolved arguments never trigger a pull.
+#[cfg(not(target_os = "linux"))]
+pub fn refresh_base(images: &dyn ImageService, containerfile: &[u8]) -> io::Result<()> {
     let Ok(text) = std::str::from_utf8(containerfile) else {
-        return Ok(None);
+        return Ok(());
     };
     let mut platform = None;
     let base = text
@@ -256,10 +280,10 @@ pub fn base_digest(images: &dyn ImageService, containerfile: &[u8]) -> io::Resul
     // Build arguments are resolved by the builder. Guessing an unresolved
     // platform here can refresh every architecture (GitHub #78).
     if platform.is_some_and(|platform| platform.contains('$')) {
-        return Ok(None);
+        return Ok(());
     }
     match base {
-        Some("scratch") => Ok(None),
+        Some("scratch") => Ok(()),
         Some(base) if !base.contains('$') => {
             // A pinfold-built base can never be pulled, so read its digest
             // locally before spending the retries on a doomed pull. Every
@@ -269,7 +293,7 @@ pub fn base_digest(images: &dyn ImageService, containerfile: &[u8]) -> io::Resul
             if let Ok(image) = images.resolve_image(base)?
                 && image.labels.contains_key(clean::BASE_LABEL)
             {
-                return Ok(image.digest);
+                return Ok(());
             }
             // A floating tag must be pulled for its digest to be current and
             // present to inspect. An unresolvable base has no digest.
@@ -282,11 +306,8 @@ pub fn base_digest(images: &dyn ImageService, containerfile: &[u8]) -> io::Resul
             }
             arguments.push(base);
             let _ = output(&arguments);
-            Ok(images
-                .resolve_image(base)?
-                .ok()
-                .and_then(|image| image.digest))
+            Ok(())
         }
-        _ => Ok(None),
+        _ => Ok(()),
     }
 }

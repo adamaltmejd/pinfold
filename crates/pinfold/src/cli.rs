@@ -27,8 +27,8 @@ pinfold pi [pi args…]            pi in a box for this project; `pi` is a symli
 pinfold attach [cmd…]            bash (or cmd) in this project's running pi box
 pinfold push                     this checkout's branches into its pi box as refs/remotes/host/*
 pinfold fetch                    its pi box's branches into refs/remotes/pinfold/*
-pinfold build [--profile NAME]   build this project's image, or a profile's; prints the ref
-pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache]   a caller's image from its own context; one JSON line
+pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this project's image, or a profile's; prints the ref
+pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]…   a caller's image from its own context; one JSON line
 pinfold image rm NAME            retire a caller image name; one JSON line
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
 pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
@@ -858,7 +858,7 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
 
     let image = crate::pi::launch::resolve_image(&config, &project);
     println!("image: {image}");
-    if runtime_ready {
+    if runtime_ready || cfg!(target_os = "linux") {
         match crate::pi::launch::ensure_image(&config, &image) {
             Ok(()) => println!("  exists"),
             Err(error) => println!("  {error}"),
@@ -875,7 +875,7 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     println!("config: {}", config_report(&root, &config)?);
 
     println!("disk:");
-    if !runtime_ready {
+    if !runtime_ready && !cfg!(target_os = "linux") {
         println!("  unavailable: runtime check failed");
         return Ok(0);
     }
@@ -1045,9 +1045,33 @@ pub(crate) fn exit_code(status: ExitStatus) -> i32 {
 /// Containerfile-only contexts keep project builds covered by trust.
 /// Other files in a profile directory are not build inputs.
 pub fn build(args: &[String]) -> io::Result<i32> {
-    let (profile, project) = match args {
-        [flag, name] if flag == "--profile" => (Profile::load(name)?, None),
-        [] => {
+    let mut profile_name = None;
+    let mut cache = true;
+    let mut allow = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--profile" if profile_name.is_none() => {
+                profile_name = Some(
+                    args.next()
+                        .ok_or_else(|| usage("build", "--profile needs a name"))?,
+                );
+            }
+            "--allow" => allow.push(
+                args.next()
+                    .ok_or_else(|| usage("build", "--allow needs a host"))?
+                    .clone(),
+            ),
+            "--no-cache" => cache = false,
+            option => {
+                return Err(usage("build", &format!("unknown build option {option:?}")));
+            }
+        }
+    }
+    image::check_build_allow(&allow).map_err(|error| usage("build", &error))?;
+    let (profile, project) = match profile_name {
+        Some(name) => (Profile::load(name)?, None),
+        None => {
             let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
             let config = Config::load(&root)?;
             // A project build is a run of its config: an untrusted change
@@ -1064,7 +1088,6 @@ pub fn build(args: &[String]) -> io::Result<i32> {
                 .map(|(_, bytes)| (crate::pi::state::project_id(&root), bytes));
             (config.profile, project)
         }
-        _ => return Err(usage("build", "build takes no arguments or --profile NAME")),
     };
     let profile_recipe = profile.containerfile.as_deref();
     if project.is_none() && profile_recipe.is_none() {
@@ -1075,8 +1098,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
     }
     let images = image::service();
     // A project image records the profile image it was built from, so
-    // `pinfold pi` warns when the profile image moves past it; a profile
-    // image records the image its FROM pulls.
+    // `pinfold pi` warns when the selected profile image moves past it.
     let (label, source, containerfile, base) = match &project {
         Some((id, bytes)) => (
             clean::PROJECT_LABEL,
@@ -1088,17 +1110,14 @@ pub fn build(args: &[String]) -> io::Result<i32> {
                     .ok()
                     .map(|image| image.id)
             } else {
-                image::base_digest(images, bytes)?
+                image::refresh_base(images, bytes)?;
+                None
             },
         ),
         None => {
             let bytes = profile_recipe.expect("a profile build has a recipe");
-            (
-                clean::PROFILE_LABEL,
-                &profile.name,
-                bytes,
-                image::base_digest(images, bytes)?,
-            )
+            image::refresh_base(images, bytes)?;
+            (clean::PROFILE_LABEL, &profile.name, bytes, None)
         }
     };
     let built = image::build(
@@ -1107,10 +1126,12 @@ pub fn build(args: &[String]) -> io::Result<i32> {
             label: Some(label),
             source,
             context: Context::Alone(containerfile),
+            cache,
             labels: base
                 .map(|digest| (clean::BASE_LABEL.to_string(), digest))
                 .into_iter()
                 .collect(),
+            allow,
         },
     )?;
     match built {
@@ -1207,6 +1228,7 @@ fn parse_image_build(name: Option<&str>, args: &[String]) -> Result<ImageRequest
     let mut context = None;
     let mut labels = BTreeMap::new();
     let mut cache = true;
+    let mut allow = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -1229,6 +1251,7 @@ fn parse_image_build(name: Option<&str>, args: &[String]) -> Result<ImageRequest
                 labels.insert(key.to_string(), value.to_string());
             }
             "--no-cache" => cache = false,
+            "--allow" => allow.push(args.next().ok_or("--allow needs a host")?.clone()),
             option => return Err(format!("unknown image build option {option:?}")),
         }
     }
@@ -1238,6 +1261,7 @@ fn parse_image_build(name: Option<&str>, args: &[String]) -> Result<ImageRequest
         context: context.ok_or("image build needs --context DIR")?,
         labels,
         cache,
+        allow,
     })
 }
 

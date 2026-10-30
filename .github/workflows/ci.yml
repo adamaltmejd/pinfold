@@ -25,7 +25,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.sha }}
 
-      - name: Rootless podman
+      - name: Firecracker host requirements
         run: sh scripts/setup-linux-runner.sh
 
       - name: Rust musl target
@@ -52,8 +52,8 @@ jobs:
       # The executable the suite runs, profiled with the restriction on.
       - name: AppArmor profile
         run: |
-          cargo build -p pinfold --locked --target x86_64-unknown-linux-musl
-          target/x86_64-unknown-linux-musl/debug/pinfold apparmor-profile >"$RUNNER_TEMP/pinfold"
+          cargo build -p pinfold --locked --release --target x86_64-unknown-linux-musl
+          target/x86_64-unknown-linux-musl/release/pinfold apparmor-profile >"$RUNNER_TEMP/pinfold"
           sudo install -m 0644 "$RUNNER_TEMP/pinfold" /etc/apparmor.d/pinfold
           sudo apparmor_parser -r /etc/apparmor.d/pinfold
           test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 1

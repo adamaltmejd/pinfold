@@ -21,7 +21,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.sha }}
 
-      - name: Rootless podman and fixture tools
+      - name: Firecracker host requirements and fixture tools
         run: |
           sh scripts/setup-linux-runner.sh
           sudo apt-get install -y -qq musl-tools openssl python3 iproute2
