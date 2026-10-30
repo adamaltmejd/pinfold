@@ -260,9 +260,6 @@ fn box_lifecycle_works_for_a_caller() {
 
 #[test]
 fn up_refuses_before_it_creates() {
-    #[cfg(target_os = "linux")]
-    let _runtime = crate::exclusive_runtime();
-    #[cfg(not(target_os = "linux"))]
     let _runtime = crate::shared_runtime();
     // Guarantee 17: up refuses before it creates.
     // Sabotage: parse the first JSON value straight into `Plan` again; the
