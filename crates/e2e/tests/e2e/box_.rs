@@ -1666,8 +1666,30 @@ fn linux_build_steps_stay_inside_the_builder_role() {
     // cannot cover this path: it already makes the cache unclean, while a
     // completed RUN failure can retain exhausted cache-mount data.
     let env = TestEnv::with_private_cache("builder-role");
-    let base = default_image(&env);
     let name = format!("e2e-builder-role-{}", std::process::id());
+    let base_context = test_dir(&env, "base");
+    let base_recipe = base_context.join("Containerfile");
+    fs::write(
+        &base_recipe,
+        r#"FROM debian:trixie-slim
+RUN set -eu; \
+    export DEBIAN_FRONTEND=noninteractive; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates coreutils curl dash mawk sed; \
+    rm -rf /var/lib/apt/lists/*
+"#,
+    )
+    .unwrap();
+    let prepared = run_ok(&mut image_build_command(
+        &env,
+        &format!("{name}-base"),
+        &base_recipe,
+        &base_context,
+    ));
+    let prepared: serde_json::Value =
+        serde_json::from_slice(&prepared.stdout).expect("base image build reports JSON");
+    let base = prepared["ref"].as_str().expect("base image build has a ref");
     let context = test_dir(&env, "context");
     let recipe = context.join("Containerfile");
     fs::write(
