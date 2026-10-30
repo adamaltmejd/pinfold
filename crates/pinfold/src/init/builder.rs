@@ -22,7 +22,6 @@ const PATH: &str = "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const PROXY: &str = "http://127.0.0.1:3128";
 const SOCKET: &str = "unix:///run/buildkit/buildkitd.sock";
 const LOG_BYTES: usize = 64 * 1024;
-// Candidate admission cap; final runtime policy still needs boundary evidence.
 const OUTPUT_BYTES: u64 = 512 * 1024 * 1024;
 const JSON_BYTES: u64 = 1024 * 1024;
 const CAPABILITIES: u64 = 0xa82425fb;

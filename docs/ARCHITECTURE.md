@@ -555,8 +555,6 @@ process. Getting further needs a host kernel bug.
   work cgroup so the disks can unmount; the box is ending anyway.
   Once pi runs on a TTY, Ctrl-C and Ctrl-\ reach it as bytes. A closed
   terminal, SIGTERM, SIGHUP or SIGINT removes the box.
-  Revisit when apple/container#1941 lands: add a graceful SIGTERM before
-  removal.
 - Exit codes pass through; `128+n` for a signal death.
 - Every process started in a box through `exec` runs with `oom_score_adj`
   1000.

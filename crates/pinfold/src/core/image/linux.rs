@@ -46,11 +46,7 @@ impl ImageService for Linux {
             return Ok(());
         };
         job::writable_snapshot(&cache_dir()?.join("job"))?;
-        match fs::remove_dir_all(cache_dir()?) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        }
+        crate::core::absent_ok(fs::remove_dir_all(cache_dir()?))
     }
     fn build_cache(&self) -> &'static str {
         "the idle isolated builder cache"
