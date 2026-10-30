@@ -672,18 +672,12 @@ pub fn resolve(reference: &str) -> io::Result<Result<ImageInfo, String>> {
 /// Resolve and protect the same generation before starting a box.
 pub fn resolve_leased(reference: &str) -> io::Result<Result<(ImageInfo, Flock<File>), String>> {
     let _lock = catalog_lock()?;
-    let catalog = read_catalog()?;
-    let id = catalog
-        .references
-        .get(reference)
-        .map(String::as_str)
-        .unwrap_or(reference);
-    Ok(match catalog.images.get(id) {
-        Some(image) => Ok((info(id, reference, image), shared_lease(id)?)),
-        None => Err(
-            "image-missing: rebuild this image with pinfold build or pinfold image build"
-                .to_string(),
-        ),
+    Ok(match resolve(reference)? {
+        Ok(image) => {
+            let lease = shared_lease(&image.id)?;
+            Ok((image, lease))
+        }
+        Err(reason) => Err(reason),
     })
 }
 
