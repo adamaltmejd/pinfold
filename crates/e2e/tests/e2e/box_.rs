@@ -16,8 +16,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use e2e::{
     HttpFixture, ImageCleanup, TestEnv, assert_denied, assert_ok, box_exec, box_list, box_stat,
-    build_profile, curl, default_image, egress_log, exit_code, git, image_id, json_lines, pinfold,
-    profile_containerfile, run_ok, runtime_images, test_dir,
+    curl, default_image, egress_log, exit_code, git, image_id, json_lines, pinfold, run_ok,
+    runtime_images, test_dir,
 };
 
 #[test]
@@ -305,18 +305,9 @@ fn up_refuses_before_it_creates() {
     // profile. Sabotage: infer its managed ref despite the absent recipe;
     // the already-built tag would be selected for launch. An explicit image
     // on the same profile and box name is the allowed control.
-    let profile = format!("e2e-no-recipe-{}", std::process::id());
-    let _profile_images = ImageCleanup {
-        repository: format!("localhost/pinfold/profile-{profile}"),
-    };
-    let profile_base = if cfg!(target_os = "linux") {
-        "scratch"
-    } else {
-        default_image(&env)
-    };
-    let recipe = profile_containerfile(&env, &profile, &format!("FROM {profile_base}\n"));
-    build_profile(&env, &profile);
-    fs::remove_file(recipe).unwrap();
+    let profile = "default";
+    let profile_image = default_image(&env);
+    fs::create_dir_all(env.config.join("pinfold/profiles").join(profile)).unwrap();
     let mut profile_spec = serde_json::json!({
         "name": name,
         "profile": profile,
@@ -332,7 +323,7 @@ fn up_refuses_before_it_creates() {
         "{refused}"
     );
     assert_left_nothing(&env, &name, label, "refused");
-    profile_spec["image"] = serde_json::json!(default_image(&env));
+    profile_spec["image"] = serde_json::json!(profile_image);
     let mut allowed = box_up(&env, &profile_spec, &name);
     assert_ok(&box_exec(&env, &name, &["true"]), "explicit profile image");
     allowed.down(&env);
