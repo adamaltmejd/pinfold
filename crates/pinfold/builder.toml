@@ -1,4 +1,3 @@
-# Private candidate factory bytes. Public URL not published; offline proof only.
 url = "https://github.com/adamaltmejd/pinfold/releases/download/builder-root-1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd/pinfold-builder-linux-x64-1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd.tar.gz"
 archive_sha256 = "1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd"
 archive_bytes = 122074383

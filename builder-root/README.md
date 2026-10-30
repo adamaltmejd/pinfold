@@ -1,9 +1,8 @@
 # Builder bootstrap
 
-This private candidate uses the
+Linux image builds use the
 [digest-pinned archive](https://github.com/adamaltmejd/pinfold/releases/download/builder-root-1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd/pinfold-builder-linux-x64-1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd.tar.gz)
-through the verified offline cache. That intended public URL is not published.
-Publication and public adoption require separate approval.
+from a published prerelease or the verified offline cache.
 
 To produce a bootstrap on Linux x64, install debootstrap, GnuPG, curl 8.4+,
 ca-certificates, e2fsprogs, GNU tar and Python 3.11.4+ with `tarfile.data_filter`.

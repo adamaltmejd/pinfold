@@ -933,10 +933,9 @@ root; the manifest and SHA256SUMS cover build metadata and retained producer inp
 The workflow only builds. It requires Linux root, Python 3.11.4+ with
 `tarfile.data_filter`, debootstrap, GnuPG, curl 8.4+, e2fsprogs and GNU tar.
 The consumer needs no host Go installation.
-`crates/pinfold/builder.toml` embeds the intended archive URL and reviewed
-archive, raw-root and recipe identities. This private candidate's URL is
-unpublished; proof uses the verified offline archive. Without that archive,
-pinfold attempts HTTPS acquisition into install staging. The offline archive cache
+`crates/pinfold/builder.toml` embeds the published archive URL and reviewed
+archive, raw-root and recipe identities. Pinfold acquires the archive over HTTPS
+into install staging. The offline archive cache
 is `~/.cache/pinfold/artifacts/builder/<archive-sha256>/`; when present, its
 archive is copied into that staging area instead. The pinned archive bound
 is 122,074,383 bytes, below the shared 512 MiB transfer cap. Acquisition,

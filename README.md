@@ -19,9 +19,7 @@ commits back as branches.
 | Linux x64, kernel 6.10+ | `/dev/kvm` for the user (the `kvm` group), unprivileged user namespaces, Landlock and e2fsprogs; pinned Firecracker and isolated BuildKit image jobs |
 
 Linux image builds use the [pinned builder bootstrap](builder-root/README.md).
-This private candidate's public URL is unpublished; use its verified offline
-archive for proof. Discovery and build share one finite VM; conversion uses
-a fresh independent VM.
+Discovery and build share one finite VM; conversion uses a fresh independent VM.
 
 On Ubuntu 24.04+, AppArmor may restrict user namespaces. If `box up` is
 refused as `runtime` naming `userns-apparmor`, load pinfold's profile
