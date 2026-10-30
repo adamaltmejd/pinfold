@@ -19,6 +19,13 @@ EVENTS = ('fork', 'exec', 'exit')
 LOSS_FIELDS = ('overrun', 'commit overrun', 'dropped events')
 RAW_LIMIT = 7 * 1024 * 1024
 PUBLIC_LIMIT = 8 * 1024 * 1024
+REFUSAL_STAGES = frozenset((
+    'observer-check', 'observer-setup', 'control-user', 'control-name', 'control-instance',
+    'tracefs-mounted', 'create-instance', 'create-stop', 'create-clock', 'create-buffer',
+    'config', 'config-tracer', 'config-clock', 'config-stacks', 'config-events',
+    'config-filters', 'config-triggers', 'config-fork', 'config-exec', 'config-exit',
+    'config-pids', 'config-buffer', 'runner-user', 'runner-temp', 'runner-private',
+))
 EXECUTABLES = frozenset((
     'pinfold', 'firecracker', 'mkfs.ext4', 'mke2fs', 'cargo', 'rustc',
     'cc', 'gcc', 'cc1', 'collect2', 'ld', 'as', 'musl-gcc', 'git',
@@ -32,13 +39,35 @@ LINE = re.compile(
 PAYLOAD = {
     'fork': re.compile(r'comm=(.*?) pid=(\d+) child_comm=(.*?) child_pid=(\d+)$'),
     'exec': re.compile(r'filename=(.*?) pid=(\d+) old_pid=(\d+)$'),
-    'exit': re.compile(r'comm=(.*?) pid=(\d+) prio=\d+$'),
+    'exit': re.compile(r'comm=(.*?) pid=(\d+) prio=\d+(?: group_dead=(?:true|false))?$'),
 }
 
 
-def require(condition):
+class Refusal(ValueError):
+    def __init__(self, stage, errno=None):
+        self.stage = stage if stage in REFUSAL_STAGES else 'observer-check'
+        self.errno = errno if type(errno) is int and 0 < errno < 4096 else None
+
+
+def refusal(error, stage='observer-check'):
+    result = {'refusal_stage': error.stage if isinstance(error, Refusal) else stage}
+    if result['refusal_stage'] not in REFUSAL_STAGES:
+        result['refusal_stage'] = 'observer-check'
+    if isinstance(error, (Refusal, OSError)) and type(error.errno) is int and 0 < error.errno < 4096:
+        result['errno'] = error.errno
+    return result
+
+
+def require(condition, stage='observer-check'):
     if not condition:
-        raise ValueError('observer unavailable or incomplete')
+        raise Refusal(stage)
+
+
+def checked_read(path, stage):
+    try:
+        return path.read_text()
+    except OSError as error:
+        raise Refusal(stage, error.errno) from None
 
 
 def private_file(path):
@@ -58,45 +87,67 @@ def stats(instance):
 
 
 def configuration(instance, enabled):
-    require((instance / 'current_tracer').read_text().strip() == 'nop')
-    require('[mono]' in (instance / 'trace_clock').read_text().split())
-    options = set((instance / 'trace_options').read_text().split())
-    require({'nostacktrace', 'nouserstacktrace'} <= options)
+    require(checked_read(instance / 'current_tracer', 'config-tracer').strip() == 'nop', 'config-tracer')
+    require('[mono]' in checked_read(instance / 'trace_clock', 'config-clock').split(), 'config-clock')
+    options = set(checked_read(instance / 'trace_options', 'config-stacks').split())
+    require({'nostacktrace', 'nouserstacktrace'} <= options, 'config-stacks')
     require(not {
         'stacktrace', 'userstacktrace', 'func_stack_trace', 'branch', 'event-fork', 'function-fork',
-    } & options)
+    } & options, 'config-stacks')
     selected = {f'sched_process_{event}' for event in EVENTS}
     for path in (instance / 'events').glob('*/*/enable'):
         wanted = path.parent.parent.name == 'sched' and path.parent.name in selected
-        require(path.read_text().strip() == ('1' if wanted and enabled else '0'))
-        require((path.parent / 'filter').read_text().strip() in ('', 'none', '0'))
+        require(checked_read(path, 'config-events').strip() == ('1' if wanted and enabled else '0'), 'config-events')
+        require(checked_read(path.parent / 'filter', 'config-filters').strip() in ('', 'none', '0'), 'config-filters')
         require(not any(
             line.strip() and not line.lstrip().startswith('#')
-            for line in (path.parent / 'trigger').read_text().splitlines()
-        ))
+            for line in checked_read(path.parent / 'trigger', 'config-triggers').splitlines()
+        ), 'config-triggers')
     schemas = {}
+    fixed_fork = {'char parent_comm[16]': (8, 16), 'pid_t parent_pid': (24, 4),
+                  'char child_comm[16]': (28, 16), 'pid_t child_pid': (44, 4)}
+    string_fork = {'__data_loc char[] parent_comm': (8, 4), 'pid_t parent_pid': (12, 4),
+                   '__data_loc char[] child_comm': (16, 4), 'pid_t child_pid': (20, 4)}
+    fixed_exit = {'char comm[16]': (8, 16), 'pid_t pid': (24, 4), 'int prio': (28, 4)}
     layouts = {
-        'fork': ('comm=%s pid=%d child_comm=%s child_pid=%d',
-                 {'parent_comm', 'parent_pid', 'child_comm', 'child_pid'}),
-        'exec': ('filename=%s pid=%d old_pid=%d', {'filename', 'pid', 'old_pid'}),
-        'exit': ('comm=%s pid=%d prio=%d', {'comm', 'pid', 'prio'}),
+        'fork': (
+            ('comm=%s pid=%d child_comm=%s child_pid=%d', fixed_fork),
+            ('comm=%s pid=%d child_comm=%s child_pid=%d', string_fork),
+        ),
+        'exec': (('filename=%s pid=%d old_pid=%d', {
+            '__data_loc char[] filename': (8, 4), 'pid_t pid': (12, 4), 'pid_t old_pid': (16, 4),
+        }),),
+        'exit': (
+            ('comm=%s pid=%d prio=%d', fixed_exit),
+            ('comm=%s pid=%d prio=%d group_dead=%s', {**fixed_exit, 'bool group_dead': (32, 1)}),
+        ),
     }
-    for event, (layout, expected) in layouts.items():
-        text = (instance / 'events/sched' / f'sched_process_{event}/format').read_text()
-        require(f'print fmt: "{layout}"' in text)
-        fields = re.findall(
-            r'field:.*?\b(\w+)(?:\[\d*\])?;\s*offset:(\d+);\s*size:(\d+);', text
-        )
-        require({name for name, _, _ in fields if not name.startswith('common_')} == expected)
-        schemas[event] = {
-            name: {'offset': int(offset), 'size': int(size)}
-            for name, offset, size in fields if name in expected
+    for event, variants in layouts.items():
+        stage = f'config-{event}'
+        text = checked_read(instance / 'events/sched' / f'sched_process_{event}/format', stage)
+        declarations = [
+            (declaration, offset, size)
+            for declaration, offset, size in re.findall(
+                r'field:([^;]+);\s*offset:(\d+);\s*size:(\d+);', text
+            ) if not declaration.split()[-1].startswith('common_')
+        ]
+        fields = {
+            ' '.join(declaration.split()): (int(offset), int(size))
+            for declaration, offset, size in declarations
         }
-        require(all(field['size'] == 16 for name, field in schemas[event].items() if 'comm' in name))
-    require((instance / 'set_event_pid').read_text().strip() == '')
-    require((instance / 'set_event_notrace_pid').read_text().strip() == '')
-    total_kib = int((instance / 'buffer_total_size_kb').read_text())
-    require(0 < total_kib <= 4096)
+        require(len(fields) == len(declarations), stage)
+        require(any(
+            fields == expected and f'print fmt: "{layout}"' in text
+            for layout, expected in variants
+        ), stage)
+        schemas[event] = {
+            declaration.rsplit(' ', 1)[-1].split('[', 1)[0]: {'offset': offset, 'size': size}
+            for declaration, (offset, size) in fields.items()
+        }
+    require(checked_read(instance / 'set_event_pid', 'config-pids').strip() == '', 'config-pids')
+    require(checked_read(instance / 'set_event_notrace_pid', 'config-pids').strip() == '', 'config-pids')
+    total_kib = int(checked_read(instance / 'buffer_total_size_kb', 'config-buffer'))
+    require(0 < total_kib <= 4096, 'config-buffer')
     return {'nop': True, 'mono': True, 'only_three_events': True,
             'no_stacks_triggers_filters': True, 'buffer_total_kib': total_kib,
             'formats': schemas}
@@ -118,25 +169,36 @@ def remove(instance):
 
 
 def control(operation, name):
-    require(os.geteuid() == 0)
-    require(re.fullmatch(r'pinfold-timing-\d+-[a-f0-9]{12}', name) is not None)
+    require(os.geteuid() == 0, 'control-user')
+    require(re.fullmatch(r'pinfold-timing-\d+-[a-f0-9]{12}', name) is not None, 'control-name')
     instance = TRACEFS / 'instances' / name
     if operation == 'create':
-        mounted = any(
-            line.split(' - ', 1)[0].split()[4] == str(TRACEFS)
-            and line.split(' - ', 1)[1].split()[0] == 'tracefs'
-            for line in Path('/proc/self/mountinfo').read_text().splitlines()
-        )
-        require(mounted)
-        instance.mkdir()
+        created = False
+        stage = 'tracefs-mounted'
         try:
+            mounted = any(
+                line.split(' - ', 1)[0].split()[4] == str(TRACEFS)
+                and line.split(' - ', 1)[1].split()[0] == 'tracefs'
+                for line in checked_read(Path('/proc/self/mountinfo'), stage).splitlines()
+            )
+            require(mounted, stage)
+            stage = 'create-instance'
+            instance.mkdir()
+            created = True
+            stage = 'create-stop'
             (instance / 'tracing_on').write_text('0')
+            stage = 'create-clock'
             (instance / 'trace_clock').write_text('mono')
+            stage = 'create-buffer'
             (instance / 'buffer_size_kb').write_text('1024')
+            stage = 'config'
             return {'ok': True, 'created': True, 'configuration': configuration(instance, False)}
-        except BaseException:
-            return {'ok': False, 'created': True, 'cleanup': remove(instance)}
-    require(instance.is_dir())
+        except BaseException as error:
+            result = {'ok': False, 'created': created, **refusal(error, stage)}
+            if created:
+                result['cleanup'] = remove(instance)
+            return result
+    require(instance.is_dir(), 'control-instance')
     if operation == 'start':
         require((instance / 'tracing_on').read_text().strip() == '0')
         (instance / 'trace').write_text('')
@@ -323,11 +385,11 @@ def parsed_clean(parsed):
 
 
 def main():
-    require(os.geteuid() != 0)
+    require(os.geteuid() != 0, 'runner-user')
     temporary = Path(os.environ['RUNNER_TEMP'])
-    require(temporary.is_absolute() and temporary.is_dir())
+    require(temporary.is_absolute() and temporary.is_dir(), 'runner-temp')
     directory = Path(tempfile.mkdtemp(prefix='pinfold-timing-', dir=temporary))
-    require(stat.S_IMODE(directory.stat().st_mode) == 0o700)
+    require(stat.S_IMODE(directory.stat().st_mode) == 0o700, 'runner-private')
     name = f'pinfold-timing-{os.getpid()}-{uuid.uuid4().hex[:12]}'
     receipt = {'diagnostic_only': True, 'wrapper_pid': os.getpid(), 'suite_started': False,
                'suite_exit': None, 'capture_complete': False, 'attribution_complete': False,
@@ -412,8 +474,9 @@ def main():
             child.send_signal(cancelled)
         receipt['suite_exit'] = child.wait()
         receipt['suite_end_monotonic_ns'] = time.monotonic_ns()
-    except BaseException:
+    except BaseException as error:
         receipt['observer_error'] = True
+        receipt.update(refusal(error))
     finally:
         if child is not None:
             code = child.wait()
@@ -511,6 +574,6 @@ if __name__ == '__main__':
                 print(json.dumps(result, separators=(',', ':')), flush=True)
         else:
             raise SystemExit(main())
-    except Exception:
-        print('{"observer_control_failed":true}', flush=True)
+    except Exception as error:
+        print(json.dumps({'observer_control_failed': True, **refusal(error, 'observer-setup')}), flush=True)
         raise SystemExit(1)
