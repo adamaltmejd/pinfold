@@ -1689,7 +1689,9 @@ RUN set -eu; \
     ));
     let prepared: serde_json::Value =
         serde_json::from_slice(&prepared.stdout).expect("base image build reports JSON");
-    let base = prepared["ref"].as_str().expect("base image build has a ref");
+    let base = prepared["ref"]
+        .as_str()
+        .expect("base image build has a ref");
     let context = test_dir(&env, "context");
     let recipe = context.join("Containerfile");
     fs::write(
