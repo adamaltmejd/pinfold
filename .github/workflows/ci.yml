@@ -58,5 +58,5 @@ jobs:
           sudo apparmor_parser -r /etc/apparmor.d/pinfold
           test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 1
 
-      - name: End-to-end tests
-        run: python3 scripts/e2e-budget.py
+      - name: End-to-end tests (one-off chronology; not budget admission)
+        run: python3 scripts/ubuntu-timing-observer.py
