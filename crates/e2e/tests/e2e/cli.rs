@@ -171,21 +171,13 @@ fn doctor_reports_without_changing_state() {
     {
         use std::io::Write;
         use std::process::Stdio;
+        let box_env = TestEnv::new("doctor-box");
         let name = crate::box_::box_name("doctor");
-        let context = e2e::test_dir(&env, "image");
-        let recipe = context.join("Containerfile");
-        fs::write(&recipe, "FROM scratch\n").unwrap();
-        let built = e2e::run_ok(
-            env.command(pinfold())
-                .args(["image", "build", &name, "--containerfile"])
-                .arg(&recipe)
-                .arg("--context")
-                .arg(&context),
-        );
-        let image: serde_json::Value =
-            serde_json::from_slice(&built.stdout).expect("caller image build reports JSON");
-        let spec = serde_json::json!({ "name": name, "image": image["ref"] });
-        let mut up = env
+        let spec = serde_json::json!({
+            "name": name,
+            "image": e2e::default_image(&box_env),
+        });
+        let mut up = box_env
             .command(&unprofiled)
             .args(["box", "up"])
             .stdin(Stdio::piped())
@@ -217,7 +209,7 @@ fn doctor_reports_without_changing_state() {
                 .is_some_and(|detail| detail.contains("userns-apparmor")),
             "the copy's refusal does not name userns-apparmor: {refused}"
         );
-        crate::box_::box_up(&env, &spec, &name).down(&env);
+        crate::box_::box_up(&box_env, &spec, &name).down(&box_env);
     }
 }
 
