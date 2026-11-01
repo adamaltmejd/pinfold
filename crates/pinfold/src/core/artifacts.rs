@@ -424,8 +424,7 @@ pub struct Pin {
 
 #[derive(Serialize)]
 struct PinAsset {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    url: Option<&'static str>,
+    url: &'static str,
     sha256: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     bytes: Option<u64>,
@@ -445,7 +444,7 @@ pub fn pins() -> io::Result<Vec<Pin>> {
                 .assets(OS_ARCH)
                 .into_iter()
                 .map(|asset| PinAsset {
-                    url: Some(&asset.url),
+                    url: &asset.url,
                     sha256: &asset.sha256,
                     bytes: None,
                 })
@@ -472,7 +471,7 @@ pub fn pins() -> io::Result<Vec<Pin>> {
                 .is_ok(),
             path,
             assets: vec![PinAsset {
-                url: Some(&BUILDER.url),
+                url: &BUILDER.url,
                 sha256: &BUILDER.archive_sha256,
                 bytes: Some(BUILDER.archive_bytes),
             }],
