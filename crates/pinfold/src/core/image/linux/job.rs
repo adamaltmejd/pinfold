@@ -38,6 +38,7 @@ const BUILD_HOSTS: &[&str] = &[
     "registry-1.docker.io",
     "auth.docker.io",
     "production.cloudfront.docker.com",
+    "docker-images-prod.s3.dualstack.us-east-1.amazonaws.com",
     "deb.debian.org",
     "github.com",
     "release-assets.githubusercontent.com",

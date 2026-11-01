@@ -787,6 +787,7 @@ A stop after those physical barriers does not make the cache unclean again.
 
 Daemon and RUN use the production proxy and audit. Initial build hosts are
 `registry-1.docker.io`, `auth.docker.io`, `production.cloudfront.docker.com`,
+`docker-images-prod.s3.dualstack.us-east-1.amazonaws.com`,
 `deb.debian.org`, `github.com`, `release-assets.githubusercontent.com`,
 `registry.npmjs.org` and `cli.github.com`. Linux `build` and `image build`
 accept repeatable `--allow HOST` exact DNS additions, independently of agent
