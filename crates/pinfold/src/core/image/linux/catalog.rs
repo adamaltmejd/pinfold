@@ -16,7 +16,6 @@ use crate::core::image::ImageInfo;
 use crate::core::{hex, ownership, sha256_hex};
 use crate::dirs;
 
-// Candidate resource policy; final admission requires the boundary evidence.
 const HEADER_MAX: usize = 8 << 10;
 const JSON_MAX: u64 = 1 << 20;
 const OBJECT_MAX: usize = 4096;
