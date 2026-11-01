@@ -185,54 +185,9 @@ fn cleanup_removes_only_pinfolds_garbage() {
     #[cfg(target_os = "macos")]
     let user_container = RuntimeContainer::run(&box_name("cleanup-user"), base, None);
 
-    let listed = box_list(&env, &live_label);
-    let live_box = listed
-        .iter()
-        .find(|box_| box_["name"] == live)
-        .unwrap_or_else(|| panic!("the live box is missing before clean: {listed:?}"));
-    assert_eq!(live_box["owner_alive"], true, "{live_box:?}");
-    assert_eq!(fs::read(&live_marker).unwrap(), b"live\n");
-    assert_eq!(fs::read(&other_marker).unwrap(), b"other\n");
-    let listed = disk_names(&env);
-    assert!(listed.contains(&live_disk) && listed.contains(&other_disk));
-    #[cfg(target_os = "macos")]
-    assert!(user_container.listed(), "the foreign container is missing");
-
-    run_ok(
-        env.command(pinfold())
-            .args(["clean", "--dry-run", "--unused", "0s"]),
-    );
-    assert_eq!(fs::read(&other_marker).unwrap(), b"other\n");
-    assert_eq!(fs::read(&live_marker).unwrap(), b"live\n");
-    let listed = disk_names(&env);
-    assert!(listed.contains(&live_disk) && listed.contains(&other_disk));
-    run_ok(env.command(pinfold()).arg("clean"));
-    let listed = disk_names(&env);
-    assert!(listed.contains(&live_disk) && listed.contains(&other_disk));
-
-    run_ok(env.command(pinfold()).args(["clean", "--unused", "0s"]));
-    let listed = disk_names(&env);
-    assert!(listed.contains(&live_disk), "clean removed the live disk");
-    assert!(!listed.contains(&other_disk), "clean kept the idle disk");
-    assert!(!other_state.exists(), "clean kept the idle project state");
-    assert!(live_state.is_dir(), "clean removed the live project state");
-    assert_eq!(fs::read(&live_marker).unwrap(), b"live\n");
-    let written = box_exec(&env, &live, &["cat", "/home-disk/marker"]);
-    assert_ok(&written, "reading the live disk after clean");
-    assert_eq!(written.stdout, "live disk write\n");
-    #[cfg(target_os = "macos")]
-    assert!(
-        user_container.listed(),
-        "clean removed the foreign container"
-    );
-    #[cfg(target_os = "macos")]
-    assert!(
-        image_id(&unlabeled).is_some(),
-        "clean removed the unlabeled image"
-    );
-
     // One fresh caller image: its last reference must remain while a box
     // holds it, then disappear on the same rm after that box stops.
+    // Build before clean so its cache purge is not followed by a cold rebuild.
     let context = test_dir(&env, "image-rm-context");
     let recipe = context.as_path().join("Containerfile");
     fs::write(
@@ -326,6 +281,52 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // Sabotage: leave a completed root after its last reference goes.
     #[cfg(target_os = "linux")]
     assert!(!root_disk.exists(), "rm kept the stopped root disk");
+
+    let listed = box_list(&env, &live_label);
+    let live_box = listed
+        .iter()
+        .find(|box_| box_["name"] == live)
+        .unwrap_or_else(|| panic!("the live box is missing before clean: {listed:?}"));
+    assert_eq!(live_box["owner_alive"], true, "{live_box:?}");
+    assert_eq!(fs::read(&live_marker).unwrap(), b"live\n");
+    assert_eq!(fs::read(&other_marker).unwrap(), b"other\n");
+    let listed = disk_names(&env);
+    assert!(listed.contains(&live_disk) && listed.contains(&other_disk));
+    #[cfg(target_os = "macos")]
+    assert!(user_container.listed(), "the foreign container is missing");
+
+    run_ok(
+        env.command(pinfold())
+            .args(["clean", "--dry-run", "--unused", "0s"]),
+    );
+    assert_eq!(fs::read(&other_marker).unwrap(), b"other\n");
+    assert_eq!(fs::read(&live_marker).unwrap(), b"live\n");
+    let listed = disk_names(&env);
+    assert!(listed.contains(&live_disk) && listed.contains(&other_disk));
+    run_ok(env.command(pinfold()).arg("clean"));
+    let listed = disk_names(&env);
+    assert!(listed.contains(&live_disk) && listed.contains(&other_disk));
+
+    run_ok(env.command(pinfold()).args(["clean", "--unused", "0s"]));
+    let listed = disk_names(&env);
+    assert!(listed.contains(&live_disk), "clean removed the live disk");
+    assert!(!listed.contains(&other_disk), "clean kept the idle disk");
+    assert!(!other_state.exists(), "clean kept the idle project state");
+    assert!(live_state.is_dir(), "clean removed the live project state");
+    assert_eq!(fs::read(&live_marker).unwrap(), b"live\n");
+    let written = box_exec(&env, &live, &["cat", "/home-disk/marker"]);
+    assert_ok(&written, "reading the live disk after clean");
+    assert_eq!(written.stdout, "live disk write\n");
+    #[cfg(target_os = "macos")]
+    assert!(
+        user_container.listed(),
+        "clean removed the foreign container"
+    );
+    #[cfg(target_os = "macos")]
+    assert!(
+        image_id(&unlabeled).is_some(),
+        "clean removed the unlabeled image"
+    );
 }
 
 #[test]
