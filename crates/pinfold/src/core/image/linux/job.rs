@@ -27,7 +27,6 @@ use crate::core::runtime::firecracker::{jail, vm};
 use crate::core::{artifacts, clean, pipe, proxy, runs, sha256_hex};
 use crate::init::firecracker::{BOOT, BOOT_PORT, FAILED, READY, write_frame};
 
-// Candidate allocations from the executed trial. Final policy is an admission gate.
 const CACHE_BYTES: u64 = 8 << 30;
 const WORK_BYTES: u64 = 3 << 30;
 const JOB_TIME: Duration = Duration::from_secs(300);
