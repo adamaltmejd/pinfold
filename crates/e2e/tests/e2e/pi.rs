@@ -32,6 +32,7 @@ pub(crate) fn holding(dir: &Path, needle: &[u8], scanned: &mut Vec<std::path::Pa
     use nix::unistd::{Whence, lseek};
     use std::io::{Read, Seek, SeekFrom};
     use std::os::fd::AsFd;
+    assert!(!needle.is_empty(), "secret scan needs a nonempty needle");
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
@@ -76,11 +77,17 @@ pub(crate) fn holding(dir: &Path, needle: &[u8], scanned: &mut Vec<std::path::Pa
                 window.resize(start + left.min(8 << 20), 0);
                 file.read_exact(&mut window[start..]).unwrap();
                 left -= window.len() - start;
-                assert!(
-                    !window.windows(needle.len()).any(|bytes| bytes == needle),
-                    "{} holds the secret",
-                    path.display()
-                );
+                // SAFETY: both live slices supply their exact readable lengths.
+                // memmem only reads them; its result is never dereferenced.
+                let found = unsafe {
+                    nix::libc::memmem(
+                        window.as_ptr().cast(),
+                        window.len(),
+                        needle.as_ptr().cast(),
+                        needle.len(),
+                    )
+                };
+                assert!(found.is_null(), "{} holds the secret", path.display());
                 window.drain(..window.len().saturating_sub(needle.len() - 1));
             }
             offset = hole;
