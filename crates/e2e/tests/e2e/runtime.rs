@@ -365,12 +365,19 @@ fn disks_persist_and_attach_exclusively() {
     let [writer, second, reader_a, reader_b] = &boxes;
     let label = "dev.example.test=disks";
     let spec = |name: &str, disk: serde_json::Value| {
-        serde_json::json!({
+        let spec = serde_json::json!({
             "name": name,
             "image": image,
             "labels": { "dev.example.test": "disks" },
             "disks": [disk],
-        })
+        });
+        #[cfg(target_os = "linux")]
+        let spec = {
+            let mut spec = spec;
+            spec["cpus"] = serde_json::json!(1);
+            spec
+        };
+        spec
     };
 
     // The host tree: a plain file, an executable and a symlink.

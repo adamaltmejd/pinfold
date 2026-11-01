@@ -1101,6 +1101,7 @@ fn the_vmm_reaches_only_its_own_box() {
             let spec = serde_json::json!({
                 "name": name,
                 "image": default_image(&env),
+                "cpus": 1,
                 "disks": [{ "name": disk, "guest": "/disk" }],
             });
             box_up(&env, &spec, name)
