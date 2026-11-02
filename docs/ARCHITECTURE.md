@@ -1239,8 +1239,9 @@ measurement does not authorize a later deletion.
   Configuration, trust and recipe image identity stay folder-based; scratch
   disk identity is per invocation.
 - **Arguments** pass through unchanged, after `-e /opt/pinfold/login/pi.ts`
-  when the configuration has a pi login route. The box starts in the invoking
-  directory. Paths outside the project fail, and pi reports them. A
+  when the configuration has a pi login route. A repository box starts in the
+  invoking directory; a scratch box starts in `/work`. Paths outside the
+  repository project fail, and pi reports them. A
   non-UTF-8 path in a pi box spec or configuration report is refused as
   `path-not-utf8`, naming its field.
 - **Environment:** the harness's variables (Box spec, `harness`), the
