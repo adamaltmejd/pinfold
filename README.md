@@ -113,14 +113,35 @@ Apple builds reject `--allow` additions.
 Rebuild old Podman-only Linux images explicitly with `build` or `image build`.
 Old Podman storage, derived roots and managed agent disks remain untouched.
 
-The project must be a git repository; run `git init` in a plain folder.
-Only committed branches enter the box, which keeps its own repository.
+Inside a Git repository, only committed branches enter the box, which keeps
+its own repository.
 Commit uncommitted work (a WIP commit on a branch will
 do) to give it to the box.
 `pinfold fetch` brings the box's commits back as `pinfold/*` branches for
 you to merge; `pinfold push` sends your branches in as `host/*`. Each
 `pi` start pushes too, and fast-forwards the box's branch when it is
 clean and strictly behind.
+
+Outside Git, each `pinfold pi` invocation gets separate retained home and
+work disks. It starts in `/work`; nothing from the host folder is copied or
+mounted. The local `.pinfold.toml` still applies. Without one, Pinfold uses
+`~/.config/pinfold/pinfold.toml` (or the XDG config directory), then profile
+defaults. Neither configuration file is created automatically. A local file,
+even empty, replaces the global file. Global configuration selects a profile
+for a reusable recipe; `containerfile` remains local-only.
+
+On normal exit, Pi reports outstanding workspace files or repository work
+as bounded metadata. Committed work can be fetched; uncommitted and untracked
+files cannot. A summary is advisory and may be incomplete. Guest file names
+are escaped, file contents are not printed, and interrupted runs skip it.
+
+Use `pinfold disk list` and `pinfold disk rm NAME` for retained disks.
+To save a stopped disk into a new host directory, run
+`pinfold disk export NAME DEST [--image IMAGE]`. It uses the local default
+profile image unless an image is named; build that image explicitly if absent.
+An attached or unclean disk is refused. Exported files are untrusted: inspect
+them before opening or executing them. Symlinks remain symlinks and are never
+followed during export. An existing destination is never replaced.
 
 Optional profiles add tools. To edit one, copy it with
 `pinfold profile new NAME --from full`:

@@ -1,11 +1,11 @@
-//! The pi layer's configuration: the project's `.pinfold.toml`, the selected
-//! profile's `pinfold.toml`, and the host environment, merged.
+//! Pi configuration: a local file or global fallback, the selected profile,
+//! and the host environment.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -30,6 +30,10 @@ const DEFAULT_ALLOW: [&str; 9] = [
 
 /// The merged configuration for one project run.
 pub struct Config {
+    /// Whether the configuration folder is also a Git project to cross.
+    pub repository: bool,
+    /// The selected local or global file; absent when neither exists.
+    pub source: Option<PathBuf>,
     pub profile: Profile,
     pub image: Option<String>,
     /// The project's Containerfile: its path from `.pinfold.toml`, relative
@@ -61,15 +65,46 @@ impl Config {
     }
 
     pub fn load(root: &Path) -> io::Result<Config> {
-        let (project, project_toml) = Layer::read(&root.join(".pinfold.toml"))?;
+        let repository = match fs::symlink_metadata(root.join(".git")) {
+            Ok(metadata) => metadata.is_dir(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error),
+        };
+        let local = root.join(".pinfold.toml");
+        let (project, project_toml, source) = match fs::symlink_metadata(&local) {
+            Ok(_) => {
+                let (layer, bytes) = Layer::read(&local)?;
+                // A dangling link is present, not permission to use global policy.
+                if bytes.is_none() {
+                    return Err(invalid(
+                        &local.display().to_string(),
+                        "file is not readable",
+                    ));
+                }
+                (layer, bytes, Some(local))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let global = crate::dirs::config_dir()?.join("pinfold.toml");
+                let (layer, bytes) = Layer::read(&global)?;
+                if layer.containerfile.is_some() {
+                    return Err(invalid(
+                        &global.display().to_string(),
+                        "`containerfile` is a project key; select a profile for a reusable recipe",
+                    ));
+                }
+                let source = bytes.as_ref().map(|_| global);
+                (layer, None, source)
+            }
+            Err(error) => return Err(error),
+        };
         let top = project.over(Layer::from_env()?);
         let profile_name = top.profile.as_deref().unwrap_or(DEFAULT_PROFILE);
         let profile = Profile::load(profile_name)?;
-        let source = format!("profile {profile_name:?} pinfold.toml");
-        let profile_layer = Layer::parse(&profile.config, &source)?;
+        let profile_source = format!("profile {profile_name:?} pinfold.toml");
+        let profile_layer = Layer::parse(&profile.config, &profile_source)?;
         if profile_layer.containerfile.is_some() {
             return Err(invalid(
-                &source,
+                &profile_source,
                 "`containerfile` is a project key; a profile's image is its own Containerfile",
             ));
         }
@@ -123,6 +158,8 @@ impl Config {
             }
         };
         Ok(Config {
+            repository,
+            source,
             profile,
             image: merged.image,
             containerfile,
@@ -149,7 +186,7 @@ impl Config {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Layer {
-    /// Only `.pinfold.toml` and `PINFOLD_PROFILE` select the profile; the
+    /// Only the selected config file and `PINFOLD_PROFILE` select the profile; the
     /// profile's own file is read after the selection, so its value is
     /// ignored.
     profile: Option<String>,
@@ -169,7 +206,15 @@ impl Layer {
                 let layer = Layer::parse(&bytes, &path.display().to_string())?;
                 Ok((layer, Some(bytes)))
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok((Layer::default(), None)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                match fs::symlink_metadata(path) {
+                    Ok(_) => Err(invalid(&path.display().to_string(), "file is not readable")),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        Ok((Layer::default(), None))
+                    }
+                    Err(error) => Err(error),
+                }
+            }
             Err(error) => Err(io::Error::new(
                 error.kind(),
                 format!("read {}: {error}", path.display()),

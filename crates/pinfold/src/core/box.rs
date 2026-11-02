@@ -92,6 +92,7 @@ pub enum RefusalReason {
     NameInUse,
     Login,
     DiskInUse,
+    DiskMissing,
     DiskUnclean,
     Limit,
 }
@@ -148,6 +149,24 @@ impl Box {
     /// before ready they remove what the start made and `up` returns
     /// [`UpError::Signal`]; after ready [`Box::hold`] watches them.
     pub async fn up(plan: &Plan, init: &Path, signals: &mut Signals) -> Result<Box, UpError> {
+        Self::up_disks(plan, init, signals, false).await
+    }
+
+    /// Export must never create a missing disk or inspect one another box holds.
+    pub(crate) async fn up_existing(
+        plan: &Plan,
+        init: &Path,
+        signals: &mut Signals,
+    ) -> Result<Box, UpError> {
+        Self::up_disks(plan, init, signals, true).await
+    }
+
+    async fn up_disks(
+        plan: &Plan,
+        init: &Path,
+        signals: &mut Signals,
+        existing_only: bool,
+    ) -> Result<Box, UpError> {
         // The spec rules are the first refusal, before anything is created
         // or resolved.
         plan.validate()
@@ -291,7 +310,7 @@ impl Box {
         claim.prepare(&state_dir)?;
         // Disk refusals come after the name claim; returning drops the
         // claim, which removes its record and state.
-        let claimed = match disk::claim(runtime, &mut claim, &plan, init) {
+        let claimed = match disk::claim(runtime, &mut claim, &plan, init, existing_only) {
             Ok(claimed) => claimed,
             Err(Ok((reason, detail))) => return Err(refused(&plan, reason, detail)),
             Err(Err(error)) => return Err(error.into()),

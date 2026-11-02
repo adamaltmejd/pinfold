@@ -597,7 +597,7 @@ const CLIENT_HOOKS: &[&str] = &[
 ];
 
 #[test]
-fn work_leaves_the_box_only_by_fetch() {
+fn project_branches_cross_only_by_fetch() {
     let _runtime = crate::shared_runtime();
     // Guarantee 10: disk writes stay in the box, fetch moves branches only,
     // and nothing the box plants runs on the host.
@@ -4493,4 +4493,147 @@ fn write_skill(dir: &Path, name: &str, marker: &str) {
         ),
     )
     .expect("write SKILL.md");
+}
+
+#[test]
+fn disk_export_writes_only_the_requested_new_destination() {
+    let _runtime = crate::shared_runtime();
+    // Guarantee 45. The host defines file bytes, modes and the symlink target.
+    // Sabotage: omit the existing-only claim; an absent disk becomes an empty
+    // successful export. Drop the disk claim lock/exclusivity check; a live
+    // writer is exported. Follow guest symlinks, or preserve special bits;
+    // the host link/permissions observations fail. Allow existing destinations
+    // at admission and publication; the second export succeeds or changes it.
+    // Skip sender type validation;
+    // the FIFO is accepted or blocks instead of refusing.
+    let env = TestEnv::new("disk-export");
+    let image = default_image(&env);
+    let name = box_name("export");
+    let disk = format!("{name}-data");
+    let spec = serde_json::json!({
+        "name": name,
+        "image": image,
+        "cpus": 1,
+        "memory": "512M",
+        "disks": [{ "name": disk, "guest": "/work", "size": "1G" }],
+    });
+    let outside = env.root.join("outside.txt");
+    fs::write(&outside, "host-only").unwrap();
+    let output = env.root.join("exported");
+    let mut up = box_up(&env, &spec, &name);
+    let fixture = box_exec(
+        &env,
+        &name,
+        &[
+            "sh",
+            "-c",
+            "mkdir /work/nested && printf fixture-data > /work/nested/data && printf '#!/bin/sh\nprintf hello\n' > /work/run && chmod 4755 /work/run && ln -s \"$1\" /work/nested/host-link && mkfifo /work/pipe",
+            "fixture",
+            outside.to_str().unwrap(),
+        ],
+    );
+    assert_ok(&fixture, "write export fixture");
+    let refused = env
+        .command(pinfold())
+        .args(["disk", "export", &disk])
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        !refused.status.success(),
+        "exported an attached writable disk"
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stdout).contains("disk-in-use")
+            || String::from_utf8_lossy(&refused.stderr).contains("disk-in-use")
+    );
+    assert!(!output.exists());
+    up.down(&env);
+    up.wait();
+
+    let refused = env
+        .command(pinfold())
+        .args(["disk", "export", &disk])
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(!refused.status.success(), "accepted a special file");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("spec"),
+        "wrong special-file refusal"
+    );
+    assert!(!output.exists(), "failed export left partial destination");
+    assert_eq!(fs::read(&outside).unwrap(), b"host-only");
+    let mut up = box_up(&env, &spec, &name);
+    assert_ok(
+        &box_exec(&env, &name, &["rm", "/work/pipe"]),
+        "remove special file",
+    );
+    up.down(&env);
+    up.wait();
+    run_ok(
+        env.command(pinfold())
+            .args(["disk", "export", &disk])
+            .arg(&output),
+    );
+    assert_eq!(
+        fs::read(output.join("nested/data")).unwrap(),
+        b"fixture-data"
+    );
+    assert_eq!(
+        fs::read(output.join("run")).unwrap(),
+        b"#!/bin/sh\nprintf hello\n"
+    );
+    assert_eq!(
+        fs::metadata(output.join("run"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o755
+    );
+    assert_eq!(
+        fs::read_link(output.join("nested/host-link")).unwrap(),
+        outside
+    );
+    assert!(
+        fs::symlink_metadata(output.join("nested/host-link"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read(&outside).unwrap(), b"host-only");
+    let before = tree_snapshot(&output);
+    let refused = env
+        .command(pinfold())
+        .args(["disk", "export", &disk])
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        !refused.status.success(),
+        "overwrote an existing destination"
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("destination-exists"),
+        "wrong existing-destination refusal"
+    );
+    assert_eq!(tree_snapshot(&output), before);
+    let listed = run_ok(env.command(pinfold()).args(["disk", "list"])).stdout;
+    let absent = env
+        .command(pinfold())
+        .args(["disk", "export", "absent-export-disk"])
+        .arg(env.root.join("absent-export"))
+        .output()
+        .unwrap();
+    assert!(!absent.status.success());
+    assert!(
+        String::from_utf8_lossy(&absent.stdout).contains("disk-missing")
+            || String::from_utf8_lossy(&absent.stderr).contains("disk-missing")
+    );
+    assert_eq!(
+        run_ok(env.command(pinfold()).args(["disk", "list"])).stdout,
+        listed,
+        "missing-disk export created a disk"
+    );
 }

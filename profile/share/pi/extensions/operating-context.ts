@@ -10,7 +10,7 @@ export default function operatingContext(pi) {
             "## Box operating context",
             `- The proxy allows only these hosts: ${allow.length > 0 ? allow.join(", ") : "none"}.`,
             "- A proxy 403 is final. Do not retry it, route around it, or probe other hosts.",
-            "- Commit your work here. Commits reach the host only when the user runs `pinfold fetch`; uncommitted changes never do.",
+            "- In a Git project, commit your work here; the user runs `pinfold fetch` to bring branches back. Outside Git, save deliverables in /work. The user can explicitly export retained disk files. Nothing is copied to the host automatically.",
         ].join("\n");
         event.systemPromptOptions.sections.pinfold = facts;
     });

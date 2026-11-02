@@ -17,6 +17,7 @@ use crate::core::plan::{Disk, Egress, Env, Plan};
 use crate::core::runs::{self, Terminal};
 use crate::core::runtime::runtime;
 use crate::core::{artifacts, crossing, disk, image, login, ownership, sha256_hex};
+use crate::pi::context::Context;
 use crate::pi::state::{self, canonical, project_id};
 use crate::trust;
 
@@ -25,18 +26,44 @@ const HARNESS: &str = "pi";
 /// Run a `pi`/`pinfold pi` invocation and return pi's exit code.
 pub fn run(args: &[String]) -> io::Result<i32> {
     let cwd = canonical(&env::current_dir()?)?;
-    let root = project_root(&cwd)?;
+    let context = Context::discover(&cwd)?;
+    let root = context.root.clone();
     utf8(&root, "project root")?;
-    require_repo(&root)?;
     let config = Config::load(&root)?;
+    if config.repository != context.repository {
+        return Err(io::Error::other(
+            "git-discovery: repository changed during configuration",
+        ));
+    }
     trust::check(&root, &config)?;
+    context.verify()?;
     let id = project_id(&root);
-    let _project = ownership::project_lock(&id)?;
-    state::record_run(&root)?;
+    let _project = config
+        .repository
+        .then(|| ownership::project_lock(&id))
+        .transpose()?;
+    if config.repository {
+        state::record_run(&root)?;
+    }
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
-    let plan = build_plan(&config, &id, &root, &image);
-    run_box(&plan, &root, &cwd, args)
+    let storage_id = if config.repository {
+        id
+    } else {
+        state::scratch_id()?
+    };
+    let guest_root = if config.repository {
+        root.as_path()
+    } else {
+        Path::new(state::WORK)
+    };
+    let guest_cwd = if config.repository {
+        cwd.as_path()
+    } else {
+        guest_root
+    };
+    let plan = build_plan(&config, &storage_id, guest_root, &image);
+    run_box(&plan, guest_root, guest_cwd, args, config.repository)
 }
 
 /// `$1` is the project's guest path, `$2` the host's branch or empty.
@@ -265,31 +292,7 @@ pub(crate) fn starting(name: &str, disk: &str) -> String {
 /// The canonical project root for `cwd`: the git top level, else `cwd`.
 /// Refuses a `cwd` inside a git directory, and one outside the root.
 pub(crate) fn project_root(cwd: &Path) -> io::Result<PathBuf> {
-    let cwd = canonical(cwd)?;
-    // `--show-toplevel` fails inside `.git`, and the fallback would take
-    // `.git` as the project, so refuse before anything is created.
-    if git(&cwd, &["rev-parse", "--is-inside-git-dir"]).is_some_and(|inside| inside == "true") {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "project-in-git: refusing to run inside a git directory: {}",
-                cwd.display()
-            ),
-        ));
-    }
-    let top = git(&cwd, &["rev-parse", "--show-toplevel"]);
-    let root = canonical(top.as_deref().map_or(&cwd, Path::new))?;
-    if !cwd.starts_with(&root) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "current directory {} is outside the project root {}",
-                cwd.display(),
-                root.display()
-            ),
-        ));
-    }
-    Ok(root)
+    Ok(Context::discover(cwd)?.root)
 }
 
 /// The admitted image source, also reported without resolving the runtime.
@@ -388,7 +391,11 @@ fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> Plan {
         let from = format!("PINFOLD_ENV_{name}");
         (name.clone(), Env::From { from })
     }));
-    let [home, project] = state::disk_names(id);
+    let [home, project] = if config.repository {
+        state::disk_names(id)
+    } else {
+        state::scratch_disk_names(id)
+    };
     Plan {
         profile: Some(config.profile.name.clone()),
         harness: Some(HARNESS.to_string()),
@@ -417,7 +424,13 @@ fn box_plan(config: &Config, id: &str, image: &str) -> Plan {
     Plan {
         name: format!("pi-{id}-{}", std::process::id()),
         image: Some(image.to_string()),
-        labels: BTreeMap::from([(clean::PROJECT_LABEL.to_string(), id.to_string())]),
+        labels: if config.repository {
+            BTreeMap::from([(clean::PROJECT_LABEL.to_string(), id.to_string())])
+        } else {
+            // A recipe image may carry its folder's project identity. Scratch
+            // disks must not acquire that ownership through label inheritance.
+            BTreeMap::from([(clean::PROJECT_LABEL.to_string(), String::new())])
+        },
         cpus: Some(config.cpus),
         memory: Some(config.memory.clone()),
         ..Plan::default()
@@ -450,7 +463,13 @@ pub(crate) fn utf8<'a>(path: &'a Path, what: &str) -> io::Result<&'a str> {
     })
 }
 
-fn run_box(plan: &Plan, root: &Path, cwd: &Path, args: &[String]) -> io::Result<i32> {
+fn run_box(
+    plan: &Plan,
+    root: &Path,
+    cwd: &Path,
+    args: &[String],
+    repository: bool,
+) -> io::Result<i32> {
     let init = artifacts::init()?;
     let extension = plan
         .logins()
@@ -477,10 +496,17 @@ fn run_box(plan: &Plan, root: &Path, cwd: &Path, args: &[String]) -> io::Result<
             }
             Err(error) => return Err(error.into()),
         };
+        if !repository {
+            eprintln!("pinfold pi: scratch disks: home={}, work={}; retained until `pinfold disk rm NAME`", plan.disks[0].name, plan.disks[1].name);
+        }
         // The sync runs here so that the signals and the box's end below
         // also cover it.
+        let summary_init = init.clone();
+        let summary_root = root.clone();
         let exec = tokio::task::spawn_blocking(move || {
-            sync(&name, &init, &root);
+            if repository {
+                sync(&name, &init, &root);
+            }
             box_runtime.exec(&name, &init, tty, Some(&workdir), &argv)
         });
         let ended = tokio::select! {
@@ -500,10 +526,26 @@ fn run_box(plan: &Plan, root: &Path, cwd: &Path, args: &[String]) -> io::Result<
         };
         // Remove the box exactly once, whatever ended the run. A failed
         // removal must not hide the error that ended pi.
-        let (terminal, code) = match ended {
+        let (mut terminal, mut code) = match ended {
             Ok((terminal, code)) => (Some(terminal), Ok(code)),
             Err(error) => (None, Err(error)),
         };
+        if terminal.as_ref().is_some_and(|terminal| terminal.reason == "harness-exited") {
+            match super::summary::report(&mut box_, &mut signals, plan, &summary_init, &summary_root, repository).await {
+                Ok(Some((stopped, status))) => {
+                    terminal = Some(stopped);
+                    // A later control/security stop can fail a successful run,
+                    // but must not turn an observed harness failure into success.
+                    if code.as_ref().is_ok_and(|code| *code == 0) { code = Ok(status); }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    terminal = None;
+                    if code.as_ref().is_ok_and(|code| *code == 0) { code = Err(error); }
+                    else { eprintln!("pinfold pi: box monitor failed during summary"); }
+                }
+            }
+        }
         let reason = terminal.as_ref().map(|terminal| terminal.reason);
         let down = box_.down(terminal).await;
         if let Some(reason) = reason.filter(|reason| !matches!(*reason, "harness-exited" | "signal")) {

@@ -27,9 +27,13 @@ use nix::sys::signal::{SigHandler, SigSet, Signal};
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "init/builder.rs"]
 mod builder;
+#[path = "init/export.rs"]
+pub(crate) mod export;
 #[cfg(target_os = "linux")]
 #[path = "init/firecracker.rs"]
 pub(crate) mod firecracker;
+#[path = "init/summary.rs"]
+pub(crate) mod summary;
 
 /// Guest values travel under names the host runtime does not interpret.
 /// Hex preserves arbitrary environment bytes through runtime JSON encoding.
@@ -44,6 +48,8 @@ pub fn run(args: &[String]) -> ! {
         Some("exec") => exec(&args[1..]),
         Some("setup") => exit_with("setup", setup(&args[1..])),
         Some("receive") => exit_with("receive", receive(&args[1..])),
+        Some("send") => exit_with("send", export::run(&args[1..])),
+        Some("summary") => exit_with("summary", summary::run(&args[1..])),
         #[cfg(target_os = "linux")]
         Some("boot") => firecracker::boot(),
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
