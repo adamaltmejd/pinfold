@@ -46,4 +46,8 @@ jobs:
           test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 1
 
       - name: Blocked responses release the upstream
-        run: cargo test -p e2e --locked --test e2e box_::blocked_route_responses_release_the_upstream -- --ignored --exact --nocapture
+        run: |
+          test_name=box_::blocked_route_responses_release_the_upstream
+          cargo test -p e2e --locked --test e2e "$test_name" -- --ignored --exact --list >"$RUNNER_TEMP/blocked-response-tests"
+          grep -Fx "$test_name: test" "$RUNNER_TEMP/blocked-response-tests"
+          cargo test -p e2e --locked --test e2e "$test_name" -- --ignored --exact --nocapture
