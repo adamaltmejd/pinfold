@@ -464,6 +464,53 @@ pub enum Removal {
     InUse(String),
 }
 
+/// Held across a read-only inspection's teardown and the removal decision.
+pub(crate) struct RemovalGuard {
+    names: BTreeSet<String>,
+    _locks: Vec<Flock<File>>,
+}
+
+impl RemovalGuard {
+    pub(crate) fn try_take(names: &[String]) -> io::Result<Option<Self>> {
+        let names: BTreeSet<String> = names.iter().cloned().collect();
+        let mut locks = Vec::new();
+        for name in &names {
+            let Some(lock) = ownership::try_disk_lock(name)? else {
+                return Ok(None);
+            };
+            locks.push(lock);
+        }
+        Ok(Some(Self {
+            names,
+            _locks: locks,
+        }))
+    }
+
+    /// Check the entire set before deleting any member. Never recover an
+    /// unclean disk or force-detach a disk another box claimed.
+    pub(crate) fn remove_clean(&self, runtime: &dyn Runtime) -> io::Result<bool> {
+        let attached = attachments(runtime, None)?;
+        for name in &self.names {
+            if attached.contains_key(name) || unclean(name)? || unfilled(name)? {
+                return Ok(false);
+            }
+        }
+        let existing: BTreeSet<String> = runtime
+            .list_disks()?
+            .into_iter()
+            .map(|disk| disk.name)
+            .collect();
+        for name in &self.names {
+            if existing.contains(name) {
+                runtime.remove_disk(name)?;
+            }
+            unmark(name, UNCLEAN)?;
+            unmark(name, UNFILLED)?;
+        }
+        Ok(true)
+    }
+}
+
 /// Remove a disk no box attaches.
 pub fn remove(runtime: &dyn Runtime, name: &str) -> io::Result<Removal> {
     let _lock = ownership::disk_lock(name)?;

@@ -440,6 +440,19 @@ fn disks_persist_and_attach_exclusively() {
         (1, &"disk-in-use".into()),
         "{refused}"
     );
+    // Sabotage: bulk removal bypasses ordinary disk claims; this live
+    // writer loses its disk instead of returning disk-in-use.
+    let bulk = env
+        .command(pinfold())
+        .args(["disk", "rm", "--all", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(bulk.status.code(), Some(1));
+    assert!(
+        json_lines(&String::from_utf8_lossy(&bulk.stdout))
+            .iter()
+            .any(|entry| entry["disk"] == work.as_str() && entry["reason"] == "disk-in-use")
+    );
 
     // Another state root naming the disk gets its own: its writable `up`
     // runs beside the writer, sees none of the writer's files, and its
@@ -760,10 +773,14 @@ fn disks_persist_and_attach_exclusively() {
     let (code, removed) = disk_rm(&env, work);
     assert_eq!((code, &removed["existed"]), (0, &true.into()), "{removed}");
     assert!(!disk_names(&env).iter().any(|name| name == work));
+    // The same bulk path succeeds after the writers stop and removes all
+    // remaining fixture disks, rather than stopping after its first item.
+    run_ok(env.command(pinfold()).args(["disk", "rm", "--all"]));
+    assert!(disk_names(&env).is_empty());
 }
 
 fn disk_list(env: &TestEnv) -> Vec<serde_json::Value> {
-    let output = run_ok(env.command(pinfold()).args(["disk", "list"]));
+    let output = run_ok(env.command(pinfold()).args(["disk", "list", "--json"]));
     json_lines(&String::from_utf8_lossy(&output.stdout))
 }
 
@@ -775,7 +792,7 @@ fn disk_names(env: &TestEnv) -> Vec<String> {
 }
 
 fn disk_rm(env: &TestEnv, name: &str) -> (i32, serde_json::Value) {
-    one_json_line(env.command(pinfold()).args(["disk", "rm", name]))
+    one_json_line(env.command(pinfold()).args(["disk", "rm", name, "--json"]))
 }
 
 #[test]

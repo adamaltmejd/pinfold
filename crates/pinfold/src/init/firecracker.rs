@@ -16,7 +16,7 @@
 //!
 //! - Boot (guest dials host port [`BOOT_PORT`]): host sends BOOT (uid u32,
 //!   gid u32, relay u8 for a box with a proxy, root device, attachment
-//!   count u32, then device, guest path, writable u8 each; fill count
+//!   count u32, then device, guest path, writable u8, fresh u8 each; fill count
 //!   u32, then each fill's guest path and a missing u8), then each fill's
 //!   copy stream: a new disk's `from`, or
 //!   with missing, the profile's seeds, each written only when absent. The
@@ -164,6 +164,7 @@ struct Attachment {
     device: String,
     guest: PathBuf,
     writable: bool,
+    fresh: bool,
 }
 
 fn parse_request(payload: &[u8]) -> io::Result<Request> {
@@ -178,6 +179,7 @@ fn parse_request(payload: &[u8]) -> io::Result<Request> {
             device: device(&mut fields)?,
             guest: guest_path(&mut fields)?,
             writable: fields.u8()? != 0,
+            fresh: fields.u8()? != 0,
         });
     }
     let mut fills = Vec::new();
@@ -234,6 +236,10 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
             || request.gid != 0
             || request.root != "/dev/vdb"
             || !request.fills.is_empty()
+            || request
+                .attachments
+                .iter()
+                .any(|attachment| attachment.fresh)
             || request.attachments.len() != if request.relay { 3 } else { 2 }
             || !request.attachments.iter().any(|attachment| {
                 attachment.device == "/dev/vdc"
@@ -338,6 +344,12 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
             Some("noinit_itable"),
         )?;
         if attachment.writable {
+            if attachment.fresh {
+                // Only a newly formatted disk, before copies or guest work.
+                // rmdir cannot discard recovered files; failed removal leaves
+                // the directory for the strict scratch inspection to retain.
+                let _ = fs::remove_dir(target.join("lost+found"));
+            }
             nix::unistd::chown(
                 &target,
                 Some(Uid::from_raw(request.uid)),

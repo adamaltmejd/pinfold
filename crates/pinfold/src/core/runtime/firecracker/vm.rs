@@ -204,14 +204,15 @@ impl Vm {
         // vda is the init disk, vdb the root disk, then the box's disks and
         // the mounts' images in this order.
         let mut drives: Vec<(PathBuf, bool)> = Vec::new();
-        let mut attachments: Vec<(&Path, bool)> = Vec::new();
+        let mut attachments: Vec<(&Path, bool, bool)> = Vec::new();
         for disk in &plan.disks {
             drives.push((super::disk_path(&disk.name)?, !disk.readonly));
-            attachments.push((&disk.guest, !disk.readonly));
+            let fresh = !disk.readonly && disk::unfilled(&disk.name)?;
+            attachments.push((&disk.guest, !disk.readonly, fresh));
         }
         for (image, guest) in &prepared.mounts {
             drives.push((image.clone(), false));
-            attachments.push((guest, false));
+            attachments.push((guest, false, false));
         }
         let device = |index: usize| format!("vd{}", char::from(b'a' + index as u8));
 
@@ -226,10 +227,11 @@ impl Vm {
         request.push(u8::from(proxy_socket.is_some()));
         put(&mut request, device(1).as_bytes());
         request.extend((attachments.len() as u32).to_be_bytes());
-        for (index, (guest, writable)) in attachments.iter().enumerate() {
+        for (index, (guest, writable, fresh)) in attachments.iter().enumerate() {
             put(&mut request, device(index + 2).as_bytes());
             put(&mut request, guest.as_os_str().as_bytes());
             request.push(u8::from(*writable));
+            request.push(u8::from(*fresh));
         }
         let filled = fills
             .iter()

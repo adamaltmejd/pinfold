@@ -39,9 +39,9 @@ pinfold apparmor-profile         the AppArmor profile for this executable (Linux
 pinfold update [--check]         check for a release, or download and install it
 pinfold config [ROOT]            effective configuration and project facts as JSON
 pinfold box …                    the process interface
-pinfold disk list                list managed disks as JSON lines
-pinfold disk rm NAME             remove an unattached disk; one JSON line
-pinfold disk export NAME DEST [--image IMAGE]   copy an unattached disk into a new directory
+pinfold disk list [--json]       list managed disks
+pinfold disk rm NAME|--all [--json]   remove unattached disks
+pinfold disk export NAME DEST [--image IMAGE] [--json]   copy an unattached disk into a new directory
 pinfold --version                print the version
 pinfold --help                   print this usage";
 
@@ -543,6 +543,8 @@ fn answer(verb: &str, run_id: &str, answer: Option<serde_json::Value>) -> io::Re
 }
 
 pub fn disk(args: &[String]) -> io::Result<i32> {
+    let json = args.last().is_some_and(|arg| arg == "--json");
+    let args = if json { &args[..args.len() - 1] } else { args };
     if let [verb, name, destination, rest @ ..] = args
         && verb == "export"
     {
@@ -556,10 +558,18 @@ pub fn disk(args: &[String]) -> io::Result<i32> {
         };
         let status = crate::core::disk_export::run(name, Path::new(destination), image)?;
         if status == 0 {
-            println!(
-                "{}",
-                serde_json::json!({"event":"exported", "disk":name, "destination":destination})
-            );
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"event":"exported", "disk":name, "destination":destination})
+                );
+            } else {
+                println!(
+                    "Exported {} to {} (untrusted files).",
+                    terminal_text(name),
+                    terminal_text(destination)
+                );
+            }
         }
         return Ok(status);
     }
@@ -567,7 +577,47 @@ pub fn disk(args: &[String]) -> io::Result<i32> {
     match args {
         [verb] if verb == "list" => {
             let attached = disk::attachments(runtime, None)?;
-            for found in runtime.list_disks()? {
+            let origins = if json {
+                BTreeMap::new()
+            } else {
+                crate::pi::state::disk_origins()?
+            };
+            let mut disks = runtime.list_disks()?;
+            if !json {
+                disks.sort_by(|left, right| left.name.cmp(&right.name));
+                println!("NAME\tALLOCATED\tCAPACITY\tSTATE\tATTACHED\tORIGIN");
+            }
+            for found in disks {
+                let clean = !disk::unclean(&found.name)?;
+                if !json {
+                    let holders = attached
+                        .get(&found.name)
+                        .into_iter()
+                        .flatten()
+                        .map(|(name, readonly)| {
+                            format!(
+                                "{} ({})",
+                                terminal_text(name),
+                                if *readonly { "ro" } else { "rw" }
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let origin = origins
+                        .get(&found.name)
+                        .map(|root| terminal_text(&root.to_string_lossy()))
+                        .unwrap_or_else(|| "—".to_string());
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}\t{}",
+                        terminal_text(&found.name),
+                        human_size(found.allocated),
+                        human_size(found.size),
+                        if clean { "clean" } else { "unclean" },
+                        if holders.is_empty() { "—" } else { &holders },
+                        origin
+                    );
+                    continue;
+                }
                 let boxes: Vec<_> = attached
                     .get(&found.name)
                     .into_iter()
@@ -583,40 +633,129 @@ pub fn disk(args: &[String]) -> io::Result<i32> {
                         "size": found.size,
                         "allocated": found.allocated,
                         "attached": boxes,
-                        "clean": !disk::unclean(&found.name)?,
+                        "clean": clean,
                     })
                 );
             }
             Ok(0)
         }
-        [verb, name] if verb == "rm" => {
-            if !valid_name(name) {
-                return Ok(refused(
-                    "disk",
-                    Some(name),
-                    RefusalReason::Spec,
-                    &format!(
-                        "disk name {name:?} must start alphanumeric and hold only [A-Za-z0-9._-]"
-                    ),
-                ));
-            }
-            match disk::remove(runtime, name)? {
-                disk::Removal::InUse(holder) => Ok(refused(
-                    "disk",
-                    Some(name),
-                    RefusalReason::DiskInUse,
-                    &format!("box {holder:?} attaches disk {name:?}"),
-                )),
-                disk::Removal::Removed { existed } => {
-                    println!(
-                        "{}",
-                        serde_json::json!({ "event": "removed", "disk": name, "existed": existed })
-                    );
-                    Ok(0)
+        [verb, name] if verb == "rm" && name == "--all" => {
+            let mut names: Vec<String> = runtime
+                .list_disks()?
+                .into_iter()
+                .map(|disk| disk.name)
+                .collect();
+            names.sort();
+            let mut status = 0;
+            for name in names {
+                match remove_disk(runtime, &name, json) {
+                    Ok(code) => status |= code,
+                    Err(error) => {
+                        if json {
+                            println!(
+                                "{}",
+                                serde_json::json!({"event":"failed", "disk":name, "detail":error.to_string()})
+                            );
+                        } else {
+                            eprintln!(
+                                "pinfold disk rm: {}: {}",
+                                terminal_text(&name),
+                                terminal_text(&error.to_string())
+                            );
+                        }
+                        status = 1;
+                    }
                 }
             }
+            Ok(status)
         }
-        _ => Err(usage("disk", "disk takes list, or rm and one name")),
+        [verb, name] if verb == "rm" => remove_disk(runtime, name, json),
+        _ => Err(usage(
+            "disk",
+            "expected list, rm NAME|--all, or export NAME DEST [--image IMAGE], with optional --json",
+        )),
+    }
+}
+
+fn remove_disk(runtime: &dyn Runtime, name: &str, json: bool) -> io::Result<i32> {
+    if !valid_name(name) {
+        let detail =
+            format!("disk name {name:?} must start alphanumeric and hold only [A-Za-z0-9._-]");
+        return Ok(if json {
+            refused("disk", Some(name), RefusalReason::Spec, &detail)
+        } else {
+            eprintln!("pinfold disk rm: spec: {}", terminal_text(&detail));
+            1
+        });
+    }
+    match disk::remove(runtime, name)? {
+        disk::Removal::InUse(holder) => Ok(if json {
+            refused(
+                "disk",
+                Some(name),
+                RefusalReason::DiskInUse,
+                &format!("box {holder:?} attaches disk {name:?}"),
+            )
+        } else {
+            eprintln!(
+                "pinfold disk rm: disk-in-use: {} is attached by {}",
+                terminal_text(name),
+                terminal_text(&holder)
+            );
+            1
+        }),
+        disk::Removal::Removed { existed } => {
+            if let Err(error) = crate::pi::state::forget_scratch_origin(name) {
+                eprintln!(
+                    "pinfold disk rm: origin cleanup: {}",
+                    terminal_text(&error.to_string())
+                );
+            }
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "event": "removed", "disk": name, "existed": existed })
+                );
+            } else {
+                println!(
+                    "{} {}",
+                    if existed {
+                        "Removed"
+                    } else {
+                        "Already absent:"
+                    },
+                    terminal_text(name)
+                );
+            }
+            Ok(0)
+        }
+    }
+}
+
+fn terminal_text(text: &str) -> String {
+    let mut escaped = String::new();
+    for ch in text.chars() {
+        if ch.is_control() {
+            escaped.extend(ch.escape_default());
+        } else {
+            escaped.push(ch);
+        }
+    }
+    escaped
+}
+
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
@@ -624,11 +763,11 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
     let (dry_run, unused) = parse_clean(args)?;
     let runtime = runtime();
     let plan = CleanPlan::measure(runtime, unused)?;
-    let total = plan.total();
+    let total = human_size(plan.total());
     let action = if dry_run {
-        format!("dry run; {total} B measured")
+        format!("dry run; {total} measured")
     } else {
-        format!("{total} B measured; removing unused data")
+        format!("{total} measured; removing unused data")
     };
     println!("pinfold clean: {action}");
     plan.print();
@@ -723,11 +862,15 @@ impl CleanPlan {
     }
 
     fn print(&self) {
-        println!("  automatic maintenance: {} B", self.automatic_bytes);
-        println!("  run records: {} B", self.run_bytes);
+        println!(
+            "  automatic maintenance: {}",
+            human_size(self.automatic_bytes)
+        );
+        println!("  run records: {}", human_size(self.run_bytes));
         match self.build_cache_bytes {
             Some(bytes) => println!(
-                "  build cache: {bytes} B; {}",
+                "  build cache: {}; {}",
+                human_size(bytes),
                 image::service().build_cache()
             ),
             None => println!(
@@ -735,10 +878,13 @@ impl CleanPlan {
                 image::service().build_cache()
             ),
         }
-        println!("  project state: {} B", self.project_state);
-        println!("  disks: {} B", self.disk_bytes);
+        println!("  project state: {}", human_size(self.project_state));
+        println!("  disks: {}", human_size(self.disk_bytes));
         for root in &self.moved {
-            println!("  checkout gone, state and disks kept: {}", root.display());
+            println!(
+                "  checkout gone, state and disks kept: {}",
+                terminal_text(&root.to_string_lossy())
+            );
         }
     }
 
@@ -905,7 +1051,10 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
             plan.print();
             let total = plan.total();
             if total > 20 << 30 {
-                println!("  {total} B is over 20 GB; run `pinfold clean`");
+                println!(
+                    "  {} is over 20 GiB; run `pinfold clean`",
+                    human_size(total)
+                );
             }
         }
         Err(error) => println!("  unavailable: {error}"),

@@ -80,6 +80,68 @@ fn box_lifecycle_works_for_a_caller() {
     let ok = box_exec(&env, &name, &["sh", "-c", "exit 0"]);
     assert_eq!(ok.code, 0);
 
+    // Sabotage: omit the host stdin-flags restoration around Apple exec;
+    // container 1.6.1 leaves this shared descriptor nonblocking. The PTY
+    // and its prelaunch flags belong to the host observer, not Pinfold.
+    // Preserve an already nonblocking caller too, rather than clearing it.
+    {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let (mut master, mut slave) = (-1, -1);
+        // SAFETY: openpty initializes the two descriptors; null options
+        // request the platform's default termios and window size.
+        assert_eq!(
+            unsafe {
+                nix::libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        // SAFETY: openpty returned two fresh, owned descriptors.
+        let (mut master, mut slave) =
+            unsafe { (fs::File::from_raw_fd(master), fs::File::from_raw_fd(slave)) };
+        // Darwin exposes a sticky kernel FWASWRITTEN marker in F_GETFL.
+        // Establish a used terminal before the baseline; F_SETFL cannot
+        // clear that marker after guest output sets it.
+        slave.write_all(b"x").unwrap();
+        let mut written = [0];
+        master.read_exact(&mut written).unwrap();
+        for nonblocking in [false, true] {
+            let fd = slave.as_raw_fd();
+            // SAFETY: fd remains open throughout this command and observation.
+            let flags = unsafe { nix::libc::fcntl(fd, nix::libc::F_GETFL) };
+            assert!(flags >= 0);
+            let flags = if nonblocking {
+                flags | nix::libc::O_NONBLOCK
+            } else {
+                flags & !nix::libc::O_NONBLOCK
+            };
+            assert_eq!(
+                unsafe { nix::libc::fcntl(fd, nix::libc::F_SETFL, flags) },
+                0
+            );
+            let before = unsafe { nix::libc::fcntl(fd, nix::libc::F_GETFL) };
+            let child = env
+                .command(pinfold())
+                .args(["box", "exec", &name, "--tty", "--", "true"])
+                .stdin(Stdio::from(slave.try_clone().unwrap()))
+                .stdout(Stdio::from(slave.try_clone().unwrap()))
+                .stderr(Stdio::from(slave.try_clone().unwrap()))
+                .spawn()
+                .unwrap();
+            assert!(ChildOwner::new(child, &env, None).wait_bounded().success());
+            assert_eq!(
+                unsafe { nix::libc::fcntl(fd, nix::libc::F_GETFL) },
+                before,
+                "interactive exec changed the caller's stdin flags"
+            );
+        }
+    }
+
     // `ready` names the image the runtime resolved. The spec has no
     // `egress`, so there is no proxy and no log: `egress_log` is null.
     assert_eq!(
@@ -516,7 +578,7 @@ fn up_refuses_before_it_creates() {
             "the refusal did not name {named}: {refused}"
         );
         assert_left_nothing(&env, &name, label, "refused");
-        let disks = run_ok(env.command(pinfold()).args(["disk", "list"]));
+        let disks = run_ok(env.command(pinfold()).args(["disk", "list", "--json"]));
         assert!(
             !String::from_utf8_lossy(&disks.stdout).contains(&disk),
             "a refused disk spec left a disk"
@@ -4613,7 +4675,7 @@ fn disk_export_writes_only_the_requested_new_destination() {
         "wrong existing-destination refusal"
     );
     assert_eq!(tree_snapshot(&output), before);
-    let listed = run_ok(env.command(pinfold()).args(["disk", "list"])).stdout;
+    let listed = run_ok(env.command(pinfold()).args(["disk", "list", "--json"])).stdout;
     let absent = env
         .command(pinfold())
         .args(["disk", "export", "absent-export-disk"])
@@ -4626,7 +4688,7 @@ fn disk_export_writes_only_the_requested_new_destination() {
             || String::from_utf8_lossy(&absent.stderr).contains("disk-missing")
     );
     assert_eq!(
-        run_ok(env.command(pinfold()).args(["disk", "list"])).stdout,
+        run_ok(env.command(pinfold()).args(["disk", "list", "--json"])).stdout,
         listed,
         "missing-disk export created a disk"
     );

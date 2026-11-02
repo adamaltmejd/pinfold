@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::core::r#box::{Box, Shutdown, Signals};
-use crate::core::plan::Plan;
+use crate::core::plan::{Disk, Plan};
 use crate::core::runs::Terminal;
 use crate::core::runtime::runtime;
 use crate::init::summary::{BYTES, ENTRIES, Entry, Summary};
@@ -20,11 +20,11 @@ pub async fn report(
     init: &Path,
     root: &Path,
     repository: bool,
-) -> io::Result<Option<(Terminal, i32)>> {
+) -> io::Result<(Option<(Terminal, i32)>, bool)> {
     let mode = if repository { "repository" } else { "scratch" };
     let result = tokio::select! {
         result = tokio::time::timeout(Duration::from_secs(2), collect(&plan.name, init, root, mode)) => result.ok().and_then(Result::ok),
-        signal = signals.recv() => return Ok(Some((Shutdown::Signal.terminal(), 128 + signal as i32))),
+        signal = signals.recv() => return Ok((Some((Shutdown::Signal.terminal(), 128 + signal as i32)), false)),
         ended = box_.ended() => {
             let shutdown = ended?;
             let code = match shutdown {
@@ -32,15 +32,15 @@ pub async fn report(
                 Shutdown::AuditLog => 1,
                 Shutdown::StdinEof | Shutdown::Signal => 0,
             };
-            return Ok(Some((shutdown.terminal(), code)));
+            return Ok((Some((shutdown.terminal(), code)), false));
         },
     };
     let Some(summary) = result else {
         eprintln!("pinfold pi: summary-unavailable; disks retained");
-        return Ok(None);
+        return Ok((None, false));
     };
     if summary.entries.is_empty() && !summary.truncated {
-        return Ok(None);
+        return Ok((None, !repository));
     }
     let disks = &plan.disks;
     let retained = serde_json::json!({
@@ -81,7 +81,75 @@ pub async fn report(
             work.name
         );
     }
-    Ok(None)
+    Ok((None, false))
+}
+
+/// Advisory emptiness is only a prefilter. Inspect again after the writable
+/// box stopped, with no home or egress and a read-only work attachment.
+pub async fn discard_empty_scratch(
+    plan: &Plan,
+    image: &str,
+    expected_image: &str,
+    init: &Path,
+) -> io::Result<bool> {
+    let [home, work] = plan.disks.as_slice() else {
+        return Ok(false);
+    };
+    let inspection = Plan {
+        name: format!("inspect-{}", super::state::scratch_id()?),
+        image: Some(image.to_string()),
+        labels: std::collections::BTreeMap::from([(
+            crate::core::clean::PROJECT_LABEL.to_string(),
+            String::new(),
+        )]),
+        cpus: Some(1.0),
+        memory: Some("1G".to_string()),
+        disks: vec![Disk {
+            readonly: true,
+            from: None,
+            ..work.clone()
+        }],
+        ..Plan::default()
+    };
+    // Expiration uses startup's existing signal rollback, never cancellation
+    // by dropping a partially started Box::up future.
+    let mut signals = Signals::with_timeout(Duration::from_secs(30))?;
+    let mut box_ = Box::up_existing(&inspection, init, &mut signals)
+        .await
+        .map_err(io::Error::from)?;
+    // Apple accepts local references, not bare image IDs. A changed tag
+    // must not change the image used to decide whether work is discarded.
+    if box_.image_id != expected_image {
+        box_.down(Some(Shutdown::Signal.terminal())).await?;
+        return Ok(false);
+    }
+    let names = [home.name.clone(), work.name.clone()];
+    let locks = crate::core::disk::RemovalGuard::try_take(&names);
+    let empty = match &locks {
+        Ok(Some(_)) => tokio::select! {
+            biased;
+            _ = signals.recv() => Err(io::Error::new(io::ErrorKind::Interrupted, "scratch inspection interrupted")),
+            _ = box_.ended() => Err(io::Error::other("scratch inspection box stopped")),
+            result = collect(&inspection.name, init, &work.guest, "scratch") => result.map(|summary| summary.entries.is_empty() && !summary.truncated),
+        },
+        _ => Ok(false),
+    };
+    // Keep both locks through teardown: another writer cannot enter after
+    // the empty observation and before deletion. Down takes no disk locks.
+    let down = box_.down(Some(Shutdown::Signal.terminal())).await;
+    down?;
+    if !empty? {
+        return Ok(false);
+    }
+    let Some(locks) = locks? else {
+        return Ok(false);
+    };
+    tokio::select! {
+        biased;
+        _ = signals.recv() => return Ok(false),
+        _ = std::future::ready(()) => {},
+    }
+    locks.remove_clean(runtime())
 }
 
 async fn collect(name: &str, init: &Path, root: &Path, mode: &str) -> io::Result<Summary> {

@@ -342,11 +342,43 @@ fn project_state_persists_and_stays_separate() {
     assert_eq!(
         in_box(
             &name_b,
-            "test ! -e /work/result.txt && test ! -e \"$HOME/home-only.txt\" && printf separate"
+            "test ! -e /work/result.txt && test ! -e \"$HOME/home-only.txt\" && printf temporary-home > \"$HOME/session-marker\" && printf separate"
         ),
         "separate"
     );
-    assert!(scratch_b.finish().success(), "second scratch failed");
+    let scratch_b_disks: Vec<String> = json_lines(&String::from_utf8_lossy(
+        &run_ok(env.command(pinfold()).args(["disk", "list", "--json"])).stdout,
+    ))
+    .into_iter()
+    .filter(|disk| {
+        disk["attached"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|attachment| attachment["box"] == name_b)
+    })
+    .map(|disk| disk["name"].as_str().unwrap().to_string())
+    .collect();
+    assert_eq!(scratch_b_disks.len(), 2);
+    let (status, scratch_b_stderr) = scratch_b.finish_output();
+    assert!(
+        status.success(),
+        "second scratch failed: {}",
+        String::from_utf8_lossy(&scratch_b_stderr)
+    );
+    // Sabotage: retain every scratch pair, or treat home/session writes
+    // as work. A clean empty work disk must discard both disks, while
+    // concurrent scratch A's real work below survives and exports intact.
+    let after_empty = json_lines(&String::from_utf8_lossy(
+        &run_ok(env.command(pinfold()).args(["disk", "list", "--json"])).stdout,
+    ));
+    assert!(
+        after_empty
+            .iter()
+            .all(|disk| !scratch_b_disks.iter().any(|name| disk["name"] == *name)),
+        "empty scratch retained its work or home disk: {}",
+        String::from_utf8_lossy(&scratch_b_stderr)
+    );
     let (status, stderr) = scratch_a.finish_output();
     assert!(status.success(), "first scratch failed");
     let summary = summary_json(&stderr).expect("scratch work was not reported");
@@ -380,11 +412,36 @@ fn project_state_persists_and_stays_separate() {
     assert_eq!(
         in_box(
             &name_c,
-            "test ! -e /work/result.txt && test ! -e \"$HOME/home-only.txt\" && printf other"
+            "test ! -e /work/result.txt && test ! -e \"$HOME/home-only.txt\" && mkdir /work/opaque && printf private > /work/opaque/result && chmod 000 /work/opaque && printf other"
         ),
         "other"
     );
+    let scratch_c_disks: Vec<String> = json_lines(&String::from_utf8_lossy(
+        &run_ok(env.command(pinfold()).args(["disk", "list", "--json"])).stdout,
+    ))
+    .into_iter()
+    .filter(|disk| {
+        disk["attached"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|attachment| attachment["box"] == name_c)
+    })
+    .map(|disk| disk["name"].as_str().unwrap().to_string())
+    .collect();
+    assert_eq!(scratch_c_disks.len(), 2);
     assert!(scratch_c.finish().success(), "other folder scratch failed");
+    // Sabotage: treat failed/incomplete inspection as empty. The guest's
+    // unreadable directory is uncertainty, not permission to discard it.
+    let after_unknown = json_lines(&String::from_utf8_lossy(
+        &run_ok(env.command(pinfold()).args(["disk", "list", "--json"])).stdout,
+    ));
+    assert!(
+        scratch_c_disks
+            .iter()
+            .all(|name| after_unknown.iter().any(|disk| disk["name"] == *name)),
+        "uncertain scratch inspection discarded a disk"
+    );
     assert_eq!(
         crate::cli::host_tree(&projects),
         before,
@@ -925,7 +982,7 @@ fn the_launch_record_is_the_applied_policy() {
 
     // The home disk the report names is the one the box attaches, writable,
     // at its $HOME: a file the box writes there is on that disk.
-    let listed = run_ok(env.command(pinfold()).args(["disk", "list"])).stdout;
+    let listed = run_ok(env.command(pinfold()).args(["disk", "list", "--json"])).stdout;
     let listed = json_lines(&String::from_utf8_lossy(&listed));
     let attached = listed
         .iter()

@@ -129,7 +129,10 @@ impl Drop for TestEnv {
         // root's. Linux disks live in the state root and go with it.
         // Best effort: a Drop during unwinding must not panic.
         if cfg!(target_os = "macos")
-            && let Ok(listed) = self.command(pinfold()).args(["disk", "list"]).output()
+            && let Ok(listed) = self
+                .command(pinfold())
+                .args(["disk", "list", "--json"])
+                .output()
         {
             for line in String::from_utf8_lossy(&listed.stdout).lines() {
                 if let Ok(disk) = serde_json::from_str::<serde_json::Value>(line)
