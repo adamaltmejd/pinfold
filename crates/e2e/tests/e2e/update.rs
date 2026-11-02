@@ -149,7 +149,6 @@ impl ReleaseProxy {
     fn new(env: &TestEnv) -> Self {
         let root = env.root.join("release-fixture");
         fs::create_dir(&root).unwrap();
-        fs::copy(pinfold(), root.join("release")).unwrap();
         run_ok(Command::new("openssl").current_dir(&root).args([
             "req",
             "-x509",
