@@ -4596,12 +4596,6 @@ fn disk_export_writes_only_the_requested_new_destination() {
         fs::read_link(output.join("nested/host-link")).unwrap(),
         outside
     );
-    assert!(
-        fs::symlink_metadata(output.join("nested/host-link"))
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
     assert_eq!(fs::read(&outside).unwrap(), b"host-only");
     let before = tree_snapshot(&output);
     let refused = env
