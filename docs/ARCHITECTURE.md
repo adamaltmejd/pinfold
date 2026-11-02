@@ -555,7 +555,9 @@ process. Getting further needs a host kernel bug.
   vsock) stays in pinfold's foreground process group, handles raw mode and
   forwards window size. No TTY: its own process group.
   On return, Apple interactive commands restore the caller's terminal
-  input file flags. This does not cover process-killing signals.
+  input file flags. A restoration failure fails an otherwise successful
+  command; an existing command failure is preserved. This does not cover
+  process-killing signals.
 - The box is the unit of lifetime; pinfold never signals a process in it
   from the host or through `exec`. At `down` on Linux, init kills the
   work cgroup so the disks can unmount; the box is ending anyway.
@@ -870,8 +872,6 @@ with `build` and caller images with `image build`. The old Podman store,
 old derived-root cache and managed agent disks are left untouched.
 
 Built-in images use `debian:trixie-slim` and strip setuid/setgid bits.
-Their package-update RUN steps may be cached; `pinfold build --no-cache`
-forces them to run again.
 
 | Profile | Tools |
 |---|---|
