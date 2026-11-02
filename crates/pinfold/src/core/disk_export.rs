@@ -194,13 +194,16 @@ impl Staging {
         // This promises atomic visibility, not durability through a host crash.
         #[cfg(target_os = "linux")]
         let result = unsafe {
-            nix::libc::renameat2(
+            // Rust's bundled musl does not export the libc wrapper. The
+            // kernel operation provides the same no-replace boundary.
+            nix::libc::syscall(
+                nix::libc::SYS_renameat2,
                 self.parent.as_raw_fd(),
                 self.name.as_ptr(),
                 self.parent.as_raw_fd(),
                 self.destination.as_ptr(),
                 nix::libc::RENAME_NOREPLACE,
-            )
+            ) as i32
         };
         #[cfg(target_os = "macos")]
         let result = unsafe {
