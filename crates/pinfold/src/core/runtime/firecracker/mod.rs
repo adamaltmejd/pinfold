@@ -95,8 +95,6 @@ impl Runtime for Firecracker {
     }
 
     /// `box exec` of this executable, for a caller that pipes its stdio.
-    /// Its only callers, the crossing's push and fetch, ask for no TTY and
-    /// no workdir.
     fn exec_command(
         &self,
         name: &str,
