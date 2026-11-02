@@ -316,7 +316,7 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &AuditLog, request: &Plain
     }
     let _ = forward(
         client,
-        dial(address),
+        dial(address).map(DeadlineStream::new),
         request,
         &request.authority,
         &[],
@@ -360,7 +360,7 @@ fn route(client: &mut UnixStream, log: &AuditLog, request: &Plain, upstream: &Up
         },
     };
     if !target.https {
-        let server = dial((target.host.as_str(), target.port));
+        let server = dial((target.host.as_str(), target.port)).map(DeadlineStream::new);
         let _ = forward(client, server, request, host, &headers, strip, &mut report);
         return;
     }
@@ -394,12 +394,60 @@ fn resolve_checked(
     }
 }
 
+// Keep the deadline below TLS: rustls's ciphertext writes must use it,
+// including writes while reading or flushing the TLS stream.
+struct DeadlineStream(Option<TcpStream>);
+
+impl DeadlineStream {
+    fn new(stream: TcpStream) -> Self {
+        Self(Some(stream))
+    }
+}
+
+impl Read for DeadlineStream {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.0
+            .as_mut()
+            .ok_or(io::ErrorKind::NotConnected)?
+            .read(buffer)
+    }
+}
+
+impl Write for DeadlineStream {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let stream = self.0.as_ref().ok_or(io::ErrorKind::NotConnected)?;
+        // Darwin ignores MSG_DONTWAIT on blocking sockets. This socket
+        // has no parallel reader or cloned handle; restore before reading.
+        #[cfg(target_os = "macos")]
+        let result = stream.set_nonblocking(true).and_then(|()| {
+            let sent = Deadline(stream.as_fd(), IDLE_TIMEOUT).write(buffer);
+            stream.set_nonblocking(false)?;
+            sent
+        });
+        #[cfg(not(target_os = "macos"))]
+        let result = Deadline(stream.as_fd(), IDLE_TIMEOUT).write(buffer);
+        // rustls can defer a write error, then wait for more guest bytes.
+        // Close the sole upstream handle before returning that error.
+        if result.is_err() {
+            drop(self.0.take());
+        }
+        result
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.as_mut().ok_or(io::ErrorKind::NotConnected)?.flush()
+    }
+}
+
 /// Connect to a checked address and complete the TLS handshake, with SNI
 /// and the certificate checked against `host`.
-fn dial_tls(address: SocketAddr, host: &str) -> Option<StreamOwned<ClientConnection, TcpStream>> {
+fn dial_tls(
+    address: SocketAddr,
+    host: &str,
+) -> Option<StreamOwned<ClientConnection, DeadlineStream>> {
     let name = ServerName::try_from(host.to_string()).ok()?;
     let mut connection = ClientConnection::new(tls_config(), name).ok()?;
-    let mut server = dial(address)?;
+    let mut server = DeadlineStream::new(dial(address)?);
     while connection.is_handshaking() {
         connection.complete_io(&mut server).ok()?;
     }
@@ -624,6 +672,7 @@ fn dial(address: impl ToSocketAddrs) -> Option<TcpStream> {
     let address = address.to_socket_addrs().ok()?.next()?;
     let server = TcpStream::connect(address).ok()?;
     server.set_read_timeout(Some(IDLE_TIMEOUT)).ok()?;
+    // Deadline still needs this fallback on Darwin's blocking sockets.
     server.set_write_timeout(Some(IDLE_TIMEOUT)).ok()?;
     Some(server)
 }
