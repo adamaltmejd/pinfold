@@ -85,7 +85,7 @@ Put the `pi` symlink before other `pi` executables on `PATH`.
 
 ## First run
 
-In a project:
+In your working folder:
 
 1. If it has a `.pinfold.toml`, run `pinfold allow`, and again after the
    file or the Containerfile it names changes.
@@ -95,8 +95,9 @@ In a project:
    Building needs network. Rebuild when a run shows `image-outdated`;
    it keeps project settings, sessions and logins.
 3. Start pi: `pi`.
-4. Run `/login` in pi once per project: state is per project. An API key
-   or a Claude or Codex subscription can instead stay on the host behind
+4. In a Git repository, run `/login` once; the home disk retains it.
+   Scratch runs have a fresh home each time. An API key or a Claude or Codex
+   subscription can instead stay on the host behind
    a pi login route in `routes` (ARCHITECTURE.md, Egress proxy); an API
    key can also arrive through the environment.
    Using a Claude subscription through pi is subject to Anthropic's terms:
@@ -122,18 +123,15 @@ you to merge; `pinfold push` sends your branches in as `host/*`. Each
 `pi` start pushes too, and fast-forwards the box's branch when it is
 clean and strictly behind.
 
-Outside Git, each `pinfold pi` invocation gets separate retained home and
-work disks. It starts in `/work`; nothing from the host folder is copied or
-mounted. The local `.pinfold.toml` still applies. Without one, Pinfold uses
-`~/.config/pinfold/pinfold.toml` (or the XDG config directory), then profile
-defaults. Neither configuration file is created automatically. A local file,
-even empty, replaces the global file. Global configuration selects a profile
-for a reusable recipe; `containerfile` remains local-only.
+Outside Git, each `pinfold pi` invocation gets fresh retained home and work
+disks and an empty `/work`; the invoking folder is not shared. Local
+`.pinfold.toml` applies, or `~/.config/pinfold/pinfold.toml` (XDG-aware) when
+absent. Neither file is created automatically. See
+[Configuration](docs/ARCHITECTURE.md#configuration) for precedence and recipes.
 
-On normal exit, Pi reports outstanding workspace files or repository work
-as bounded metadata. Committed work can be fetched; uncommitted and untracked
-files cannot. A summary is advisory and may be incomplete. Guest file names
-are escaped, file contents are not printed, and interrupted runs skip it.
+On normal exit, Pi gives a bounded advisory summary of outstanding work,
+without file contents. Fetch commits to retain them; uncommitted and untracked
+files remain on the guest disk.
 
 Use `pinfold disk list` and `pinfold disk rm NAME` for retained disks.
 To save a stopped disk into a new host directory, run
@@ -196,8 +194,8 @@ agent this; copy its directory into the agent's skills directory.
 
 ## Fresh state
 
-`pinfold pi` and `pinfold pi -p` reuse the same home and project disks.
-To start fresh:
+In a Git repository, `pinfold pi` and `pinfold pi -p` reuse the same home
+and project disks. To start fresh:
 
 1. Finish Pi after committing guest work you want to keep. Run `pinfold fetch`,
    inspect the fetched commits, then merge or give them a host branch to retain them.
@@ -212,6 +210,9 @@ preserves the guest repository; removing only the project preserves
 sessions, settings and other home files. Everything on a deleted disk is
 lost, including uncommitted work and home-only files. Fetch brings back commits,
 not uncommitted or home-only files. Later fetches can move `pinfold/*` refs.
+
+Outside Git, each invocation already has fresh disks. Save wanted files with
+`disk export`, then remove retained disks using their printed names.
 
 Disk removal refuses attached disks. The two removals are separate operations;
 serialize access to the project. Use `disk rm`, never delete state or volume

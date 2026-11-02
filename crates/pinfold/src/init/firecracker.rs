@@ -120,7 +120,7 @@ pub fn boot() -> ! {
     };
     drop((host, dropped));
     if let Err(error) =
-        drop_bounding(Some(CAP_SYS_ADMIN)).and_then(|()| set_capabilities(Some(CAP_SYS_ADMIN)))
+        drop_bounding(1_u64 << CAP_SYS_ADMIN).and_then(|()| set_capabilities(Some(CAP_SYS_ADMIN)))
     {
         die(&format!("keep only CAP_SYS_ADMIN: {error}"))
     }
@@ -409,11 +409,6 @@ pub(super) fn mount_builder_input() -> io::Result<()> {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub(super) fn connect_builder() -> io::Result<UnixStream> {
-    vsock_connect(BOOT_PORT)
-}
-
-#[cfg(target_arch = "x86_64")]
 pub(super) fn relay_builder() -> io::Result<()> {
     let relay = TcpListener::bind(super::RELAY_LISTEN)?;
     super::serve_relay(relay, || vsock_connect(PROXY_PORT))
@@ -491,12 +486,12 @@ fn loopback_up() -> io::Result<()> {
 
 const CAP_SYS_ADMIN: u32 = 21;
 
-/// Drop every capability but `keep` from the bounding set. Needs
+/// Drop every capability outside the `keep` mask from the bounding set. Needs
 /// `CAP_SETPCAP`, so it comes before [`set_capabilities`]. Only system
 /// calls: the VMM jail's child runs it between `clone` and `execve`.
-pub(crate) fn drop_bounding(keep: Option<u32>) -> io::Result<()> {
+pub(crate) fn drop_bounding(keep: u64) -> io::Result<()> {
     for capability in 0..64 {
-        if Some(capability) == keep {
+        if keep & (1_u64 << capability) != 0 {
             continue;
         }
         // Safety: prctl with integer arguments, passed as the kernel's
@@ -527,6 +522,11 @@ pub(crate) fn drop_bounding(keep: Option<u32>) -> io::Result<()> {
 /// inheritable and ambient sets empty. Only system calls, like
 /// [`drop_bounding`].
 pub(crate) fn set_capabilities(keep: Option<u32>) -> io::Result<()> {
+    clear_ambient()?;
+    capset(keep.map_or(0, |capability| 1_u64 << capability))
+}
+
+pub(super) fn clear_ambient() -> io::Result<()> {
     // Safety: prctl with integer arguments, as unsigned longs.
     if unsafe {
         libc::prctl(
@@ -540,13 +540,18 @@ pub(crate) fn set_capabilities(keep: Option<u32>) -> io::Result<()> {
     {
         return Err(io::Error::last_os_error());
     }
+    Ok(())
+}
+
+/// Set effective and permitted capabilities to `keep`, with no inheritable
+/// capabilities. Only system calls, like [`drop_bounding`].
+pub(super) fn capset(keep: u64) -> io::Result<()> {
     #[repr(C)]
     struct Header {
         version: u32,
         pid: i32,
     }
     #[repr(C)]
-    #[derive(Clone, Copy, Default)]
     struct Data {
         effective: u32,
         permitted: u32,
@@ -556,12 +561,11 @@ pub(crate) fn set_capabilities(keep: Option<u32>) -> io::Result<()> {
         version: 0x2008_0522, // _LINUX_CAPABILITY_VERSION_3
         pid: 0,
     };
-    let mut data = [Data::default(); 2];
-    if let Some(capability) = keep {
-        let word = &mut data[(capability / 32) as usize];
-        word.effective = 1 << (capability % 32);
-        word.permitted = 1 << (capability % 32);
-    }
+    let data = [0, 32].map(|shift| Data {
+        effective: (keep >> shift) as u32,
+        permitted: (keep >> shift) as u32,
+        inheritable: 0,
+    });
     // Safety: capset reads the header and two data words.
     if unsafe { libc::syscall(libc::SYS_capset, &header, data.as_ptr()) } < 0 {
         return Err(io::Error::last_os_error());
@@ -696,7 +700,7 @@ fn become_box_user(uid: u32, gid: u32) -> io::Result<()> {
     fs::write(format!("{WORK}/cgroup.procs"), "0")?;
     // Lowering needs privilege, raising does not: exec'd work goes to 1000.
     fs::write("/proc/self/oom_score_adj", "-1000")?;
-    drop_bounding(None)?;
+    drop_bounding(0)?;
     nix::unistd::setgroups(&[])?;
     let (uid, gid) = (Uid::from_raw(uid), Gid::from_raw(gid));
     nix::unistd::setresgid(gid, gid, gid)?;
@@ -1033,7 +1037,7 @@ fn vsock_socket() -> io::Result<OwnedFd> {
 /// A vsock stream to the host. It travels as a `UnixStream`, whose read,
 /// write, shutdown and clone are the socket calls any stream socket takes;
 /// its address methods would be wrong and are never called.
-fn vsock_connect(port: u32) -> io::Result<UnixStream> {
+pub(super) fn vsock_connect(port: u32) -> io::Result<UnixStream> {
     let socket = vsock_socket()?;
     nix::sys::socket::connect(socket.as_raw_fd(), &VsockAddr::new(HOST_CID, port))?;
     Ok(UnixStream::from(socket))

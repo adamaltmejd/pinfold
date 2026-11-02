@@ -683,7 +683,7 @@ fn restrict(exec: &Exec) -> Result<(), Failure> {
     landlock::restrict(&ruleset).map_err(fail("restrict to the Landlock ruleset", 0))?;
     // A raw OS error carries its errno without allocating.
     let errno = |error: io::Error| Errno::from_raw(error.raw_os_error().unwrap_or(0));
-    drop_bounding(None).map_err(|error| fail("drop the bounding set", 0)(errno(error)))?;
+    drop_bounding(0).map_err(|error| fail("drop the bounding set", 0)(errno(error)))?;
     set_capabilities(None).map_err(|error| fail("clear the capability sets", 0)(errno(error)))
 }
 
@@ -703,22 +703,13 @@ pub mod landlock {
     pub const IOCTL_DEV: u64 = 1 << 15;
     pub const RESOLVE_UNIX: u64 = 1 << 16;
 
-    /// Every filesystem right of ABIs 1 to 10: 13 in ABI 1, `REFER` in 2,
-    /// `TRUNCATE` in 3, `IOCTL_DEV` in 5, `RESOLVE_UNIX` in 9. ABIs 4 and 10
-    /// add network rights, 6 adds scopes, 7 and 8 add none. A newer ABI's
+    /// Every filesystem right of accepted ABIs 5 to 10: the first 16 in
+    /// ABI 5, `RESOLVE_UNIX` in 9. ABIs 4 and 10 add network rights, 6 adds
+    /// scopes, 7 and 8 add none. A newer ABI's
     /// new rights stay unhandled until they are listed here (ARCHITECTURE.md
     /// "VMM jail").
     pub fn handled_fs(abi: i32) -> u64 {
-        let mut rights = (1 << 13) - 1;
-        if abi >= 2 {
-            rights |= 1 << 13;
-        }
-        if abi >= 3 {
-            rights |= 1 << 14;
-        }
-        if abi >= 5 {
-            rights |= IOCTL_DEV;
-        }
+        let mut rights = (1 << 16) - 1;
         if abi >= 9 {
             rights |= RESOLVE_UNIX;
         }
@@ -761,11 +752,7 @@ pub mod landlock {
             handled_access_fs: handled_fs(abi),
             // TCP bind and connect, then UDP bind and send, with no rule
             // allowing any.
-            handled_access_net: match abi {
-                ..4 => 0,
-                4..10 => 0b11,
-                _ => 0b1111,
-            },
+            handled_access_net: if abi >= 10 { 0b1111 } else { 0b11 },
             // Abstract unix sockets and signals.
             scoped: if abi >= 6 { 0b11 } else { 0 },
         };

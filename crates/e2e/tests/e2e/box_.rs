@@ -1635,7 +1635,7 @@ fn a_caller_builds_an_image_from_its_own_tree() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn linux_build_steps_stay_inside_the_builder_role() {
+fn linux_image_work_stays_in_its_own_vm() {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
     use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
@@ -2431,9 +2431,9 @@ fn blocked_route_responses_release_the_upstream() {
 #[test]
 fn an_injecting_route_keeps_the_credential_on_the_host() {
     let _runtime = crate::shared_runtime();
-    // Guarantee 21. Sabotage: pass the header value through the box's
-    // environment as well (spec env `ROUTE_KEY: {from:
-    // PINFOLD_E2E_ROUTE_KEY}`); the environment assertion fails. The value
+    // Guarantee 21. Sabotage: during box preparation, copy the resolved
+    // injecting-route header into Plan.env; the environment assertion fails.
+    // The value
     // lives only in `up`'s environment; the box sends its own Authorization,
     // which the proxy replaces.
     let env = TestEnv::new("inject");

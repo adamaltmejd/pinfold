@@ -533,9 +533,9 @@ before it execs Firecracker:
 - a capability bounding set of zero, `no_new_privs`, and the user's
   supplementary groups, which reach nothing in the jail (dropping them
   needs privilege);
-- a Landlock ruleset on ABI 5 or later (so `/dev/kvm`'s ioctls are
-  explicit) that handles every access right pinfold knows up to the
-  running ABI, TCP included; a newer ABI runs normally, and its new rights
+- a Landlock ruleset requiring ABI 5 or later; older ABIs refuse before
+  ruleset creation. It handles every known access right through the running
+  ABI, TCP and `/dev/kvm`'s ioctls included. Newer ABIs run normally; new rights
   stay unhandled. It allows only: read and execute on the binary; read on
   the kernel, the root and init disks, the mounts' images, the box's
   read-only disks and the configuration; read and write on the box's
@@ -767,8 +767,8 @@ A project recipe typically `FROM`s the profile image.
 
 This is a separate internal role, never a box-spec option. Agent Always
 applied and outer VMM jail, parent lifetime, seccomp and vsock controls
-stay exact. The trusted guest service runs as root with no_new_privs and
-capability bound `0xa82425fb`, including mount privilege. RUN uses pinned
+stay exact. The trusted guest service stays root with capability bound
+`0xa82425fb` (mount included) and `no_new_privs`. RUN uses pinned
 BuildKit's ordinary OCI capabilities without SYS_ADMIN; user namespaces
 and insecure entitlements are disabled. There is no NIC or direct route.
 
@@ -901,8 +901,8 @@ records its files; a use that finds one missing reinstalls it. A checksum
 mismatch fails the start, naming the harness, version and asset. A harness
 no box asks for is never downloaded.
 
-`scripts/bump-pins.py` moves the pins: harnesses, Firecracker and the
-guest kernel, image tools, Rust, Cargo dependencies and the Public
+`scripts/bump-pins.py` moves the pins: harnesses, Firecracker and its
+compatible asset for the pinned guest kernel, image tools, Rust, Cargo dependencies and the Public
 Suffix List. Pins move only with a pinfold release. A
 version pin only moves up, to a stable version at or below upstream's
 latest stable release, and is never rehashed at its version. The pi,
@@ -1114,6 +1114,9 @@ catchable failure; a hard kill may leave private staging, never a partial
 DEST. After successful transfer and teardown, publication must not replace
 any existing DEST. The destination root is 700. Export does not repair an
 unclean disk or change Pi's branch crossing.
+
+Success exits 0 and prints one JSON line:
+`{"event":"exported","disk":NAME,"destination":DEST}`.
 
 ## Updates
 
@@ -1413,8 +1416,8 @@ the command refuses as `project-in-git`.
 
 ## Guarantees
 
-Each has one end-to-end test in the Rust E2E crate's suite, but for
-two that run apart. Testing policy is in `AGENTS.md`.
+Each guarantee has an end-to-end proof. Guarantees 34 and 36 run in separate
+slow gates. Testing policy is in `AGENTS.md`.
 
 - 34 is excluded from the five-minute suite and runs separately on Linux in
   the Slow response proof workflow for PRs, main and manual runs. Release

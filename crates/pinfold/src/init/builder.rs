@@ -55,7 +55,7 @@ pub(super) fn boot() -> ! {
         eprintln!("pinfold init builder runs only as PID 1");
         process::exit(1);
     }
-    let mut host = match firecracker::connect_builder() {
+    let mut host = match firecracker::vsock_connect(firecracker::BOOT_PORT) {
         Ok(host) => host,
         Err(error) => {
             eprintln!("pinfold init builder: {error}");
@@ -203,65 +203,10 @@ fn failure_text(error: io::Error) -> String {
 fn capabilities() -> io::Result<()> {
     // This role intentionally retains mount privileges. Agent work still uses
     // the separate entry point's empty bounding set.
-    for capability in 0..64 {
-        if CAPABILITIES & (1_u64 << capability) != 0 {
-            continue;
-        }
-        // SAFETY: prctl takes integer arguments and changes this process only.
-        if unsafe { libc::prctl(libc::PR_CAPBSET_DROP, capability, 0, 0, 0) } < 0 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::EINVAL) && capability > 0 {
-                break;
-            }
-            return Err(error);
-        }
-    }
-    // SAFETY: clear all ambient capabilities and prohibit gaining privilege.
-    if unsafe {
-        libc::prctl(
-            libc::PR_CAP_AMBIENT,
-            libc::PR_CAP_AMBIENT_CLEAR_ALL,
-            0,
-            0,
-            0,
-        )
-    } < 0
-        || unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } < 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    #[repr(C)]
-    struct Header {
-        version: u32,
-        pid: i32,
-    }
-    #[repr(C)]
-    struct Data {
-        effective: u32,
-        permitted: u32,
-        inheritable: u32,
-    }
-    let header = Header {
-        version: 0x2008_0522,
-        pid: 0,
-    };
-    let data = [
-        Data {
-            effective: CAPABILITIES as u32,
-            permitted: CAPABILITIES as u32,
-            inheritable: 0,
-        },
-        Data {
-            effective: (CAPABILITIES >> 32) as u32,
-            permitted: (CAPABILITIES >> 32) as u32,
-            inheritable: 0,
-        },
-    ];
-    // SAFETY: capset reads the versioned header and two data words.
-    if unsafe { libc::syscall(libc::SYS_capset, &header, data.as_ptr()) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    firecracker::drop_bounding(CAPABILITIES)?;
+    firecracker::clear_ambient()?;
+    nix::sys::prctl::set_no_new_privs()?;
+    firecracker::capset(CAPABILITIES)
 }
 
 fn command(program: &str, proxy: bool) -> Command {

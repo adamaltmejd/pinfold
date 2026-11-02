@@ -215,6 +215,16 @@ fn git_input(root: &Path, args: &[&str], input: &[u8]) -> io::Result<Vec<u8>> {
     result
 }
 
+fn numstat(record: &[u8]) -> io::Result<(&[u8], &[u8], &[u8])> {
+    let mut fields = record.splitn(3, |byte| *byte == b'\t');
+    let mut field = || {
+        fields
+            .next()
+            .ok_or_else(|| io::Error::other("summary: invalid stat"))
+    };
+    Ok((field()?, field()?, field()?))
+}
+
 fn repository(root: &Path, summary: &mut Summary) -> io::Result<()> {
     let mut baseline = Vec::new();
     io::stdin()
@@ -255,15 +265,16 @@ fn repository(root: &Path, summary: &mut Summary) -> io::Result<()> {
             .parse()
             .map_err(io::Error::other)?;
         if count > 0 {
+            let short = escaped(
+                branch
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(branch)
+                    .as_bytes(),
+            );
             summary.push(Entry {
                 kind: "committed".into(),
                 path: escaped(branch.as_bytes()),
-                branch: Some(escaped(
-                    branch
-                        .strip_prefix("refs/heads/")
-                        .unwrap_or(branch)
-                        .as_bytes(),
-                )),
+                branch: Some(short.clone()),
                 bytes: None,
                 commits: Some(count),
                 added: None,
@@ -289,25 +300,11 @@ fn repository(root: &Path, summary: &mut Summary) -> io::Result<()> {
                 .filter(|record| !record.is_empty())
             {
                 let record = record.strip_prefix(b"\n").unwrap_or(record);
-                let mut fields = record.splitn(3, |byte| *byte == b'\t');
-                let added = fields
-                    .next()
-                    .ok_or_else(|| io::Error::other("summary: stat"))?;
-                let deleted = fields
-                    .next()
-                    .ok_or_else(|| io::Error::other("summary: stat"))?;
-                let path = fields
-                    .next()
-                    .ok_or_else(|| io::Error::other("summary: stat"))?;
+                let (added, deleted, path) = numstat(record)?;
                 summary.push(Entry {
                     kind: "committed".into(),
                     path: escaped(path),
-                    branch: Some(escaped(
-                        branch
-                            .strip_prefix("refs/heads/")
-                            .unwrap_or(branch)
-                            .as_bytes(),
-                    )),
+                    branch: Some(short.clone()),
                     bytes: None,
                     commits: None,
                     added: Some(String::from_utf8(added.to_vec()).map_err(io::Error::other)?),
@@ -372,16 +369,7 @@ fn repository(root: &Path, summary: &mut Summary) -> io::Result<()> {
             .split(|byte| *byte == 0)
             .filter(|record| !record.is_empty())
         {
-            let mut fields = record.splitn(3, |byte| *byte == b'\t');
-            let added = fields
-                .next()
-                .ok_or_else(|| io::Error::other("summary: invalid stat"))?;
-            let deleted = fields
-                .next()
-                .ok_or_else(|| io::Error::other("summary: invalid stat"))?;
-            let path = fields
-                .next()
-                .ok_or_else(|| io::Error::other("summary: invalid stat"))?;
+            let (added, deleted, path) = numstat(record)?;
             if let Some(entry) = summary
                 .entries
                 .iter_mut()
