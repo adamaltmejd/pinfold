@@ -901,8 +901,8 @@ records its files; a use that finds one missing reinstalls it. A checksum
 mismatch fails the start, naming the harness, version and asset. A harness
 no box asks for is never downloaded.
 
-`scripts/bump-pins.py` moves the pins: harnesses, Firecracker and the
-guest kernel, image tools, Rust, Cargo dependencies and the Public
+`scripts/bump-pins.py` moves the pins: harnesses, Firecracker and its
+compatible asset for the pinned guest kernel, image tools, Rust, Cargo dependencies and the Public
 Suffix List. Pins move only with a pinfold release. A
 version pin only moves up, to a stable version at or below upstream's
 latest stable release, and is never rehashed at its version. The pi,
@@ -1413,8 +1413,8 @@ the command refuses as `project-in-git`.
 
 ## Guarantees
 
-Each has one end-to-end test in the Rust E2E crate's suite, but for
-two that run apart. Testing policy is in `AGENTS.md`.
+Each guarantee has an end-to-end proof. Guarantees 34 and 36 run in separate
+slow gates. Testing policy is in `AGENTS.md`.
 
 - 34 is excluded from the five-minute suite and runs separately on Linux in
   the Slow response proof workflow for PRs, main and manual runs. Release

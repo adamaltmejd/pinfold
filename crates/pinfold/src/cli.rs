@@ -47,8 +47,8 @@ pinfold --help                   print this usage";
 
 /// The process interface's verbs, which the table above does not spell out.
 const BOX_USAGE: &str = "\
-pinfold box up
-pinfold box exec BOX [--tty] -- argv
+pinfold box up < spec.json
+pinfold box exec BOX [--tty] -- argv…
 pinfold box stat BOX
 pinfold box down BOX
 pinfold box list --label KEY[=VALUE]…
