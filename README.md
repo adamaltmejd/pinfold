@@ -117,10 +117,8 @@ login = "pi"
 provider = "openai-codex"
 ```
 
-The token and refresh stay on the host. This works across independent Pi
-homes. Local configuration with an explicit `routes` table replaces the
-profile's routes. The global `~/.config/pinfold/pinfold.toml` is also an
-option, but is used only when the folder has no local `.pinfold.toml`.
+The token and refresh stay on the host across independent Pi homes.
+An explicit local `routes` table replaces the profile's routes.
 For scripts, add `--json` to `pinfold disk` commands for exact byte counts
 and structured results.
 
@@ -144,10 +142,8 @@ you to merge; `pinfold push` sends your branches in as `host/*`. Each
 `pi` start pushes too, and fast-forwards the box's branch when it is
 clean and strictly behind.
 
-Outside Git, each `pinfold pi` invocation gets fresh retained home and work
-disks and an empty `/work`; the invoking folder is not shared. Local
-`.pinfold.toml` applies, or `~/.config/pinfold/pinfold.toml` (XDG-aware) when
-absent. Neither file is created automatically. See
+Outside Git, each invocation starts with fresh home and work disks and an
+empty `/work`; the invoking folder is not shared. See
 [Configuration](docs/ARCHITECTURE.md#configuration) for precedence and recipes.
 
 On normal exit, Pi gives a bounded advisory summary of outstanding work,
