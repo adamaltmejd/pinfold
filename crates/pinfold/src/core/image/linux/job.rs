@@ -290,7 +290,6 @@ async fn run_transaction(
     let generation = claim.generation().to_string();
     runs::create(&generation)?;
     let vsock = socket_dir(&generation, true)?;
-    private_dir(&vsock)?;
     let mut hosts: Vec<String> = BUILD_HOSTS.iter().map(|host| (*host).to_string()).collect();
     hosts.extend_from_slice(&request.allow);
     runs::write_launch(
@@ -784,7 +783,6 @@ async fn run_job(
     check_cancel(cancel)?;
     private_dir(state)?;
     let vsock = socket_dir(claim.generation(), phase.egress())?;
-    private_dir(&vsock)?;
     let disk = state.join("input.ext4");
     let selected_disk = state.join("selected.ext4");
     let formatting = {
