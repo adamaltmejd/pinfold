@@ -767,8 +767,8 @@ A project recipe typically `FROM`s the profile image.
 
 This is a separate internal role, never a box-spec option. Agent Always
 applied and outer VMM jail, parent lifetime, seccomp and vsock controls
-stay exact. The trusted guest service runs as root with no_new_privs and
-capability bound `0xa82425fb`, including mount privilege. RUN uses pinned
+stay exact. The trusted guest service stays root with capability bound
+`0xa82425fb` (mount included) and `no_new_privs`. RUN uses pinned
 BuildKit's ordinary OCI capabilities without SYS_ADMIN; user namespaces
 and insecure entitlements are disabled. There is no NIC or direct route.
 

@@ -683,7 +683,7 @@ fn restrict(exec: &Exec) -> Result<(), Failure> {
     landlock::restrict(&ruleset).map_err(fail("restrict to the Landlock ruleset", 0))?;
     // A raw OS error carries its errno without allocating.
     let errno = |error: io::Error| Errno::from_raw(error.raw_os_error().unwrap_or(0));
-    drop_bounding(None).map_err(|error| fail("drop the bounding set", 0)(errno(error)))?;
+    drop_bounding(0).map_err(|error| fail("drop the bounding set", 0)(errno(error)))?;
     set_capabilities(None).map_err(|error| fail("clear the capability sets", 0)(errno(error)))
 }
 
