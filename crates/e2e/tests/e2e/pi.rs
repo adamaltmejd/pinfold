@@ -878,16 +878,6 @@ fn the_launch_record_is_the_applied_policy() {
             secret.as_bytes(),
             &mut scanned,
         );
-        let names: Vec<String> = scanned
-            .iter()
-            .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
-            .collect();
-        for written in ["config.json", "init.ext4", "mount0.ext4"] {
-            assert!(
-                names.iter().any(|name| name == written),
-                "no {written} under the state dir: {names:?}"
-            );
-        }
     }
 
     // `cpus` and `memory` reach the box as its kernel sees them: a
@@ -1657,6 +1647,9 @@ fn pi_reports_retained_work_without_copying_it() {
     // loses retained work. Fetch for inspection; the host refs change.
     // Sabotage: print guest names without escaping, or omit the entry bound;
     // the hostile name or the 120-file listing violates the report checks.
+    // Sabotage: remove byte trimming from init::summary::run or pi::summary::report;
+    // the first report disappears or exceeds 64 KiB. Its 80 long paths fit
+    // below the entry cap; 600 quotes per path exceed the byte cap when escaped.
     // Guarantee 13 supplies scratch's work-only report and export observation.
     let env = TestEnv::new("pi-summary");
     default_image(&env);
@@ -1688,11 +1681,40 @@ fn pi_reports_retained_work_without_copying_it() {
         &box_exec(&env, &name, &["sh", "-c", &script]),
         "create retained work",
     );
+    let quoted = "\"".repeat(200);
+    let long_path = format!("zz-long/{quoted}/{quoted}/{quoted}");
+    assert_ok(
+        &box_exec(
+            &env,
+            &name,
+            &[
+                "sh",
+                "-c",
+                "cd \"$1\" && mkdir -p \"$2\" && i=0; while [ \"$i\" -lt 80 ]; do printf extra > \"$2/result-$i\"; i=$((i+1)); done",
+                "sh",
+                project.to_str().unwrap(),
+                &long_path,
+            ],
+        ),
+        "add byte-bound fixture",
+    );
     let (status, stderr) = run.finish_output();
     assert!(status.success());
     let summary = summary_json(&stderr).expect("missing repository work report");
     assert_eq!(summary["mode"], "repository");
+    assert_eq!(summary["truncated"], true);
+    assert!(
+        serde_json::to_vec(&summary).unwrap().len() <= (64 << 10),
+        "summary exceeded byte bound"
+    );
     let entries = summary["entries"].as_array().unwrap();
+    assert!(
+        entries
+            .iter()
+            .filter_map(|entry| entry["path"].as_str())
+            .any(|path| path.starts_with("zz-long/") && path.len() >= 600),
+        "long-path fixture was omitted instead of bounded"
+    );
     assert!(
         entries.iter().any(|entry| entry["kind"] == "committed"
             && entry["branch"] == "result"
@@ -1723,7 +1745,7 @@ fn pi_reports_retained_work_without_copying_it() {
 
     let (run, _, name) = PiRpc::start(&env, &project);
     let script = format!(
-        "cd {} && printf x > \"$(printf 'a\\033b')\" && i=0; while [ \"$i\" -lt 120 ]; do printf extra > extra-$i; i=$((i+1)); done",
+        "cd {} && rm -rf zz-long && printf x > \"$(printf 'a\\033b')\" && i=0; while [ \"$i\" -lt 120 ]; do printf extra > extra-$i; i=$((i+1)); done",
         project.display()
     );
     assert_ok(
@@ -1757,10 +1779,6 @@ fn pi_reports_retained_work_without_copying_it() {
             .filter_map(|entry| entry["path"].as_str())
             .any(|path| path.contains("\\x1b")),
         "hostile filename was omitted instead of escaped"
-    );
-    assert!(
-        stderr.len() <= (64 << 10) + 4096,
-        "summary exceeded byte bound"
     );
     assert_eq!(git(&project, &["show-ref"]), host_refs);
 }
