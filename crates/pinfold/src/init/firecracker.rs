@@ -409,11 +409,6 @@ pub(super) fn mount_builder_input() -> io::Result<()> {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub(super) fn connect_builder() -> io::Result<UnixStream> {
-    vsock_connect(BOOT_PORT)
-}
-
-#[cfg(target_arch = "x86_64")]
 pub(super) fn relay_builder() -> io::Result<()> {
     let relay = TcpListener::bind(super::RELAY_LISTEN)?;
     super::serve_relay(relay, || vsock_connect(PROXY_PORT))
@@ -1033,7 +1028,7 @@ fn vsock_socket() -> io::Result<OwnedFd> {
 /// A vsock stream to the host. It travels as a `UnixStream`, whose read,
 /// write, shutdown and clone are the socket calls any stream socket takes;
 /// its address methods would be wrong and are never called.
-fn vsock_connect(port: u32) -> io::Result<UnixStream> {
+pub(super) fn vsock_connect(port: u32) -> io::Result<UnixStream> {
     let socket = vsock_socket()?;
     nix::sys::socket::connect(socket.as_raw_fd(), &VsockAddr::new(HOST_CID, port))?;
     Ok(UnixStream::from(socket))

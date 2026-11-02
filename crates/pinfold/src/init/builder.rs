@@ -55,7 +55,7 @@ pub(super) fn boot() -> ! {
         eprintln!("pinfold init builder runs only as PID 1");
         process::exit(1);
     }
-    let mut host = match firecracker::connect_builder() {
+    let mut host = match firecracker::vsock_connect(firecracker::BOOT_PORT) {
         Ok(host) => host,
         Err(error) => {
             eprintln!("pinfold init builder: {error}");
