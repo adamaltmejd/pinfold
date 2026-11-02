@@ -1416,7 +1416,10 @@ the command refuses as `project-in-git`.
 Each has one end-to-end test in the Rust E2E crate's suite, but for
 two that run apart. Testing policy is in `AGENTS.md`.
 
-- 34 is an ignored slow test in the crate:
+- 34 is excluded from the five-minute suite and runs separately on Linux in
+  the Slow response proof workflow for PRs, main and manual runs. Release
+  publication, including nightly pin releases, requires its success at the
+  release's exact ref. It can also run explicitly on either platform:
   `cargo test -p e2e --locked --test e2e box_::blocked_route_responses_release_the_upstream -- --ignored --exact`.
 - 36 is the Linux slow gate `scripts/slow-proxy.sh`.
 
