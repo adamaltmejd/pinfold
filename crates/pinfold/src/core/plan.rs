@@ -688,7 +688,13 @@ impl Plan {
             }
             let mut seen_login = false;
             let mut pi_providers = BTreeSet::new();
+            let mut route_names = BTreeSet::new();
             for (name, route) in &egress.routes {
+                if !route_names.insert(name.to_ascii_lowercase()) {
+                    return Err(invalid(format!(
+                        "route {name:?} duplicates a name ignoring ASCII case"
+                    )));
+                }
                 match route {
                     Route::Address(address) => {
                         if !valid_route_address(address) {
