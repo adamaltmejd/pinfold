@@ -96,12 +96,31 @@ In your working folder:
    it keeps project settings, sessions and logins.
 3. Start pi: `pi`.
 4. In a Git repository, run `/login` once; the home disk retains it.
-   Scratch runs have a fresh home each time. An API key or a Claude or Codex
+   Scratch runs have a fresh home each time. After a clean exit, confirmed
+   empty work deletes both scratch disks, including guest logins and sessions.
+   Runs with work or failed inspection keep their disks. `pinfold disk list`
+   shows readable sizes and recorded originating folders; `disk rm --all`
+   removes unattached disks in the current state root.
+   An API key or a Claude or Codex
    subscription can instead stay on the host behind
    a pi login route in `routes` (ARCHITECTURE.md, Egress proxy); an API
    key can also arrive through the environment.
    Using a Claude subscription through pi is subject to Anthropic's terms:
    pi presents the token as Claude Code and may bill it as extra usage.
+
+For reusable Codex subscription login, sign in with Codex on the host and
+put this in the selected profile's `pinfold.toml`:
+
+```toml
+[routes.openai]
+login = "pi"
+provider = "openai-codex"
+```
+
+The token and refresh stay on the host across independent Pi homes.
+An explicit local `routes` table replaces the profile's routes.
+For scripts, add `--json` to `pinfold disk` commands for exact byte counts
+and structured results.
 
 Profile and project builds reuse cached layers by default. Package-update RUN
 steps can remain cached. Use `pinfold build --no-cache` or
@@ -123,10 +142,8 @@ you to merge; `pinfold push` sends your branches in as `host/*`. Each
 `pi` start pushes too, and fast-forwards the box's branch when it is
 clean and strictly behind.
 
-Outside Git, each `pinfold pi` invocation gets fresh retained home and work
-disks and an empty `/work`; the invoking folder is not shared. Local
-`.pinfold.toml` applies, or `~/.config/pinfold/pinfold.toml` (XDG-aware) when
-absent. Neither file is created automatically. See
+Outside Git, each invocation starts with fresh home and work disks and an
+empty `/work`; the invoking folder is not shared. See
 [Configuration](docs/ARCHITECTURE.md#configuration) for precedence and recipes.
 
 On normal exit, Pi gives a bounded advisory summary of outstanding work,

@@ -151,6 +151,11 @@ pub fn disk_lock(name: &str) -> io::Result<Flock<File>> {
     Flock::lock(open_lock(&key)?, FlockArg::LockExclusive).map_err(|(_, error)| error.into())
 }
 
+pub(crate) fn try_disk_lock(name: &str) -> io::Result<Option<Flock<File>>> {
+    let key = format!("disk:{}:{name}", crate::dirs::state_root_key()?);
+    try_lock(&key, FlockArg::LockExclusiveNonblock)
+}
+
 pub fn record(name: &str) -> io::Result<Option<Record>> {
     match fs::read(path(&format!("box:{name}"), "owner")?) {
         Ok(bytes) => serde_json::from_slice(&bytes)

@@ -1,5 +1,6 @@
 //! Per-project state: the state file and the names of the project's disks.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -32,6 +33,91 @@ pub fn scratch_id() -> io::Result<String> {
 
 pub fn scratch_disk_names(id: &str) -> [String; 2] {
     [format!("pi-{id}-home"), format!("pi-{id}-work")]
+}
+
+/// Scratch origins identify disks without making the folder a project.
+pub fn record_scratch(id: &str, root: &Path) -> io::Result<()> {
+    let dir = dirs::state_dir()?.join("scratch");
+    fs::create_dir_all(&dir)?;
+    fs::write(
+        dir.join(format!("{id}.json")),
+        serde_json::to_vec(&StateFile {
+            root: root.to_path_buf(),
+            last_run: now(),
+        })?,
+    )
+}
+
+fn scratch_records() -> io::Result<Vec<(String, PathBuf, StateFile)>> {
+    let mut records = Vec::new();
+    for entry in dirs::entries(&dirs::state_dir()?.join("scratch"))? {
+        let path = entry.path();
+        let Some(id) = path.file_stem().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(nonce) = id.strip_prefix("scratch-") else {
+            continue;
+        };
+        if path.extension().is_none_or(|extension| extension != "json")
+            || nonce.len() != 24
+            || !nonce.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&path) else { continue };
+        let Ok(state) = serde_json::from_slice::<StateFile>(&bytes) else {
+            continue;
+        };
+        records.push((id.to_string(), path, state));
+    }
+    Ok(records)
+}
+
+pub fn disk_origins() -> io::Result<BTreeMap<String, PathBuf>> {
+    let mut origins = BTreeMap::new();
+    for project in state_dirs()? {
+        for name in disk_names(&project.id) {
+            origins.insert(name, project.root.clone());
+        }
+    }
+    for (id, _, state) in scratch_records()? {
+        for name in scratch_disk_names(&id) {
+            origins.insert(name, state.root.clone());
+        }
+    }
+    Ok(origins)
+}
+
+/// Removing one half keeps the other's origin available.
+pub fn forget_scratch_origin(removed: &str) -> io::Result<()> {
+    let Some(id) = removed.strip_prefix("pi-").and_then(|name| {
+        name.strip_suffix("-home")
+            .or_else(|| name.strip_suffix("-work"))
+    }) else {
+        return Ok(());
+    };
+    let Some(nonce) = id.strip_prefix("scratch-") else {
+        return Ok(());
+    };
+    if nonce.len() != 24 || !nonce.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Ok(());
+    }
+    let names = scratch_disk_names(id);
+    let Some(_locks) = crate::core::disk::RemovalGuard::try_take(&names)? else {
+        return Ok(());
+    };
+    if crate::core::runtime::runtime()
+        .list_disks()?
+        .iter()
+        .all(|disk| !names.contains(&disk.name))
+    {
+        crate::core::absent_ok(fs::remove_file(
+            dirs::state_dir()?
+                .join("scratch")
+                .join(format!("{id}.json")),
+        ))?;
+    }
+    Ok(())
 }
 
 /// Record this run in the project's `state.json`. `root` is canonical.

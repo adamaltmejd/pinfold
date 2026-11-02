@@ -10,6 +10,8 @@ use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(not(target_os = "linux"))]
+use nix::libc;
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -30,6 +32,48 @@ pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
 
 /// Apple `container`.
 pub struct Apple;
+
+/// `container exec -i` changes its inherited stdin's shared file flags.
+/// Save them in the command owner, which can outlive an interrupted exec.
+#[cfg(not(target_os = "linux"))]
+pub(crate) struct StdinFlags(Option<libc::c_int>);
+
+#[cfg(not(target_os = "linux"))]
+impl StdinFlags {
+    pub(crate) fn save() -> io::Result<Option<Self>> {
+        if !std::io::IsTerminal::is_terminal(&io::stdin()) {
+            return Ok(None);
+        }
+        // SAFETY: F_GETFL reads the flags of the inherited stdin descriptor.
+        let flags = unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_GETFL) };
+        if flags < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Some(Self(Some(flags))))
+    }
+
+    pub(crate) fn restore(mut self) -> io::Result<()> {
+        self.restore_saved()
+    }
+
+    fn restore_saved(&mut self) -> io::Result<()> {
+        let Some(flags) = self.0.take() else {
+            return Ok(());
+        };
+        // SAFETY: restores exactly the flags read from this descriptor.
+        if unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_SETFL, flags) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl Drop for StdinFlags {
+    fn drop(&mut self) {
+        let _ = self.restore_saved();
+    }
+}
 
 /// The volume behind disk `name`. Apple's volumes are host-wide and a disk
 /// belongs to one state root, so the root's key prefixes the name.

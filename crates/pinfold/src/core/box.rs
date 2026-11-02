@@ -518,6 +518,7 @@ pub struct Signals {
     interrupt: Signal,
     hangup: Option<Signal>,
     last: Option<nix::sys::signal::Signal>,
+    deadline: Option<tokio::time::Instant>,
 }
 
 impl Signals {
@@ -527,12 +528,20 @@ impl Signals {
             interrupt: signal(SignalKind::interrupt())?,
             hangup: None,
             last: None,
+            deadline: None,
         })
     }
 
     pub fn with_hangup() -> io::Result<Signals> {
         let mut signals = Self::new()?;
         signals.hangup = Some(signal(SignalKind::hangup())?);
+        Ok(signals)
+    }
+
+    /// Advisory helpers expire through the ordinary startup rollback path.
+    pub(crate) fn with_timeout(timeout: std::time::Duration) -> io::Result<Signals> {
+        let mut signals = Self::with_hangup()?;
+        signals.deadline = Some(tokio::time::Instant::now() + timeout);
         Ok(signals)
     }
 
@@ -545,6 +554,7 @@ impl Signals {
             _ = self.terminate.recv() => nix::sys::signal::SIGTERM,
             _ = self.interrupt.recv() => nix::sys::signal::SIGINT,
             _ = async { match self.hangup.as_mut() { Some(hangup) => { hangup.recv().await; }, None => std::future::pending().await } } => nix::sys::signal::SIGHUP,
+            _ = async { match self.deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await } } => nix::sys::signal::SIGTERM,
         };
         self.last = Some(received);
         received

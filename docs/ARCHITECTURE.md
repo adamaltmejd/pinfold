@@ -170,9 +170,9 @@ pinfold box prune                 # remove boxes whose `up` is gone, print each 
 pinfold box inspect RUN           # one JSON object: a run's retained records
 pinfold box events RUN [--limit N] [--after CURSOR]   # one JSON object: a page of a run's egress log
 pinfold box fetch BOX --repo GUEST_REPO --into REPO   # box branches into REPO; one JSON line
-pinfold disk list                 # JSON lines
-pinfold disk rm NAME              # one JSON line
-pinfold disk export NAME DEST [--image IMAGE] # untrusted files into a new directory
+pinfold disk list [--json]        # managed disks and their recorded origins
+pinfold disk rm NAME|--all [--json] # unattached disks in this state root
+pinfold disk export NAME DEST [--image IMAGE] [--json] # untrusted files into a new directory
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]…   # one JSON line
 pinfold image rm NAME             # one JSON line
 ```
@@ -554,6 +554,10 @@ process. Getting further needs a host kernel bug.
 - TTY: the exec client (Apple's runtime exec; on Linux, pinfold's own over
   vsock) stays in pinfold's foreground process group, handles raw mode and
   forwards window size. No TTY: its own process group.
+  On return, Apple interactive commands restore the caller's terminal
+  input file flags. A restoration failure fails an otherwise successful
+  command; an existing command failure is preserved. This does not cover
+  process-killing signals.
 - The box is the unit of lifetime; pinfold never signals a process in it
   from the host or through `exec`. At `down` on Linux, init kills the
   work cgroup so the disks can unmount; the box is ending anyway.
@@ -868,8 +872,6 @@ with `build` and caller images with `image build`. The old Podman store,
 old derived-root cache and managed agent disks are left untouched.
 
 Built-in images use `debian:trixie-slim` and strip setuid/setgid bits.
-Their package-update RUN steps may be cached; `pinfold build --no-cache`
-forces them to run again.
 
 | Profile | Tools |
 |---|---|
@@ -1075,14 +1077,28 @@ no ref on the receiving side.
 NAME is validated like a profile name. REF is the full ref set on the
 receiving side.
 
-`disk list` prints one line per disk:
+`disk` prints human-readable output by default. `list` shows each disk's
+allocated storage, capacity, clean state, attachments and recorded full
+origin path. A repository origin is its checkout; a scratch origin is
+where the run started, not a mounted or copied folder. Older scratch and
+caller-created disks may have no recorded origin. Paths are descriptive,
+never deletion authority, and terminal controls are escaped. Human sizes
+use B, KiB, MiB and GiB as appropriate.
+
+A trailing `--json` selects structured output. `disk list --json` prints
+one line per disk, with exact byte counts:
 
 ```json
 {"name":NAME,"size":BYTES,"allocated":BYTES,"attached":[{"box":NAME,"readonly":BOOL}],"clean":BOOL}
 ```
 
 `disk rm NAME` removes a disk no box attaches, and exits 0 for an absent
-one; an attached disk is refused as `disk-in-use`, exit 1:
+one; an attached disk is refused as `disk-in-use`, exit 1. `rm --all`
+snapshots the managed disks in this state root and attempts each ordinary
+removal. Attached disks stay intact; failures do not stop other removals,
+and any failure makes the command exit 1. Disks created after the snapshot
+are outside that pass. Removal is not atomic across disks.
+With `--json`, removal prints:
 
 ```json
 {"event":"removed","disk":NAME,"existed":BOOL}
@@ -1236,9 +1252,20 @@ measurement does not authorize a later deletion.
 - **Scratch:** outside Git, `pi` reads configuration from the invoking
   directory but never copies or mounts that directory. Each invocation gets
   a fresh independent home disk at `/home/pi` and work disk at `/work`, even
-  from the same directory. Both are retained and their names reported.
+  from the same directory. Their names and originating folder are recorded.
   Scratch creates no project-state record, project cleanup label or branch
-  sync. Its disks are ordinary managed disks, removed only by `disk rm`.
+  sync. After a successful harness exit and clean teardown, an apparently
+  empty work disk is inspected again in a transient box using the same
+  image, with only that disk read-only, no home and no egress. Inspection
+  has a 30-second signal deadline. Both disk claims stay locked from the
+  observation through inspector teardown and fresh attachment/clean checks.
+  New writable disks remove only an empty formatter-created
+  recovery directory before guest work; unreadable subtrees never count
+  as empty.
+  Only confirmed empty work permits deleting both disks, including home
+  sessions and guest logins. Work, failed inspection, signals, failed
+  teardown or another attachment retain the disks. Ordinary `disk rm`
+  remains available for retained disks.
   Configuration, trust and recipe image identity stay folder-based; scratch
   disk identity is per invocation.
 - **Arguments** pass through unchanged, after `-e /opt/pinfold/login/pi.ts`
@@ -1252,7 +1279,9 @@ measurement does not authorize a later deletion.
 - **TTY** whenever the host has one.
 - **Auth:** a subscription or API key through pi login routes (Egress
   proxy), kept on the host; else OAuth `/login` once per project, or the
-  environment.
+  environment. Scratch homes are independent: their `/login` credentials
+  are not shared. A profile's login routes provide reusable host auth
+  unless the selected configuration or environment replaces `routes`.
 - **herdr:** no herdr socket. The TTY passes through, so screen detection
   works, and the shim sets `HERDR_AGENT=pi`.
 - **After a run:** when the box ends for a reason other than
@@ -1434,11 +1463,11 @@ slow gates. Testing policy is in `AGENTS.md`.
 | 5 | Nothing can gain privileges | `CapBnd` 0 and the host uid in exec'd processes; no setuid or setgid files; rootfs not writable; init's credentials are the host uid on Apple; on Linux PID 1 is root with `CapBnd` exactly `CAP_SYS_ADMIN`, the exec service is the host uid with every capability set empty and box work cannot list its `/proc/<pid>/fd`, and `unshare -U` fails. The box's `uname -r` differs from the host's; on Linux it is the guest kernel `vmm.toml` pins. |
 | 6 | The environment is exactly the spec | A caller box whose `up` has unprefixed proxy variables does not get them. Guest PATH, HOME, `XDG_RUNTIME_DIR`, `LD_PRELOAD`, multiline values and a transport-prefixed name arrive exactly while local list/exec/down still manage the box. Always-applied values win. Guarantee 39 shows PINFOLD_ENV_SECRET's path. |
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, egress fails closed; another XDG root sees the owner dead, prunes the box and reuses its name. The run's launch record stays `available` and its terminal `not-observed`, also after the prune. An abandoned partial claim is reclaimable. On Linux the VM ends with its owner (guarantee 43), so the egress half runs on Apple. |
-| 9 | The lifecycle works for a caller | `exec` immediately after `ready` streams both streams and returns the exit code, and exits 3 on an absent box; `ready` and `list` name the image's id, and without egress `ready`'s `egress_log` is null; `down` of an absent, empty or flag-like name exits 0, prints nothing and leaves the live box alone; closing `up`'s stdin tears the box down with reason `stdin-closed`. On Apple, a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. |
+| 9 | The lifecycle works for a caller | `exec` immediately after `ready` streams both streams and returns the exit code, and exits 3 on an absent box; `ready` and `list` name the image's id, and without egress `ready`'s `egress_log` is null; `down` of an absent, empty or flag-like name exits 0, prints nothing and leaves the live box alone; closing `up`'s stdin tears the box down with reason `stdin-closed`. A real terminal exec preserves the caller's input file flags, whether initially blocking or nonblocking. On Apple, a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. |
 | 10 | Project branches cross only by fetch | A box's writes on its disk leave the host project's bytes, modes and mtimes unchanged. `fetch` lands only the box's branches, under `refs/remotes/<box>/*`, and no tag, two that shadow a branch's names included; after a merge and two checkouts on the host, nothing the box planted (hooks under every client-side name, `core.hooksPath`, `core.fsmonitor`, tracked `.githooks/` and `.husky/`) has run; control: a host hook runs. Each of five hostile bundles, an injected refspec head, a `.git` tree entry, a missing commit, `x` beside `x/y`, and a listed branch it omits, fails the fetch naming its cause and changes no host ref and nothing under `.git/objects`. |
-| 11 | Disks persist and attach exclusively | A disk created with `from` holds the host tree's files, exec bits and symlink; after its owner is SIGKILLed during the copy and its box pruned, the next `up` naming it holds the whole tree. A file one box writes is read by the next box that attaches it; another state root naming the same disk gets its own. While a box attaches a disk writable, another `up` naming it and `disk rm` are refused as `disk-in-use` and create nothing; of two writable `up`s racing for one new disk exactly one runs and the other is refused as `disk-in-use`; two read-only boxes at once can write neither the disk nor a mount. A sparse `from` past the disk's `size` is refused as `limit`. After the runtime kills a writer's box, or the writer's owner is SIGKILLed, a read-only attachment is refused as `disk-unclean` until a writable one has run, and then reads the disk. On macOS, a dead owner's box the runtime created but never started holds its disk. `disk rm ../escape` is refused as `spec`. On Linux, a nested disk whose mount point is a symlink the box planted ends the start `failed` and leaves nothing at the link's target. |
+| 11 | Disks persist and attach exclusively | A disk created with `from` holds the host tree's files, exec bits and symlink; after its owner is SIGKILLed during the copy and its box pruned, the next `up` naming it holds the whole tree. A file one box writes is read by the next box that attaches it; another state root naming the same disk gets its own. While a box attaches a disk writable, another `up` naming it and `disk rm` (including `--all`) are refused as `disk-in-use` and create nothing; of two writable `up`s racing for one new disk exactly one runs and the other is refused as `disk-in-use`; two read-only boxes at once can write neither the disk nor a mount. A sparse `from` past the disk's `size` is refused as `limit`. After the runtime kills a writer's box, or the writer's owner is SIGKILLed, a read-only attachment is refused as `disk-unclean` until a writable one has run, and then reads the disk. On macOS, a dead owner's box the runtime created but never started holds its disk. `disk rm ../escape` is refused as `spec`; after writers stop, `disk rm --all` removes the remaining disks. On Linux, a nested disk whose mount point is a symlink the box planted ends the start `failed` and leaves nothing at the link's target. |
 | 12 | A changed project file stops the run | A domain added to `.pinfold.toml` by a box commit, fetched and merged on the host, an explicit image added even with the same effective reference, or a changed project Containerfile, makes the next run, `pinfold fetch` and `pinfold build` refuse as `untrusted` until `pinfold allow`. After approval, an explicit image runs but `build` refuses as `image-no-recipe`; the project recipe builds and runs with a recipe-less profile. State, config or cache roots inside the project, reached through a symlinked ancestor whose suffix does not exist, make `allow`, build and pi refuse as `host-path-in-project`; with external roots the same project runs. With no identity in the repository or home, the box's commits arrive authored `pi <pi@pinfold.invalid>`. A start pushes host commits in: a clean box branch strictly behind is fast-forwarded to the host's commit; a dirty tracked file or a local box commit leaves the box's HEAD where it was while `host/main` still moves; an untracked box file the fast-forward would overwrite prints `sync-failed` and pi still runs. |
-| 13 | Project state persists and stays separate | Guest writes in two same-named projects remain separate on A/B/A runs. The first start's box repository is checked out clean at the host's HEAD commit, on a branch two tags shadow by its short and its full name, holding its committed file, and holds none of the host's untracked `.env`, unstaged blob, stash, remote URL or hook. Outside Git, two concurrent invocations from the same folder and one from another folder have independent home/work disks, no host files enter, disks survive exit, and no project state is created. Existing local config still requires approval; absent config is not written. A long valid project basename launches. |
+| 13 | Project state persists and stays separate | Guest writes in two same-named projects remain separate on A/B/A runs. The first start's box repository is checked out clean at the host's HEAD commit, on a branch two tags shadow by its short and its full name, holding its committed file, and holds none of the host's untracked `.env`, unstaged blob, stash, remote URL or hook. Outside Git, concurrent invocations from the same folder and another folder have independent home/work disks and no host files enter. Work survives exit; clean empty runs discard both disks, including home data. No project state is created. Existing local config still requires approval; absent config is not written. A long valid project basename launches. |
 | 15 | Cleanup removes only pinfold's garbage | One project image supplies a live box alongside an idle project's state and disk. Both projects' state bytes and disks survive `clean --dry-run --unused 0s`; plain `clean` keeps both disks. Real `clean --unused 0s` removes idle state and disk while preserving live state bytes and a write read back through the live box's disk. On Apple an externally started container and an unlabeled external image survive cleanup. One caller image held by a running box survives `image rm`, reports `in_use` and still serves its fixture bytes; after the box stops the same removal reclaims its refs and, on Linux, its observed root disk. |
 | 17 | up refuses before it creates | A missing image, a misspelled nested spec key, a bad env name, a `dev.pinfold.` label, a suffix allow entry on or above a public suffix, a mount or disk `from` path with a comma, a disk at or below `/proc`, `/sys` or `/dev` or at `/`, `/tmp`, `/etc` or `/etc/resolv.conf`, each reached through `..` or `.`, a flag- or path-like disk name and a live name are refused as data, naming the cause; the misspelled key's refusal also names the box; each leaves no box and no state dir. A recipe-less profile refuses with `image-source-missing` even when its old managed tag exists; the same profile with an explicit image runs. Of two `up`s racing for one name exactly one wins, and the winner answers exec. |
 | 18 | A caller reads the effective configuration as data | Without a runtime, config reports host policy without creating state/cache/config files. Linux reports known availability from its local catalog, including false for an absent catalog; Apple reports image_built null and image_error when its native probe is unavailable. An existing Linux image remains reportable with empty PATH and KVM denied, without changing the catalog. Global fallback applies only without a local file, an empty local file shadows it, and invalid or dangling local files fail rather than falling back. Global containerfile is refused even under environment overrides; correcting the same file succeeds. Unknown project/profile TOML keys and a profile's containerfile are refused with the source and key; correcting the same file restores the fixture policy. With `PINFOLD_PROFILE=full` and no project `allow`, config reports the default list plus `github.com` and `api.github.com`. Layered image defaults and project overrides report `image_source` and null recipe for explicit images; a project recipe works with a recipe-less profile. Conflicting, missing and empty sources refuse with their tokens before box/project/disk/run state; correcting the fixture succeeds. Guarantee 39 shows the live report. |

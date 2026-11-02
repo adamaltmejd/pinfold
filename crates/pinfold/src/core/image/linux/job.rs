@@ -877,6 +877,7 @@ async fn run_job(
             for (device, path, writable) in attachments {
                 put(&mut request, device); put(&mut request, path);
                 request.push(u8::from(writable));
+                request.push(0); // Builder attachments are never new managed disks.
             }
             request.extend(0u32.to_be_bytes());
             write_frame(&mut reader, BOOT, &request)?;

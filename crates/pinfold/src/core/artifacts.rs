@@ -220,19 +220,17 @@ pub struct Harness {
     asset: Vec<Asset>,
 }
 
-/// One release asset. It serializes as `artifacts` reports it: the url and
-/// its sha256.
-#[derive(Deserialize, Serialize)]
+/// One pinned release asset.
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Asset {
-    #[serde(rename = "os-arch", skip_serializing)]
+    #[serde(rename = "os-arch")]
     os_arch: String,
     url: String,
     sha256: String,
-    #[serde(skip_serializing)]
     install: Install,
     /// Where it is installed, relative to the `<os-arch>/` directory.
-    #[serde(rename = "as", skip_serializing)]
+    #[serde(rename = "as")]
     path: PathBuf,
 }
 

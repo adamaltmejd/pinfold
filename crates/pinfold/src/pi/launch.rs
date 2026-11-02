@@ -63,7 +63,14 @@ pub fn run(args: &[String]) -> io::Result<i32> {
         guest_root
     };
     let plan = build_plan(&config, &storage_id, guest_root, &image);
-    run_box(&plan, guest_root, guest_cwd, args, config.repository)
+    run_box(
+        &plan,
+        guest_root,
+        guest_cwd,
+        args,
+        config.repository,
+        (!config.repository).then_some((storage_id.as_str(), cwd.as_path())),
+    )
 }
 
 /// `$1` is the project's guest path, `$2` the host's branch or empty.
@@ -469,6 +476,7 @@ fn run_box(
     cwd: &Path,
     args: &[String],
     repository: bool,
+    scratch_origin: Option<(&str, &Path)>,
 ) -> io::Result<i32> {
     let init = artifacts::init()?;
     let extension = plan
@@ -497,7 +505,12 @@ fn run_box(
             Err(error) => return Err(error.into()),
         };
         if !repository {
-            eprintln!("pinfold pi: scratch disks: home={}, work={}; retained until `pinfold disk rm NAME`", plan.disks[0].name, plan.disks[1].name);
+            if let Some((id, root)) = scratch_origin
+                && let Err(error) = state::record_scratch(id, root)
+            {
+                eprintln!("pinfold pi: could not record scratch origin: {error}");
+            }
+            eprintln!("pinfold pi: scratch disks: home={}, work={}; empty work is removed on clean exit; retained disks can be removed with `pinfold disk rm NAME`", plan.disks[0].name, plan.disks[1].name);
         }
         // The sync runs here so that the signals and the box's end below
         // also cover it.
@@ -530,15 +543,16 @@ fn run_box(
             Ok((terminal, code)) => (Some(terminal), Ok(code)),
             Err(error) => (None, Err(error)),
         };
+        let mut empty_scratch = false;
         if terminal.as_ref().is_some_and(|terminal| terminal.reason == "harness-exited") {
             match super::summary::report(&mut box_, &mut signals, plan, &summary_init, &summary_root, repository).await {
-                Ok(Some((stopped, status))) => {
+                Ok((Some((stopped, status)), _)) => {
                     terminal = Some(stopped);
                     // A later control/security stop can fail a successful run,
                     // but must not turn an observed harness failure into success.
                     if code.as_ref().is_ok_and(|code| *code == 0) { code = Ok(status); }
                 }
-                Ok(None) => {}
+                Ok((None, empty)) => { empty_scratch = empty; }
                 Err(error) => {
                     terminal = None;
                     if code.as_ref().is_ok_and(|code| *code == 0) { code = Err(error); }
@@ -556,6 +570,19 @@ fn run_box(
         }
         let code = code?;
         down?;
+        if empty_scratch && code == 0 {
+            match super::summary::discard_empty_scratch(plan, &box_.image_ref, &box_.image_id, &summary_init).await {
+                Ok(true) => {
+                    let cleanup = state::forget_scratch_origin(&plan.disks[0].name);
+                    if let Err(error) = cleanup {
+                        eprintln!("pinfold pi: scratch origin cleanup failed: {error}");
+                    }
+                    eprintln!("pinfold pi: empty scratch disks removed");
+                }
+                Ok(false) => eprintln!("pinfold pi: scratch disks retained"),
+                Err(error) => eprintln!("pinfold pi: scratch cleanup failed; check `pinfold disk list`: {error}"),
+            }
+        }
         Ok(code)
     });
     // The exec runs on the blocking pool. A removed box makes it return, but

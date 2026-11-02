@@ -122,6 +122,9 @@ fn walk(dir: &fs::File, relative: &Path, summary: &mut Summary) -> io::Result<()
                     && metadata.uid() == 0
                     && error.kind() == io::ErrorKind::PermissionDenied
                 {
+                    // It may contain recovered files. An advisory omission
+                    // must never authorize automatic disk deletion.
+                    summary.truncated = true;
                     continue;
                 }
                 return Err(error);

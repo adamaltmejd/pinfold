@@ -174,6 +174,9 @@ fn setup(args: &[String]) -> io::Result<()> {
         let Some((uid, gid)) = owner else {
             return Err(io::Error::other(SETUP_USAGE));
         };
+        // This helper owns only newly created volumes, before population.
+        // Nonempty recovery directories stay intact and block empty cleanup.
+        let _ = fs::remove_dir(Path::new(dir).join("lost+found"));
         nix::unistd::chown(
             dir.as_str(),
             Some(nix::unistd::Uid::from_raw(uid)),

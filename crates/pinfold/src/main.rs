@@ -91,5 +91,30 @@ fn main() -> ExitCode {
         | ("box", Some("up" | "list" | "down" | "inspect" | "events")) => {}
         _ => crate::core::clean::maintain(),
     }
-    ExitCode::from(cli::report(verb, run(args)) as u8)
+    #[cfg(not(target_os = "linux"))]
+    let stdin_flags = if matches!(verb, "pi" | "attach")
+        || (verb == "box" && args.first().is_some_and(|arg| arg == "exec"))
+    {
+        match crate::core::runtime::apple::StdinFlags::save() {
+            Ok(flags) => flags,
+            Err(error) => return ExitCode::from(cli::report(verb, Err(error)) as u8),
+        }
+    } else {
+        None
+    };
+    let result = run(args);
+    #[cfg(not(target_os = "linux"))]
+    let result = match stdin_flags.map(|flags| flags.restore()).transpose() {
+        Ok(_) => result,
+        Err(error) => {
+            let error = io::Error::other(format!("restore terminal input flags: {error}"));
+            if matches!(result, Ok(0)) {
+                Err(error)
+            } else {
+                eprintln!("pinfold {verb}: {error}");
+                result
+            }
+        }
+    };
+    ExitCode::from(cli::report(verb, result) as u8)
 }

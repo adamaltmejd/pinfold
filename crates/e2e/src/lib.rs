@@ -128,16 +128,11 @@ impl Drop for TestEnv {
         // Apple's disks are volumes outside the state root: remove this
         // root's. Linux disks live in the state root and go with it.
         // Best effort: a Drop during unwinding must not panic.
-        if cfg!(target_os = "macos")
-            && let Ok(listed) = self.command(pinfold()).args(["disk", "list"]).output()
-        {
-            for line in String::from_utf8_lossy(&listed.stdout).lines() {
-                if let Ok(disk) = serde_json::from_str::<serde_json::Value>(line)
-                    && let Some(name) = disk["name"].as_str()
-                {
-                    let _ = self.command(pinfold()).args(["disk", "rm", name]).output();
-                }
-            }
+        if cfg!(target_os = "macos") {
+            let _ = self
+                .command(pinfold())
+                .args(["disk", "rm", "--all"])
+                .output();
         }
         let _ = fs::remove_dir_all(&self.root);
         let _ = fs::remove_dir_all(&self.state);
