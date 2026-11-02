@@ -41,6 +41,7 @@ pinfold config [ROOT]            effective configuration and project facts as JS
 pinfold box …                    the process interface
 pinfold disk list                list managed disks as JSON lines
 pinfold disk rm NAME             remove an unattached disk; one JSON line
+pinfold disk export NAME DEST [--image IMAGE]   copy an unattached disk into a new directory
 pinfold --version                print the version
 pinfold --help                   print this usage";
 
@@ -542,6 +543,26 @@ fn answer(verb: &str, run_id: &str, answer: Option<serde_json::Value>) -> io::Re
 }
 
 pub fn disk(args: &[String]) -> io::Result<i32> {
+    if let [verb, name, destination, rest @ ..] = args
+        && verb == "export"
+    {
+        if !valid_name(name) {
+            return Err(usage("disk export", "spec: invalid disk name"));
+        }
+        let image = match rest {
+            [] => None,
+            [flag, image] if flag == "--image" && !image.is_empty() => Some(image.as_str()),
+            _ => return Err(usage("disk export", "expected NAME DEST [--image IMAGE]")),
+        };
+        let status = crate::core::disk_export::run(name, Path::new(destination), image)?;
+        if status == 0 {
+            println!(
+                "{}",
+                serde_json::json!({"event":"exported", "disk":name, "destination":destination})
+            );
+        }
+        return Ok(status);
+    }
     let runtime = runtime();
     match args {
         [verb] if verb == "list" => {
@@ -964,6 +985,8 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
     };
     Ok(serde_json::json!({
         "root": utf8(root, "project root")?,
+        "mode": if config.repository { "repository" } else { "scratch" },
+        "config_source": config.source.as_deref(),
         "profile": &config.profile.name,
         "image": image,
         "image_source": config.image_source(),
@@ -977,7 +1000,7 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
         "project": {
             "id": project,
             "home": crate::pi::state::HOME,
-            "disks": { "home": home_disk, "project": project_disk },
+            "disks": if config.repository { Some(serde_json::json!({ "home": home_disk, "project": project_disk })) } else { None },
         },
         "trust": trust,
     }))

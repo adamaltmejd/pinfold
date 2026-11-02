@@ -1,7 +1,7 @@
 //! Per-project state: the state file and the names of the project's disks.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,18 @@ struct StateFile {
 
 /// `$HOME` in a pi box: the home disk's guest path.
 pub const HOME: &str = "/home/pi";
+pub const WORK: &str = "/work";
+
+/// A scratch run is independent of both its configuration folder and PID.
+pub fn scratch_id() -> io::Result<String> {
+    let mut bytes = [0; 16];
+    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(format!("scratch-{}", &sha256_hex(bytes)[..24]))
+}
+
+pub fn scratch_disk_names(id: &str) -> [String; 2] {
+    [format!("pi-{id}-home"), format!("pi-{id}-work")]
+}
 
 /// Record this run in the project's `state.json`. `root` is canonical.
 pub fn record_run(root: &Path) -> io::Result<()> {

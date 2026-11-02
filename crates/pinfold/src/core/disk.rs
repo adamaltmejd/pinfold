@@ -124,6 +124,7 @@ pub fn claim(
     claim: &mut Claim,
     plan: &Plan,
     init: &Path,
+    existing_only: bool,
 ) -> Result<Claimed, Result<(RefusalReason, String), io::Error>> {
     let (name, disks) = (plan.name.as_str(), plan.disks.as_slice());
     if disks.is_empty() {
@@ -141,6 +142,20 @@ pub fn claim(
     let mut claimed = Claimed::default();
     for disk in disks {
         let others = attached.get(&disk.name).map(Vec::as_slice).unwrap_or(&[]);
+        if existing_only {
+            if !disk.readonly || !others.is_empty() {
+                return Err(Ok((
+                    RefusalReason::DiskInUse,
+                    "export requires an unattached read-only disk".to_string(),
+                )));
+            }
+            if !existing.contains(&disk.name) || unfilled(&disk.name).map_err(Err)? {
+                return Err(Ok((
+                    RefusalReason::DiskMissing,
+                    "the requested disk is absent or unfilled".to_string(),
+                )));
+            }
+        }
         if let Some((holder, _)) = others
             .iter()
             .find(|(_, readonly)| !disk.readonly || !readonly)

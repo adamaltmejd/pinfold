@@ -33,7 +33,9 @@ struct Trust {
 /// Record the current hashes for the project rooted at `root`.
 pub fn allow(root: &Path) -> io::Result<()> {
     let config = Config::load(root)?;
-    validate_host_paths(root, &config)?;
+    if config.repository {
+        validate_host_paths(root, &config)?;
+    }
     let trust = current(&config);
     let path = record_path(root)?;
     fs::create_dir_all(path.parent().expect("under the state dir"))?;
@@ -43,7 +45,9 @@ pub fn allow(root: &Path) -> io::Result<()> {
 
 /// Refuse when the project's config inputs no longer match the record.
 pub fn check(root: &Path, config: &Config) -> io::Result<()> {
-    validate_host_paths(root, config)?;
+    if config.repository {
+        validate_host_paths(root, config)?;
+    }
     let current = current(config);
     let path = record_path(root)?;
     let stored: Trust = match fs::read(&path) {
@@ -83,6 +87,13 @@ pub fn validate_host_paths(root: &Path, config: &Config) -> io::Result<()> {
     ];
     if let Some(share) = &config.profile.share {
         paths.push(share.path()?);
+    }
+    // Global policy is host-owned only while its resolved source stays out
+    // of the project. Local policy instead has exact-byte approval.
+    if config.project_toml.is_none()
+        && let Some(source) = &config.source
+    {
+        paths.push(source.clone());
     }
     for path in paths {
         if dirs::resolve_host_path(&path)?.starts_with(&root) {

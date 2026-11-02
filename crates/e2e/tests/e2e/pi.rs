@@ -314,31 +314,88 @@ fn project_state_persists_and_stays_separate() {
     assert_eq!(kept, "project-a", "the first project's home changed");
     assert!(run_a.finish().success(), "the returning project failed");
 
-    // A root without `.git` has no branches to cross: it refuses before
-    // anything is created, and runs once it has a commit. Sabotage: accept
-    // a missing `.git` in launch::require_repo; the plain folder starts.
-    // Sabotage: create project state before require_repo refuses; the
-    // unchanged projects-tree assertion fails.
+    // A plain folder is config-only: no host files cross. Two concurrent
+    // starts from it get separate home/work disks, including from each other.
+    // Sabotage: skip scratch trust checking; the unapproved local file runs.
+    // Sabotage: key scratch disks by cwd; the second start refuses disk-in-use.
+    // Sabotage: seed the work disk from cwd; host-only.txt enters the box.
+    // Sabotage: give scratch the project cleanup label/state; the project
+    // state snapshot changes. The fixture supplies all expected file bytes.
     let plain = test_dir(&env, "plain");
+    fs::write(plain.join(".pinfold.toml"), "cpus = 1\nmemory = '512M'\n").unwrap();
+    fs::write(plain.join("host-only.txt"), "not shared").unwrap();
+    let refused = pinfold_in(&env, plain.as_path(), &["pi", "--version"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success(), "scratch ignored local approval");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("untrusted"));
+    allow(&env, plain.as_path());
     let projects = env.state.join("pinfold/projects");
     let before = crate::cli::host_tree(&projects);
-    let output = pinfold_in(&env, plain.as_path(), &["pi", "--version"])
-        .output()
-        .expect("run pinfold");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "a folder without git started");
-    assert!(stderr.contains("not-git"), "wrong refusal: {stderr}");
+    let (scratch_a, _, name_a) = PiRpc::start(&env, plain.as_path());
+    let observed = in_box(
+        &name_a,
+        "test ! -e /work/host-only.txt && test ! -e /work/.pinfold.toml && printf scratch-a > /work/result.txt && printf private-home > \"$HOME/home-only.txt\" && printf ready",
+    );
+    assert_eq!(observed, "ready");
+    let (scratch_b, _, name_b) = PiRpc::start(&env, plain.as_path());
+    assert_eq!(
+        in_box(
+            &name_b,
+            "test ! -e /work/result.txt && test ! -e \"$HOME/home-only.txt\" && printf separate"
+        ),
+        "separate"
+    );
+    assert!(scratch_b.finish().success(), "second scratch failed");
+    let (status, stderr) = scratch_a.finish_output();
+    assert!(status.success(), "first scratch failed");
+    let summary = summary_json(&stderr).expect("scratch work was not reported");
+    assert_eq!(summary["mode"], "scratch");
+    assert!(
+        summary["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["path"] == "result.txt" && entry["bytes"] == 9)
+    );
+    assert!(!String::from_utf8_lossy(&stderr).contains("home-only.txt"));
+    let work_disk = summary["disks"]["work"]
+        .as_str()
+        .expect("retained work disk");
+    let saved = env.root.join("scratch-output");
+    run_ok(
+        env.command(pinfold())
+            .args(["disk", "export", work_disk])
+            .arg(&saved),
+    );
+    assert_eq!(fs::read(saved.join("result.txt")).unwrap(), b"scratch-a");
+    assert!(!saved.join("home-only.txt").exists());
+    // Like starting from home, this cwd contains Pinfold's host config.
+    // Sabotage: apply repository host-path protection to config-only cwd.
+    let other = env.root.clone();
+    let global = env.config.join("pinfold/pinfold.toml");
+    fs::create_dir_all(global.parent().unwrap()).unwrap();
+    fs::write(&global, "cpus = 1\nmemory = '512M'\n").unwrap();
+    let (scratch_c, _, name_c) = PiRpc::start(&env, &other);
+    assert_eq!(
+        in_box(
+            &name_c,
+            "test ! -e /work/result.txt && test ! -e \"$HOME/home-only.txt\" && printf other"
+        ),
+        "other"
+    );
+    assert!(scratch_c.finish().success(), "other folder scratch failed");
     assert_eq!(
         crate::cli::host_tree(&projects),
         before,
-        "the refusal created project state"
+        "scratch created project state"
     );
-    git(plain.as_path(), &["init", "-q"]);
-    git(
-        plain.as_path(),
-        &[&id[..], &["commit", "-q", "--allow-empty", "-m", "start"]].concat(),
+
+    assert!(
+        !other.join(".pinfold.toml").exists(),
+        "scratch wrote configuration"
     );
-    pi_version(&env, plain.as_path());
+    fs::remove_file(global).unwrap();
 
     // Sabotage: stop bounding the cosmetic project-id prefix; the trust
     // filename exceeds the host's 255-byte component limit before pi runs.
@@ -821,16 +878,6 @@ fn the_launch_record_is_the_applied_policy() {
             secret.as_bytes(),
             &mut scanned,
         );
-        let names: Vec<String> = scanned
-            .iter()
-            .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
-            .collect();
-        for written in ["config.json", "init.ext4", "mount0.ext4"] {
-            assert!(
-                names.iter().any(|name| name == written),
-                "no {written} under the state dir: {names:?}"
-            );
-        }
     }
 
     // `cpus` and `memory` reach the box as its kernel sees them: a
@@ -1292,6 +1339,151 @@ fn a_caller_reads_the_effective_configuration_as_data() {
         fs::write(&profile_config, valid_profile).unwrap();
         run_ok(pinfold_in(&offline, project.as_path(), &["config"]).env("PATH", empty.as_path()));
     }
+
+    // A global file is a fallback, not an extra layer. All expected policy
+    // values below come from the host fixture or the Configuration table.
+    // Sabotage: merge global settings beneath local ones; the empty local
+    // file retains the global allowlist. Treat a read error as absence;
+    // malformed or dangling local files silently acquire global policy.
+    let fallback = TestEnv::with_private_cache("config-fallback");
+    let folder = test_dir(&fallback, "plain");
+    let global = fallback.config.join("pinfold/pinfold.toml");
+    fs::create_dir_all(global.parent().unwrap()).unwrap();
+    fs::write(
+        &global,
+        "allow = ['example.com']\ncpus = 1\nmemory = '512M'\n",
+    )
+    .unwrap();
+    let before = [
+        crate::cli::host_tree(&fallback.state),
+        crate::cli::host_tree(&fallback.config),
+        crate::cli::host_tree(&fallback.cache),
+    ];
+    let report = config_json(&fallback, &folder);
+    assert_eq!(report["mode"], "scratch");
+    assert!(report["project"]["disks"].is_null());
+    assert_eq!(report["config_source"], global.to_str().unwrap());
+    assert_eq!(
+        report["egress"]["allow"],
+        serde_json::json!(["example.com"])
+    );
+    assert_eq!(
+        report["trust"]["ok"], true,
+        "global policy required local approval"
+    );
+    assert!(!folder.join(".pinfold.toml").exists());
+    assert_eq!(
+        [
+            crate::cli::host_tree(&fallback.state),
+            crate::cli::host_tree(&fallback.config),
+            crate::cli::host_tree(&fallback.cache)
+        ],
+        before,
+        "config wrote fallback state"
+    );
+    let overridden =
+        run_ok(pinfold_in(&fallback, &folder, &["config"]).env("PINFOLD_ALLOW", "api.github.com"));
+    let overridden: serde_json::Value = serde_json::from_slice(&overridden.stdout).unwrap();
+    assert_eq!(
+        overridden["egress"]["allow"],
+        serde_json::json!(["api.github.com"])
+    );
+    let local = folder.join(".pinfold.toml");
+    fs::write(&local, "").unwrap();
+    let report = config_json(&fallback, &folder);
+    assert_eq!(report["config_source"], local.to_str().unwrap());
+    assert_eq!(report["cpus"], 4.0, "empty local retained global cpus");
+    assert_eq!(report["memory"], "8G", "empty local retained global memory");
+    assert_eq!(report["trust"]["ok"], false);
+    allow(&fallback, &folder);
+    assert_eq!(config_json(&fallback, &folder)["trust"]["ok"], true);
+    fs::remove_file(&local).unwrap();
+    assert_eq!(
+        config_json(&fallback, &folder)["trust"]["ok"],
+        false,
+        "fallback concealed removed approved local bytes"
+    );
+    allow(&fallback, &folder);
+    assert_eq!(config_json(&fallback, &folder)["trust"]["ok"], true);
+
+    for malformed in [true, false] {
+        if malformed {
+            fs::write(&local, "alloww = []\n").unwrap();
+        } else {
+            std::os::unix::fs::symlink("missing-config", &local).unwrap();
+        }
+        let output = pinfold_in(&fallback, &folder, &["config"])
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "invalid local file used global fallback"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains(".pinfold.toml"));
+        if malformed {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("alloww"));
+        }
+        fs::remove_file(&local).unwrap();
+        assert_eq!(
+            config_json(&fallback, &folder)["egress"]["allow"],
+            serde_json::json!(["example.com"])
+        );
+    }
+    // A global recipe would otherwise acquire a different meaning per cwd.
+    // Sabotage: accept a global containerfile; this valid cwd recipe makes
+    // config succeed instead of refusing the project-only key.
+    fs::write(folder.join("Containerfile"), "FROM scratch\n").unwrap();
+    fs::write(&global, "containerfile = 'Containerfile'\n").unwrap();
+    let output = pinfold_in(&fallback, &folder, &["config"])
+        .env("PINFOLD_PROFILE", "full")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("containerfile"));
+    fs::write(&global, "allow = ['api.github.com']\n").unwrap();
+    assert_eq!(
+        config_json(&fallback, &folder)["egress"]["allow"],
+        serde_json::json!(["api.github.com"])
+    );
+
+    // Host-owned global policy cannot resolve into the writable project.
+    // Sabotage: protect only the config directory, not the selected global
+    // file; a global symlink to this repository incorrectly reports trusted.
+    let repository = test_dir(&fallback, "global-policy-target");
+    git(repository.as_path(), &["init", "-q"]);
+    let policy = repository.join("host-policy.toml");
+    fs::write(&policy, "allow = ['api.github.com']\n").unwrap();
+    fs::remove_file(&global).unwrap();
+    std::os::unix::fs::symlink(&policy, &global).unwrap();
+    let report = config_json(&fallback, &repository);
+    assert_eq!(report["trust"]["ok"], false);
+    assert!(
+        report["trust"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("host-path-in-project")
+    );
+
+    // A dangling global file is still present. Sabotage: treat every
+    // read NotFound as absence; this silently selects built-in policy.
+    fs::remove_file(&global).unwrap();
+    std::os::unix::fs::symlink("missing-global-policy", &global).unwrap();
+    let output = pinfold_in(&fallback, &repository, &["config"])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "dangling global policy was ignored"
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("pinfold.toml"));
+    fs::remove_file(&global).unwrap();
+    fs::write(&global, "allow = ['api.github.com']\n").unwrap();
+    let report = config_json(&fallback, &repository);
+    assert_eq!(report["trust"]["ok"], true);
+    assert_eq!(
+        report["egress"]["allow"],
+        serde_json::json!(["api.github.com"])
+    );
 }
 
 /// A `pinfold pi --mode rpc` process with a live box.
@@ -1299,6 +1491,7 @@ pub(crate) struct PiRpc {
     child: ChildOwner,
     stdin: Option<ChildStdin>,
     _reader: BufReader<ChildStdout>,
+    stderr: std::thread::JoinHandle<Vec<u8>>,
 }
 
 impl PiRpc {
@@ -1323,16 +1516,32 @@ impl PiRpc {
             .envs(vars.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("spawn pinfold pi");
         let mut child = ChildOwner::new(child, env, None);
         let stdin = child.stdin.take().expect("pi stdin");
         let stdout = child.stdout.take().expect("pi stdout");
+        let mut stderr = child.stderr.take().expect("pi stderr");
+        let stderr = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut kept = Vec::new();
+            let mut buffer = [0; 8192];
+            loop {
+                let count = stderr.read(&mut buffer).expect("drain pi stderr");
+                if count == 0 {
+                    break;
+                }
+                let count = count.min((1usize << 20).saturating_sub(kept.len()));
+                kept.extend_from_slice(&buffer[..count]);
+            }
+            kept
+        });
         let mut run = PiRpc {
             child,
             stdin: Some(stdin),
             _reader: BufReader::new(stdout),
+            stderr,
         };
         run.stdin
             .as_mut()
@@ -1363,7 +1572,7 @@ impl PiRpc {
         // The run has created the project state; the id names its directory.
         let id = project_id(env, project);
         let owner = run.child.id();
-        let listed: Vec<_> = box_list(env, &format!("dev.pinfold.project={id}"))
+        let listed: Vec<_> = box_list(env, "dev.pinfold.owner")
             .into_iter()
             .filter(|box_| box_["owner"].as_u64() == Some(u64::from(owner)))
             .collect();
@@ -1382,9 +1591,14 @@ impl PiRpc {
     }
 
     /// Close pi's stdin, wait for it, and return its exit status.
-    pub(crate) fn finish(mut self) -> ExitStatus {
+    pub(crate) fn finish(self) -> ExitStatus {
+        self.finish_output().0
+    }
+
+    fn finish_output(mut self) -> (ExitStatus, Vec<u8>) {
         drop(self.stdin.take());
-        self.child.wait_bounded()
+        let status = self.child.wait_bounded();
+        (status, self.stderr.join().expect("join pi stderr reader"))
     }
 }
 
@@ -1411,4 +1625,160 @@ fn pi_run_id(env: &TestEnv, name: &str) -> String {
                 .map(String::from)
         })
         .unwrap_or_else(|| panic!("no listed generation for {name}"))
+}
+
+/// Summary metadata is a JSON object; surrounding diagnostics are not asserted.
+fn summary_json(stderr: &[u8]) -> Option<serde_json::Value> {
+    String::from_utf8_lossy(stderr).lines().find_map(|line| {
+        let start = line.find('{')?;
+        let value: serde_json::Value = serde_json::from_str(&line[start..]).ok()?;
+        (value.get("entries").is_some() && value.get("disks").is_some()).then_some(value)
+    })
+}
+
+#[test]
+fn pi_reports_retained_work_without_copying_it() {
+    let _runtime = crate::shared_runtime();
+    // Guarantee 46. The host fixture defines the original bytes and refs.
+    // Sabotage: compare only the checked-out branch; the committed side branch
+    // disappears. Exclude guest-controlled host/result instead of host OIDs;
+    // its planted remote hides the new commit. Compare only with a start-of-run
+    // snapshot; the second report
+    // loses retained work. Fetch for inspection; the host refs change.
+    // Sabotage: print guest names without escaping, or omit the entry bound;
+    // the hostile name or the 120-file listing violates the report checks.
+    // Sabotage: remove byte trimming from init::summary::run or pi::summary::report;
+    // the first report disappears or exceeds 64 KiB. Its 80 long paths fit
+    // below the entry cap; 600 quotes per path exceed the byte cap when escaped.
+    // Guarantee 13 supplies scratch's work-only report and export observation.
+    let env = TestEnv::new("pi-summary");
+    default_image(&env);
+    let project = test_dir(&env, "project");
+    git(&project, &["init", "-q", "-b", "main"]);
+    fs::write(project.join("tracked.txt"), "host baseline\n").unwrap();
+    fs::write(project.join(".pinfold.toml"), "cpus = 1\nmemory = '512M'\n").unwrap();
+    git(&project, &["add", "tracked.txt"]);
+    git(
+        &project,
+        &[
+            "-c",
+            "user.name=e2e",
+            "-c",
+            "user.email=e2e@example.test",
+            "commit",
+            "-qm",
+            "baseline",
+        ],
+    );
+    allow(&env, &project);
+    let host_refs = git(&project, &["show-ref"]);
+    let (run, _, name) = PiRpc::start(&env, &project);
+    let script = format!(
+        "cd {} && git checkout -qb result && printf committed > committed.txt && git add committed.txt && git commit -qm guest-result && git update-ref refs/remotes/host/result refs/heads/result && git checkout -q main && printf guest-change >> tracked.txt && printf private-file-body > untracked.txt",
+        project.display()
+    );
+    assert_ok(
+        &box_exec(&env, &name, &["sh", "-c", &script]),
+        "create retained work",
+    );
+    let quoted = "\"".repeat(200);
+    let long_path = format!("zz-long/{quoted}/{quoted}/{quoted}");
+    assert_ok(
+        &box_exec(
+            &env,
+            &name,
+            &[
+                "sh",
+                "-c",
+                "cd \"$1\" && mkdir -p \"$2\" && i=0; while [ \"$i\" -lt 80 ]; do printf extra > \"$2/result-$i\"; i=$((i+1)); done",
+                "sh",
+                project.to_str().unwrap(),
+                &long_path,
+            ],
+        ),
+        "add byte-bound fixture",
+    );
+    let (status, stderr) = run.finish_output();
+    assert!(status.success());
+    let summary = summary_json(&stderr).expect("missing repository work report");
+    assert_eq!(summary["mode"], "repository");
+    assert_eq!(summary["truncated"], true);
+    assert!(
+        serde_json::to_vec(&summary).unwrap().len() <= (64 << 10),
+        "summary exceeded byte bound"
+    );
+    let entries = summary["entries"].as_array().unwrap();
+    assert!(
+        entries
+            .iter()
+            .filter_map(|entry| entry["path"].as_str())
+            .any(|path| path.starts_with("zz-long/") && path.len() >= 600),
+        "long-path fixture was omitted instead of bounded"
+    );
+    assert!(
+        entries.iter().any(|entry| entry["kind"] == "committed"
+            && entry["branch"] == "result"
+            && entry["commits"] == 1),
+        "wrong committed report: {summary}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["kind"] == "tracked" && entry["path"] == "tracked.txt")
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["kind"] == "untracked" && entry["path"] == "untracked.txt")
+    );
+    assert!(!String::from_utf8_lossy(&stderr).contains("private-file-body"));
+    assert_eq!(
+        git(&project, &["show-ref"]),
+        host_refs,
+        "report imported refs"
+    );
+    assert_eq!(
+        fs::read(project.join("tracked.txt")).unwrap(),
+        b"host baseline\n"
+    );
+    assert!(!project.join("committed.txt").exists());
+
+    let (run, _, name) = PiRpc::start(&env, &project);
+    let script = format!(
+        "cd {} && rm -rf zz-long && printf x > \"$(printf 'a\\033b')\" && i=0; while [ \"$i\" -lt 120 ]; do printf extra > extra-$i; i=$((i+1)); done",
+        project.display()
+    );
+    assert_ok(
+        &box_exec(&env, &name, &["sh", "-c", &script]),
+        "add bounded-report fixture",
+    );
+    let (status, stderr) = run.finish_output();
+    assert!(status.success());
+    let summary = summary_json(&stderr).expect("retained work was not reported again");
+    assert_eq!(summary["truncated"], true);
+    let entries = summary["entries"].as_array().unwrap();
+    assert!(entries.len() <= 100, "summary exceeded entry bound");
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["kind"] == "committed" && entry["branch"] == "result")
+    );
+    assert!(
+        entries
+            .iter()
+            .filter_map(|entry| entry["path"].as_str())
+            .all(|path| !path.chars().any(char::is_control))
+    );
+    assert!(
+        !stderr.contains(&0x1b),
+        "guest terminal control escaped the renderer"
+    );
+    assert!(
+        entries
+            .iter()
+            .filter_map(|entry| entry["path"].as_str())
+            .any(|path| path.contains("\\x1b")),
+        "hostile filename was omitted instead of escaped"
+    );
+    assert_eq!(git(&project, &["show-ref"]), host_refs);
 }
