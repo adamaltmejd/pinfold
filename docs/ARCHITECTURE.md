@@ -1115,6 +1115,9 @@ DEST. After successful transfer and teardown, publication must not replace
 any existing DEST. The destination root is 700. Export does not repair an
 unclean disk or change Pi's branch crossing.
 
+Success exits 0 and prints one JSON line:
+`{"event":"exported","disk":NAME,"destination":DEST}`.
+
 ## Updates
 
 `pinfold update --check` reports whether a newer stable GitHub release is
