@@ -18,7 +18,7 @@ use e2e::image_cli;
 use e2e::{
     HttpFixture, ImageCleanup, TestEnv, assert_denied, assert_ok, box_exec, box_list, curl,
     default_image, exit_code, git, image_id, inspect, json_lines, pinfold, profile_containerfile,
-    project_id, project_state_dir, run_dir, run_ok, tagged_images, test_dir,
+    project_id, project_state_dir, run_dir, run_ok, runtime_images, tagged_images, test_dir,
 };
 
 #[cfg(target_os = "macos")]
@@ -76,25 +76,27 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let live_disk = format!("pi-{live_id}-home");
     let other_disk = format!("pi-{other_id}-home");
 
-    // One project image supplies both the live-project label and tools to
-    // write its attached disk. The idle project needs state and a disk only.
+    // Reuse the disk creator and live-project boxes as retention pins.
+    // P0 must survive P2 while held, then become removable behind held P1.
+    // Sabotage: remove retention's in-use check; P0 loses its last tag at P2.
+    // Sabotage: stop retention at the first in-use image instead of skipping
+    // only it; P0 remains after P3 despite its box having stopped.
     let containerfile = live_project.as_path().join("Containerfile");
-    fs::write(&containerfile, format!("FROM {base}\n")).unwrap();
-    let live_repository = if cfg!(target_os = "linux") {
-        format!("localhost/pinfold/project-{live_id}")
-    } else {
-        format!("e2e-cleanup-live-{}", std::process::id())
-    };
+    let live_repository = format!("localhost/pinfold/project-{live_id}");
     let _live_images = ImageCleanup {
         repository: live_repository.clone(),
     };
     let live_ref = format!("{live_repository}:latest");
     let live_label = format!("dev.pinfold.project={live_id}");
-    #[cfg(target_os = "linux")]
-    {
+    fs::write(
+        live_project.as_path().join(".pinfold.toml"),
+        format!("profile = \"{missing}\"\ncontainerfile = \"Containerfile\"\n"),
+    )
+    .unwrap();
+    let build_project = |marker: &str| {
         fs::write(
-            live_project.as_path().join(".pinfold.toml"),
-            format!("profile = \"{missing}\"\ncontainerfile = \"Containerfile\"\n"),
+            &containerfile,
+            format!("FROM {base}\nLABEL dev.example.retention={marker}\n"),
         )
         .unwrap();
         e2e::allow(&env, live_project.as_path());
@@ -103,24 +105,37 @@ fn cleanup_removes_only_pinfolds_garbage() {
                 .arg("build")
                 .current_dir(live_project.as_path()),
         );
-    }
-    // The project fixture must not inherit the base's profile identity.
-    #[cfg(target_os = "macos")]
-    run_ok(
-        Command::new(image_cli())
-            .env_remove("NO_COLOR")
-            .env_remove("BUILDKIT_COLORS")
-            .args(["build", "--file"])
-            .arg(&containerfile)
-            .args(["--tag", &live_ref, "--label", &live_label])
-            .args(["--label", "dev.pinfold.profile="])
-            .arg(live_project.as_path())
-            .stdin(Stdio::null()),
+        let images = runtime_images().expect("list the project's built image");
+        let id = images
+            .iter()
+            .find(|image| image.names.contains(&live_ref))
+            .expect("the latest project image exists")
+            .id
+            .clone();
+        let reference = images
+            .into_iter()
+            .filter(|image| image.id == id)
+            .flat_map(|image| image.names)
+            .find(|name| name.starts_with(&format!("{live_repository}:")) && name != &live_ref)
+            .expect("the project build has a unique runtime reference");
+        (reference, id)
+    };
+    let (p0_ref, p0_id) = build_project("A");
+    let creator = box_name("cleanup-disk");
+    let mut creator_up = box_up(
+        &env,
+        &serde_json::json!({
+            "name": creator,
+            "image": p0_ref,
+            "disks": [{ "name": other_disk, "guest": "/disk" }],
+        }),
+        &creator,
     );
+    let (p1_ref, p1_id) = build_project("B");
     let live = box_name("cleanup-live");
     let live_spec = serde_json::json!({
         "name": live,
-        "image": live_ref,
+        "image": p1_ref,
         "disks": [{ "name": live_disk, "guest": "/home-disk" }],
     });
     let _live = box_up(&env, &live_spec, &live);
@@ -137,18 +152,13 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "writing the live project's disk",
     );
 
-    let creator = box_name("cleanup-disk");
-    let mut up = box_up(
-        &env,
-        &serde_json::json!({
-            "name": creator,
-            "image": base,
-            "disks": [{ "name": other_disk, "guest": "/disk" }],
-        }),
-        &creator,
+    let (p2_ref, p2_id) = build_project("C");
+    assert_eq!(image_id(&p0_ref).as_ref(), Some(&p0_id), "P0 lost its pin");
+    creator_up.down(&env);
+    assert!(
+        creator_up.wait().success(),
+        "the disk's box did not exit cleanly"
     );
-    up.down(&env);
-    assert!(up.wait().success(), "the disk's box did not exit cleanly");
     #[cfg(target_os = "macos")]
     let unlabeled_repository = format!(
         "localhost/pinfold/e2e-cleanup-unlabeled-{}",
@@ -160,8 +170,8 @@ fn cleanup_removes_only_pinfolds_garbage() {
     };
     #[cfg(target_os = "macos")]
     let unlabeled = {
-        // This external runtime fixture has no pinfold labels. It is not
-        // one of the two case builds through pinfold's image lifecycle.
+        // This external runtime fixture has no pinfold labels and does not
+        // use pinfold's image lifecycle.
         let context = test_dir(&env, "unlabeled-context");
         let recipe = context.as_path().join("Containerfile");
         fs::write(&recipe, "FROM scratch\n").unwrap();
@@ -192,7 +202,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let recipe = context.as_path().join("Containerfile");
     fs::write(
         &recipe,
-        format!("FROM {base}\nCOPY marker.txt /marker.txt\n"),
+        format!("FROM {p2_ref}\nCOPY marker.txt /marker.txt\n"),
     )
     .unwrap();
     fs::write(context.as_path().join("marker.txt"), "retire\n").unwrap();
@@ -206,6 +216,19 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert_eq!(built["event"], "built", "{built}");
     let reference = built["ref"].as_str().expect("caller build has a ref");
     let id = image_id(reference).expect("the caller image exists before rm");
+    // Sabotage: leave the caller's inherited project-family label intact.
+    // Its newer build tag then displaces P2 from the project's rollback pair.
+    let (_, p3_id) = build_project("D");
+    let expected: std::collections::BTreeSet<_> =
+        [&p0_id, &p1_id, &p2_id, &p3_id].into_iter().collect();
+    assert_eq!(expected.len(), 4, "fixture builds must be distinct images");
+    let mut expected = vec![p1_id, p2_id, p3_id];
+    expected.sort();
+    assert_eq!(
+        tagged_images(&live_repository),
+        expected,
+        "retention must keep only P1's pin and the newest two project builds"
+    );
     let pinned = box_name("cleanup-retire");
     let mut up = box_up(
         &env,
