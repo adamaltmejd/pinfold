@@ -2405,16 +2405,18 @@ fn blocked_route_responses_release_the_upstream() {
     let _runtime = crate::shared_runtime();
     // Guarantee 34. Sabotage: remove write deadlines from the host proxy
     // and guest relay; their full buffers keep the fixture blocked until
-    // its own 330-second safety deadline. This exercises a route response,
-    // not CONNECT's shared activity clock. The first small response is the
-    // positive control; the second client deliberately never reads fd 3.
+    // its own 330-second safety deadline. Restore socket-timeout writes to
+    // the upstream transport and a blocked upload can exceed its bound.
+    // These are route writes, not CONNECT's shared
+    // activity clock. The small POST and its response are the control.
+    // Both blocked directions run concurrently at the production timeout.
     let env = TestEnv::new("blocked-response");
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let route = listener.local_addr().unwrap().to_string();
     let (started, start) = std::sync::mpsc::channel();
     let (ended, end) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        for large in [false, true] {
+        for case in ["control", "response", "upload"] {
             let (mut stream, _) = listener.accept().unwrap();
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(10)))
@@ -2433,8 +2435,11 @@ fn blocked_route_responses_release_the_upstream() {
                     break;
                 }
             }
-            drop(request);
-            if !large {
+            if case == "control" {
+                let mut body = [0; 7];
+                request.read_exact(&mut body).unwrap();
+                assert_eq!(&body, b"control", "small routed upload");
+                drop(request);
                 stream
                     .write_all(
                         b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\ncontrol",
@@ -2442,19 +2447,27 @@ fn blocked_route_responses_release_the_upstream() {
                     .unwrap();
                 continue;
             }
-            let began = std::time::Instant::now();
-            started.send(began).unwrap();
-            let sent = (|| -> std::io::Result<()> {
-                stream.write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 1073741824\r\nConnection: close\r\n\r\n",
-                )?;
-                let chunk = [b'x'; 64 * 1024];
-                for _ in 0..16384 {
-                    stream.write_all(&chunk)?;
-                }
-                Ok(())
-            })();
-            let _ = ended.send((began.elapsed(), sent.map_err(|error| error.kind())));
+            drop(request);
+            let started = started.clone();
+            let ended = ended.clone();
+            std::thread::spawn(move || {
+                let began = std::time::Instant::now();
+                started.send((case, began)).unwrap();
+                // The upload fixture does not read the request body.
+                // Its own blocked response observes peer closure without
+                // draining that body and accidentally releasing the writer.
+                let sent = (|| -> std::io::Result<()> {
+                    stream.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 1073741824\r\nConnection: close\r\n\r\n",
+                    )?;
+                    let chunk = [b'x'; 64 * 1024];
+                    for _ in 0..16384 {
+                        stream.write_all(&chunk)?;
+                    }
+                    Ok(())
+                })();
+                let _ = ended.send((case, began.elapsed(), sent.map_err(|error| error.kind())));
+            });
         }
     });
     let name = box_name("blocked-response");
@@ -2464,8 +2477,13 @@ fn blocked_route_responses_release_the_upstream() {
         "egress": { "routes": { "fixture.internal": route } },
     });
     let mut up = box_up(&env, &spec, &name);
-    let control = curl(&env, &name, "5", &["http://fixture.internal/"]);
-    assert_ok(&control, "small route response");
+    let control = curl(
+        &env,
+        &name,
+        "5",
+        &["--data", "control", "http://fixture.internal/"],
+    );
+    assert_ok(&control, "small route upload and response");
     assert_eq!(control.stdout, "control");
 
     let holder = env
@@ -2483,41 +2501,101 @@ fn blocked_route_responses_release_the_upstream() {
         .expect("start a client that does not read the response");
     let mut holder = ChildOwner::new(holder, &env, Some(up.pid()));
     holder.observe(&up.ready);
-    let ready = start.recv_timeout(std::time::Duration::from_secs(10));
-    let observed = ready
-        .as_ref()
-        .map(|_| end.recv_timeout(std::time::Duration::from_secs(330)));
-    let still_held = holder
-        .try_wait()
-        .expect("observe the held client")
-        .is_none();
+    let response_ready = start.recv_timeout(std::time::Duration::from_secs(10));
+    let upload = env
+        .command(pinfold())
+        .args([
+            "box", "exec", &name, "--", "bash", "-c",
+            "exec 3<>/dev/tcp/127.0.0.1/3128; \
+             printf 'POST http://fixture.internal/ HTTP/1.1\\r\\nHost: fixture.internal\\r\\nContent-Length: 1073741824\\r\\n\\r\\n' >&3; \
+             dd if=/dev/zero bs=65536 count=16384 >&3 2>/dev/null; \
+             printf 'upload-ended\\n'; read -r release",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("start a client whose upstream does not read its upload");
+    let mut upload = ChildOwner::new(upload, &env, Some(up.pid()));
+    upload.observe(&up.ready);
+    let stdout = upload.stdout.take().expect("observe the upload producer");
+    let (completed, completion) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut marker = String::new();
+        let read = BufReader::new(stdout).read_line(&mut marker);
+        let _ = completed.send((std::time::Instant::now(), read, marker));
+    });
+    let upload_ready = start.recv_timeout(std::time::Duration::from_secs(10));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(330);
+    let observed: Vec<_> = (0..2)
+        .map(|_| end.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())))
+        .collect();
+    let producer = completion.recv_timeout(std::time::Duration::from_secs(5));
+    let mut held = Vec::new();
+    let mut statuses = Vec::new();
     // Release and reap before asserting, so a failed deadline leaves no
     // guest exec or host runtime client behind.
-    if let Some(mut input) = holder.stdin.take() {
-        let _ = input.write_all(b"release\n");
+    for client in [&mut holder, &mut upload] {
+        held.push(
+            client
+                .try_wait()
+                .expect("observe the held client")
+                .is_none(),
+        );
+        if let Some(mut input) = client.stdin.take() {
+            let _ = input.write_all(b"release\n");
+        }
+        statuses.push(client.wait_bounded());
     }
-    let status = holder.wait_bounded();
     up.down(&env);
     assert!(up.wait().success(), "slow test's owner did not exit");
-    assert!(ready.is_ok(), "fixture did not observe the held request");
-    let (elapsed, sent) = observed.unwrap().expect("blocked response did not close");
-    assert!(still_held, "the guest closed its own response socket early");
-    assert!(status.success(), "held client failed: {status}");
+    assert_eq!(response_ready.unwrap().0, "response");
+    let (case, upload_began) = upload_ready.unwrap();
+    assert_eq!(case, "upload");
+    let (finished, read, marker) = producer.expect("upload producer did not finish");
+    read.expect("read the upload producer's completion marker");
+    assert_eq!(marker, "upload-ended\n");
+    // The independently held shell alone would also survive an immediate
+    // dd failure. Timestamp producer completion on the host to exclude a
+    // short body followed by the proxy's read timeout instead of a blocked
+    // upstream write.
+    let produced_for = finished.saturating_duration_since(upload_began);
+    eprintln!("blocked upload producer ended after {produced_for:?}");
     assert!(
-        matches!(
-            sent,
-            Err(std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset)
-        ),
-        "fixture ended without peer closure: {sent:?}"
+        produced_for >= std::time::Duration::from_secs(295),
+        "upload producer ended before the write deadline: {produced_for:?}"
     );
     assert!(
-        elapsed >= std::time::Duration::from_secs(295),
-        "response closed early: {elapsed:?}"
+        held.into_iter().all(|held| held),
+        "a guest holder exited early"
     );
     assert!(
-        elapsed <= std::time::Duration::from_secs(330),
-        "response stayed blocked: {elapsed:?}"
+        statuses.into_iter().all(|status| status.success()),
+        "a held client failed"
     );
+    for result in observed {
+        let (case, elapsed, sent) = result.expect("blocked route did not close");
+        eprintln!("blocked route {case} ended after {elapsed:?}: {sent:?}");
+        assert!(
+            matches!(
+                sent,
+                Err(std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset)
+            ),
+            "{case} fixture ended without peer closure: {sent:?}"
+        );
+        assert!(
+            elapsed >= std::time::Duration::from_secs(295),
+            "{case} closed early: {elapsed:?}"
+        );
+        // Response relay buffers retain their existing allowance. An
+        // upstream write has no such relay after it; ten seconds allows
+        // buffer fill and scheduling without hiding Linux timeout rounding.
+        let limit = if case == "upload" { 310 } else { 330 };
+        assert!(
+            elapsed <= std::time::Duration::from_secs(limit),
+            "{case} stayed blocked: {elapsed:?}"
+        );
+    }
 }
 
 #[test]
