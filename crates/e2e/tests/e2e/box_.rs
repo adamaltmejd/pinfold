@@ -491,6 +491,25 @@ fn up_refuses_before_it_creates() {
     );
     assert_left_nothing(&env, &name, label, "refused");
 
+    // Sabotage: omit case-insensitive route-name uniqueness in Plan's
+    // validation; both names then enter the proxy as the same key and this
+    // up becomes ready. The race's winner below serves both distinct names.
+    let first_route = HttpFixture::start(Some(("text/plain", "first")));
+    let second_route = HttpFixture::start(Some(("text/plain", "second")));
+    let route_collision = serde_json::json!({
+        "name": name,
+        "image": default_image(&env),
+        "labels": { "dev.example.test": "refuses" },
+        "egress": { "routes": {
+            "First.internal": first_route.route(),
+            "first.internal": second_route.route(),
+        } },
+    });
+    let (code, refused) = box_up_refused(&env, &route_collision, &[]);
+    assert_eq!(code, 1, "{refused}");
+    assert_eq!(refused["reason"], "spec", "{refused}");
+    assert_left_nothing(&env, &name, label, "route collision");
+
     // A spec whose mount path holds a comma is refused as data, naming the
     // path, and leaves no state dir and no box: on Apple the bind value is
     // built by concatenation, so the runtime reads the rest as mount
@@ -594,7 +613,13 @@ fn up_refuses_before_it_creates() {
         "image": default_image(&env),
         "labels": { "dev.example.test": "refuses" },
         "mounts": [{ "host": work, "guest": "/devices" }],
-        "egress": { "allow": [".github.com"] },
+        "egress": {
+            "allow": [".github.com"],
+            "routes": {
+                "First.internal": first_route.route(),
+                "second.internal": second_route.route(),
+            },
+        },
         "env": { "NESTED_VALUE": { "from": "PINFOLD_E2E_NESTED" } },
     });
     let mut starts = [
@@ -625,6 +650,11 @@ fn up_refuses_before_it_creates() {
     let value = box_exec(&env, &name, &["sh", "-c", r#"printf %s "$NESTED_VALUE""#]);
     assert_ok(&value, "reading the allowed nested env reference");
     assert_eq!(value.stdout, "fixture-value");
+    for (route, expected) in [("first.internal", "first"), ("second.internal", "second")] {
+        let response = curl(&env, &name, "5", &[&format!("http://{route}/")]);
+        assert_ok(&response, "distinct route name");
+        assert_eq!(response.stdout, expected);
+    }
     let _ = box_down(&env, &name);
     assert!(
         winner.wait().success(),
