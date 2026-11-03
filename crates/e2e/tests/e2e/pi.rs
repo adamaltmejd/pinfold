@@ -255,6 +255,51 @@ fn project_state_persists_and_stays_separate() {
         &[&id[..], &["commit", "-q", "-m", "start"]].concat(),
     );
     let head = git(a.as_path(), &["rev-parse", "HEAD"]).trim().to_string();
+
+    // Sabotage: let Context::discover treat Git metadata or a linked
+    // worktree as scratch. Nested paths require checking ancestors, and
+    // the bare repository has no `.git` name to identify it. The same
+    // main checkout below must still launch and receive its committed file.
+    let bare = test_dir(&env, "bare-repository");
+    git(bare.as_path(), &["init", "-q", "--bare"]);
+    let linked = env.root.join("linked-checkout");
+    git(
+        a.as_path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            linked.to_str().unwrap(),
+            &head,
+        ],
+    );
+    let linked_child = linked.join("nested");
+    fs::create_dir(&linked_child).unwrap();
+    // `disk list` also completes ordinary maintenance before the snapshot.
+    run_ok(env.command(pinfold()).args(["disk", "list", "--json"]));
+    let state_before = crate::cli::host_tree(&env.state);
+    for (cwd, reason) in [
+        (a.join(".git/objects"), "project-in-git"),
+        (bare.join("objects"), "project-in-git"),
+        (linked_child, "worktree"),
+    ] {
+        let output = pinfold_in(&env, &cwd, &["pi", "--version"])
+            .output()
+            .expect("refuse Git metadata or worktree");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "accepted {}", cwd.display());
+        assert!(stderr.contains(reason), "wrong refusal: {stderr}");
+        assert_eq!(crate::cli::host_tree(&env.state), state_before);
+    }
+    assert!(
+        json_lines(&String::from_utf8_lossy(
+            &run_ok(env.command(pinfold()).args(["disk", "list", "--json"])).stdout
+        ))
+        .is_empty(),
+        "refused discovery created a disk"
+    );
+
     git(a.as_path(), &["update-ref", "refs/tags/work", "HEAD"]);
     git(
         a.as_path(),
