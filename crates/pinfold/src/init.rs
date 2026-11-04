@@ -90,8 +90,7 @@ pub fn run(args: &[String]) -> ! {
 }
 
 /// `init exec -- ARGV...`: raise this process's `oom_score_adj` to 1000 and
-/// become ARGV. Every process pinfold starts in a box other than init runs
-/// through here, so the kernel's OOM killer takes one of them before init.
+/// become ARGV.
 fn exec(args: &[String]) -> ! {
     let (program, args) = match args {
         [separator, program, args @ ..] if separator == "--" => (program, args),
@@ -100,8 +99,8 @@ fn exec(args: &[String]) -> ! {
             process::exit(1);
         }
     };
-    // Raising a process's own OOM score needs no privilege; a rootless
-    // container cannot lower it again.
+    // Raising a process's own OOM score needs no privilege. Linux work can
+    // lower it again only to the floor inherited from the exec service.
     if let Err(error) = fs::write("/proc/self/oom_score_adj", "1000") {
         eprintln!("pinfold init exec: oom_score_adj: {error}");
         process::exit(1);

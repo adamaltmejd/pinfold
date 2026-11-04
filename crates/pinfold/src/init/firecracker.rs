@@ -710,8 +710,10 @@ fn exec_service(request: &Request, host: UnixStream, mut dropped: io::PipeReader
 /// box user with every capability set empty and `no_new_privs`.
 fn become_box_user(uid: u32, gid: u32) -> io::Result<()> {
     fs::write(format!("{WORK}/cgroup.procs"), "0")?;
-    // Lowering needs privilege, raising does not: exec'd work goes to 1000.
-    fs::write("/proc/self/oom_score_adj", "-1000")?;
+    // The modern ABI sets the inherited unprivileged floor. The deprecated
+    // ABI keeps the service immune without lowering that floor (#199).
+    fs::write("/proc/self/oom_score_adj", "-999")?;
+    fs::write("/proc/self/oom_adj", "-17")?;
     drop_bounding(0)?;
     nix::unistd::setgroups(&[])?;
     let (uid, gid) = (Uid::from_raw(uid), Gid::from_raw(gid));
