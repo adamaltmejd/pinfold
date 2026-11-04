@@ -3886,6 +3886,20 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
         "image": default_image(&env),
         "memory": "256M",
     });
+    #[cfg(target_os = "linux")]
+    let spec = {
+        let fixture = test_dir(&env, "oom-fixture");
+        run_ok(
+            Command::new("musl-gcc")
+                .args(["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-static"])
+                .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/e2e/oom.c"))
+                .arg("-o")
+                .arg(fixture.join("oom")),
+        );
+        let mut spec = spec;
+        spec["mounts"] = serde_json::json!([{ "host": fixture, "guest": "/oom-fixture" }]);
+        spec
+    };
     let up = box_up(&env, &spec, &name);
 
     // Every key is present, and the limit is the one in force: 256 MiB. A
@@ -3914,8 +3928,7 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
 
     // Every process `exec` starts runs through the box's init, which raises
     // its oom_score_adj to 1000 before exec'ing the command. The kernel's
-    // OOM killer then takes a box process before init, so the box survives
-    // the hog on every kernel.
+    // OOM killer can select it while init remains protected.
     let score = box_exec(&env, &name, &["cat", "/proc/self/oom_score_adj"]);
     assert_ok(&score, "cat /proc/self/oom_score_adj");
     assert_eq!(
@@ -3931,19 +3944,37 @@ fn a_caller_can_tell_an_oom_kill_from_a_failure() {
     #[cfg(target_os = "linux")]
     assert_guest_memory(&env, &name, 256 << 20);
 
-    if cfg!(target_os = "linux") {
+    #[cfg(target_os = "linux")]
+    {
         // A fresh box's cgroup has killed nothing; the caller's baseline.
         assert_eq!(before["oom_kills"].as_u64(), Some(0), "stat: {before}");
-        // A command that allocates past the limit is killed; the box stays
-        // up and the count rises. The command's non-zero exit must be read
-        // together with stat, not as a failure.
-        let killed = box_exec(&env, &name, &["sh", "-c", "head -c 1G /dev/zero | tail"]);
-        assert_ne!(killed.code, 0, "the memory hog exited 0");
+        // Sabotage: set the privileged modern score to -1000; the modern
+        // immunity attempt then succeeds without privilege. Omit the
+        // legacy write instead and the fixture's service-parent check fails.
+        // The same process can set -999 and legacy 15, but both immunity
+        // attempts must return EACCES without changing its score. Its
+        // fork+exec descendant inherits -999 and repeats these controls.
+        let exec = |mode: &str| {
+            command_bounded(
+                env.command(pinfold())
+                    .args(["box", "exec", &name, "--", "/oom-fixture/oom", mode]),
+                std::time::Instant::now() + std::time::Duration::from_secs(60),
+            )
+            .expect("bounded OOM fixture exec")
+        };
+        let probe = exec("probe");
+        assert!(probe.status.success(), "OOM controls: {probe:?}");
+        // One process lowers its score to -999 and touches a finite 1 GiB
+        // mapping. No competing workload can satisfy the OOM observation.
+        let killed = exec("hog");
+        assert_eq!(killed.status.code(), Some(137), "OOM hog: {killed:?}");
         let after = box_stat(&env, &name);
         let kills = after["oom_kills"]
             .as_u64()
             .unwrap_or_else(|| panic!("stat lost oom_kills: {after}"));
         assert!(kills >= 1, "stat reports no OOM kill after one: {after}");
+        let probe = exec("probe");
+        assert!(probe.status.success(), "post-OOM controls: {probe:?}");
     }
 
     up.down(&env);
