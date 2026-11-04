@@ -753,7 +753,8 @@ A project recipe typically `FROM`s the profile image.
   Identical inputs under two names build one image. It carries the
   caller's `--label`s, none of which may start with `dev.pinfold.`. It uses
   the builder's layer cache unless the caller passes `--no-cache`.
-- A build never touches project homes.
+- Before invoking the builder, a build names its profile, project or caller
+  image on stderr. A build never touches project homes.
 - Profile and project images record their Containerfile's SHA-256 as
   `dev.pinfold.containerfile-sha256`. Before a pi launch, and in doctor,
   changed or unrecorded Containerfile inputs produce an `image-outdated`

@@ -118,6 +118,7 @@ pub fn build(images: &dyn ImageService, build: Build) -> io::Result<Result<Built
     let reference = format!("{repository}:{id}");
     let tags = [latest.clone(), reference.clone()];
     let request = |context: &Path, containerfile: &Path| {
+        eprintln!("pinfold: building {stem} {}", build.source);
         images.build(&BuildRequest {
             context,
             containerfile,
