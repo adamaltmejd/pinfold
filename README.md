@@ -133,14 +133,11 @@ Apple builds reject `--allow` additions.
 Rebuild old Podman-only Linux images explicitly with `build` or `image build`.
 Old Podman storage, derived roots and managed agent disks remain untouched.
 
-Inside a Git repository, only committed branches enter the box, which keeps
-its own repository.
-Commit uncommitted work (a WIP commit on a branch will
-do) to give it to the box.
-`pinfold fetch` brings the box's commits back as `pinfold/*` branches for
-you to merge; `pinfold push` sends your branches in as `host/*`. Each
-`pi` start pushes too, and fast-forwards the box's branch when it is
-clean and strictly behind.
+In Git, the box keeps its own repository. Only committed branches enter it;
+commit local work (a WIP commit is enough) to send it in.
+`pinfold fetch` brings guest commits back as `pinfold/*` branches to merge;
+`pinfold push` sends host branches in as `host/*`. Each `pi` start also pushes
+and fast-forwards the guest branch when clean and strictly behind.
 
 Outside Git, each invocation starts with fresh home and work disks and an
 empty `/work`; the invoking folder is not shared. See
@@ -150,7 +147,6 @@ On normal exit, Pi gives a bounded advisory summary of outstanding work,
 without file contents. Fetch commits to retain them; uncommitted and untracked
 files remain on the guest disk.
 
-Use `pinfold disk list` and `pinfold disk rm NAME` for retained disks.
 To save a stopped disk into a new host directory, run
 `pinfold disk export NAME DEST [--image IMAGE]`. It uses the local default
 profile image unless an image is named; build that image explicitly if absent.
