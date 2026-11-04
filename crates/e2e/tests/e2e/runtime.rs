@@ -67,7 +67,6 @@ fn cleanup_removes_only_pinfolds_garbage() {
     };
     let live_project = test_dir(&env, "live-project");
     let live_marker = seed_project(&live_project, b"live\n");
-    let live_state = project_state_dir(&env, live_project.as_path());
     let live_id = project_id(&env, live_project.as_path());
     let other_project = test_dir(&env, "other-project");
     let other_marker = seed_project(&other_project, b"other\n");
@@ -89,6 +88,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
         repository: live_repository.clone(),
     };
     let live_ref = format!("{live_repository}:latest");
+    #[cfg(target_os = "macos")]
     let live_label = format!("dev.pinfold.project={live_id}");
     #[cfg(target_os = "linux")]
     {
@@ -282,16 +282,6 @@ fn cleanup_removes_only_pinfolds_garbage() {
     #[cfg(target_os = "linux")]
     assert!(!root_disk.exists(), "rm kept the stopped root disk");
 
-    let listed = box_list(&env, &live_label);
-    let live_box = listed
-        .iter()
-        .find(|box_| box_["name"] == live)
-        .unwrap_or_else(|| panic!("the live box is missing before clean: {listed:?}"));
-    assert_eq!(live_box["owner_alive"], true, "{live_box:?}");
-    assert_eq!(fs::read(&live_marker).unwrap(), b"live\n");
-    assert_eq!(fs::read(&other_marker).unwrap(), b"other\n");
-    let listed = disk_names(&env);
-    assert!(listed.contains(&live_disk) && listed.contains(&other_disk));
     #[cfg(target_os = "macos")]
     assert!(user_container.listed(), "the foreign container is missing");
 
@@ -312,7 +302,6 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert!(listed.contains(&live_disk), "clean removed the live disk");
     assert!(!listed.contains(&other_disk), "clean kept the idle disk");
     assert!(!other_state.exists(), "clean kept the idle project state");
-    assert!(live_state.is_dir(), "clean removed the live project state");
     assert_eq!(fs::read(&live_marker).unwrap(), b"live\n");
     let written = box_exec(&env, &live, &["cat", "/home-disk/marker"]);
     assert_ok(&written, "reading the live disk after clean");

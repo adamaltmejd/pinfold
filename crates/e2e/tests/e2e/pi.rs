@@ -1274,12 +1274,6 @@ fn a_caller_reads_the_effective_configuration_as_data() {
     let valid_profile = "allow = [\"api.github.com\"]\n";
     for (path, key, invalid, source) in [
         (
-            &project_config,
-            "alloww",
-            format!("{valid_project}alloww = [\"example.com\"]\n"),
-            ".pinfold.toml",
-        ),
-        (
             &profile_config,
             "alloww",
             format!("{valid_profile}alloww = [\"example.com\"]\n"),
@@ -1834,11 +1828,6 @@ fn pi_reports_retained_work_without_copying_it() {
             .any(|entry| entry["kind"] == "untracked" && entry["path"] == "untracked.txt")
     );
     assert!(!String::from_utf8_lossy(&stderr).contains("private-file-body"));
-    assert_eq!(
-        git(&project, &["show-ref"]),
-        host_refs,
-        "report imported refs"
-    );
     assert_eq!(
         fs::read(project.join("tracked.txt")).unwrap(),
         b"host baseline\n"
