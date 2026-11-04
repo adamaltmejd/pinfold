@@ -253,7 +253,8 @@ The caller keeps `up`'s stdin open for the life of the box; closing it is
 ```
 
 `REASON` is one of `stdin-closed`, `signal` (SIGTERM, SIGINT or an accepted
-`box down` request), `audit-log` (an egress log append failed), or `exited` (the box's init ended on its own;
+`box down` request), `audit-log` (an egress log append failed or would exceed
+its 128 MiB cap), or `exited` (the box's init ended on its own;
 `detail` carries its exit status). `up` exits 0 for `stdin-closed` and
 `signal`, and 1 for `exited` or `audit-log`; `box` is null when a signal ended `up` before
 its spec parsed, and `run_id` is null when it ended `up` before `ready`.
@@ -451,8 +452,8 @@ in `detail`. An owner that dies without
 teardown writes none, and nothing infers one later: `prune` writes no
 terminal record.
 
-An egress log append failure (Egress proxy) is the only write failure
-that stops a running box. A launch record that cannot be
+An egress log append failure or cap exhaustion (Egress proxy) stops a
+running box. No other record write failure does. A launch record that cannot be
 written fails the start with `failed`, naming it. A terminal record that
 cannot be written is reported on stderr; `down`, its reason and the exit
 code are unchanged. A run-record write never delays or alters an audit
@@ -705,8 +706,12 @@ network listener, no token: the socket identifies the box.
   time (RFC 3339 to the second), the host, the decision and its reason. A
   route request's line also names the method, the request path without its
   query, and the upstream's status (null when no status line arrived). No header value is ever written.
-  An append failure stops the box with `audit-log`. Storage failure can
-  prevent recording a request already forwarded to its upstream.
+  Each box's log is capped at 128 MiB. A complete encoded JSON line,
+  including its newline, that would exceed the cap writes nothing. A line
+  that fits exactly is appended. There is no rotation or truncation.
+  An append failure or cap exhaustion stops the box with `audit-log`.
+  Either can prevent recording a request already forwarded to its upstream;
+  teardown follows the owner notification.
 
 ## Images
 
@@ -804,7 +809,9 @@ accept repeatable `--allow HOST` exact DNS additions, independently of agent
 policy. A recipe grants no network authority. Denials retain the proxy's
 stable reasons. Apple rejects `--allow` additions and retains its existing
 build egress policy. Build records name their audit log on stderr and use
-normal retained run records; no credential values enter argv or files.
+normal retained run records. Each Linux build's egress log has the same
+128 MiB cap. Exhaustion follows the existing audit-failure handling and
+publication boundary below. No credential values enter argv or files.
 
 Freeze caller context and local image metadata. One finite builder guest
 uses pinned BuildKit's native Dockerfile frontend for discovery and build.
@@ -1192,7 +1199,7 @@ A run is inactive when its generation owns no lifetime lock. An inactive
 run's directory goes when its newest file is older than 14 days; then,
 while inactive runs together exceed 128 MiB, the oldest goes first, so
 the quota can remove an egress log before 14 days. A live run's records
-are never removed or truncated; its egress log can grow without bound.
+are never removed or truncated. Its egress log has the Egress proxy's size limit.
 
 `pinfold image rm NAME` retires a caller image name: it removes every tag
 of NAME, whatever its age, and no other name's.
@@ -1482,7 +1489,7 @@ slow gates. Testing policy is in `AGENTS.md`.
 | 36 | CONNECT tunnels share activity | Initially idle TLS tunnels start at staggered times and expire after the production idle interval. Real TLS tunnels carry upload-only and download-only traffic for longer than the production idle deadline. Neither closes while bytes flow; both then close after a full idle interval with `idle timeout` in the egress log while the guest holders remain alive. |
 | 38 | Each run's history is its own | Two `up`s of one name in sequence; the first makes an allowed and a refused request, and when `box down` returns, `inspect` already reports its terminal `signal`. The second's `ready.run_id` equals its `dev.pinfold.generation` label and differs from the first's, and its `ready.egress_log` is empty before its first request. Its 150 decisions, paged at the default limit while its box appends 50 more after the first page, return every line once, in order, across `next`; `events` for the first run still returns exactly its two decisions. Each `down` names its own run_id. A no-egress box SIGKILLed from the host (its init through Apple's runtime, its VMM on Linux) makes `up` exit 1 with `down` reason `exited`, and terminal `exited` whose detail names exit status 137. With no runtime on `PATH`, `inspect` and `events` answer for finished runs, and the no-egress run reports egress `not-applicable`. A malformed run id, `--limit 101` and another run's cursor exit 1; an unknown run id exits 3. |
 | 39 | The launch record is the applied policy | A pi box starts with an explicit local image and a recipe-less profile, from a trusted `.pinfold.toml` with an allow list, cpus, memory, a host-service route and an injecting route whose header comes from a host variable, plus `PINFOLD_ENV_SECRET`, under environment overrides of the allow list, cpus and memory. Before `allow`, `config` reports the file's list, trust false, the built image and the home disk; the environment's `PINFOLD_ROUTES` replaces the file's routes; an invalid UTF-8 override fails without disclosing its bytes. The box attaches the reported home disk writable at `$HOME`; its kernel sees the environment's cpus and memory; SECRET arrives without entering host argv, and on Linux is in neither `/proc/cmdline`, the VM configuration, the init disk nor any disk image. Its seeds are readable and its share refuses guest writes without changing host bytes. While it runs, the file's image and allow list change and are not re-allowed: `config` reports the change, but `inspect` still reports the started allow list, route kinds and targets, cpus and memory, equal to what the test wrote, plus env names that include `SECRET` and the started image reference and runtime-observed id; the started list decides, refusing the file's hosts as `not allowlisted`. No file under the state root holds the secret or the header value. When pi exits, the terminal record is `harness-exited`. On a second start, host profile edits need no project reapproval, the guest-edited seed survives and current shared bytes appear. |
-| 42 | Run records are retained within bounds | With inactive runs padded on the host past 128 MiB in valid decision lines, `clean` removes the oldest inactive run, keeps the newest, and leaves a live run's log unchanged. Once the newest is aged 15 days on the host, `clean` removes it (`inspect` exits 3), while a live run aged the same stays `available` and its log keeps appending. |
+| 42 | Run records are retained within bounds | With inactive runs padded on the host past 128 MiB in valid decision lines, `clean` removes the oldest inactive run, keeps the newest, and leaves a live run's log unchanged. Once the newest is aged 15 days on the host, `clean` removes it (`inspect` exits 3), while a live run aged the same stays `available` and its log keeps appending. With that live log padded to 128 MiB minus one byte, the next real route request stops the owner with `audit-log`, exit 1, and leaves the log length unchanged. |
 | 43 | The VMM reaches only its own box | Linux only. With two boxes up, each VMM is a child of its `box up` and runs as the user with `CapBnd` 0 and `NoNewPrivs` 1; its user, mount, PID, network, IPC and UTS namespaces differ from `box up`'s; its root, read through `/proc/PID/root`, holds its own disk and not the other box's disk; none of its mount points is under the user's home; its fds 0–2 are `/dev/null` and none is under the home; SIGKILL of `box up` ends the VM. |
 
 | 44 | Linux image work stays in its own VM | During an audited RUN, SIGINT ends the build with exit 1 and one failed line whose log names `cancelled`; its VMM ends and public refs stay unchanged. The next ordinary build succeeds in the same cache. Real RUN observes the approved rootful OCI role, no_new_privs, disabled user namespaces and only loopback. In the same build, an explicit api.github.com addition succeeds and example.com gets proxy 403 with its denial audited. Cache-mount exhaustion fails with unchanged public refs; its next ordinary build succeeds without manual cache cleanup. After clean removes the idle cache and the pinned builder is unavailable, the completed image still launches and reads its fixture. |

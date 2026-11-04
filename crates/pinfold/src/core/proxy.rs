@@ -43,6 +43,8 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 const MAX_CONNECTIONS: usize = 64;
 
+const MAX_LOG_BYTES: u64 = 128 * 1024 * 1024;
+
 /// Bind the box's socket, create its log, and serve. `codex` is the token of
 /// a login route on the host's Codex login, asked of the host helper at
 /// `up`. The accept thread is never stopped: each owner exits right after
@@ -807,7 +809,17 @@ fn record(
     if failure.is_none() {
         return Err(io::Error::other("egress audit log failed"));
     }
-    let written = runs::open_log(&log.path).and_then(|mut file| file.write_all(line.as_bytes()));
+    let written = runs::open_log(&log.path).and_then(|mut file| {
+        let bytes = file
+            .metadata()?
+            .len()
+            .checked_add(line.len() as u64)
+            .ok_or_else(|| io::Error::other("egress audit log size overflow"))?;
+        if bytes > MAX_LOG_BYTES {
+            return Err(io::Error::other("egress audit log is full"));
+        }
+        file.write_all(line.as_bytes())
+    });
     if written.is_err() {
         if let Some(failure) = failure.take() {
             let _ = failure.send(());

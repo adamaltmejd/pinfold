@@ -925,10 +925,16 @@ fn age(dir: &Path, age: Duration) {
     File::open(dir).unwrap().set_modified(time).unwrap();
 }
 
-/// Append `bytes` of valid decision lines to the run's egress log.
+/// Append exactly `bytes` of valid decision lines to the run's egress log.
 fn pad(dir: &Path, bytes: usize) {
     let line = b"{\"time\":\"2026-10-01T00:00:00Z\",\"host\":\"pad.invalid\",\"decision\":\"refused\",\"reason\":\"not allowlisted\"}\n";
-    let padding = line.repeat(bytes.div_ceil(line.len()));
+    let mut padding = line.repeat(bytes / line.len());
+    padding
+        .pop()
+        .expect("padding fits a complete decision line");
+    // JSON permits trailing whitespace before the final newline.
+    padding.resize(bytes - 1, b' ');
+    padding.push(b'\n');
     fs::OpenOptions::new()
         .append(true)
         .open(dir.join("egress.jsonl"))
@@ -1019,5 +1025,26 @@ fn run_records_are_retained_within_bounds() {
         log_bytes(&env, &live) > live_bytes,
         "the live run's log did not keep appending"
     );
-    live_up.close_stdin();
+
+    // Sabotage: omit the live log cap or check its size without the next
+    // complete line; another decision appends past the spec's 128 MiB.
+    // The earlier request is the same box's positive control. Padding
+    // leaves one byte free, less than any complete decision line, and
+    // the host file observes whether even a partial line was appended.
+    let almost_full = (128 << 20) - 1;
+    let bytes = log_bytes(&env, &live);
+    pad(&run_dir(&env, &live), (almost_full - bytes) as usize);
+    let _ = curl(&env, &name, "5", &["http://fixture.internal/after-clean"]);
+    let status = live_up.wait();
+    let lines = live_up.close_stdin();
+    assert_eq!(status.code(), Some(1), "full audit log's owner exit");
+    assert_eq!(
+        lines.last().expect("full audit log's down line")["reason"],
+        "audit-log"
+    );
+    assert_eq!(
+        log_bytes(&env, &live),
+        almost_full,
+        "the over-cap decision appended a partial or complete line"
+    );
 }
