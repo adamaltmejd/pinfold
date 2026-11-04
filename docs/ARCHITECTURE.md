@@ -497,7 +497,11 @@ run ...` (or `events`); it may never have existed or have been removed
   set and `no_new_privs`.
 - `NODE_USE_ENV_PROXY=1`.
 - Apple adds: `--network none`, `--cap-drop ALL`, `--read-only`. PID 1 runs
-  as the host uid.
+  as the host uid. The guest kernel boots with
+  `sysctl.user.max_user_namespaces=0`; init requires an effective
+  `user.max_user_namespaces` of 0 before readiness. An unreadable or
+  nonzero value fails startup. All Apple agent boxes disable nested user
+  namespaces. Workloads requiring them are unsupported.
 - Firecracker adds: no network device; the root disk and init disk
   read-only; `vcpu_count` and `mem_size_mib` from `cpus` and `memory`, 4 and 1G
   when the spec names none, as Apple's defaults; no swap; the image's
@@ -1471,7 +1475,7 @@ slow gates. Testing policy is in `AGENTS.md`.
 | 1 | No network but loopback | Inside: only `lo`; `1.1.1.1` unreachable. Without `egress`, nothing gets out, not even through a route: a request to the proxy's port is refused, and on Linux a vsock connection to the host proxy's port is reset. Control: with a route, the fixture answers through the proxy. On Linux, from inside, a vsock connection to CID 2 on the exec port and on an unused port is reset at once, not timed out; control: CID 2 port 3128 reaches the proxy. The guest kernel's `/proc/config.gz` leaves vsock loopback unset. |
 | 2 | Only allowlisted hosts get through | `api.github.com` answers. `example.com` gets a proxy 403, logged "not allowlisted"; `ready` names that log's path. Each trick has a positive control in the same box: IP literal, loopback resolution, SNI mismatch, CONNECT to a route and ambiguous Content-Length framing are refused, each logged with its own reason. A raw valid Content-Length POST delivers its body to the same host fixture. |
 | 4 | A route reaches exactly one host service | A route reaches the fixture with the Host header rewritten from the client's and logs method, queryless path and upstream status. Replacing its writable audit log with a directory makes the next request stop the owner with audit-log, exit 1 and, on Apple, no runtime box. |
-| 5 | Nothing can gain privileges | `CapBnd` 0 and the host uid in exec'd processes; no setuid or setgid files; rootfs not writable; init's credentials are the host uid on Apple; on Linux PID 1 is root with `CapBnd` exactly `CAP_SYS_ADMIN`, the exec service is the host uid with every capability set empty and box work cannot list its `/proc/<pid>/fd`, and `unshare -U` fails. The box's `uname -r` differs from the host's; on Linux it is the guest kernel `vmm.toml` pins. |
+| 5 | Nothing can gain privileges | `CapBnd` 0 and the host uid in exec'd processes; no setuid or setgid files; rootfs not writable; init's credentials are the host uid on Apple; on Linux PID 1 is root with `CapBnd` exactly `CAP_SYS_ADMIN`, the exec service is the host uid with every capability set empty and box work cannot list its `/proc/<pid>/fd`. On both runtimes `user.max_user_namespaces` is 0, a descendant's `unshare -U` fails with ENOSPC, and a plain child succeeds in the same box. The box's `uname -r` differs from the host's; on Linux it is the guest kernel `vmm.toml` pins. |
 | 6 | The environment is exactly the spec | A caller box whose `up` has unprefixed proxy variables does not get them. Guest PATH, HOME, `XDG_RUNTIME_DIR`, `LD_PRELOAD`, multiline values and a transport-prefixed name arrive exactly while local list/exec/down still manage the box. Always-applied values win. Guarantee 39 shows PINFOLD_ENV_SECRET's path. |
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, egress fails closed; another XDG root sees the owner dead, prunes the box and reuses its name. The run's launch record stays `available` and its terminal `not-observed`, also after the prune. An abandoned partial claim is reclaimable. On Linux the VM ends with its owner (guarantee 43), so the egress half runs on Apple. |
 | 9 | The lifecycle works for a caller | `exec` immediately after `ready` streams both streams and returns the exit code, and exits 3 on an absent box; `ready` and `list` name the image's id, and without egress `ready`'s `egress_log` is null; `down` of an absent, empty or flag-like name exits 0, prints nothing and leaves the live box alone; closing `up`'s stdin tears the box down with reason `stdin-closed`. A real terminal exec preserves the caller's input file flags, whether initially blocking or nonblocking. On Apple, a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. |
@@ -1532,8 +1536,6 @@ data, `crates/pinfold/public_suffix_list.dat`, embedded with `include_str!`.
 
 - `198.18/15` blocking breaks fake-IP DNS proxies (Surge, Clash).
   Configurable, or documented.
-- User namespaces in the Apple guest kernel: can they be turned off
-  without giving box work a capability?
 - Linux arm64 returns once a KVM host can run its suite; GitHub's arm64
   runners have none.
 - Where herdr reads `HERDR_AGENT`.

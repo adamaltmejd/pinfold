@@ -99,6 +99,7 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
     command
         .args(["run", "-i", "--name", &plan.name])
         .args(["--network", "none", "--cap-drop", "ALL"])
+        .args(["--kernel-arg", "sysctl.user.max_user_namespaces=0"])
         .args(["--read-only", "--tmpfs", "/tmp"])
         .arg("--user")
         .arg(format!("{uid}:{gid}"))

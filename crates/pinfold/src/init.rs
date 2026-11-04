@@ -57,6 +57,16 @@ pub fn run(args: &[String]) -> ! {
         _ => {}
     }
 
+    let user_namespaces =
+        fs::read_to_string("/proc/sys/user/max_user_namespaces").unwrap_or_else(|error| {
+            eprintln!("pinfold init: read user.max_user_namespaces: {error}");
+            process::exit(1)
+        });
+    if user_namespaces.trim() != "0" {
+        eprintln!("pinfold init: user.max_user_namespaces must be 0");
+        process::exit(1)
+    }
+
     // Blocked before the relay thread exists, which inherits the mask, so
     // both signals stay pending for `wait` below. A blocked signal reaches
     // PID 1 even with no handler installed.
