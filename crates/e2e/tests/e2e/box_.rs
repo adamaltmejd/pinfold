@@ -1088,6 +1088,13 @@ fn nothing_can_gain_privileges() {
         assert_ok(&own, "listing its own fds");
     } else {
         assert_process_ids(&init.stdout, "PID 1");
+        // Sabotage: omit generic init's setter; exec's setter does not
+        // change the already-running PID 1.
+        assert_eq!(
+            status_field(&init.stdout, "NoNewPrivs:"),
+            "1",
+            "PID 1 no_new_privs"
+        );
     }
 
     // No setuid or setgid files on the root filesystem. The marker proves the
@@ -1136,7 +1143,19 @@ fn nothing_can_gain_privileges() {
     let unshare = box_exec(
         &env,
         &name,
-        &["sh", "-c", "unshare -U true; status=$?; exit \"$status\""],
+        &[
+            "sh",
+            "-c",
+            "grep '^NoNewPrivs:' /proc/self/status; unshare -U true; status=$?; exit \"$status\"",
+        ],
+    );
+    // grep is a fork+exec descendant of the shell retained for unshare.
+    // Sabotage: omit init exec's setter. Apple's runtime exec starts
+    // independently of PID 1, so this descendant then reports 0.
+    assert_eq!(
+        status_field(&unshare.stdout, "NoNewPrivs:"),
+        "1",
+        "descendant no_new_privs"
     );
     assert_denied(&unshare, "No space left on device", "unshare -U");
     // Positive control: the same box still runs a plain child process.

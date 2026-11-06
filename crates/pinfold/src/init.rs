@@ -57,6 +57,12 @@ pub fn run(args: &[String]) -> ! {
         _ => {}
     }
 
+    #[cfg(target_os = "linux")]
+    if let Err(error) = nix::sys::prctl::set_no_new_privs() {
+        eprintln!("pinfold init: no_new_privs: {error}");
+        process::exit(1);
+    }
+
     let user_namespaces =
         fs::read_to_string("/proc/sys/user/max_user_namespaces").unwrap_or_else(|error| {
             eprintln!("pinfold init: read user.max_user_namespaces: {error}");
@@ -109,6 +115,12 @@ fn exec(args: &[String]) -> ! {
             process::exit(1);
         }
     };
+    // Apple's runtime starts exec independently of PID 1.
+    #[cfg(target_os = "linux")]
+    if let Err(error) = nix::sys::prctl::set_no_new_privs() {
+        eprintln!("pinfold init exec: no_new_privs: {error}");
+        process::exit(1);
+    }
     // Raising a process's own OOM score needs no privilege. Linux work can
     // lower it again only to the floor inherited from the exec service.
     if let Err(error) = fs::write("/proc/self/oom_score_adj", "1000") {
