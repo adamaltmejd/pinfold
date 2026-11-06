@@ -220,7 +220,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
     let image = resolve_image(&config, &id);
     ensure_image(&config, &image)?;
     let plan = Plan {
-        disks: vec![project_disk(disk, &root)],
+        disks: vec![empty_writable_disk(disk, &root)],
         ..box_plan(&config, &id, &image)
     };
     let runtime = Builder::new_current_thread().enable_all().build()?;
@@ -407,14 +407,8 @@ fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> Plan {
         profile: Some(config.profile.name.clone()),
         harness: Some(HARNESS.to_string()),
         disks: vec![
-            Disk {
-                name: home,
-                guest: PathBuf::from(state::HOME),
-                size: None,
-                from: None,
-                readonly: false,
-            },
-            project_disk(project, root),
+            empty_writable_disk(home, Path::new(state::HOME)),
+            empty_writable_disk(project, root),
         ],
         env,
         egress: Some(Egress {
@@ -444,9 +438,8 @@ fn box_plan(config: &Config, id: &str, image: &str) -> Plan {
     }
 }
 
-/// The project disk, writable at the project's own path, which the caller
-/// has checked is UTF-8. It is created empty: only branches cross.
-fn project_disk(name: String, root: &Path) -> Disk {
+/// An empty writable disk; no host tree is copied into it.
+fn empty_writable_disk(name: String, root: &Path) -> Disk {
     Disk {
         name,
         guest: root.to_path_buf(),
