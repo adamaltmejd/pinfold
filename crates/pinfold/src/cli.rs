@@ -1346,10 +1346,7 @@ fn image_build(args: &[String]) -> i32 {
                 "ref": built.reference,
                 "latest": built.latest,
                 "id": built.id,
-                "base": built
-                    .labels
-                    .get(clean::BASE_LABEL)
-                    .filter(|base| !base.is_empty()),
+                "base": null,
                 "labels": built.labels,
             }),
             0,

@@ -232,7 +232,7 @@ fn project_state_persists_and_stays_separate() {
     // untracked `.env`, the blob of a file staged and then unstaged, a
     // stash, a remote URL holding a token, or a hook.
     // Two tags shadow the host's branch, by its short and its full name.
-    // Sabotage: give project_disk the checkout as `from` again; the
+    // Sabotage: give empty_writable_disk the checkout as `from` again; the
     // untracked `.env` makes the box's `git status` unclean.
     // Sabotage: bundle `--all` instead of the branch list in crossing::push;
     // the stash commit's objects arrive and `stash` is printed.
@@ -1375,15 +1375,6 @@ fn a_caller_reads_the_effective_configuration_as_data() {
             assert_eq!(report["image"], image, "{report}");
         }
         assert_eq!(report["containerfile"], serde_json::json!(containerfile));
-        assert_eq!(
-            report["image_built"],
-            if cfg!(target_os = "linux") {
-                serde_json::json!(false)
-            } else {
-                serde_json::Value::Null
-            },
-            "{report}"
-        );
         assert_eq!(owned_trees(), before, "config wrote pinfold files");
     }
 

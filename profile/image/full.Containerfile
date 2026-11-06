@@ -24,7 +24,7 @@ RUN set -eux; \
     chmod -R a+rX "${fff}"
 
 FROM base AS ponytail-install
-ADD --checksum=sha256:d2e8ef2f98e8f70bf40ffcd3ff157634fe13b2572e10ad70a62fc26db6de6dc5 https://registry.npmjs.org/@dietrichgebert/ponytail/-/ponytail-5.3.2.tgz /tmp/ponytail.tgz
+ADD --checksum=sha256:c5246b2dbaf3b733e5a7b9dc51d5e208497ada790b094adf14c13b6df045a697 https://registry.npmjs.org/@dietrichgebert/ponytail/-/ponytail-5.3.3.tgz /tmp/ponytail.tgz
 RUN set -eux; \
     mkdir -p /opt/pinfold/packages/ponytail; \
     tar -xzf /tmp/ponytail.tgz --strip-components=1 -C /opt/pinfold/packages/ponytail; \

@@ -159,11 +159,7 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
 /// under a prefixed name, so argv holds only the name.
 fn guest_env(command: &mut std::process::Command, name: &str, value: &OsStr) {
     let transport = format!("{BOX_ENV_PREFIX}{name}");
-    let encoded: String = value
-        .as_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
+    let encoded = crate::core::hex(value.as_bytes());
     command.args(["--env", &transport]).env(transport, encoded);
 }
 

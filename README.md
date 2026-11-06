@@ -122,9 +122,8 @@ An explicit local `routes` table replaces the profile's routes.
 For scripts, add `--json` to `pinfold disk` commands for exact byte counts
 and structured results.
 
-Profile and project builds reuse cached layers by default. Package-update RUN
-steps can remain cached. Use `pinfold build --no-cache` or
-`pinfold build --profile NAME --no-cache` to run them again.
+To rerun package-update steps, use `pinfold build --no-cache` or
+`pinfold build --profile NAME --no-cache`.
 
 Linux build egress has its own allowlist. Add exact hosts with
 `pinfold build --allow HOST` or `pinfold image build … --allow HOST`.
