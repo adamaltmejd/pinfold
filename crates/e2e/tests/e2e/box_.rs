@@ -1125,17 +1125,23 @@ fn nothing_can_gain_privileges() {
     );
     assert_eq!(tmp.code, 0, "writing /tmp failed: {}", tmp.stderr);
 
-    // On Linux the guest allows no user namespace. Sabotage: skip init's
-    // `user.max_user_namespaces` 0; `unshare -U true` succeeds as the box
-    // user and this assertion fails. Nested user namespaces on Apple
-    // `container` are an open question in the spec, so assert nothing there.
-    if cfg!(target_os = "linux") {
-        let unshare = box_exec(&env, &name, &["unshare", "-U", "true"]);
-        assert_denied(&unshare, "No space left on device", "unshare -U");
-        // Positive control: the same box still runs a plain child process.
-        let child = box_exec(&env, &name, &["true"]);
-        assert_ok(&child, "a plain child process");
-    }
+    // Sabotage: omit Apple's user-namespace boot argument; init refuses
+    // readiness when the kernel leaves a nonzero limit. On Linux, skip
+    // init's zero sysctl write; the readback or namespace refusal fails.
+    let namespaces = box_exec(&env, &name, &["cat", "/proc/sys/user/max_user_namespaces"]);
+    assert_ok(&namespaces, "reading the user-namespace limit");
+    assert_eq!(namespaces.stdout.trim(), "0", "user-namespace limit");
+    // Keep the shell as a parent so a descendant attempts creation without
+    // an ID-mapping option that could fail for a different reason.
+    let unshare = box_exec(
+        &env,
+        &name,
+        &["sh", "-c", "unshare -U true; status=$?; exit \"$status\""],
+    );
+    assert_denied(&unshare, "No space left on device", "unshare -U");
+    // Positive control: the same box still runs a plain child process.
+    let child = box_exec(&env, &name, &["true"]);
+    assert_ok(&child, "a plain child process");
 
     // The box runs its own kernel, not the host's.
     let release = box_exec(&env, &name, &["uname", "-r"]);
