@@ -270,8 +270,7 @@ fn entry_parent(
     directories: &BTreeSet<Vec<u8>>,
 ) -> io::Result<(File, CString)> {
     let parts: Vec<_> = path.split(|byte| *byte == b'/').collect();
-    if parts.is_empty()
-        || parts.len() > 256
+    if parts.len() > 256
         || parts
             .iter()
             .any(|part| part.is_empty() || *part == b"." || *part == b"..")
