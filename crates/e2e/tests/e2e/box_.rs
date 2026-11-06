@@ -736,6 +736,51 @@ fn project_branches_cross_only_by_fetch() {
         assert_ok(&output, script);
         output.stdout
     };
+    // Sabotage: assign fresh disk roots gid 0 while keeping the caller uid;
+    // ordinary Git can still work, but the sampled ownership differs.
+    let object = object_store(repo)
+        .into_iter()
+        .find(|(_, size)| *size > 0)
+        .expect("the committed fixture has a nonempty Git object")
+        .0;
+    let object = Path::new("/work").join(object.strip_prefix(repo).unwrap());
+    let ownership = box_exec(
+        &env,
+        &name,
+        &[
+            "sh",
+            "-ec",
+            "id -u; id -g; stat -c '%u:%g' /work /work/.git /work/.git/objects \"$1\"",
+            "ownership",
+            object.to_str().unwrap(),
+        ],
+    );
+    assert_ok(&ownership, "copied Git tree ownership");
+    let (uid, gid) = (host_id("-u"), host_id("-g"));
+    assert_eq!(
+        ownership.stdout,
+        format!("{uid}\n{gid}\n{}", format!("{uid}:{gid}\n").repeat(4))
+    );
+    // Sabotage: exempt this tree through system safe.directory; the later
+    // Git success must not mask a copied-tree ownership failure.
+    let exemptions = box_exec(
+        &env,
+        &name,
+        &[
+            "git",
+            "-C",
+            "/work",
+            "config",
+            "--show-origin",
+            "--get-all",
+            "safe.directory",
+        ],
+    );
+    assert_eq!(exemptions.code, 1, "{}", exemptions.stderr);
+    assert!(exemptions.stdout.is_empty(), "{}", exemptions.stdout);
+    // Sabotage: discard executable modes while copying from; the later
+    // deliberate chmod otherwise masks run.sh's initial dirty status.
+    assert!(in_box("git -C /work status --porcelain=v1 --untracked-files=all").is_empty());
     in_box("git -C /work config user.name box && git -C /work config user.email box@example.test");
 
     // The box writes, chmods and deletes on its disk; the host project,
