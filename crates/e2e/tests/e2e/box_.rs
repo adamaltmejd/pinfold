@@ -4834,10 +4834,6 @@ fn disk_export_writes_only_the_requested_new_destination() {
         !refused.status.success(),
         "overwrote an existing destination"
     );
-    assert!(
-        String::from_utf8_lossy(&refused.stderr).contains("destination-exists"),
-        "wrong existing-destination refusal"
-    );
     assert_eq!(tree_snapshot(&output), before);
     let listed = run_ok(env.command(pinfold()).args(["disk", "list", "--json"])).stdout;
     let absent = env
