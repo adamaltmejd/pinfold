@@ -31,9 +31,9 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "cc"
-version = "1.11.0"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "375989decec1a0fa424442bed520fa12ede43a48475ce8c7417d2c69b32b5f6b"
+checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "e2e"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "nix",
  "serde_json",
@@ -246,7 +246,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinfold"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "httparse",
  "nix",
@@ -262,7 +262,7 @@ dependencies = [
 
 [[package]]
 name = "pinfold-init"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "nix",
  "serde",
@@ -666,9 +666,9 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "winnow"
-version = "1.0.4"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
+checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
 
 [[package]]
 name = "zeroize"
