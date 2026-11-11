@@ -1,0 +1,10 @@
+primeB=0 A: atom=cat: /work/0tg4/atom: No such file or directory del=832
+primeB=0 B: atom=new del=stat: cannot statx '/work/0tg4/del': No such file or directory
+primeB=0 A: atom=cat: /work/0tg5/atom: No such file or directory del=835
+primeB=0 B: atom=new del=stat: cannot statx '/work/0tg5/del': No such file or directory
+primeB=0 A: atom=cat: /work/0tg6/atom: No such file or directory del=838
+primeB=0 B: atom=new del=stat: cannot statx '/work/0tg6/del': No such file or directory
+primeB=1 A: atom=cat: /work/1tg4/atom: No such file or directory del=841
+primeB=1 B: atom=cat: /work/1tg4/atom: No such file or directory del=23
+primeB=1 A: atom=cat: /work/1tg5/atom: No such file or directory del=844
+primeB=1 B: atom=cat: /work/1tg5/atom: No such file or directory del=26

@@ -1,0 +1,6 @@
+wait=0 atom=cat: /work/repo0/atom: No such file or directory del=STALE
+wait=0.5 atom=cat: /work/repo0.5/atom: No such file or directory del=STALE
+wait=1.2 atom=new del=stat: cannot statx '/work/repo1.2/del': No such file or directory gone
+wait=3 atom=new del=stat: cannot statx '/work/repo3/del': No such file or directory gone
+wait=3 atom=new del=stat: cannot statx '/work/repo3/del': No such file or directory gone
+wait=3 atom=new del=stat: cannot statx '/work/repo3/del': No such file or directory gone

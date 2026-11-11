@@ -1,0 +1,27 @@
+## drop_caches=1
+before: atom=cat: /work/m del=5 ren=r chm=644
+mitigation rc=0
+after: atom=cat: /work/m del=5 ren=r chm=644
+## drop_caches=2
+before: atom=cat: /work/m del=10 ren=r chm=644
+mitigation rc=0
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755
+## drop_caches=3
+before: atom=cat: /work/m del=18 ren=r chm=644
+mitigation rc=0
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755
+## remount rw
+before: atom=cat: /work/m del=26 ren=r chm=644
+mitigation rc=0
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755
+## remount with dax=never
+before: atom=cat: /work/m del=34 ren=r chm=644
+mitigation rc=0
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755
+## umount+mount fresh virtiofs tag?
+4
+virtiofs
+bind
+uevent
+unbind
+virtio4

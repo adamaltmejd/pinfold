@@ -1,0 +1,56 @@
+## true #1
+before: atom=cat: /work/m del=173 ren=r chm=644
+mitigation rc=0 took=0.003s
+after: atom=cat: /work/m del=173 ren=r chm=644
+## true #2
+before: atom=cat: /work/m del=179 ren=r chm=644
+mitigation rc=0 took=0.003s
+after: atom=cat: /work/m del=179 ren=r chm=644
+## sync #1
+before: atom=cat: /work/m del=185 ren=r chm=644
+mitigation rc=0 took=0.005s
+after: atom=cat: /work/m del=185 ren=r chm=644
+## sync #2
+before: atom=cat: /work/m del=191 ren=r chm=644
+mitigation rc=0 took=0.004s
+after: atom=cat: /work/m del=191 ren=r chm=644
+## sync; echo 2 > /tmp/p/sys/vm/drop_caches #1
+before: atom=cat: /work/m del=197 ren=r chm=644
+mitigation rc=0 took=0.004s
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755
+## sync; echo 2 > /tmp/p/sys/vm/drop_caches #2
+before: atom=cat: /work/m del=206 ren=r chm=644
+mitigation rc=0 took=0.005s
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755
+## echo 2 > /tmp/p/sys/vm/drop_caches #1
+before: atom=cat: /work/m del=215 ren=r chm=644
+mitigation rc=0 took=0.003s
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755
+## echo 2 > /tmp/p/sys/vm/drop_caches #2
+before: atom=cat: /work/m del=224 ren=r chm=644
+mitigation rc=0 took=0.003s
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755
+## echo 3 > /tmp/p/sys/vm/drop_caches #1
+before: atom=cat: /work/m del=233 ren=r chm=644
+mitigation rc=0 took=0.009s
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755
+## echo 3 > /tmp/p/sys/vm/drop_caches #2
+before: atom=cat: /work/m del=242 ren=r chm=644
+mitigation rc=0 took=0.012s
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755
+## mount -o remount,rw /work #1
+before: atom=cat: /work/m del=251 ren=r chm=644
+mitigation rc=0 took=0.006s
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755
+## mount -o remount,rw /work #2
+before: atom=cat: /work/m del=260 ren=r chm=644
+mitigation rc=0 took=0.003s
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755
+## sleep 1 #1
+before: atom=cat: /work/m del=269 ren=r chm=644
+mitigation rc=0 took=1.013s
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755
+## sleep 1 #2
+before: atom=cat: /work/m del=277 ren=r chm=644
+mitigation rc=0 took=1.009s
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755

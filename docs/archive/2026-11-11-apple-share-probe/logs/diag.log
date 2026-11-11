@@ -1,0 +1,32 @@
+host before: atom ino=836684206 size=4
+guest prime: atom ino=787 size=4 old del ino=788 
+host after: atom ino=836684209 size=17; del exists=n
+-- stat atom:
+ino=787 size=4
+-- cat atom:
+cat: /work/diag1/atom: No such file or directory
+-- cat via ./ and // paths:
+cat: /work/diag1/./atom: No such file or directory
+cat: /work//diag1/atom: No such file or directory
+-- readdir (ls -1fi, no stat per entry? ls -i uses d_ino):
+786 .
+2 ..
+789 atom
+790 other
+-- ls -li (readdir + lstat each):
+total 8
+789 -rw-r--r-- 1 501 dialout 17 Nov 11 18:22 atom
+790 -rw-r--r-- 1 501 dialout  5 Nov 11 18:22 other
+-- find -name atom -printf inode (readdir d_ino):
+789 17
+-- stat del:
+ino=788
+-- cat del:
+cat: /work/diag1/del: No such file or directory
+-- stat dir:
+dir ino=786 nlink=4 mtime=1794421332 size=128
+host dir: dir ino=836684205 nlink=4 mtime=1794421332 size=128
+== after 1.5 s
+atom ino=789 size=17
+newer-and-longer
+stat: cannot statx '/work/diag1/del': No such file or directory
