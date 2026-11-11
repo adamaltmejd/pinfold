@@ -233,13 +233,15 @@ pub trait Runtime: Sync {
     /// `argv`, so the kernel's OOM killer takes a box process before init.
     /// `init` is the host path Apple's `up` mounts at the same guest path;
     /// Firecracker's guest has its own. The process inherits the run's
-    /// user, so box-created files stay the host user's.
+    /// user, so box-created files stay the host user's. `env` is added to
+    /// the box's environment for this exec only, as the host's `TERM` is.
     fn exec(
         &self,
         name: &str,
         init: &Path,
         tty: bool,
         workdir: Option<&Path>,
+        env: &[(String, String)],
         argv: &[String],
     ) -> io::Result<ExitStatus>;
 

@@ -171,12 +171,16 @@ impl Box {
         // or resolved.
         plan.validate()
             .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
-        // Pinfold adds the harness mount, a codex login's config dir and pi's
+        // Pinfold adds the harness mounts, a codex login's config dir and pi's
         // login extension in `start`, and the profile's `share/` below.
         // Check every guest path, the spec's and these, before `home_disk`
         // picks the disk behind `$HOME`, so a clash is refused as spec and
         // no tie can hide it.
-        let harness = plan.harness.as_deref().map(artifacts::guest);
+        let harnesses: Vec<PathBuf> = plan
+            .harnesses
+            .iter()
+            .map(|name| artifacts::guest(name))
+            .collect();
         let codex_config = plan
             .logins()
             .any(|(_, login)| login.is_codex())
@@ -185,9 +189,9 @@ impl Box {
             .logins()
             .any(|(_, login)| login.is_pi())
             .then(|| Path::new(login::PI_LOGIN_DIR));
-        let extra: Vec<&Path> = harness
-            .as_deref()
-            .into_iter()
+        let extra: Vec<&Path> = harnesses
+            .iter()
+            .map(PathBuf::as_path)
             .chain(codex_config)
             .chain(pi_login)
             .collect();
@@ -601,8 +605,8 @@ async fn start(
     codex: Option<login::Token>,
     progress: &mut Starting,
 ) -> Result<(BoxInfo, Option<PathBuf>), Stop> {
-    // Fetch the harness after the claim. Early refusals download nothing;
-    // alias admission follows preparation. The spec's own env wins.
+    // Fetch the harnesses after the claim. Early refusals download nothing;
+    // alias admission follows preparation.
     let mut resolved = plan.clone();
     let preparation_dir = state_dir.to_path_buf();
     let cancel = progress.cancel.clone();
@@ -610,7 +614,7 @@ async fn start(
     let worker = progress
         .preparing
         .insert(tokio::task::spawn_blocking(move || {
-            resolve_harness(&mut resolved, &preparation_dir, &cancel)?;
+            resolve_harnesses(&mut resolved, &preparation_dir, &cancel)?;
             let prepared = runtime::prepare(&resolved, &preparation_dir, &image_id, &cancel)?;
             Ok((resolved, prepared))
         }));
@@ -682,10 +686,12 @@ fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json
             .collect();
         serde_json::json!({ "allow": &egress.allow, "routes": routes })
     });
-    let harness =
-        plan.harness.as_deref().and_then(artifacts::harness).map(
-            |harness| serde_json::json!({ "name": &harness.name, "version": &harness.version }),
-        );
+    let harnesses: Vec<serde_json::Value> = plan
+        .harnesses
+        .iter()
+        .filter_map(|name| artifacts::harness(name))
+        .map(|harness| serde_json::json!({ "name": &harness.name, "version": &harness.version }))
+        .collect();
     let mounts: Vec<serde_json::Value> = plan
         .mounts
         .iter()
@@ -716,7 +722,7 @@ fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json
         },
         "image": { "id": &observed.image_id, "ref": image_ref },
         "profile": &plan.profile,
-        "harness": harness,
+        "harnesses": harnesses,
         "labels": &observed.labels,
         "mounts": mounts,
         "disks": disks,
@@ -742,23 +748,39 @@ async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
     }
 }
 
-/// Fold the spec's harness into the plan: install the pinned harness if it
-/// is not cached, mount it read-only, and set its environment. The spec's
-/// own env wins over the harness defaults. A codex login's config and pi's
-/// login extension are written into the box's state dir and mounted
-/// read-only at `/etc/codex` and `/opt/pinfold/login`.
-fn resolve_harness(
+/// The file in a box's state dir that maps each of its harnesses to the
+/// environment an exec for that harness adds.
+const HARNESS_ENV: &str = "harnesses.json";
+
+/// The environment an exec for `harness` adds in box `name`: the harness's
+/// pinned defaults and its login routes' placeholders, less the names the
+/// spec sets. `None` when the box does not list `harness`.
+pub fn harness_env(name: &str, harness: &str) -> io::Result<Option<Vec<(String, String)>>> {
+    let bytes = match fs::read(dirs::box_state_dir(name)?.join(HARNESS_ENV)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut envs: BTreeMap<String, Vec<(String, String)>> =
+        serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    Ok(envs.remove(harness))
+}
+
+/// Fold the spec's harnesses into the plan: install each pinned harness if
+/// it is not cached, mount it read-only, and record the environment its
+/// execs add in [`HARNESS_ENV`]. That holds no secret: pinned defaults and
+/// placeholders. `PINFOLD_ALLOW` is box-wide. The spec's own env wins over
+/// both. A codex login's config and pi's login extension are written into
+/// the box's state dir and mounted read-only at `/etc/codex` and
+/// `/opt/pinfold/login`.
+fn resolve_harnesses(
     plan: &mut Plan,
     state_dir: &Path,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> io::Result<()> {
-    let Some(harness) = plan.harness.as_deref().and_then(artifacts::harness) else {
+    if plan.harnesses.is_empty() {
         return Ok(());
-    };
-    plan.mounts.push(Mount {
-        host: harness.install(Some(cancel))?,
-        guest: artifacts::guest(&harness.name),
-    });
+    }
     let logins: Vec<(String, Login)> = plan
         .logins()
         .map(|(route, login)| (route.to_owned(), login.clone()))
@@ -768,22 +790,38 @@ fn resolve_harness(
         .as_ref()
         .map(|egress| egress.allow.join(","))
         .unwrap_or_default();
-    // The first default for a name wins: the harness's, then the login
-    // routes' placeholders, then the allowlist.
-    let defaults = harness
-        .env
-        .iter()
-        .map(|(name, value)| (name.clone(), value.clone()))
-        .chain(
-            logins
-                .iter()
-                .flat_map(|(route, login)| login.env(route))
-                .map(|(name, value)| (name.to_owned(), value)),
-        )
-        .chain([("PINFOLD_ALLOW".to_owned(), allow)]);
-    for (name, value) in defaults {
-        plan.env.entry(name).or_insert(Env::Exact(value));
+    plan.env
+        .entry("PINFOLD_ALLOW".to_owned())
+        .or_insert(Env::Exact(allow));
+    let mut envs = BTreeMap::new();
+    for name in plan.harnesses.clone() {
+        let harness = artifacts::harness(&name).expect("validate refuses an unknown harness");
+        plan.mounts.push(Mount {
+            host: harness.install(Some(cancel))?,
+            guest: artifacts::guest(&name),
+        });
+        // The first default for a name wins: the harness's, then its login
+        // routes' placeholders.
+        let mut env = BTreeMap::new();
+        let defaults = harness
+            .env
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .chain(
+                logins
+                    .iter()
+                    .filter(|(_, login)| login.login == name)
+                    .flat_map(|(route, login)| login.env(route))
+                    .map(|(name, value)| (name.to_owned(), value)),
+            );
+        for (name, value) in defaults {
+            if !plan.env.contains_key(&name) {
+                env.entry(name).or_insert(value);
+            }
+        }
+        envs.insert(name, env.into_iter().collect::<Vec<_>>());
     }
+    fs::write(state_dir.join(HARNESS_ENV), serde_json::to_vec(&envs)?)?;
     if let Some((route, _)) = logins.iter().find(|(_, login)| login.is_codex()) {
         let dir = state_dir.join("codex");
         fs::create_dir_all(&dir)?;

@@ -88,9 +88,10 @@ impl Runtime for Firecracker {
         _init: &Path,
         tty: bool,
         workdir: Option<&Path>,
+        env: &[(String, String)],
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        let code = vsock::exec(&Self::record(name)?.state_dir, tty, workdir, argv)?;
+        let code = vsock::exec(&Self::record(name)?.state_dir, tty, workdir, env, argv)?;
         Ok(exit_status(code))
     }
 

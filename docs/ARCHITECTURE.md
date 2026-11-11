@@ -162,7 +162,7 @@ leftovers host-wide. The CLI runs the same code in-process.
 
 ```
 pinfold box up < spec.json        # prints ready, holds the box, ends with down
-pinfold box exec BOX [--tty] -- argv…   # stdio through, exit code back
+pinfold box exec BOX [--tty] [--harness NAME] -- argv…   # stdio through, exit code back
 pinfold box stat BOX              # one JSON object of the box's memory, pids and OOM kills
 pinfold box down BOX              # asks its owner to tear down; an absent box exits 0
 pinfold box list --label KEY[=VALUE]…      # JSON lines; repeat --label to AND filters
@@ -210,8 +210,10 @@ a bad name is refused as `spec` like a build's:
 {"event":"removed","image":NAME,"ids":[ID,…],"in_use":[ID,…]}
 ```
 
-On a box that is absent, `exec` exits 3 with `pinfold box exec: no box
-named ...`; any other exit code is the command's. `box fetch`
+`--harness NAME` adds NAME's env (Box spec, `harnesses`) for that exec
+only. On a box that is absent, `exec` exits 3 with `pinfold box exec: no box
+named ...`, and on a box that does not list NAME, with `pinfold box exec:
+box ... has no harness ...`; any other exit code is the command's. `box fetch`
 (see Disks) exits 3 the same way.
 
 `stat` prints one JSON object with every key present:
@@ -329,7 +331,7 @@ The box spec `up` reads from stdin:
   "name": "job-3f2a…",
   "labels": { "dev.example.job": "…" },
   "profile": "builder",
-  "harness": "pi",
+  "harnesses": ["pi", "claude"],
   "image": "…",
   "mounts": [{ "host": "/…/fixtures", "guest": "/fixtures" }],
   "disks": [
@@ -366,13 +368,16 @@ The box spec `up` reads from stdin:
 - `profile` applies the profile's `home/` and `share/` (see Profiles), and
   its image if `image` is absent; egress, env and resources come only
   from the spec.
-- `harness` is `pi`, `claude` or `codex` (see Pinned artifacts); any other
-  value is refused as `spec`, naming it and the accepted names. It mounts
-  that harness's directory read-only at `/opt/pinfold/<name>`, its
-  executable `/opt/pinfold/<name>/<name>`, and sets its pinned env
-  defaults and `PINFOLD_ALLOW` (the spec's `egress.allow`, empty without egress). The
-  spec's own `env` wins; a spec mount at `/opt/pinfold/<name>`, or with a
-  pi login route at `/opt/pinfold/login`, is refused.
+- `harnesses` lists distinct names from `pi`, `claude` and `codex` (see
+  Pinned artifacts); any other name, or one listed twice, is refused as
+  `spec`, naming it. Absent or empty, the box has no harness. Each mounts
+  its directory read-only at `/opt/pinfold/<name>`, its executable
+  `/opt/pinfold/<name>/<name>`. A box with a harness gets `PINFOLD_ALLOW`
+  (the spec's `egress.allow`, empty without egress). A harness's pinned env
+  defaults and its login routes' placeholders are set only in an exec with
+  `--harness <name>`. The spec's own `env` wins over all of these; a spec
+  mount at `/opt/pinfold/<name>`, or with a pi login route at
+  `/opt/pinfold/login`, is refused.
   claude is the glibc build, so it needs a glibc image (the default profile
   is Debian). codex's `codex-code-mode-host` sits beside it. codex's own sandbox does
   not start in a box; a caller runs codex with
@@ -386,7 +391,7 @@ The box spec `up` reads from stdin:
   inside it whatever the spec's order; two at one lexical guest path, with
   `.` and `..` resolved, are refused as `spec` before preparation.
 - On Linux a box attaches at most 24 disks and mounts, pinfold's own
-  (the harness, `share/`, codex's config, pi's login extension) included;
+  (the harnesses, `share/`, codex's config, pi's login extension) included;
   more are refused as `spec`.
 - A disk `name` is validated like a profile name, and named once per
   spec. `size` is a whole number
@@ -430,7 +435,7 @@ The launch record is written once, atomically, after the box accepts
 cleanup removes the run's directory:
 
 ```json
-{"run_id":ID,"box":NAME,"time":RFC3339,"pinfold":VERSION,"runtime":{"name":"apple"|"firecracker","version":V},"image":{"id":ID,"ref":REF},"profile":NAME|null,"harness":{"name":NAME,"version":V}|null,"labels":{…},"mounts":[{"host":PATH,"guest":PATH}],"disks":[{"name":NAME,"guest":PATH,"readonly":BOOL}],"env":[NAME,…],"egress":{"allow":[…],"routes":{NAME:{"kind":"host-service"|"injecting"|"login","to":TARGET}}}|null,"cpus":N,"memory":M}
+{"run_id":ID,"box":NAME,"time":RFC3339,"pinfold":VERSION,"runtime":{"name":"apple"|"firecracker","version":V},"image":{"id":ID,"ref":REF},"profile":NAME|null,"harnesses":[{"name":NAME,"version":V}],"labels":{…},"mounts":[{"host":PATH,"guest":PATH}],"disks":[{"name":NAME,"guest":PATH,"readonly":BOOL}],"env":[NAME,…],"egress":{"allow":[…],"routes":{NAME:{"kind":"host-service"|"injecting"|"login","to":TARGET}}}|null,"cpus":N,"memory":M}
 ```
 
 Every field is a value the box spec carries or that `ready`, `list`,
@@ -631,16 +636,18 @@ network listener, no token: the socket identifies the box.
   headers back. Header names that frame the request (`Host`,
   `Content-Length`, hop-by-hop) are refused.
 - **Login routes:** a route whose value is `{ "login": HARNESS }` carries
-  a login for the box's harness; pinfold owns the origin, the
+  a login for that harness; pinfold owns the origin, the
   headers and the harness's config for the pinned version. `login` must
-  name the spec's `harness`, and a spec has at most one login route, or
-  for pi one per pi provider; else `spec`. An optional `to` replaces the
-  harness's origin, checked like an injecting route's. The box gets only
-  placeholders; the spec's own `env` wins.
+  name one of the spec's `harnesses`, and a spec has at most one login
+  route per harness, or for pi one per pi provider; else `spec`. An
+  optional `to` replaces the harness's origin, checked like an injecting
+  route's. The box gets only placeholders. Placeholder variables are set
+  only in an exec for that harness (`box exec --harness`); files are
+  mounted for the whole box. The spec's own `env` wins.
   - `claude`: `{ "login": "claude", "from": VAR }`, where `$VAR` is a
     `claude setup-token` token read once at start like an injecting route's.
     The route goes to `https://api.anthropic.com` with `Authorization:
-    Bearer`. The box gets `ANTHROPIC_BASE_URL=http://<route>` and a
+    Bearer`. claude's execs get `ANTHROPIC_BASE_URL=http://<route>` and a
     placeholder `CLAUDE_CODE_OAUTH_TOKEN`.
   - `codex`: `{ "login": "codex" }` uses the host's own Codex login, in
     whatever store Codex keeps it. The proxy gets the access token from
@@ -669,7 +676,9 @@ network listener, no token: the socket identifies the box.
     route's; or `{ "login": "pi", "provider": "openai-codex" }`, which
     uses the host's Codex login as a `codex` login route does: helper,
     in-memory token, JWT checks, refresh window, host-wide lock,
-    `login-busy`, `login lapsed`, deadline and reaping. A missing or other
+    `login-busy`, `login lapsed`, deadline and reaping. With a `codex`
+    route in the same box, both share one token and one refresh: the
+    helper is asked once at start. A missing or other
     P, `from` with `openai-codex`, or two routes for one pi provider
     (`anthropic` and `anthropic-subscription` are both pi's `anthropic`)
     is refused as `spec`, and so is `provider` on a claude or codex login
@@ -687,7 +696,7 @@ network listener, no token: the socket identifies the box.
     headers, `anthropic-version` and `anthropic-beta` included, pass
     unchanged. As for any route, every path under the origin is
     forwarded, responses stream as received, and `Upgrade` is dropped.
-    For each pi login route the box gets a placeholder: P's key variable
+    For each pi login route pi's execs get a placeholder: P's key variable
     (`OPENROUTER_API_KEY`, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`) for
     the API-key forms; `ANTHROPIC_OAUTH_TOKEN` for `anthropic-subscription`; for
     `openai-codex` an unsigned JWT with a placeholder account id. The box also gets one pi
@@ -1246,7 +1255,8 @@ measurement does not authorize a later deletion.
 ## pi layer
 
 - **Harness:** pi, a pinned harness at `/opt/pinfold/pi`; `pinfold pi`
-  asks core for it with `"harness": "pi"`.
+  asks core for it with `"harnesses": ["pi"]` and runs it as an exec for
+  pi.
 - **State:** `~/.local/state/pinfold/projects/<name>-<hash>/` on the host,
   where the hash is of the canonical project root path, and two disks,
   `pi-<name>-<hash>-home` attached as `$HOME`, `/home/pi`, and
@@ -1289,8 +1299,9 @@ measurement does not authorize a later deletion.
   repository project fail, and pi reports them. A
   non-UTF-8 path in a pi box spec or configuration report is refused as
   `path-not-utf8`, naming its field.
-- **Environment:** the harness's variables (Box spec, `harness`), the
-  core's proxy variables, `HERDR_AGENT` and `PINFOLD_ENV_*`.
+- **Environment:** pi's variables (Box spec, `harnesses`), the core's
+  proxy variables, `HERDR_AGENT` and `PINFOLD_ENV_*`. `attach` gets all
+  but pi's own.
 - **TTY** whenever the host has one.
 - **Auth:** a subscription or API key through pi login routes (Egress
   proxy), kept on the host; else OAuth `/login` once per project, or the
