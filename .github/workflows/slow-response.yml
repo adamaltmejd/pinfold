@@ -1,9 +1,8 @@
 name: Slow response proof
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  # No push or pull_request trigger while the suite is suspended (AGENTS.md).
+  # Release still calls this, and fails without the suite.
   workflow_dispatch:
   workflow_call:
     inputs:

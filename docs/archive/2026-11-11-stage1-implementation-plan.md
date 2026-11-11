@@ -172,6 +172,12 @@ Guarantee rows:
 
 ## Tests
 
+Amended 2026-11-11, Adam's decision: the end-to-end suite is removed for
+this build and rewritten once stage 2 lands. No step adds a test. The
+cases below are what each step's builder exercises with the real binary
+and records in a dated archive file. The suite-time risk no longer
+applies during the build.
+
 - 47, in `pi.rs`. Hardest cases: the SIGKILLed last session, and a
   launch racing the last finish. Controls: an unchanged join succeeds;
   the second session still answers. Observers: `box list` by project

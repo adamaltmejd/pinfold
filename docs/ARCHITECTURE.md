@@ -1460,8 +1460,9 @@ the command refuses as `project-in-git`.
 
 ## Guarantees
 
-Each guarantee has an end-to-end proof. Guarantees 34 and 36 run in separate
-slow gates. Testing policy is in `AGENTS.md`.
+The end-to-end proofs are suspended (`AGENTS.md`, Tests): no suite or gate
+runs. "Shown by" states what the rewritten suite must show. Guarantees 34
+and 36 run in separate slow gates. Testing policy is in `AGENTS.md`.
 
 - 34 is excluded from the five-minute suite and runs separately on Linux in
   the Slow response proof workflow for PRs, main and manual runs. Release
