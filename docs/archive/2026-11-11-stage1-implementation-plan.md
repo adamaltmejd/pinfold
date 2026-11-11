@@ -14,7 +14,8 @@ Adam accepted each proposal below.
 
 1. **A killed session's agent keeps running.** On Linux the exec
    service keeps a process alive after its client goes
-   (`init/firecracker.rs:913-939`) [code]. Apple is [probe]. So after a
+   (`init/firecracker.rs:913-939`) [code]. Apple is [probe], and the
+   spec states only what the probe shows. So after a
    SIGKILLed launcher, its agent can keep using routes while another
    session holds the box. The spec says pinfold never signals a process
    in a box. Proposed: accept and state it; the process ends with the
@@ -25,7 +26,8 @@ Adam accepted each proposal below.
 3. **Which agents a project's box carries.** Decision 15 says "every
    agent the configuration names", but no configuration key names
    agents. Proposed: always all three, with no new key, provided the
-   Linux start cost measures acceptable (step 1).
+   Linux start cost measures acceptable (step 1). Until then it is
+   conditional.
 4. **`login-busy` after ready.** A detached owner has no stderr once it
    reports ready, so the notice is lost after that point. Proposed:
    accept; it stays on stderr until ready.
@@ -170,38 +172,37 @@ Guarantee rows:
   `pinfold start` the box outlives its last session until
   `pinfold stop`. A SIGKILLed last session ends the box.
 
-## Tests
+## Verification
 
-Amended 2026-11-11, Adam's decision: the end-to-end suite is removed for
-this build and rewritten once stage 2 lands. No step adds a test. The
-cases below are what each step's builder exercises with the real binary
-and records in a dated archive file. The suite-time risk no longer
-applies during the build.
+Adam's decision, 2026-11-11: the end-to-end suite is removed for this
+build and rewritten once stage 2 lands. No step adds a test. Each
+step's builder exercises the real binary through the cases below and
+records the commands and what it observed in a dated archive file.
 
-- 47, in `pi.rs`. Hardest cases: the SIGKILLed last session, and a
-  launch racing the last finish. Controls: an unchanged join succeeds;
-  the second session still answers. Observers: `box list` by project
-  label, `inspect`, exit codes, the fixture.
-- Sabotages for 47: count sessions per process instead of per
-  connection; skip the comparison; drop the listener after teardown
-  instead of before; drop `setsid`.
-- 8: the existing test on `--sessions`. Sabotage: run the proxy in the
-  launcher.
-- 19: one start, three joined `--version` calls, one stop. Sabotage:
-  mount only the first harness.
-- 26: the three login cases merged into one box. Sabotages: a token per
-  route; box-wide placeholders.
-- No sleeps: block on replies, on launcher exit, and on owner exit
-  through a new e2e helper (pidfd on Linux, kqueue on macOS).
-- The helpers that find a box by owner pid (`pi.rs:1661-1670`,
-  `box_.rs:4360-4368`) must find it by project label.
+- Sessions: while `pinfold pi` runs, a second launch and `attach` join
+  one box. A SIGKILLed first launcher leaves the second working. The
+  box ends with its last session. A launch racing that end runs in
+  exactly one box. A SIGKILLed last session ends the box.
+- Configuration: an unchanged join succeeds; a changed allow list is
+  refused as `config-changed`, and the started list still decides.
+- Keep: after `pinfold start` the box outlives its last session until
+  `pinfold stop`.
+- Owner death: after SIGKILL of the owner, egress fails closed.
+- Harnesses: one box runs each agent at its pin; each login reaches its
+  fixture with the host credential; the two Codex routes ask the helper
+  once; an exec for one harness sees none of another's placeholders.
+
+The mistakes most worth checking for: sessions counted per process
+instead of per connection; the comparison skipped; the listener dropped
+after teardown instead of before; `setsid` missing; the proxy running
+in the launcher; only the first harness mounted; a token per route;
+box-wide placeholders.
 
 ## Risks and probes
 
-- Suite time: estimated +40 to 90 s [inf] against a 5-minute budget.
-  Linux re-images every mount at each start (`vm.rs:129-150`), so three
+- Linux re-images every mount at each start (`vm.rs:129-150`), so three
   harnesses cost every start. Measure in step 1. If it matters, cache
-  each pinned harness's image by version, or cut rows.
+  each pinned harness's image by version, or let a key name the agents.
 - [probe] Whether killing a `container exec` client ends its guest
   process on Apple.
 - [probe] Whether the `--ssh` socket forward survives the owner's
