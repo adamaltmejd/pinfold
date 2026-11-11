@@ -1,0 +1,8 @@
+before: atom=cat: /work/rdA1/atom: No such file or directory del=793 ren=r ren2=r chm=644
+after ls -1f: atom=new del=793 ren=r ren2=r chm=755
+before: atom=cat: /work/rdB1/atom: No such file or directory del=799 ren=r ren2=r chm=644
+after ls -l: atom=new del=799 ren=r ren2=r chm=755
+before: atom=cat: /work/rdA2/atom: No such file or directory del=805 ren=r ren2=r chm=644
+after ls -1f: atom=new del=805 ren=r ren2=r chm=755
+before: atom=cat: /work/rdB2/atom: No such file or directory del=811 ren=r ren2=r chm=644
+after ls -l: atom=new del=811 ren=r ren2=r chm=755

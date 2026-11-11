@@ -1,0 +1,168 @@
+== iter 2
+-- modify in place
+  guest[cat /work/p/h2/mod] rc=0 :: one|
+  host: 836614614 24 -rw-r--r-- :: one modified and longer|
+  guest[cat /work/p/h2/mod] rc=0 :: one modified and longer|
+-- create
+  guest[cat /work/p/h2/new] rc=1 :: cat: /work/p/h2/new: No such file or directory|
+  host: 836614620 8 -rw-r--r-- :: created|
+  guest[cat /work/p/h2/new] rc=0 :: created|
+-- delete
+  guest[cat /work/p/h2/gone] rc=0 :: del|
+  host: exists=n
+  guest[stat -c %i /work/p/h2/gone] rc=0 :: 20|
+  guest[cat /work/p/h2/gone] rc=1 :: cat: /work/p/h2/gone: No such file or directory|
+-- rename
+  guest[cat /work/p/h2/ren] rc=0 :: ren|
+  guest[cat /work/p/h2/ren2] rc=1 :: cat: /work/p/h2/ren2: No such file or directory|
+  host old exists=n
+  host: 836614616 4 -rw-r--r-- :: ren|
+  guest[cat /work/p/h2/ren] rc=0 :: ren|
+  guest[cat /work/p/h2/ren2] rc=0 :: ren|
+-- atomic replace
+  guest[cat /work/p/h2/atom] rc=0 :: atomic old|
+  host: 836614621 19 -rw-r--r-- :: atomic replacement|
+  guest[cat /work/p/h2/atom] rc=1 :: cat: /work/p/h2/atom: No such file or directory|
+-- directory rename
+  guest[cat /work/p/h2/d/f] rc=0 :: inner|
+  guest[cat /work/p/h2/d2/f] rc=1 :: cat: /work/p/h2/d2/f: No such file or directory|
+  host old exists=n
+  host: 836614618 6 -rw-r--r-- :: inner|
+  guest[cat /work/p/h2/d/f] rc=0 :: inner|
+  guest[cat /work/p/h2/d2/f] rc=0 :: inner|
+-- chmod +x
+  guest[stat -c %a /work/p/h2/exe] rc=0 :: 644|
+  host: 836614619 2 -rwxr-xr-x :: x|
+  guest[stat -c %a /work/p/h2/exe] rc=0 :: 644|
+-- symlink
+  guest[readlink /work/p/h2/link] rc=1 :: |
+  guest[cat /work/p/h2/link] rc=1 :: cat: /work/p/h2/link: No such file or directory|
+  host: mod
+  guest[readlink /work/p/h2/link] rc=0 :: mod|
+  guest[cat /work/p/h2/link] rc=0 :: one modified and longer|
+== iter 3
+-- modify in place
+  guest[cat /work/p/h3/mod] rc=0 :: one|
+  host: 836614629 24 -rw-r--r-- :: one modified and longer|
+  guest[cat /work/p/h3/mod] rc=0 :: one modified and longer|
+-- create
+  guest[cat /work/p/h3/new] rc=1 :: cat: /work/p/h3/new: No such file or directory|
+  host: 836614635 8 -rw-r--r-- :: created|
+  guest[cat /work/p/h3/new] rc=0 :: created|
+-- delete
+  guest[cat /work/p/h3/gone] rc=0 :: del|
+  host: exists=n
+  guest[stat -c %i /work/p/h3/gone] rc=0 :: 30|
+  guest[cat /work/p/h3/gone] rc=1 :: cat: /work/p/h3/gone: No such file or directory|
+-- rename
+  guest[cat /work/p/h3/ren] rc=0 :: ren|
+  guest[cat /work/p/h3/ren2] rc=1 :: cat: /work/p/h3/ren2: No such file or directory|
+  host old exists=n
+  host: 836614631 4 -rw-r--r-- :: ren|
+  guest[cat /work/p/h3/ren] rc=0 :: ren|
+  guest[cat /work/p/h3/ren2] rc=0 :: ren|
+-- atomic replace
+  guest[cat /work/p/h3/atom] rc=0 :: atomic old|
+  host: 836614637 19 -rw-r--r-- :: atomic replacement|
+  guest[cat /work/p/h3/atom] rc=1 :: cat: /work/p/h3/atom: No such file or directory|
+-- directory rename
+  guest[cat /work/p/h3/d/f] rc=0 :: inner|
+  guest[cat /work/p/h3/d2/f] rc=1 :: cat: /work/p/h3/d2/f: No such file or directory|
+  host old exists=n
+  host: 836614633 6 -rw-r--r-- :: inner|
+  guest[cat /work/p/h3/d/f] rc=0 :: inner|
+  guest[cat /work/p/h3/d2/f] rc=0 :: inner|
+-- chmod +x
+  guest[stat -c %a /work/p/h3/exe] rc=0 :: 644|
+  host: 836614634 2 -rwxr-xr-x :: x|
+  guest[stat -c %a /work/p/h3/exe] rc=0 :: 644|
+-- symlink
+  guest[readlink /work/p/h3/link] rc=1 :: |
+  guest[cat /work/p/h3/link] rc=1 :: cat: /work/p/h3/link: No such file or directory|
+  host: mod
+  guest[readlink /work/p/h3/link] rc=0 :: mod|
+  guest[cat /work/p/h3/link] rc=0 :: one modified and longer|
+== iter 4
+-- modify in place
+  guest[cat /work/p/h4/mod] rc=0 :: one|
+  host: 836614643 24 -rw-r--r-- :: one modified and longer|
+  guest[cat /work/p/h4/mod] rc=0 :: one modified and longer|
+-- create
+  guest[cat /work/p/h4/new] rc=1 :: cat: /work/p/h4/new: No such file or directory|
+  host: 836614653 8 -rw-r--r-- :: created|
+  guest[cat /work/p/h4/new] rc=0 :: created|
+-- delete
+  guest[cat /work/p/h4/gone] rc=0 :: del|
+  host: exists=n
+  guest[stat -c %i /work/p/h4/gone] rc=0 :: 40|
+  guest[cat /work/p/h4/gone] rc=1 :: cat: /work/p/h4/gone: No such file or directory|
+-- rename
+  guest[cat /work/p/h4/ren] rc=0 :: ren|
+  guest[cat /work/p/h4/ren2] rc=1 :: cat: /work/p/h4/ren2: No such file or directory|
+  host old exists=n
+  host: 836614645 4 -rw-r--r-- :: ren|
+  guest[cat /work/p/h4/ren] rc=0 :: ren|
+  guest[cat /work/p/h4/ren2] rc=0 :: ren|
+-- atomic replace
+  guest[cat /work/p/h4/atom] rc=0 :: atomic old|
+  host: 836614654 19 -rw-r--r-- :: atomic replacement|
+  guest[cat /work/p/h4/atom] rc=1 :: cat: /work/p/h4/atom: No such file or directory|
+-- directory rename
+  guest[cat /work/p/h4/d/f] rc=0 :: inner|
+  guest[cat /work/p/h4/d2/f] rc=1 :: cat: /work/p/h4/d2/f: No such file or directory|
+  host old exists=n
+  host: 836614647 6 -rw-r--r-- :: inner|
+  guest[cat /work/p/h4/d/f] rc=0 :: inner|
+  guest[cat /work/p/h4/d2/f] rc=0 :: inner|
+-- chmod +x
+  guest[stat -c %a /work/p/h4/exe] rc=0 :: 644|
+  host: 836614648 2 -rwxr-xr-x :: x|
+  guest[stat -c %a /work/p/h4/exe] rc=0 :: 644|
+-- symlink
+  guest[readlink /work/p/h4/link] rc=1 :: |
+  guest[cat /work/p/h4/link] rc=1 :: cat: /work/p/h4/link: No such file or directory|
+  host: mod
+  guest[readlink /work/p/h4/link] rc=0 :: mod|
+  guest[cat /work/p/h4/link] rc=0 :: one modified and longer|
+== iter 5
+-- modify in place
+  guest[cat /work/p/h5/mod] rc=0 :: one|
+  host: 836614659 24 -rw-r--r-- :: one modified and longer|
+  guest[cat /work/p/h5/mod] rc=0 :: one modified and longer|
+-- create
+  guest[cat /work/p/h5/new] rc=1 :: cat: /work/p/h5/new: No such file or directory|
+  host: 836614666 8 -rw-r--r-- :: created|
+  guest[cat /work/p/h5/new] rc=0 :: created|
+-- delete
+  guest[cat /work/p/h5/gone] rc=0 :: del|
+  host: exists=n
+  guest[stat -c %i /work/p/h5/gone] rc=0 :: 50|
+  guest[cat /work/p/h5/gone] rc=1 :: cat: /work/p/h5/gone: No such file or directory|
+-- rename
+  guest[cat /work/p/h5/ren] rc=0 :: ren|
+  guest[cat /work/p/h5/ren2] rc=1 :: cat: /work/p/h5/ren2: No such file or directory|
+  host old exists=n
+  host: 836614661 4 -rw-r--r-- :: ren|
+  guest[cat /work/p/h5/ren] rc=0 :: ren|
+  guest[cat /work/p/h5/ren2] rc=0 :: ren|
+-- atomic replace
+  guest[cat /work/p/h5/atom] rc=0 :: atomic old|
+  host: 836614667 19 -rw-r--r-- :: atomic replacement|
+  guest[cat /work/p/h5/atom] rc=1 :: cat: /work/p/h5/atom: No such file or directory|
+-- directory rename
+  guest[cat /work/p/h5/d/f] rc=0 :: inner|
+  guest[cat /work/p/h5/d2/f] rc=1 :: cat: /work/p/h5/d2/f: No such file or directory|
+  host old exists=n
+  host: 836614663 6 -rw-r--r-- :: inner|
+  guest[cat /work/p/h5/d/f] rc=0 :: inner|
+  guest[cat /work/p/h5/d2/f] rc=0 :: inner|
+-- chmod +x
+  guest[stat -c %a /work/p/h5/exe] rc=0 :: 644|
+  host: 836614664 2 -rwxr-xr-x :: x|
+  guest[stat -c %a /work/p/h5/exe] rc=0 :: 644|
+-- symlink
+  guest[readlink /work/p/h5/link] rc=1 :: |
+  guest[cat /work/p/h5/link] rc=1 :: cat: /work/p/h5/link: No such file or directory|
+  host: mod
+  guest[readlink /work/p/h5/link] rc=0 :: mod|
+  guest[cat /work/p/h5/link] rc=0 :: one modified and longer|

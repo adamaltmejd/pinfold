@@ -1,0 +1,38 @@
+## sp2c drop_caches=1 #1
+before: atom=cat: /work/m del=285 ren=r chm=644
+mitigation rc=0 took=0.011s
+after: atom=cat: /work/m del=285 ren=r chm=644
+## sp2c drop_caches=1 #2
+before: atom=cat: /work/m del=291 ren=r chm=644
+mitigation rc=0 took=0.008s
+after: atom=cat: /work/m del=291 ren=r chm=644
+## sp2d (CAP_SYS_ADMIN only) drop_caches=2
+before: atom=cat: /work/m del=6 ren=r chm=644
+mitigation rc=0 took=0.004s
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755
+## sp2d (CAP_SYS_ADMIN only) remount
+before: atom=cat: /work/m del=15 ren=r chm=644
+mitigation rc=0 took=0.005s
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755
+## sp2a uid 501 default caps: remount
+before: atom=cat: /work/m del=848 ren=r chm=644
+mount: /work: must be superuser to use mount.
+       dmesg(1) may have more information after failed mount system call.
+mitigation rc=32 took=0.007s
+after: atom=cat: /work/m del=848 ren=r chm=644
+## sp2a uid 501: unshare -Urm remount
+before: atom=cat: /work/m del=854 ren=r chm=644
+mount: /work: permission denied.
+       dmesg(1) may have more information after failed mount system call.
+mitigation rc=32 took=0.005s
+after: atom=cat: /work/m del=854 ren=r chm=644
+## sp2a uid 501: drop_caches via ro /proc
+before: atom=cat: /work/m del=860 ren=r chm=644
+/work/obs-my30501.sh: 3: cannot create /proc/sys/vm/drop_caches: Read-only file system
+mitigation rc=2 took=0.004s
+after: atom=cat: /work/m del=860 ren=r chm=644
+## sp2a uid 501: ls -1f parent (readdir)
+before: atom=cat: /work/m del=866 ren=r chm=644
+ls: cannot access '/work/work': No such file or directory
+mitigation rc=2 took=0.007s
+after: atom=cat: /work/m del=866 ren=r chm=644

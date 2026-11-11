@@ -1,0 +1,108 @@
+== iter 2
+-- modify in place
+  guest[cat /work/p/g2/mod >/dev/null; printf 'one modified and longer\n' > /work/p/g2/mod] rc=0 :: |
+  host[stat -f '%i %z' /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/mod; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/mod]: 836614736 24|one modified and longer|
+-- create
+  guest[printf 'created\n' > /work/p/g2/new] rc=0 :: |
+  host[stat -f '%u:%g %Sp' /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/new; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/new]: 501:0 -rw-r--r--|created|
+-- delete
+  guest[rm /work/p/g2/gone] rc=0 :: |
+  host[ls /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/gone]: ls: /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/gone: No such file or directory|
+-- rename
+  guest[mv /work/p/g2/ren /work/p/g2/ren2] rc=0 :: |
+  host[ls /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/ren; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/ren2]: ls: /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/ren: No such file or directory|ren|
+-- atomic replace
+  guest[printf 'atomic replacement\n' > /work/p/g2/atom.tmp && mv -f /work/p/g2/atom.tmp /work/p/g2/atom] rc=0 :: |
+  host[cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/atom; ls /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/atom.tmp]: atomic replacement|ls: /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/atom.tmp: No such file or directory|
+-- directory rename
+  guest[mv /work/p/g2/d /work/p/g2/d2] rc=0 :: |
+  host[ls /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/d; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/d2/f]: ls: /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/d: No such file or directory|inner|
+-- chmod +x
+  guest[chmod +x /work/p/g2/exe] rc=0 :: |
+  host[stat -f '%Sp' /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/exe]: -rwxr-xr-x|
+-- symlink
+  guest[ln -s mod /work/p/g2/link] rc=0 :: |
+  host[readlink /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/link; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g2/link]: mod|one modified and longer|
+-- guest re-read of its own changes (fresh exec)
+  guest[cat /work/p/g2/mod /work/p/g2/new /work/p/g2/ren2 /work/p/g2/atom /work/p/g2/d2/f; readlink /work/p/g2/link; stat -c %a /work/p/g2/exe; ls /work/p/g2/gone /work/p/g2/ren /work/p/g2/d] rc=2 :: one modified and longer|created|ren|atomic replacement|inner|mod|755|ls: cannot access '/work/p/g2/gone': No such file or directory|ls: cannot access '/work/p/g2/ren': No such file or directory|ls: cannot access '/work/p/g2/d': No such file or directory|
+== iter 3
+-- modify in place
+  guest[cat /work/p/g3/mod >/dev/null; printf 'one modified and longer\n' > /work/p/g3/mod] rc=0 :: |
+  host[stat -f '%i %z' /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/mod; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/mod]: 836614752 24|one modified and longer|
+-- create
+  guest[printf 'created\n' > /work/p/g3/new] rc=0 :: |
+  host[stat -f '%u:%g %Sp' /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/new; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/new]: 501:0 -rw-r--r--|created|
+-- delete
+  guest[rm /work/p/g3/gone] rc=0 :: |
+  host[ls /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/gone]: ls: /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/gone: No such file or directory|
+-- rename
+  guest[mv /work/p/g3/ren /work/p/g3/ren2] rc=0 :: |
+  host[ls /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/ren; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/ren2]: ls: /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/ren: No such file or directory|ren|
+-- atomic replace
+  guest[printf 'atomic replacement\n' > /work/p/g3/atom.tmp && mv -f /work/p/g3/atom.tmp /work/p/g3/atom] rc=0 :: |
+  host[cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/atom; ls /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/atom.tmp]: atomic replacement|ls: /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/atom.tmp: No such file or directory|
+-- directory rename
+  guest[mv /work/p/g3/d /work/p/g3/d2] rc=0 :: |
+  host[ls /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/d; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/d2/f]: ls: /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/d: No such file or directory|inner|
+-- chmod +x
+  guest[chmod +x /work/p/g3/exe] rc=0 :: |
+  host[stat -f '%Sp' /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/exe]: -rwxr-xr-x|
+-- symlink
+  guest[ln -s mod /work/p/g3/link] rc=0 :: |
+  host[readlink /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/link; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g3/link]: mod|one modified and longer|
+-- guest re-read of its own changes (fresh exec)
+  guest[cat /work/p/g3/mod /work/p/g3/new /work/p/g3/ren2 /work/p/g3/atom /work/p/g3/d2/f; readlink /work/p/g3/link; stat -c %a /work/p/g3/exe; ls /work/p/g3/gone /work/p/g3/ren /work/p/g3/d] rc=2 :: one modified and longer|created|ren|atomic replacement|inner|mod|755|ls: cannot access '/work/p/g3/gone': No such file or directory|ls: cannot access '/work/p/g3/ren': No such file or directory|ls: cannot access '/work/p/g3/d': No such file or directory|
+== iter 4
+-- modify in place
+  guest[cat /work/p/g4/mod >/dev/null; printf 'one modified and longer\n' > /work/p/g4/mod] rc=0 :: |
+  host[stat -f '%i %z' /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/mod; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/mod]: 836614763 24|one modified and longer|
+-- create
+  guest[printf 'created\n' > /work/p/g4/new] rc=0 :: |
+  host[stat -f '%u:%g %Sp' /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/new; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/new]: 501:0 -rw-r--r--|created|
+-- delete
+  guest[rm /work/p/g4/gone] rc=0 :: |
+  host[ls /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/gone]: ls: /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/gone: No such file or directory|
+-- rename
+  guest[mv /work/p/g4/ren /work/p/g4/ren2] rc=0 :: |
+  host[ls /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/ren; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/ren2]: ls: /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/ren: No such file or directory|ren|
+-- atomic replace
+  guest[printf 'atomic replacement\n' > /work/p/g4/atom.tmp && mv -f /work/p/g4/atom.tmp /work/p/g4/atom] rc=0 :: |
+  host[cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/atom; ls /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/atom.tmp]: atomic replacement|ls: /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/atom.tmp: No such file or directory|
+-- directory rename
+  guest[mv /work/p/g4/d /work/p/g4/d2] rc=0 :: |
+  host[ls /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/d; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/d2/f]: ls: /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/d: No such file or directory|inner|
+-- chmod +x
+  guest[chmod +x /work/p/g4/exe] rc=0 :: |
+  host[stat -f '%Sp' /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/exe]: -rwxr-xr-x|
+-- symlink
+  guest[ln -s mod /work/p/g4/link] rc=0 :: |
+  host[readlink /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/link; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g4/link]: mod|one modified and longer|
+-- guest re-read of its own changes (fresh exec)
+  guest[cat /work/p/g4/mod /work/p/g4/new /work/p/g4/ren2 /work/p/g4/atom /work/p/g4/d2/f; readlink /work/p/g4/link; stat -c %a /work/p/g4/exe; ls /work/p/g4/gone /work/p/g4/ren /work/p/g4/d] rc=2 :: one modified and longer|created|ren|atomic replacement|inner|mod|755|ls: cannot access '/work/p/g4/gone': No such file or directory|ls: cannot access '/work/p/g4/ren': No such file or directory|ls: cannot access '/work/p/g4/d': No such file or directory|
+== iter 5
+-- modify in place
+  guest[cat /work/p/g5/mod >/dev/null; printf 'one modified and longer\n' > /work/p/g5/mod] rc=0 :: |
+  host[stat -f '%i %z' /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/mod; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/mod]: 836614774 24|one modified and longer|
+-- create
+  guest[printf 'created\n' > /work/p/g5/new] rc=0 :: |
+  host[stat -f '%u:%g %Sp' /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/new; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/new]: 501:0 -rw-r--r--|created|
+-- delete
+  guest[rm /work/p/g5/gone] rc=0 :: |
+  host[ls /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/gone]: ls: /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/gone: No such file or directory|
+-- rename
+  guest[mv /work/p/g5/ren /work/p/g5/ren2] rc=0 :: |
+  host[ls /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/ren; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/ren2]: ls: /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/ren: No such file or directory|ren|
+-- atomic replace
+  guest[printf 'atomic replacement\n' > /work/p/g5/atom.tmp && mv -f /work/p/g5/atom.tmp /work/p/g5/atom] rc=0 :: |
+  host[cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/atom; ls /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/atom.tmp]: atomic replacement|ls: /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/atom.tmp: No such file or directory|
+-- directory rename
+  guest[mv /work/p/g5/d /work/p/g5/d2] rc=0 :: |
+  host[ls /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/d; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/d2/f]: ls: /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/d: No such file or directory|inner|
+-- chmod +x
+  guest[chmod +x /work/p/g5/exe] rc=0 :: |
+  host[stat -f '%Sp' /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/exe]: -rwxr-xr-x|
+-- symlink
+  guest[ln -s mod /work/p/g5/link] rc=0 :: |
+  host[readlink /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/link; cat /private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe/repo/p/g5/link]: mod|one modified and longer|
+-- guest re-read of its own changes (fresh exec)
+  guest[cat /work/p/g5/mod /work/p/g5/new /work/p/g5/ren2 /work/p/g5/atom /work/p/g5/d2/f; readlink /work/p/g5/link; stat -c %a /work/p/g5/exe; ls /work/p/g5/gone /work/p/g5/ren /work/p/g5/d] rc=2 :: one modified and longer|created|ren|atomic replacement|inner|mod|755|ls: cannot access '/work/p/g5/gone': No such file or directory|ls: cannot access '/work/p/g5/ren': No such file or directory|ls: cannot access '/work/p/g5/d': No such file or directory|

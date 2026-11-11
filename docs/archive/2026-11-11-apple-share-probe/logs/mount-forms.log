@@ -1,0 +1,21 @@
+## --mount type=virtiofs,source=/private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe2/repo,target=/work
+sp2e
+virtiofs /work virtiofs rw,relatime 0 0
+## --mount type=bind,source=/private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe2/repo,target=/work
+sp2e
+virtiofs /work virtiofs rw,relatime 0 0
+## --mount type=volume,source=/private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe2/repo,target=/work
+Error: invalid volume name '/private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe2/repo': must match ^[A-Za-z0-9][A-Za-z0-9_.-]*$
+Error: get failed: container sp2e not found
+## --mount type=virtiofs,source=/private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe2/repo,target=/work,readonly
+sp2e
+virtiofs /work virtiofs ro,relatime 0 0
+## --mount type=virtiofs,source=/private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe2/repo,target=/work,cache=none
+Error: unknown directive cache when parsing mount type=virtiofs,source=/private/tmp/claude-501/-Users-adam--claude-spares-spare-WgmH1f/409584a9-d4bf-4c5c-9e08-723dcb3be88b/scratchpad/share-probe2/repo,target=/work,cache=none
+Error: get failed: container sp2e not found
+## -v HOST:/work:ro
+sp2e
+virtiofs /work virtiofs ro,relatime 0 0
+## -v HOST:/work:cached
+sp2e
+virtiofs /work virtiofs rw,relatime 0 0

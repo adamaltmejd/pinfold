@@ -1,0 +1,28 @@
+## -v :ro #1
+before: atom=cat: /work/m del=6 ren=r chm=644
+mitigation rc=0 took=0.004s
+after: atom=cat: /work/m del=6 ren=r chm=644
+## -v :ro #2
+before: atom=new del=stat: cannot ren=cat: /work/m chm=755
+mitigation rc=0 took=0.003s
+after: atom=new del=stat: cannot ren=cat: /work/m chm=755
+## -v :cached #1
+before: atom=cat: /work/m del=6 ren=r chm=644
+mitigation rc=0 took=0.004s
+after: atom=cat: /work/m del=6 ren=r chm=644
+## -v :cached #2
+before: atom=cat: /work/m del=12 ren=r chm=644
+mitigation rc=0 took=0.003s
+after: atom=cat: /work/m del=12 ren=r chm=644
+## -v :ro #3
+before: atom=cat: /work/m del=6 ren=r chm=644
+## -v :ro #4
+before: atom=cat: /work/m del=12 ren=r chm=644
+## -v :ro #5
+before: atom=cat: /work/m del=18 ren=r chm=644
+## -v :ro #6
+before: atom=cat: /work/m del=24 ren=r chm=644
+## -v :ro #7
+before: atom=cat: /work/m del=30 ren=r chm=644
+## -v :ro #8
+before: atom=cat: /work/m del=36 ren=r chm=644

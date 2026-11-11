@@ -1,0 +1,10 @@
+{"target": 0.0, "start": 0.0, "end": 0.07, "atom_poll": "stale:cat: /work/r3/atom_poll: No such file or directory", "del_poll": "stale", "ren_poll": "stale:old1.new1", "chm_poll": "stale:644", "atom_q0": "stale:cat: /work/r3/atom_q0: No such file or directory", "del_q0": "stale", "ren_q0": "stale:old1.new1", "chm_q0": "stale:644"}
+{"target": 0.5, "start": 0.5, "end": 0.57, "atom_poll": "stale:cat: /work/r3/atom_poll: No such file or directory", "del_poll": "stale", "ren_poll": "stale:old1.new1", "chm_poll": "stale:644", "atom_q1": "stale:cat: /work/r3/atom_q1: No such file or directory", "del_q1": "stale", "ren_q1": "stale:old1.new1", "chm_q1": "stale:644"}
+{"target": 1.0, "start": 1.0, "end": 1.09, "atom_poll": "ok", "del_poll": "ok", "ren_poll": "ok", "chm_poll": "ok", "atom_q2": "ok", "del_q2": "ok", "ren_q2": "ok", "chm_q2": "ok"}
+{"target": 2.0, "start": 2.0, "end": 2.07, "atom_poll": "ok", "del_poll": "ok", "ren_poll": "ok", "chm_poll": "ok", "atom_q3": "ok", "del_q3": "ok", "ren_q3": "ok", "chm_q3": "ok"}
+{"target": 5.0, "start": 5.01, "end": 5.07, "atom_poll": "ok", "del_poll": "ok", "ren_poll": "ok", "chm_poll": "ok", "atom_q4": "ok", "del_q4": "ok", "ren_q4": "ok", "chm_q4": "ok"}
+{"target": 10.0, "start": 10.0, "end": 10.09, "atom_poll": "ok", "del_poll": "ok", "ren_poll": "ok", "chm_poll": "ok", "atom_q5": "ok", "del_q5": "ok", "ren_q5": "ok", "chm_q5": "ok"}
+{"target": 30.0, "start": 30.0, "end": 30.19, "atom_poll": "ok", "del_poll": "ok", "ren_poll": "ok", "chm_poll": "ok", "atom_q6": "ok", "del_q6": "ok", "ren_q6": "ok", "chm_q6": "ok"}
+{"target": 60.0, "start": 60.0, "end": 60.13, "atom_poll": "ok", "del_poll": "ok", "ren_poll": "ok", "chm_poll": "ok", "atom_q7": "ok", "del_q7": "ok", "ren_q7": "ok", "chm_q7": "ok"}
+{"target": 120.0, "start": 120.0, "end": 120.19, "atom_poll": "ok", "del_poll": "ok", "ren_poll": "ok", "chm_poll": "ok", "atom_q8": "ok", "del_q8": "ok", "ren_q8": "ok", "chm_q8": "ok"}
+{"mutation_took": 0.002, "prime_start": -0.108, "prime_end": -0.0}
