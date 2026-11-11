@@ -53,9 +53,9 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "const-oid"
-version = "0.10.2"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
+checksum = "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a"
 
 [[package]]
 name = "core-foundation"
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "e2e"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "nix",
  "serde_json",
@@ -246,7 +246,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinfold"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "httparse",
  "nix",
@@ -262,7 +262,7 @@ dependencies = [
 
 [[package]]
 name = "pinfold-init"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "nix",
  "serde",
@@ -330,9 +330,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-pki-types"
-version = "1.15.1"
+version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
+checksum = "102f35f7de7b06d8c61f1cff6592f5253e0dea431c74867aad5dfd70f44663fb"
 dependencies = [
  "zeroize",
 ]

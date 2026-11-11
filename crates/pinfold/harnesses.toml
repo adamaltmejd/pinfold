@@ -9,20 +9,20 @@
 
 [[harness]]
 name = "pi"
-version = "1.5.1"
+version = "1.5.2"
 env = { PI_TELEMETRY = "0", PI_SKIP_VERSION_CHECK = "1" }
 
 [[harness.asset]]
 os-arch = "linux-arm64"
-url = "https://github.com/earendil-works/pi/releases/download/v1.5.1/pi-linux-arm64.tar.gz"
-sha256 = "98f1762f56adc5703f931996ae802216dad490dde0b6793aed1e3bb0383df1f7"
+url = "https://github.com/earendil-works/pi/releases/download/v1.5.2/pi-linux-arm64.tar.gz"
+sha256 = "42805cd5615952fcbbfc9c56b04f8feb84395134952e169a6cdc8d7676975666"
 install = "tar.gz"
 as = "pi"
 
 [[harness.asset]]
 os-arch = "linux-x64"
-url = "https://github.com/earendil-works/pi/releases/download/v1.5.1/pi-linux-x64.tar.gz"
-sha256 = "cb69979c0a8162bf22bcee0762f3c3701a45b51b552fa16a736d467c6068509f"
+url = "https://github.com/earendil-works/pi/releases/download/v1.5.2/pi-linux-x64.tar.gz"
+sha256 = "811c6f2c9e7aaee252b5404252e556fb713aa209c1f7f924226aa77d4ef70cb5"
 install = "tar.gz"
 as = "pi"
 
@@ -47,47 +47,47 @@ as = "claude/claude"
 
 [[harness]]
 name = "codex"
-version = "0.167.0"
+version = "0.167.1"
 env = {}
 
 [[harness.asset]]
 os-arch = "linux-arm64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.167.0/codex-aarch64-unknown-linux-musl.tar.gz"
-sha256 = "843489acb4d4b1079745c36b03c5963b887b83155af208fd53584e33ee8eb281"
+url = "https://github.com/openai/codex/releases/download/rust-v0.167.1/codex-aarch64-unknown-linux-musl.tar.gz"
+sha256 = "3eefec1b400ea67d01a1a091ef98f8749304fdef89577beeeb97b8aee7c75e32"
 install = "tar.gz"
 as = "codex/codex"
 
 [[harness.asset]]
 os-arch = "linux-arm64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.167.0/codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz"
-sha256 = "6e99948fa20ca816a01f222a56afa261b321e00cbed611d76bb92c765fd11ec6"
+url = "https://github.com/openai/codex/releases/download/rust-v0.167.1/codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz"
+sha256 = "b6513596c09c00805909477d2b715f29b67c34ffe79c577054024e565fd96707"
 install = "tar.gz"
 as = "codex/codex-code-mode-host"
 
 [[harness.asset]]
 os-arch = "linux-x64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.167.0/codex-x86_64-unknown-linux-musl.tar.gz"
-sha256 = "9d64836106d5b374e90ee4454c7ebcde7ca7106558bd7e41a34b9f26ebda251a"
+url = "https://github.com/openai/codex/releases/download/rust-v0.167.1/codex-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "64bcc99c32e434b4bcb0508a97df9b7aeecdb97e956d976fb13661096ec4e3e2"
 install = "tar.gz"
 as = "codex/codex"
 
 [[harness.asset]]
 os-arch = "linux-x64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.167.0/codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz"
-sha256 = "b5074d5dd64643b2c073927e494a588eff31c1f5a27f12c1e2c45f9a6cf07dd4"
+url = "https://github.com/openai/codex/releases/download/rust-v0.167.1/codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "dc8a10a95df3878dda60a62b72acf9c1d1ee18599c04934952f128d9dcc78320"
 install = "tar.gz"
 as = "codex/codex-code-mode-host"
 
 [[harness.asset]]
 os-arch = "host-darwin-arm64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.167.0/codex-app-server-aarch64-apple-darwin.tar.gz"
-sha256 = "59b70a23390597f56c64b2ff883dd5403724353a93256081662658d0a8892dc3"
+url = "https://github.com/openai/codex/releases/download/rust-v0.167.1/codex-app-server-aarch64-apple-darwin.tar.gz"
+sha256 = "d8ccd88f64b776bbf8d330a46a0d2d80eae7580dcd981e0f97070eae58a4bf63"
 install = "tar.gz"
 as = "codex-app-server"
 
 [[harness.asset]]
 os-arch = "host-linux-x64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.167.0/codex-app-server-x86_64-unknown-linux-musl.tar.gz"
-sha256 = "b41e6c0e3432de25ff8bb405018de876e653dc0501f253a9268fbd19cf6636f0"
+url = "https://github.com/openai/codex/releases/download/rust-v0.167.1/codex-app-server-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "009fce8607080643ad4773d3eceee58a1ad35df8e1af7c015313d04473b8dbe1"
 install = "tar.gz"
 as = "codex-app-server"
