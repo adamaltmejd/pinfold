@@ -52,6 +52,18 @@ rules for changing the repository.
 
 ## Tests
 
+**Suspended.** The suite was removed on 2026-11-11 for the composable
+build (`docs/archive/2026-11-11-composable-plan.md`). Until stage 2 lands
+and the suite is rewritten from ARCHITECTURE.md:
+- No step adds a test.
+- Each step's builder exercises the real binary through its ticket's
+  cases and records the commands and what it observed in a dated archive
+  file. The rewrite starts from those records.
+- No release is cut. The release and nightly workflows still call the
+  suite and fail without it.
+
+The rules below govern the rewrite.
+
 - **End-to-end only.** No unit tests, mocks, runtime stubs, or test-only code
   paths or flags in the binary. A test builds the real binary, starts real
   boxes, and observes from outside (exit codes, output, host files, the
