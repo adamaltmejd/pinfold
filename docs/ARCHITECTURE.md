@@ -698,8 +698,9 @@ network listener, no token: the socket identifies the box.
     forwarded, responses stream as received, and `Upgrade` is dropped.
     For each pi login route pi's execs get a placeholder: P's key variable
     (`OPENROUTER_API_KEY`, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`) for
-    the API-key forms; `ANTHROPIC_OAUTH_TOKEN` for `anthropic-subscription`; for
-    `openai-codex` an unsigned JWT with a placeholder account id. The box also gets one pi
+    the API-key forms; `ANTHROPIC_OAUTH_TOKEN` for `anthropic-subscription`.
+    `openai-codex` gets none: the extension below carries an unsigned JWT
+    with a placeholder account id. The box also gets one pi
     extension, `pi.ts`, written by pinfold per box and mounted read-only
     under `/opt/pinfold/login/`, that sets each pi provider's `baseUrl` to
     `http://<route>` plus the base path of its built-in URL in the pinned
@@ -1300,8 +1301,7 @@ measurement does not authorize a later deletion.
   non-UTF-8 path in a pi box spec or configuration report is refused as
   `path-not-utf8`, naming its field.
 - **Environment:** pi's variables (Box spec, `harnesses`), the core's
-  proxy variables, `HERDR_AGENT` and `PINFOLD_ENV_*`. `attach` gets all
-  but pi's own.
+  proxy variables, `HERDR_AGENT` and `PINFOLD_ENV_*`.
 - **TTY** whenever the host has one.
 - **Auth:** a subscription or API key through pi login routes (Egress
   proxy), kept on the host; else OAuth `/login` once per project, or the

@@ -155,7 +155,8 @@ pub fn attach(args: &[String]) -> io::Result<i32> {
     let runtime = runtime();
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
     let init = artifacts::init()?;
-    let status = runtime.exec(&name, &init, tty, Some(&cwd), &[], &argv)?;
+    let env = crate::core::r#box::harness_env(&name, "pi")?.unwrap_or_default();
+    let status = runtime.exec(&name, &init, tty, Some(&cwd), &env, &argv)?;
     Ok(exit_code(status))
 }
 

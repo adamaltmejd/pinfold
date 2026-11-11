@@ -393,8 +393,7 @@ impl Login {
 
     /// The environment a login route adds to its harness's execs, beside the
     /// harness defaults; the spec's own `env` still wins. `route` is the
-    /// route's name. codex
-    /// adds none: its box gets [`login::codex_config`]. pi gets only its
+    /// route's name. codex adds none: its box gets [`login::codex_config`]. pi gets only its
     /// key's placeholder, or none for `openai-codex`:
     /// [`login::pi_extension`] points pi at the route.
     pub fn env(&self, route: &str) -> Vec<(&'static str, String)> {

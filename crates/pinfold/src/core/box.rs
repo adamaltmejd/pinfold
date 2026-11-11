@@ -815,7 +815,7 @@ fn resolve_harnesses(
                     .map(|(name, value)| (name.to_owned(), value)),
             );
         for (name, value) in defaults {
-            if !plan.env.contains_key(&name) {
+            if !plan.env.contains_key(&name) && !runtime::ALWAYS_APPLIED.contains(&name.as_str()) {
                 env.entry(name).or_insert(value);
             }
         }
