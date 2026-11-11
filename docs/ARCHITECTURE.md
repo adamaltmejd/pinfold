@@ -1460,16 +1460,15 @@ the command refuses as `project-in-git`.
 
 ## Guarantees
 
-The end-to-end proofs are suspended (`AGENTS.md`, Tests): no suite or gate
-runs. "Shown by" states what the rewritten suite must show. Guarantees 34
-and 36 run in separate slow gates. Testing policy is in `AGENTS.md`.
+The end-to-end proofs are suspended (`AGENTS.md`, Tests): the suite is
+removed, and no row is proven until it is rewritten. "Shown by" states
+what the rewritten suite must show. Testing policy is in `AGENTS.md`.
 
-- 34 is excluded from the five-minute suite and runs separately on Linux in
-  the Slow response proof workflow for PRs, main and manual runs. Release
-  publication, including nightly pin releases, requires its success at the
-  release's exact ref. It can also run explicitly on either platform:
-  `cargo test -p e2e --locked --test e2e box_::blocked_route_responses_release_the_upstream -- --ignored --exact`.
-- 36 is the Linux slow gate `scripts/slow-proxy.sh`.
+- 34 is a slow gate outside the five-minute suite, the Slow response proof
+  workflow. Release publication, including nightly pin releases, requires
+  its success at the release's exact ref. It fails while the suite is
+  removed, so no release publishes.
+- 36 is the Linux slow gate `scripts/slow-proxy.sh`, run by manual dispatch.
 
 | # | Guarantee | Shown by |
 |---|---|---|
