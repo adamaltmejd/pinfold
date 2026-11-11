@@ -3,8 +3,8 @@
 Recorded 2026-11-11 against main 1de856099daf98cacb8b0bac916f6952aaca8d35.
 
 This follows Astra's draft, `2026-11-11-composable-vm-design-draft.md`,
-kept as written. Adam and Claude worked through it on 2026-11-11. It
-awaits Adam's confirmation. ARCHITECTURE.md remains the contract. Each
+kept as written. Adam and Claude worked through it on 2026-11-11, and
+Adam confirmed it that day. ARCHITECTURE.md remains the contract. Each
 ticket below changes it in its own commit. Nothing here is implemented.
 
 Evidence: `2026-11-11-apple-share-probe.md`.
@@ -35,10 +35,10 @@ and "workspace" are not used. One term is added, in stage 2:
    the box.
 3. **The one-second window is accepted.** On Apple `container` a host
    delete, rename, replace or chmod is stale in the box for about one
-   second after the box last looked at that path. If a box reads a
-   branch, the host commits within a second, and the box commits within
-   the next second, the branch can lose its history to the reflog. It is
-   listed as not protected.
+   second after the box last looked at that path. A box that commits
+   while its view of a branch is stale can replace the branch with a
+   parentless commit, leaving the history in the reflog. The probe
+   produced this once. It is listed as not protected.
 4. **One box per project.** A detached per-box owner process holds the
    box, its proxy and its credentials. There is no global daemon. Owner
    death still fails closed.
@@ -46,8 +46,10 @@ and "workspace" are not used. One term is added, in stage 2:
    as a new session. It never starts a second box and never changes the
    running box's policy. If the configuration differs from what the box
    started with, the launch is refused and names the difference.
-6. **A box ends when its last session exits.** A flag keeps it running.
-   An explicit stop ends it. One agent exiting never stops another.
+6. **A box ends when its last session exits.** `pinfold start` keeps it
+   past its last session, and `pinfold stop` ends it. A flag cannot do
+   this, because agent arguments pass through. One agent exiting never
+   stops another.
 7. **No "VM build".** Only images are built. Policy is read at box start,
    so a policy change means stop and start. The home disk survives
    everything but explicit removal.
@@ -71,11 +73,12 @@ and "workspace" are not used. One term is added, in stage 2:
     `fetch`, scratch and disk export get no new work. They are today's
     isolated mode on both platforms. A later isolation design, likely
     using Git remotes, replaces them.
-15. **A box carries every configured agent.** Today a box spec names one
+15. **A box carries all three agents.** Today a box spec names one
     harness, and a login route must name it. A project's box instead
-    starts with every agent the configuration names and all their login
-    routes, so any of them can join later. The owner loads every
-    configured login even when one agent runs.
+    starts with pi, claude and codex and every configured login route,
+    so any of them can join later. No configuration key names agents.
+    This holds if the Linux start cost measures acceptable; otherwise a
+    key names them.
 16. **Outside Git, the folder is a share**, on the Mac, built with
     stage 2. A folder holding pinfold's state, configuration or cache is
     refused as `host-path-in-project`, which also refuses `$HOME`.
@@ -97,7 +100,7 @@ Both platforms. No threat-model change.
 
 | Ticket | Change | Guarantee |
 |---|---|---|
-| 1.1 | A detached owner holds a project's box. The box ends when its last session exits, on explicit stop, or on owner death. A flag keeps it past the last session. | New: a project's sessions share one box. Guarantee 8 holds for the detached owner. |
+| 1.1 | A detached owner holds a project's box. The box ends when its last session exits, on `pinfold stop`, or on owner death. `pinfold start` keeps it past the last session. | New: a project's sessions share one box. Guarantee 8 holds for the detached owner. |
 | 1.2 | A second launch joins the running box. A launch whose configuration differs from the box's is refused with its own token. | Same new guarantee. Replaces the pi layer's refusal of a second start as `disk-in-use`. |
 | 1.3 | A box spec takes a list of harnesses, with a login route for each. `pinfold claude` and `pinfold codex` beside `pinfold pi`, on one launch path. | Extends guarantees 19 and 26: each agent launches pinned, and each login stays on the host, in one box. |
 
