@@ -1,7 +1,8 @@
 # Shared helpers for the 2026-11-12 worktree probe. Source with T set.
 # T is the temp root; R=$T/R is the main checkout. Every share is mounted
-# in the box at its host path. Host and box Git run with no global or
-# system config, so the operator's hooks and signing stay out.
+# in the box at its host path. Host Git runs with no global or system
+# config, so the operator's hooks and signing stay out. Box Git runs with
+# no global config only; it does not set GIT_CONFIG_NOSYSTEM.
 IMAGE=localhost/pinfold/profile-default:latest
 R=$T/R
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Case 2: box edits in the worktree, host commits there, box reads.
 
-Usage: T=... c2.py CT TRIALS LOG. Expects R/wt/x from c1's fresh() and a
-running box CT. Each trial: the box appends a line to a; the host checks
-it sees the line and commits; the box then runs `git log -1` and
-`git status --porcelain` at once and again 1.5 s after the host commit.
+Usage: T=... c2.py CT TRIALS LOG. Expects R/wt/x and a running box CT;
+c2.sh makes both with fresh() and box(). Each trial: the box appends a
+line to a; the host checks it sees the line and commits; the box then
+runs `git log -1` and `git status --porcelain` at once and again 1.5 s
+after the host commit.
 A read is right when HEAD equals the host's new commit and status is empty.
 """
 import json, os, subprocess, sys, time

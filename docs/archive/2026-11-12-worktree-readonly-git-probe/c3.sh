@@ -5,13 +5,13 @@ CT=wtp3; Y=$R/wt/y
 fresh
 box $CT
 g $CT $R "git worktree list; ls wt"
-# A box process that sits in R/wt/y once it exists, to see what removal does to it.
 echo "## host adds wt/y"
 h $R "git worktree add -q wt/y -b y && git worktree list"
 g $CT $R "git worktree list; ls wt; git -C wt/y status --short --branch; git -C wt/y log --oneline -1"
 sleep 1.5
 echo "## 1.5 s after add"
 g $CT $R "git worktree list; git -C wt/y status --short --branch; git -C wt/y log --oneline -1"
+# A box process that sits in R/wt/y, to see what removal does to it.
 container exec -d $CT sh -c "cd $Y && sleep 30" 2>&1
 echo "  (box process started with cwd $Y)"
 g $CT $Y "echo boxfile > boxfile; ls"
