@@ -1,0 +1,21 @@
+argv ['box', 'sim']
+env GIT_AUTHOR_DATE=2026-11-12T12:00:00Z
+env GIT_AUTHOR_EMAIL=probe@example.invalid
+env GIT_AUTHOR_NAME=probe
+env GIT_COMMITTER_DATE=2026-11-12T12:00:00Z
+env GIT_COMMITTER_EMAIL=probe@example.invalid
+env GIT_COMMITTER_NAME=probe
+env GIT_CONFIG_GLOBAL=/dev/null
+env GIT_CONFIG_NOSYSTEM=1
+env GIT_DIR=.git
+env GIT_EDITOR=true
+env GIT_EXEC_PATH=/opt/homebrew/opt/git/libexec/git-core
+env GIT_PREFIX=
+config-fetch +refs/heads/*:refs/remotes/box/*
+git> b'capabilities\n'
+helper> fetch
+push
+
+
+git> b'list\n'
+helper-error git index-pack failed (exit 128): fatal: early EOF

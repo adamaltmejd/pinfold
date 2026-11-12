@@ -1,0 +1,60 @@
+argv ['box', 'sim']
+env GIT_AUTHOR_DATE=2026-11-12T12:00:00Z
+env GIT_AUTHOR_EMAIL=probe@example.invalid
+env GIT_AUTHOR_NAME=probe
+env GIT_COMMITTER_DATE=2026-11-12T12:00:00Z
+env GIT_COMMITTER_EMAIL=probe@example.invalid
+env GIT_COMMITTER_NAME=probe
+env GIT_CONFIG_GLOBAL=/dev/null
+env GIT_CONFIG_NOSYSTEM=1
+env GIT_DIR=.git
+env GIT_EDITOR=true
+env GIT_EXEC_PATH=/opt/homebrew/opt/git/libexec/git-core
+env GIT_PREFIX=
+config-fetch +refs/heads/*:refs/remotes/box/*
+git> b'capabilities\n'
+helper> fetch
+push
+
+
+git> b'list\n'
+box-fetch-exit 0
+helper> b7036811f28d630ef484116a6df59f77f15c520f refs/heads/main
+
+
+git> b'fetch b7036811f28d630ef484116a6df59f77f15c520f refs/heads/main\n'
+git> b'\n'
+helper> 
+
+git> b'\n'
+argv ['box', 'sim']
+env GIT_AUTHOR_DATE=2026-11-12T12:00:00Z
+env GIT_AUTHOR_EMAIL=probe@example.invalid
+env GIT_AUTHOR_NAME=probe
+env GIT_COMMITTER_DATE=2026-11-12T12:00:00Z
+env GIT_COMMITTER_EMAIL=probe@example.invalid
+env GIT_COMMITTER_NAME=probe
+env GIT_CONFIG_GLOBAL=/dev/null
+env GIT_CONFIG_NOSYSTEM=1
+env GIT_DIR=.git
+env GIT_EDITOR=true
+env GIT_EXEC_PATH=/opt/homebrew/opt/git/libexec/git-core
+env GIT_PREFIX=
+config-fetch +refs/heads/*:refs/remotes/box/*
+git> b'capabilities\n'
+helper> fetch
+push
+
+
+git> b'list\n'
+box-fetch-exit 0
+helper> 52960449ecdbf8fb51d6fee8b0d0a3ae37f97084 refs/heads/main
+
+
+git> b'fetch 52960449ecdbf8fb51d6fee8b0d0a3ae37f97084 refs/heads/main\n'
+git> b'\n'
+own-transaction-prepared
+own-transaction-exit 0
+helper> 
+
+git> b'\n'

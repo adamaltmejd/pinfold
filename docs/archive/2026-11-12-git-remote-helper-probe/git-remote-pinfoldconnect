@@ -1,0 +1,13 @@
+#!/bin/sh
+# The `connect` shape, for comparison only: host Git speaks the pack
+# protocol straight to an upload-pack on the box's repository ($PROBE_CONNECT_REPO).
+while read -r line; do
+  case $line in
+    capabilities) printf 'connect\n\n' ;;
+    "connect git-upload-pack")
+      printf '\n'
+      exec env -u GIT_DIR GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+        git upload-pack "$PROBE_CONNECT_REPO" ;;
+    *) echo "unexpected: $line" >&2; exit 1 ;;
+  esac
+done

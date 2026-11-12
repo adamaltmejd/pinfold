@@ -1,0 +1,51 @@
+# The service was stopped before this session started it (status: "apiserver is not running and not registered with launchd").
+$ container system status
+apiserver is not running and not registered with launchd
+exit=1
+$ container system start --disable-kernel-install
+Launching container-apiserver...
+Testing access to container-apiserver...
+Verifying machine API server is running...
+exit=0
+$ container image list
+NAME                                          TAG                     DIGEST
+debian                                        trixie-slim             a72b4433de1c
+ghcr.io/apple/container-builder-shim/builder  0.13.2                  ca27b4f564f2
+ghcr.io/apple/containerization/vminit         0.53.0                  526b1bf414a1
+localhost/pinfold/profile-default             18e57c1d4022b190-58537  ab6b6a86fab2
+localhost/pinfold/profile-default             18e5870956aadf68-5967   ae6f1273f183
+localhost/pinfold/profile-default             latest                  ae6f1273f183
+localhost/pinfold/profile-full                18e6b5fb6aa373c8-83193  a7aabf4589a0
+localhost/pinfold/profile-full                latest                  a7aabf4589a0
+exit=0
+$ container list --all
+ID        IMAGE                                                OS     ARCH   STATE    IP  CPUS  MEMORY   STARTED
+buildkit  ghcr.io/apple/container-builder-shim/builder:0.13.3  linux  arm64  stopped      2     2048 MB  
+exit=0
+$ container image list
+NAME                                          TAG                     DIGEST
+debian                                        trixie-slim             a72b4433de1c
+ghcr.io/apple/container-builder-shim/builder  0.13.2                  ca27b4f564f2
+ghcr.io/apple/containerization/vminit         0.53.0                  526b1bf414a1
+localhost/pinfold/profile-default             18e57c1d4022b190-58537  ab6b6a86fab2
+localhost/pinfold/profile-default             18e5870956aadf68-5967   ae6f1273f183
+localhost/pinfold/profile-default             latest                  ae6f1273f183
+localhost/pinfold/profile-full                18e6b5fb6aa373c8-83193  a7aabf4589a0
+localhost/pinfold/profile-full                latest                  a7aabf4589a0
+exit=0
+$ container list --all
+ID        IMAGE                                                OS     ARCH   STATE    IP  CPUS  MEMORY   STARTED
+buildkit  ghcr.io/apple/container-builder-shim/builder:0.13.3  linux  arm64  stopped      2     2048 MB  
+exit=0
+$ container system stop
+2026-11-12T15:31:41+0100 info com.apple.container.cli: [ContainerCommands] checking if APIServer is alive
+2026-11-12T15:31:41+0100 info com.apple.container.cli: stopTimeoutSeconds=5 [ContainerCommands] stopping containers
+buildkit
+2026-11-12T15:31:41+0100 info com.apple.container.cli: [ContainerCommands] waiting for containers to exit
+2026-11-12T15:31:41+0100 info com.apple.container.cli: label=gui/501/com.apple.container.apiserver [ContainerCommands] stopping service
+2026-11-12T15:31:41+0100 info com.apple.container.cli: label=gui/501/com.apple.container.container-network-vmnet.default [ContainerCommands] stopping service
+2026-11-12T15:31:41+0100 info com.apple.container.cli: label=gui/501/com.apple.container.container-core-images [ContainerCommands] stopping service
+2026-11-12T15:31:41+0100 info com.apple.container.cli: label=gui/501/com.apple.container.container-core-clusters [ContainerCommands] stopping service
+2026-11-12T15:31:41+0100 info com.apple.container.cli: label=gui/501/com.apple.container.cluster-hoststore [ContainerCommands] stopping service
+2026-11-12T15:31:41+0100 info com.apple.container.cli: label=gui/501/com.apple.container.machine-apiserver [ContainerCommands] stopping service
+exit=0

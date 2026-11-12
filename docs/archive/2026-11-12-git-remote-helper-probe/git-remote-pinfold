@@ -1,0 +1,524 @@
+#!/usr/bin/env python3
+"""Throwaway prototype of git-remote-pinfold, for the 2026-11-12 probe.
+
+Capabilities: `fetch` and `push` only. No `connect`, `import` or `option`.
+
+Fetch: the whole box exchange happens at `list`, as today's FETCH_SCRIPT
+does: the box prints its branches, an empty line, then a bundle. Every
+check and a quarantined `index-pack --fsck-objects` run there, and only
+refs that passed are printed to Git. `fetch` then only moves the
+quarantine's packs into the repository.
+
+Push: `list for-push` answers nothing, so the host reads nothing from the
+box but its exit status. Each `push SRC:DST` with DST under refs/heads/
+lands in the box's refs/remotes/host/*.
+
+Probe-only switches, all environment variables:
+  PROBE_BOX       local:REPO | feed:FILE | exec:BOXNAME | transient:SPEC |
+                  sh:SCRIPT (the box side; sh: runs SCRIPT and never reads
+                  the held list)
+  PROBE_PINFOLD   the pinfold binary, for exec:
+  PROBE_LIMIT     bundle byte limit (today 4 GiB)
+  PROBE_BRANCHES  branch limit (today 4096)
+  PROBE_CHECKS    off: pass the box's listing and bundle to Git unchecked
+  PROBE_PREFLIGHT 1: prepare and abort a ref transaction for
+                  refs/remotes/REMOTE/* before moving any pack
+  PROBE_OWNREFS   the helper itself commits refs/remotes/REMOTE/* in one
+                  transaction, prepared before the packs move and committed
+                  after. When: fetch (before it answers `fetch`), list
+                  (before it answers `list`) or end (prepared at `fetch`,
+                  committed at Git's closing blank line). list and end
+                  require configured refspecs with no destination.
+  PROBE_LOG       file: argv, GIT_* environment and every protocol line
+  PROBE_LOG_CONFIG_ENV  1: also log GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT
+                  and GIT_CONFIG_KEY_* (values of GIT_CONFIG_VALUE_* never)
+"""
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+LIMIT = int(os.environ.get("PROBE_LIMIT", str(4 << 30)))
+BRANCHES = int(os.environ.get("PROBE_BRANCHES", "4096"))
+CHECKS = os.environ.get("PROBE_CHECKS", "on") != "off"
+PREFLIGHT = os.environ.get("PROBE_PREFLIGHT") == "1"
+OWNREFS = os.environ.get("PROBE_OWNREFS", "")
+LOG = os.environ.get("PROBE_LOG")
+LOG_CONFIG_ENV = os.environ.get("PROBE_LOG_CONFIG_ENV") == "1"
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+FETCH_SCRIPT = r"""
+repo=$1
+git -C "$repo" rev-parse --git-dir >/dev/null || exit 64
+held=$(git -C "$repo" cat-file --batch-check='%(objectname) %(objecttype)' |
+  sed -n 's/^\([0-9a-f]*\) commit$/^\1/p') || exit
+git -C "$repo" for-each-ref --format='%(objectname) %(refname)' refs/heads/ || exit
+echo
+revs() { git -C "$repo" for-each-ref --format='%(refname)' refs/heads/; printf '%s\n' $held; }
+[ -n "$(revs | git -C "$repo" rev-list -n1 --stdin)" ] || exit 0
+revs | exec git -C "$repo" -c core.warnAmbiguousRefs=false bundle create -q - --stdin
+"""
+
+# $1 is the box repository; the rest are refspecs. The bundle is stdin.
+PUSH_SCRIPT = r"""
+repo=$1; shift
+git -C "$repo" rev-parse --git-dir >/dev/null || exit 64
+dir=$(git -C "$repo" rev-parse --absolute-git-dir) || exit
+bundle=$(mktemp "$dir/pinfold-push.XXXXXX") || exit
+trap 'rm -f "$bundle"' EXIT
+cat >"$bundle" &&
+  git -C "$repo" fetch -q --atomic --no-tags --no-write-fetch-head "$bundle" "$@"
+"""
+
+OID = re.compile(rb"^([0-9a-f]{40}|[0-9a-f]{64})$")
+
+
+def log(*parts):
+    """Control bytes are written escaped, so the log never holds raw ones."""
+    if LOG:
+        line = " ".join(str(p) for p in parts)
+        line = CONTROL.sub(lambda m: f"\\x{ord(m.group()):02x}", line)
+        with open(LOG, "a") as f:
+            f.write(line + "\n")
+
+
+def die(msg):
+    log("helper-error", msg)
+    sys.stderr.write(f"pinfold-helper: {msg}\n")
+    sys.exit(1)
+
+
+def box_env():
+    """The box side never sees the host's repository."""
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")} | {
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+
+
+def box_command(script, args):
+    kind, _, where = os.environ["PROBE_BOX"].partition(":")
+    if kind == "local":
+        return ["sh", "-c", script, "sh", where, *args]
+    if kind == "feed" and script is PUSH_SCRIPT:
+        # A hostile box for push: it prints the file named by PROBE_BOX.
+        return ["sh", "-c", 'cat >/dev/null; cat "$1"', "sh", where]
+    if kind == "sh":
+        return ["sh", "-c", where, "sh"]
+    if kind == "exec":
+        return [os.environ["PROBE_PINFOLD"], "box", "exec", where, "--",
+                "sh", "-c", script, "sh", os.environ["PROBE_GUEST_REPO"], *args]
+    die(f"no box command for {kind}")
+
+
+def transient_box(spec_path):
+    """A stopped box's disk, read through a throwaway box: `box up` with the
+    disk read-only, wait for `ready`, and return (name, owner process).
+    Closing the owner's stdin tears the box down."""
+    import json
+    owner = subprocess.Popen([os.environ["PROBE_PINFOLD"], "box", "up"],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, env=box_env())
+    owner.stdin.write(open(spec_path, "rb").read())
+    owner.stdin.flush()
+    ready = json.loads(owner.stdout.readline() or b"{}")
+    log("transient-ready", ready.get("event"), ready.get("box"))
+    if ready.get("event") != "ready":
+        die(f"transient box did not start: {ready}")
+    return ready["box"], owner
+
+
+def box_make_bundle(held):
+    """The box's stream: listing, empty line, bundle. Untrusted bytes."""
+    kind, _, where = os.environ["PROBE_BOX"].partition(":")
+    if kind == "feed":
+        with open(where, "rb") as f:
+            return f.read()
+    if kind == "transient":
+        name, owner = transient_box(where)
+        os.environ["PROBE_BOX"] = f"exec:{name}"
+        try:
+            return box_make_bundle(held)
+        finally:
+            os.environ["PROBE_BOX"] = f"transient:{where}"
+            owner.stdin.close()
+            log("transient-down", owner.wait())
+    cap = LIMIT + 1 + 4096 * (BRANCHES + 1)
+    proc = subprocess.Popen(box_command(FETCH_SCRIPT, []), stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            env=box_env())
+    proc.stdin.write(held.encode())
+    proc.stdin.close()
+    data = proc.stdout.read(cap)
+    killed = len(data) == cap
+    if killed:
+        proc.kill()
+    code = proc.wait()
+    log("box-fetch-exit", code)
+    if killed and kind == "local":
+        # The box's `exec git bundle create` runs in a pipeline subshell, not
+        # as the process killed above.
+        alive = subprocess.run(["pgrep", "-f", f"{where} -c core.warnAmbiguousRefs=false bundle create"],
+                               capture_output=True).stdout.split()
+        log("bundle-writers-after-kill", len(alive))
+    if code != 0 and len(data) < cap:
+        die(f"box exited {code}")
+    return data
+
+
+def box_take_bundle(bundle_path, refspecs):
+    """Hand a bundle to the box. Only the exit status comes back, except
+    with PROBE_CHECKS=off, where the box's stdout is returned too."""
+    with open(bundle_path, "rb") as f:
+        proc = subprocess.run(box_command(PUSH_SCRIPT, refspecs), stdin=f,
+                              stdout=subprocess.DEVNULL if CHECKS else subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, env=box_env())
+    return proc.returncode, proc.stdout or b""
+
+
+def git(*args, env=None, input=None, check=True):
+    """Host git. Its stdout is captured, never the protocol channel."""
+    proc = subprocess.run(["git", *args], input=input, capture_output=True,
+                          env=None if env is None else os.environ | env)
+    if check and proc.returncode != 0:
+        said = (proc.stderr or proc.stdout).decode(errors="replace").strip()
+        die(f"git {args[0]} failed (exit {proc.returncode}): {said}")
+    return proc
+
+
+class Quarantine:
+    def __init__(self):
+        self.objects = git("rev-parse", "--path-format=absolute", "--git-path",
+                           "objects").stdout.decode().strip()
+        self.dir = os.path.join(self.objects, f"pinfold-incoming-{os.getpid()}")
+        os.mkdir(self.dir)
+
+    def env(self):
+        quoted = self.objects.replace("\\", "\\\\").replace('"', '\\"')
+        return {"GIT_OBJECT_DIRECTORY": self.dir,
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES": f'"{quoted}"'}
+
+    def migrate(self):
+        src = os.path.join(self.dir, "pack")
+        if not os.path.isdir(src):
+            return
+        names = sorted((n for n in os.listdir(src) if n.startswith("pack-")),
+                       key=lambda n: n.endswith(".idx"))
+        for n in names:
+            dst = os.path.join(self.objects, "pack", n)
+            if not os.path.exists(dst):
+                os.rename(os.path.join(src, n), dst)
+
+    def remove(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def check_branch(namespace, branch):
+    if git("check-ref-format", namespace + branch, check=False).returncode != 0:
+        die(f"the box named a malformed branch: {branch!r}")
+
+
+def header(path):
+    """(filtered, pack offset) of a bundle, reading 8 bytes of each line."""
+    filtered, length = False, 0
+    with open(path, "rb") as f:
+        while True:
+            line = f.readline(8)
+            if not line:
+                die("the bundle's header is malformed")
+            filtered |= line.startswith(b"@filter")
+            length += len(line)
+            if line == b"\n":
+                return filtered, length
+            while not line.endswith(b"\n"):
+                line = f.readline(1 << 16)
+                if not line:
+                    die("the bundle's header is malformed")
+                length += len(line)
+
+
+def bundle_heads(path):
+    heads = {}
+    for line in git("bundle", "list-heads", path).stdout.decode(errors="replace").splitlines():
+        oid, _, name = line.partition(" ")
+        if not name.startswith("refs/heads/"):
+            continue
+        if not OID.match(oid.encode()):
+            die(f"the bundle names {oid!r} for {name!r}")
+        heads[name[len("refs/heads/"):]] = oid
+    return heads
+
+
+def parse_stream(stream):
+    """Split the box's stream into its listing and its bundle bytes."""
+    listed, pos = [], 0
+    while True:
+        end = stream.find(b"\n", pos, pos + 4096)
+        if end < 0:
+            die("the box's branch listing is malformed")
+        line, pos = stream[pos:end], end + 1
+        if not line:
+            break
+        if len(listed) == BRANCHES:
+            die(f"the box has more than {BRANCHES} branches")
+        oid, sep, name = line.partition(b" ")
+        if not sep or not OID.match(oid) or not name.startswith(b"refs/heads/"):
+            die("the box's branch listing is malformed")
+        try:
+            listed.append((name[len(b"refs/heads/"):].decode(), oid.decode()))
+        except UnicodeDecodeError:
+            die("the box's branch listing is malformed")
+    bundle = stream[pos:]
+    if len(bundle) > LIMIT:
+        die(f"the bundle is past {LIMIT} bytes")
+    return listed, bundle
+
+
+def checked_list(remote, workdir):
+    """Run every check today's fetch runs; return refs and the quarantine."""
+    namespace = f"refs/remotes/{remote}/"
+    held = git("for-each-ref", "--format=%(objectname)", namespace).stdout.decode()
+    listed, bundle = parse_stream(box_make_bundle(held))
+    for branch, _ in listed:
+        check_branch(namespace, branch)
+    quarantine = Quarantine()
+    refs = {}
+    try:
+        if bundle:
+            path = os.path.join(workdir, "in.bundle")
+            with open(path, "wb") as f:
+                f.write(bundle)
+            filtered, start = header(path)
+            if filtered:
+                die("the box sent a filtered bundle")
+            git("bundle", "verify", "-q", path)
+            heads = bundle_heads(path)
+            if len(heads) > BRANCHES:
+                die(f"the box has more than {BRANCHES} branches")
+            for branch in heads:
+                check_branch(namespace, branch)
+            with open(path, "rb") as f:
+                f.seek(start)
+                git("index-pack", "--stdin", "--fix-thin", "--fsck-objects",
+                    input=f.read(), env=quarantine.env())
+            # Connectivity: every head's history is in the quarantine or the repo.
+            wanted = "".join(f"{oid}\n" for oid in heads.values()).encode()
+            git("rev-list", "--objects", "--stdin", "--not", "--all",
+                input=wanted, env=quarantine.env())
+            refs.update(heads)
+        for branch, oid in listed:
+            if branch in refs:
+                continue
+            reached = git("rev-list", "-n1", f"{oid}^{{commit}}", "--not",
+                          f"--glob={namespace}*", check=False)
+            if reached.returncode != 0 or reached.stdout:
+                die(f"branch {branch!r} names {oid}, which the bundle does not "
+                    f"carry and {namespace}* does not reach")
+            refs[branch] = oid
+        if PREFLIGHT and refs:
+            updates = "".join(f"update {namespace}{b}\0{o}\0\0" for b, o in refs.items())
+            proc = git("update-ref", "-z", "--stdin", env=quarantine.env(), check=False,
+                       input=f"start\0{updates}prepare\0abort\0".encode())
+            if proc.returncode != 0:
+                die("ref preflight failed: " + proc.stderr.decode(errors="replace").strip())
+    except SystemExit:
+        quarantine.remove()
+        raise
+    return refs, quarantine
+
+
+def own_prepare(remote, refs, quarantine):
+    """Today's update_refs, first half: prepare against the quarantine, then
+    move the packs. Closing stdin before `commit` aborts."""
+    namespace = f"refs/remotes/{remote}/"
+    updates = "".join(f"update {namespace}{b}\0{o}\0\0" for b, o in refs.items())
+    proc = subprocess.Popen(["git", "update-ref", "-z", "--stdin"],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, env=os.environ | quarantine.env())
+    proc.stdin.write(f"start\0{updates}prepare\0".encode())
+    proc.stdin.flush()
+    replies = proc.stdout.readline() + proc.stdout.readline()
+    if replies != b"start: ok\nprepare: ok\n":
+        proc.stdin.close()
+        proc.wait()
+        die("own ref transaction failed: " + proc.stderr.read().decode(errors="replace").strip())
+    log("own-transaction-prepared")
+    quarantine.migrate()
+    quarantine.remove()
+    return proc
+
+
+def own_commit(proc):
+    proc.stdin.write(b"commit\0")
+    proc.stdin.close()
+    code = proc.wait()
+    log("own-transaction-exit", code)
+    if code != 0:
+        die("own ref commit failed: " + proc.stderr.read().decode(errors="replace").strip())
+
+
+class Unbundle:
+    """PROBE_CHECKS=off: the bundle goes into the repository at `fetch`."""
+    def __init__(self, path):
+        self.path = path
+
+    def migrate(self):
+        git("bundle", "unbundle", self.path, check=False)
+
+    def remove(self):
+        pass
+
+
+def unchecked_list(workdir):
+    """PROBE_CHECKS=off: the box's listing goes to Git verbatim."""
+    stream = box_make_bundle("")
+    # Everything before the bundle's signature, blank lines included.
+    cut = min((i for i in (stream.find(b"# v2 git bundle"), stream.find(b"# v3 git bundle"))
+               if i >= 0), default=len(stream))
+    listing, bundle = stream[:cut], stream[cut:]
+    quarantine = None
+    if bundle:
+        path = os.path.join(workdir, "in.bundle")
+        with open(path, "wb") as f:
+            f.write(bundle)
+        quarantine = Unbundle(path)
+    return listing, quarantine
+
+
+def send(data):
+    log("helper>", data)
+    sys.stdout.buffer.write(data if isinstance(data, bytes) else data.encode())
+    sys.stdout.flush()
+
+
+def read_line():
+    line = sys.stdin.buffer.readline()
+    log("git>", line)
+    return line
+
+
+def push_batch(first, remote, workdir):
+    lines = [first]
+    while True:
+        line = read_line()
+        if line in (b"\n", b""):
+            break
+        lines.append(line)
+    results, srcs, refspecs = [], [], []
+    for line in lines:
+        spec = line[len(b"push "):].strip().decode()
+        force = spec.startswith("+")
+        src, _, dst = spec.lstrip("+").partition(":")
+        if not src or not dst.startswith("refs/heads/"):
+            results.append(f"error {dst} only branches can be pushed\n")
+            continue
+        branch = dst[len("refs/heads/"):]
+        if git("check-ref-format", f"refs/remotes/host/{branch}", check=False).returncode:
+            results.append(f"error {dst} malformed branch\n")
+            continue
+        srcs.append(src)
+        refspecs.append(f"+{src}:refs/remotes/host/{branch}")
+        results.append(f"ok {dst}\n")
+        log("push", "force" if force else "noforce", src, dst)
+    if srcs:
+        path = os.path.join(workdir, "out.bundle")
+        git("-c", "core.warnAmbiguousRefs=false", "bundle", "create", "-q", path, *srcs)
+        code, relayed = box_take_bundle(path, refspecs)
+        log("box-push-exit", code)
+        if not CHECKS:
+            send(relayed)
+        if code != 0:
+            results = [r if r.startswith("error") else
+                       f"error {r.split()[1]} the box refused the bundle\n" for r in results]
+    send("".join(results) + "\n")
+
+
+def main():
+    log("argv", sys.argv[1:])
+    for k in sorted(os.environ):
+        if not k.startswith("GIT_") or k.startswith("GIT_CONFIG_VALUE_"):
+            continue
+        if not LOG_CONFIG_ENV and (k in ("GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")
+                                   or k.startswith("GIT_CONFIG_KEY_")):
+            continue
+        log("env", f"{k}={os.environ[k]}")
+    remote = sys.argv[1]
+    if not NAME.fullmatch(remote):
+        die(f"remote name {remote!r} is not a plain name")
+    # The box name, the URL's part after `pinfold::`. The probe's box side
+    # is PROBE_BOX; the name is only checked.
+    url = sys.argv[2] if len(sys.argv) > 2 else ""
+    if not NAME.fullmatch(url):
+        die(f"box name {url!r} in the URL is not a plain name")
+    configured = git("config", "--get-all", f"remote.{remote}.fetch", check=False)
+    configured = configured.stdout.decode().split()
+    log("config-fetch", " | ".join(configured))
+    workdir = tempfile.mkdtemp(prefix="pinfold-helper-")
+    quarantine = None
+    pending = None  # PROBE_OWNREFS=end: a prepared transaction to commit at the end
+    listed_refs = {}
+    try:
+        while True:
+            line = read_line()
+            if line == b"capabilities\n":
+                send("fetch\npush\n\n")
+            elif line == b"list\n":
+                # The only refspec the helper can see is configuration.
+                for spec in configured:
+                    dst = spec.lstrip("+").partition(":")[2]
+                    if not CHECKS:
+                        continue
+                    if OWNREFS in ("list", "end"):
+                        if dst:
+                            die(f"remote.{remote}.fetch has a destination: {spec}")
+                    elif not dst.startswith(f"refs/remotes/{remote}/"):
+                        die(f"remote.{remote}.fetch writes outside refs/remotes/{remote}/: {spec}")
+                if CHECKS:
+                    refs, quarantine = checked_list(remote, workdir)
+                    listed_refs = refs
+                    if OWNREFS == "list" and refs:
+                        own_commit(own_prepare(remote, refs, quarantine))
+                        quarantine = None
+                    send("".join(f"{o} refs/heads/{b}\n" for b, o in sorted(refs.items())) + "\n")
+                else:
+                    listing, quarantine = unchecked_list(workdir)
+                    send(listing)
+            elif line == b"list for-push\n":
+                send("\n")
+            elif line.startswith(b"fetch "):
+                while line not in (b"\n", b""):
+                    line = read_line()
+                if quarantine and OWNREFS == "fetch" and CHECKS:
+                    own_commit(own_prepare(remote, listed_refs, quarantine))
+                    quarantine = None
+                if quarantine and OWNREFS == "end" and CHECKS and listed_refs:
+                    pending = own_prepare(remote, listed_refs, quarantine)
+                    quarantine = None
+                if quarantine:
+                    quarantine.migrate()
+                    quarantine.remove()
+                    quarantine = None
+                send("\n")
+            elif line.startswith(b"push "):
+                push_batch(line, remote, workdir)
+            elif line in (b"\n", b""):
+                if OWNREFS == "end" and CHECKS and listed_refs:
+                    if pending is None:
+                        pending = own_prepare(remote, listed_refs, quarantine)
+                        quarantine = None
+                    own_commit(pending)
+                break
+            else:
+                die(f"unexpected command {line!r}")
+    finally:
+        if quarantine:
+            quarantine.remove()
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()
