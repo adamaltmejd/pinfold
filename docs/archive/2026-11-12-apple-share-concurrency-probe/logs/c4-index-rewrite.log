@@ -1,0 +1,2 @@
+host only, touch a + git status, GIT_OPTIONAL_LOCKS=1: .git/index inode changed 20 of 20
+host only, touch a + git status, GIT_OPTIONAL_LOCKS=0: .git/index inode changed 0 of 20
