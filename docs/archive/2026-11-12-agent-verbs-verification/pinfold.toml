@@ -1,0 +1,11 @@
+# Copied to the project as .pinfold.toml for login.sh. Every login route
+# points at fake.py; the from variables hold fixture values.
+allow = ["api.github.com"]
+
+[routes]
+fake = "127.0.0.1:18765"
+claude = { login = "claude", from = "PFV_CLAUDE_TOKEN", to = "http://127.0.0.1:18765" }
+anthropic = { login = "pi", provider = "anthropic", from = "PFV_PI_KEY", to = "http://127.0.0.1:18765" }
+# Never used by login.sh, which does not run `pinfold codex` with this file:
+# a launch of pi or claude must leave it out.
+codex = { login = "codex" }
