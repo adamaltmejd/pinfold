@@ -150,8 +150,8 @@ file was restored afterwards.
 ### Other
 
 - `grep -rl` for either dummy value under `~/.local/state/pinfold` and
-  `~/.cache/pinfold` found nothing (exit 1). `~/.config/pinfold` did not
-  exist.
+  `~/.cache/pinfold` printed nothing. It exited 2, because the command
+  also named `~/.config/pinfold`, which did not exist.
 - `pinfold box inspect RUN`: `harnesses`
   `[{"name":"pi","version":"1.5.2"},{"name":"claude","version":"2.1.322"},{"name":"codex","version":"0.167.1"}]`,
   `env` `["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC","PINFOLD_ALLOW"]`,
@@ -209,7 +209,7 @@ the `t-three` trace:
   directory, three times each: pi 1.43, 1.49, 1.45 s; claude 4.03, 4.05,
   4.00 s; codex 3.49, 3.75, 3.48 s.
 - In all three traces the first `mkfs.ext4` started 0.77–0.81 s after
-  `pinfold`'s own `execve`, and Firecracker started about 10 ms after the
+  `pinfold`'s own `execve`, and Firecracker started 11–12 ms after the
   last `mkfs.ext4` exited. The rest of the 2.27 s no-harness start is
   after that, by subtraction about 1.4 s.
 - Tracing slows the VMM: the traced starts took 4.65, 6.16 and 13.83 s to
@@ -217,8 +217,11 @@ the `t-three` trace:
   trace without `--seccomp-bpf` slowed `mkfs.ext4` itself several times
   over and is not used.
 
-The cost follows the bytes copied, not the entry count: 87, 82 and
-111 MiB/s for pi, claude and codex.
+The time does not track the entry count: claude has 2 entries and pi
+234. The rates were 87, 82 and 111 MiB/s for pi, claude and codex, so
+it does not track the bytes exactly either. The traces' SIGCHLD lines
+give user plus system time against wall time of 1.34 of 1.43 s for pi,
+3.78 of 3.99 s for claude and 3.23 of 3.44 s for codex.
 
 The macOS record measured 0.78–1.16 s for both one and three harnesses.
 
@@ -229,8 +232,7 @@ The macOS record measured 0.78–1.16 s for both one and three harnesses.
 - `pinfold pi` on Linux, and any harness reaching its provider.
 - A cold start. Every timed start had the harness files in the page
   cache.
-- A second machine. The numbers are from one 2-vCPU VM; `mkfs.ext4 -d` is
-  bound by its disk and CPU.
+- A second machine. The numbers are from one 2-vCPU VM.
 - `scripts/setup-linux-runner.sh` failed once on a held dpkg lock right
   after the VM came up. Its udev rule had applied; the two packages were
   installed by hand afterwards.
