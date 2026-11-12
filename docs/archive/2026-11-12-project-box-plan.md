@@ -2,11 +2,11 @@
 
 Date: 2026-11-12, against main 42c140e. Worked out by Adam and Claude
 after Astra's review of an earlier proposal; an independent review
-against the code is folded in. It would supersede parts of
+against the code is folded in. It supersedes parts of
 `2026-11-11-composable-plan.md`, which stays as written. ARCHITECTURE.md
 remains the contract until a ticket changes it. Nothing here is
-implemented. Adam answered most of the open questions on 2026-11-12;
-the answers are decisions 13 to 26, and no question remains open.
+implemented. Adam answered the open questions on 2026-11-12 (decisions
+13 to 26) and confirmed the plan that day.
 
 Evidence, all dated 2026-11-12: `linux-harness-measurement.md` (merged),
 `apple-share-concurrency-probe.md`, `readonly-git-mount-probe.md` and
