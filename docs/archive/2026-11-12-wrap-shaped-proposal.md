@@ -28,6 +28,22 @@ host-side subscription login, their egress control intercepts TLS, and
 several allowlist bypasses are reported against it (not checked). wrap
 does not build on macOS today.
 
+## Threat model, as Adam stated it on 2026-11-12
+
+1. **Primary: an agent with unfettered access to what the host can
+   reach.** Personal data on research servers and elsewhere, through the
+   user's files, credentials and network position.
+2. **Prompt injection**, as the way an agent is turned.
+3. **Secondary: local, unsafe or malicious models** under test.
+
+ARCHITECTURE.md's threat model opens with prompt injection only. If this
+proposal goes ahead, that section is reworded to lead with host data.
+
+One tension to settle, Q12: decision 2 of the 2026-11-11 plan accepts
+that files an agent writes into a share (hooks, Makefiles, editor
+config) later run on the host as the user. That path leads from a
+turned agent to exactly the data in item 1.
+
 ## What stays
 
 - The runtimes: Apple `container` and Firecracker.
@@ -48,14 +64,17 @@ Each is marked **Adam said** or **proposed**. A proposed item is the
 operator's recommendation and needs Adam's answer. Each names the
 guarantee it changes.
 
-1. **Rely on the VM boundary for privilege.** Adam said. Replaces
-   decision 12, the "No privilege" control and guarantee 5. The variant
-   is open: Q1 to Q3.
-2. **`pinfold -- CMD` is the one entry point.** Proposed. A session is
-   one command in the project's box. Replaces decision 10; touches
-   guarantee 39's `harness-exited` record. Deletes `pinfold pi`,
-   `pinfold claude`, `pinfold codex` and `attach`. It is not fully
-   command-agnostic: Q9.
+1. **Rely on the VM boundary for privilege: passwordless `sudo`, as in
+   wrap.** Adam said. Replaces decision 12, the "No privilege" control
+   and guarantee 5. Open: which capabilities root holds (Q1b) and the
+   root filesystem (Q2).
+2. **`pinfold -- CMD` is the only way to run something in a box.** Adam
+   said. Every other `pinfold VERB` acts on pinfold from outside. Bare
+   `pinfold` is `pinfold --help`. A session is one command in the
+   project's box; a shell is `pinfold -- bash`. Replaces decision 10;
+   touches guarantee 39's `harness-exited` record. Deletes
+   `pinfold pi`, `pinfold claude`, `pinfold codex` and `attach`. It is
+   not fully command-agnostic: Q9.
 3. **Agents are installed in the image at `pinfold build`.** Proposed.
    Replaces decision 15; changes guarantees 19 and 26. Deletes harness
    mounts, the spec's `harnesses` key, `harnesses.json` and
@@ -69,7 +88,9 @@ guarantee it changes.
    the whole box if the probe passes; otherwise a wrapper per agent in
    the image. Touches guarantee 26. Known and suspected collisions are
    listed below.
-6. **Chrome and Codex run with their own sandboxes off.** Proposed.
+6. **Chrome and Codex run with their own sandboxes off.** Adam agreed
+   for Chrome, noting that egress is also heavily limited; Codex is
+   proposed on the same reasoning.
    Their sandboxes protect the box's contents from a hostile page or
    tool call. The agent in the box is already assumed steerable by
    hostile content, and the box is the boundary. wrap ships Chrome with
@@ -153,9 +174,10 @@ The suite stays removed; AGENTS.md's suspension holds.
 
 ## Questions for Adam
 
-- **Q1. Who is root?** (a) Work runs as the host uid with passwordless
-  `sudo`. (b) All work runs as root. Recommended: (a), if probe 2
-  allows it.
+- **Q1. Settled by Adam:** work runs as the host uid with passwordless
+  `sudo`. Probe 2 checks that this works on an Apple share. Without
+  root, `apt` cannot install anything; only tools that install under
+  the home directory (mise, pip, npm, cargo) work.
 - **Q1b. Root's capabilities.** (a) All. (b) The ordinary container set,
   without `SYS_ADMIN`, `SYS_MODULE` and `SYS_PTRACE`. Recommended: (b).
   It allows `apt install` and keeps the Apple read-only row, module
@@ -202,6 +224,26 @@ The suite stays removed; AGENTS.md's suspension holds.
   identity is computed.
 - **Q11. Confirm deleting** the three verbs, `attach`, and core's
   `harnesses` key and `box exec --harness`.
+
+- **Q12. Host execution of agent-written files in a share.** Given the
+  threat model above, is decision 2 still accepted as is? Options: (a)
+  accept, as decided on 2026-11-11. (b) Accept, and have pinfold warn
+  when a session changed files that commonly execute on the host (Git
+  hooks and config, editor and tool configuration). (c) Keep `.git`
+  out of the share. Recommended: (b); (c) breaks the goal of agents
+  committing in place.
+- **Q13. TLS interception.** Not built today. The proxy tunnels HTTPS to
+  allowlisted names without reading it, and credentials are added on
+  routes, where the box speaks plain HTTP to the proxy and the proxy
+  speaks TLS upstream. Interception would add: rules by path and method
+  (for example read-only GitHub), a check against Host-header fronting,
+  which the spec lists as not protected, and credential injection for
+  tools that cannot be pointed at a route. It costs: a CA in every trust
+  store in the guest, breakage with pinned certificates, a large parser
+  on the host reading hostile bytes, and the host seeing all plaintext.
+  microsandbox's reported bypasses are in this code. Recommended: not
+  now; revisit if "allowlisted services that accept writes" becomes the
+  exfiltration path that matters.
 
 ## Not established
 
