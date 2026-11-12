@@ -5,11 +5,13 @@ after Astra's review of an earlier proposal; an independent review
 against the code is folded in. It would supersede parts of
 `2026-11-11-composable-plan.md`, which stays as written. ARCHITECTURE.md
 remains the contract until a ticket changes it. Nothing here is
-implemented, and the open questions at the end are not answered.
+implemented. Adam answered most of the open questions on 2026-11-12;
+the answers are decisions 13 to 22, and three questions remain.
 
 Evidence, all dated 2026-11-12: `linux-harness-measurement.md` (merged),
-`apple-share-concurrency-probe.md` (PR #289, under review),
-`readonly-git-mount-probe.md` and `wrap-microsandbox-notes.md` (PR #290).
+`apple-share-concurrency-probe.md`, `readonly-git-mount-probe.md` and
+`wrap-microsandbox-notes.md` (all merged), and
+`worktree-readonly-git-probe.md` (PR #291, under review).
 
 ## Goal and threat model
 
@@ -60,7 +62,31 @@ Threat model, in Adam's order:
     pinfold's host configuration. `pinfold allow` and the hash check go.
 11. **An egress report for the operating agent** is wanted, later.
 12. **PR #286 is closed.** Its scratch-disk fix and route handling are
-    carried where they still apply; its start sync depends on Q4.
+    carried where they still apply.
+13. **A project is the Git root** when there is one, else the current
+    folder. Outside Git on Linux, where there is no share, the start is
+    refused.
+14. **`pinfold config edit`** opens the project's file under pinfold's
+    host configuration directory. A per-project recipe lives there too.
+15. **A share that holds pinfold's own state, configuration or cache is
+    refused,** the project or an extra mount. That also refuses `$HOME`.
+16. **A disk mount gets one automatic push** of the host's branches at
+    its first start. The exit summary and scratch disks go.
+17. **One copy-out command** takes files out of a disk without Git. It
+    runs in a throwaway box, as disk export does today. The host never
+    mounts a box's disk.
+18. **The host `pi` symlink is dropped.** It may return later.
+19. **The profile's recipe alone decides which agents are installed.**
+    Login routes are configured separately; an unused route is harmless.
+20. **A Linux project is always a disk mount.** The share on Linux stays
+    a later design.
+21. **A project with no configuration is refused,** with a one-line
+    command to create it. A moved or renamed project is such a project.
+22. **`pinfold -- CMD`** runs the command in the box at the folder
+    matching the host's current one. It gets a terminal when pinfold
+    has one. Its exit code is passed through, and pinfold's own failures
+    use codes a command is unlikely to return. Herdr's agent label is
+    the command's first word.
 
 ## Operator's calls
 
@@ -108,13 +134,13 @@ These follow from the decisions but were not put to Adam one by one.
 | 12. Small image, privilege unchanged | Privilege unchanged; the default image grows (3) |
 | 14. Disk projects frozen as they are | Disk mounts stay; their crossing is rebuilt as a Git remote (9) |
 | 15. A box carries all three agents, mounted | The image carries whichever agents its recipe installs (4) |
-| 16. Outside Git the folder is a share | Open: Q1 |
+| 16. Outside Git the folder is a share | Kept on the Mac; refused on Linux (13) |
 
 Guarantees: 19 (pinned harness) and 46 (exit summary) are deleted. 12
 (trust) is deleted, and its shared-folder and identity assertions move
 to 13. 10 (crossing), 13, 18 (configuration as data), 26 and 39 are
 rewritten. 44 changes if the Linux build host list grows. 11 and 45
-depend on Q4 and Q5. 5, 8, 43 and the proxy guarantees stand. A
+are rewritten for decisions 16 and 17. 5, 8, 43 and the proxy guarantees stand. A
 writable share is a new kind in the box spec, where every mount is
 read-only today, and the spec's opening and its "Host files" row
 change. The profile's existing `share/` mount needs another name.
@@ -122,8 +148,9 @@ change. The profile's existing `share/` mount needs another name.
 Code that goes: `trust.rs`'s hash check and `pinfold allow`; the agent
 pins and mounts, the spec's `harnesses` key, `harnesses.json` and
 `box exec --harness` (#284); `pinfold pi`, `attach`, `pinfold push`,
-`pinfold fetch`, the exit summary and scratch handling. The start sync
-goes or stays with Q4.
+`pinfold fetch`, the exit summary and scratch handling; the host `pi`
+symlink and its install step. The start sync shrinks to the first push
+of decision 16.
 
 Caller changes, all hard breaks: the spec's `harnesses` key and
 `box exec --harness`; the launch record's `harnesses` field; `pinfold
@@ -200,7 +227,7 @@ the `config` output's mode, source and trust fields.
 
 ## Order
 
-1. Probes 1 to 3, and Adam's answers below.
+1. Probes 1 to 3. Probe 3 is run (PR #291).
 2. Configuration: mounts as configuration, per-project configuration on
    the host, the hash check deleted, the shared-folder check moved.
 3. Agents in the image, with login files driven by routes. Probes 4 to
@@ -217,47 +244,8 @@ Issues #276 to #281 are re-scoped after Adam confirms.
 
 ## Open questions for Adam
 
-- **Q1. What is a project?** With configuration off the project and
-  scratch gone, a project could be the folder `pinfold` is run in, or
-  the Git root above it. Outside Git on Linux, where there is no share,
-  the choices are to refuse or to give an empty disk. Recommended: the
-  Git root when there is one, else the current folder; outside Git on
-  Linux, refuse.
-- **Q2. How is per-project configuration created and edited?**
-  Recommended: `pinfold config edit` opens the project's file under
-  pinfold's configuration directory. A per-project recipe moves there
-  too.
-- **Q3. Which folders may be shared?** Recommended: refuse any share
-  mount, the project or an extra one, that holds pinfold's own state,
-  configuration or cache. That also refuses `$HOME`.
-- **Q4. A disk mount starts empty.** Without the start sync nothing
-  creates the box's repository, so pinfold must at least initialise it
-  for `git push box` to work. Options: (a) pinfold initialises an empty
-  repository and the user pushes. (b) Keep one automatic push of the
-  host's branches at first start. Recommended: (b); an empty box is a
-  trap. The exit summary and scratch disks go either way.
-- **Q5. Getting files out of a disk without Git.** The host cannot mount
-  the disk: macOS has no ext4, and the design keeps the host kernel from
-  parsing a box's filesystem. Recommended: keep one copy-out command
-  that runs in a throwaway box, as disk export does today.
-- **Q6. The host `pi` symlink.** It makes plain `pi` on the host run in
-  a box. Recommended: keep it as a shorthand for `pinfold -- pi`.
-- **Q7. Which agents does a profile install?** Recommended: the
-  profile's recipe alone decides. pinfold cannot see what a recipe
-  installed, so login routes are configured independently; an unused
-  route is harmless.
-- **Q8. Linux.** Everything here except the share applies on Linux, so a
-  Linux project is always a disk mount. Confirm that the share on Linux
-  stays a later design.
-- **Q9. A project with no configuration, or a moved one.** A project is
-  identified by a hash of its path. After a move or rename its host
-  configuration is no longer found, and two checkouts of one repository
-  are two projects. A box can also create a nested repository inside a
-  share, which then looks like a new project. Options when no
-  configuration is found: (a) run on the profile's defaults. (b) Refuse
-  until the user creates one. Recommended: (b), with a one-line command
-  to create it; (a) could silently widen a project's allowlist after a
-  move.
+Q1 to Q9 and Q13 are answered; see decisions 13 to 22.
+
 - **Q10. Agents' own updaters.** An updater needs its download host on
   the allowlist, and these are likely shared hosts such as GitHub
   release assets or npm. Today's default allowlist already includes
@@ -265,25 +253,29 @@ Issues #276 to #281 are re-scoped after Adam confirms.
   (b) Off; a rebuild updates. Recommended: (a) for hosts already
   allowlisted by default, (b) for the rest, decided per agent after
   probe 5.
-- **Q11. What "latest at build" can mean.** Builds reuse cached layers,
-  and pinfold does not notice a new agent release. A self-updated copy
-  on the home disk also shadows the image's copy. Options: (a) An agent
-  is the version current when its layer was last built; `pinfold build
-  --no-cache` refreshes it; pinfold reports nothing about freshness.
-  (b) `pinfold build` always rebuilds the agent layer, which costs a
-  download on every build. Recommended: (b), as it is what decision 4
-  says; the layer is last in the recipe so nothing else rebuilds.
-- **Q12. Worktrees.** A linked worktree keeps its index under the main
-  `.git`, which the box cannot write, and its `.git` file can be
-  rewritten by the box. Options: (a) Refuse to share a linked worktree;
-  share only a main checkout. (b) Share the main root and let the box
-  work in worktrees beneath it, read-only for Git like the rest.
-  Recommended: (b) if probe 3 shows Git reads work there; otherwise (a).
-- **Q13. The contract of `pinfold -- CMD`.** Recommended: the command
-  runs in the box at the folder matching the host's current one; it gets
-  a terminal when pinfold has one; its exit code is passed through, and
-  pinfold's own failures use codes a command is unlikely to return.
-  Herdr's agent label is the command's first word.
+- **Q11. How a build gets the latest agents.** Adam, 2026-11-12: a
+  build should not download an agent it already has; use ordinary
+  package caching. Options: (a) The agent step runs on every build with
+  the package manager's download cache kept between builds. The package
+  manager asks its index for the latest version and downloads only a
+  new one. pinfold knows nothing about agents. The layer is rewritten
+  each build. (b) pinfold asks each agent's release index for the
+  latest version and passes it to the build as an argument, so an
+  unchanged version reuses the cached layer exactly. pinfold must then
+  know each agent's index. Recommended: (a), if probe 6 shows each
+  agent's installer uses a cache and the rewritten layer is cheap.
+- **Q12. Worktrees.** Probe 3 (PR #291, under review): in a linked
+  worktree under a read-only main `.git`, box Git reads work and box
+  Git writes fail. The box can point the worktree's `.git` file at a
+  Git directory it wrote, and host Git then ran the box's fsmonitor and
+  hooks. Mounting that file read-only did not prevent it, because the
+  box can rename the worktree's folder. This is the host execution
+  decision 8 accepts, already listed under "Not protected". Options:
+  (a) Refuse to share a linked worktree; share only a main checkout.
+  (b) Share the main root and let the box work in worktrees beneath it,
+  read-only for Git like the rest. Recommended: (b). Whether a nested
+  repository the box creates in a main checkout gives the same path was
+  not tried; if it does, (a) buys nothing.
 
 ## Not established
 
@@ -291,4 +283,4 @@ Issues #276 to #281 are re-scoped after Adam confirms.
 - Whether a subscription login accepts each agent configured this way.
 - How tightly Codex's pinned host helper is coupled to the Codex
   version in the image.
-- #289's results, until that record is reviewed.
+- #291's results, until that record is reviewed.
