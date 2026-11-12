@@ -11,8 +11,8 @@ the answers are decisions 13 to 26, and no question remains open.
 Evidence, all dated 2026-11-12: `linux-harness-measurement.md` (merged),
 `apple-share-concurrency-probe.md`, `readonly-git-mount-probe.md` and
 `wrap-microsandbox-notes.md` (all merged), and
-`worktree-readonly-git-probe.md` and `agent-login-files-probe.md` (all
-merged), and `git-remote-helper-probe.md` (PR #293, under review).
+`worktree-readonly-git-probe.md`, `agent-login-files-probe.md` and
+`git-remote-helper-probe.md` (all merged).
 
 ## Goal and threat model
 
@@ -104,8 +104,8 @@ Threat model, in Adam's order:
     "Not protected" with decision 8.
 26. **A fetch through the Git remote may update `box/*` branches
     partially.** Every byte is checked before it lands. `pinfold fetch`
-    and `pinfold push` are deleted. If probe 2's second pass finds a
-    clean all-or-nothing method, it is used.
+    and `pinfold push` are deleted. Git writes the refs. Probe 2 tried
+    three ways for the helper to write them and each had a worse cost.
 
 ## Operator's calls
 
@@ -196,6 +196,13 @@ the `config` output's mode, source and trust fields.
     after a host save-by-rename replaced the host's content in 15 of 15
     trials, and a failed in-place write left the host file empty in 15
     of 15 (#289).
+- **Not protected, for the Git remote** (probe 2): a refspec given on
+  the command line and `git pull box` write the user's own branches;
+  with `--prune` the box deletes `box/*` branches by deleting its own;
+  a box branch named `HEAD` makes `box` resolve to a commit the box
+  chose; a fetch may update `box/*` partially (26). Kept: every check
+  on the box's bytes, in a quarantine, before anything lands. The
+  helper does the transfer itself; `connect` is ruled out.
 - **Agents are no longer checksum-pinned.** A recipe's install step
   trusts what the vendor serves at build time. The agents run in the
   box, which is untrusted either way.
@@ -246,8 +253,7 @@ the `config` output's mode, source and trust fields.
 
 ## Order
 
-1. Probes 1 to 3. Probes 1 and 3 are run and merged (#292, #291).
-   Probe 2 is run and under review (#293).
+1. Probes 1 to 3. All three are run and merged (#292, #293, #291).
 2. Configuration: mounts as configuration, per-project configuration on
    the host, the hash check deleted, the shared-folder check moved.
 3. Agents in the image, with login files driven by routes. Probes 4 to
@@ -273,7 +279,9 @@ decisions 13 to 26.
 - Whether a subscription login accepts each agent configured this way.
 - How tightly Codex's pinned host helper is coupled to the Codex
   version in the image.
-- #293's results, until that record is reviewed and corrected.
+- From probe 2, not run: the limits at full size, the size-limit kill
+  against a real box, concurrent fetches, Linux. Its second-pass cases
+  were not independently reviewed.
 - From probe 1, not run: claude's blank `ANTHROPIC_API_KEY` entry with
   all three agents in one box; what codex sends by itself on a plain
   route; pi's start on a fresh home disk once mount-point parents are
