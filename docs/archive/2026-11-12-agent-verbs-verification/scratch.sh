@@ -1,7 +1,7 @@
-# Scratch: outside Git, pi removes empty disks; claude retains them.
+# Scratch: outside Git, every agent's empty disks are removed.
 # Run with PROJ naming a directory that is not in a Git repository.
 . "$(dirname "$0")/env.sh"
-for a in pi claude; do
+for a in pi claude codex; do
   echo "== pinfold $a --version outside Git"
   "$P" "$a" --version </dev/null 2>&1 | grep -v image-outdated
 done

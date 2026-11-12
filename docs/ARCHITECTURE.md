@@ -1259,7 +1259,7 @@ measurement does not authorize a later deletion.
   `/opt/pinfold/<agent>`. `pinfold <agent>` asks core for a box with
   `"harnesses": [AGENT]` and runs `/opt/pinfold/<agent>/<agent>` as an
   exec for that agent. The box leaves out the configuration's login
-  routes for the other agents.
+  routes for the other agents, unchecked.
 - **State:** `~/.local/state/pinfold/projects/<name>-<hash>/` on the host,
   where the hash is of the canonical project root path, and two disks,
   `pi-<name>-<hash>-home` attached as `$HOME`, `/home/pi`, and
@@ -1277,15 +1277,14 @@ measurement does not authorize a later deletion.
   as `not-git`. A `.git` that is not a directory (a worktree) is refused
   as `worktree`. Git metadata directories and operational discovery errors
   never become scratch workspaces.
-- **Scratch:** outside Git, `pi` reads configuration from the invoking
+- **Scratch:** outside Git, a launch reads configuration from the invoking
   directory but never copies or mounts that directory. Each invocation gets
   a fresh independent home disk at `/home/pi` and work disk at `/work`, even
   from the same directory. Their names and originating folder are recorded.
   Scratch creates no project-state record, project cleanup label or branch
-  sync. claude and codex retain both disks. After pi's successful exit and
-  clean teardown, an apparently
-  empty work disk is inspected again in a transient box using the same
-  image, with only that disk read-only, no home and no egress. Inspection
+  sync. After a successful exit and clean teardown, a work disk that
+  pi's summary found apparently empty, or any claude or codex work disk,
+  is inspected again in a transient box using the same image, with only that disk read-only, no home and no egress. Inspection
   has a 30-second signal deadline. Both disk claims stay locked from the
   observation through inspector teardown and fresh attachment/clean checks.
   New writable disks remove only an empty formatter-created

@@ -215,7 +215,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
     {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "this project has no project disk yet; start it with `pinfold pi`",
+            "this project has no project disk yet; start it with `pinfold pi`, `pinfold claude` or `pinfold codex`",
         ));
     }
     let image = resolve_image(&config, &id);
@@ -390,9 +390,6 @@ fn warn_containerfile(image: &ImageInfo, bytes: &[u8], build: &str) {
     }
 }
 
-/// The agents a project's box can run, each a pinned harness.
-const AGENTS: [&str; 3] = ["pi", "claude", "codex"];
-
 /// The harnesses a launch of `agent` lists.
 fn harnesses(agent: &str) -> Vec<String> {
     vec![agent.to_string()]
@@ -429,7 +426,8 @@ fn build_plan(agent: &str, config: &Config, id: &str, root: &Path, image: &str) 
                 .iter()
                 .filter(|(_, route)| match route {
                     Route::Login(login) => {
-                        harnesses.contains(&login.login) || !AGENTS.contains(&login.login.as_str())
+                        harnesses.contains(&login.login)
+                            || artifacts::harness(&login.login).is_none()
                     }
                     _ => true,
                 })
@@ -526,9 +524,7 @@ fn run_box(
             {
                 eprintln!("pinfold {agent}: could not record scratch origin: {error}");
             }
-            // Only pi's exit summary finds an empty work disk to remove.
-            let removed = if pi { "empty work is removed on clean exit; " } else { "" };
-            eprintln!("pinfold {agent}: scratch disks: home={}, work={}; {removed}retained disks can be removed with `pinfold disk rm NAME`", plan.disks[0].name, plan.disks[1].name);
+            eprintln!("pinfold {agent}: scratch disks: home={}, work={}; empty work is removed on clean exit; retained disks can be removed with `pinfold disk rm NAME`", plan.disks[0].name, plan.disks[1].name);
         }
         // The sync runs here so that the signals and the box's end below
         // also cover it.
@@ -563,8 +559,10 @@ fn run_box(
             Ok((terminal, code)) => (Some(terminal), Ok(code)),
             Err(error) => (None, Err(error)),
         };
-        let mut empty_scratch = false;
-        if pi && terminal.as_ref().is_some_and(|terminal| terminal.reason == "harness-exited") {
+        // Without pi's summary, the inspection after teardown decides alone.
+        let exited = terminal.as_ref().is_some_and(|terminal| terminal.reason == "harness-exited");
+        let mut empty_scratch = exited && !pi && !repository;
+        if pi && exited {
             match super::summary::report(&mut box_, &mut signals, plan, &summary_init, &summary_root, repository).await {
                 Ok((Some((stopped, status)), _)) => {
                     terminal = Some(stopped);

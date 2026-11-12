@@ -74,9 +74,14 @@ Scratch (`scratch.sh`, in `scr`):
 - `pinfold pi --version`: the scratch line ending `empty work is removed
   on clean exit; retained disks …`, then `pinfold pi: empty scratch disks
   removed`.
-- `pinfold claude --version`: `pinfold claude: scratch disks: home=…,
-  work=…; retained disks can be removed with …`. Both disks stayed in
-  `pinfold disk list`.
+- `pinfold claude --version` and `pinfold codex --version`: the same
+  scratch line, the version, then `pinfold <agent>: empty scratch disks
+  removed`. `pinfold disk list` showed no disk afterwards.
+
+The first build kept claude's and codex's disks, because removal ran only
+inside pi's summary. Review found the leak; the lines above are from the
+rerun after the fix. A claude or codex scratch run that leaves work on the
+disk was not exercised.
 
 ## 3. `pinfold claude` on a fresh project gets the start sync (`sync.sh`)
 
