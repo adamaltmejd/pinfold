@@ -1,0 +1,6 @@
+host$ ls -ln $R/wt/evilB | head -5   (run by hand after c4.sh)
+total 48
+-rw-r--r--@  1 501  0   13 Nov 12 14:39 COMMIT_EDITMSG
+-rw-r--r--   1 501  0  246 Nov 12 14:39 config
+-rw-r--r--   1 501  0   73 Nov 12 14:39 description
+-rwxr-xr-x   1 501  0  102 Nov 12 14:39 fsm.sh

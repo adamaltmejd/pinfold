@@ -1,0 +1,122 @@
+host$ (cd /private/tmp/wtprobe.xdhf/R) git init -q -b main . && echo a > a && printf 'wt/\n' > .gitignore && git add a .gitignore && git commit -qm c0 && git worktree add -q wt/x -b x && cat wt/x/.git && git worktree list
+  gitdir: /private/tmp/wtprobe.xdhf/R/.git/worktrees/x
+  /private/tmp/wtprobe.xdhf/R      3a77dc6 [main]
+  /private/tmp/wtprobe.xdhf/R/wt/x 3a77dc6 [x]
+  rc=0
+host$ container run -d --name wtp4 --user 501:20 -v /private/tmp/wtprobe.xdhf/R:/private/tmp/wtprobe.xdhf/R -v /private/tmp/wtprobe.xdhf/R/.git:/private/tmp/wtprobe.xdhf/R/.git:ro  --entrypoint sleep IMAGE infinity
+  rc=0
+## variant A: own gitdir with commondir -> R/.git and its own config
+box[wtp4]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) mkdir /private/tmp/wtprobe.xdhf/R/wt/evilA && cp /private/tmp/wtprobe.xdhf/R/.git/worktrees/x/HEAD /private/tmp/wtprobe.xdhf/R/.git/worktrees/x/index /private/tmp/wtprobe.xdhf/R/wt/evilA/ && echo /private/tmp/wtprobe.xdhf/R/.git > /private/tmp/wtprobe.xdhf/R/wt/evilA/commondir && echo /private/tmp/wtprobe.xdhf/R/wt/x/.git > /private/tmp/wtprobe.xdhf/R/wt/evilA/gitdir   && printf '#!/bin/sh
+echo "fsmonitor-A ran on $(uname -s) args=$*" >> /private/tmp/wtprobe.xdhf/marker.log
+exit 1' > /private/tmp/wtprobe.xdhf/R/wt/evilA/fsm.sh && chmod +x /private/tmp/wtprobe.xdhf/R/wt/evilA/fsm.sh   && printf '[core]\n\tfsmonitor = /private/tmp/wtprobe.xdhf/R/wt/evilA/fsm.sh\n' > /private/tmp/wtprobe.xdhf/R/wt/evilA/config && printf 'gitdir: /private/tmp/wtprobe.xdhf/R/wt/evilA\n' > .git && cat .git
+  gitdir: /private/tmp/wtprobe.xdhf/R/wt/evilA
+  rc=0
+host$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) git rev-parse --git-dir --git-common-dir; git status --short; git config --show-origin core.fsmonitor
+  /private/tmp/wtprobe.xdhf/R/wt/evilA
+  /private/tmp/wtprobe.xdhf/R/.git
+  rc=1
+host$ (cd /private/tmp/wtprobe.xdhf) cat marker.log
+  cat: marker.log: No such file or directory
+  rc=1
+## variant B: a full copy of R/.git with its own config and hooks
+box[wtp4]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) cp -r /private/tmp/wtprobe.xdhf/R/.git /private/tmp/wtprobe.xdhf/R/wt/evilB && echo 'ref: refs/heads/x' > /private/tmp/wtprobe.xdhf/R/wt/evilB/HEAD && cp /private/tmp/wtprobe.xdhf/R/.git/worktrees/x/index /private/tmp/wtprobe.xdhf/R/wt/evilB/index   && mkdir /private/tmp/wtprobe.xdhf/R/wt/evilB/h && printf '#!/bin/sh
+echo "fsmonitor-B ran on $(uname -s) args=$*" >> /private/tmp/wtprobe.xdhf/marker.log
+exit 1' > /private/tmp/wtprobe.xdhf/R/wt/evilB/fsm.sh   && printf '#!/bin/sh
+echo "pre-commit-B ran on $(uname -s) args=$*" >> /private/tmp/wtprobe.xdhf/marker.log
+exit 0' > /private/tmp/wtprobe.xdhf/R/wt/evilB/h/pre-commit && printf '#!/bin/sh
+echo "post-commit-B ran on $(uname -s) args=$*" >> /private/tmp/wtprobe.xdhf/marker.log
+exit 0' > /private/tmp/wtprobe.xdhf/R/wt/evilB/h/post-commit   && chmod +x /private/tmp/wtprobe.xdhf/R/wt/evilB/fsm.sh /private/tmp/wtprobe.xdhf/R/wt/evilB/h/pre-commit /private/tmp/wtprobe.xdhf/R/wt/evilB/h/post-commit   && git config -f /private/tmp/wtprobe.xdhf/R/wt/evilB/config core.fsmonitor /private/tmp/wtprobe.xdhf/R/wt/evilB/fsm.sh && git config -f /private/tmp/wtprobe.xdhf/R/wt/evilB/config core.hooksPath /private/tmp/wtprobe.xdhf/R/wt/evilB/h   && printf 'gitdir: /private/tmp/wtprobe.xdhf/R/wt/evilB\n' > .git && cat .git && cat /private/tmp/wtprobe.xdhf/R/wt/evilB/config
+  gitdir: /private/tmp/wtprobe.xdhf/R/wt/evilB
+  [core]
+  	repositoryformatversion = 0
+  	filemode = true
+  	bare = false
+  	logallrefupdates = true
+  	ignorecase = true
+  	precomposeunicode = true
+  	fsmonitor = /private/tmp/wtprobe.xdhf/R/wt/evilB/fsm.sh
+  	hooksPath = /private/tmp/wtprobe.xdhf/R/wt/evilB/h
+  rc=0
+## the box's own Git through the new gitdir
+box[wtp4]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) git rev-parse --git-dir --git-common-dir; git status --short; echo boxline >> a; git commit -qam box-in-evil; echo commit_rc=$?; git log --oneline
+  /private/tmp/wtprobe.xdhf/R/wt/evilB
+  /private/tmp/wtprobe.xdhf/R/wt/evilB
+  /private/tmp/wtprobe.xdhf/R/wt/evilB/fsm.sh: 2: cannot create /private/tmp/wtprobe.xdhf/marker.log: Permission denied
+  /private/tmp/wtprobe.xdhf/R/wt/evilB/fsm.sh: 2: cannot create /private/tmp/wtprobe.xdhf/marker.log: Permission denied
+  /private/tmp/wtprobe.xdhf/R/wt/evilB/fsm.sh: 2: cannot create /private/tmp/wtprobe.xdhf/marker.log: Permission denied
+  /private/tmp/wtprobe.xdhf/R/wt/evilB/fsm.sh: 2: cannot create /private/tmp/wtprobe.xdhf/marker.log: Permission denied
+  /private/tmp/wtprobe.xdhf/R/wt/evilB/h/pre-commit: 2: cannot create /private/tmp/wtprobe.xdhf/marker.log: Permission denied
+  /private/tmp/wtprobe.xdhf/R/wt/evilB/fsm.sh: 2: cannot create /private/tmp/wtprobe.xdhf/marker.log: Permission denied
+  /private/tmp/wtprobe.xdhf/R/wt/evilB/fsm.sh: 2: cannot create /private/tmp/wtprobe.xdhf/marker.log: Permission denied
+  /private/tmp/wtprobe.xdhf/R/wt/evilB/h/post-commit: 2: cannot create /private/tmp/wtprobe.xdhf/marker.log: Permission denied
+  commit_rc=0
+  2882f87 box-in-evil
+  3a77dc6 c0
+  rc=0
+host$ (cd /private/tmp/wtprobe.xdhf) cat marker.log
+  cat: marker.log: No such file or directory
+  rc=1
+## host Git in the worktree
+host$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) git rev-parse --git-dir --git-common-dir; git status --short
+  /private/tmp/wtprobe.xdhf/R/wt/evilB
+  /private/tmp/wtprobe.xdhf/R/wt/evilB
+  rc=0
+host$ (cd /private/tmp/wtprobe.xdhf) cat marker.log
+  fsmonitor-B ran on Darwin args=2 1794490789982807792
+  fsmonitor-B ran on Darwin args=1 1794490789982807792
+  rc=0
+host$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) echo hostline >> a; git commit -qam host-in-evil; echo commit_rc=$?; git log --oneline
+  commit_rc=0
+  bb30bc0 host-in-evil
+  2882f87 box-in-evil
+  3a77dc6 c0
+  rc=0
+host$ (cd /private/tmp/wtprobe.xdhf) cat marker.log
+  fsmonitor-B ran on Darwin args=2 1794490789982807792
+  fsmonitor-B ran on Darwin args=1 1794490789982807792
+  fsmonitor-B ran on Darwin args=2 1794490790085460000
+  fsmonitor-B ran on Darwin args=1 1794490790085460000
+  pre-commit-B ran on Darwin args=
+  fsmonitor-B ran on Darwin args=2 1794490790418477000
+  fsmonitor-B ran on Darwin args=1 1794490790418477000
+  post-commit-B ran on Darwin args=
+  rc=0
+## where the host commit went
+host$ (cd /private/tmp/wtprobe.xdhf/R) git log --oneline --all; git -C /private/tmp/wtprobe.xdhf/R/wt/x log --oneline -1
+  3a77dc6 c0
+  bb30bc0 host-in-evil
+  rc=0
+## host worktree list and repair
+host$ (cd /private/tmp/wtprobe.xdhf/R) git worktree list; git worktree list --porcelain
+  /private/tmp/wtprobe.xdhf/R      3a77dc6 [main]
+  /private/tmp/wtprobe.xdhf/R/wt/x 3a77dc6 [x]
+  worktree /private/tmp/wtprobe.xdhf/R
+  HEAD 3a77dc6f7ac72e41c9ed1b702ede675b1ac4cdd9
+  branch refs/heads/main
+  
+  worktree /private/tmp/wtprobe.xdhf/R/wt/x
+  HEAD 3a77dc6f7ac72e41c9ed1b702ede675b1ac4cdd9
+  branch refs/heads/x
+  
+  rc=0
+host$ (cd /private/tmp/wtprobe.xdhf/R) git worktree prune --dry-run -v
+  rc=0
+host$ (cd /private/tmp/wtprobe.xdhf/R) git worktree repair; echo repair_rc=$?; cat /private/tmp/wtprobe.xdhf/R/wt/x/.git
+  repair: .git file incorrect: /private/tmp/wtprobe.xdhf/R/wt/x
+  repair_rc=0
+  gitdir: /private/tmp/wtprobe.xdhf/R/.git/worktrees/x
+  rc=0
+host$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) git worktree repair; echo repair_rc=$?; cat /private/tmp/wtprobe.xdhf/R/wt/x/.git
+  repair_rc=0
+  gitdir: /private/tmp/wtprobe.xdhf/R/.git/worktrees/x
+  rc=0
+host$ (cd /private/tmp/wtprobe.xdhf) cat marker.log
+  fsmonitor-B ran on Darwin args=2 1794490789982807792
+  fsmonitor-B ran on Darwin args=1 1794490789982807792
+  fsmonitor-B ran on Darwin args=2 1794490790085460000
+  fsmonitor-B ran on Darwin args=1 1794490790085460000
+  pre-commit-B ran on Darwin args=
+  fsmonitor-B ran on Darwin args=2 1794490790418477000
+  fsmonitor-B ran on Darwin args=1 1794490790418477000
+  post-commit-B ran on Darwin args=
+  rc=0

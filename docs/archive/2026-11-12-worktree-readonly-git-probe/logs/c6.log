@@ -1,0 +1,39 @@
+host$ (cd /private/tmp/wtprobe.xdhf/R) git init -q -b main . && echo a > a && printf 'wt/\n' > .gitignore && git add a .gitignore && git commit -qm c0 && git worktree add -q wt/x -b x && cat wt/x/.git && git worktree list
+  gitdir: /private/tmp/wtprobe.xdhf/R/.git/worktrees/x
+  /private/tmp/wtprobe.xdhf/R      b366891 [main]
+  /private/tmp/wtprobe.xdhf/R/wt/x b366891 [x]
+  rc=0
+host$ (cd /private/tmp/wtprobe.xdhf/R) git worktree add -q /private/tmp/wtprobe.xdhf/side -b side && cat /private/tmp/wtprobe.xdhf/side/.git
+  gitdir: /private/tmp/wtprobe.xdhf/R/.git/worktrees/side
+  rc=0
+host$ container run -d --name wtp6 --user 501:20 -v /private/tmp/wtprobe.xdhf/side:/private/tmp/wtprobe.xdhf/side -v /private/tmp/wtprobe.xdhf/R/.git:/private/tmp/wtprobe.xdhf/R/.git:ro --entrypoint sleep IMAGE infinity
+  rc=0
+box[wtp6]$ (cd /private/tmp/wtprobe.xdhf/side) grep -E ' /private/tmp/wtprobe.xdhf' /proc/self/mountinfo | cut -d' ' -f5,6,9-; ls /private/tmp/wtprobe.xdhf/R
+  /private/tmp/wtprobe.xdhf/side rw,relatime virtiofs rw
+  /private/tmp/wtprobe.xdhf/R/.git ro,relatime virtiofs rw
+  rc=0
+box[wtp6]$ (cd /private/tmp/wtprobe.xdhf/side) git rev-parse --show-toplevel --git-dir --git-common-dir; git status --short --branch; git log --oneline; git worktree list
+  /private/tmp/wtprobe.xdhf/side
+  /private/tmp/wtprobe.xdhf/R/.git/worktrees/side
+  /private/tmp/wtprobe.xdhf/R/.git
+  ## side
+  b366891 c0
+  /private/tmp/wtprobe.xdhf/R       b366891 [main]
+  /private/tmp/wtprobe.xdhf/R/wt/x  b366891 [x] prunable
+  /private/tmp/wtprobe.xdhf/side    b366891 [side]
+  rc=0
+box[wtp6]$ (cd /private/tmp/wtprobe.xdhf/side) echo boxedit >> a; git diff --stat; git status --short
+   a | 1 +
+   1 file changed, 1 insertion(+)
+   M a
+  rc=0
+box[wtp6]$ (cd /private/tmp/wtprobe.xdhf/side) git add a
+  fatal: Unable to create '/private/tmp/wtprobe.xdhf/R/.git/worktrees/side/index.lock': Read-only file system
+  rc=128
+box[wtp6]$ (cd /private/tmp/wtprobe.xdhf/side) git commit -qam box
+  fatal: Unable to create '/private/tmp/wtprobe.xdhf/R/.git/worktrees/side/index.lock': Read-only file system
+  rc=128
+host$ (cd /private/tmp/wtprobe.xdhf/side) git status --short; git log --oneline
+   M a
+  b366891 c0
+  rc=0

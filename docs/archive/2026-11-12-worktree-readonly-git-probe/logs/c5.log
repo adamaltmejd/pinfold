@@ -1,0 +1,57 @@
+host$ (cd /private/tmp/wtprobe.xdhf/R) git init -q -b main . && echo a > a && printf 'wt/\n' > .gitignore && git add a .gitignore && git commit -qm c0 && git worktree add -q wt/x -b x && cat wt/x/.git && git worktree list
+  gitdir: /private/tmp/wtprobe.xdhf/R/.git/worktrees/x
+  /private/tmp/wtprobe.xdhf/R      c5a717e [main]
+  /private/tmp/wtprobe.xdhf/R/wt/x c5a717e [x]
+  rc=0
+host$ container run -d --name wtp5 --user 501:20 -v /private/tmp/wtprobe.xdhf/R:/private/tmp/wtprobe.xdhf/R -v /private/tmp/wtprobe.xdhf/R/.git:/private/tmp/wtprobe.xdhf/R/.git:ro -v /private/tmp/wtprobe.xdhf/R/wt/x/.git:/private/tmp/wtprobe.xdhf/R/wt/x/.git:ro --entrypoint sleep IMAGE infinity
+  rc=0
+  wtp5      localhost/pinfold/profile-default:latest             linux  arm64  running  192.168.64.7/24  4     1024 MB  2026-11-12T13:40:16Z
+box[wtp5]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) grep -E ' /private/tmp/wtprobe.xdhf/R' /proc/self/mountinfo | cut -d' ' -f5,6,9-
+  /private/tmp/wtprobe.xdhf/R rw,relatime virtiofs rw
+  /private/tmp/wtprobe.xdhf/R/.git ro,relatime virtiofs rw
+  /private/tmp/wtprobe.xdhf/R/wt/x/.git ro,relatime virtiofs rw
+  rc=0
+## reads
+box[wtp5]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) git rev-parse --show-toplevel --git-dir; git status --short --branch; git log --oneline; echo boxedit >> a; git diff --stat
+  /private/tmp/wtprobe.xdhf/R/wt/x
+  /private/tmp/wtprobe.xdhf/R/.git/worktrees/x
+  ## x
+  c5a717e c0
+   a | 1 +
+   1 file changed, 1 insertion(+)
+  rc=0
+## replace the .git file
+box[wtp5]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) printf 'gitdir: /nowhere\n' > .git
+  sh: 1: cannot create .git: Read-only file system
+  rc=2
+box[wtp5]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) echo x >> .git
+  sh: 1: cannot create .git: Read-only file system
+  rc=2
+box[wtp5]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) mv .git .git.old
+  mv: cannot move '.git' to '.git.old': Device or resource busy
+  rc=1
+box[wtp5]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) mv a .git
+  mv: cannot move 'a' to '.git': Device or resource busy
+  rc=1
+box[wtp5]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) ln -s /nowhere .git2 && mv -T .git2 .git
+  mv: cannot move '.git2' to '.git': Device or resource busy
+  rc=1
+box[wtp5]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) cat .git
+  gitdir: /private/tmp/wtprobe.xdhf/R/.git/worktrees/x
+  rc=0
+## rename the worktree directory or its parent
+box[wtp5]$ (cd /private/tmp/wtprobe.xdhf/R) mv wt/x wt/x2
+  rc=0
+box[wtp5]$ (cd /private/tmp/wtprobe.xdhf/R) mv wt wt2
+  rc=0
+box[wtp5]$ (cd /private/tmp/wtprobe.xdhf/R) mv /private/tmp/wtprobe.xdhf/R /private/tmp/wtprobe.xdhf/R2
+  mv: cannot move '/private/tmp/wtprobe.xdhf/R' to '/private/tmp/wtprobe.xdhf/R2': Permission denied
+  rc=1
+## a sibling path with its own .git file
+box[wtp5]$ (cd /private/tmp/wtprobe.xdhf/R) mkdir wt/z && cp -r wt/x/. wt/z/ 2>&1 | head -3; printf 'gitdir: /private/tmp/wtprobe.xdhf/R/wt/zgit\n' > wt/z/.git && cat wt/z/.git
+  mkdir: cannot create directory 'wt/z': No such file or directory
+  sh: 1: cannot create wt/z/.git: Directory nonexistent
+  rc=2
+host$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) cat .git; git status --short
+  ./lib.sh: line 18: cd: /private/tmp/wtprobe.xdhf/R/wt/x: No such file or directory
+  rc=1
