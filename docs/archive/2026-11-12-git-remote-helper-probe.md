@@ -19,8 +19,10 @@ Files in `2026-11-12-git-remote-helper-probe/`:
 - `git-remote-pinfoldconnect`: a ten-line `connect` helper, for comparison.
 - `craft.py`: rewrites bundle headers for the hostile cases.
 - `run.sh TEMP`: every simulated case, in order, from fresh repositories.
-  Run twice; the two `cases.log` were identical apart from random temp
-  file names.
+  Before the O cases were added, two runs gave identical `cases.log`
+  files apart from random temp file names. The final version ran once,
+  and its log matched the earlier one outside the O and N-early-blank
+  cases.
 - `e2e.sh TEMP BINARY`: the two real-box fetches.
 - `scrub.sh TEMP`: replaces temp paths (`TMP`, `SYSTMP`) and the account
   name (`user`) in the logs, run after the drivers.
