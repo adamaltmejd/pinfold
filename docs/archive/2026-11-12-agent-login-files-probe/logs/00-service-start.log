@@ -1,0 +1,37 @@
+$ container system start --disable-kernel-install
+Launching container-apiserver...
+Testing access to container-apiserver...
+Verifying machine API server is running...
+[exit 0]
+$ container system status
+FIELD               VALUE
+status              running
+client.version      1.7.1
+client.build        release
+client.commit       unspecified
+host.os             Version 27.2.1 (Build 26B131)
+host.architecture   arm64
+host.cpus           10
+server.version      1.7.1
+server.build        release
+server.commit       unspecified
+server.appName      container-apiserver
+paths.appRoot       /Users/user/Library/Application Support/com.apple.container/
+paths.installRoot   /opt/homebrew/Cellar/container/1.7.1_1/
+paths.logRoot       
+containers.total    1
+containers.running  0
+images.total        10
+$ container image list
+NAME                                          TAG                     DIGEST
+debian                                        trixie-slim             a72b4433de1c
+ghcr.io/apple/container-builder-shim/builder  0.13.2                  ca27b4f564f2
+ghcr.io/apple/containerization/vminit         0.53.0                  526b1bf414a1
+localhost/pinfold/profile-default             18e57c1d4022b190-58537  ab6b6a86fab2
+localhost/pinfold/profile-default             18e5870956aadf68-5967   ae6f1273f183
+localhost/pinfold/profile-default             latest                  ae6f1273f183
+localhost/pinfold/profile-full                18e6b5fb6aa373c8-83193  a7aabf4589a0
+localhost/pinfold/profile-full                latest                  a7aabf4589a0
+$ container list --all
+ID        IMAGE                                                OS     ARCH   STATE    IP  CPUS  MEMORY   STARTED
+buildkit  ghcr.io/apple/container-builder-shim/builder:0.13.3  linux  arm64  stopped      2     2048 MB  

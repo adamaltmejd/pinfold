@@ -1,0 +1,39 @@
+== spec
+{"name": "plp-claude-key-boxwide", "image": "localhost/pinfold/profile-default:latest", "harnesses": ["pi", "claude", "codex"], "mounts": [{"host": "/Users/user/code/pinfold/.claude/worktrees/login-probe/docs/archive/2026-11-12-agent-login-files-probe/files/claude-managed", "guest": "/etc/claude-code"}], "disks": [{"name": "plp-claude-key-boxwide-home", "guest": "/home/pi"}, {"name": "plp-claude-key-boxwide-work", "guest": "/work"}], "env": {"HOME": "/home/pi", "PI_TELEMETRY": "0", "PI_SKIP_VERSION_CHECK": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "ANTHROPIC_API_KEY": "pinfold-placeholder"}, "egress": {"allow": [], "routes": {"claude": {"to": "http://127.0.0.1:18771", "headers": {"Authorization": {"from": "FAKE_CLAUDE_TOKEN", "prefix": "Bearer "}}}, "anthropic": {"to": "http://127.0.0.1:18772", "headers": {"x-api-key": {"from": "FAKE_PI_KEY"}}}, "codex": {"to": "http://127.0.0.1:18773", "headers": {"Authorization": {"from": "FAKE_CODEX_TOKEN", "prefix": "Bearer "}, "ChatGPT-Account-ID": {"from": "FAKE_CODEX_ACCOUNT"}}}, "raw": "127.0.0.1:18774"}}, "cpus": 2, "memory": "4G"}
+
+-- up plp-claude-key-boxwide:
+{"box":"plp-claude-key-boxwide","egress_log":"/tmp/plp.1Kel/state/pinfold/runs/a1056b5a7ea397b55009862d9234309c1a8ba81092347f71113d00320ade2fe6/egress.jsonl","event":"ready","image":{"id":"ae6f1273f1836a19225b840e0f8de4350ba667c04d77c2e0379269c863cfca71","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"219a537cd424e4188e5bfeb292740edb02f2baec485b9f2ff87163c192300dbb","dev.pinfold.generation":"a1056b5a7ea397b55009862d9234309c1a8ba81092347f71113d00320ade2fe6","dev.pinfold.owner":"34392","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":34392,"run_id":"a1056b5a7ea397b55009862d9234309c1a8ba81092347f71113d00320ade2fe6"}
+== box env
+ANTHROPIC_API_KEY=pinfold-placeholder
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+HOME=/home/pi
+HTTPS_PROXY=http://127.0.0.1:3128
+NODE_USE_ENV_PROXY=1
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PINFOLD_ALLOW=
+PI_SKIP_VERSION_CHECK=1
+PI_TELEMETRY=0
+SSH_AUTH_SOCK=/var/host-services/ssh-auth.sock
+http_proxy=http://127.0.0.1:3128
+== mounts
+total 4
+drwxr-xr-x 3 root root    96 Nov 12 13:53 .
+-rw-r--r-- 1  501 dialout 95 Nov 12 13:53 managed-settings.json
+--- /etc/claude-code/managed-settings.json
+{"env":{"ANTHROPIC_BASE_URL":"http://claude","CLAUDE_CODE_OAUTH_TOKEN":"pinfold-placeholder"}}
+touch: cannot touch '/etc/claude-code/write-probe': Read-only file system
+== claude, managed settings, box-wide ANTHROPIC_API_KEY
+$ box exec plp-claude-key-boxwide -- sh -c 'cd /work && timeout 120 /opt/pinfold/claude/claude -p "say hi"'
+API Error: 400 fixture
+[exit 1]
+-- fake 18771 saw:
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "127.0.0.1:18771", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder", "authorization": "Bearer FAKE-claude-token"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "127.0.0.1:18771", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder", "authorization": "Bearer FAKE-claude-token"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "127.0.0.1:18771", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder", "authorization": "Bearer FAKE-claude-token"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "127.0.0.1:18771", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder", "authorization": "Bearer FAKE-claude-token"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "127.0.0.1:18771", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder", "authorization": "Bearer FAKE-claude-token"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "127.0.0.1:18771", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder", "authorization": "Bearer FAKE-claude-token"}}
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold box down plp-claude-key-boxwide
+[exit 0]
+-- up plp-claude-key-boxwide ended:
+{"box":"plp-claude-key-boxwide","event":"down","reason":"signal","run_id":"a1056b5a7ea397b55009862d9234309c1a8ba81092347f71113d00320ade2fe6"}

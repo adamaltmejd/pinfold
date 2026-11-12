@@ -1,0 +1,20 @@
+== spec
+{"name": "plp-claude-key-boxwide-raw", "image": "localhost/pinfold/profile-default:latest", "harnesses": ["pi", "claude", "codex"], "mounts": [{"host": "/Users/user/code/pinfold/.claude/worktrees/login-probe/docs/archive/2026-11-12-agent-login-files-probe/files/claude-managed-raw", "guest": "/etc/claude-code"}], "disks": [{"name": "plp-claude-key-boxwide-raw-home", "guest": "/home/pi"}, {"name": "plp-claude-key-boxwide-raw-work", "guest": "/work"}], "env": {"HOME": "/home/pi", "PI_TELEMETRY": "0", "PI_SKIP_VERSION_CHECK": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "ANTHROPIC_API_KEY": "pinfold-placeholder"}, "egress": {"allow": [], "routes": {"claude": {"to": "http://127.0.0.1:18771", "headers": {"Authorization": {"from": "FAKE_CLAUDE_TOKEN", "prefix": "Bearer "}}}, "anthropic": {"to": "http://127.0.0.1:18772", "headers": {"x-api-key": {"from": "FAKE_PI_KEY"}}}, "codex": {"to": "http://127.0.0.1:18773", "headers": {"Authorization": {"from": "FAKE_CODEX_TOKEN", "prefix": "Bearer "}, "ChatGPT-Account-ID": {"from": "FAKE_CODEX_ACCOUNT"}}}, "raw": "127.0.0.1:18774"}}, "cpus": 2, "memory": "4G"}
+
+-- up plp-claude-key-boxwide-raw:
+{"box":"plp-claude-key-boxwide-raw","egress_log":"/tmp/plp.1Kel/state/pinfold/runs/5f7b8128a88d7f9864b7baf9231e8ffb588542d7260aa0d96a471dfd087d5da8/egress.jsonl","event":"ready","image":{"id":"ae6f1273f1836a19225b840e0f8de4350ba667c04d77c2e0379269c863cfca71","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"219a537cd424e4188e5bfeb292740edb02f2baec485b9f2ff87163c192300dbb","dev.pinfold.generation":"5f7b8128a88d7f9864b7baf9231e8ffb588542d7260aa0d96a471dfd087d5da8","dev.pinfold.owner":"34649","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":34649,"run_id":"5f7b8128a88d7f9864b7baf9231e8ffb588542d7260aa0d96a471dfd087d5da8"}
+== claude, raw route, box-wide ANTHROPIC_API_KEY
+$ box exec plp-claude-key-boxwide-raw -- sh -c 'cd /work && timeout 120 /opt/pinfold/claude/claude -p "say hi"'
+API Error: 400 fixture
+[exit 1]
+-- fake 18774 saw:
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder"}}
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold box down plp-claude-key-boxwide-raw
+[exit 0]
+-- up plp-claude-key-boxwide-raw ended:
+{"box":"plp-claude-key-boxwide-raw","event":"down","reason":"signal","run_id":"5f7b8128a88d7f9864b7baf9231e8ffb588542d7260aa0d96a471dfd087d5da8"}

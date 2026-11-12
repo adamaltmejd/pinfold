@@ -1,0 +1,17 @@
+$ container list --all
+ID        IMAGE                                                OS     ARCH   STATE    IP  CPUS  MEMORY   STARTED
+buildkit  ghcr.io/apple/container-builder-shim/builder:0.13.3  linux  arm64  stopped      2     2048 MB  
+$ container system stop
+2026-11-12T15:03:26+0100 info com.apple.container.cli: [ContainerCommands] checking if APIServer is alive
+2026-11-12T15:03:26+0100 info com.apple.container.cli: stopTimeoutSeconds=5 [ContainerCommands] stopping containers
+buildkit
+2026-11-12T15:03:26+0100 info com.apple.container.cli: [ContainerCommands] waiting for containers to exit
+2026-11-12T15:03:26+0100 info com.apple.container.cli: label=gui/501/com.apple.container.apiserver [ContainerCommands] stopping service
+2026-11-12T15:03:26+0100 info com.apple.container.cli: label=gui/501/com.apple.container.container-network-vmnet.default [ContainerCommands] stopping service
+2026-11-12T15:03:26+0100 info com.apple.container.cli: label=gui/501/com.apple.container.container-core-images [ContainerCommands] stopping service
+2026-11-12T15:03:26+0100 info com.apple.container.cli: label=gui/501/com.apple.container.container-core-clusters [ContainerCommands] stopping service
+2026-11-12T15:03:26+0100 info com.apple.container.cli: label=gui/501/com.apple.container.cluster-hoststore [ContainerCommands] stopping service
+2026-11-12T15:03:26+0100 info com.apple.container.cli: label=gui/501/com.apple.container.machine-apiserver [ContainerCommands] stopping service
+[exit 0]
+$ rm -rf <T>
+[exit 0]

@@ -1,0 +1,31 @@
+== spec
+{"name": "plp-claude-managed-raw", "image": "localhost/pinfold/profile-default:latest", "harnesses": ["pi", "claude", "codex"], "mounts": [{"host": "/Users/user/code/pinfold/.claude/worktrees/login-probe/docs/archive/2026-11-12-agent-login-files-probe/files/claude-managed-raw", "guest": "/etc/claude-code"}], "disks": [{"name": "plp-claude-managed-raw-home", "guest": "/home/pi"}, {"name": "plp-claude-managed-raw-work", "guest": "/work"}], "env": {"HOME": "/home/pi", "PI_TELEMETRY": "0", "PI_SKIP_VERSION_CHECK": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}, "egress": {"allow": [], "routes": {"claude": {"to": "http://127.0.0.1:18771", "headers": {"Authorization": {"from": "FAKE_CLAUDE_TOKEN", "prefix": "Bearer "}}}, "anthropic": {"to": "http://127.0.0.1:18772", "headers": {"x-api-key": {"from": "FAKE_PI_KEY"}}}, "codex": {"to": "http://127.0.0.1:18773", "headers": {"Authorization": {"from": "FAKE_CODEX_TOKEN", "prefix": "Bearer "}, "ChatGPT-Account-ID": {"from": "FAKE_CODEX_ACCOUNT"}}}, "raw": "127.0.0.1:18774"}}, "cpus": 2, "memory": "4G"}
+
+-- up plp-claude-managed-raw:
+{"box":"plp-claude-managed-raw","egress_log":"/tmp/plp.1Kel/state/pinfold/runs/f4839b759980c6cf2f9b6dc71e3e363103b7db92c7a27e7848f92bc6e5edb5f8/egress.jsonl","event":"ready","image":{"id":"ae6f1273f1836a19225b840e0f8de4350ba667c04d77c2e0379269c863cfca71","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"219a537cd424e4188e5bfeb292740edb02f2baec485b9f2ff87163c192300dbb","dev.pinfold.generation":"f4839b759980c6cf2f9b6dc71e3e363103b7db92c7a27e7848f92bc6e5edb5f8","dev.pinfold.owner":"34152","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":34152,"run_id":"f4839b759980c6cf2f9b6dc71e3e363103b7db92c7a27e7848f92bc6e5edb5f8"}
+== claude, managed settings to the raw route
+$ box exec plp-claude-managed-raw -- sh -c 'cd /work && timeout 120 /opt/pinfold/claude/claude -p "say hi"'
+API Error: 400 fixture
+[exit 1]
+-- fake 18774 saw:
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "authorization": "Bearer pinfold-placeholder", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "authorization": "Bearer pinfold-placeholder", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "authorization": "Bearer pinfold-placeholder", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "authorization": "Bearer pinfold-placeholder", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "authorization": "Bearer pinfold-placeholder", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "authorization": "Bearer pinfold-placeholder", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)"}}
+== claude, raw route, ANTHROPIC_API_KEY in its env
+$ box exec plp-claude-managed-raw -- sh -c 'cd /work && ANTHROPIC_API_KEY=pinfold-placeholder timeout 120 /opt/pinfold/claude/claude -p "say hi"'
+API Error: 400 fixture
+[exit 1]
+-- fake 18774 saw:
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "x-api-key": "pinfold-placeholder"}}
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold box down plp-claude-managed-raw
+[exit 0]
+-- up plp-claude-managed-raw ended:
+{"box":"plp-claude-managed-raw","event":"down","reason":"signal","run_id":"f4839b759980c6cf2f9b6dc71e3e363103b7db92c7a27e7848f92bc6e5edb5f8"}

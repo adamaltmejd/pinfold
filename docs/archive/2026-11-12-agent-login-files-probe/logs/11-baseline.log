@@ -1,0 +1,87 @@
+== spec
+{"name": "plp-baseline", "image": "localhost/pinfold/profile-default:latest", "harnesses": ["pi", "claude", "codex"], "mounts": [], "disks": [{"name": "plp-baseline-home", "guest": "/home/pi"}, {"name": "plp-baseline-work", "guest": "/work"}], "env": {"HOME": "/home/pi", "PI_TELEMETRY": "0", "PI_SKIP_VERSION_CHECK": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}, "egress": {"allow": [], "routes": {"claude": {"to": "http://127.0.0.1:18771", "headers": {"Authorization": {"from": "FAKE_CLAUDE_TOKEN", "prefix": "Bearer "}}}, "anthropic": {"to": "http://127.0.0.1:18772", "headers": {"x-api-key": {"from": "FAKE_PI_KEY"}}}, "codex": {"to": "http://127.0.0.1:18773", "headers": {"Authorization": {"from": "FAKE_CODEX_TOKEN", "prefix": "Bearer "}, "ChatGPT-Account-ID": {"from": "FAKE_CODEX_ACCOUNT"}}}, "raw": "127.0.0.1:18774"}}, "cpus": 2, "memory": "4G"}
+
+-- up plp-baseline:
+{"box":"plp-baseline","egress_log":"/tmp/plp.1Kel/state/pinfold/runs/5e2b17b434093549f4ac64a4278c0ae31bfc119a1354cb8c25843453e46011b5/egress.jsonl","event":"ready","image":{"id":"ae6f1273f1836a19225b840e0f8de4350ba667c04d77c2e0379269c863cfca71","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"219a537cd424e4188e5bfeb292740edb02f2baec485b9f2ff87163c192300dbb","dev.pinfold.generation":"5e2b17b434093549f4ac64a4278c0ae31bfc119a1354cb8c25843453e46011b5","dev.pinfold.owner":"31646","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":31646,"run_id":"5e2b17b434093549f4ac64a4278c0ae31bfc119a1354cb8c25843453e46011b5"}
+== versions
+1.5.2
+2.1.322 (Claude Code)
+codex-cli 0.167.1
+== box env
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+HOME=/home/pi
+HTTPS_PROXY=http://127.0.0.1:3128
+NODE_USE_ENV_PROXY=1
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PINFOLD_ALLOW=
+PI_SKIP_VERSION_CHECK=1
+PI_TELEMETRY=0
+SSH_AUTH_SOCK=/var/host-services/ssh-auth.sock
+http_proxy=http://127.0.0.1:3128
+== mounts
+== pi, no login file
+$ box exec plp-baseline -- sh -c 'cd /work && timeout 120 /opt/pinfold/pi/pi -p "say hi" --provider anthropic --model sonnet'
+No API key found for anthropic.
+
+Use /login to log into a provider via OAuth or API key. See:
+  /opt/pinfold/pi/docs/providers.md
+  /opt/pinfold/pi/docs/models.md
+[exit 1]
+== claude, no login file
+$ box exec plp-baseline -- sh -c 'cd /work && timeout 120 /opt/pinfold/claude/claude -p "say hi"'
+Not logged in · Please run /login
+[exit 1]
+== codex, no login file
+$ box exec plp-baseline -- sh -c 'cd /work && timeout 60 /opt/pinfold/codex/codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "say hi"'
+2026-11-12T14:00:15.732234Z ERROR codex_api::endpoint::responses_websocket: failed to connect to Responses WebSocket stage=Unknown
+2026-11-12T14:00:15.956504Z ERROR codex_api::endpoint::responses_websocket: failed to connect to Responses WebSocket stage=Unknown
+ERROR: Reconnecting... 2/5
+2026-11-12T14:00:16.335855Z ERROR codex_api::endpoint::responses_websocket: failed to connect to Responses WebSocket stage=Unknown
+ERROR: Reconnecting... 3/5
+2026-11-12T14:00:17.182544Z ERROR codex_api::endpoint::responses_websocket: failed to connect to Responses WebSocket stage=Unknown
+ERROR: Reconnecting... 4/5
+2026-11-12T14:00:18.757657Z ERROR codex_api::endpoint::responses_websocket: failed to connect to Responses WebSocket stage=Unknown
+ERROR: Reconnecting... 5/5
+2026-11-12T14:00:22.275474Z ERROR codex_api::endpoint::responses_websocket: failed to connect to Responses WebSocket stage=Unknown
+warning: Falling back from WebSockets to HTTPS transport. stream disconnected before completion: URL error: Proxy connection failed: HTTP CONNECT failed with status 403
+ERROR: Reconnecting... waiting for network
+ERROR: Reconnecting... waiting for network
+ERROR: Reconnecting... waiting for network
+ERROR: Reconnecting... waiting for network
+[exit 124]
+-- egress log of run 5e2b17b434093549f4ac64a4278c0ae31bfc119a1354cb8c25843453e46011b5:
+{"decision":"refused","host":"chatgpt.com","reason":"not allowlisted","time":"2026-11-12T14:00:15Z"}
+{"decision":"refused","host":"github.com","reason":"not allowlisted","time":"2026-11-12T14:00:15Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:16Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:16Z"}
+{"decision":"refused","host":"api.github.com","reason":"not allowlisted","time":"2026-11-12T14:00:16Z"}
+{"decision":"refused","host":"chatgpt.com","reason":"not allowlisted","time":"2026-11-12T14:00:16Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:16Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:16Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:17Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:19Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:22Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:22Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:22Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:23Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:24Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:25Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:30Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:30Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:31Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:32Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:33Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:43Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:43Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:44Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:45Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:00:46Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:01:06Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:01:07Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:01:07Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:01:08Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-12T14:01:09Z"}
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold box down plp-baseline
+[exit 0]
+-- up plp-baseline ended:
+{"box":"plp-baseline","event":"down","reason":"signal","run_id":"5e2b17b434093549f4ac64a4278c0ae31bfc119a1354cb8c25843453e46011b5"}

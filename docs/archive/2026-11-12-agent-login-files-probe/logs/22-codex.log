@@ -1,0 +1,120 @@
+== spec
+{"name": "plp-codex", "image": "localhost/pinfold/profile-default:latest", "harnesses": ["pi", "claude", "codex"], "mounts": [{"host": "/Users/user/code/pinfold/.claude/worktrees/login-probe/docs/archive/2026-11-12-agent-login-files-probe/files/codex", "guest": "/etc/codex"}], "disks": [{"name": "plp-codex-home", "guest": "/home/pi"}, {"name": "plp-codex-work", "guest": "/work"}], "env": {"HOME": "/home/pi", "PI_TELEMETRY": "0", "PI_SKIP_VERSION_CHECK": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}, "egress": {"allow": [], "routes": {"claude": {"to": "http://127.0.0.1:18771", "headers": {"Authorization": {"from": "FAKE_CLAUDE_TOKEN", "prefix": "Bearer "}}}, "anthropic": {"to": "http://127.0.0.1:18772", "headers": {"x-api-key": {"from": "FAKE_PI_KEY"}}}, "codex": {"to": "http://127.0.0.1:18773", "headers": {"Authorization": {"from": "FAKE_CODEX_TOKEN", "prefix": "Bearer "}, "ChatGPT-Account-ID": {"from": "FAKE_CODEX_ACCOUNT"}}}, "raw": "127.0.0.1:18774"}}, "cpus": 2, "memory": "4G"}
+
+-- up plp-codex:
+{"box":"plp-codex","egress_log":"/tmp/plp.1Kel/state/pinfold/runs/fa9df34c3acacda954855c9827f0d3163997e9f34f9873f2bd7ec8881eaaa03b/egress.jsonl","event":"ready","image":{"id":"ae6f1273f1836a19225b840e0f8de4350ba667c04d77c2e0379269c863cfca71","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"219a537cd424e4188e5bfeb292740edb02f2baec485b9f2ff87163c192300dbb","dev.pinfold.generation":"fa9df34c3acacda954855c9827f0d3163997e9f34f9873f2bd7ec8881eaaa03b","dev.pinfold.owner":"35067","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":35067,"run_id":"fa9df34c3acacda954855c9827f0d3163997e9f34f9873f2bd7ec8881eaaa03b"}
+== box env
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+HOME=/home/pi
+HTTPS_PROXY=http://127.0.0.1:3128
+NODE_USE_ENV_PROXY=1
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PINFOLD_ALLOW=
+PI_SKIP_VERSION_CHECK=1
+PI_TELEMETRY=0
+SSH_AUTH_SOCK=/var/host-services/ssh-auth.sock
+http_proxy=http://127.0.0.1:3128
+== mounts
+total 4
+drwxr-xr-x 3 root root     96 Nov 12 13:53 .
+-rw-r--r-- 1  501 dialout 167 Nov 12 13:53 config.toml
+--- /etc/codex/config.toml
+model_provider = "pinfold"
+
+[model_providers.pinfold]
+name = "pinfold"
+base_url = "http://codex/backend-api/codex"
+wire_api = "responses"
+requires_openai_auth = false
+touch: cannot touch '/etc/codex/write-probe': Read-only file system
+== codex, /etc/codex/config.toml
+$ box exec plp-codex -- sh -c 'cd /work && timeout 60 /opt/pinfold/codex/codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "say hi"'
+OpenAI Codex v0.167.1
+--------
+workdir: /work
+model: gpt-6.1-sol
+provider: pinfold
+approval: never
+sandbox: danger-full-access
+reasoning effort: none
+reasoning summaries: none
+session id: 01a1d010-c174-7ab2-9c63-2f0daaad3960
+--------
+user
+say hi
+ERROR: {"type":"error","error":{"type":"invalid_request_error","message":"fixture"}}
+ERROR: {"type":"error","error":{"type":"invalid_request_error","message":"fixture"}}
+[exit 1]
+-- fake 18773 saw:
+{"method": "POST", "path": "/backend-api/codex/responses", "headers": {"host": "127.0.0.1:18773", "user-agent": "codex_exec/0.167.1 (Debian 13.0.0; aarch64) unknown (codex_exec; 0.167.1)", "authorization": "Bearer FAKE-codex-token", "chatgpt-account-id": "FAKE-codex-account"}}
+-- egress log of run fa9df34c3acacda954855c9827f0d3163997e9f34f9873f2bd7ec8881eaaa03b:
+{"decision":"refused","host":"github.com","reason":"not allowlisted","time":"2026-11-12T14:02:01Z"}
+{"decision":"refused","host":"chatgpt.com","reason":"not allowlisted","time":"2026-11-12T14:02:01Z"}
+{"decision":"refused","host":"api.github.com","reason":"not allowlisted","time":"2026-11-12T14:02:01Z"}
+{"decision":"refused","host":"chatgpt.com","reason":"not allowlisted","time":"2026-11-12T14:02:01Z"}
+{"decision":"allowed","host":"codex","method":"POST","path":"/backend-api/codex/responses","reason":"route","status":400,"time":"2026-11-12T14:02:01Z"}
+== files the agents wrote under HOME and /work
+/home/pi/.codex/.sandbox_migration
+/home/pi/.codex/.tmp/plugins.sync.lock
+/home/pi/.codex/goals_1.sqlite
+/home/pi/.codex/goals_1.sqlite-shm
+/home/pi/.codex/goals_1.sqlite-wal
+/home/pi/.codex/installation_id
+/home/pi/.codex/logs_2.sqlite
+/home/pi/.codex/logs_2.sqlite-shm
+/home/pi/.codex/logs_2.sqlite-wal
+/home/pi/.codex/memories_1.sqlite
+/home/pi/.codex/memories_1.sqlite-shm
+/home/pi/.codex/memories_1.sqlite-wal
+/home/pi/.codex/queue_1.sqlite
+/home/pi/.codex/queue_1.sqlite-shm
+/home/pi/.codex/queue_1.sqlite-wal
+/home/pi/.codex/sessions/2026/11/12/rollout-2026-11-12T14-02-01-01a1d010-c174-7ab2-9c63-2f0daaad3960.jsonl
+/home/pi/.codex/skills/.system/.codex-system-skills.marker
+/home/pi/.codex/skills/.system/imagegen/LICENSE.txt
+/home/pi/.codex/skills/.system/imagegen/SKILL.md
+/home/pi/.codex/skills/.system/imagegen/agents/openai.yaml
+/home/pi/.codex/skills/.system/imagegen/assets/imagegen-small.svg
+/home/pi/.codex/skills/.system/imagegen/assets/imagegen.png
+/home/pi/.codex/skills/.system/imagegen/references/cli.md
+/home/pi/.codex/skills/.system/imagegen/references/codex-network.md
+/home/pi/.codex/skills/.system/imagegen/references/image-api.md
+/home/pi/.codex/skills/.system/imagegen/references/prompting.md
+/home/pi/.codex/skills/.system/imagegen/references/sample-prompts.md
+/home/pi/.codex/skills/.system/imagegen/scripts/image_gen.py
+/home/pi/.codex/skills/.system/imagegen/scripts/remove_chroma_key.py
+/home/pi/.codex/skills/.system/openai-docs/LICENSE.txt
+/home/pi/.codex/skills/.system/openai-docs/SKILL.md
+/home/pi/.codex/skills/.system/openai-docs/agents/openai.yaml
+/home/pi/.codex/skills/.system/openai-docs/assets/openai-small.svg
+/home/pi/.codex/skills/.system/openai-docs/assets/openai.png
+/home/pi/.codex/skills/.system/openai-docs/references/codex-self-knowledge.md
+/home/pi/.codex/skills/.system/openai-docs/references/latest-model.md
+/home/pi/.codex/skills/.system/openai-docs/references/mcp-diagnostics.md
+/home/pi/.codex/skills/.system/openai-docs/references/model-migration.md
+/home/pi/.codex/skills/.system/openai-docs/references/model-selection.md
+/home/pi/.codex/skills/.system/openai-docs/references/official-docs.md
+/home/pi/.codex/skills/.system/openai-docs/references/prompting-guide.md
+/home/pi/.codex/skills/.system/openai-docs/references/upgrade-guide.md
+/home/pi/.codex/skills/.system/openai-docs/references/upgrading-to-gpt-6-astra.md
+/home/pi/.codex/skills/.system/openai-docs/scripts/fetch-codex-manual.mjs
+/home/pi/.codex/skills/.system/openai-docs/scripts/resolve-latest-model-info
+/home/pi/.codex/skills/.system/openai-docs/scripts/resolve-latest-model-info.cjs
+/home/pi/.codex/skills/.system/review-agent/SKILL.md
+/home/pi/.codex/skills/.system/review-agent/agents/openai.yaml
+/home/pi/.codex/skills/.system/skill-creator/SKILL.md
+/home/pi/.codex/skills/.system/skill-creator/agents/openai.yaml
+/home/pi/.codex/skills/.system/skill-creator/assets/skill-creator-small.svg
+/home/pi/.codex/skills/.system/skill-creator/assets/skill-creator.png
+/home/pi/.codex/skills/.system/skill-creator/license.txt
+/home/pi/.codex/skills/.system/skill-creator/references/openai_yaml.md
+/home/pi/.codex/skills/.system/skill-creator/scripts/generate_openai_yaml.py
+/home/pi/.codex/skills/.system/skill-creator/scripts/init_skill.py
+/home/pi/.codex/skills/.system/skill-creator/scripts/quick_validate.py
+/home/pi/.codex/skills/.system/skill-installer/LICENSE.txt
+/home/pi/.codex/skills/.system/skill-installer/SKILL.md
+/home/pi/.codex/skills/.system/skill-installer/agents/openai.yaml
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold box down plp-codex
+[exit 0]
+-- up plp-codex ended:
+{"box":"plp-codex","event":"down","reason":"signal","run_id":"fa9df34c3acacda954855c9827f0d3163997e9f34f9873f2bd7ec8881eaaa03b"}

@@ -1,0 +1,15 @@
+== spec
+{"name": "plp-pi-ext-raw", "image": "localhost/pinfold/profile-default:latest", "harnesses": ["pi", "claude", "codex"], "mounts": [{"host": "/Users/user/code/pinfold/.claude/worktrees/login-probe/docs/archive/2026-11-12-agent-login-files-probe/files/pi-ext-raw", "guest": "/opt/plp"}], "disks": [{"name": "plp-pi-ext-raw-home", "guest": "/home/pi"}, {"name": "plp-pi-ext-raw-work", "guest": "/work"}], "env": {"HOME": "/home/pi", "PI_TELEMETRY": "0", "PI_SKIP_VERSION_CHECK": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}, "egress": {"allow": [], "routes": {"claude": {"to": "http://127.0.0.1:18771", "headers": {"Authorization": {"from": "FAKE_CLAUDE_TOKEN", "prefix": "Bearer "}}}, "anthropic": {"to": "http://127.0.0.1:18772", "headers": {"x-api-key": {"from": "FAKE_PI_KEY"}}}, "codex": {"to": "http://127.0.0.1:18773", "headers": {"Authorization": {"from": "FAKE_CODEX_TOKEN", "prefix": "Bearer "}, "ChatGPT-Account-ID": {"from": "FAKE_CODEX_ACCOUNT"}}}, "raw": "127.0.0.1:18774"}}, "cpus": 2, "memory": "4G"}
+
+-- up plp-pi-ext-raw:
+{"box":"plp-pi-ext-raw","egress_log":"/tmp/plp.1Kel/state/pinfold/runs/d97f2789e0b32aabfa6e3dc5e7e277e4087ffeee9ed550589364a40c28c73df4/egress.jsonl","event":"ready","image":{"id":"ae6f1273f1836a19225b840e0f8de4350ba667c04d77c2e0379269c863cfca71","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"219a537cd424e4188e5bfeb292740edb02f2baec485b9f2ff87163c192300dbb","dev.pinfold.generation":"d97f2789e0b32aabfa6e3dc5e7e277e4087ffeee9ed550589364a40c28c73df4","dev.pinfold.owner":"33480","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":33480,"run_id":"d97f2789e0b32aabfa6e3dc5e7e277e4087ffeee9ed550589364a40c28c73df4"}
+== pi, settings.json names the extension to the raw route
+$ box exec plp-pi-ext-raw -- sh -c 'cd /work && timeout 120 /opt/pinfold/pi/pi -p "say hi" --provider anthropic --model sonnet'
+400 {"type":"error","error":{"type":"invalid_request_error","message":"fixture"}}
+[exit 1]
+-- fake 18774 saw:
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "raw", "user-agent": "pi/1.5.2 (linux; bun/1.4.4; arm64)", "x-api-key": "pinfold-placeholder"}}
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold box down plp-pi-ext-raw
+[exit 0]
+-- up plp-pi-ext-raw ended:
+{"box":"plp-pi-ext-raw","event":"down","reason":"signal","run_id":"d97f2789e0b32aabfa6e3dc5e7e277e4087ffeee9ed550589364a40c28c73df4"}
