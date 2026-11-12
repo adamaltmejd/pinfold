@@ -56,14 +56,21 @@ keep every check today's fetch makes on the box's bytes:
 A bundle the helper rejects leaves no object and no ref. That held in
 every hostile case the helper rejected.
 
-The helper cannot keep the single ref transaction. Git writes the refs
-after the helper returns. A box can make that write fail by renaming
+The single ref transaction is the open cost. When Git writes the refs
+after the helper returns, a box can make that write fail by renaming
 branches, a D/F conflict. Without `--atomic` the update is then partial.
 With `--atomic` no ref moves, but the objects have already moved into
-the repository. A helper preflight can catch such a failure first. It
-prepares and aborts the same `update-ref` transaction against the
-quarantine. It caught both kinds of failure tried, but it only narrows
-the window.
+the repository. Two helper-side fixes were tried:
+
+- **A preflight.** The helper prepares and aborts the same `update-ref`
+  transaction against the quarantine. It caught both kinds of failure
+  tried, but it only narrows the window.
+- **The helper writing the refs itself.** It runs today's transaction:
+  prepare, move the packs, commit, then answer `fetch`. That kept the
+  D/F case all-or-nothing, objects included, with or without
+  `--atomic`. But Git then failed its own update of every existing ref
+  with "is at NEW but expected OLD", exit 1, though the ref was right.
+  So it works as a transaction and fails as a user interface.
 
 The helper sees configured refspecs and can refuse them. It cannot see a
 command-line refspec. `git fetch box main:other` wrote `refs/heads/other`,
@@ -80,19 +87,23 @@ tree entry straight into the object store.
   lines (`helper-F0-baseline.log`). The helper made the objects present:
   its quarantined packs were moved in at `fetch`. Git then wrote
   `refs/remotes/box/main` ("`* [new branch]      main       -> box/main`").
-  Git sent no `fetch` command at all when the objects were already
-  present (`helper-N-*-checks-off.log`, where the unchecked helper had
-  unbundled during `list`).
+  Git then ran its own connectivity check: when a desynchronised helper
+  answered `fetch` before writing anything (N-early-blank, checks off),
+  Git failed with "`error: pinfold::sim did not send all necessary
+  objects`".
 - **connect** (C1, `-c fetch.fsckObjects` unset). Host Git spoke the pack
   protocol to `git upload-pack` on the box repository. It wrote the
   objects and refs itself:
-  - The malformed commit landed: `> ./58/a90eb1c08faeefd7bc75eb6baf571937f3a848`.
-  - The host's fsck then failed: "`error in commit 58a90eb…: missingEmail`",
-    `fsck-exit=1`.
+  - The malformed commit landed as the loose object
+    `./58/a90eb1c08faeefd7bc75eb6baf571937f3a848`.
+  - The host's fsck then failed: "`error in commit
+    58a90eb1c08faeefd7bc75eb6baf571937f3a848: missingEmail: invalid
+    author/committer line - missing email`", `fsck-exit=1`.
   - Git also created `refs/remotes/conn/HEAD`.
 
   C3: a tree with a `.git` entry landed, and fsck printed "`warning in
-  tree 4baa8f40…: hasDotgit: contains '.git'`". C2, with
+  tree 4baa8f401b7d47a8d3a15de3438e5e1c447c0fb4: hasDotgit: contains
+  '.git'`". C2, with
   `fetch.fsckObjects=true`: refused, "`fatal: fsck error in packed
   object`", exit=128. That run still left `./pack/tmp_pack_*` in the
   object store (`garbage: 1`). `connect` loses everything pinfold checks
@@ -109,11 +120,11 @@ helper's message:
 
 | Case | Input | Helper's message (log line) |
 |---|---|---|
-| F1 | commit with no author email | `git index-pack failed: error: object 58a90eb1…: missingEmail: invalid author/committer line - missing email` |
+| F1 | commit with no author email | `git index-pack failed (exit 128): error: object 58a90eb1c08faeefd7bc75eb6baf571937f3a848: missingEmail: invalid author/committer line - missing email` |
 | F2 | `.gitmodules` with `update = !sh -c "echo F2 >>…marker"` | `gitmodulesUpdate: disallowed submodule update setting`; marker file absent |
 | F2b | `.gitmodules` with `url = --upload-pack=echo F2b >>…marker` | `gitmodulesUrl: disallowed submodule url`; marker absent |
 | F3 | tree entry `.git/hooks/post-checkout` | `hasDotgit: contains '.git'` |
-| F4 | bundle cut from 503 to 251 bytes | `git index-pack failed: fatal: early EOF` |
+| F4 | bundle cut from 503 to 251 bytes | `git index-pack failed (exit 128): fatal: early EOF` |
 | F5 | bundle over `PROBE_LIMIT=2000` | `the bundle is past 2000 bytes` |
 | F6a | 5 listed branches, `PROBE_BRANCHES=3` | `the box has more than 3 branches` |
 | F6b | 1 listed branch, 5 bundled heads | `the box has more than 3 branches` |
@@ -123,11 +134,11 @@ helper's message:
 | F7.4 | listed `refs/heads/x:y` | `malformed branch: 'x:y'` |
 | F7.6 | listed `refs/heads/@{1}` | `malformed branch: '@{1}'` |
 | F7b | bundle head renamed to `refs/heads/x:y` | `malformed branch: 'x:y'` |
-| F8 | listed `ghost` at an object neither side has | `branch 'ghost' names 0123…4567, which the bundle does not carry and refs/remotes/box/* does not reach` |
-| F8b | bundle header names a head its pack lacks | `git rev-list failed (exit 128): fatal: bad object 0123…4567` |
+| F8 | listed `ghost` at an object neither side has | `branch 'ghost' names 0123456789abcdef0123456789abcdef01234567, which the bundle does not carry and refs/remotes/box/* does not reach` |
+| F8b | bundle header names a head its pack lacks | `git rev-list failed (exit 128): fatal: bad object 0123456789abcdef0123456789abcdef01234567` |
 | F9a | header `@filter=blob:none` | `the box sent a filtered bundle` |
-| F9b | header `@object-format=sha256` over sha1 heads | `git bundle failed: error: unrecognized header: b7036811… refs/heads/main (56)` |
-| F9c | header `@hooks=post-checkout` | `git bundle failed: error: unknown capability 'hooks=post-checkout'` |
+| F9b | header `@object-format=sha256` over sha1 heads | `git bundle failed (exit 1): error: unrecognized header: b7036811f28d630ef484116a6df59f77f15c520f refs/heads/main (56)` |
+| F9c | header `@hooks=post-checkout` | `git bundle failed (exit 1): error: unknown capability 'hooks=post-checkout'` |
 | F9d | prerequisite the host lacks | `git bundle failed (exit 1): ` (`bundle verify -q` printed nothing) |
 
 More cases:
@@ -138,7 +149,7 @@ More cases:
 - F9e: a prerequisite the host holds, with a 100000-byte subject, was
   accepted. The header reader keeps 8 bytes of each line.
 - F0 and F0b: honest fetches. F0b's bundle held only what
-  `refs/remotes/box/*` lacked; `b703681..5296044  main -> box/main`.
+  `refs/remotes/box/*` lacked: "`b703681..5296044  main       -> box/main`".
 - F9a: the `@filter` header was written by hand with `craft.py`, not
   made by `bundle create`.
 
@@ -148,13 +159,13 @@ More cases:
 `refs/remotes/box/x`. The box then deleted `x`, created `x/y` and
 advanced `main`. The helper's checks all passed.
 
-- **R1, plain `git fetch box`:** exit=1, "`! [new branch]      x/y
-  -> box/x/y  (unable to update local ref)`". `refs/remotes/box/main`
-  moved to 5296044 anyway. Partial.
+- **R1, plain `git fetch box`:** exit=1, "`! [new branch]      x/y        -> box/x/y  (unable to update local ref)`".
+  `refs/remotes/box/main` moved to 52960449 anyway. Partial.
 - **R1b, `git fetch --atomic box`:** exit=254, "`error: cannot lock ref
   'refs/remotes/box/x/y': 'refs/remotes/box/x' exists`". No ref moved.
-  But the pack `pack-29bebf79…` was now in the repository and fsck
-  reported "`dangling commit 52960449…`".
+  But the pack `pack-29bebf79beec4eccfaf3b63aeb197192d4222244` was now in
+  the repository and fsck reported "`dangling commit
+  52960449ecdbf8fb51d6fee8b0d0a3ae37f97084`".
 - **R1c, the helper's preflight** (`PROBE_PREFLIGHT=1`): exit=128,
   "`ref preflight failed: fatal: prepare: cannot lock ref
   'refs/remotes/box/x/y'`". State unchanged.
@@ -164,6 +175,24 @@ advanced `main`. The helper's checks all passed.
   - R2b: exit=253. No ref moved; the pack landed and fsck reported a
     dangling commit.
   - R2c: exit=128, the preflight named the lock. State unchanged.
+- **O1 to O6: the helper commits `refs/remotes/box/*` itself**
+  (`PROBE_OWNREFS=1`). It runs today's `update_refs` sequence at `fetch`:
+  `start`, the updates and `prepare` against the quarantine, then the
+  pack move, then `commit`, then its answer to Git.
+  - O1, a new ref: exit=0, `refs/remotes/box/main` at b7036811.
+  - O2, a fast-forward: exit=1, "`error: cannot lock ref
+    'refs/remotes/box/main': is at 52960449ecdbf8fb51d6fee8b0d0a3ae37f97084
+    but expected b7036811f28d630ef484116a6df59f77f15c520f`". The ref was
+    left at the new value 52960449, the right one.
+  - O3, a rewritten box branch: the same, "`is at
+    d876e12af719d57ae3e80f47829d2c98ba293e90 but expected
+    b7036811f28d630ef484116a6df59f77f15c520f`", exit=1. The ref was at
+    d876e12a.
+  - O4 (plain) and O5 (`--atomic`), the D/F case: "`own ref transaction
+    failed: fatal: prepare: cannot lock ref 'refs/remotes/box/x/y'`",
+    exit=128, state unchanged in both.
+  - O6, `git fetch box main:other`: exit=0. Git still wrote
+    `refs/heads/other`.
 - **No setting makes fetch atomic.** `git help -c` lists no
   `fetch.atomic`. Atomicity is the caller's `--atomic` flag. The helper
   advertises no `option` capability, so it is never told whether the
@@ -213,12 +242,9 @@ unchanged in all twelve runs.
 | `@refs/heads/main HEAD` | exit=0, **created `refs/remotes/box/HEAD` → `refs/remotes/box/main`** | malformed; no `refs/remotes/box/HEAD` |
 | `:object-format sha256` | exit=0, ignored | malformed |
 | `aaaa…aaaa -x` | exit=0, ignored | malformed |
-| empty line, then `ok refs/heads/main` | exit=0. Git sent no `fetch` command, because the objects were already present, so the trailing lines were never read | the rest became bundle bytes: `does not look like a v2 or v3 bundle file` |
+| empty line, then `ok refs/heads/main` | exit=1. Git read the box's lines as the helper's answer to `fetch`: "`warning: pinfold unexpectedly said: 'ok refs/heads/main'`", then the box's blank line as the end of the fetch, then "`error: pinfold::sim did not send all necessary objects`". No ref moved; the pack the helper unbundled afterwards stayed, a dangling commit | the rest became bundle bytes: `does not look like a v2 or v3 bundle file` |
 
 Notes:
-- A ref name cannot carry a newline. Both the box's listing and a
-  bundle header are split on newlines, so an "injected" line is just
-  one more listed name, checked like the others.
 - Bundle headers: an unknown capability (F9c) and a wrong object format
   (F9b) were refused by `bundle verify`, and `@filter` by the helper
   (F9a).
@@ -240,8 +266,7 @@ The helper kept only the box's exit status (box stdout and stderr to
 - **P1:** exit=0. The box held `refs/remotes/host/main` at 9f4816c5 and
   its `refs/heads/main` was unchanged. **Git then moved the host's
   `refs/remotes/box/main` to 9f4816c5**, a value the box's branch never
-  had. The next `git fetch box` reset it: "`+ 9f4816c...b703681 main ->
-  box/main  (forced update)`".
+  had. The next `git fetch box` reset it: "`+ 9f4816c...b703681 main       -> box/main  (forced update)`".
 - **P2, `push box main:refs/tags/v1`:** "`! [remote rejected] main -> v1
   (only branches can be pushed)`", exit=1, no box ref.
 - **P3, delete `:refs/heads/main`:** rejected the same way, exit=1.
@@ -258,8 +283,15 @@ The helper kept only the box's exit status (box stdout and stderr to
 ### 6. Real boxes (`logs/e2e.log`, `logs/service.log`)
 
 - **Setup.** The container service was stopped. It was started with
-  `container system start --disable-kernel-install` and stopped again
-  with `container system stop`.
+  `container system start --disable-kernel-install` and stopped with
+  `container system stop`, twice: once for the discarded run below, not
+  logged, and once for the logged run (`logs/service.log`). Each
+  `container system stop` printed `buildkit` under "stopping
+  containers", although `container list --all` showed it stopped before
+  and after.
+- **Helper version.** The e2e run used the helper before `PROBE_OWNREFS`
+  was added and before the unchecked mode's unbundle moved to `fetch`.
+  Both paths are off by default and unused by `e2e.sh`.
 - **Image and state root.** `localhost/pinfold/profile-default:latest`
   was already in the store. `container image list` was the same before
   and after. The box spec named that image, a disk `from` a clone of
@@ -291,6 +323,18 @@ The helper kept only the box's exit status (box stdout and stderr to
   the repository directly from a stream the helper produces. The helper
   would have to turn the box's pack into a fast-import stream itself,
   with no quarantine. It has no advantage over `fetch` here.
+- **`stateless-connect`** is the same shape as `connect` for this
+  question: host Git speaks protocol v2 to a box-side service, and Git's
+  own fetch code writes objects and refs.
+- **No newline in a ref name.** Both the box's listing and a bundle
+  header are split on newlines. So an "injected" line is just one more
+  listed name, checked like the others.
+- **Helper-written refs keep the transaction but not the report.** Git
+  reads the old values of its refs before the helper's `fetch`, and its
+  own update checks them. Any existing ref the helper moved then fails
+  in Git's report, as in O2 and O3. Making it usable would need Git to
+  skip refs the helper already wrote, which no helper capability for
+  `fetch` offers.
 - **The preflight is a check, not a transaction.** Git takes its own
   locks after the helper aborts its own. A ref or lock that appears in
   between still gives the R1 or R1b outcome. It narrows a host-side
@@ -323,13 +367,18 @@ The helper kept only the box's exit status (box stdout and stderr to
 
 - **Limits at full size:** 4 GiB bundles and 4096 branches.
 - **Killing or stalling:**
-  - killing the helper mid-fetch
+  - killing the helper mid-fetch. Seen once by accident, not logged: a
+    first draft of the unchecked mode hung, and the helper killed with
+    `pkill` left its temp directory (a 503-byte `in.bundle`) under the
+    system temp dir. It was removed by hand. No quarantine was involved
   - quarantine cleanup by dead pid; the prototype only removes its own
     quarantine on exit
   - a box that stalls or sends slowly
   - a real box killed past the limit; the prototype kills it in
     `local` mode only
 - **Races:** concurrent fetches, and a race against the preflight.
+- **Helper-written refs** when Git sends no `fetch` command (objects
+  already present). Git would then write the refs itself.
 - **Other Git paths:**
   - `--prune` and `fetch.prune`
   - `remote.box.followRemoteHEAD`, mirror remotes, `--refmap`
@@ -363,7 +412,7 @@ Rules from `crates/pinfold/src/core/crossing.rs` and ARCHITECTURE.md
 | Listed branch missing from the bundle lands only at a commit `refs/remotes/NAME/*` reaches | Kept | F8, F7.5 |
 | Bundle holds only what `refs/remotes/NAME/*` lacks | Kept | F0b, E2 |
 | A rejected bundle leaves the object store as it was | Kept for helper rejections; lost when Git's ref update fails after the helper (dangling pack) | F1–F9d; R1b, R2b |
-| All refs in one `update-ref` transaction, prepared before packs move | Lost. Git updates refs; partial without `--atomic`. Preflight narrows it | R1, R2, R1b, R2b, R1c, R2c |
+| All refs in one `update-ref` transaction, prepared before packs move | Lost when Git writes the refs: partial without `--atomic`; a preflight narrows it. Kept if the helper writes them, but Git then reports every updated existing ref as failed (exit 1) | R1, R2, R1b, R2b, R1c, R2c, O1–O6 |
 | Only `refs/remotes/NAME/*` is written | Kept for configured refspecs (refused otherwise); lost for command-line refspecs and `git pull` | R3a, R3c, R3d, R3e |
 | Tags stay in the box | Kept by construction (only `refs/heads/` listed); a box tag not tested | — |
 | No symref from the box | Kept by the helper's checks; Git creates `refs/remotes/box/HEAD` from a listed symref otherwise | N-symref |

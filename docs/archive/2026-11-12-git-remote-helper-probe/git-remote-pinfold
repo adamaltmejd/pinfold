@@ -21,6 +21,9 @@ Probe-only switches, all environment variables:
   PROBE_CHECKS    off: pass the box's listing and bundle to Git unchecked
   PROBE_PREFLIGHT 1: prepare and abort a ref transaction for
                   refs/remotes/REMOTE/* before moving any pack
+  PROBE_OWNREFS   1: the helper itself commits refs/remotes/REMOTE/* in
+                  one transaction, prepared before the packs move and
+                  committed after, before it answers `fetch`
   PROBE_LOG       file: argv, GIT_* environment and every protocol line
 """
 
@@ -35,6 +38,7 @@ LIMIT = int(os.environ.get("PROBE_LIMIT", str(4 << 30)))
 BRANCHES = int(os.environ.get("PROBE_BRANCHES", "4096"))
 CHECKS = os.environ.get("PROBE_CHECKS", "on") != "off"
 PREFLIGHT = os.environ.get("PROBE_PREFLIGHT") == "1"
+OWNREFS = os.environ.get("PROBE_OWNREFS") == "1"
 LOG = os.environ.get("PROBE_LOG")
 
 FETCH_SCRIPT = r"""
@@ -305,6 +309,42 @@ def checked_list(remote, workdir):
     return refs, quarantine
 
 
+def own_transaction(remote, refs, quarantine):
+    """Today's update_refs: prepare against the quarantine, move the packs,
+    commit. Closing stdin before `commit` aborts."""
+    namespace = f"refs/remotes/{remote}/"
+    updates = "".join(f"update {namespace}{b}\0{o}\0\0" for b, o in refs.items())
+    proc = subprocess.Popen(["git", "update-ref", "-z", "--stdin"],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, env=os.environ | quarantine.env())
+    proc.stdin.write(f"start\0{updates}prepare\0".encode())
+    proc.stdin.flush()
+    replies = proc.stdout.readline() + proc.stdout.readline()
+    if replies != b"start: ok\nprepare: ok\n":
+        proc.stdin.close()
+        proc.wait()
+        die("own ref transaction failed: " + proc.stderr.read().decode(errors="replace").strip())
+    quarantine.migrate()
+    proc.stdin.write(b"commit\0")
+    proc.stdin.close()
+    code = proc.wait()
+    log("own-transaction-exit", code)
+    if code != 0:
+        die("own ref commit failed: " + proc.stderr.read().decode(errors="replace").strip())
+
+
+class Unbundle:
+    """PROBE_CHECKS=off: the bundle goes into the repository at `fetch`."""
+    def __init__(self, path):
+        self.path = path
+
+    def migrate(self):
+        git("bundle", "unbundle", self.path, check=False)
+
+    def remove(self):
+        pass
+
+
 def unchecked_list(workdir):
     """PROBE_CHECKS=off: the box's listing goes to Git verbatim."""
     stream = box_make_bundle("")
@@ -317,7 +357,7 @@ def unchecked_list(workdir):
         path = os.path.join(workdir, "in.bundle")
         with open(path, "wb") as f:
             f.write(bundle)
-        git("bundle", "unbundle", path, check=False)
+        quarantine = Unbundle(path)
     return listing, quarantine
 
 
@@ -395,6 +435,7 @@ def main():
                         die(f"remote.{remote}.fetch writes outside refs/remotes/{remote}/: {spec}")
                 if CHECKS:
                     refs, quarantine = checked_list(remote, workdir)
+                    listed_refs = refs
                     send("".join(f"{o} refs/heads/{b}\n" for b, o in sorted(refs.items())) + "\n")
                 else:
                     listing, quarantine = unchecked_list(workdir)
@@ -404,6 +445,10 @@ def main():
             elif line.startswith(b"fetch "):
                 while line not in (b"\n", b""):
                     line = read_line()
+                if quarantine and OWNREFS and CHECKS:
+                    own_transaction(remote, listed_refs, quarantine)
+                    quarantine.remove()
+                    quarantine = None
                 if quarantine:
                     quarantine.migrate()
                     quarantine.remove()

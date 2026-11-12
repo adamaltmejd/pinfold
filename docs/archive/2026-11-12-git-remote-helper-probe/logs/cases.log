@@ -375,6 +375,127 @@ pinfold-helper: ref preflight failed: fatal: prepare: cannot lock ref 'refs/remo
 Another git process seems to be running in this repository, or the lock file may be stale
 [R2c-lockfile-preflight] exit=128: git -C TMP/p/host fetch box
 [R2c-lockfile-preflight] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== O1-own-transaction-new-ref
+[O1-own-transaction-new-ref] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+[O1-own-transaction-new-ref] exit=0: git -C TMP/p/host fetch box
+[O1-own-transaction-new-ref] state: CHANGED
+[O1-own-transaction-new-ref]   3,6c3,6
+[O1-own-transaction-new-ref]   < in-pack: 0
+[O1-own-transaction-new-ref]   < packs: 0
+[O1-own-transaction-new-ref]   < size-pack: 0
+[O1-own-transaction-new-ref]   < prune-packable: 0
+[O1-own-transaction-new-ref]   ---
+[O1-own-transaction-new-ref]   > in-pack: 6
+[O1-own-transaction-new-ref]   > packs: 1
+[O1-own-transaction-new-ref]   > size-pack: 1
+[O1-own-transaction-new-ref]   > prune-packable: 3
+[O1-own-transaction-new-ref]   10a11
+[O1-own-transaction-new-ref]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+[O1-own-transaction-new-ref]   14a16,18
+[O1-own-transaction-new-ref]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.idx
+[O1-own-transaction-new-ref]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.pack
+[O1-own-transaction-new-ref]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.rev
+=== O2-own-transaction-fast-forward
+[O2-own-transaction-fast-forward] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+[O2-own-transaction-fast-forward] exit=0: git -C TMP/p/host fetch box
+[O2-own-transaction-fast-forward] $ git -C TMP/p/host fetch box
+error: cannot lock ref 'refs/remotes/box/main': is at 52960449ecdbf8fb51d6fee8b0d0a3ae37f97084 but expected b7036811f28d630ef484116a6df59f77f15c520f
+From pinfold::sim
+ ! b703681..5296044  main       -> box/main  (unable to update local ref)
+[O2-own-transaction-fast-forward] exit=1: git -C TMP/p/host fetch box
+[O2-own-transaction-fast-forward] state: CHANGED
+[O2-own-transaction-fast-forward]   3,5c3,5
+[O2-own-transaction-fast-forward]   < in-pack: 6
+[O2-own-transaction-fast-forward]   < packs: 1
+[O2-own-transaction-fast-forward]   < size-pack: 1
+[O2-own-transaction-fast-forward]   ---
+[O2-own-transaction-fast-forward]   > in-pack: 9
+[O2-own-transaction-fast-forward]   > packs: 2
+[O2-own-transaction-fast-forward]   > size-pack: 3
+[O2-own-transaction-fast-forward]   11c11
+[O2-own-transaction-fast-forward]   < b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+[O2-own-transaction-fast-forward]   ---
+[O2-own-transaction-fast-forward]   > 52960449ecdbf8fb51d6fee8b0d0a3ae37f97084 commit	refs/remotes/box/main
+[O2-own-transaction-fast-forward]   15a16,18
+[O2-own-transaction-fast-forward]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.idx
+[O2-own-transaction-fast-forward]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.pack
+[O2-own-transaction-fast-forward]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.rev
+=== O3-own-transaction-forced
+[O3-own-transaction-forced] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+[O3-own-transaction-forced] exit=0: git -C TMP/p/host fetch box
+[O3-own-transaction-forced] box main rewritten to d876e12af719d57ae3e80f47829d2c98ba293e90
+[O3-own-transaction-forced] $ git -C TMP/p/host fetch box
+error: cannot lock ref 'refs/remotes/box/main': is at d876e12af719d57ae3e80f47829d2c98ba293e90 but expected b7036811f28d630ef484116a6df59f77f15c520f
+From pinfold::sim
+ ! b703681...d876e12 main       -> box/main  (unable to update local ref)
+[O3-own-transaction-forced] exit=1: git -C TMP/p/host fetch box
+[O3-own-transaction-forced] state: CHANGED
+[O3-own-transaction-forced]   3,5c3,5
+[O3-own-transaction-forced]   < in-pack: 6
+[O3-own-transaction-forced]   < packs: 1
+[O3-own-transaction-forced]   < size-pack: 1
+[O3-own-transaction-forced]   ---
+[O3-own-transaction-forced]   > in-pack: 9
+[O3-own-transaction-forced]   > packs: 2
+[O3-own-transaction-forced]   > size-pack: 3
+[O3-own-transaction-forced]   11c11
+[O3-own-transaction-forced]   < b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+[O3-own-transaction-forced]   ---
+[O3-own-transaction-forced]   > d876e12af719d57ae3e80f47829d2c98ba293e90 commit	refs/remotes/box/main
+[O3-own-transaction-forced]   15a16,18
+[O3-own-transaction-forced]   > ./pack/pack-a0efbbc5b746a6be8d7325830aaf39e3e8dd4a79.idx
+[O3-own-transaction-forced]   > ./pack/pack-a0efbbc5b746a6be8d7325830aaf39e3e8dd4a79.pack
+[O3-own-transaction-forced]   > ./pack/pack-a0efbbc5b746a6be8d7325830aaf39e3e8dd4a79.rev
+=== O4-own-transaction-df-plain
+[O4-own-transaction-df-plain] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+ * [new branch]      x          -> box/x
+[O4-own-transaction-df-plain] exit=0: git -C TMP/p/host fetch box
+[O4-own-transaction-df-plain] $ git -C TMP/p/host fetch box
+pinfold-helper: own ref transaction failed: fatal: prepare: cannot lock ref 'refs/remotes/box/x/y': 'refs/remotes/box/x' exists; cannot create 'refs/remotes/box/x/y'
+[O4-own-transaction-df-plain] exit=128: git -C TMP/p/host fetch box
+[O4-own-transaction-df-plain] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== O5-own-transaction-df-atomic
+[O5-own-transaction-df-atomic] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+ * [new branch]      x          -> box/x
+[O5-own-transaction-df-atomic] exit=0: git -C TMP/p/host fetch box
+[O5-own-transaction-df-atomic] $ git -C TMP/p/host fetch --atomic box
+pinfold-helper: own ref transaction failed: fatal: prepare: cannot lock ref 'refs/remotes/box/x/y': 'refs/remotes/box/x' exists; cannot create 'refs/remotes/box/x/y'
+[O5-own-transaction-df-atomic] exit=128: git -C TMP/p/host fetch --atomic box
+[O5-own-transaction-df-atomic] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== O6-own-transaction-cli-refspec
+[O6-own-transaction-cli-refspec] $ git -C TMP/p/host fetch box main:other
+From pinfold::sim
+ * [new branch]      main       -> other
+ * [new branch]      main       -> box/main
+[O6-own-transaction-cli-refspec] exit=0: git -C TMP/p/host fetch box main:other
+[O6-own-transaction-cli-refspec] state: CHANGED
+[O6-own-transaction-cli-refspec]   3,6c3,6
+[O6-own-transaction-cli-refspec]   < in-pack: 0
+[O6-own-transaction-cli-refspec]   < packs: 0
+[O6-own-transaction-cli-refspec]   < size-pack: 0
+[O6-own-transaction-cli-refspec]   < prune-packable: 0
+[O6-own-transaction-cli-refspec]   ---
+[O6-own-transaction-cli-refspec]   > in-pack: 6
+[O6-own-transaction-cli-refspec]   > packs: 1
+[O6-own-transaction-cli-refspec]   > size-pack: 1
+[O6-own-transaction-cli-refspec]   > prune-packable: 3
+[O6-own-transaction-cli-refspec]   10a11,12
+[O6-own-transaction-cli-refspec]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/heads/other
+[O6-own-transaction-cli-refspec]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+[O6-own-transaction-cli-refspec]   14a17,19
+[O6-own-transaction-cli-refspec]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.idx
+[O6-own-transaction-cli-refspec]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.pack
+[O6-own-transaction-cli-refspec]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.rev
 === R3a-cli-refspec-to-branch
 [R3a-cli-refspec-to-branch] $ git -C TMP/p/host fetch box main:other
 From pinfold::sim
@@ -692,9 +813,23 @@ remote.box.fetch=+refs/heads/*:refs/remotes/box/*
 === N-early-blank-checks-off
 [N-early-blank-checks-off] listing adds:  ok refs/heads/main
 [N-early-blank-checks-off] $ git -C TMP/p/host fetch box
-From pinfold::sim
- * [new branch]      main       -> box/main
-[N-early-blank-checks-off] exit=0: git -C TMP/p/host fetch box
+warning: pinfold unexpectedly said: 'ok refs/heads/main'
+fatal: bad object b7036811f28d630ef484116a6df59f77f15c520f
+error: pinfold::sim did not send all necessary objects
+Traceback (most recent call last):
+  File "HOME/code/pinfold/.claude/worktrees/remote-probe/docs/archive/2026-11-12-git-remote-helper-probe/git-remote-pinfold", line 470, in <module>
+    main()
+    ~~~~^^
+  File "HOME/code/pinfold/.claude/worktrees/remote-probe/docs/archive/2026-11-12-git-remote-helper-probe/git-remote-pinfold", line 456, in main
+    send("\n")
+    ~~~~^^^^^^
+  File "HOME/code/pinfold/.claude/worktrees/remote-probe/docs/archive/2026-11-12-git-remote-helper-probe/git-remote-pinfold", line 367, in send
+    sys.stdout.flush()
+    ~~~~~~~~~~~~~~~~^^
+BrokenPipeError: [Errno 32] Broken pipe
+Exception ignored while flushing sys.stdout:
+BrokenPipeError: [Errno 32] Broken pipe
+[N-early-blank-checks-off] exit=1: git -C TMP/p/host fetch box
 [N-early-blank-checks-off] state: CHANGED
 [N-early-blank-checks-off]   3,6c3,6
 [N-early-blank-checks-off]   < in-pack: 0
@@ -706,12 +841,12 @@ From pinfold::sim
 [N-early-blank-checks-off]   > packs: 1
 [N-early-blank-checks-off]   > size-pack: 1
 [N-early-blank-checks-off]   > prune-packable: 3
-[N-early-blank-checks-off]   10a11
-[N-early-blank-checks-off]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
-[N-early-blank-checks-off]   14a16,18
+[N-early-blank-checks-off]   14a15,17
 [N-early-blank-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.idx
 [N-early-blank-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.pack
 [N-early-blank-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.rev
+[N-early-blank-checks-off]   15a19
+[N-early-blank-checks-off]   > dangling commit b7036811f28d630ef484116a6df59f77f15c520f
 [N-early-blank-checks-off] --- refs/remotes/box/HEAD
 [N-early-blank-checks-off] --- config after
 core.repositoryformatversion=0
@@ -725,7 +860,7 @@ remote.box.fetch=+refs/heads/*:refs/remotes/box/*
 === N-early-blank-checks-on
 [N-early-blank-checks-on] listing adds:  ok refs/heads/main
 [N-early-blank-checks-on] $ git -C TMP/p/host fetch box
-pinfold-helper: git bundle failed (exit 1): error: 'SYSTMP/pinfold-helper-cikbhk4m/in.bundle' does not look like a v2 or v3 bundle file
+pinfold-helper: git bundle failed (exit 1): error: 'SYSTMP/pinfold-helper-aj4xs50n/in.bundle' does not look like a v2 or v3 bundle file
 [N-early-blank-checks-on] exit=128: git -C TMP/p/host fetch box
 [N-early-blank-checks-on] state: unchanged (count-objects, for-each-ref, object files, fsck)
 [N-early-blank-checks-on] --- refs/remotes/box/HEAD
@@ -847,13 +982,13 @@ fatal: index-pack failed
 [C2-connect-fsck-bad-fsckobjects] exit=128: git -C TMP/p/host -c fetch.fsckObjects=true fetch conn
 [C2-connect-fsck-bad-fsckobjects] state: CHANGED
 [C2-connect-fsck-bad-fsckobjects]   0a1
-[C2-connect-fsck-bad-fsckobjects]   > warning: garbage found: .git/objects/pack/tmp_pack_0RQ9Bc
+[C2-connect-fsck-bad-fsckobjects]   > warning: garbage found: .git/objects/pack/tmp_pack_K40IMC
 [C2-connect-fsck-bad-fsckobjects]   7c8
 [C2-connect-fsck-bad-fsckobjects]   < garbage: 0
 [C2-connect-fsck-bad-fsckobjects]   ---
 [C2-connect-fsck-bad-fsckobjects]   > garbage: 1
 [C2-connect-fsck-bad-fsckobjects]   14a16
-[C2-connect-fsck-bad-fsckobjects]   > ./pack/tmp_pack_0RQ9Bc
+[C2-connect-fsck-bad-fsckobjects]   > ./pack/tmp_pack_K40IMC
 === C3-connect-dotgit
 [C3-connect-dotgit] $ git -C TMP/p/host fetch conn
 From pinfoldconnect::x

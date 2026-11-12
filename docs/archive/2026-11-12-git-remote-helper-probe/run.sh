@@ -17,7 +17,7 @@ unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS $(compgen -e | grep -E '^GIT_CONFIG
 export GIT_AUTHOR_NAME=probe GIT_AUTHOR_EMAIL=probe@example.invalid
 export GIT_COMMITTER_NAME=probe GIT_COMMITTER_EMAIL=probe@example.invalid
 export GIT_AUTHOR_DATE='2026-11-12T12:00:00Z' GIT_COMMITTER_DATE='2026-11-12T12:00:00Z'
-unset PROBE_LIMIT PROBE_BRANCHES PROBE_CHECKS PROBE_PREFLIGHT PROBE_LOG
+unset PROBE_LIMIT PROBE_BRANCHES PROBE_CHECKS PROBE_PREFLIGHT PROBE_OWNREFS PROBE_LOG
 H=$T/host
 B=$T/box
 
@@ -74,7 +74,7 @@ fresh() {
 	git -C "$B" remote remove origin
 	commit "$B" b box "box one"
 	export PROBE_BOX=local:$B
-	unset PROBE_LIMIT PROBE_BRANCHES PROBE_CHECKS PROBE_PREFLIGHT
+	unset PROBE_LIMIT PROBE_BRANCHES PROBE_CHECKS PROBE_PREFLIGHT PROBE_OWNREFS
 }
 # The box's honest stream, as FETCH_SCRIPT prints it for a host holding nothing.
 stream_of() {
@@ -342,6 +342,59 @@ git -C "$B" branch other
 export PROBE_PREFLIGHT=1
 hostile_fetch
 rm -f "$H/.git/refs/remotes/box/main.lock"
+
+# The helper commits refs/remotes/box/* itself before answering `fetch`.
+begin O1-own-transaction-new-ref
+fresh
+export PROBE_OWNREFS=1
+hostile_fetch
+
+begin O2-own-transaction-fast-forward
+fresh
+run git -C "$H" fetch box
+commit "$B" b box2 "box two"
+export PROBE_OWNREFS=1
+hostile_fetch
+
+begin O3-own-transaction-forced
+fresh
+run git -C "$H" fetch box
+git -C "$B" reset -q --hard HEAD~1
+commit "$B" b box3 "box rewritten"
+export PROBE_OWNREFS=1
+note "box main rewritten to $(git -C "$B" rev-parse main)"
+hostile_fetch
+
+begin O4-own-transaction-df-plain
+fresh
+git -C "$B" branch x
+run git -C "$H" fetch box
+git -C "$B" branch -D x
+git -C "$B" branch x/y
+commit "$B" b box2 "box two"
+export PROBE_OWNREFS=1
+hostile_fetch
+
+begin O5-own-transaction-df-atomic
+fresh
+git -C "$B" branch x
+run git -C "$H" fetch box
+git -C "$B" branch -D x
+git -C "$B" branch x/y
+commit "$B" b box2 "box two"
+export PROBE_OWNREFS=1
+snap before
+run git -C "$H" fetch --atomic box
+snap after
+compare before after
+
+begin O6-own-transaction-cli-refspec
+fresh
+export PROBE_OWNREFS=1
+snap before
+run git -C "$H" fetch box main:other
+snap after
+compare before after
 
 begin R3a-cli-refspec-to-branch
 fresh
