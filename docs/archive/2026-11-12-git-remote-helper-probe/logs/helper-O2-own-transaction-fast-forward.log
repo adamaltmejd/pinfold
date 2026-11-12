@@ -53,6 +53,7 @@ helper> 52960449ecdbf8fb51d6fee8b0d0a3ae37f97084 refs/heads/main
 
 git> b'fetch 52960449ecdbf8fb51d6fee8b0d0a3ae37f97084 refs/heads/main\n'
 git> b'\n'
+own-transaction-prepared
 own-transaction-exit 0
 helper> 
 

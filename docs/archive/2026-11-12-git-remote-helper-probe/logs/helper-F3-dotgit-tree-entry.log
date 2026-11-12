@@ -19,5 +19,5 @@ push
 
 git> b'list\n'
 box-fetch-exit 0
-helper-error git index-pack failed (exit 128): error: object 64f07b15047c5919a0f463458c10b435942ddc50: hasDotgit: contains '.git'
+helper-error git index-pack failed (exit 128): error: object 6b0116e587dd935969c734cd9de15c3bfb7f47e6: hasDotgit: contains '.git'
 fatal: fsck error in packed object

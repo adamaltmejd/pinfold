@@ -25,6 +25,7 @@ helper> b7036811f28d630ef484116a6df59f77f15c520f refs/heads/main
 git> b'fetch b7036811f28d630ef484116a6df59f77f15c520f refs/heads/main\n'
 git> b'fetch b7036811f28d630ef484116a6df59f77f15c520f refs/heads/main\n'
 git> b'\n'
+own-transaction-prepared
 own-transaction-exit 0
 helper> 
 

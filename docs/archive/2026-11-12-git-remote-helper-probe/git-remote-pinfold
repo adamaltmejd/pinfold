@@ -14,17 +14,24 @@ box but its exit status. Each `push SRC:DST` with DST under refs/heads/
 lands in the box's refs/remotes/host/*.
 
 Probe-only switches, all environment variables:
-  PROBE_BOX       local:REPO | feed:FILE | exec:BOXNAME (the box side)
+  PROBE_BOX       local:REPO | feed:FILE | exec:BOXNAME | transient:SPEC |
+                  sh:SCRIPT (the box side; sh: runs SCRIPT and never reads
+                  the held list)
   PROBE_PINFOLD   the pinfold binary, for exec:
   PROBE_LIMIT     bundle byte limit (today 4 GiB)
   PROBE_BRANCHES  branch limit (today 4096)
   PROBE_CHECKS    off: pass the box's listing and bundle to Git unchecked
   PROBE_PREFLIGHT 1: prepare and abort a ref transaction for
                   refs/remotes/REMOTE/* before moving any pack
-  PROBE_OWNREFS   1: the helper itself commits refs/remotes/REMOTE/* in
-                  one transaction, prepared before the packs move and
-                  committed after, before it answers `fetch`
+  PROBE_OWNREFS   the helper itself commits refs/remotes/REMOTE/* in one
+                  transaction, prepared before the packs move and committed
+                  after. When: fetch (before it answers `fetch`), list
+                  (before it answers `list`) or end (prepared at `fetch`,
+                  committed at Git's closing blank line). list and end
+                  require configured refspecs with no destination.
   PROBE_LOG       file: argv, GIT_* environment and every protocol line
+  PROBE_LOG_CONFIG_ENV  1: also log GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT
+                  and GIT_CONFIG_KEY_* (values of GIT_CONFIG_VALUE_* never)
 """
 
 import os
@@ -38,8 +45,11 @@ LIMIT = int(os.environ.get("PROBE_LIMIT", str(4 << 30)))
 BRANCHES = int(os.environ.get("PROBE_BRANCHES", "4096"))
 CHECKS = os.environ.get("PROBE_CHECKS", "on") != "off"
 PREFLIGHT = os.environ.get("PROBE_PREFLIGHT") == "1"
-OWNREFS = os.environ.get("PROBE_OWNREFS") == "1"
+OWNREFS = os.environ.get("PROBE_OWNREFS", "")
 LOG = os.environ.get("PROBE_LOG")
+LOG_CONFIG_ENV = os.environ.get("PROBE_LOG_CONFIG_ENV") == "1"
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 FETCH_SCRIPT = r"""
 repo=$1
@@ -68,9 +78,12 @@ OID = re.compile(rb"^([0-9a-f]{40}|[0-9a-f]{64})$")
 
 
 def log(*parts):
+    """Control bytes are written escaped, so the log never holds raw ones."""
     if LOG:
+        line = " ".join(str(p) for p in parts)
+        line = CONTROL.sub(lambda m: f"\\x{ord(m.group()):02x}", line)
         with open(LOG, "a") as f:
-            f.write(" ".join(str(p) for p in parts) + "\n")
+            f.write(line + "\n")
 
 
 def die(msg):
@@ -94,6 +107,8 @@ def box_command(script, args):
     if kind == "feed" and script is PUSH_SCRIPT:
         # A hostile box for push: it prints the file named by PROBE_BOX.
         return ["sh", "-c", 'cat >/dev/null; cat "$1"', "sh", where]
+    if kind == "sh":
+        return ["sh", "-c", where, "sh"]
     if kind == "exec":
         return [os.environ["PROBE_PINFOLD"], "box", "exec", where, "--",
                 "sh", "-c", script, "sh", os.environ["PROBE_GUEST_REPO"], *args]
@@ -139,10 +154,17 @@ def box_make_bundle(held):
     proc.stdin.write(held.encode())
     proc.stdin.close()
     data = proc.stdout.read(cap)
-    if len(data) == cap:
+    killed = len(data) == cap
+    if killed:
         proc.kill()
     code = proc.wait()
     log("box-fetch-exit", code)
+    if killed and kind == "local":
+        # The box's `exec git bundle create` runs in a pipeline subshell, not
+        # as the process killed above.
+        alive = subprocess.run(["pgrep", "-f", f"{where} -c core.warnAmbiguousRefs=false bundle create"],
+                               capture_output=True).stdout.split()
+        log("bundle-writers-after-kill", len(alive))
     if code != 0 and len(data) < cap:
         die(f"box exited {code}")
     return data
@@ -309,9 +331,9 @@ def checked_list(remote, workdir):
     return refs, quarantine
 
 
-def own_transaction(remote, refs, quarantine):
-    """Today's update_refs: prepare against the quarantine, move the packs,
-    commit. Closing stdin before `commit` aborts."""
+def own_prepare(remote, refs, quarantine):
+    """Today's update_refs, first half: prepare against the quarantine, then
+    move the packs. Closing stdin before `commit` aborts."""
     namespace = f"refs/remotes/{remote}/"
     updates = "".join(f"update {namespace}{b}\0{o}\0\0" for b, o in refs.items())
     proc = subprocess.Popen(["git", "update-ref", "-z", "--stdin"],
@@ -324,7 +346,13 @@ def own_transaction(remote, refs, quarantine):
         proc.stdin.close()
         proc.wait()
         die("own ref transaction failed: " + proc.stderr.read().decode(errors="replace").strip())
+    log("own-transaction-prepared")
     quarantine.migrate()
+    quarantine.remove()
+    return proc
+
+
+def own_commit(proc):
     proc.stdin.write(b"commit\0")
     proc.stdin.close()
     code = proc.wait()
@@ -412,16 +440,27 @@ def push_batch(first, remote, workdir):
 def main():
     log("argv", sys.argv[1:])
     for k in sorted(os.environ):
-        if k.startswith("GIT_") and not k.startswith("GIT_CONFIG_VALUE_"):
-            log("env", f"{k}={os.environ[k]}")
+        if not k.startswith("GIT_") or k.startswith("GIT_CONFIG_VALUE_"):
+            continue
+        if not LOG_CONFIG_ENV and (k in ("GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")
+                                   or k.startswith("GIT_CONFIG_KEY_")):
+            continue
+        log("env", f"{k}={os.environ[k]}")
     remote = sys.argv[1]
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", remote):
+    if not NAME.fullmatch(remote):
         die(f"remote name {remote!r} is not a plain name")
+    # The box name, the URL's part after `pinfold::`. The probe's box side
+    # is PROBE_BOX; the name is only checked.
+    url = sys.argv[2] if len(sys.argv) > 2 else ""
+    if not NAME.fullmatch(url):
+        die(f"box name {url!r} in the URL is not a plain name")
     configured = git("config", "--get-all", f"remote.{remote}.fetch", check=False)
     configured = configured.stdout.decode().split()
     log("config-fetch", " | ".join(configured))
     workdir = tempfile.mkdtemp(prefix="pinfold-helper-")
     quarantine = None
+    pending = None  # PROBE_OWNREFS=end: a prepared transaction to commit at the end
+    listed_refs = {}
     try:
         while True:
             line = read_line()
@@ -431,11 +470,19 @@ def main():
                 # The only refspec the helper can see is configuration.
                 for spec in configured:
                     dst = spec.lstrip("+").partition(":")[2]
-                    if CHECKS and not dst.startswith(f"refs/remotes/{remote}/"):
+                    if not CHECKS:
+                        continue
+                    if OWNREFS in ("list", "end"):
+                        if dst:
+                            die(f"remote.{remote}.fetch has a destination: {spec}")
+                    elif not dst.startswith(f"refs/remotes/{remote}/"):
                         die(f"remote.{remote}.fetch writes outside refs/remotes/{remote}/: {spec}")
                 if CHECKS:
                     refs, quarantine = checked_list(remote, workdir)
                     listed_refs = refs
+                    if OWNREFS == "list" and refs:
+                        own_commit(own_prepare(remote, refs, quarantine))
+                        quarantine = None
                     send("".join(f"{o} refs/heads/{b}\n" for b, o in sorted(refs.items())) + "\n")
                 else:
                     listing, quarantine = unchecked_list(workdir)
@@ -445,9 +492,11 @@ def main():
             elif line.startswith(b"fetch "):
                 while line not in (b"\n", b""):
                     line = read_line()
-                if quarantine and OWNREFS and CHECKS:
-                    own_transaction(remote, listed_refs, quarantine)
-                    quarantine.remove()
+                if quarantine and OWNREFS == "fetch" and CHECKS:
+                    own_commit(own_prepare(remote, listed_refs, quarantine))
+                    quarantine = None
+                if quarantine and OWNREFS == "end" and CHECKS and listed_refs:
+                    pending = own_prepare(remote, listed_refs, quarantine)
                     quarantine = None
                 if quarantine:
                     quarantine.migrate()
@@ -457,6 +506,11 @@ def main():
             elif line.startswith(b"push "):
                 push_batch(line, remote, workdir)
             elif line in (b"\n", b""):
+                if OWNREFS == "end" and CHECKS and listed_refs:
+                    if pending is None:
+                        pending = own_prepare(remote, listed_refs, quarantine)
+                        quarantine = None
+                    own_commit(pending)
                 break
             else:
                 die(f"unexpected command {line!r}")

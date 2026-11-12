@@ -19,5 +19,5 @@ push
 
 git> b'list\n'
 box-fetch-exit 0
-helper-error git index-pack failed (exit 128): error: object 12b7a0b5593e7c98e8a9d61204eb3b62687c1a10: gitmodulesUrl: disallowed submodule url: --upload-pack=echo F2b >>TMP/p/marker
+helper-error git index-pack failed (exit 128): error: object a4882e00d6d8cffd4cb9aabebdacfed8fa424496: gitmodulesUrl: disallowed submodule url: --upload-pack=echo F2b >>TMP/p/marker
 fatal: fsck error in packed object

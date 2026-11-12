@@ -18,4 +18,4 @@ push
 
 
 git> b'list\n'
-helper-error git bundle failed (exit 1): error: 'SYSTMP/pinfold-helper-aj4xs50n/in.bundle' does not look like a v2 or v3 bundle file
+helper-error git bundle failed (exit 1): error: 'SYSTMP/pinfold-helper-c5tpr_e2/in.bundle' does not look like a v2 or v3 bundle file

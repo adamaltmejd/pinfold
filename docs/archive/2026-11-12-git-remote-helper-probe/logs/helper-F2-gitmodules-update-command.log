@@ -19,5 +19,5 @@ push
 
 git> b'list\n'
 box-fetch-exit 0
-helper-error git index-pack failed (exit 128): error: object 5bd7ff56f304baf2b736bf0c1356c51f1833de87: gitmodulesUpdate: disallowed submodule update setting: !sh -c echo F2 >>TMP/p/marker
+helper-error git index-pack failed (exit 128): error: object 6cdfe94799bb6b591a6e310932caac6af23c66eb: gitmodulesUpdate: disallowed submodule update setting: !sh -c echo F2 >>TMP/p/marker
 fatal: fsck error in packed object
