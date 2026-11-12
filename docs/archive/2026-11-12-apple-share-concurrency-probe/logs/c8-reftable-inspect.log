@@ -1,8 +1,8 @@
 == c1reftable4901_1 (host)
 total 24
--rw-r--r--  1 adam  wheel  219 Nov 12 10:08 0x000000000001-0x000000000001-0c839f20.ref
--rw-r--r--@ 1 adam  wheel  354 Nov 12 10:08 0x000000000001-0x000000000004-b6f76fcf.ref
--rw-r--r--  1 adam  wheel   43 Nov 12 10:08 tables.list
+-rw-r--r--  1 user  wheel  219 Nov 12 10:08 0x000000000001-0x000000000001-0c839f20.ref
+-rw-r--r--@ 1 user  wheel  354 Nov 12 10:08 0x000000000001-0x000000000004-b6f76fcf.ref
+-rw-r--r--  1 user  wheel   43 Nov 12 10:08 tables.list
 tables.list:
 0x000000000001-0x000000000001-0c839f20.ref
 -- HEAD:
@@ -20,9 +20,9 @@ dangling commit 0c4fbc1c0f6c0a6efc2f3120f3d870e7230c456b
 ?? hfile
 == c1reftable4901_10 (host)
 total 24
--rw-r--r--  1 adam  wheel  219 Nov 12 10:08 0x000000000001-0x000000000001-e834bc00.ref
--rw-r--r--@ 1 adam  wheel  355 Nov 12 10:08 0x000000000001-0x000000000004-7b5d7a78.ref
--rw-r--r--  1 adam  wheel   43 Nov 12 10:08 tables.list
+-rw-r--r--  1 user  wheel  219 Nov 12 10:08 0x000000000001-0x000000000001-e834bc00.ref
+-rw-r--r--@ 1 user  wheel  355 Nov 12 10:08 0x000000000001-0x000000000004-7b5d7a78.ref
+-rw-r--r--  1 user  wheel   43 Nov 12 10:08 tables.list
 tables.list:
 0x000000000001-0x000000000001-e834bc00.ref
 -- HEAD:
@@ -40,9 +40,9 @@ dangling commit 9154ff8ea2edc7620ea242c82deacd5dc50c2e31
 ?? hfile
 == c1reftable4901_11 (host)
 total 24
--rw-r--r--  1 adam  wheel  219 Nov 12 10:08 0x000000000001-0x000000000001-19e7577f.ref
--rw-r--r--@ 1 adam  wheel  355 Nov 12 10:08 0x000000000001-0x000000000004-ef7e0d3d.ref
--rw-r--r--  1 adam  wheel   43 Nov 12 10:08 tables.list
+-rw-r--r--  1 user  wheel  219 Nov 12 10:08 0x000000000001-0x000000000001-19e7577f.ref
+-rw-r--r--@ 1 user  wheel  355 Nov 12 10:08 0x000000000001-0x000000000004-ef7e0d3d.ref
+-rw-r--r--  1 user  wheel   43 Nov 12 10:08 tables.list
 tables.list:
 0x000000000001-0x000000000001-19e7577f.ref
 -- HEAD:

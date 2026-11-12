@@ -19,13 +19,15 @@ capabilities prevent it.
 - Box: `container run -d --user 501:20 -v /tmp/pfs.EUq1:/work --entrypoint sleep IMAGE infinity`.
   Case 7 adds a second box that mounts the same directory at its host
   path (`-v /private/tmp/pfs.EUq1:/private/tmp/pfs.EUq1`).
-- Every guest step is one `container exec … sh -c`. An exec starts in about
-  40 ms.
+- Every guest step is one `container exec … sh -c`.
 - Both sides run git with `GIT_CONFIG_GLOBAL=/dev/null` and fixed author
   names, so the host's signing config stays out. The guest adds
   `safe.directory=*` through `GIT_CONFIG_*`.
-- Each trial uses a fresh repository under the temp dir: `git init -b main`
-  and two commits `c0`, `c1` touching files `a` and `b`.
+- Cases 1, 2, 3, 5, 7 and 8 use a fresh repository under the temp dir
+  for each trial: `git init -b main` and two commits `c0`, `c1` touching
+  files `a` and `b`. Case 6 uses a fresh directory holding the file `f`.
+  Case 4 runs 30 iterations in each of three repositories, so damage
+  carries forward within a repository.
 
 The container service was stopped at the start; it was started with
 `container system start --disable-kernel-install` and stopped again at the
@@ -38,6 +40,16 @@ after the run, because the wrapper's stderr line followed `commit_rc=0` and
 broke the first parse; all 20 are 0. A first guest-loop run of case 4 was
 discarded: its loop had a shell syntax error and never ran.
 
+`logs/c1-observe.jsonl` holds 60 records. In 30 of them (delays 0, 0.25
+and 0.5 s) the `guest_commit_rc` field is
+`"0\nfatal: your current branch 'main' does not have any commits yet"`.
+An earlier version of `c1.py` than the archived one wrote them, and they
+were not re-parsed. `c4-hostloop*.jsonl` and `c4-guestloop.jsonl` lack
+the `host_loop_replacements` field, and `c5-damage.jsonl` and
+`c5-observe.jsonl` lack `delay`, because they predate additive edits to
+`c4.py` and `c5.py`. The owner name in `logs/c8-reftable-inspect.log`
+(the `ls -l` lines) was replaced with `user`.
+
 ## Words used below
 
 - Prime: the guest runs `git status --porcelain; git log -1` in the repository.
@@ -45,14 +57,16 @@ discarded: its loop had a shell syntax error and never ran.
 - History loss: the host's last commit is no longer an ancestor of `main`.
 - Content loss: the commit at the tip of `main` lacks a file or line the
   host had committed before the guest acted.
-- Delay: time from the end of the host's command to the start of the guest
-  exec.
+- Delay: the sleep after the host's commit and one host `rev-parse`,
+  before the guest exec is launched. The guest's command starts after
+  exec startup.
 
 ## Case 1: host commit, then guest commit
 
 `c1.py base 10`. Guest primes. Host runs
-`echo host >> a; echo h > hfile; git add a hfile; git commit -qm host`, 21 to
-26 ms after the prime. After the delay the guest runs
+`echo host >> a; echo h > hfile; git add a hfile; git commit -qm host`.
+The host commit finished 21 to 26 ms after the prime returned. After the
+delay the guest runs
 `echo g > gfile; git add gfile; git commit -qm guest`. The host then checks
 ancestry, `git ls-tree`, `git fsck --full`, `git reflog main` and
 `git status`.
@@ -75,13 +89,16 @@ still listed `host`, `c1` and `c0`, so the old history was reachable only
 through the reflog.
 
 The two content-loss trials at 0.9 s kept history: the guest commit had
-`host` as its parent but its tree held only `gfile`. The ref was already
-fresh for the guest; the index was not.
+`host` as its parent but its tree held only `gfile`. Presumably the ref was
+fresh for the guest and the index was not.
 
 `c1.py observe 10` repeats the sweep with
 `git status --porcelain; git log --oneline -3` in the same exec before the
 commit. Counts were identical: 30 of 30 lost at 0 to 0.5 s, 0 of 30 at
-1.0 to 2.0 s. Inside the window the guest printed:
+1.0 to 2.0 s. Inside the window the guest printed the following. This is
+an excerpt of the logged output, which also holds the `--log`, `--end`
+and `commit_rc` markers. Stderr is appended after stdout, so the `fatal`
+line comes last:
 
 ```
 ?? a
@@ -114,14 +131,16 @@ exec launch by -0.1 to +0.15 s. 30 trials.
 | +0.06 to +0.15 | 11 | Clean: four commits in a line, all files. |
 
 No `index.lock` or `main.lock` was left behind. `fsck` exited 0 in all 30.
-With a 40 ms exec start, offsets up to about +0.02 s mean the host commit
-finished before the guest git ran, so those 15 trials are case 1 at delay 0.
-Only the +0.04 and +0.06 rows overlapped.
+The 15 trials at offsets up to +0.02 s match the case 1 outcome at delay 0;
+presumably the host commit finished before guest git ran. Outcomes other
+than that one appear from +0.04 s.
 
 `c3.py 10` then sampled the overlap band densely, 50 trials
 (`logs/c3-dense.jsonl`). "Refused" means one commit exited non-zero
-(`index.lock: File exists`, `cannot lock ref 'HEAD'`, or exit 1) and the
-other side's commit and files were all on `main`.
+(`index.lock: File exists` or `cannot lock ref 'HEAD'`) and the
+other side's commit and files were all on `main`. In 5 refused trials the
+guest exited 128 on a lock-file error while the host commit's tree
+contained `gfile` (3 at +0.04, 1 at +0.05, 1 at +0.06).
 
 | Offset (s) | Clean | Refused, nothing lost | Content loss, history kept | Host commit dropped from `main` |
 |---|---|---|---|---|
@@ -132,24 +151,40 @@ other side's commit and files were all on `main`.
 | +0.07 | 10 | 0 | 0 | 0 |
 
 The content-loss trials (8) had a commit that exited 0 whose tree lacked
-`a`, `b` or the committer's own file; in two of them the tree on `main` was
-empty. `fsck` exited 0 in all 50 and no lock file was left.
+`a`, `b` or the committer's own file; in three of them the tree on `main` was
+empty (two at +0.04, one at +0.05). `fsck` exited 0 in all 50 and no lock
+file was left.
 
 ## Case 4: a side that only refreshes the index
 
-`c4.py MODE 3 30`. One side loops `git status --porcelain; sleep 0.1`. In the
-plain poll mode that is all it does. The forced modes also `touch a` before each status, so that every
-status refreshes stat data and replaces `.git/index`. Host only, 20
-iterations of the forced loop: the index inode changed 20 of 20 times with
-`GIT_OPTIONAL_LOCKS=1`, 0 of 20 with `GIT_OPTIONAL_LOCKS=0`
-(`logs/c4-index-rewrite.log`). The other side runs 30 iterations of
+`c4.py MODE 3 30`. One side loops `git status --porcelain; sleep 0.1`. In
+the plain poll mode that is all it does. The forced modes also `touch a`
+before each status, so that every status refreshes stat data and replaces
+`.git/index`. Host only, 20 iterations of the forced loop: the index inode
+changed 20 of 20 times with `GIT_OPTIONAL_LOCKS=1`, 0 of 20 with
+`GIT_OPTIONAL_LOCKS=0` (`logs/c4-index-rewrite.log`). The other side runs 30 iterations of
 `echo N >> mine; git status --porcelain; git add mine && git commit`.
-Three repositories per mode, 90 iterations. Anomalous means a commit
-refused, or a status line other than `M mine` or `?? mine`.
+Three repositories per mode, 90 iterations, 30 in each repository in
+sequence. Anomalous means a commit refused, or a status line other than
+`M mine` or `?? mine`.
 
-In the plain poll mode the host loop compared the index inode before and after each of its own
-`git status` runs. It replaced the index 17, 18 and 17 times in the three
-repositories, prompted by the guest's edits to `mine`. The `index_inodes_seen`
+In the host modes an iteration counts as anomalous once the first damaging
+commit has landed in that repository, because the damage stays. In eight
+of the nine host-mode repositories, `D  a` and `D  b` appear in one
+iteration only: iteration 1 or 2 (plain poll 2, 1, 1; forced loop 1, 1, 1;
+wrapper 1 and 1). In the ninth (wrapper, second repository) they never
+appear and `?? a ?? b` first appears at iteration 2. Every later iteration
+in all nine shows `?? a` and `?? b`, so the 86/90-style figures mostly
+count persistent state. In the plain poll mode, 3 of the 86 are the
+`D  a` iterations, 4 are refusals, and 79 show only `?? a ?? b`, 40 of
+them with `D  mine`. In the wrapper mode, iteration 0 of two repositories
+is counted only because the wrapper's `gitwrap: host change seen,
+waiting` line followed `rc=0`.
+
+In the plain poll mode the host loop compared the index inode before and
+after each of its own `git status` runs. The inode changed across the
+host's status 17, 18 and 17 times in the three repositories. This includes
+any guest index write in that interval. The `index_inodes_seen`
 field in the logs is sampled once per iteration and also counts the
 committing side's own index writes. It does not measure the loop.
 
@@ -159,16 +194,18 @@ committing side's own index writes. It does not measure the loop.
 | Host forced loop, guest commits | 87/90 | `mine` only (3/3) | 90/90 |
 | Host forced loop with `GIT_OPTIONAL_LOCKS=0`, guest commits | 0/90 | `a b mine` (3/3) | 90/90 |
 | Host forced loop, guest uses `gitwrap.sh` | 89/90 (4 `index.lock` refusals) | `mine` only (3/3) | 86/90 |
-| Guest forced loop, host commits | 12/90 (7 `index.lock` refusals, 5 follow-on `MM mine`) | `a b mine` (3/3) | all 30 lines of `mine` present; refused commits folded into the next |
+| Guest forced loop, host commits | 12/90 (7 `index.lock` refusals, 5 follow-on `MM mine`) | `a b mine` (3/3) | 83/90 (27 + 29 + 27); all 30 lines of `mine` present; refused commits folded into the next |
 
 With either host loop, the guest's status showed lines such as `?? a`, `?? b`,
-`D  mine`, `?? mine` or `D  a`, `D  b`. Its commits exited 0. The commits
-recorded `a` and `b` as deleted, and the host status afterwards showed
-`?? a ?? b`. History stayed linear with one root. `fsck` exited 0 in every
+`D  mine`, `?? mine` or `D  a`, `D  b`. Its commits that were not refused
+exited 0. The commits recorded `a` and `b` as deleted, and the host status
+afterwards showed `?? a ?? b`. History stayed linear with one root. `fsck` exited 0 in every
 repository of every mode.
 
-With the guest loop, the host saw only `index.lock` refusals from the guest's
-`git status` holding the lock. No file or line was lost.
+With the guest loop, the host saw 7 `index.lock` refusals, presumably from
+the guest's `git status` holding the lock. It also saw the 5 `MM mine`
+lines the table counts, each in the iteration after a refusal. No file or
+line was lost.
 
 ## Case 5: host ref updates other than commit
 
@@ -177,7 +214,10 @@ With the guest loop, the host saw only `index.lock` refusals from the guest's
 `rebase` (host on `feat` branched from `c0`, runs `git rebase main`);
 `stash` (host has `a` modified, runs `git stash`). The guest primes with
 status, log, `git branch`, `git stash list`, `cat a b` and
-`ls -la . .git .git/refs/heads`.
+`ls -la . .git .git/refs/heads`. After the operation and before the guest
+acts, `c5.py` runs host `git branch`, `rev-parse`, `git status --porcelain`
+and `stash list`, and in damage mode `for-each-ref`. The host `git status`
+can itself refresh and replace `.git/index`.
 
 Observe, 5 trials each, guest reading branch, HEAD, status and stash count
 at 0.04, 0.3, 0.6, 1.0 and 1.5 s:
@@ -189,8 +229,8 @@ at 0.04, 0.3, 0.6, 1.0 and 1.5 s:
 | rebase | same (5/5) | correct (5/5) |
 | stash | branch, HEAD and stash count correct; status `D  a`, `D  b`, `?? a`, `?? b` (5/5) | correct, status clean (5/5) |
 
-Damage, 10 trials each, guest at once runs `git status`, adds `gfile` and
-commits:
+Damage, 10 trials each. "At once" means after those host calls; the guest
+then runs `git status`, adds `gfile` and commits:
 
 | Op | Guest commit | Refs moved | Result |
 |---|---|---|---|
@@ -225,8 +265,8 @@ Host saves, guest edits (10 trials at 0 s, 5 at 0.5 s, 5 at 1.5 s per method):
 | Guest `cat f` before editing | `No such file or directory` (60/60) | `l1 host` (20/20) |
 | `echo guest >> f` | exit 2, `cannot create f: Directory nonexistent`; host keeps `l1 host` (15/15) | both lines (5/5) |
 | `sed -i '$a guest' f` | exit 2, `can't read f`; host keeps `l1 host` (15/15) | both lines (5/5) |
-| `c=$(cat f); printf … > f.tmp && mv f.tmp f` | exit 0; host file is the 7 bytes `\nguest\n` (15/15) | both lines (5/5) |
-| `c=$(cat f); printf … > f` | exit 2, `cannot create f: Directory nonexistent`; host file is 0 bytes (15/15) | both lines (5/5) |
+| `c=$(cat f); printf … > f.tmp && mv f.tmp f` | exit 0; host `cat` prints `guest` (the log strips whitespace; the command writes an empty line first) (15/15) | both lines (5/5) |
+| `c=$(cat f); printf … > f` | exit 2, `cannot create f: Directory nonexistent`; host file is empty (`cat` printed nothing) (15/15) | both lines (5/5) |
 
 Guest saves, host edits (10 trials at 0 s per method: append, in-place
 rewrite, temp and rename, `perl -0pi`): 40 of 40 ended with `l1 guest host`
@@ -285,9 +325,10 @@ no content loss, `gfile` committed, clean host status and `fsck` exit 0.
 
 Notes on the rows:
 
-- (b) with host `pack-refs`: the loose `refs/heads/main` was deleted on the
-  host. The listing does not heal a removed name (as in the prior probe), and
-  the guest made a parentless commit with the full tree `a b gfile hfile`.
+- (b) with host `pack-refs`: the guest made a parentless commit with the
+  full tree `a b gfile hfile`. Presumably `pack-refs` deleted the loose
+  `refs/heads/main` and the listing does not heal a removed name (as in the
+  prior probe).
 - (c) printed `gitwrap: host change seen, waiting` in all 20 trials. In case 4
   the same wrapper did not change the outcome (89/90 anomalous iterations),
   because a host index refresh does not touch `.git/logs/HEAD`. These trials
@@ -296,13 +337,15 @@ Notes on the rows:
 - (e) reftable: afterwards on the host, `git symbolic-ref HEAD` fails with
   `ref HEAD is not a symbolic ref`, `git show-ref` prints nothing, and
   `git reflog --all` holds only the guest's initial commit. `fsck` reports
-  the host commit as a dangling commit. `tables.list` names only the
+  one dangling commit. `tables.list` names only the
   guest's new table. The previous table file is still in `.git/reftable`
   but unlisted (`logs/c8-reftable-inspect.log`).
 - (f) `GIT_OPTIONAL_LOCKS=0` on the host loop: against case 1 it changed
-  nothing, since the host commit itself replaces the ref and index. In the
-  forced case 4 loop it removed every anomaly (0/90) and the loop never
-  replaced the index. It was not run with the plain poll loop.
+  nothing, presumably since the host commit itself replaces the ref and
+  index. In the forced case 4 loop it removed every anomaly (0/90). A
+  separate host-only check showed the loop never replaced the index
+  (`logs/c4-index-rewrite.log`, 0 of 20). It was not run with the plain
+  poll loop.
 - (b) and (c) passed only in these sequential case 1 trials.
 
 ## Not tested
@@ -329,4 +372,7 @@ Notes on the rows:
 - Case 5 between 0 and 0.9 s other than the observe timeline.
 - Long runs (hours) and several boxes on one share at once.
 - Why a failed guest `> f` (`Directory nonexistent`) left the host file
-  truncated to 0 bytes.
+  empty.
+- `c3.py`'s `root_commits != 1` test cannot detect a parentless
+  replacement, since a parentless commit on `main` is the only root. The
+  case 3 tables use the categories stated in the text, not that field.
