@@ -6,12 +6,13 @@ against the code is folded in. It would supersede parts of
 `2026-11-11-composable-plan.md`, which stays as written. ARCHITECTURE.md
 remains the contract until a ticket changes it. Nothing here is
 implemented. Adam answered most of the open questions on 2026-11-12;
-the answers are decisions 13 to 22, and three questions remain.
+the answers are decisions 13 to 26, and no question remains open.
 
 Evidence, all dated 2026-11-12: `linux-harness-measurement.md` (merged),
 `apple-share-concurrency-probe.md`, `readonly-git-mount-probe.md` and
 `wrap-microsandbox-notes.md` (all merged), and
-`worktree-readonly-git-probe.md` (PR #291, under review).
+`worktree-readonly-git-probe.md` and `agent-login-files-probe.md` (all
+merged), and `git-remote-helper-probe.md` (PR #293, under review).
 
 ## Goal and threat model
 
@@ -42,8 +43,7 @@ Threat model, in Adam's order:
    withdrawn.
 4. **Agents are installed in the image at `pinfold build`,** latest at
    that build, with the runtimes. No separate update flag. An agent may
-   update itself inside a box. Q10 and Q11 ask how far each half can be
-   honoured.
+   update itself inside a box. Decisions 23 and 24 say how.
 5. **Agent settings are configuration,** carried by the profile. The
    default profile runs each agent with its own sandbox and permission
    prompts off. Chrome runs with its sandbox off.
@@ -87,6 +87,25 @@ Threat model, in Adam's order:
     has one. Its exit code is passed through, and pinfold's own failures
     use codes a command is unlikely to return. Herdr's agent label is
     the command's first word.
+23. **A build installs the latest agents through the package manager's
+    cache.** The agent step runs on every build, with the download cache
+    kept between builds, so only a new version is downloaded. pinfold
+    knows nothing about agents. Probe 6 checks that each agent's
+    installer uses a cache.
+24. **Agents' own updaters are on for all three.** Each updater's
+    download hosts join the default allowlist, named after probe 5. The
+    allowlist is a control, so this is a spec change with named hosts.
+    Operator's note: a host that also accepts uploads is a way out for
+    data, so probe 5 records what each added host accepts.
+25. **A share is the main repository root, and the box may work in
+    linked worktrees beneath it,** read-only for Git like the rest. The
+    box can point a worktree's `.git` file at a Git directory it wrote,
+    and host Git then runs the box's scripts (PR #291). That stays under
+    "Not protected" with decision 8.
+26. **A fetch through the Git remote may update `box/*` branches
+    partially.** Every byte is checked before it lands. `pinfold fetch`
+    and `pinfold push` are deleted. If probe 2's second pass finds a
+    clean all-or-nothing method, it is used.
 
 ## Operator's calls
 
@@ -130,7 +149,7 @@ These follow from the decisions but were not put to Adam one by one.
 | 3. The one-second window accepted | Replaced. Shared Git state lost history in 40 of 40 trials inside 0.75 s. With one writer nothing is damaged; box Git reads can be wrong for about a second |
 | 8. Trust unchanged | Deleted with the project-held configuration (10) |
 | 10. `pinfold pi`, `claude`, `codex` | `pinfold -- CMD` (2) |
-| 11. Worktrees inside the root join its box | Open: Q12 |
+| 11. Worktrees inside the root join its box | Kept, read-only for Git (25) |
 | 12. Small image, privilege unchanged | Privilege unchanged; the default image grows (3) |
 | 14. Disk projects frozen as they are | Disk mounts stay; their crossing is rebuilt as a Git remote (9) |
 | 15. A box carries all three agents, mounted | The image carries whichever agents its recipe installs (4) |
@@ -227,7 +246,8 @@ the `config` output's mode, source and trust fields.
 
 ## Order
 
-1. Probes 1 to 3. Probe 3 is run (PR #291).
+1. Probes 1 to 3. Probes 1 and 3 are run and merged (#292, #291).
+   Probe 2 is run and under review (#293).
 2. Configuration: mounts as configuration, per-project configuration on
    the host, the hash check deleted, the shared-folder check moved.
 3. Agents in the image, with login files driven by routes. Probes 4 to
@@ -244,38 +264,8 @@ Issues #276 to #281 are re-scoped after Adam confirms.
 
 ## Open questions for Adam
 
-Q1 to Q9 and Q13 are answered; see decisions 13 to 22.
-
-- **Q10. Agents' own updaters.** An updater needs its download host on
-  the allowlist, and these are likely shared hosts such as GitHub
-  release assets or npm. Today's default allowlist already includes
-  `registry.npmjs.org`. Options: (a) On, with their hosts allowlisted.
-  (b) Off; a rebuild updates. Recommended: (a) for hosts already
-  allowlisted by default, (b) for the rest, decided per agent after
-  probe 5.
-- **Q11. How a build gets the latest agents.** Adam, 2026-11-12: a
-  build should not download an agent it already has; use ordinary
-  package caching. Options: (a) The agent step runs on every build with
-  the package manager's download cache kept between builds. The package
-  manager asks its index for the latest version and downloads only a
-  new one. pinfold knows nothing about agents. The layer is rewritten
-  each build. (b) pinfold asks each agent's release index for the
-  latest version and passes it to the build as an argument, so an
-  unchanged version reuses the cached layer exactly. pinfold must then
-  know each agent's index. Recommended: (a), if probe 6 shows each
-  agent's installer uses a cache and the rewritten layer is cheap.
-- **Q12. Worktrees.** Probe 3 (PR #291, under review): in a linked
-  worktree under a read-only main `.git`, box Git reads work and box
-  Git writes fail. The box can point the worktree's `.git` file at a
-  Git directory it wrote, and host Git then ran the box's fsmonitor and
-  hooks. Mounting that file read-only did not prevent it, because the
-  box can rename the worktree's folder. This is the host execution
-  decision 8 accepts, already listed under "Not protected". Options:
-  (a) Refuse to share a linked worktree; share only a main checkout.
-  (b) Share the main root and let the box work in worktrees beneath it,
-  read-only for Git like the rest. Recommended: (b). Whether a nested
-  repository the box creates in a main checkout gives the same path was
-  not tried; if it does, (a) buys nothing.
+None. Q1 to Q13 and the fetch question from probe 2 are answered; see
+decisions 13 to 26.
 
 ## Not established
 
@@ -283,4 +273,8 @@ Q1 to Q9 and Q13 are answered; see decisions 13 to 22.
 - Whether a subscription login accepts each agent configured this way.
 - How tightly Codex's pinned host helper is coupled to the Codex
   version in the image.
-- #291's results, until that record is reviewed.
+- #293's results, until that record is reviewed and corrected.
+- From probe 1, not run: claude's blank `ANTHROPIC_API_KEY` entry with
+  all three agents in one box; what codex sends by itself on a plain
+  route; pi's start on a fresh home disk once mount-point parents are
+  created as the box user. These rerun before the login step is built.
