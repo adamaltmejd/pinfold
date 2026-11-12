@@ -1,0 +1,886 @@
+=== F0-baseline
+[F0-baseline] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+[F0-baseline] exit=0: git -C TMP/p/host fetch box
+[F0-baseline] state: CHANGED
+[F0-baseline]   3,6c3,6
+[F0-baseline]   < in-pack: 0
+[F0-baseline]   < packs: 0
+[F0-baseline]   < size-pack: 0
+[F0-baseline]   < prune-packable: 0
+[F0-baseline]   ---
+[F0-baseline]   > in-pack: 6
+[F0-baseline]   > packs: 1
+[F0-baseline]   > size-pack: 1
+[F0-baseline]   > prune-packable: 3
+[F0-baseline]   10a11
+[F0-baseline]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+[F0-baseline]   14a16,18
+[F0-baseline]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.idx
+[F0-baseline]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.pack
+[F0-baseline]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.rev
+[F0-baseline] --- FETCH_HEAD
+b7036811f28d630ef484116a6df59f77f15c520f	not-for-merge	branch 'main' of pinfold::sim
+[F0-baseline] --- refs/remotes/box/HEAD
+[F0-baseline] box main=b7036811f28d630ef484116a6df59f77f15c520f host refs/remotes/box/main=b7036811f28d630ef484116a6df59f77f15c520f
+=== F0b-incremental
+[F0b-incremental] $ git -C TMP/p/host fetch box
+From pinfold::sim
+   b703681..5296044  main       -> box/main
+[F0b-incremental] exit=0: git -C TMP/p/host fetch box
+[F0b-incremental] state: CHANGED
+[F0b-incremental]   3,5c3,5
+[F0b-incremental]   < in-pack: 6
+[F0b-incremental]   < packs: 1
+[F0b-incremental]   < size-pack: 1
+[F0b-incremental]   ---
+[F0b-incremental]   > in-pack: 9
+[F0b-incremental]   > packs: 2
+[F0b-incremental]   > size-pack: 3
+[F0b-incremental]   11c11
+[F0b-incremental]   < b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+[F0b-incremental]   ---
+[F0b-incremental]   > 52960449ecdbf8fb51d6fee8b0d0a3ae37f97084 commit	refs/remotes/box/main
+[F0b-incremental]   15a16,18
+[F0b-incremental]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.idx
+[F0b-incremental]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.pack
+[F0b-incremental]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.rev
+[F0b-incremental] box main=52960449ecdbf8fb51d6fee8b0d0a3ae37f97084 host refs/remotes/box/main=52960449ecdbf8fb51d6fee8b0d0a3ae37f97084
+=== F1-fsck-bad-commit
+[F1-fsck-bad-commit] box refs/heads/bad=58a90eb1c08faeefd7bc75eb6baf571937f3a848
+[F1-fsck-bad-commit] $ git -C TMP/p/host fetch box
+pinfold-helper: git index-pack failed (exit 128): error: object 58a90eb1c08faeefd7bc75eb6baf571937f3a848: missingEmail: invalid author/committer line - missing email
+fatal: fsck error in packed object
+[F1-fsck-bad-commit] exit=128: git -C TMP/p/host fetch box
+[F1-fsck-bad-commit] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F2-gitmodules-update-command
+[F2-gitmodules-update-command] $ git -C TMP/p/host fetch box
+pinfold-helper: git index-pack failed (exit 128): error: object 5bd7ff56f304baf2b736bf0c1356c51f1833de87: gitmodulesUpdate: disallowed submodule update setting: !sh -c echo F2 >>TMP/p/marker
+fatal: fsck error in packed object
+[F2-gitmodules-update-command] exit=128: git -C TMP/p/host fetch box
+[F2-gitmodules-update-command] state: unchanged (count-objects, for-each-ref, object files, fsck)
+[F2-gitmodules-update-command] --- marker
+cat: TMP/p/marker: No such file or directory
+=== F2b-gitmodules-url-option
+[F2b-gitmodules-url-option] $ git -C TMP/p/host fetch box
+pinfold-helper: git index-pack failed (exit 128): error: object 12b7a0b5593e7c98e8a9d61204eb3b62687c1a10: gitmodulesUrl: disallowed submodule url: --upload-pack=echo F2b >>TMP/p/marker
+fatal: fsck error in packed object
+[F2b-gitmodules-url-option] exit=128: git -C TMP/p/host fetch box
+[F2b-gitmodules-url-option] state: unchanged (count-objects, for-each-ref, object files, fsck)
+[F2b-gitmodules-url-option] --- marker
+cat: TMP/p/marker: No such file or directory
+=== F3-dotgit-tree-entry
+[F3-dotgit-tree-entry] box refs/heads/dotgit=7d64d03a48412e5312d40c349c9245f5da52485b
+[F3-dotgit-tree-entry] $ git -C TMP/p/host fetch box
+pinfold-helper: git index-pack failed (exit 128): error: object 64f07b15047c5919a0f463458c10b435942ddc50: hasDotgit: contains '.git'
+fatal: fsck error in packed object
+[F3-dotgit-tree-entry] exit=128: git -C TMP/p/host fetch box
+[F3-dotgit-tree-entry] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F4-truncated-bundle
+[F4-truncated-bundle] bundle 503 bytes cut to 251
+[F4-truncated-bundle] $ git -C TMP/p/host fetch box
+pinfold-helper: git index-pack failed (exit 128): fatal: early EOF
+[F4-truncated-bundle] exit=128: git -C TMP/p/host fetch box
+[F4-truncated-bundle] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F5-size-limit
+[F5-size-limit] PROBE_LIMIT=2000 (today 4 GiB)
+[F5-size-limit] $ git -C TMP/p/host fetch box
+pinfold-helper: the bundle is past 2000 bytes
+[F5-size-limit] exit=128: git -C TMP/p/host fetch box
+[F5-size-limit] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F6a-listing-branch-count
+[F6a-listing-branch-count] PROBE_BRANCHES=3 (today 4096); box has 5 branches
+[F6a-listing-branch-count] $ git -C TMP/p/host fetch box
+pinfold-helper: the box has more than 3 branches
+[F6a-listing-branch-count] exit=128: git -C TMP/p/host fetch box
+[F6a-listing-branch-count] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F6b-bundle-head-count
+[F6b-bundle-head-count] listing names 1 branch, bundle carries 5 heads, PROBE_BRANCHES=3
+[F6b-bundle-head-count] $ git -C TMP/p/host fetch box
+pinfold-helper: the box has more than 3 branches
+[F6b-bundle-head-count] exit=128: git -C TMP/p/host fetch box
+[F6b-bundle-head-count] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F7.1-listing-name
+[F7.1-listing-name] listing adds: refs/heads/a..b
+[F7.1-listing-name] $ git -C TMP/p/host fetch box
+pinfold-helper: the box named a malformed branch: 'a..b'
+[F7.1-listing-name] exit=128: git -C TMP/p/host fetch box
+[F7.1-listing-name] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F7.2-listing-name
+[F7.2-listing-name] listing adds: refs/tags/v1
+[F7.2-listing-name] $ git -C TMP/p/host fetch box
+pinfold-helper: the box's branch listing is malformed
+[F7.2-listing-name] exit=128: git -C TMP/p/host fetch box
+[F7.2-listing-name] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F7.3-listing-name
+[F7.3-listing-name] listing adds: refs/heads/x y
+[F7.3-listing-name] $ git -C TMP/p/host fetch box
+pinfold-helper: the box named a malformed branch: 'x y'
+[F7.3-listing-name] exit=128: git -C TMP/p/host fetch box
+[F7.3-listing-name] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F7.4-listing-name
+[F7.4-listing-name] listing adds: refs/heads/x:y
+[F7.4-listing-name] $ git -C TMP/p/host fetch box
+pinfold-helper: the box named a malformed branch: 'x:y'
+[F7.4-listing-name] exit=128: git -C TMP/p/host fetch box
+[F7.4-listing-name] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F7.5-listing-name
+[F7.5-listing-name] listing adds: refs/heads/-x
+[F7.5-listing-name] $ git -C TMP/p/host fetch box
+pinfold-helper: branch '-x' names b7036811f28d630ef484116a6df59f77f15c520f, which the bundle does not carry and refs/remotes/box/* does not reach
+[F7.5-listing-name] exit=128: git -C TMP/p/host fetch box
+[F7.5-listing-name] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F7.6-listing-name
+[F7.6-listing-name] listing adds: refs/heads/@{1}
+[F7.6-listing-name] $ git -C TMP/p/host fetch box
+pinfold-helper: the box named a malformed branch: '@{1}'
+[F7.6-listing-name] exit=128: git -C TMP/p/host fetch box
+[F7.6-listing-name] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F7b-bundle-head-name
+[F7b-bundle-head-name] bundle head refs/heads/main renamed to refs/heads/x:y, listing empty
+[F7b-bundle-head-name] $ git -C TMP/p/host fetch box
+pinfold-helper: the box named a malformed branch: 'x:y'
+[F7b-bundle-head-name] exit=128: git -C TMP/p/host fetch box
+[F7b-bundle-head-name] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F7c-real-dash-branch
+[F7c-real-dash-branch] box has refs/heads/-x
+[F7c-real-dash-branch] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      -x         -> box/-x
+ * [new branch]      main       -> box/main
+[F7c-real-dash-branch] exit=0: git -C TMP/p/host fetch box
+[F7c-real-dash-branch] state: CHANGED
+[F7c-real-dash-branch]   3,6c3,6
+[F7c-real-dash-branch]   < in-pack: 0
+[F7c-real-dash-branch]   < packs: 0
+[F7c-real-dash-branch]   < size-pack: 0
+[F7c-real-dash-branch]   < prune-packable: 0
+[F7c-real-dash-branch]   ---
+[F7c-real-dash-branch]   > in-pack: 6
+[F7c-real-dash-branch]   > packs: 1
+[F7c-real-dash-branch]   > size-pack: 1
+[F7c-real-dash-branch]   > prune-packable: 3
+[F7c-real-dash-branch]   10a11,12
+[F7c-real-dash-branch]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/-x
+[F7c-real-dash-branch]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+[F7c-real-dash-branch]   14a17,19
+[F7c-real-dash-branch]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.idx
+[F7c-real-dash-branch]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.pack
+[F7c-real-dash-branch]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.rev
+=== F8-listed-ghost
+[F8-listed-ghost] listing names refs/heads/ghost at an object neither side has
+[F8-listed-ghost] $ git -C TMP/p/host fetch box
+pinfold-helper: branch 'ghost' names 0123456789abcdef0123456789abcdef01234567, which the bundle does not carry and refs/remotes/box/* does not reach
+[F8-listed-ghost] exit=128: git -C TMP/p/host fetch box
+[F8-listed-ghost] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F8b-bundled-head-missing
+[F8b-bundled-head-missing] bundle header names refs/heads/ghost at an object its pack lacks
+[F8b-bundled-head-missing] $ git -C TMP/p/host fetch box
+pinfold-helper: git rev-list failed (exit 128): fatal: bad object 0123456789abcdef0123456789abcdef01234567
+[F8b-bundled-head-missing] exit=128: git -C TMP/p/host fetch box
+[F8b-bundled-head-missing] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F9a-filtered-bundle
+[F9a-filtered-bundle] this git's bundle create has no --filter, so the header is written by hand
+[F9a-filtered-bundle] --- bundle header
+# v3 git bundle
+@filter=blob:none
+b7036811f28d630ef484116a6df59f77f15c520f refs/heads/main
+
+[F9a-filtered-bundle] $ git -C TMP/p/host fetch box
+pinfold-helper: the box sent a filtered bundle
+[F9a-filtered-bundle] exit=128: git -C TMP/p/host fetch box
+[F9a-filtered-bundle] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F9b-object-format-sha256
+[F9b-object-format-sha256] --- bundle header
+# v3 git bundle
+@object-format=sha256
+b7036811f28d630ef484116a6df59f77f15c520f refs/heads/main
+
+[F9b-object-format-sha256] $ git -C TMP/p/host fetch box
+pinfold-helper: git bundle failed (exit 1): error: unrecognized header: b7036811f28d630ef484116a6df59f77f15c520f refs/heads/main (56)
+[F9b-object-format-sha256] exit=128: git -C TMP/p/host fetch box
+[F9b-object-format-sha256] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F9c-unknown-capability
+[F9c-unknown-capability] $ git -C TMP/p/host fetch box
+pinfold-helper: git bundle failed (exit 1): error: unknown capability 'hooks=post-checkout'
+[F9c-unknown-capability] exit=128: git -C TMP/p/host fetch box
+[F9c-unknown-capability] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F9d-missing-prerequisite
+[F9d-missing-prerequisite] --- bundle header
+# v2 git bundle
+-b7036811f28d630ef484116a6df59f77f15c520f box one
+52960449ecdbf8fb51d6fee8b0d0a3ae37f97084 refs/heads/main
+
+[F9d-missing-prerequisite] $ git -C TMP/p/host fetch box
+pinfold-helper: git bundle failed (exit 1): 
+[F9d-missing-prerequisite] exit=128: git -C TMP/p/host fetch box
+[F9d-missing-prerequisite] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== F9e-long-prerequisite-subject
+[F9e-long-prerequisite-subject] prerequisite 0be1ac189ceac3ea3c900037854ce9e30b51a988 (the host has it) with a 100000-byte subject
+[F9e-long-prerequisite-subject] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+[F9e-long-prerequisite-subject] exit=0: git -C TMP/p/host fetch box
+[F9e-long-prerequisite-subject] state: CHANGED
+[F9e-long-prerequisite-subject]   3,6c3,6
+[F9e-long-prerequisite-subject]   < in-pack: 0
+[F9e-long-prerequisite-subject]   < packs: 0
+[F9e-long-prerequisite-subject]   < size-pack: 0
+[F9e-long-prerequisite-subject]   < prune-packable: 0
+[F9e-long-prerequisite-subject]   ---
+[F9e-long-prerequisite-subject]   > in-pack: 6
+[F9e-long-prerequisite-subject]   > packs: 1
+[F9e-long-prerequisite-subject]   > size-pack: 1
+[F9e-long-prerequisite-subject]   > prune-packable: 3
+[F9e-long-prerequisite-subject]   10a11
+[F9e-long-prerequisite-subject]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+[F9e-long-prerequisite-subject]   14a16,18
+[F9e-long-prerequisite-subject]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.idx
+[F9e-long-prerequisite-subject]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.pack
+[F9e-long-prerequisite-subject]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.rev
+=== R1-df-conflict-plain
+[R1-df-conflict-plain] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+ * [new branch]      x          -> box/x
+[R1-df-conflict-plain] exit=0: git -C TMP/p/host fetch box
+[R1-df-conflict-plain] box: x deleted, x/y created, main advanced to 52960449ecdbf8fb51d6fee8b0d0a3ae37f97084
+[R1-df-conflict-plain] $ git -C TMP/p/host fetch box
+error: some local refs could not be updated; try running
+ 'git remote prune box' to remove any old, conflicting branches
+From pinfold::sim
+   b703681..5296044  main       -> box/main
+ ! [new branch]      x/y        -> box/x/y  (unable to update local ref)
+[R1-df-conflict-plain] exit=1: git -C TMP/p/host fetch box
+[R1-df-conflict-plain] state: CHANGED
+[R1-df-conflict-plain]   3,5c3,5
+[R1-df-conflict-plain]   < in-pack: 6
+[R1-df-conflict-plain]   < packs: 1
+[R1-df-conflict-plain]   < size-pack: 1
+[R1-df-conflict-plain]   ---
+[R1-df-conflict-plain]   > in-pack: 9
+[R1-df-conflict-plain]   > packs: 2
+[R1-df-conflict-plain]   > size-pack: 3
+[R1-df-conflict-plain]   11c11
+[R1-df-conflict-plain]   < b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+[R1-df-conflict-plain]   ---
+[R1-df-conflict-plain]   > 52960449ecdbf8fb51d6fee8b0d0a3ae37f97084 commit	refs/remotes/box/main
+[R1-df-conflict-plain]   16a17,19
+[R1-df-conflict-plain]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.idx
+[R1-df-conflict-plain]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.pack
+[R1-df-conflict-plain]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.rev
+=== R1b-df-conflict-atomic
+[R1b-df-conflict-atomic] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+ * [new branch]      x          -> box/x
+[R1b-df-conflict-atomic] exit=0: git -C TMP/p/host fetch box
+[R1b-df-conflict-atomic] $ git -C TMP/p/host fetch --atomic box
+From pinfold::sim
+   b703681..5296044  main       -> box/main
+ * [new branch]      x/y        -> box/x/y
+error: cannot lock ref 'refs/remotes/box/x/y': 'refs/remotes/box/x' exists; cannot create 'refs/remotes/box/x/y'
+[R1b-df-conflict-atomic] exit=254: git -C TMP/p/host fetch --atomic box
+[R1b-df-conflict-atomic] state: CHANGED
+[R1b-df-conflict-atomic]   3,5c3,5
+[R1b-df-conflict-atomic]   < in-pack: 6
+[R1b-df-conflict-atomic]   < packs: 1
+[R1b-df-conflict-atomic]   < size-pack: 1
+[R1b-df-conflict-atomic]   ---
+[R1b-df-conflict-atomic]   > in-pack: 9
+[R1b-df-conflict-atomic]   > packs: 2
+[R1b-df-conflict-atomic]   > size-pack: 3
+[R1b-df-conflict-atomic]   16a17,19
+[R1b-df-conflict-atomic]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.idx
+[R1b-df-conflict-atomic]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.pack
+[R1b-df-conflict-atomic]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.rev
+[R1b-df-conflict-atomic]   20a24
+[R1b-df-conflict-atomic]   > dangling commit 52960449ecdbf8fb51d6fee8b0d0a3ae37f97084
+=== R1c-df-conflict-preflight
+[R1c-df-conflict-preflight] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+ * [new branch]      x          -> box/x
+[R1c-df-conflict-preflight] exit=0: git -C TMP/p/host fetch box
+[R1c-df-conflict-preflight] $ git -C TMP/p/host fetch box
+pinfold-helper: ref preflight failed: fatal: prepare: cannot lock ref 'refs/remotes/box/x/y': 'refs/remotes/box/x' exists; cannot create 'refs/remotes/box/x/y'
+[R1c-df-conflict-preflight] exit=128: git -C TMP/p/host fetch box
+[R1c-df-conflict-preflight] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== R2-lockfile-plain
+[R2-lockfile-plain] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+[R2-lockfile-plain] exit=0: git -C TMP/p/host fetch box
+[R2-lockfile-plain] host has refs/remotes/box/main.lock; box advanced main and added other
+[R2-lockfile-plain] $ git -C TMP/p/host fetch box
+error: cannot lock ref 'refs/remotes/box/main': Unable to create 'TMP/p/host/.git/refs/remotes/box/main.lock': File exists.
+
+Another git process seems to be running in this repository, or the lock file may be stale
+From pinfold::sim
+ ! b703681..5296044  main       -> box/main  (unable to update local ref)
+ * [new branch]      other      -> box/other
+[R2-lockfile-plain] exit=1: git -C TMP/p/host fetch box
+[R2-lockfile-plain] state: CHANGED
+[R2-lockfile-plain]   3,5c3,5
+[R2-lockfile-plain]   < in-pack: 6
+[R2-lockfile-plain]   < packs: 1
+[R2-lockfile-plain]   < size-pack: 1
+[R2-lockfile-plain]   ---
+[R2-lockfile-plain]   > in-pack: 9
+[R2-lockfile-plain]   > packs: 2
+[R2-lockfile-plain]   > size-pack: 3
+[R2-lockfile-plain]   11a12
+[R2-lockfile-plain]   > 52960449ecdbf8fb51d6fee8b0d0a3ae37f97084 commit	refs/remotes/box/other
+[R2-lockfile-plain]   15a17,19
+[R2-lockfile-plain]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.idx
+[R2-lockfile-plain]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.pack
+[R2-lockfile-plain]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.rev
+=== R2b-lockfile-atomic
+[R2b-lockfile-atomic] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+[R2b-lockfile-atomic] exit=0: git -C TMP/p/host fetch box
+[R2b-lockfile-atomic] $ git -C TMP/p/host fetch --atomic box
+From pinfold::sim
+   b703681..5296044  main       -> box/main
+ * [new branch]      other      -> box/other
+error: cannot lock ref 'refs/remotes/box/main': Unable to create 'TMP/p/host/.git/refs/remotes/box/main.lock': File exists.
+
+Another git process seems to be running in this repository, or the lock file may be stale
+[R2b-lockfile-atomic] exit=253: git -C TMP/p/host fetch --atomic box
+[R2b-lockfile-atomic] state: CHANGED
+[R2b-lockfile-atomic]   3,5c3,5
+[R2b-lockfile-atomic]   < in-pack: 6
+[R2b-lockfile-atomic]   < packs: 1
+[R2b-lockfile-atomic]   < size-pack: 1
+[R2b-lockfile-atomic]   ---
+[R2b-lockfile-atomic]   > in-pack: 9
+[R2b-lockfile-atomic]   > packs: 2
+[R2b-lockfile-atomic]   > size-pack: 3
+[R2b-lockfile-atomic]   15a16,18
+[R2b-lockfile-atomic]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.idx
+[R2b-lockfile-atomic]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.pack
+[R2b-lockfile-atomic]   > ./pack/pack-29bebf79beec4eccfaf3b63aeb197192d4222244.rev
+[R2b-lockfile-atomic]   19a23
+[R2b-lockfile-atomic]   > dangling commit 52960449ecdbf8fb51d6fee8b0d0a3ae37f97084
+=== R2c-lockfile-preflight
+[R2c-lockfile-preflight] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+[R2c-lockfile-preflight] exit=0: git -C TMP/p/host fetch box
+[R2c-lockfile-preflight] $ git -C TMP/p/host fetch box
+pinfold-helper: ref preflight failed: fatal: prepare: cannot lock ref 'refs/remotes/box/main': Unable to create 'TMP/p/host/.git/refs/remotes/box/main.lock': File exists.
+
+Another git process seems to be running in this repository, or the lock file may be stale
+[R2c-lockfile-preflight] exit=128: git -C TMP/p/host fetch box
+[R2c-lockfile-preflight] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== R3a-cli-refspec-to-branch
+[R3a-cli-refspec-to-branch] $ git -C TMP/p/host fetch box main:other
+From pinfold::sim
+ * [new branch]      main       -> other
+ * [new branch]      main       -> box/main
+[R3a-cli-refspec-to-branch] exit=0: git -C TMP/p/host fetch box main:other
+[R3a-cli-refspec-to-branch] state: CHANGED
+[R3a-cli-refspec-to-branch]   3,6c3,6
+[R3a-cli-refspec-to-branch]   < in-pack: 0
+[R3a-cli-refspec-to-branch]   < packs: 0
+[R3a-cli-refspec-to-branch]   < size-pack: 0
+[R3a-cli-refspec-to-branch]   < prune-packable: 0
+[R3a-cli-refspec-to-branch]   ---
+[R3a-cli-refspec-to-branch]   > in-pack: 6
+[R3a-cli-refspec-to-branch]   > packs: 1
+[R3a-cli-refspec-to-branch]   > size-pack: 1
+[R3a-cli-refspec-to-branch]   > prune-packable: 3
+[R3a-cli-refspec-to-branch]   10a11,12
+[R3a-cli-refspec-to-branch]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/heads/other
+[R3a-cli-refspec-to-branch]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+[R3a-cli-refspec-to-branch]   14a17,19
+[R3a-cli-refspec-to-branch]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.idx
+[R3a-cli-refspec-to-branch]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.pack
+[R3a-cli-refspec-to-branch]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.rev
+=== R3b-cli-refspec-checked-out
+[R3b-cli-refspec-checked-out] $ git -C TMP/p/host fetch box main:main
+fatal: refusing to fetch into branch 'refs/heads/main' checked out at 'TMP/p/host'
+[R3b-cli-refspec-checked-out] exit=128: git -C TMP/p/host fetch box main:main
+[R3b-cli-refspec-checked-out] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== R3c-pull
+[R3c-pull] host main before=0be1ac189ceac3ea3c900037854ce9e30b51a988
+[R3c-pull] $ git -C TMP/p/host pull --no-rebase box main
+From pinfold::sim
+ * branch            main       -> FETCH_HEAD
+ * [new branch]      main       -> box/main
+Updating 0be1ac1..b703681
+Fast-forward
+ b | 1 +
+ 1 file changed, 1 insertion(+)
+ create mode 100644 b
+[R3c-pull] exit=0: git -C TMP/p/host pull --no-rebase box main
+[R3c-pull] host main after=b7036811f28d630ef484116a6df59f77f15c520f box main=b7036811f28d630ef484116a6df59f77f15c520f
+=== R3d-configured-refspec
+[R3d-configured-refspec] $ git -C TMP/p/host fetch box
+pinfold-helper: remote.box.fetch writes outside refs/remotes/box/: +refs/heads/*:refs/heads/*
+[R3d-configured-refspec] exit=128: git -C TMP/p/host fetch box
+[R3d-configured-refspec] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== R3e-command-line-config-refspec
+[R3e-command-line-config-refspec] $ git -C TMP/p/host -c remote.box.fetch=+refs/heads/*:refs/heads/box-* fetch box
+pinfold-helper: remote.box.fetch writes outside refs/remotes/box/: +refs/heads/*:refs/heads/box-*
+[R3e-command-line-config-refspec] exit=128: git -C TMP/p/host -c remote.box.fetch=+refs/heads/*:refs/heads/box-* fetch box
+[R3e-command-line-config-refspec] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== R3f-url-not-remote
+[R3f-url-not-remote] $ git -C TMP/p/host fetch pinfold::sim main:other
+pinfold-helper: remote name 'pinfold::sim' is not a plain name
+fatal: remote helper 'pinfold' aborted session
+[R3f-url-not-remote] exit=128: git -C TMP/p/host fetch pinfold::sim main:other
+[R3f-url-not-remote] state: unchanged (count-objects, for-each-ref, object files, fsck)
+=== R3g-host-hook-control
+[R3g-host-hook-control] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+[R3g-host-hook-control] exit=0: git -C TMP/p/host fetch box
+[R3g-host-hook-control] --- marker (the host's own hook)
+reference-transaction-preparing
+reference-transaction-prepared
+reference-transaction-committed
+=== N-option-line-checks-off
+[N-option-line-checks-off] listing adds: option upload-pack touch-marker
+[N-option-line-checks-off] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+[N-option-line-checks-off] exit=0: git -C TMP/p/host fetch box
+[N-option-line-checks-off] state: CHANGED
+[N-option-line-checks-off]   3,6c3,6
+[N-option-line-checks-off]   < in-pack: 0
+[N-option-line-checks-off]   < packs: 0
+[N-option-line-checks-off]   < size-pack: 0
+[N-option-line-checks-off]   < prune-packable: 0
+[N-option-line-checks-off]   ---
+[N-option-line-checks-off]   > in-pack: 6
+[N-option-line-checks-off]   > packs: 1
+[N-option-line-checks-off]   > size-pack: 1
+[N-option-line-checks-off]   > prune-packable: 3
+[N-option-line-checks-off]   10a11
+[N-option-line-checks-off]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+[N-option-line-checks-off]   14a16,18
+[N-option-line-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.idx
+[N-option-line-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.pack
+[N-option-line-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.rev
+[N-option-line-checks-off] --- refs/remotes/box/HEAD
+[N-option-line-checks-off] --- config after
+core.repositoryformatversion=0
+core.filemode=true
+core.bare=false
+core.logallrefupdates=true
+core.ignorecase=true
+core.precomposeunicode=true
+remote.box.url=pinfold::sim
+remote.box.fetch=+refs/heads/*:refs/remotes/box/*
+=== N-option-line-checks-on
+[N-option-line-checks-on] listing adds: option upload-pack touch-marker
+[N-option-line-checks-on] $ git -C TMP/p/host fetch box
+pinfold-helper: the box's branch listing is malformed
+[N-option-line-checks-on] exit=128: git -C TMP/p/host fetch box
+[N-option-line-checks-on] state: unchanged (count-objects, for-each-ref, object files, fsck)
+[N-option-line-checks-on] --- refs/remotes/box/HEAD
+[N-option-line-checks-on] --- config after
+core.repositoryformatversion=0
+core.filemode=true
+core.bare=false
+core.logallrefupdates=true
+core.ignorecase=true
+core.precomposeunicode=true
+remote.box.url=pinfold::sim
+remote.box.fetch=+refs/heads/*:refs/remotes/box/*
+=== N-extra-ok-checks-off
+[N-extra-ok-checks-off] listing adds: ok refs/heads/main
+[N-extra-ok-checks-off] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+[N-extra-ok-checks-off] exit=0: git -C TMP/p/host fetch box
+[N-extra-ok-checks-off] state: CHANGED
+[N-extra-ok-checks-off]   3,6c3,6
+[N-extra-ok-checks-off]   < in-pack: 0
+[N-extra-ok-checks-off]   < packs: 0
+[N-extra-ok-checks-off]   < size-pack: 0
+[N-extra-ok-checks-off]   < prune-packable: 0
+[N-extra-ok-checks-off]   ---
+[N-extra-ok-checks-off]   > in-pack: 6
+[N-extra-ok-checks-off]   > packs: 1
+[N-extra-ok-checks-off]   > size-pack: 1
+[N-extra-ok-checks-off]   > prune-packable: 3
+[N-extra-ok-checks-off]   10a11
+[N-extra-ok-checks-off]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+[N-extra-ok-checks-off]   14a16,18
+[N-extra-ok-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.idx
+[N-extra-ok-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.pack
+[N-extra-ok-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.rev
+[N-extra-ok-checks-off] --- refs/remotes/box/HEAD
+[N-extra-ok-checks-off] --- config after
+core.repositoryformatversion=0
+core.filemode=true
+core.bare=false
+core.logallrefupdates=true
+core.ignorecase=true
+core.precomposeunicode=true
+remote.box.url=pinfold::sim
+remote.box.fetch=+refs/heads/*:refs/remotes/box/*
+=== N-extra-ok-checks-on
+[N-extra-ok-checks-on] listing adds: ok refs/heads/main
+[N-extra-ok-checks-on] $ git -C TMP/p/host fetch box
+pinfold-helper: the box's branch listing is malformed
+[N-extra-ok-checks-on] exit=128: git -C TMP/p/host fetch box
+[N-extra-ok-checks-on] state: unchanged (count-objects, for-each-ref, object files, fsck)
+[N-extra-ok-checks-on] --- refs/remotes/box/HEAD
+[N-extra-ok-checks-on] --- config after
+core.repositoryformatversion=0
+core.filemode=true
+core.bare=false
+core.logallrefupdates=true
+core.ignorecase=true
+core.precomposeunicode=true
+remote.box.url=pinfold::sim
+remote.box.fetch=+refs/heads/*:refs/remotes/box/*
+=== N-symref-checks-off
+[N-symref-checks-off] listing adds: @refs/heads/main HEAD
+[N-symref-checks-off] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+[N-symref-checks-off] exit=0: git -C TMP/p/host fetch box
+[N-symref-checks-off] state: CHANGED
+[N-symref-checks-off]   3,6c3,6
+[N-symref-checks-off]   < in-pack: 0
+[N-symref-checks-off]   < packs: 0
+[N-symref-checks-off]   < size-pack: 0
+[N-symref-checks-off]   < prune-packable: 0
+[N-symref-checks-off]   ---
+[N-symref-checks-off]   > in-pack: 6
+[N-symref-checks-off]   > packs: 1
+[N-symref-checks-off]   > size-pack: 1
+[N-symref-checks-off]   > prune-packable: 3
+[N-symref-checks-off]   10a11,12
+[N-symref-checks-off]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/HEAD
+[N-symref-checks-off]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+[N-symref-checks-off]   14a17,19
+[N-symref-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.idx
+[N-symref-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.pack
+[N-symref-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.rev
+[N-symref-checks-off] --- refs/remotes/box/HEAD
+refs/remotes/box/main
+[N-symref-checks-off] --- config after
+core.repositoryformatversion=0
+core.filemode=true
+core.bare=false
+core.logallrefupdates=true
+core.ignorecase=true
+core.precomposeunicode=true
+remote.box.url=pinfold::sim
+remote.box.fetch=+refs/heads/*:refs/remotes/box/*
+=== N-symref-checks-on
+[N-symref-checks-on] listing adds: @refs/heads/main HEAD
+[N-symref-checks-on] $ git -C TMP/p/host fetch box
+pinfold-helper: the box's branch listing is malformed
+[N-symref-checks-on] exit=128: git -C TMP/p/host fetch box
+[N-symref-checks-on] state: unchanged (count-objects, for-each-ref, object files, fsck)
+[N-symref-checks-on] --- refs/remotes/box/HEAD
+[N-symref-checks-on] --- config after
+core.repositoryformatversion=0
+core.filemode=true
+core.bare=false
+core.logallrefupdates=true
+core.ignorecase=true
+core.precomposeunicode=true
+remote.box.url=pinfold::sim
+remote.box.fetch=+refs/heads/*:refs/remotes/box/*
+=== N-object-format-checks-off
+[N-object-format-checks-off] listing adds: :object-format sha256
+[N-object-format-checks-off] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+[N-object-format-checks-off] exit=0: git -C TMP/p/host fetch box
+[N-object-format-checks-off] state: CHANGED
+[N-object-format-checks-off]   3,6c3,6
+[N-object-format-checks-off]   < in-pack: 0
+[N-object-format-checks-off]   < packs: 0
+[N-object-format-checks-off]   < size-pack: 0
+[N-object-format-checks-off]   < prune-packable: 0
+[N-object-format-checks-off]   ---
+[N-object-format-checks-off]   > in-pack: 6
+[N-object-format-checks-off]   > packs: 1
+[N-object-format-checks-off]   > size-pack: 1
+[N-object-format-checks-off]   > prune-packable: 3
+[N-object-format-checks-off]   10a11
+[N-object-format-checks-off]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+[N-object-format-checks-off]   14a16,18
+[N-object-format-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.idx
+[N-object-format-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.pack
+[N-object-format-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.rev
+[N-object-format-checks-off] --- refs/remotes/box/HEAD
+[N-object-format-checks-off] --- config after
+core.repositoryformatversion=0
+core.filemode=true
+core.bare=false
+core.logallrefupdates=true
+core.ignorecase=true
+core.precomposeunicode=true
+remote.box.url=pinfold::sim
+remote.box.fetch=+refs/heads/*:refs/remotes/box/*
+=== N-object-format-checks-on
+[N-object-format-checks-on] listing adds: :object-format sha256
+[N-object-format-checks-on] $ git -C TMP/p/host fetch box
+pinfold-helper: the box's branch listing is malformed
+[N-object-format-checks-on] exit=128: git -C TMP/p/host fetch box
+[N-object-format-checks-on] state: unchanged (count-objects, for-each-ref, object files, fsck)
+[N-object-format-checks-on] --- refs/remotes/box/HEAD
+[N-object-format-checks-on] --- config after
+core.repositoryformatversion=0
+core.filemode=true
+core.bare=false
+core.logallrefupdates=true
+core.ignorecase=true
+core.precomposeunicode=true
+remote.box.url=pinfold::sim
+remote.box.fetch=+refs/heads/*:refs/remotes/box/*
+=== N-bare-dash-name-checks-off
+[N-bare-dash-name-checks-off] listing adds: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -x
+[N-bare-dash-name-checks-off] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+[N-bare-dash-name-checks-off] exit=0: git -C TMP/p/host fetch box
+[N-bare-dash-name-checks-off] state: CHANGED
+[N-bare-dash-name-checks-off]   3,6c3,6
+[N-bare-dash-name-checks-off]   < in-pack: 0
+[N-bare-dash-name-checks-off]   < packs: 0
+[N-bare-dash-name-checks-off]   < size-pack: 0
+[N-bare-dash-name-checks-off]   < prune-packable: 0
+[N-bare-dash-name-checks-off]   ---
+[N-bare-dash-name-checks-off]   > in-pack: 6
+[N-bare-dash-name-checks-off]   > packs: 1
+[N-bare-dash-name-checks-off]   > size-pack: 1
+[N-bare-dash-name-checks-off]   > prune-packable: 3
+[N-bare-dash-name-checks-off]   10a11
+[N-bare-dash-name-checks-off]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+[N-bare-dash-name-checks-off]   14a16,18
+[N-bare-dash-name-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.idx
+[N-bare-dash-name-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.pack
+[N-bare-dash-name-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.rev
+[N-bare-dash-name-checks-off] --- refs/remotes/box/HEAD
+[N-bare-dash-name-checks-off] --- config after
+core.repositoryformatversion=0
+core.filemode=true
+core.bare=false
+core.logallrefupdates=true
+core.ignorecase=true
+core.precomposeunicode=true
+remote.box.url=pinfold::sim
+remote.box.fetch=+refs/heads/*:refs/remotes/box/*
+=== N-bare-dash-name-checks-on
+[N-bare-dash-name-checks-on] listing adds: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -x
+[N-bare-dash-name-checks-on] $ git -C TMP/p/host fetch box
+pinfold-helper: the box's branch listing is malformed
+[N-bare-dash-name-checks-on] exit=128: git -C TMP/p/host fetch box
+[N-bare-dash-name-checks-on] state: unchanged (count-objects, for-each-ref, object files, fsck)
+[N-bare-dash-name-checks-on] --- refs/remotes/box/HEAD
+[N-bare-dash-name-checks-on] --- config after
+core.repositoryformatversion=0
+core.filemode=true
+core.bare=false
+core.logallrefupdates=true
+core.ignorecase=true
+core.precomposeunicode=true
+remote.box.url=pinfold::sim
+remote.box.fetch=+refs/heads/*:refs/remotes/box/*
+=== N-early-blank-checks-off
+[N-early-blank-checks-off] listing adds:  ok refs/heads/main
+[N-early-blank-checks-off] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ * [new branch]      main       -> box/main
+[N-early-blank-checks-off] exit=0: git -C TMP/p/host fetch box
+[N-early-blank-checks-off] state: CHANGED
+[N-early-blank-checks-off]   3,6c3,6
+[N-early-blank-checks-off]   < in-pack: 0
+[N-early-blank-checks-off]   < packs: 0
+[N-early-blank-checks-off]   < size-pack: 0
+[N-early-blank-checks-off]   < prune-packable: 0
+[N-early-blank-checks-off]   ---
+[N-early-blank-checks-off]   > in-pack: 6
+[N-early-blank-checks-off]   > packs: 1
+[N-early-blank-checks-off]   > size-pack: 1
+[N-early-blank-checks-off]   > prune-packable: 3
+[N-early-blank-checks-off]   10a11
+[N-early-blank-checks-off]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+[N-early-blank-checks-off]   14a16,18
+[N-early-blank-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.idx
+[N-early-blank-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.pack
+[N-early-blank-checks-off]   > ./pack/pack-f14afbc0f3bda33a4b76e5814005c01d3c1a0edd.rev
+[N-early-blank-checks-off] --- refs/remotes/box/HEAD
+[N-early-blank-checks-off] --- config after
+core.repositoryformatversion=0
+core.filemode=true
+core.bare=false
+core.logallrefupdates=true
+core.ignorecase=true
+core.precomposeunicode=true
+remote.box.url=pinfold::sim
+remote.box.fetch=+refs/heads/*:refs/remotes/box/*
+=== N-early-blank-checks-on
+[N-early-blank-checks-on] listing adds:  ok refs/heads/main
+[N-early-blank-checks-on] $ git -C TMP/p/host fetch box
+pinfold-helper: git bundle failed (exit 1): error: 'SYSTMP/pinfold-helper-cikbhk4m/in.bundle' does not look like a v2 or v3 bundle file
+[N-early-blank-checks-on] exit=128: git -C TMP/p/host fetch box
+[N-early-blank-checks-on] state: unchanged (count-objects, for-each-ref, object files, fsck)
+[N-early-blank-checks-on] --- refs/remotes/box/HEAD
+[N-early-blank-checks-on] --- config after
+core.repositoryformatversion=0
+core.filemode=true
+core.bare=false
+core.logallrefupdates=true
+core.ignorecase=true
+core.precomposeunicode=true
+remote.box.url=pinfold::sim
+remote.box.fetch=+refs/heads/*:refs/remotes/box/*
+=== P1-push-branch
+[P1-push-branch] host main=9f4816c5ebf5bb2228061352c3e5aaa0a3939c90
+[P1-push-branch] $ git -C TMP/p/host push box main
+To pinfold::sim
+ * [new branch]      main -> main
+[P1-push-branch] exit=0: git -C TMP/p/host push box main
+[P1-push-branch] --- box refs
+b7036811f28d630ef484116a6df59f77f15c520f commit	refs/heads/main
+9f4816c5ebf5bb2228061352c3e5aaa0a3939c90 commit	refs/remotes/host/main
+[P1-push-branch] --- host refs
+9f4816c5ebf5bb2228061352c3e5aaa0a3939c90 commit	refs/heads/main
+9f4816c5ebf5bb2228061352c3e5aaa0a3939c90 commit	refs/remotes/box/main
+[P1-push-branch] $ git -C TMP/p/host fetch box
+From pinfold::sim
+ + 9f4816c...b703681 main       -> box/main  (forced update)
+[P1-push-branch] exit=0: git -C TMP/p/host fetch box
+[P1-push-branch] --- host refs after the next fetch
+9f4816c5ebf5bb2228061352c3e5aaa0a3939c90 commit	refs/heads/main
+b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/box/main
+=== P2-push-to-tag
+[P2-push-to-tag] $ git -C TMP/p/host push box main:refs/tags/v1
+To pinfold::sim
+ ! [remote rejected] main -> v1 (only branches can be pushed)
+error: failed to push some refs to 'pinfold::sim'
+[P2-push-to-tag] exit=1: git -C TMP/p/host push box main:refs/tags/v1
+[P2-push-to-tag] --- box refs
+b7036811f28d630ef484116a6df59f77f15c520f commit	refs/heads/main
+=== P3-push-delete
+[P3-push-delete] $ git -C TMP/p/host push box :refs/heads/main
+To pinfold::sim
+ ! [remote rejected] main (only branches can be pushed)
+error: failed to push some refs to 'pinfold::sim'
+[P3-push-delete] exit=1: git -C TMP/p/host push box :refs/heads/main
+[P3-push-delete] --- box refs
+b7036811f28d630ef484116a6df59f77f15c520f commit	refs/heads/main
+=== P4-box-refuses
+[P4-box-refuses] $ git -C TMP/p/host push box main
+To pinfold::sim
+ ! [remote rejected] main -> main (the box refused the bundle)
+error: failed to push some refs to 'pinfold::sim'
+[P4-box-refuses] exit=1: git -C TMP/p/host push box main
+[P4-box-refuses] --- host refs
+0be1ac189ceac3ea3c900037854ce9e30b51a988 commit	refs/heads/main
+=== P5-box-prints-status-lines
+[P5-box-prints-status-lines] PROBE_CHECKS=off: the box prints two status lines
+[P5-box-prints-status-lines] $ git -C TMP/p/host push box main
+warning: helper reported unexpected status of refs/heads/forged
+To pinfold::sim
+ * [new branch]      main -> main
+[P5-box-prints-status-lines] exit=0: git -C TMP/p/host push box main
+[P5-box-prints-status-lines] --- host refs
+0be1ac189ceac3ea3c900037854ce9e30b51a988 commit	refs/heads/main
+0be1ac189ceac3ea3c900037854ce9e30b51a988 commit	refs/remotes/box/main
+[P5-box-prints-status-lines] PROBE_CHECKS=on: the box prints two status lines
+[P5-box-prints-status-lines] $ git -C TMP/p/host push box main
+To pinfold::sim
+ * [new branch]      main -> main
+[P5-box-prints-status-lines] exit=0: git -C TMP/p/host push box main
+[P5-box-prints-status-lines] --- host refs
+0be1ac189ceac3ea3c900037854ce9e30b51a988 commit	refs/heads/main
+0be1ac189ceac3ea3c900037854ce9e30b51a988 commit	refs/remotes/box/main
+=== P6-push-atomic-and-force
+[P6-push-atomic-and-force] $ git -C TMP/p/host push --atomic box main
+fatal: helper pinfold does not support --atomic
+[P6-push-atomic-and-force] exit=128: git -C TMP/p/host push --atomic box main
+[P6-push-atomic-and-force] $ git -C TMP/p/host push --force box main
+To pinfold::sim
+ * [new branch]      main -> main
+[P6-push-atomic-and-force] exit=0: git -C TMP/p/host push --force box main
+[P6-push-atomic-and-force] $ git -C TMP/p/host push --dry-run box main
+fatal: helper pinfold does not support dry-run
+[P6-push-atomic-and-force] exit=128: git -C TMP/p/host push --dry-run box main
+=== C1-connect-fsck-bad
+[C1-connect-fsck-bad] $ git -C TMP/p/host fetch conn
+From pinfoldconnect::x
+ * [new branch]      bad        -> conn/bad
+ * [new branch]      main       -> conn/main
+[C1-connect-fsck-bad] exit=0: git -C TMP/p/host fetch conn
+[C1-connect-fsck-bad] state: CHANGED
+[C1-connect-fsck-bad]   1,2c1,2
+[C1-connect-fsck-bad]   < count: 3
+[C1-connect-fsck-bad]   < size: 12
+[C1-connect-fsck-bad]   ---
+[C1-connect-fsck-bad]   > count: 7
+[C1-connect-fsck-bad]   > size: 28
+[C1-connect-fsck-bad]   10a11,13
+[C1-connect-fsck-bad]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/conn/HEAD
+[C1-connect-fsck-bad]   > 58a90eb1c08faeefd7bc75eb6baf571937f3a848 commit	refs/remotes/conn/bad
+[C1-connect-fsck-bad]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/conn/main
+[C1-connect-fsck-bad]   12a16,18
+[C1-connect-fsck-bad]   > ./58/a90eb1c08faeefd7bc75eb6baf571937f3a848
+[C1-connect-fsck-bad]   > ./79/6307bff0c2cd371ded6d50688ba4a6a1ad31e1
+[C1-connect-fsck-bad]   > ./b7/036811f28d630ef484116a6df59f77f15c520f
+[C1-connect-fsck-bad]   13a20
+[C1-connect-fsck-bad]   > ./d5/91a2710eb6ec0dc090ed021171bc58abca0f95
+[C1-connect-fsck-bad]   16c23,24
+[C1-connect-fsck-bad]   < fsck-exit=0
+[C1-connect-fsck-bad]   ---
+[C1-connect-fsck-bad]   > error in commit 58a90eb1c08faeefd7bc75eb6baf571937f3a848: missingEmail: invalid author/committer line - missing email
+[C1-connect-fsck-bad]   > fsck-exit=1
+[C1-connect-fsck-bad] bad commit 58a90eb1c08faeefd7bc75eb6baf571937f3a848 on the host: commit
+=== C2-connect-fsck-bad-fsckobjects
+[C2-connect-fsck-bad-fsckobjects] $ git -C TMP/p/host -c fetch.fsckObjects=true fetch conn
+error: object 58a90eb1c08faeefd7bc75eb6baf571937f3a848: missingEmail: invalid author/committer line - missing email
+fatal: fsck error in packed object
+fatal: index-pack failed
+[C2-connect-fsck-bad-fsckobjects] exit=128: git -C TMP/p/host -c fetch.fsckObjects=true fetch conn
+[C2-connect-fsck-bad-fsckobjects] state: CHANGED
+[C2-connect-fsck-bad-fsckobjects]   0a1
+[C2-connect-fsck-bad-fsckobjects]   > warning: garbage found: .git/objects/pack/tmp_pack_0RQ9Bc
+[C2-connect-fsck-bad-fsckobjects]   7c8
+[C2-connect-fsck-bad-fsckobjects]   < garbage: 0
+[C2-connect-fsck-bad-fsckobjects]   ---
+[C2-connect-fsck-bad-fsckobjects]   > garbage: 1
+[C2-connect-fsck-bad-fsckobjects]   14a16
+[C2-connect-fsck-bad-fsckobjects]   > ./pack/tmp_pack_0RQ9Bc
+=== C3-connect-dotgit
+[C3-connect-dotgit] $ git -C TMP/p/host fetch conn
+From pinfoldconnect::x
+ * [new branch]      dotgit     -> conn/dotgit
+ * [new branch]      main       -> conn/main
+[C3-connect-dotgit] exit=0: git -C TMP/p/host fetch conn
+[C3-connect-dotgit] state: CHANGED
+[C3-connect-dotgit]   1,2c1,2
+[C3-connect-dotgit]   < count: 3
+[C3-connect-dotgit]   < size: 12
+[C3-connect-dotgit]   ---
+[C3-connect-dotgit]   > count: 11
+[C3-connect-dotgit]   > size: 44
+[C3-connect-dotgit]   10a11,13
+[C3-connect-dotgit]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/conn/HEAD
+[C3-connect-dotgit]   > 4ff6ebf7fea9eb3a99591664c4eec7f7b193f6b7 commit	refs/remotes/conn/dotgit
+[C3-connect-dotgit]   > b7036811f28d630ef484116a6df59f77f15c520f commit	refs/remotes/conn/main
+[C3-connect-dotgit]   12a16,22
+[C3-connect-dotgit]   > ./4b/aa8f401b7d47a8d3a15de3438e5e1c447c0fb4
+[C3-connect-dotgit]   > ./4f/f6ebf7fea9eb3a99591664c4eec7f7b193f6b7
+[C3-connect-dotgit]   > ./63/9d366d77b923ed0d53fc7989aad95a28bb59a3
+[C3-connect-dotgit]   > ./79/6307bff0c2cd371ded6d50688ba4a6a1ad31e1
+[C3-connect-dotgit]   > ./9b/2bd89cfd3947660443c06fbdad5e8ba5f1e021
+[C3-connect-dotgit]   > ./b7/036811f28d630ef484116a6df59f77f15c520f
+[C3-connect-dotgit]   > ./b9/8c34a9d17070ab729ba79a8bec1927e4161b09
+[C3-connect-dotgit]   13a24
+[C3-connect-dotgit]   > ./d5/91a2710eb6ec0dc090ed021171bc58abca0f95
+[C3-connect-dotgit]   15a27
+[C3-connect-dotgit]   > warning in tree 4baa8f401b7d47a8d3a15de3438e5e1c447c0fb4: hasDotgit: contains '.git'
+=== done

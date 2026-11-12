@@ -1,0 +1,78 @@
+[setup] $ TMP/target/debug/pinfold --version
+pinfold 0.5.5
+[setup] exit=0: TMP/target/debug/pinfold --version
+[E1-live-box] up: {"box":"grh-probe-live","egress_log":null,"event":"ready","image":{"id":"ae6f1273f1836a19225b840e0f8de4350ba667c04d77c2e0379269c863cfca71","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"219a537cd424e4188e5bfeb292740edb02f2baec485b9f2ff87163c192300dbb","dev.pinfold.generation":"31d65b4fa922152ea7d364bcec929e859edfbd7b2769ae732ecc17cd5bf74fb7","dev.pinfold.owner":"67190","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":67190,"run_id":"31d65b4fa922152ea7d364bcec929e859edfbd7b2769ae732ecc17cd5bf74fb7"}
+[E1-live-box] $ TMP/target/debug/pinfold box exec grh-probe-live -- sh -c cd /work && git config user.name probe && git config user.email probe@example.invalid && echo box >b && git add b && git commit -qm "box one" && git rev-parse HEAD
+be2add3e674b5cbd31d931a109edb1f964619444
+[E1-live-box] exit=0: TMP/target/debug/pinfold box exec grh-probe-live -- sh -c cd /work && git config user.name probe && git config user.email probe@example.invalid && echo box >b && git add b && git commit -qm "box one" && git rev-parse HEAD
+[E1-live-box] $ git -C TMP/e/host fetch box
+From pinfold::e2e
+ * [new branch]      main       -> box/main
+[E1-live-box] exit=0: git -C TMP/e/host fetch box
+[E1-live-box] state: CHANGED
+[E1-live-box]   3,6c3,6
+[E1-live-box]   < in-pack: 0
+[E1-live-box]   < packs: 0
+[E1-live-box]   < size-pack: 0
+[E1-live-box]   < prune-packable: 0
+[E1-live-box]   ---
+[E1-live-box]   > in-pack: 6
+[E1-live-box]   > packs: 1
+[E1-live-box]   > size-pack: 1
+[E1-live-box]   > prune-packable: 3
+[E1-live-box]   9a10
+[E1-live-box]   > be2add3e674b5cbd31d931a109edb1f964619444 commit	refs/remotes/box/main
+[E1-live-box]   12a14,16
+[E1-live-box]   > ./pack/pack-26de6019e715cfa13f9d0b057048f78da057f3d1.idx
+[E1-live-box]   > ./pack/pack-26de6019e715cfa13f9d0b057048f78da057f3d1.pack
+[E1-live-box]   > ./pack/pack-26de6019e715cfa13f9d0b057048f78da057f3d1.rev
+[E1-live-box] $ git -C TMP/e/host for-each-ref
+0be1ac189ceac3ea3c900037854ce9e30b51a988 commit	refs/heads/main
+be2add3e674b5cbd31d931a109edb1f964619444 commit	refs/remotes/box/main
+[E1-live-box] exit=0: git -C TMP/e/host for-each-ref
+[E1-live-box] $ TMP/target/debug/pinfold box exec grh-probe-live -- sh -c cd /work && echo box2 >b && git commit -qam "box two" && git rev-parse HEAD
+a03af9f35019dc31de41e6f6f56081abe96972c5
+[E1-live-box] exit=0: TMP/target/debug/pinfold box exec grh-probe-live -- sh -c cd /work && echo box2 >b && git commit -qam "box two" && git rev-parse HEAD
+[E1-live-box] up after stdin closed: {"box":"grh-probe-live","event":"down","reason":"stdin-closed","run_id":"31d65b4fa922152ea7d364bcec929e859edfbd7b2769ae732ecc17cd5bf74fb7"} up-exit=0 
+[E2-stopped-box-transient] $ container list --all
+ID        IMAGE                                                OS     ARCH   STATE    IP  CPUS  MEMORY   STARTED
+buildkit  ghcr.io/apple/container-builder-shim/builder:0.13.3  linux  arm64  stopped      2     2048 MB  
+[E2-stopped-box-transient] exit=0: container list --all
+[E2-stopped-box-transient] $ TMP/target/debug/pinfold box exec grh-probe-live -- true
+pinfold box exec: no box named "grh-probe-live"
+[E2-stopped-box-transient] exit=3: TMP/target/debug/pinfold box exec grh-probe-live -- true
+[E2-stopped-box-transient] $ git -C TMP/e/host fetch box
+From pinfold::e2e
+   be2add3..a03af9f  main       -> box/main
+[E2-stopped-box-transient] exit=0: git -C TMP/e/host fetch box
+[E2-stopped-box-transient] state: CHANGED
+[E2-stopped-box-transient]   3,5c3,5
+[E2-stopped-box-transient]   < in-pack: 6
+[E2-stopped-box-transient]   < packs: 1
+[E2-stopped-box-transient]   < size-pack: 1
+[E2-stopped-box-transient]   ---
+[E2-stopped-box-transient]   > in-pack: 9
+[E2-stopped-box-transient]   > packs: 2
+[E2-stopped-box-transient]   > size-pack: 3
+[E2-stopped-box-transient]   10c10
+[E2-stopped-box-transient]   < be2add3e674b5cbd31d931a109edb1f964619444 commit	refs/remotes/box/main
+[E2-stopped-box-transient]   ---
+[E2-stopped-box-transient]   > a03af9f35019dc31de41e6f6f56081abe96972c5 commit	refs/remotes/box/main
+[E2-stopped-box-transient]   16a17,19
+[E2-stopped-box-transient]   > ./pack/pack-711f471aeb2ae4a434cca209e39b5af97e188633.idx
+[E2-stopped-box-transient]   > ./pack/pack-711f471aeb2ae4a434cca209e39b5af97e188633.pack
+[E2-stopped-box-transient]   > ./pack/pack-711f471aeb2ae4a434cca209e39b5af97e188633.rev
+[E2-stopped-box-transient] $ git -C TMP/e/host for-each-ref
+0be1ac189ceac3ea3c900037854ce9e30b51a988 commit	refs/heads/main
+a03af9f35019dc31de41e6f6f56081abe96972c5 commit	refs/remotes/box/main
+[E2-stopped-box-transient] exit=0: git -C TMP/e/host for-each-ref
+[E2-stopped-box-transient] $ container list --all
+ID        IMAGE                                                OS     ARCH   STATE    IP  CPUS  MEMORY   STARTED
+buildkit  ghcr.io/apple/container-builder-shim/builder:0.13.3  linux  arm64  stopped      2     2048 MB  
+[E2-stopped-box-transient] exit=0: container list --all
+[cleanup] $ TMP/target/debug/pinfold disk rm grh-probe-work
+Removed grh-probe-work
+[cleanup] exit=0: TMP/target/debug/pinfold disk rm grh-probe-work
+[cleanup] $ TMP/target/debug/pinfold disk list
+NAME	ALLOCATED	CAPACITY	STATE	ATTACHED	ORIGIN
+[cleanup] exit=0: TMP/target/debug/pinfold disk list
