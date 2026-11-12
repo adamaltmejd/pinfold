@@ -384,9 +384,10 @@ impl Runtime for Apple {
         init: &Path,
         tty: bool,
         workdir: Option<&Path>,
+        env: &[(String, String)],
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        self.exec_command(name, init, tty, workdir, argv)
+        exec_command(name, init, tty, workdir, env, argv)
             .status()
             .map_err(|error| spawn_error("container", error))
     }
@@ -399,31 +400,7 @@ impl Runtime for Apple {
         workdir: Option<&Path>,
         argv: &[String],
     ) -> std::process::Command {
-        let mut command = std::process::Command::new("container");
-        command.args(["exec", "-i"]);
-        if tty {
-            // Keep the host's terminal identity: the runtime otherwise
-            // reports its own `TERM`.
-            command.arg("-t");
-            for variable in ["TERM", "COLORTERM"] {
-                if let Some(value) = std::env::var_os(variable) {
-                    guest_env(&mut command, variable, &value);
-                }
-            }
-        } else {
-            // Without a TTY the runtime's exec gets its own process group, so
-            // a terminal signal reaches pinfold and not the exec.
-            command.process_group(0);
-        }
-        if let Some(dir) = workdir {
-            command.arg("--workdir").arg(dir);
-        }
-        command
-            .arg(name)
-            .arg(init)
-            .args(["init", "exec", "--"])
-            .args(argv);
-        command
+        exec_command(name, init, tty, workdir, &[], argv)
     }
 
     /// A transient helper owns only the new disks, under the caller's
@@ -513,6 +490,46 @@ impl Runtime for Apple {
         let stdout = output(&["container", "--version"])?;
         Ok(String::from_utf8_lossy(&stdout).trim().to_string())
     }
+}
+
+/// `container exec` of `argv` through init, with `env` added under transport
+/// names as the host's `TERM` is.
+fn exec_command(
+    name: &str,
+    init: &Path,
+    tty: bool,
+    workdir: Option<&Path>,
+    env: &[(String, String)],
+    argv: &[String],
+) -> std::process::Command {
+    let mut command = std::process::Command::new("container");
+    command.args(["exec", "-i"]);
+    for (variable, value) in env {
+        guest_env(&mut command, variable, OsStr::new(value));
+    }
+    if tty {
+        // Keep the host's terminal identity: the runtime otherwise
+        // reports its own `TERM`.
+        command.arg("-t");
+        for variable in ["TERM", "COLORTERM"] {
+            if let Some(value) = std::env::var_os(variable) {
+                guest_env(&mut command, variable, &value);
+            }
+        }
+    } else {
+        // Without a TTY the runtime's exec gets its own process group, so
+        // a terminal signal reaches pinfold and not the exec.
+        command.process_group(0);
+    }
+    if let Some(dir) = workdir {
+        command.arg("--workdir").arg(dir);
+    }
+    command
+        .arg(name)
+        .arg(init)
+        .args(["init", "exec", "--"])
+        .args(argv);
+    command
 }
 
 /// Wait, bounded, until `list` reports box `name` running. Apple records

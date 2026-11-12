@@ -46,7 +46,7 @@ const MAX_CONNECTIONS: usize = 64;
 const MAX_LOG_BYTES: u64 = 128 * 1024 * 1024;
 
 /// Bind the box's socket, create its log, and serve. `codex` is the token of
-/// a login route on the host's Codex login, asked of the host helper at
+/// the login routes on the host's Codex login, asked of the host helper at
 /// `up`. The accept thread is never stopped: each owner exits right after
 /// teardown, which deletes the socket.
 pub fn start(
@@ -95,14 +95,19 @@ enum Upstream {
         strip: &'static [&'static str],
     },
     /// The target of a login route on the host's Codex login; its headers
-    /// come from the live token on each request.
-    Codex { target: Target, login: login::Codex },
+    /// come from the live token on each request. Every such route in a box
+    /// shares one token and its refresh.
+    Codex {
+        target: Target,
+        login: Arc<login::Codex>,
+    },
 }
 
 impl Rules {
     /// The rules for one box. Injected header values are read here, once,
     /// from this process's environment; a codex login route takes `codex`.
-    fn new(egress: &Egress, mut codex: Option<login::Token>) -> io::Result<Rules> {
+    fn new(egress: &Egress, codex: Option<login::Token>) -> io::Result<Rules> {
+        let codex = codex.map(|token| Arc::new(login::Codex::new(token)));
         let mut routes = BTreeMap::new();
         for (name, route) in &egress.routes {
             let upstream = match route {
@@ -124,13 +129,10 @@ impl Rules {
                         strip: &[],
                     }
                 }
-                Route::Login(login) if login.uses_host_codex() => {
-                    let token = codex.take().expect("up resolves a Codex login's token");
-                    Upstream::Codex {
-                        target: login.target().map_err(io::Error::other)?,
-                        login: login::Codex::new(token),
-                    }
-                }
+                Route::Login(login) if login.uses_host_codex() => Upstream::Codex {
+                    target: login.target().map_err(io::Error::other)?,
+                    login: codex.clone().expect("up resolves a Codex login's token"),
+                },
                 Route::Login(login) => {
                     let (target, headers, strip) = login.resolve().map_err(io::Error::other)?;
                     Upstream::Inject {

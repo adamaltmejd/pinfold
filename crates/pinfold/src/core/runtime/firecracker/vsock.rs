@@ -111,27 +111,32 @@ pub fn unmount(state_dir: &Path) -> io::Result<()> {
     answer(&mut stream, crate::init::firecracker::CLEAN).map(drop)
 }
 
-/// Run `argv` in the box and relay stdio until it exits: its exit code, or
-/// `128+n` for signal `n`. The client stays in pinfold's process.
+/// Run `argv` in the box with `env` added and relay stdio until it exits:
+/// its exit code, or `128+n` for signal `n`. The client stays in pinfold's
+/// process.
 pub fn exec(
     state_dir: &Path,
     tty: bool,
     workdir: Option<&Path>,
+    env: &[(String, String)],
     argv: &[String],
 ) -> io::Result<i32> {
     let mut connection = connect(state_dir, EXEC_PORT)?;
     // A command runs as long as it runs.
     connection.set_read_timeout(None)?;
     let (rows, cols) = if tty { window() } else { (0, 0) };
+    let mut extra: Vec<(OsString, OsString)> = env
+        .iter()
+        .map(|(name, value)| (name.into(), value.into()))
+        .collect();
     // Keep the host's terminal identity on a TTY.
-    let extra: Vec<(OsString, OsString)> = if tty {
-        ["TERM", "COLORTERM"]
-            .into_iter()
-            .filter_map(|name| Some((name.into(), std::env::var_os(name)?)))
-            .collect()
-    } else {
-        Vec::new()
-    };
+    if tty {
+        extra.extend(
+            ["TERM", "COLORTERM"]
+                .into_iter()
+                .filter_map(|name| Some((name.into(), std::env::var_os(name)?))),
+        );
+    }
     let mut payload = Vec::new();
     payload.extend((argv.len() as u32).to_be_bytes());
     for arg in argv {

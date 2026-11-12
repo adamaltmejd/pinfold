@@ -17,6 +17,11 @@ use crate::core::disk::{Fill, Seeding};
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
 
+/// The names `guest_vars` always sets. A per-exec env is sent after the box's
+/// own, so a harness default under one of these names is dropped before it
+/// can replace the value.
+pub const ALWAYS_APPLIED: [&str; 3] = ["NODE_USE_ENV_PROXY", "HTTPS_PROXY", "http_proxy"];
+
 /// The box runtime for this OS: Apple `container` on macOS, Firecracker on
 /// Linux, the only targets pinfold builds for.
 pub fn runtime() -> &'static dyn Runtime {
@@ -233,13 +238,15 @@ pub trait Runtime: Sync {
     /// `argv`, so the kernel's OOM killer takes a box process before init.
     /// `init` is the host path Apple's `up` mounts at the same guest path;
     /// Firecracker's guest has its own. The process inherits the run's
-    /// user, so box-created files stay the host user's.
+    /// user, so box-created files stay the host user's. `env` is added to
+    /// the box's environment for this exec only, as the host's `TERM` is.
     fn exec(
         &self,
         name: &str,
         init: &Path,
         tty: bool,
         workdir: Option<&Path>,
+        env: &[(String, String)],
         argv: &[String],
     ) -> io::Result<ExitStatus>;
 
@@ -304,8 +311,9 @@ fn guest_vars(plan: &Plan) -> Vec<(String, OsString)> {
             Some((name.clone(), value?))
         })
         .collect();
-    // Always applied: Node's fetch reads the proxy variables only with this
-    // set. These override any spec entries with the same names.
+    // Always applied (`ALWAYS_APPLIED`): Node's fetch reads the proxy
+    // variables only with this set. These override any spec entries with the
+    // same names.
     vars.push(("NODE_USE_ENV_PROXY".into(), "1".into()));
     if plan.egress.is_some() {
         vars.push(("HTTPS_PROXY".into(), PROXY_URL.into()));

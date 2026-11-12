@@ -9,7 +9,7 @@ use tokio::runtime::Builder;
 
 use crate::cli;
 use crate::config::Config;
-use crate::core::r#box::{Box, RefusalReason, Shutdown, Signals, UpError};
+use crate::core::r#box::{self, Box, RefusalReason, Shutdown, Signals, UpError};
 use crate::core::clean;
 use crate::core::crossing::CrossingError;
 use crate::core::image::{ImageInfo, service};
@@ -405,7 +405,7 @@ fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> Plan {
     };
     Plan {
         profile: Some(config.profile.name.clone()),
-        harness: Some(HARNESS.to_string()),
+        harnesses: vec![HARNESS.to_string()],
         disks: vec![
             empty_writable_disk(home, Path::new(state::HOME)),
             empty_writable_disk(project, root),
@@ -513,7 +513,9 @@ fn run_box(
             if repository {
                 sync(&name, &init, &root);
             }
-            box_runtime.exec(&name, &init, tty, Some(&workdir), &argv)
+            let env = r#box::harness_env(&name, HARNESS)?
+                .ok_or_else(|| io::Error::other(format!("box {name:?} has no harness {HARNESS:?}")))?;
+            box_runtime.exec(&name, &init, tty, Some(&workdir), &env, &argv)
         });
         let ended = tokio::select! {
             status = exec => status

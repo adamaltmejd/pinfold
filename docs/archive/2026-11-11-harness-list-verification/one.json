@@ -1,0 +1,1 @@
+{"name":"hl-one","image":"localhost/pinfold/profile-default:latest","harnesses":["pi"],"egress":{"allow":["api.github.com"]}}

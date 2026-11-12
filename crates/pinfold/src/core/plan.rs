@@ -20,9 +20,10 @@ pub struct Plan {
     /// The profile to apply: its image when `image` is absent, its `home/`
     /// seeds and its `share/`.
     pub profile: Option<String>,
-    /// The pinned harness to install in the box, by its name in
+    /// The pinned harnesses to install in the box, by their names in
     /// `harnesses.toml`.
-    pub harness: Option<String>,
+    #[serde(default)]
+    pub harnesses: Vec<String>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
     #[serde(default)]
@@ -71,7 +72,7 @@ pub enum Route {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Login {
-    /// The harness the login belongs to; it must be the spec's `harness`.
+    /// The harness the login belongs to; the spec must list it.
     pub login: String,
     /// pi's provider, one of [`PI_PROVIDERS`]; only pi names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -390,9 +391,9 @@ impl Login {
         Ok((target, headers, strip))
     }
 
-    /// The box environment a login route adds beside the harness defaults;
-    /// the spec's own `env` still wins. `route` is the route's name. codex
-    /// adds none: its box gets [`login::codex_config`]. pi gets only its
+    /// The environment a login route adds to its harness's execs, beside the
+    /// harness defaults; the spec's own `env` still wins. `route` is the
+    /// route's name. codex adds none: its box gets [`login::codex_config`]. pi gets only its
     /// key's placeholder, or none for `openai-codex`:
     /// [`login::pi_extension`] points pi at the route.
     pub fn env(&self, route: &str) -> Vec<(&'static str, String)> {
@@ -571,16 +572,20 @@ impl Plan {
         if self.image.is_none() && self.profile.is_none() {
             return Err(invalid("a box spec needs an image or a profile"));
         }
-        if let Some(harness) = &self.harness
-            && artifacts::harness(harness).is_none()
-        {
-            let names: Vec<&str> = artifacts::HARNESSES
-                .iter()
-                .map(|harness| harness.name.as_str())
-                .collect();
-            return Err(invalid(format!(
-                "harness {harness:?} is not supported; the harnesses are {names:?}"
-            )));
+        let mut harnesses = BTreeSet::new();
+        for harness in &self.harnesses {
+            if artifacts::harness(harness).is_none() {
+                let names: Vec<&str> = artifacts::HARNESSES
+                    .iter()
+                    .map(|harness| harness.name.as_str())
+                    .collect();
+                return Err(invalid(format!(
+                    "harness {harness:?} is not supported; the harnesses are {names:?}"
+                )));
+            }
+            if !harnesses.insert(harness) {
+                return Err(invalid(format!("harness {harness:?} is listed twice")));
+            }
         }
         if let Some(memory) = &self.memory
             && !memory_mib(memory).is_some_and(|mebibytes| mebibytes >= 256)
@@ -686,7 +691,7 @@ impl Plan {
                     )));
                 }
             }
-            let mut seen_login = false;
+            let mut logins = BTreeSet::new();
             let mut pi_providers = BTreeSet::new();
             let mut route_names = BTreeSet::new();
             for (name, route) in &egress.routes {
@@ -712,22 +717,15 @@ impl Plan {
                         inject.resolve()?;
                     }
                     Route::Login(login) => {
-                        if self.harness.as_deref() != Some(login.login.as_str()) {
-                            let detail = match &self.harness {
-                                Some(harness) => format!(
-                                    "login route {name:?} names {:?}, but the spec's harness is {harness:?}",
-                                    login.login
-                                ),
-                                None => format!(
-                                    "login route {name:?} names {:?}, but the spec has no harness",
-                                    login.login
-                                ),
-                            };
-                            return Err(invalid(detail));
+                        if !self.harnesses.contains(&login.login) {
+                            return Err(invalid(format!(
+                                "login route {name:?} names {:?}, but the spec's harnesses are {:?}",
+                                login.login, self.harnesses
+                            )));
                         }
                         login.check(name)?;
                         // pi takes one login route per pi provider, the
-                        // other harnesses one per spec.
+                        // other harnesses one each.
                         if login.is_pi() {
                             let provider = login.pi_provider()?.pi;
                             if !pi_providers.insert(provider) {
@@ -735,12 +733,12 @@ impl Plan {
                                     "login route {name:?} is a second pi login route for {provider:?}"
                                 )));
                             }
-                        } else if seen_login {
+                        } else if !logins.insert(&login.login) {
                             return Err(invalid(format!(
-                                "login route {name:?} is a second login route"
+                                "login route {name:?} is a second {} login route",
+                                login.login
                             )));
                         }
-                        seen_login = true;
                     }
                 }
             }
@@ -763,7 +761,8 @@ impl Plan {
     /// that cannot be used refuses as `login` rather than `spec`: from this
     /// process's environment, or from the host helper for a login on the
     /// host's Codex login. The value never enters the plan; the Codex token
-    /// is returned for the proxy.
+    /// is returned for the proxy. A codex route and pi's `openai-codex`
+    /// route share that one token, so the helper is asked once.
     pub fn resolve_login(
         &self,
         cancel: Option<&std::sync::atomic::AtomicBool>,
@@ -771,7 +770,10 @@ impl Plan {
         let mut token = None;
         for (route, login) in self.logins() {
             let resolved = if login.uses_host_codex() {
-                login::token_from_helper(cancel).map(|codex| token = Some(codex))
+                match token {
+                    Some(_) => Ok(()),
+                    None => login::token_from_helper(cancel).map(|codex| token = Some(codex)),
+                }
             } else {
                 login.resolve().map(|_| ())
             };
