@@ -1,0 +1,11 @@
+host$ (cd /private/tmp/wtprobe.xdhf/R) git init -q -b main . && echo a > a && printf 'wt/\n' > .gitignore && git add a .gitignore && git commit -qm c0 && git worktree add -q wt/x -b x && cat wt/x/.git && git worktree list
+  gitdir: /private/tmp/wtprobe.xdhf/R/.git/worktrees/x
+  /private/tmp/wtprobe.xdhf/R      b54bd50 [main]
+  /private/tmp/wtprobe.xdhf/R/wt/x b54bd50 [x]
+  rc=0
+host$ container run -d --name wtp2 --user 501:20 -v /private/tmp/wtprobe.xdhf/R:/private/tmp/wtprobe.xdhf/R -v /private/tmp/wtprobe.xdhf/R/.git:/private/tmp/wtprobe.xdhf/R/.git:ro  --entrypoint sleep IMAGE infinity
+  rc=0
+trials 20 host_saw_edit 20 host_commit_ok 20 immediate_wrong 19 later_wrong 0
+host$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) git log --oneline | wc -l; git status --short; git fsck --no-progress
+        21
+  rc=0

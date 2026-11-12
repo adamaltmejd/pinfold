@@ -1,0 +1,42 @@
+host$ (cd /private/tmp/wtprobe.xdhf/R) git init -q -b main . && echo a > a && printf 'wt/\n' > .gitignore && git add a .gitignore && git commit -qm c0 && git worktree add -q wt/x -b x && cat wt/x/.git && git worktree list
+  gitdir: /private/tmp/wtprobe.xdhf/R/.git/worktrees/x
+  /private/tmp/wtprobe.xdhf/R      e580978 [main]
+  /private/tmp/wtprobe.xdhf/R/wt/x e580978 [x]
+  rc=0
+host$ container run -d --name wtp5b --user 501:20 -v /private/tmp/wtprobe.xdhf/R:/private/tmp/wtprobe.xdhf/R -v /private/tmp/wtprobe.xdhf/R/.git:/private/tmp/wtprobe.xdhf/R/.git:ro -v /private/tmp/wtprobe.xdhf/R/wt/x/.git:/private/tmp/wtprobe.xdhf/R/wt/x/.git:ro --entrypoint sleep IMAGE infinity
+  rc=0
+box[wtp5b]$ (cd /private/tmp/wtprobe.xdhf/R) mv wt/x wt/x2 && grep -E ' /private/tmp/wtprobe.xdhf/R' /proc/self/mountinfo | cut -d' ' -f5,6,9-
+  /private/tmp/wtprobe.xdhf/R rw,relatime virtiofs rw
+  /private/tmp/wtprobe.xdhf/R/.git ro,relatime virtiofs rw
+  /private/tmp/wtprobe.xdhf/R/wt/x2/.git ro,relatime virtiofs rw
+  rc=0
+box[wtp5b]$ (cd /private/tmp/wtprobe.xdhf/R) cat wt/x2/.git; printf 'gitdir: /nowhere\n' > wt/x2/.git
+  cat: wt/x2/.git: Permission denied
+  sh: 1: cannot create wt/x2/.git: Read-only file system
+  rc=2
+host$ (cd /private/tmp/wtprobe.xdhf/R) ls wt; cat wt/x2/.git; git worktree list
+  x2
+  gitdir: /private/tmp/wtprobe.xdhf/R/.git/worktrees/x
+  /private/tmp/wtprobe.xdhf/R      e580978 [main]
+  /private/tmp/wtprobe.xdhf/R/wt/x e580978 [x] prunable
+  rc=0
+## box builds a gitdir and a new wt/x
+box[wtp5b]$ (cd /private/tmp/wtprobe.xdhf/R) cp -r .git /private/tmp/wtprobe.xdhf/R/wt/evil && echo 'ref: refs/heads/x' > /private/tmp/wtprobe.xdhf/R/wt/evil/HEAD && cp .git/worktrees/x/index /private/tmp/wtprobe.xdhf/R/wt/evil/index   && printf '#!/bin/sh\necho "fsmonitor ran on $(uname -s) args=$*" >> /private/tmp/wtprobe.xdhf/marker.log\nexit 1\n' > /private/tmp/wtprobe.xdhf/R/wt/evil/fsm.sh && chmod +x /private/tmp/wtprobe.xdhf/R/wt/evil/fsm.sh   && git config -f /private/tmp/wtprobe.xdhf/R/wt/evil/config core.fsmonitor /private/tmp/wtprobe.xdhf/R/wt/evil/fsm.sh   && mkdir wt/x && cp wt/x2/a wt/x2/.gitignore wt/x/ && printf 'gitdir: /private/tmp/wtprobe.xdhf/R/wt/evil\n' > wt/x/.git && cat wt/x/.git
+  gitdir: /private/tmp/wtprobe.xdhf/R/wt/evil
+  rc=0
+## host in wt/x
+host$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) cat .git; git rev-parse --git-dir; git status --short
+  gitdir: /private/tmp/wtprobe.xdhf/R/wt/evil
+  /private/tmp/wtprobe.xdhf/R/wt/evil
+  rc=0
+host$ (cd /private/tmp/wtprobe.xdhf) cat marker.log
+  fsmonitor ran on Darwin args=2 1794490836528422000
+  fsmonitor ran on Darwin args=1 1794490836528422000
+  rc=0
+host$ (cd /private/tmp/wtprobe.xdhf/R) git worktree list; git worktree repair; echo repair_rc=$?; cat wt/x/.git
+  /private/tmp/wtprobe.xdhf/R      e580978 [main]
+  /private/tmp/wtprobe.xdhf/R/wt/x e580978 [x]
+  repair: .git file incorrect: /private/tmp/wtprobe.xdhf/R/wt/x
+  repair_rc=0
+  gitdir: /private/tmp/wtprobe.xdhf/R/.git/worktrees/x
+  rc=0

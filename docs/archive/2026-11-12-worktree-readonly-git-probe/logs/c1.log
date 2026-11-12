@@ -1,0 +1,88 @@
+host$ (cd /private/tmp/wtprobe.xdhf/R) git init -q -b main . && echo a > a && printf 'wt/\n' > .gitignore && git add a .gitignore && git commit -qm c0 && git worktree add -q wt/x -b x && cat wt/x/.git && git worktree list
+  gitdir: /private/tmp/wtprobe.xdhf/R/.git/worktrees/x
+  /private/tmp/wtprobe.xdhf/R      e0bedea [main]
+  /private/tmp/wtprobe.xdhf/R/wt/x e0bedea [x]
+  rc=0
+host$ container run -d --name wtp1 --user 501:20 -v /private/tmp/wtprobe.xdhf/R:/private/tmp/wtprobe.xdhf/R -v /private/tmp/wtprobe.xdhf/R/.git:/private/tmp/wtprobe.xdhf/R/.git:ro  --entrypoint sleep IMAGE infinity
+  rc=0
+box[wtp1]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) grep -E ' /private/tmp/wtprobe.xdhf/R' /proc/self/mountinfo | cut -d' ' -f5,6,9-
+  /private/tmp/wtprobe.xdhf/R rw,relatime virtiofs rw
+  /private/tmp/wtprobe.xdhf/R/.git ro,relatime virtiofs rw
+  rc=0
+box[wtp1]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) git rev-parse --show-toplevel --git-dir --git-common-dir
+  /private/tmp/wtprobe.xdhf/R/wt/x
+  /private/tmp/wtprobe.xdhf/R/.git/worktrees/x
+  /private/tmp/wtprobe.xdhf/R/.git
+  rc=0
+box[wtp1]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) git status; git log --oneline; git worktree list
+  On branch x
+  nothing to commit, working tree clean
+  e0bedea c0
+  /private/tmp/wtprobe.xdhf/R       e0bedea [main]
+  /private/tmp/wtprobe.xdhf/R/wt/x  e0bedea [x]
+  rc=0
+box[wtp1]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) echo boxedit >> a; touch .gitignore; git diff --stat; git diff
+   a | 1 +
+   1 file changed, 1 insertion(+)
+  diff --git a/a b/a
+  index 7898192..72b7267 100644
+  --- a/a
+  +++ b/a
+  @@ -1 +1,2 @@
+   a
+  +boxedit
+  rc=0
+## status with a stale index, default
+box[wtp1]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) git status --short; echo status_rc=$?; ls /private/tmp/wtprobe.xdhf/R/.git/worktrees/x
+   M a
+  status_rc=0
+  HEAD
+  ORIG_HEAD
+  commondir
+  gitdir
+  index
+  logs
+  refs
+  rc=0
+box[wtp1]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) git status --short
+   M a
+  rc=0
+## status with a stale index, GIT_OPTIONAL_LOCKS=0
+box[wtp1]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) GIT_OPTIONAL_LOCKS=0 git status --short
+   M a
+  rc=0
+box[wtp1]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) git update-index --refresh
+  a: needs update
+  fatal: Unable to create '/private/tmp/wtprobe.xdhf/R/.git/worktrees/x/index.lock': Read-only file system
+  rc=128
+## writes
+box[wtp1]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) git add a
+  fatal: Unable to create '/private/tmp/wtprobe.xdhf/R/.git/worktrees/x/index.lock': Read-only file system
+  rc=128
+box[wtp1]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) git commit -qam box
+  fatal: Unable to create '/private/tmp/wtprobe.xdhf/R/.git/worktrees/x/index.lock': Read-only file system
+  rc=128
+box[wtp1]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) git stash
+  error: could not write index
+  rc=1
+box[wtp1]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) git checkout -q -b other
+  fatal: Unable to create '/private/tmp/wtprobe.xdhf/R/.git/worktrees/x/index.lock': Read-only file system
+  rc=128
+box[wtp1]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) touch /private/tmp/wtprobe.xdhf/R/.git/worktrees/x/y
+  touch: cannot touch '/private/tmp/wtprobe.xdhf/R/.git/worktrees/x/y': Read-only file system
+  rc=1
+box[wtp1]$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) echo x > /private/tmp/wtprobe.xdhf/R/.git/worktrees/x/HEAD
+  sh: 1: cannot create /private/tmp/wtprobe.xdhf/R/.git/worktrees/x/HEAD: Read-only file system
+  rc=2
+## host afterwards
+host$ (cd /private/tmp/wtprobe.xdhf/R/wt/x) git log --oneline --all; git status --short; git fsck --no-progress; ls /private/tmp/wtprobe.xdhf/R/.git/worktrees/x
+  e0bedea c0
+   M a
+  commondir
+  gitdir
+  HEAD
+  index
+  logs
+  ORIG_HEAD
+  refs
+  rc=0
