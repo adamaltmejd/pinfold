@@ -1,0 +1,37 @@
+20891 1794461433.953513 execve("/home/agent/bin/pinfold", ["/home/agent/bin/pinfold", "box", "up"], 0x7fffaf750e68 /* 19 vars */) = 0
+20893 1794461433.957203 exit_group(0)   = ?
+20893 1794461433.957457 +++ exited with 0 +++
+20891 1794461433.957487 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=20893, si_uid=1000, si_status=0, si_utime=0, si_stime=0} ---
+20894 1794461434.761321 execve("/usr/sbin/mkfs.ext4", ["/usr/sbin/mkfs.ext4", "-q", "-F", "-m", "0", "-O", "^has_journal", "-N", "1028", "-d", "/home/agent/.local/state/pinfold"..., "/home/agent/.local/state/pinfold"..., "24476k"], 0x7ffdaf8c4848 /* 19 vars */) = 0
+20894 1794461434.825364 exit_group(0)   = ?
+20894 1794461434.825758 +++ exited with 0 +++
+20892 1794461434.825785 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=20894, si_uid=1000, si_status=0, si_utime=2 /* 0.02 s */, si_stime=0} ---
+20895 1794461434.845194 execve("/usr/sbin/mkfs.ext4", ["/usr/sbin/mkfs.ext4", "-q", "-F", "-m", "0", "-O", "^has_journal", "-N", "1258", "-d", "/home/agent/.cache/pinfold/artif"..., "/home/agent/.local/state/pinfold"..., "157193k"], 0x7ffdaf8c4848 /* 19 vars */) = 0
+20895 1794461436.275479 exit_group(0)   = ?
+20895 1794461436.275815 +++ exited with 0 +++
+20892 1794461436.275843 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=20895, si_uid=1000, si_status=0, si_utime=114 /* 1.14 s */, si_stime=20 /* 0.20 s */} ---
+20898 1794461436.277805 execve("/usr/sbin/mkfs.ext4", ["/usr/sbin/mkfs.ext4", "-q", "-F", "-m", "0", "-O", "^has_journal", "-N", "1026", "-d", "/home/agent/.cache/pinfold/artif"..., "/home/agent/.local/state/pinfold"..., "383682k"], 0x7ffdaf8c4848 /* 19 vars */) = 0
+20898 1794461440.264430 exit_group(0)   = ?
+20898 1794461440.264810 +++ exited with 0 +++
+20891 1794461440.264832 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=20898, si_uid=1000, si_status=0, si_utime=326 /* 3.26 s */, si_stime=52 /* 0.52 s */} ---
+20903 1794461440.266629 execve("/usr/sbin/mkfs.ext4", ["/usr/sbin/mkfs.ext4", "-q", "-F", "-m", "0", "-O", "^has_journal", "-N", "1027", "-d", "/home/agent/.cache/pinfold/artif"..., "/home/agent/.local/state/pinfold"..., "445441k"], 0x7ffdaf8c4848 /* 19 vars */) = 0
+20903 1794461443.710673 exit_group(0)   = ?
+20903 1794461443.711045 +++ exited with 0 +++
+20892 1794461443.711075 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=20903, si_uid=1000, si_status=0, si_utime=275 /* 2.75 s */, si_stime=48 /* 0.48 s */} ---
+20909 1794461443.722890 execve("/firecracker", ["/firecracker", "--config-file", "/config.json", "--no-api"], 0x7f7ba5df95f8 /* 0 vars */) = 0
+20915 1794461443.732220 --- SIGRT_3 {si_signo=SIGRT_3, si_code=SI_TKILL, si_pid=1, si_uid=1000} ---
+20914 1794461443.732247 --- SIGRT_3 {si_signo=SIGRT_3, si_code=SI_TKILL, si_pid=1, si_uid=1000} ---
+20913 1794461443.732257 --- SIGRT_3 {si_signo=SIGRT_3, si_code=SI_TKILL, si_pid=1, si_uid=1000} ---
+20912 1794461443.732325 --- SIGRT_3 {si_signo=SIGRT_3, si_code=SI_TKILL, si_pid=1, si_uid=1000} ---
+20915 1794461448.005887 +++ killed by SIGKILL +++
+20914 1794461448.005907 +++ killed by SIGKILL +++
+20913 1794461448.005912 +++ killed by SIGKILL +++
+20912 1794461448.041484 +++ killed by SIGKILL +++
+20909 1794461448.041510 +++ killed by SIGKILL +++
+20908 1794461448.041544 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_KILLED, si_pid=20909, si_uid=1000, si_status=SIGKILL, si_utime=145 /* 1.45 s */, si_stime=112 /* 1.12 s */} ---
+20908 1794461448.042745 +++ exited with 0 +++
+20891 1794461448.047644 exit_group(0)   = ?
+20923 1794461448.048163 +++ exited with 0 +++
+20907 1794461448.048178 +++ exited with 0 +++
+20892 1794461448.048183 +++ exited with 0 +++
+20891 1794461448.048508 +++ exited with 0 +++

@@ -1,0 +1,1 @@
+{"name":"t-three","image":"localhost/pinfold/profile-default:latest","harnesses":["pi","claude","codex"],"egress":{"allow":["api.github.com"]}}

@@ -1,0 +1,25 @@
+20799 1794461421.773026 execve("/home/agent/bin/pinfold", ["/home/agent/bin/pinfold", "box", "up"], 0x7fff170eb1c8 /* 19 vars */) = 0
+20801 1794461421.775903 exit_group(0)   = ?
+20801 1794461421.776122 +++ exited with 0 +++
+20799 1794461421.776132 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=20801, si_uid=1000, si_status=0, si_utime=0, si_stime=0} ---
+20802 1794461422.548609 execve("/usr/sbin/mkfs.ext4", ["/usr/sbin/mkfs.ext4", "-q", "-F", "-m", "0", "-O", "^has_journal", "-N", "1028", "-d", "/home/agent/.local/state/pinfold"..., "/home/agent/.local/state/pinfold"..., "24476k"], 0x7ffd3a15d748 /* 19 vars */) = 0
+20802 1794461422.610154 exit_group(0)   = ?
+20802 1794461422.610499 +++ exited with 0 +++
+20800 1794461422.610528 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=20802, si_uid=1000, si_status=0, si_utime=2 /* 0.02 s */, si_stime=2 /* 0.02 s */} ---
+20805 1794461422.622573 execve("/firecracker", ["/firecracker", "--config-file", "/config.json", "--no-api"], 0x7f172ebf95f8 /* 0 vars */) = 0
+20811 1794461422.632772 --- SIGRT_3 {si_signo=SIGRT_3, si_code=SI_TKILL, si_pid=1, si_uid=1000} ---
+20808 1794461422.632803 --- SIGRT_3 {si_signo=SIGRT_3, si_code=SI_TKILL, si_pid=1, si_uid=1000} ---
+20810 1794461422.632819 --- SIGRT_3 {si_signo=SIGRT_3, si_code=SI_TKILL, si_pid=1, si_uid=1000} ---
+20809 1794461422.632839 --- SIGRT_3 {si_signo=SIGRT_3, si_code=SI_TKILL, si_pid=1, si_uid=1000} ---
+20811 1794461426.777770 +++ killed by SIGKILL +++
+20810 1794461426.777797 +++ killed by SIGKILL +++
+20809 1794461426.777853 +++ killed by SIGKILL +++
+20808 1794461426.809566 +++ killed by SIGKILL +++
+20805 1794461426.809592 +++ killed by SIGKILL +++
+20804 1794461426.809611 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_KILLED, si_pid=20805, si_uid=1000, si_status=SIGKILL, si_utime=118 /* 1.18 s */, si_stime=108 /* 1.08 s */} ---
+20804 1794461426.810458 +++ exited with 0 +++
+20799 1794461426.815787 exit_group(0)   = ?
+20818 1794461426.815928 +++ exited with 0 +++
+20800 1794461426.816372 +++ exited with 0 +++
+20803 1794461426.816736 +++ exited with 0 +++
+20799 1794461426.816753 +++ exited with 0 +++
