@@ -15,10 +15,10 @@ Marks: [code] read from code or spec, [susp] suspected, not tested.
 ## Why
 
 - Adam asked whether the surface could be `pinfold -- CMD`, as in
-  tobi/wrap, whether agents could be installed in the image, and said
-  that relying on the VM boundary makes work in a box much easier.
+  tobi/wrap, and whether agents could be installed in the image.
 - wrap already has the shape his goal describes: a live project share,
-  one entry point, agents installed at build, root in the guest.
+  one entry point, agents installed at build. Its root in the guest is
+  not taken up; see change 1.
 - Carrying three agents costs 7.5 s on every Linux box start (11.16 s
   against 3.65 s). This alone does not justify change 3; see the
   alternative there.
@@ -53,6 +53,8 @@ turned agent to exactly the data in item 1.
 - Host files and profiles: a box writes no host file outside its share.
 - Trust: `pinfold allow` and the hash check at every box start.
 - The Linux VMM jail.
+- No privilege in a box: the host uid, no capabilities, a read-only
+  root, nested user namespaces off.
 - No secret value in argv, logs or any file.
 - From the 2026-11-11 plan: decisions 1 to 9, 11, 13, 14 and 16, and
   stage 1's detached owner, sessions and join as planned (#276, #277;
@@ -64,10 +66,15 @@ Each is marked **Adam said** or **proposed**. A proposed item is the
 operator's recommendation and needs Adam's answer. Each names the
 guarantee it changes.
 
-1. **Rely on the VM boundary for privilege: passwordless `sudo`, as in
-   wrap.** Adam said. Replaces decision 12, the "No privilege" control
-   and guarantee 5. Open: which capabilities root holds (Q1b) and the
-   root filesystem (Q2).
+1. **Privilege stays as it is. The default image is well stocked.**
+   Adam said, after first choosing passwordless `sudo`. Box work keeps
+   the host uid, no capabilities and a read-only root; decision 12 and
+   guarantee 5 stand. System packages are a line in a profile or
+   project recipe and a rebuild, where `apt` runs as root. Tools that
+   install under the home directory (mise, uv, npm, cargo, pixi) work
+   in a box as they are. The built-in default profile gains compilers,
+   common `-dev` libraries, mise and pixi; the list is a ticket.
+   The reasons are under "Why sudo was withdrawn".
 2. **`pinfold -- CMD` is the only way to run something in a box.** Adam
    said. Every other `pinfold VERB` acts on pinfold from outside. Bare
    `pinfold` is `pinfold --help`. A session is one command in the
@@ -100,27 +107,25 @@ guarantee it changes.
 Not proposed: any change to disk projects (decision 14), nested
 containers, ports, or the share on Linux.
 
-## Guest privilege: what root in the guest reaches
+## Why sudo was withdrawn
 
-"Root" below means box work able to become uid 0 with full
-capabilities. Q1b offers a narrower variant that avoids most rows.
+- With a root that resets at each box start, an `apt install` in a box
+  lasts one session. Anything kept has to be in a recipe anyway.
+- A recipe change is reviewed: a project recipe needs `pinfold allow`.
+- Root in the guest opened risks the review read from code or
+  suspected. The most serious: every read-only mount in an Apple box is
+  a live host directory with read-only passed as a mount option [code],
+  including pinfold's cached init and agent binaries. The share probe
+  found `mount -o remount,rw` works with `CAP_SYS_ADMIN`. If read-only
+  holds only in the guest, root rewrites files every later box runs
+  [susp]. Others: forging PID 1's clean-unmount answer on Linux, writing
+  raw disk blocks that other boxes' kernels then parse, leaving the
+  work cgroup, and mixed uids breaking Git on an Apple share.
+- None of these arise with today's rules.
 
-| Control today | With root in the guest |
-|---|---|
-| Host uid, empty capability bounding set, `no_new_privs` | Goes. This is the change. |
-| Read-only root, no setuid files | `sudo` needs a setuid binary and `no_new_privs` off; built-in images strip setuid. `apt install` needs a writable root. Q2. |
-| **Read-only host mounts on Apple** | **Unknown, and the most serious row.** Every Apple mount is a live host directory with `readonly` passed as a mount option [code]: pinfold's cached init, the harness cache, profile files, `/etc/codex`. The share probe found mount options reach only a guest-side bind mount, and that `mount -o remount,rw` works with `CAP_SYS_ADMIN`. If read-only is enforced only in the guest, root writes those host files, and every later box runs them [susp]. Probe first. |
-| Read-only mounts and disks on Linux | Unchanged. The VMM enforces `is_read_only` [code]. |
-| No network interface but loopback | Linux: unchanged; after ready only the proxy port listens on the host's vsock [code]. Apple: the socket row holds, root can only remove its own egress [code]; but the VM still has vsock to Apple's runtime, whose parsers root might reach [susp]. |
-| Linux PID 1 and the exec service | Root can forge PID 1's "disks unmounted clean" answer, or leave the work cgroup so the unmount fails as `disk-unclean` [susp]. Root can read the exec service's descriptors, which with sessions include other sessions' streams [code]. |
-| Disks hold only what file syscalls wrote | Root can write a disk's raw blocks. Every later guest that mounts it parses a hostile filesystem in its kernel: another box sharing the disk read-only, the scratch inspection box, the export VM [code]. |
-| Pids cap, memory accounting, no OOM immunity | Root can leave the cgroup and set its own OOM score [code]. |
-| Writable disks are `nodev` but not `nosuid` | A setuid binary planted on the home disk survives a later return to less privilege [code]. |
-| Apple share: every process looking at it is the host uid | Breaks under mixed uids; the probe saw Git refuse. |
-| Kernel modules | Not checked whether the guest kernels allow loading them [susp]. |
-| The VMM jail (Linux) | Unchanged, and it matters more. The Mac has no equivalent. |
-
-The Mac is therefore not the safer first platform for privilege.
+The cost: an agent that needs a system library no home-directory tool
+provides must stop for a recipe change, a rebuild and a box restart.
+Revisit if that is frequent in practice.
 
 ## Box-wide env: collisions
 
@@ -150,45 +155,24 @@ The Mac is therefore not the safer first platform for privilege.
 2. Agents in the image, or the per-version image cache.
 3. The detached owner and sessions, with `pinfold -- CMD` as the client.
 4. Join.
-5. Guest privilege, in the variant chosen, after the Apple read-only
-   probe.
-6. Stage 2 as planned: the share on the Mac.
+5. Stage 2 as planned: the share on the Mac.
 
 The suite stays removed; AGENTS.md's suspension holds.
 
 ## Probes before tickets
 
-1. **Apple read-only mounts under root.** In a throwaway box run with
-   capabilities, try to remount a read-only host mount writable and
-   write to it. Decides whether privilege is possible on the Mac at all.
-2. **Mixed uids on an Apple share.** `sudo`, then Git as the host uid.
-   Also all work as uid 0.
-3. **Box-wide env**, with #287 fixed. A fixture shows what each agent
+1. **Box-wide env**, with #287 fixed. A fixture shows what each agent
    sends. Whether a subscription accepts it needs Adam's own login.
-4. **pi's login extension** when pi is installed, not mounted.
-5. **Headless Chrome** with `--no-sandbox` through the proxy.
-6. **Guest kernels:** whether modules can be loaded.
-7. **Cost of a writable root:** on Linux an overlay in memory counts
-   against the box's `memory`; on Apple dropping `--read-only` is
-   unmeasured.
+2. **pi's login extension** when pi is installed, not mounted.
+3. **Headless Chrome** with `--no-sandbox` through the proxy, as the
+   host uid.
+4. **The default image's contents:** which tools cover Adam's projects
+   without `apt` in a box, and the image's size and build time.
 
 ## Questions for Adam
 
-- **Q1. Settled by Adam:** work runs as the host uid with passwordless
-  `sudo`. Probe 2 checks that this works on an Apple share. Without
-  root, `apt` cannot install anything; only tools that install under
-  the home directory (mise, pip, npm, cargo) work.
-- **Q1b. Root's capabilities.** (a) All. (b) The ordinary container set,
-  without `SYS_ADMIN`, `SYS_MODULE` and `SYS_PTRACE`. Recommended: (b).
-  It allows `apt install` and keeps the Apple read-only row, module
-  loading and the PID 1 rows off the table. It rules out mounting and
-  nested containers.
-- **Q2. The root filesystem.** (a) Read-only, as today. (b) Writable,
-  reset at each box start. (c) Writable and kept per project, as in
-  wrap; conflicts with decision 7. Recommended: (b), cost permitting.
-- **Q3. Nested user namespaces.** Only Codex's sandbox and nested
-  containers need them once change 6 is accepted. Recommended: leave
-  them off.
+- **Q1 to Q3. Closed.** Privilege, the root filesystem and nested user
+  namespaces stay as they are.
 - **Q4. Agent versions.** (a) Latest at build. (b) Pinned in the binary,
   installed at build. Recommended: (b) first, (a) later if wanted.
   What (a) costs beyond the hash check:
@@ -204,8 +188,7 @@ The suite stays removed; AGENTS.md's suspension holds.
 - **Q5. Agent self-updaters.** Recommended: off, by each agent's own
   setting. claude's updater writes under the home directory, which
   persists, so an update would shadow the image's version.
-- **Q6. Linux too?** Recommended: yes for changes 2 to 6. Privilege
-  follows the table.
+- **Q6. Linux too?** Recommended: yes for changes 2 to 6.
 - **Q7. Codex's sandbox.** Under change 6, `pinfold -- codex` passes
   `--sandbox danger-full-access` unless the user gives a sandbox flag.
 - **Q8. #286.** (a) Close it and carry its three kept parts into the new
