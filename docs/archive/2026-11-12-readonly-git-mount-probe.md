@@ -1,6 +1,6 @@
 # Read-only `.git` inside a writable Apple share
 
-Date: 2026-11-12. Evidence for `2026-11-12-project-box-plan.md`.
+Date: 2026-11-12. Evidence for the project box plan (PR #288).
 Diagnostic only. Run by the operator by hand; no script was kept.
 
 ## Environment
@@ -23,8 +23,9 @@ Each observation was a `container exec -w /work`.
 /work/.git  ro,relatime - virtiofs virtiofs rw
 ```
 
-The second line's mount flag is `ro` while the filesystem's own option
-is `rw`. Read-only is a mount flag set in the guest.
+The second mount is `ro` by its per-mount flag; the filesystem reports
+`rw`. Whether the host's share server would refuse a write was not
+tested.
 
 ## Writes
 
@@ -60,17 +61,18 @@ appended to its own file.
 - The box's read was correct in 3 of 20. In 17 it said "your current
   branch 'main' does not have any commits yet" and listed every file as
   untracked.
-- After 1.2 s the box's `git log -1` and `git status` were correct.
+- After the last trial and a 1.2 s wait, one more `git log -1` and
+  `git status` in the box were correct.
 - The host ended with 21 commits, `git fsck` silent, and all 20 of the
   box's appended lines.
 
 ## What this shows and does not
 
-- A box without privilege cannot write the host's `.git` through this
-  mount, and its Git reads work.
-- The read-only flag holds only while box work cannot mount. It rests
-  on the box having no capabilities.
-- Box Git reads are wrong for up to about a second after a host Git
-  write. Nothing is damaged.
+- None of the nine writes tried reached the host's `.git`, and the
+  box's Git reads worked.
+- Remount and umount failed for lack of privilege. A box with privilege
+  was not tried.
+- Box Git reads were wrong in 17 of 20 reads made at once after a host
+  commit, and correct at 1.2 s. Nothing was damaged in these 20 trials.
 - Not tried: file removal under `.git`, worktrees, submodules, a `.git`
   file in place of a directory, Linux.

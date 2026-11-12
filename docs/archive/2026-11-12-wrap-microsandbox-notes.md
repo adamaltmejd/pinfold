@@ -1,15 +1,16 @@
 # wrap and microsandbox: what was read
 
-Date: 2026-11-12. Evidence for `2026-11-12-project-box-plan.md`.
+Date: 2026-11-12. Evidence for the project box plan (PR #288).
 Diagnostic only. Nothing here was built or run.
 
 Two research subagents read the sources. The operator did not re-read
-them. Marks: [S] read from source, [D] read from the project's own docs,
+them, so [S] means a subagent read the source. Marks: [S] read from source, [D] read from the project's own docs,
 [I] inferred, [W] through a summarising fetch and not checked directly.
 
 ## wrap
 
-`github.com/tobi/wrap`, default branch, shallow clone, 2026-11-12. Files
+`github.com/tobi/wrap`, default branch, shallow clone, 2026-11-12; the
+commit was not recorded. Files
 read: README.md, resources/default.yml, src/config.rs, src/main.rs,
 src/skill.md, Containerfile, resources/mise.toml.
 
@@ -24,21 +25,23 @@ src/skill.md, Containerfile, resources/mise.toml.
 - Guest user has passwordless sudo. The desktop image runs Chrome with
   `--no-sandbox`. [D]
 - Egress: default deny, TCP 80 and 443 to an allowlist, DNS to the host.
-  The DNS rule allows any query name. [S] [I] That is a channel to an
-  attacker's resolver.
+  The DNS rule allows any query name. [S] Any query name then reaches
+  the host resolver, which can carry data out if it forwards upstream.
+  [I]
 - Secrets: every guest variable holds `NOT-AN-ACTUAL-KEY`. The real
   value is substituted by microsandbox on traffic to the secret's hosts.
-  Variables are set for the whole VM; no per-agent scoping exists. [S]
+  Variables are set for the whole VM; no per-agent scoping was found in
+  the files read. [S]
 - Defaults: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
   `GH_TOKEN`. No `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_BASE_URL` or
-  Codex login handling anywhere in the tree. [S]
+  Codex login handling in the files read. [S]
 - Subscription login: only an opt-in `host-copy: ~/.claude` (or
   `~/.codex`, `~/.pi`), which copies the whole host directory into the
   guest unfiltered. [S]
 - Agents: installed at build as mise packages at `@latest`; the resolved
   version is pinned in the image. The stage is cached and refreshes on
-  `wrap --rebuild` or a configuration change. Nothing disables an
-  agent's own updater. [S]
+  `wrap --rebuild` or a configuration change. Nothing that disables an
+  agent's own updater was found in the files read. [S]
 
 ## microsandbox
 
