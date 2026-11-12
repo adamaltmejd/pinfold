@@ -1,0 +1,44 @@
+$ sw_vers
+ProductName:		macOS
+ProductVersion:		27.2.1
+BuildVersion:		26B131
+[exit 0]
+$ container --version
+container CLI version 1.7.1 (build: release, commit: unspeci)
+[exit 0]
+$ container system status
+FIELD               VALUE
+status              running
+client.version      1.7.1
+client.build        release
+client.commit       unspecified
+host.os             Version 27.2.1 (Build 26B131)
+host.architecture   arm64
+host.cpus           10
+server.version      1.7.1
+server.build        release
+server.commit       unspecified
+server.appName      container-apiserver
+paths.appRoot       /Users/user/Library/Application Support/com.apple.container/
+paths.installRoot   /opt/homebrew/Cellar/container/1.7.1_1/
+paths.logRoot       
+containers.total    1
+containers.running  0
+images.total        10
+[exit 0]
+$ git -C /Users/user/code/pinfold/.claude/worktrees/login-probe/docs/archive/2026-11-12-agent-login-files-probe rev-parse HEAD
+8dab5f88880873fcb57267900e075bb757d44d63
+[exit 0]
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold artifacts
+[{"assets":[{"sha256":"42805cd5615952fcbbfc9c56b04f8feb84395134952e169a6cdc8d7676975666","url":"https://github.com/earendil-works/pi/releases/download/v1.5.2/pi-linux-arm64.tar.gz"}],"cached":true,"name":"pi","path":"/tmp/plp.1Kel/cache/pinfold/artifacts/pi/1.5.2/linux-arm64/pi","version":"1.5.2"},{"assets":[{"sha256":"f220ca50ea4f3222043ff83cc224a1262e0196e9897acc0871efa94235b0c1fd","url":"https://downloads.claude.ai/claude-code-releases/2.1.322/linux-arm64/claude"}],"cached":true,"name":"claude","path":"/tmp/plp.1Kel/cache/pinfold/artifacts/claude/2.1.322/linux-arm64/claude","version":"2.1.322"},{"assets":[{"sha256":"3eefec1b400ea67d01a1a091ef98f8749304fdef89577beeeb97b8aee7c75e32","url":"https://github.com/openai/codex/releases/download/rust-v0.167.1/codex-aarch64-unknown-linux-musl.tar.gz"},{"sha256":"b6513596c09c00805909477d2b715f29b67c34ffe79c577054024e565fd96707","url":"https://github.com/openai/codex/releases/download/rust-v0.167.1/codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz"}],"cached":true,"name":"codex","path":"/tmp/plp.1Kel/cache/pinfold/artifacts/codex/0.167.1/linux-arm64/codex","version":"0.167.1"}]
+[exit 0]
+== reset: remove every disk and run record of this state root
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold disk rm --all
+Removed plp-all-home
+Removed plp-all-work
+[exit 0]
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold disk list
+NAME	ALLOCATED	CAPACITY	STATE	ATTACHED	ORIGIN
+[exit 0]
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold box list --label dev.pinfold.owner
+[exit 0]

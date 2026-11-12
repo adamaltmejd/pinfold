@@ -1,0 +1,39 @@
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold disk rm --all
+Removed plp-all-home
+Removed plp-all-work
+Removed plp-baseline-home
+Removed plp-baseline-work
+Removed plp-claude-key-blanked-home
+Removed plp-claude-key-blanked-work
+Removed plp-claude-key-boxwide-home
+Removed plp-claude-key-boxwide-raw-home
+Removed plp-claude-key-boxwide-raw-work
+Removed plp-claude-key-boxwide-work
+Removed plp-claude-managed-home
+Removed plp-claude-managed-raw-home
+Removed plp-claude-managed-raw-work
+Removed plp-claude-managed-work
+Removed plp-claude-tui-env-home
+Removed plp-claude-tui-env-work
+Removed plp-codex-home
+Removed plp-codex-work
+Removed plp-pi-ext-home
+Removed plp-pi-ext-predir-home
+Removed plp-pi-ext-predir-work
+Removed plp-pi-ext-raw-home
+Removed plp-pi-ext-raw-work
+Removed plp-pi-ext-work
+Removed plp-pi-models-home
+Removed plp-pi-models-work
+Removed plp-pi-settings-home
+Removed plp-pi-settings-work
+[exit 0]
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold disk list
+NAME	ALLOCATED	CAPACITY	STATE	ATTACHED	ORIGIN
+[exit 0]
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold box list --label dev.pinfold.owner
+[exit 0]
+$ container list --all
+ID        IMAGE                                                OS     ARCH   STATE    IP  CPUS  MEMORY   STARTED
+buildkit  ghcr.io/apple/container-builder-shim/builder:0.13.3  linux  arm64  stopped      2     2048 MB  
+[exit 0]

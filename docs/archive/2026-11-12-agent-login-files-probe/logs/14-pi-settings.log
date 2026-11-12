@@ -1,0 +1,24 @@
+== spec
+{"name": "plp-pi-settings", "image": "localhost/pinfold/profile-default:latest", "harnesses": ["pi", "claude", "codex"], "mounts": [{"host": "/Users/user/code/pinfold/.claude/worktrees/login-probe/docs/archive/2026-11-12-agent-login-files-probe/files/pi-ext", "guest": "/opt/plp"}], "disks": [{"name": "plp-pi-settings-home", "guest": "/home/pi"}, {"name": "plp-pi-settings-work", "guest": "/work"}], "env": {"HOME": "/home/pi", "PI_TELEMETRY": "0", "PI_SKIP_VERSION_CHECK": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}, "egress": {"allow": [], "routes": {"claude": {"to": "http://127.0.0.1:18771", "headers": {"Authorization": {"from": "FAKE_CLAUDE_TOKEN", "prefix": "Bearer "}}}, "anthropic": {"to": "http://127.0.0.1:18772", "headers": {"x-api-key": {"from": "FAKE_PI_KEY"}}}, "codex": {"to": "http://127.0.0.1:18773", "headers": {"Authorization": {"from": "FAKE_CODEX_TOKEN", "prefix": "Bearer "}, "ChatGPT-Account-ID": {"from": "FAKE_CODEX_ACCOUNT"}}}, "raw": "127.0.0.1:18774"}}, "cpus": 2, "memory": "4G"}
+
+-- up plp-pi-settings:
+{"box":"plp-pi-settings","egress_log":"/tmp/plp.1Kel/state/pinfold/runs/6d4fac85f7e51003b37bbd4b3e3f6de12fee8101cb0b13abf8efba3c04be2cf8/egress.jsonl","event":"ready","image":{"id":"ae6f1273f1836a19225b840e0f8de4350ba667c04d77c2e0379269c863cfca71","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"219a537cd424e4188e5bfeb292740edb02f2baec485b9f2ff87163c192300dbb","dev.pinfold.generation":"6d4fac85f7e51003b37bbd4b3e3f6de12fee8101cb0b13abf8efba3c04be2cf8","dev.pinfold.owner":"33093","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":33093,"run_id":"6d4fac85f7e51003b37bbd4b3e3f6de12fee8101cb0b13abf8efba3c04be2cf8"}
+{"extensions":["/opt/plp/pinfold-login.ts"]}
+== pi, settings.json extensions entry
+$ box exec plp-pi-settings -- sh -c 'cd /work && timeout 120 /opt/pinfold/pi/pi -p "say hi" --provider anthropic --model sonnet'
+400 {"type":"error","error":{"type":"invalid_request_error","message":"fixture"}}
+[exit 1]
+-- fake 18772 saw:
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "127.0.0.1:18772", "user-agent": "pi/1.5.2 (linux; bun/1.4.4; arm64)", "x-api-key": "FAKE-pi-key"}}
+-- egress log of run 6d4fac85f7e51003b37bbd4b3e3f6de12fee8101cb0b13abf8efba3c04be2cf8:
+{"decision":"allowed","host":"anthropic","method":"POST","path":"/v1/messages","reason":"route","status":400,"time":"2026-11-12T14:01:24Z"}
+== files the agents wrote under HOME and /work
+/home/pi/.pi/agent/auth.json
+/home/pi/.pi/agent/models-store.json
+/home/pi/.pi/agent/sessions/--work--/2026-11-12T14-01-24-437Z_01a1d010-30d4-7648-90a4-d728074a8ffd.jsonl
+/home/pi/.pi/agent/settings.json
+{"extensions":["/opt/plp/pinfold-login.ts"]}
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold box down plp-pi-settings
+[exit 0]
+-- up plp-pi-settings ended:
+{"box":"plp-pi-settings","event":"down","reason":"signal","run_id":"6d4fac85f7e51003b37bbd4b3e3f6de12fee8101cb0b13abf8efba3c04be2cf8"}

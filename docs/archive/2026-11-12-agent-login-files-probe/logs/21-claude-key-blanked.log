@@ -1,0 +1,39 @@
+== spec
+{"name": "plp-claude-key-blanked", "image": "localhost/pinfold/profile-default:latest", "harnesses": ["pi", "claude", "codex"], "mounts": [{"host": "/Users/user/code/pinfold/.claude/worktrees/login-probe/docs/archive/2026-11-12-agent-login-files-probe/files/claude-managed-key", "guest": "/etc/claude-code"}], "disks": [{"name": "plp-claude-key-blanked-home", "guest": "/home/pi"}, {"name": "plp-claude-key-blanked-work", "guest": "/work"}], "env": {"HOME": "/home/pi", "PI_TELEMETRY": "0", "PI_SKIP_VERSION_CHECK": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "ANTHROPIC_API_KEY": "pinfold-placeholder"}, "egress": {"allow": [], "routes": {"claude": {"to": "http://127.0.0.1:18771", "headers": {"Authorization": {"from": "FAKE_CLAUDE_TOKEN", "prefix": "Bearer "}}}, "anthropic": {"to": "http://127.0.0.1:18772", "headers": {"x-api-key": {"from": "FAKE_PI_KEY"}}}, "codex": {"to": "http://127.0.0.1:18773", "headers": {"Authorization": {"from": "FAKE_CODEX_TOKEN", "prefix": "Bearer "}, "ChatGPT-Account-ID": {"from": "FAKE_CODEX_ACCOUNT"}}}, "raw": "127.0.0.1:18774"}}, "cpus": 2, "memory": "4G"}
+
+-- up plp-claude-key-blanked:
+{"box":"plp-claude-key-blanked","egress_log":"/tmp/plp.1Kel/state/pinfold/runs/0fb600da4a8710248d2a3770a1b11bfe36103b2a224d00981b0209663ff45470/egress.jsonl","event":"ready","image":{"id":"ae6f1273f1836a19225b840e0f8de4350ba667c04d77c2e0379269c863cfca71","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"219a537cd424e4188e5bfeb292740edb02f2baec485b9f2ff87163c192300dbb","dev.pinfold.generation":"0fb600da4a8710248d2a3770a1b11bfe36103b2a224d00981b0209663ff45470","dev.pinfold.owner":"34792","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":34792,"run_id":"0fb600da4a8710248d2a3770a1b11bfe36103b2a224d00981b0209663ff45470"}
+== box env
+ANTHROPIC_API_KEY=pinfold-placeholder
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+HOME=/home/pi
+HTTPS_PROXY=http://127.0.0.1:3128
+NODE_USE_ENV_PROXY=1
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PINFOLD_ALLOW=
+PI_SKIP_VERSION_CHECK=1
+PI_TELEMETRY=0
+SSH_AUTH_SOCK=/var/host-services/ssh-auth.sock
+http_proxy=http://127.0.0.1:3128
+== mounts
+total 4
+drwxr-xr-x 3 root root     96 Nov 12 13:53 .
+-rw-r--r-- 1  501 dialout 118 Nov 12 13:53 managed-settings.json
+--- /etc/claude-code/managed-settings.json
+{"env":{"ANTHROPIC_BASE_URL":"http://claude","CLAUDE_CODE_OAUTH_TOKEN":"pinfold-placeholder","ANTHROPIC_API_KEY":""}}
+touch: cannot touch '/etc/claude-code/write-probe': Read-only file system
+== claude, managed settings blank ANTHROPIC_API_KEY, box-wide one present
+$ box exec plp-claude-key-blanked -- sh -c 'cd /work && timeout 120 /opt/pinfold/claude/claude -p "say hi"'
+API Error: 400 fixture
+[exit 1]
+-- fake 18771 saw:
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "127.0.0.1:18771", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "authorization": "Bearer FAKE-claude-token"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "127.0.0.1:18771", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "authorization": "Bearer FAKE-claude-token"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "127.0.0.1:18771", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "authorization": "Bearer FAKE-claude-token"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "127.0.0.1:18771", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "authorization": "Bearer FAKE-claude-token"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "127.0.0.1:18771", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "authorization": "Bearer FAKE-claude-token"}}
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "127.0.0.1:18771", "user-agent": "claude-cli/2.1.322 (external, sdk-cli)", "authorization": "Bearer FAKE-claude-token"}}
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold box down plp-claude-key-blanked
+[exit 0]
+-- up plp-claude-key-blanked ended:
+{"box":"plp-claude-key-blanked","event":"down","reason":"signal","run_id":"0fb600da4a8710248d2a3770a1b11bfe36103b2a224d00981b0209663ff45470"}

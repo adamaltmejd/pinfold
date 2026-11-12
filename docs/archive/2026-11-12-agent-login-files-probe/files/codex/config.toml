@@ -1,0 +1,7 @@
+model_provider = "pinfold"
+
+[model_providers.pinfold]
+name = "pinfold"
+base_url = "http://codex/backend-api/codex"
+wire_api = "responses"
+requires_openai_auth = false

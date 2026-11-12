@@ -1,0 +1,103 @@
+== spec
+{"name": "plp-pi-ext", "image": "localhost/pinfold/profile-default:latest", "harnesses": ["pi", "claude", "codex"], "mounts": [{"host": "/Users/user/code/pinfold/.claude/worktrees/login-probe/docs/archive/2026-11-12-agent-login-files-probe/files/pi-ext", "guest": "/home/pi/.pi/agent/extensions"}], "disks": [{"name": "plp-pi-ext-home", "guest": "/home/pi"}, {"name": "plp-pi-ext-work", "guest": "/work"}], "env": {"HOME": "/home/pi", "PI_TELEMETRY": "0", "PI_SKIP_VERSION_CHECK": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}, "egress": {"allow": [], "routes": {"claude": {"to": "http://127.0.0.1:18771", "headers": {"Authorization": {"from": "FAKE_CLAUDE_TOKEN", "prefix": "Bearer "}}}, "anthropic": {"to": "http://127.0.0.1:18772", "headers": {"x-api-key": {"from": "FAKE_PI_KEY"}}}, "codex": {"to": "http://127.0.0.1:18773", "headers": {"Authorization": {"from": "FAKE_CODEX_TOKEN", "prefix": "Bearer "}, "ChatGPT-Account-ID": {"from": "FAKE_CODEX_ACCOUNT"}}}, "raw": "127.0.0.1:18774"}}, "cpus": 2, "memory": "4G"}
+
+-- up plp-pi-ext:
+{"box":"plp-pi-ext","egress_log":"/tmp/plp.1Kel/state/pinfold/runs/f36ea86308405bb5623500a38cd1b4f5dcdaf48c172d3efc6ef555fecde4d729/egress.jsonl","event":"ready","image":{"id":"ae6f1273f1836a19225b840e0f8de4350ba667c04d77c2e0379269c863cfca71","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"219a537cd424e4188e5bfeb292740edb02f2baec485b9f2ff87163c192300dbb","dev.pinfold.generation":"f36ea86308405bb5623500a38cd1b4f5dcdaf48c172d3efc6ef555fecde4d729","dev.pinfold.owner":"32480","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":32480,"run_id":"f36ea86308405bb5623500a38cd1b4f5dcdaf48c172d3efc6ef555fecde4d729"}
+== box env
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+HOME=/home/pi
+HTTPS_PROXY=http://127.0.0.1:3128
+NODE_USE_ENV_PROXY=1
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PINFOLD_ALLOW=
+PI_SKIP_VERSION_CHECK=1
+PI_TELEMETRY=0
+SSH_AUTH_SOCK=/var/host-services/ssh-auth.sock
+http_proxy=http://127.0.0.1:3128
+== mounts
+total 4
+drwxr-xr-x 3 root root     96 Nov 12 13:53 .
+-rw-r--r-- 1  501 dialout 132 Nov 12 13:53 pinfold-login.ts
+--- /home/pi/.pi/agent/extensions/pinfold-login.ts
+export default function (pi) {
+  pi.registerProvider("anthropic", {"baseUrl":"http://anthropic","apiKey":"pinfold-placeholder"});
+}
+touch: cannot touch '/home/pi/.pi/agent/extensions/write-probe': Read-only file system
+== pi, extension in ~/.pi/agent/extensions
+$ box exec plp-pi-ext -- sh -c 'cd /work && timeout 120 /opt/pinfold/pi/pi -p "say hi" --provider anthropic --model sonnet'
+196632 |   const sessionDir = getDefaultSessionDirPath(cwd, agentDir);
+196633 |     mkdirSync6(sessionDir, { recursive: true });
+                       ^
+EACCES: permission denied, mkdir '/home/pi/.pi/agent/sessions'
+    path: "/home/pi/.pi/agent/sessions",
+ syscall: "mkdir",
+   errno: -13,
+    code: "EACCES"
+
+      at getDefaultSessionDir (/$bunfs/root/pi:196633:15)
+      at create (/$bunfs/root/pi:197463:78)
+      at createSessionManager (/$bunfs/root/pi:281476:31)
+      at main (/$bunfs/root/pi:281645:50)
+
+Bun v1.4.4 (Linux arm64)
+[exit 1]
+/home/pi:
+total 12
+drwxr-xr-x 3 501 20 4096 Nov 12 14:01 .
+drwxr-xr-x 3   0  0 4096 Nov 12 14:01 ..
+drwxr-xr-x 3   0  0 4096 Nov 12 14:01 .pi
+
+/home/pi/.pi:
+total 12
+drwxr-xr-x 3   0  0 4096 Nov 12 14:01 .
+drwxr-xr-x 3 501 20 4096 Nov 12 14:01 ..
+drwxr-xr-x 3   0  0 4096 Nov 12 14:01 agent
+
+/home/pi/.pi/agent:
+total 8
+drwxr-xr-x 3   0  0 4096 Nov 12 14:01 .
+drwxr-xr-x 3   0  0 4096 Nov 12 14:01 ..
+drwxr-xr-x 3 501 20   96 Nov 12 13:53 extensions
+== pi, the same with --no-session
+$ box exec plp-pi-ext -- sh -c 'cd /work && timeout 120 /opt/pinfold/pi/pi -p "say hi" --provider anthropic --model sonnet --no-session'
+ syscall: "mkdir",
+   errno: -13,
+    code: "EACCES"
+
+      at <anonymous> (/$bunfs/root/pi:120154:36)
+      at acquireLock (/$bunfs/root/pi:119937:21)
+      at <anonymous> (/$bunfs/root/pi:120061:20)
+      at <anonymous> (/$bunfs/root/pi:119587:13)
+      at <anonymous> (/$bunfs/root/pi:120060:25)
+      at lock (/$bunfs/root/pi:120055:25)
+      at <anonymous> (/$bunfs/root/pi:120183:13)
+      at lockSync (/$bunfs/root/pi:120214:42)
+      at acquireTrustLockSync (/$bunfs/root/pi:245375:54)
+
+Bun v1.4.4 (Linux arm64)
+[exit 1]
+== pi auth --help
+$ box exec plp-pi-ext -- sh -c 'cd /work && /opt/pinfold/pi/pi auth --help 2>&1 | head -20'
+  pi auth check [--provider <provider>] [--model <model>] [--json] [--credentials] [--no-refresh]
+
+Log in to and out of model providers, print their credentials for external clients, or check that they are ready.
+Credentials are stored in ~/.pi/agent/auth.json.
+
+Commands:
+  login <provider>        Sign in with an account in the browser, or save an API key, then exit
+  logout <provider>       Remove the stored credentials; environment variables and models.json stay
+  print-api-key           Print the resolved API key
+  print-bearer-token      Print a resolved OAuth bearer token (refreshes if expired)
+  check                   Print ready, not_ready, or invalid; exit with 0, 1, or 2
+
+Options for print-api-key, print-bearer-token, and check (at least one is required):
+  --provider <provider>   Resolve credentials for a provider
+  --model <model>         Resolve credentials from a model
+[exit 0]
+-- egress log of run f36ea86308405bb5623500a38cd1b4f5dcdaf48c172d3efc6ef555fecde4d729:
+== files the agents wrote under HOME and /work
+/home/pi/.pi/agent/extensions/pinfold-login.ts
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold box down plp-pi-ext
+[exit 0]
+-- up plp-pi-ext ended:
+{"box":"plp-pi-ext","event":"down","reason":"signal","run_id":"f36ea86308405bb5623500a38cd1b4f5dcdaf48c172d3efc6ef555fecde4d729"}

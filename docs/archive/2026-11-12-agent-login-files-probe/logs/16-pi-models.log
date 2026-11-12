@@ -1,0 +1,50 @@
+== spec
+{"name": "plp-pi-models", "image": "localhost/pinfold/profile-default:latest", "harnesses": ["pi", "claude", "codex"], "mounts": [{"host": "/Users/user/code/pinfold/.claude/worktrees/login-probe/docs/archive/2026-11-12-agent-login-files-probe/files/pi-models", "guest": "/opt/plp"}], "disks": [{"name": "plp-pi-models-home", "guest": "/home/pi"}, {"name": "plp-pi-models-work", "guest": "/work"}], "env": {"HOME": "/home/pi", "PI_TELEMETRY": "0", "PI_SKIP_VERSION_CHECK": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}, "egress": {"allow": [], "routes": {"claude": {"to": "http://127.0.0.1:18771", "headers": {"Authorization": {"from": "FAKE_CLAUDE_TOKEN", "prefix": "Bearer "}}}, "anthropic": {"to": "http://127.0.0.1:18772", "headers": {"x-api-key": {"from": "FAKE_PI_KEY"}}}, "codex": {"to": "http://127.0.0.1:18773", "headers": {"Authorization": {"from": "FAKE_CODEX_TOKEN", "prefix": "Bearer "}, "ChatGPT-Account-ID": {"from": "FAKE_CODEX_ACCOUNT"}}}, "raw": "127.0.0.1:18774"}}, "cpus": 2, "memory": "4G"}
+
+-- up plp-pi-models:
+{"box":"plp-pi-models","egress_log":"/tmp/plp.1Kel/state/pinfold/runs/3f910168fe5ed778aea47c6cc790bc4273fefd6c25f19863aa6a921d97061ce8/egress.jsonl","event":"ready","image":{"id":"ae6f1273f1836a19225b840e0f8de4350ba667c04d77c2e0379269c863cfca71","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"219a537cd424e4188e5bfeb292740edb02f2baec485b9f2ff87163c192300dbb","dev.pinfold.generation":"3f910168fe5ed778aea47c6cc790bc4273fefd6c25f19863aa6a921d97061ce8","dev.pinfold.owner":"33754","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":33754,"run_id":"3f910168fe5ed778aea47c6cc790bc4273fefd6c25f19863aa6a921d97061ce8"}
+== box env
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+HOME=/home/pi
+HTTPS_PROXY=http://127.0.0.1:3128
+NODE_USE_ENV_PROXY=1
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PINFOLD_ALLOW=
+PI_SKIP_VERSION_CHECK=1
+PI_TELEMETRY=0
+SSH_AUTH_SOCK=/var/host-services/ssh-auth.sock
+http_proxy=http://127.0.0.1:3128
+== mounts
+total 4
+drwxr-xr-x 3 root root    96 Nov 12 13:53 .
+-rw-r--r-- 1  501 dialout 90 Nov 12 13:53 models.json
+--- /opt/plp/models.json
+{"providers":{"anthropic":{"baseUrl":"http://anthropic","apiKey":"pinfold-placeholder"}}}
+touch: cannot touch '/opt/plp/write-probe': Read-only file system
+total 8
+drwxr-xr-x 2 501 dialout 4096 Nov 12 14:01 .
+drwxr-xr-x 3 501 dialout 4096 Nov 12 14:01 ..
+lrwxrwxrwx 1 501 dialout   20 Nov 12 14:01 models.json -> /opt/plp/models.json
+== pi, models.json symlinked to /opt/plp/models.json
+$ box exec plp-pi-models -- sh -c 'cd /work && timeout 120 /opt/pinfold/pi/pi -p "say hi" --provider anthropic --model sonnet'
+400 {"type":"error","error":{"type":"invalid_request_error","message":"fixture"}}
+[exit 1]
+-- fake 18772 saw:
+{"method": "POST", "path": "/v1/messages", "headers": {"host": "127.0.0.1:18772", "user-agent": "pi/1.5.2 (linux; bun/1.4.4; arm64)", "x-api-key": "FAKE-pi-key"}}
+-- egress log of run 3f910168fe5ed778aea47c6cc790bc4273fefd6c25f19863aa6a921d97061ce8:
+{"decision":"allowed","host":"anthropic","method":"POST","path":"/v1/messages","reason":"route","status":400,"time":"2026-11-12T14:01:28Z"}
+== files the agents wrote under HOME and /work
+/home/pi/.pi/agent/auth.json
+/home/pi/.pi/agent/models-store.json
+/home/pi/.pi/agent/sessions/--work--/2026-11-12T14-01-28-409Z_01a1d010-4059-70b2-a9d5-dd229b8586e7.jsonl
+total 20
+drwxr-xr-x 3 501 dialout 4096 Nov 12 14:01 .
+drwxr-xr-x 3 501 dialout 4096 Nov 12 14:01 ..
+-rw------- 1 501 dialout    2 Nov 12 14:01 auth.json
+-rw------- 1 501 dialout    2 Nov 12 14:01 models-store.json
+lrwxrwxrwx 1 501 dialout   20 Nov 12 14:01 models.json -> /opt/plp/models.json
+drwxr-xr-x 3 501 dialout 4096 Nov 12 14:01 sessions
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold box down plp-pi-models
+[exit 0]
+-- up plp-pi-models ended:
+{"box":"plp-pi-models","event":"down","reason":"signal","run_id":"3f910168fe5ed778aea47c6cc790bc4273fefd6c25f19863aa6a921d97061ce8"}

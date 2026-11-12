@@ -1,0 +1,63 @@
+== spec
+{"name": "plp-claude-tui-env", "image": "localhost/pinfold/profile-default:latest", "harnesses": ["pi", "claude", "codex"], "mounts": [], "disks": [{"name": "plp-claude-tui-env-home", "guest": "/home/pi"}, {"name": "plp-claude-tui-env-work", "guest": "/work"}], "env": {"HOME": "/home/pi", "PI_TELEMETRY": "0", "PI_SKIP_VERSION_CHECK": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}, "egress": {"allow": [], "routes": {"claude": {"to": "http://127.0.0.1:18771", "headers": {"Authorization": {"from": "FAKE_CLAUDE_TOKEN", "prefix": "Bearer "}}}, "anthropic": {"to": "http://127.0.0.1:18772", "headers": {"x-api-key": {"from": "FAKE_PI_KEY"}}}, "codex": {"to": "http://127.0.0.1:18773", "headers": {"Authorization": {"from": "FAKE_CODEX_TOKEN", "prefix": "Bearer "}, "ChatGPT-Account-ID": {"from": "FAKE_CODEX_ACCOUNT"}}}, "raw": "127.0.0.1:18774"}}, "cpus": 2, "memory": "4G"}
+
+-- up plp-claude-tui-env:
+{"box":"plp-claude-tui-env","egress_log":"/tmp/plp.1Kel/state/pinfold/runs/906051f44ffad66a68d5503fcddff5b57dba3af56730890df7d820e2808a2029/egress.jsonl","event":"ready","image":{"id":"ae6f1273f1836a19225b840e0f8de4350ba667c04d77c2e0379269c863cfca71","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"219a537cd424e4188e5bfeb292740edb02f2baec485b9f2ff87163c192300dbb","dev.pinfold.generation":"906051f44ffad66a68d5503fcddff5b57dba3af56730890df7d820e2808a2029","dev.pinfold.owner":"35955","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":35955,"run_id":"906051f44ffad66a68d5503fcddff5b57dba3af56730890df7d820e2808a2029"}
+== claude-process-env interactive, keys [[10,"\r"],[5,"\r"],[5,"\r"],[5,"/login\r"],[6,"\u001b"],[2,"\u0003"],[1,"\u0003"]]
+[exit 1]
+-- screen text (escapes stripped, last 70 distinct lines):
+Welcome
+to
+Claude
+Code
+v2.1.322
+Unable
+connect
+Anthropic
+services
+Failed
+api.anthropic.com:
+ERR_PROXY_TUNNEL
+A
+proxy
+is
+configured
+via
+HTTPS_PROXY.
+Check
+that
+it
+allows
+connections
+the
+host
+above.
+See
+https://code.claude.com/docs/en/network-config
+Please
+check
+your
+internet
+connection
+and
+network
+settings.
+Note:
+might
+not
+be
+available
+in
+country.
+supported
+countries
+at
+https://anthropic.com/supported-countries
+B
+-- egress log of run 906051f44ffad66a68d5503fcddff5b57dba3af56730890df7d820e2808a2029:
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-12T14:02:50Z"}
+{"decision":"refused","host":"platform.claude.com","reason":"not allowlisted","time":"2026-11-12T14:02:50Z"}
+$ /Users/user/code/pinfold/.claude/worktrees/login-probe/target/debug/pinfold box down plp-claude-tui-env
+[exit 0]
+-- up plp-claude-tui-env ended:
+{"box":"plp-claude-tui-env","event":"down","reason":"signal","run_id":"906051f44ffad66a68d5503fcddff5b57dba3af56730890df7d820e2808a2029"}
