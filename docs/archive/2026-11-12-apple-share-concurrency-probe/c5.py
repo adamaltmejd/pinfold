@@ -8,11 +8,13 @@ runs OP. observe: the guest reports branch, HEAD, status and stash count at
 0, 0.3, 0.6, 1.0 and 1.5 s. damage: at once, the guest runs status, adds
 gfile and commits; the host then checks that only its current branch moved,
 by one commit on top of its own tip, with its own tree plus gfile.
+Env C5_DELAY (default 0): seconds the damage mode waits after OP.
 """
-import sys, time
+import os, sys, time
 from lib import *
 
 MODE, N, LOG, OPS = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4:]
+DELAY = float(os.environ.get("C5_DELAY", "0"))
 
 SETUP = {
     "checkout-b": "",
@@ -47,7 +49,7 @@ for op in OPS:
         t0 = now()
         truth = dict(br=h(repo, "git branch --show-current")[1], head=rev(repo)[:7],
                      st=h(repo, "git status --porcelain")[1], stash=h(repo, "git stash list | wc -l")[1].strip())
-        rec = dict(mode=MODE, op=op, repo=repo, host_rc=hrc, host=ho[-200:], truth=truth)
+        rec = dict(mode=MODE, op=op, repo=repo, host_rc=hrc, host=ho[-200:], truth=truth, delay=DELAY)
         if MODE == "observe":
             obs = []
             for d in (0, 0.3, 0.6, 1.0, 1.5):
@@ -65,6 +67,7 @@ for op in OPS:
             before = refs(repo)
             br = truth["br"]
             tip = rev(repo)
+            time.sleep(max(0, DELAY - (now() - t0)))
             rc, o = g(repo, "git status --porcelain; echo g > gfile; git add gfile; git commit -qm guest; echo rc=$?")
             after = refs(repo)
             moved = {k for k in set(before) | set(after) if before.get(k) != after.get(k)}
