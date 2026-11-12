@@ -63,7 +63,7 @@ fn development(path: &Path) -> bool {
 
 /// Checks are bounded, silent on failure, and confined to interactive launches.
 pub fn notice(verb: &str, args: &[String]) {
-    if !matches!(verb, "pi" | "attach")
+    if !matches!(verb, "pi" | "claude" | "codex" | "attach")
         || std::env::var_os("PINFOLD_NO_UPDATE_CHECK").as_deref() == Some("1".as_ref())
         || !io::stdin().is_terminal()
         || !io::stdout().is_terminal()

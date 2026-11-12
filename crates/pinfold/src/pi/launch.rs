@@ -1,4 +1,5 @@
-//! `pinfold pi`: assemble one project's box and run pi in it.
+//! `pinfold pi`, `pinfold claude` and `pinfold codex`: assemble one
+//! project's box and run that agent in it.
 
 use std::collections::BTreeMap;
 use std::env;
@@ -13,7 +14,7 @@ use crate::core::r#box::{self, Box, RefusalReason, Shutdown, Signals, UpError};
 use crate::core::clean;
 use crate::core::crossing::CrossingError;
 use crate::core::image::{ImageInfo, service};
-use crate::core::plan::{Disk, Egress, Env, Plan};
+use crate::core::plan::{Disk, Egress, Env, Plan, Route};
 use crate::core::runs::{self, Terminal};
 use crate::core::runtime::runtime;
 use crate::core::{artifacts, crossing, disk, image, login, ownership, sha256_hex};
@@ -21,10 +22,9 @@ use crate::pi::context::Context;
 use crate::pi::state::{self, canonical, project_id};
 use crate::trust;
 
-const HARNESS: &str = "pi";
-
-/// Run a `pi`/`pinfold pi` invocation and return pi's exit code.
-pub fn run(args: &[String]) -> io::Result<i32> {
+/// Run `agent` (`pi`, `claude` or `codex`) with `args` in this project's
+/// box and return its exit code.
+pub fn run(agent: &'static str, args: &[String]) -> io::Result<i32> {
     let cwd = canonical(&env::current_dir()?)?;
     let context = Context::discover(&cwd)?;
     let root = context.root.clone();
@@ -62,8 +62,9 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     } else {
         guest_root
     };
-    let plan = build_plan(&config, &storage_id, guest_root, &image);
+    let plan = build_plan(agent, &config, &storage_id, guest_root, &image);
     run_box(
+        agent,
         &plan,
         guest_root,
         guest_cwd,
@@ -98,10 +99,10 @@ exec git merge -q --ff-only "$host"
 
 /// Create the box's repository if the project disk has none, push the
 /// checkout's branches into it, then fast-forward its checkout (Git). A
-/// failure is reported and never stops pi.
-fn sync(name: &str, init: &Path, root: &Path) {
+/// failure is reported and never stops the agent.
+fn sync(agent: &str, name: &str, init: &Path, root: &Path) {
     let Some(guest) = root.to_str() else { return };
-    let failed = |detail: &str| eprintln!("pinfold pi: sync-failed: {}", detail.trim());
+    let failed = |detail: &str| eprintln!("pinfold {agent}: sync-failed: {}", detail.trim());
     // `--short` would print `heads/<b>` when a tag shares the branch's name.
     let branch = git(root, &["symbolic-ref", "-q", "HEAD"])
         .and_then(|head| head.strip_prefix("refs/heads/").map(str::to_string))
@@ -389,10 +390,19 @@ fn warn_containerfile(image: &ImageInfo, bytes: &[u8], build: &str) {
     }
 }
 
-fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> Plan {
+/// The agents a project's box can run, each a pinned harness.
+const AGENTS: [&str; 3] = ["pi", "claude", "codex"];
+
+/// The harnesses a launch of `agent` lists.
+fn harnesses(agent: &str) -> Vec<String> {
+    vec![agent.to_string()]
+}
+
+fn build_plan(agent: &str, config: &Config, id: &str, root: &Path, image: &str) -> Plan {
+    let harnesses = harnesses(agent);
     let mut env = BTreeMap::from([
         ("HOME".to_string(), Env::Exact(state::HOME.to_string())),
-        ("HERDR_AGENT".to_string(), Env::Exact("pi".to_string())),
+        ("HERDR_AGENT".to_string(), Env::Exact(agent.to_string())),
     ]);
     env.extend(config.env.iter().map(|name| {
         let from = format!("PINFOLD_ENV_{name}");
@@ -405,16 +415,28 @@ fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> Plan {
     };
     Plan {
         profile: Some(config.profile.name.clone()),
-        harnesses: vec![HARNESS.to_string()],
         disks: vec![
             empty_writable_disk(home, Path::new(state::HOME)),
             empty_writable_disk(project, root),
         ],
         env,
+        // A login route for another agent is left out. Any other unlisted
+        // name stays, so the spec check refuses it.
         egress: Some(Egress {
             allow: config.allow.clone(),
-            routes: config.routes.clone(),
+            routes: config
+                .routes
+                .iter()
+                .filter(|(_, route)| match route {
+                    Route::Login(login) => {
+                        harnesses.contains(&login.login) || !AGENTS.contains(&login.login.as_str())
+                    }
+                    _ => true,
+                })
+                .map(|(name, route)| (name.clone(), route.clone()))
+                .collect(),
         }),
+        harnesses,
         ..box_plan(config, id, image)
     }
 }
@@ -464,6 +486,7 @@ pub(crate) fn utf8<'a>(path: &'a Path, what: &str) -> io::Result<&'a str> {
 }
 
 fn run_box(
+    agent: &'static str,
     plan: &Plan,
     root: &Path,
     cwd: &Path,
@@ -472,14 +495,14 @@ fn run_box(
     scratch_origin: Option<(&str, &Path)>,
 ) -> io::Result<i32> {
     let init = artifacts::init()?;
-    let extension = plan
-        .logins()
-        .any(|(_, login)| login.is_pi())
+    let pi = agent == "pi";
+    let extension = (pi && plan.logins().any(|(_, login)| login.is_pi()))
         .then(|| ["-e".to_string(), login::PI_EXTENSION.to_string()]);
-    let argv: Vec<String> = std::iter::once(format!("{}/pi", artifacts::guest(HARNESS).display()))
-        .chain(extension.into_iter().flatten())
-        .chain(args.iter().cloned())
-        .collect();
+    let argv: Vec<String> =
+        std::iter::once(artifacts::guest(agent).join(agent).display().to_string())
+            .chain(extension.into_iter().flatten())
+            .chain(args.iter().cloned())
+            .collect();
     let (name, root, workdir) = (plan.name.clone(), root.to_path_buf(), cwd.to_path_buf());
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
     let box_runtime = runtime();
@@ -501,9 +524,11 @@ fn run_box(
             if let Some((id, root)) = scratch_origin
                 && let Err(error) = state::record_scratch(id, root)
             {
-                eprintln!("pinfold pi: could not record scratch origin: {error}");
+                eprintln!("pinfold {agent}: could not record scratch origin: {error}");
             }
-            eprintln!("pinfold pi: scratch disks: home={}, work={}; empty work is removed on clean exit; retained disks can be removed with `pinfold disk rm NAME`", plan.disks[0].name, plan.disks[1].name);
+            // Only pi's exit summary finds an empty work disk to remove.
+            let removed = if pi { "empty work is removed on clean exit; " } else { "" };
+            eprintln!("pinfold {agent}: scratch disks: home={}, work={}; {removed}retained disks can be removed with `pinfold disk rm NAME`", plan.disks[0].name, plan.disks[1].name);
         }
         // The sync runs here so that the signals and the box's end below
         // also cover it.
@@ -511,15 +536,15 @@ fn run_box(
         let summary_root = root.clone();
         let exec = tokio::task::spawn_blocking(move || {
             if repository {
-                sync(&name, &init, &root);
+                sync(agent, &name, &init, &root);
             }
-            let env = r#box::harness_env(&name, HARNESS)?
-                .ok_or_else(|| io::Error::other(format!("box {name:?} has no harness {HARNESS:?}")))?;
+            let env = r#box::harness_env(&name, agent)?
+                .ok_or_else(|| io::Error::other(format!("box {name:?} has no harness {agent:?}")))?;
             box_runtime.exec(&name, &init, tty, Some(&workdir), &env, &argv)
         });
         let ended = tokio::select! {
             status = exec => status
-                .map_err(|error| io::Error::other(format!("pi exec failed: {error}")))
+                .map_err(|error| io::Error::other(format!("{agent} exec failed: {error}")))
                 .and_then(|status| status)
                 .map(|status| (Terminal { reason: "harness-exited", detail: Some(status.to_string()) }, cli::exit_code(status))),
             shutdown = box_.ended() => shutdown.map(|shutdown| {
@@ -533,13 +558,13 @@ fn run_box(
             signal = signals.recv() => Ok((Shutdown::Signal.terminal(), 128 + signal as i32)),
         };
         // Remove the box exactly once, whatever ended the run. A failed
-        // removal must not hide the error that ended pi.
+        // removal must not hide the error that ended the agent.
         let (mut terminal, mut code) = match ended {
             Ok((terminal, code)) => (Some(terminal), Ok(code)),
             Err(error) => (None, Err(error)),
         };
         let mut empty_scratch = false;
-        if terminal.as_ref().is_some_and(|terminal| terminal.reason == "harness-exited") {
+        if pi && terminal.as_ref().is_some_and(|terminal| terminal.reason == "harness-exited") {
             match super::summary::report(&mut box_, &mut signals, plan, &summary_init, &summary_root, repository).await {
                 Ok((Some((stopped, status)), _)) => {
                     terminal = Some(stopped);
@@ -551,7 +576,7 @@ fn run_box(
                 Err(error) => {
                     terminal = None;
                     if code.as_ref().is_ok_and(|code| *code == 0) { code = Err(error); }
-                    else { eprintln!("pinfold pi: box monitor failed during summary"); }
+                    else { eprintln!("pinfold {agent}: box monitor failed during summary"); }
                 }
             }
         }
@@ -559,7 +584,7 @@ fn run_box(
         let down = box_.down(terminal).await;
         if let Some(reason) = reason.filter(|reason| !matches!(*reason, "harness-exited" | "signal")) {
             eprintln!(
-                "pinfold pi: the box ended with {reason}; see `pinfold box inspect {}`",
+                "pinfold {agent}: the box ended with {reason}; see `pinfold box inspect {}`",
                 box_.run_id
             );
         }
@@ -570,12 +595,12 @@ fn run_box(
                 Ok(true) => {
                     let cleanup = state::forget_scratch_origin(&plan.disks[0].name);
                     if let Err(error) = cleanup {
-                        eprintln!("pinfold pi: scratch origin cleanup failed: {error}");
+                        eprintln!("pinfold {agent}: scratch origin cleanup failed: {error}");
                     }
-                    eprintln!("pinfold pi: empty scratch disks removed");
+                    eprintln!("pinfold {agent}: empty scratch disks removed");
                 }
-                Ok(false) => eprintln!("pinfold pi: scratch disks retained"),
-                Err(error) => eprintln!("pinfold pi: scratch cleanup failed; check `pinfold disk list`: {error}"),
+                Ok(false) => eprintln!("pinfold {agent}: scratch disks retained"),
+                Err(error) => eprintln!("pinfold {agent}: scratch cleanup failed; check `pinfold disk list`: {error}"),
             }
         }
         Ok(code)

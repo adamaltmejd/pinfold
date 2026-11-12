@@ -5,7 +5,8 @@ Firecracker on Linux. The box works on its own clone of the project's branches, 
 its only way out is its own allowlisting proxy. `pinfold fetch` brings its
 commits back as branches.
 
-- **Interactive:** `pi` on the host is a shim for `pinfold pi`.
+- **Interactive:** `pi` on the host is a shim for `pinfold pi`;
+  `pinfold claude` and `pinfold codex` run those agents the same way.
 - **From another agent:** `pinfold pi -p` (see below).
 - **Programmatic:** drive boxes through `pinfold box` (JSON on stdio, the
   [box spec](docs/ARCHITECTURE.md#process-interface)), and read project settings with `pinfold config`.

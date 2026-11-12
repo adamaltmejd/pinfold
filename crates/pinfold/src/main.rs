@@ -62,7 +62,9 @@ fn main() -> ExitCode {
         "apparmor-profile" => cli::apparmor_profile,
         "config" => cli::config,
         "profile" => cli::profile,
-        "pi" => launch::run,
+        "pi" => |args| launch::run("pi", args),
+        "claude" => |args| launch::run("claude", args),
+        "codex" => |args| launch::run("codex", args),
         "push" => |args| launch::crossing("push", args),
         "fetch" => |args| launch::crossing("fetch", args),
         "update" => update::run,
@@ -92,7 +94,7 @@ fn main() -> ExitCode {
         _ => crate::core::clean::maintain(),
     }
     #[cfg(not(target_os = "linux"))]
-    let stdin_flags = if matches!(verb, "pi" | "attach")
+    let stdin_flags = if matches!(verb, "pi" | "claude" | "codex" | "attach")
         || (verb == "box" && args.first().is_some_and(|arg| arg == "exec"))
     {
         match crate::core::runtime::apple::StdinFlags::save() {

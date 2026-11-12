@@ -24,9 +24,11 @@ use crate::trust;
 /// malformed invocation, and one line at a time by [`syntax`].
 pub const USAGE: &str = "\
 pinfold pi [pi args…]            pi in a box for this project; `pi` is a symlink to this
-pinfold attach [cmd…]            bash (or cmd) in this project's running pi box
-pinfold push                     this checkout's branches into its pi box as refs/remotes/host/*
-pinfold fetch                    its pi box's branches into refs/remotes/pinfold/*
+pinfold claude [claude args…]    claude in a box for this project
+pinfold codex [codex args…]      codex in a box for this project
+pinfold attach [cmd…]            bash (or cmd) in this project's running box
+pinfold push                     this checkout's branches into its box as refs/remotes/host/*
+pinfold fetch                    its box's branches into refs/remotes/pinfold/*
 pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this project's image, or a profile's; prints the ref
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]…   a caller's image from its own context; one JSON line
 pinfold image rm NAME            retire a caller image name; one JSON line
@@ -94,10 +96,10 @@ fn syntax(verb: &str) -> String {
 /// `verb`'s syntax from [`syntax`] on stdout, touching no runtime and no
 /// state, as top-level `--help` does. `attach` counts one only as its
 /// command's first word (`attach ls --help` gives `--help` to `ls`), and
-/// `pi`'s arguments are all pi's.
+/// an agent's arguments are all the agent's.
 pub fn help(verb: &str, args: &[String]) -> bool {
     let asks = match verb {
-        "pi" => false,
+        "pi" | "claude" | "codex" => false,
         "attach" => matches!(args.first(), Some(first) if first == "--help" || first == "-h"),
         _ => args
             .iter()
@@ -124,7 +126,7 @@ pub fn allow(args: &[String]) -> io::Result<i32> {
 }
 
 /// `pinfold attach`: bash, or the given command, in this project's running
-/// pi box, the box that attaches its project disk. The box's owner keeps
+/// box, the box that attaches its project disk. The box's owner keeps
 /// its lifetime; attach streams one exec and adds none of its own.
 pub fn attach(args: &[String]) -> io::Result<i32> {
     let mut argv = match args {
@@ -148,7 +150,7 @@ pub fn attach(args: &[String]) -> io::Result<i32> {
         crate::pi::launch::Holder::None => {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
-                "no running pi box for this project; start one with `pinfold pi`",
+                "no running box for this project; start one with `pinfold pi`, `pinfold claude` or `pinfold codex`",
             ));
         }
     };

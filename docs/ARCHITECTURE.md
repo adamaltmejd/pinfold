@@ -451,8 +451,8 @@ acknowledges `box down` and before `up` prints `down`:
 {"run_id":ID,"time":RFC3339,"reason":REASON,"detail":TEXT|null}
 ```
 
-`reason` and `detail` are the `down` line's. A pi box, which prints no
-`down`, adds `harness-exited` for its harness ending, with its exit status
+`reason` and `detail` are the `down` line's. An agent's box (pi layer),
+which prints no `down`, adds `harness-exited` for its agent ending, with its exit status
 in `detail`. An owner that dies without
 teardown writes none, and nothing infers one later: `prune` writes no
 terminal record.
@@ -743,7 +743,7 @@ Explicit images resolve locally only. Launch never pulls, imports or builds.
 A project recipe typically `FROM`s the profile image.
 
 - Images are built only by `pinfold build` and `pinfold image build`.
-  `pinfold pi` refuses when the image is missing and names the build command
+  An agent's start refuses when the image is missing and names the build command
   for a recipe, or explicit preparation for a selected image. `pinfold build`
   builds the selected recipe; an explicit image refuses as `image-no-recipe`.
   `pinfold build --profile NAME` explicitly builds that profile's Containerfile,
@@ -1178,7 +1178,7 @@ executable was replaced before it acquired the lock must be rerun.
 Checksum failures name `checksum-mismatch`; development builds name
 `development-build`.
 
-Before interactive `pi` and `attach`, with stdin, stdout and stderr all
+Before interactive `pi`, `claude`, `codex` and `attach`, with stdin, stdout and stderr all
 terminals, pinfold checks at most once per 24 hours and prints an update
 notice on stderr. The request has a one-second total timeout. Failed
 checks are silent and count toward the interval. Help, version arguments,
@@ -1255,9 +1255,11 @@ measurement does not authorize a later deletion.
 
 ## pi layer
 
-- **Harness:** pi, a pinned harness at `/opt/pinfold/pi`; `pinfold pi`
-  asks core for it with `"harnesses": ["pi"]` and runs it as an exec for
-  pi.
+- **Agents:** pi, claude and codex, pinned harnesses at
+  `/opt/pinfold/<agent>`. `pinfold <agent>` asks core for a box with
+  `"harnesses": [AGENT]` and runs `/opt/pinfold/<agent>/<agent>` as an
+  exec for that agent. The box leaves out the configuration's login
+  routes for the other agents.
 - **State:** `~/.local/state/pinfold/projects/<name>-<hash>/` on the host,
   where the hash is of the canonical project root path, and two disks,
   `pi-<name>-<hash>-home` attached as `$HOME`, `/home/pi`, and
@@ -1270,8 +1272,8 @@ measurement does not authorize a later deletion.
 - **Project disk:** attached writable at the project's own absolute path.
   The first start creates it empty; the box's repository is made in it
   and filled only with the host's branches (Git). Later starts reuse the
-  disk as the box left it. One pi box runs per project; a second start is
-  refused as `disk-in-use`. `push` and `fetch` refuse a root without `.git`
+  disk as the box left it. One box runs per project; a second start, of
+  any agent, is refused as `disk-in-use`. `push` and `fetch` refuse a root without `.git`
   as `not-git`. A `.git` that is not a directory (a worktree) is refused
   as `worktree`. Git metadata directories and operational discovery errors
   never become scratch workspaces.
@@ -1280,7 +1282,8 @@ measurement does not authorize a later deletion.
   a fresh independent home disk at `/home/pi` and work disk at `/work`, even
   from the same directory. Their names and originating folder are recorded.
   Scratch creates no project-state record, project cleanup label or branch
-  sync. After a successful harness exit and clean teardown, an apparently
+  sync. claude and codex retain both disks. After pi's successful exit and
+  clean teardown, an apparently
   empty work disk is inspected again in a transient box using the same
   image, with only that disk read-only, no home and no egress. Inspection
   has a 30-second signal deadline. Both disk claims stay locked from the
@@ -1294,27 +1297,27 @@ measurement does not authorize a later deletion.
   remains available for retained disks.
   Configuration, trust and recipe image identity stay folder-based; scratch
   disk identity is per invocation.
-- **Arguments** pass through unchanged, after `-e /opt/pinfold/login/pi.ts`
-  when the configuration has a pi login route. A repository box starts in the
+- **Arguments** pass through to the agent unchanged; pi's come after
+  `-e /opt/pinfold/login/pi.ts` when the configuration has a pi login route. A repository box starts in the
   invoking directory; a scratch box starts in `/work`. Paths outside the
   repository project fail, and pi reports them. A
   non-UTF-8 path in a pi box spec or configuration report is refused as
   `path-not-utf8`, naming its field.
-- **Environment:** pi's variables (Box spec, `harnesses`), the core's
-  proxy variables, `HERDR_AGENT` and `PINFOLD_ENV_*`.
+- **Environment:** the agent's variables (Box spec, `harnesses`), the
+  core's proxy variables, `HERDR_AGENT` and `PINFOLD_ENV_*`.
 - **TTY** whenever the host has one.
-- **Auth:** a subscription or API key through pi login routes (Egress
-  proxy), kept on the host; else OAuth `/login` once per project, or the
-  environment. Scratch homes are independent: their `/login` credentials
+- **Auth:** a subscription or API key through the agent's login routes
+  (Egress proxy), kept on the host; else, for pi, OAuth `/login` once per
+  project, or the environment. Scratch homes are independent: their `/login` credentials
   are not shared. A profile's login routes provide reusable host auth
   unless the selected configuration or environment replaces `routes`.
 - **herdr:** no herdr socket. The TTY passes through, so screen detection
-  works, and the shim sets `HERDR_AGENT=pi`.
+  works, and the box sets `HERDR_AGENT` to the agent's name.
 - **After a run:** when the box ends for a reason other than
   `harness-exited` or `signal` (an `audit-log` stop, the box's init
-  exiting), `pinfold pi` prints that reason and `pinfold box inspect
+  exiting), the verb prints that reason and `pinfold box inspect
   <run_id>` on stderr after teardown.
-  On normal harness completion, a cancellable advisory summary reports
+  On pi's normal completion, a cancellable advisory summary reports
   outstanding work on stderr before teardown, at most 100 entries, 64 KiB
   and two seconds. Scratch reports work-disk paths and file sizes, never
   home/session files. Repository summaries distinguish branch commits not
@@ -1329,7 +1332,7 @@ measurement does not authorize a later deletion.
   can fail an otherwise successful run. No
   guest objects are imported into the host repository by reporting.
 - **Attach:** `pinfold attach [cmd…]` execs bash (or cmd) in this
-  project's running pi box. It fails if none is running. Its processes end
+  project's running box, with pi's variables when the box lists pi. It fails if none is running. Its processes end
   with the box.
 
 ### Git
@@ -1346,12 +1349,12 @@ repository or home identity overrides it.
 the user merges; signing and host hooks are the user's. `pinfold push` is
 Crossing's push of the checkout; uncommitted host edits do not cross.
 
-Both check trust as `pinfold pi` does, then use the project's running pi
+Both check trust as an agent's start does, then use the project's running
 box, or a transient box on the project disk without egress, and print
 Crossing's lines. With no project disk, or one whose
 box never came ready (Disks), both exit nonzero and start no box.
 
-Every `pinfold pi` start, once the box is ready and before pi runs,
+Every agent's start, once the box is ready and before the agent runs,
 syncs, printing nothing. A project disk without `.git` first gets a new
 repository, by `git init` in the box as the box user, its initial branch
 named for the host's checked-out branch, or git's default when the
@@ -1361,11 +1364,11 @@ it, and fast-forwards the box's checked-out branch to `host/<branch>`, by
 is unborn, or is a proper ancestor of `host/<branch>` and the working
 tree has no tracked changes. Otherwise (diverged, ahead, equal,
 detached, no such `host/<branch>`) the checkout stays as the box left
-it. pi is not yet running; the box's own hooks apply. The push bundles
+it. The agent is not yet running; the box's own hooks apply. The push bundles
 every branch's full history, so it grows with the repository, and no
 step has a deadline. A checkout with no branches skips the push and the
 fast-forward silently. A failed step skips the rest. A failure prints
-`pinfold pi: sync-failed: DETAIL` on stderr, and pi starts; the next
+`pinfold AGENT: sync-failed: DETAIL` on stderr, and the agent starts; the next
 start retries.
 
 ## Configuration
@@ -1388,7 +1391,7 @@ Only the environment and selected configuration file select `profile`; a profile
 | `profile` | `PINFOLD_PROFILE` | `default` | Profile name |
 | `image` | — | — | Local image reference, independent of the profile; project overrides profile |
 | `allow` | `PINFOLD_ALLOW` | `api.anthropic.com`, `platform.claude.com`, `api.openai.com`, `auth.openai.com`, `chatgpt.com`, `openrouter.ai`, `opencode.ai`, `registry.npmjs.org`, `pi.dev` | Hosts the proxy lets through |
-| `routes` | `PINFOLD_ROUTES` | `{}` | Proxy routes: `name = "host:port"` for a host service, an injecting route `name = { to = "https://…", headers = { Authorization = { from = "VAR", prefix = "Bearer " } } }`, or a pi login route `name = { login = "pi", provider = "openrouter", from = "OPENROUTER_API_KEY" }` (see Egress proxy) |
+| `routes` | `PINFOLD_ROUTES` | `{}` | Proxy routes: `name = "host:port"` for a host service, an injecting route `name = { to = "https://…", headers = { Authorization = { from = "VAR", prefix = "Bearer " } } }`, or a login route such as `name = { login = "pi", provider = "openrouter", from = "OPENROUTER_API_KEY" }`, `{ login = "claude", from = "VAR" }` or `{ login = "codex" }` (see Egress proxy) |
 | `containerfile` | — | — | The project's Containerfile, a path relative to the project; typically FROM the profile image |
 | `cpus` | `PINFOLD_CPUS` | 4 | |
 | `memory` | `PINFOLD_MEMORY` | `8G` | |
@@ -1437,9 +1440,11 @@ write and mount controls apply in both modes.
 
 ```
 pinfold pi [pi args…]            pi in a box for this project; `pi` is a symlink to this
-pinfold attach [cmd…]            bash (or cmd) in this project's running pi box
-pinfold push                     this checkout's branches into its pi box as refs/remotes/host/*
-pinfold fetch                    its pi box's branches into refs/remotes/pinfold/*
+pinfold claude [claude args…]    claude in a box for this project
+pinfold codex [codex args…]      codex in a box for this project
+pinfold attach [cmd…]            bash (or cmd) in this project's running box
+pinfold push                     this checkout's branches into its box as refs/remotes/host/*
+pinfold fetch                    its box's branches into refs/remotes/pinfold/*
 pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this project's image, or a profile's; prints the ref
 pinfold image build|rm NAME …    a caller's image, built from its own context, or retired (Process interface)
 pinfold allow                    trust this project's .pinfold.toml and Containerfile
@@ -1463,8 +1468,9 @@ entry also reports the recipe identity. `doctor` reports the same list.
 
 `pinfold --version` (`-V`) and `pinfold --help` (`-h`) answer without
 touching the runtime or the state dir; `--help` or `-h` after a subcommand, before any `--`,
-prints that subcommand's syntax line and exits 0, touching neither. `pi`
-passes it to pi, and `attach` to its command once one is given.
+prints that subcommand's syntax line and exits 0, touching neither. `pi`,
+`claude` and `codex` pass it to the agent, and `attach` to its command
+once one is given.
 
 The project root is the git top level, else `$PWD`. Inside a git directory,
 the command refuses as `project-in-git`.
@@ -1497,11 +1503,11 @@ what the rewritten suite must show. Testing policy is in `AGENTS.md`.
 | 15 | Cleanup removes only pinfold's garbage | One project image supplies a live box alongside an idle project's state and disk. Both projects' state bytes and disks survive `clean --dry-run --unused 0s`; plain `clean` keeps both disks. Real `clean --unused 0s` removes idle state and disk while preserving live state bytes and a write read back through the live box's disk. On Apple an externally started container and an unlabeled external image survive cleanup. One caller image held by a running box survives `image rm`, reports `in_use` and still serves its fixture bytes; after the box stops the same removal reclaims its refs and, on Linux, its observed root disk. |
 | 17 | up refuses before it creates | A missing image, a misspelled nested spec key, a bad env name, a `dev.pinfold.` label, case-colliding route names, a suffix allow entry on or above a public suffix, a mount or disk `from` path with a comma, a disk at or below `/proc`, `/sys` or `/dev` or at `/`, `/tmp`, `/etc` or `/etc/resolv.conf`, each reached through `..` or `.`, a flag- or path-like disk name and a live name are refused as data, naming the cause; the misspelled key's refusal also names the box; each leaves no box and no state dir. A recipe-less profile refuses with `image-source-missing` even when its old managed tag exists; the same profile with an explicit image runs. Of two `up`s racing for one name exactly one wins, and the winner answers exec and reaches each distinct route name. |
 | 18 | A caller reads the effective configuration as data | Without a runtime, config reports host policy without creating state/cache/config files. Linux reports known availability from its local catalog, including false for an absent catalog; Apple reports image_built null and image_error when its native probe is unavailable. An existing Linux image remains reportable with empty PATH and KVM denied, without changing the catalog. Global fallback applies only without a local file, an empty local file shadows it, and invalid or dangling local files fail rather than falling back. Global containerfile is refused even under environment overrides; correcting the same file succeeds. Unknown project/profile TOML keys and a profile's containerfile are refused with the source and key; correcting the same file restores the fixture policy. With `PINFOLD_PROFILE=full` and no project `allow`, config reports the default list plus `github.com` and `api.github.com`. Layered image defaults and project overrides report `image_source` and null recipe for explicit images; a project recipe works with a recipe-less profile. Conflicting, missing and empty sources refuse with their tokens before box/project/disk/run state; correcting the fixture succeeds. Guarantee 39 shows the live report. |
-| 19 | A caller-owned box launches the pinned harness | A pi spec runs `/opt/pinfold/pi/pi --version` at the version `pinfold artifacts` pins, and the box's PINFOLD_ALLOW is the spec's allow list. |
+| 19 | A caller-owned box launches the pinned harness | A spec listing pi, claude and codex runs each `/opt/pinfold/<name>/<name> --version` at the version `pinfold artifacts` pins, and the box's PINFOLD_ALLOW is the spec's allow list. `pinfold pi --version`, `pinfold claude --version` and `pinfold codex --version` print the same pins. |
 | 20 | A caller can tell an OOM kill from a failure | On both runtimes stat reports the limits in force, every field is present, and `exec`'d processes start with `oom_score_adj` 1000. On Linux, the guest kernel's `MemTotal` is within 64 MiB under the box's memory. In one process and its fork+exec descendant, -999 is allowed, modern -1000 and legacy -17 return EACCES with unchanged scores, and legacy 15 succeeds. The service parent stays -1000. A sole workload at -999 touches a finite 1 GiB mapping in the 256 MiB box, exits 137, and stat's oom_kills rises; a fresh probe succeeds afterward. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
 | 23 | A caller builds an image from its own tree | Caller builds A and changed B report distinct refs, runtime-observed ids and the fixture label. After B moves latest, A's unique ref launches with A's COPYed bytes and latest launches with B's bytes; on Linux `ready` carries the image label. Linux A retains its successful outcome and both refs after an injected post-commit directory-sync EIO. Ordinary failed build F prints a tail bounded to 64 KiB after a 200,000-byte unterminated diagnostic, keeps the caller's final marker and leaves every caller ref-to-id mapping unchanged. |
-| 26 | A login route keeps the login on the host | Each login route's fixture receives exactly the host credential and none the box sent, in any case or number: claude's `from` token as Bearer; codex's login refreshed on the host when it lapses within 5 minutes, once across two XDG roots on one `CODEX_HOME`, the second reporting `login-busy`; pi's `openrouter`, `anthropic`, `anthropic-subscription` and `openai-codex` routes. Cancelling `up` during a stalled codex refresh reaps the helper and closes its refresh connection. `pi -p` through the `pi` shim and the `openrouter` route sends the profile's and the project's skills and the profile's allowlist. No token, key or account id is in the box's environment or files, its home disk, the state root or the egress log. Misconfigured routes are refused as `spec` or `login`. On macOS only, with a real login, codex completes one tool round trip through a route with no `to`. |
+| 26 | A login route keeps the login on the host | Each login route's fixture receives exactly the host credential and none the box sent, in any case or number: claude's `from` token as Bearer; codex's login refreshed on the host when it lapses within 5 minutes, once across two XDG roots on one `CODEX_HOME`, the second reporting `login-busy`; pi's `openrouter`, `anthropic`, `anthropic-subscription` and `openai-codex` routes. One box carries claude's, codex's and pi's `openai-codex` routes; the two Codex routes ask the helper once; an exec for one harness sees none of another's placeholders. From a configuration naming every agent's login route, `pinfold claude` and `pinfold pi` each reach their own route's fixture. Cancelling `up` during a stalled codex refresh reaps the helper and closes its refresh connection. `pi -p` through the `pi` shim and the `openrouter` route sends the profile's and the project's skills and the profile's allowlist. No token, key or account id is in the box's environment or files, its home disk, the state root or the egress log. Misconfigured routes are refused as `spec` or `login`. On macOS only, with a real login, codex completes one tool round trip through a route with no `to`. |
 | 27 | Doctor reports without changing state | With and without a runtime, doctor leaves complete Pinfold-owned state/config/cache trees unchanged, including absent roots, and reports host configuration; so do `pinfold --version`, which prints the version, and `pinfold box list --help` with no runtime. Native runtime bookkeeping is outside those trees. Linux missing-kvm diagnostics use real failures. The Linux host keeps AppArmor's unprivileged user-namespace restriction on (`kernel.apparmor_restrict_unprivileged_userns` is 1); there a copy of pinfold outside its profile's path reports `userns-apparmor` and is refused as `runtime`; the profiled executable starts a box. |
 | 28 | Host updates are verified and atomic | A host HTTPS release fixture supplies a different valid executable. Wrong checksums preserve the original bytes/inode; a working command started during a held asset transfer also prevents replacement. After teardown the verified bytes replace the inode and preserve the invoked command symlink. |
 | 34 | Blocked route writes release the upstream | A small routed POST and response succeed. In concurrent connections, a guest stops reading a response and a host fixture stops reading an upload while sending a response. Both fixture connections close after the production write deadline while the guest holders remain alive. The upload producer's completion is timed independently to exclude an early failure followed by a read timeout. |
