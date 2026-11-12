@@ -1,0 +1,5 @@
+{"name":"hl-three","image":"localhost/pinfold/profile-default:latest","harnesses":["pi","claude","codex"],
+ "env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"spec-wins"},
+ "egress":{"allow":["api.github.com"],"routes":{
+   "claude":{"login":"claude","from":"HL_DUMMY_CLAUDE"},
+   "anthropic":{"login":"pi","provider":"anthropic","from":"HL_DUMMY_ANTHROPIC"}}}}

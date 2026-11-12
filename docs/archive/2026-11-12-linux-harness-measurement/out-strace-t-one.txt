@@ -1,0 +1,29 @@
+20844 1794461426.845412 execve("/home/agent/bin/pinfold", ["/home/agent/bin/pinfold", "box", "up"], 0x7ffe9916b608 /* 19 vars */) = 0
+20846 1794461426.848592 exit_group(0)   = ?
+20846 1794461426.848858 +++ exited with 0 +++
+20844 1794461426.848897 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=20846, si_uid=1000, si_status=0, si_utime=0, si_stime=0} ---
+20847 1794461427.613440 execve("/usr/sbin/mkfs.ext4", ["/usr/sbin/mkfs.ext4", "-q", "-F", "-m", "0", "-O", "^has_journal", "-N", "1028", "-d", "/home/agent/.local/state/pinfold"..., "/home/agent/.local/state/pinfold"..., "24476k"], 0x7ffef5eea408 /* 19 vars */) = 0
+20847 1794461427.694271 exit_group(0)   = ?
+20847 1794461427.694695 +++ exited with 0 +++
+20845 1794461427.694721 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=20847, si_uid=1000, si_status=0, si_utime=2 /* 0.02 s */, si_stime=1 /* 0.01 s */} ---
+20848 1794461427.715514 execve("/usr/sbin/mkfs.ext4", ["/usr/sbin/mkfs.ext4", "-q", "-F", "-m", "0", "-O", "^has_journal", "-N", "1258", "-d", "/home/agent/.cache/pinfold/artif"..., "/home/agent/.local/state/pinfold"..., "157193k"], 0x7ffef5eea408 /* 19 vars */) = 0
+20848 1794461429.143175 exit_group(0)   = ?
+20848 1794461429.143437 +++ exited with 0 +++
+20845 1794461429.143465 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=20848, si_uid=1000, si_status=0, si_utime=113 /* 1.13 s */, si_stime=19 /* 0.19 s */} ---
+20853 1794461429.154004 execve("/firecracker", ["/firecracker", "--config-file", "/config.json", "--no-api"], 0x7fdda37f95f8 /* 0 vars */) = 0
+20858 1794461429.162936 --- SIGRT_3 {si_signo=SIGRT_3, si_code=SI_TKILL, si_pid=1, si_uid=1000} ---
+20856 1794461429.162965 --- SIGRT_3 {si_signo=SIGRT_3, si_code=SI_TKILL, si_pid=1, si_uid=1000} ---
+20857 1794461429.162981 --- SIGRT_3 {si_signo=SIGRT_3, si_code=SI_TKILL, si_pid=1, si_uid=1000} ---
+20855 1794461429.162998 --- SIGRT_3 {si_signo=SIGRT_3, si_code=SI_TKILL, si_pid=1, si_uid=1000} ---
+20858 1794461433.874764 +++ killed by SIGKILL +++
+20856 1794461433.874788 +++ killed by SIGKILL +++
+20857 1794461433.874797 +++ killed by SIGKILL +++
+20855 1794461433.909445 +++ killed by SIGKILL +++
+20853 1794461433.909472 +++ killed by SIGKILL +++
+20852 1794461433.909521 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_KILLED, si_pid=20853, si_uid=1000, si_status=SIGKILL, si_utime=133 /* 1.33 s */, si_stime=101 /* 1.01 s */} ---
+20852 1794461433.910677 +++ exited with 0 +++
+20844 1794461433.912811 exit_group(0)   = ?
+20845 1794461433.912884 +++ exited with 0 +++
+20866 1794461433.912892 +++ exited with 0 +++
+20851 1794461433.913284 +++ exited with 0 +++
+20844 1794461433.913296 +++ exited with 0 +++

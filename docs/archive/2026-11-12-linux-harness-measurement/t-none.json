@@ -1,0 +1,1 @@
+{"name":"t-none","image":"localhost/pinfold/profile-default:latest","egress":{"allow":["api.github.com"]}}

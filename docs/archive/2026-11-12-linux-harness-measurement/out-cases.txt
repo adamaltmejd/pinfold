@@ -1,0 +1,115 @@
+== up
+{"box":"hl-three","egress_log":"/home/agent/.local/state/pinfold/runs/6af5ddbefddcd6090be7ca5c42283b68db5c71178cefa2329b9ada77b03c23e9/egress.jsonl","event":"ready","image":{"id":"sha256:15ffeacd6b798abbad29210b34e0c7d71e530fff58b8903ef6f424b17558cbcd","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"219a537cd424e4188e5bfeb292740edb02f2baec485b9f2ff87163c192300dbb","dev.pinfold.generation":"6af5ddbefddcd6090be7ca5c42283b68db5c71178cefa2329b9ada77b03c23e9","dev.pinfold.owner":"16118","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":16118,"run_id":"6af5ddbefddcd6090be7ca5c42283b68db5c71178cefa2329b9ada77b03c23e9"}
+elapsed 24.491 s
+== artifacts
+pi 1.5.2
+claude 2.1.322
+codex 0.167.1
+vmm 1.17.0+6.18.57
+builder 1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd
+== mounts and versions
+$ pinfold box exec hl-three -- ls /opt/pinfold /opt/pinfold/login
+  stdout: /opt/pinfold:
+  stdout: claude
+  stdout: codex
+  stdout: login
+  stdout: pi
+  stdout: 
+  stdout: /opt/pinfold/login:
+  stdout: lost+found
+  stdout: pi.ts
+  exit 0
+$ pinfold box exec hl-three -- sh -c grep " /opt/pinfold" /proc/mounts
+  stdout: /dev/vdc /opt/pinfold/pi ext4 ro,nosuid,nodev,relatime,noinit_itable 0 0
+  stdout: /dev/vdd /opt/pinfold/claude ext4 ro,nosuid,nodev,relatime,noinit_itable 0 0
+  stdout: /dev/vde /opt/pinfold/codex ext4 ro,nosuid,nodev,relatime,noinit_itable 0 0
+  stdout: /dev/vdf /opt/pinfold/login ext4 ro,nosuid,nodev,relatime,noinit_itable 0 0
+  exit 0
+$ pinfold box exec hl-three -- /opt/pinfold/pi/pi --version
+  stderr: 102245 | }
+  stderr: 102246 | function getAgentDir() {
+  stderr: 102247 |   const envDir = process.env[ENV_AGENT_DIR];
+  stderr: 102248 |   if (envDir) {
+  stderr: 102249 |     return expandTildePath(envDir);
+  stderr: 102250 |   return join4(homedir3(), CONFIG_DIR_NAME, "agent");
+  stderr:                                 ^
+  stderr: ENOENT: no such file or directory, uv_os_homedir
+  stderr:  syscall: "uv_os_homedir",
+  stderr:    errno: -2,
+  stderr:     code: "ENOENT"
+  stderr: 
+  stderr:       at getAgentDir (/$bunfs/root/pi:102250:24)
+  stderr:       at getBinDir (/$bunfs/root/pi:102262:27)
+  stderr:       at <anonymous> (/$bunfs/root/pi:240315:24)
+  stderr:       at <anonymous> (/$bunfs/root/pi:70:15)
+  stderr:       at <anonymous> (/$bunfs/root/pi:240642:21)
+  stderr:       at <anonymous> (/$bunfs/root/pi:70:15)
+  stderr:       at <anonymous> (/$bunfs/root/pi:241834:13)
+  stderr:       at <anonymous> (/$bunfs/root/pi:70:15)
+  stderr:       at <anonymous> (/$bunfs/root/pi:244753:13)
+  stderr: 
+  stderr: Bun v1.4.4 (Linux x64)
+  exit 1
+$ pinfold box exec hl-three -- /opt/pinfold/claude/claude --version
+  stdout: 2.1.322 (Claude Code)
+  exit 0
+$ pinfold box exec hl-three -- /opt/pinfold/codex/codex --version
+  stdout: codex-cli 0.167.1
+  stderr: WARNING: proceeding, even though we could not create PATH aliases: Could not find home directory
+  exit 0
+== env per harness
+$ pinfold box exec hl-three --harness claude -- sh -c env | grep -E 'ANTHROPIC|CLAUDE|PI_|PINFOLD|PROXY|proxy|OPENROUTER|OPENAI|CODEX' | sort
+  stdout: ANTHROPIC_BASE_URL=http://claude
+  stdout: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=spec-wins
+  stdout: CLAUDE_CODE_OAUTH_TOKEN=pinfold-placeholder
+  stdout: HTTPS_PROXY=http://127.0.0.1:3128
+  stdout: NODE_USE_ENV_PROXY=1
+  stdout: PINFOLD_ALLOW=api.github.com
+  stdout: http_proxy=http://127.0.0.1:3128
+  exit 0
+$ pinfold box exec hl-three --harness pi -- sh -c env | grep -E 'ANTHROPIC|CLAUDE|PI_|PINFOLD|PROXY|proxy|OPENROUTER|OPENAI|CODEX' | sort
+  stdout: ANTHROPIC_API_KEY=pinfold-placeholder
+  stdout: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=spec-wins
+  stdout: HTTPS_PROXY=http://127.0.0.1:3128
+  stdout: NODE_USE_ENV_PROXY=1
+  stdout: PINFOLD_ALLOW=api.github.com
+  stdout: PI_SKIP_VERSION_CHECK=1
+  stdout: PI_TELEMETRY=0
+  stdout: http_proxy=http://127.0.0.1:3128
+  exit 0
+$ pinfold box exec hl-three --harness codex -- sh -c env | grep -E 'ANTHROPIC|CLAUDE|PI_|PINFOLD|PROXY|proxy|OPENROUTER|OPENAI|CODEX' | sort
+  stdout: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=spec-wins
+  stdout: HTTPS_PROXY=http://127.0.0.1:3128
+  stdout: NODE_USE_ENV_PROXY=1
+  stdout: PINFOLD_ALLOW=api.github.com
+  stdout: http_proxy=http://127.0.0.1:3128
+  exit 0
+$ pinfold box exec hl-three -- sh -c env | grep -E 'ANTHROPIC|CLAUDE|PI_|PINFOLD|PROXY|proxy|OPENROUTER|OPENAI|CODEX' | sort
+  stdout: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=spec-wins
+  stdout: HTTPS_PROXY=http://127.0.0.1:3128
+  stdout: NODE_USE_ENV_PROXY=1
+  stdout: PINFOLD_ALLOW=api.github.com
+  stdout: http_proxy=http://127.0.0.1:3128
+  exit 0
+== unlisted harness
+$ pinfold box exec hl-three --harness nope -- true
+  stderr: pinfold box exec: box "hl-three" has no harness "nope"
+  exit 3
+$ pinfold box exec hl-three --harness gemini -- true
+  stderr: pinfold box exec: box "hl-three" has no harness "gemini"
+  exit 3
+== always-applied names
+$ pinfold box exec hl-three --harness claude -- sh -c echo "$NODE_USE_ENV_PROXY|$HTTPS_PROXY|$http_proxy"
+  stdout: 1|http://127.0.0.1:3128|http://127.0.0.1:3128
+  exit 0
+$ pinfold box exec hl-three --harness pi -- sh -c echo "$NODE_USE_ENV_PROXY|$HTTPS_PROXY|$http_proxy"
+  stdout: 1|http://127.0.0.1:3128|http://127.0.0.1:3128
+  exit 0
+$ pinfold box exec hl-three --harness codex -- sh -c echo "$NODE_USE_ENV_PROXY|$HTTPS_PROXY|$http_proxy"
+  stdout: 1|http://127.0.0.1:3128|http://127.0.0.1:3128
+  exit 0
+== recorded harness env
+state dir: /home/agent/.local/state/pinfold/boxes/a443d4cb73283f72
+{"claude":[["ANTHROPIC_BASE_URL","http://claude"],["CLAUDE_CODE_OAUTH_TOKEN","pinfold-placeholder"]],"codex":[],"pi":[["ANTHROPIC_API_KEY","pinfold-placeholder"],["PI_SKIP_VERSION_CHECK","1"],["PI_TELEMETRY","0"]]}
+== dummy values on disk
+grep exit 2
