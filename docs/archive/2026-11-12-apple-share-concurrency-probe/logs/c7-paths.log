@@ -1,0 +1,18 @@
+== host: git worktree add  ./wt -b wtb -> (0, '')
+host wt/.git: gitdir: /private/tmp/pfs.EUq1/c7p506_1/.git/worktrees/wt
+host .git/worktrees/wt/gitdir: /private/tmp/pfs.EUq1/c7p506_1/wt/.git
+host extensions.relativeWorktrees: (unset)
+guest in wt: git status -> (128, 'fatal: not a git repository: /private/tmp/pfs.EUq1/c7p506_1/.git/worktrees/wt')
+guest in root: git status --short; git worktree list -> (0, '?? wt/\n/work/c7p506_1                     f1a0f15 [main]\n/private/tmp/pfs.EUq1/c7p506_1/wt  f1a0f15 [wtb] prunable')
+== host: git worktree add --relative-paths ./wt -b wtb -> (0, '')
+host wt/.git: gitdir: ../.git/worktrees/wt
+host .git/worktrees/wt/gitdir: ../../../wt/.git
+host extensions.relativeWorktrees: true
+guest in wt: git status -> (128, 'fatal: unknown repository extension found:\n\trelativeworktrees')
+guest in root: git status --short; git worktree list -> (128, 'fatal: unknown repository extension found:\n\trelativeworktrees\nfatal: unknown repository extension found:\n\trelativeworktrees')
+== guest git worktree prune on absolute-path worktree
+guest prune -n -v: (0, 'Removing worktrees/wt: gitdir file points to non-existent location')
+guest prune: (0, 'Removing worktrees/wt: gitdir file points to non-existent location\nrc=0')
+host worktree list: (0, '/private/tmp/pfs.EUq1/c7p506_3 f1a0f15 [main]')
+host ls .git/worktrees: (1, 'ls: .git/worktrees: No such file or directory')
+host in wt: git status -> (128, 'fatal: gitfile does not point to a valid repository: /private/tmp/pfs.EUq1/c7p506_3/wt/.git')
