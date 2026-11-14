@@ -1,0 +1,8 @@
+$ pinfold box list --label dev.pinfold.profile=probe-linux294
+$ ps -eo comm= (Firecracker processes)
+$ image catalog: probe-linux294 references
+{
+  "localhost/pinfold/profile-probe-linux294:18e7fcefb8b86e97-25846": "sha256:7a76df9a1bf093743a7486ef023bd32fd60f456102addd10c6a9fbb6a80bf761",
+  "localhost/pinfold/profile-probe-linux294:latest": "sha256:7a76df9a1bf093743a7486ef023bd32fd60f456102addd10c6a9fbb6a80bf761"
+}
+$ git diff --exit-code -- crates

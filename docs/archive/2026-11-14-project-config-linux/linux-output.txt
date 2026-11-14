@@ -1,0 +1,76 @@
+## D. Outside Git: refused as not-git, nothing created
+$ pinfold pi --version
+pinfold pi: not-git: $W/plain is not a git repository; a Linux project is a Git checkout
+[exit 1]
+
+$ pinfold config edit
+pinfold config: not-git: $W/plain is not a git repository; a Linux project is a Git checkout
+[exit 1]
+
+$ pinfold config
+pinfold config: not-git: $W/plain is not a git repository; a Linux project is a Git checkout
+[exit 1]
+
+$ pinfold build
+pinfold build: not-git: $W/plain is not a git repository; a Linux project is a Git checkout
+[exit 1]
+
+entries under config and state roots: 2
+
+## A. No configuration: refused
+$ pinfold pi --version
+pinfold pi: no-config: $W/proj has no configuration; run `pinfold config edit`
+[exit 1]
+
+project state dirs: 0
+
+## B. Configured Git project starts (positive control)
+$ pinfold profile new probe-linux294 --from default
+[exit 0]
+
+$ pinfold config edit
+pinfold config: $W/config/pinfold/projects/proj-b004c5f501bb/pinfold.toml
+[exit 0]
+
+Filesystem     1G-blocks  Used Available Use% Mounted on
+/dev/sda1            32G    7G       24G  22% /
+$ pinfold build
+pinfold: building profile probe-linux294
+pinfold: build run f8e10f49d58968b0a7a1a135b7ca9305e3a97bd5620f7e190f9826dca76f7731; egress log $W/state/pinfold/runs/f8e10f49d58968b0a7a1a135b7ca9305e3a97bd5620f7e190f9826dca76f7731/egress.jsonl
+localhost/pinfold/profile-probe-linux294:latest
+[exit 0]
+
+$ pinfold pi --version
+1.5.2
+[exit 0]
+
+$ pinfold push
+{"box":"pi-proj-b004c5f501bb-26019","event":"pushed","refs":{"refs/remotes/host/master":"46976ef34ab9575456487e0e6e5a624cdbc78abb"},"remote":"host"}
+[exit 0]
+
+$ pinfold fetch
+{"box":"pi-proj-b004c5f501bb-26043","event":"fetched","refs":{"refs/remotes/pinfold/master":"46976ef34ab9575456487e0e6e5a624cdbc78abb"},"remote":"pinfold"}
+[exit 0]
+
+## E. mounts other than the template: refused as spec
+1:mounts = [{ host = "/etc", kind = "share" }]
+$ pinfold pi --version
+pinfold pi: $W/config/pinfold/projects/proj-b004c5f501bb/pinfold.toml: spec: `mounts` must be exactly mounts = [{ host = ".", kind = "disk" }]
+[exit 1]
+
+## C. host-path-in-project: refused; external roots run
+$ pinfold pi --version
+pinfold pi: host-path-in-project: $W/cachelink/missing/cache/pinfold/artifacts resolves inside $W/proj
+[exit 1]
+
+under proj/inside: 0 entries
+
+$ pinfold pi --version
+1.5.2
+[exit 0]
+
+## Cleanup
+$ pinfold disk rm --all
+Removed pi-proj-b004c5f501bb-home
+Removed pi-proj-b004c5f501bb-project
+[exit 0]
