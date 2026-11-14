@@ -21,11 +21,9 @@ review of 0d0d478.
   - Every case in it is refused before a box, or only reads.
 - Full output, with paths rewritten (`/Users/user`, `$TMPDIR`):
   `2026-11-14-project-config-build/no-box-output.txt`.
-- No box started in this session. At first its sandbox denied Apple
-  `container` ("Operation not permitted"). After that changed, pinfold
-  run with the case's environment variables still could not reach
-  `container`. So Adam runs the cases that start a box, in
-  `run-box-cases.sh` (below), in his own terminal.
+- The cases that start a box are in `run-box-cases.sh` (Started boxes,
+  below). It ran outside the sandbox through an exception for that
+  script.
 - Linux was not run. The Linux `not-git` refusal is compiled only for
   Linux; clippy for `x86_64-unknown-linux-musl` was clean, nothing more.
 
@@ -140,29 +138,46 @@ service reads as "not built". Guarantee 18 expects `image_built: null`
 and an `image_error` when the probe is unavailable. That code is
 unchanged from main; it is reported to the operator, not fixed here.
 
-## Not run
+## Started boxes
 
-The build session did not run these. Adam runs
-`2026-11-14-project-config-build/run-box-cases.sh BINARY` in his terminal;
-its output goes to `2026-11-14-project-config-build/box-output.txt` and is
-summarized here before merge.
+`2026-11-14-project-config-build/run-box-cases.sh target/debug/pinfold`,
+run from the worktree root at 71a60f4 with the debug build of 8437f32's
+code. Output: `2026-11-14-project-config-build/box-output.txt`, where `$W`
+is the script's work root.
 
 The script:
+- uses a work root under `/tmp`. The first attempt, under macOS's
+  `$TMPDIR`, failed every start with `proxy socket …/proxy.sock: path must
+  be shorter than SUN_LEN`. That run's refusals behaved as below;
 - writes a fresh maintenance stamp into its state root;
 - uses the real cache root (pinned artifacts and the init), except for
-  case C's refusal.
+  case C's refusal;
+- reused the existing `localhost/pinfold/profile-default:latest`. No image
+  was built, pulled or deleted;
+- found the container service running and left it running. Afterwards
+  only `buildkit` was listed.
 
-Cases:
-- A. A project with no configuration creates no box.
-- B. A configured Git project starts (`pinfold pi --version`), and `push`
-  and `fetch` work against it.
-- C. A cache root inside the project, through a symlink with a
-  nonexistent suffix, is refused with no box. The same project with
-  external roots starts.
-- D. On macOS outside Git, scratch is refused without a configuration and
-  starts with one.
+Observed:
+- **A. No configuration.** `pi --version` in a Git project exits 1 with
+  `no-config`. The box list is unchanged, and no project state directory
+  exists.
+- **B. Configured Git project.** `config edit` exits 0. `pi --version`
+  prints the harness version and exits 0. `push` reports `pushed` with
+  `refs/remotes/host/master` at the host commit. `fetch` reports `fetched`
+  with `refs/remotes/pinfold/master` at the same commit. Both exit 0.
+- **C. Cache root inside the project.** With `XDG_CACHE_HOME` reaching
+  `proj/inside` through a symlink with a missing suffix, `pi` exits 1 with
+  `host-path-in-project`, naming the artifacts root. The box list is
+  unchanged, and nothing is created under `proj/inside`. With the real
+  cache root, the same project's `pi --version` exits 0.
+- **D. macOS outside Git.** In a plain folder, `pi --version` exits 1 with
+  `no-config`. After `config edit`, it starts a scratch box, prints the
+  version, removes the empty scratch disks and exits 0.
+- **Cleanup.** `disk rm --all` removed the project's two disks. The script
+  removed its work root.
 
-Also not run:
+## Not run
+
 - Linux: every project command outside Git refused as `not-git`. There
   was no Linux host in this session.
 - Killing `config edit` between writing its staging file and linking it
@@ -171,4 +186,4 @@ Also not run:
   beside it. Not tested.
 - The assertions that move from guarantee 12 to 13 (the identity
   `pi <pi@pinfold.invalid>`, and the start's push and fast-forward). That
-  code is unchanged and was not exercised.
+  code is unchanged and was not exercised beyond case B.

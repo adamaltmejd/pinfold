@@ -1,0 +1,61 @@
+container service started by this script: 0
+## A. No configuration: refused, no box
+$ pinfold pi --version
+pinfold pi: no-config: $W/proj has no configuration; run `pinfold config edit`
+[exit 1]
+
+box list unchanged
+
+project state dirs: 0
+
+## B. Configured Git project starts (positive control)
+$ pinfold config edit
+pinfold config: $W/config/pinfold/projects/proj-b773c326fab5/pinfold.toml
+[exit 0]
+
+$ pinfold pi --version
+1.5.2
+[exit 0]
+
+$ pinfold push
+{"box":"pi-proj-b773c326fab5-83271","event":"pushed","refs":{"refs/remotes/host/master":"b94210027bf87af373cbd8fa0b0b7e0699b720dd"},"remote":"host"}
+[exit 0]
+
+$ pinfold fetch
+{"box":"pi-proj-b773c326fab5-83387","event":"fetched","refs":{"refs/remotes/pinfold/master":"b94210027bf87af373cbd8fa0b0b7e0699b720dd"},"remote":"pinfold"}
+[exit 0]
+
+## C. host-path-in-project: refused before a box; external roots run
+$ pinfold pi --version
+pinfold pi: host-path-in-project: $W/cachelink/missing/cache/pinfold/artifacts resolves inside $W/proj
+[exit 1]
+
+box list unchanged
+under proj/inside: 0 entries
+
+$ pinfold pi --version
+1.5.2
+[exit 0]
+
+## D. macOS outside Git: scratch, after config edit
+$ pinfold pi --version
+pinfold pi: no-config: $W/plain has no configuration; run `pinfold config edit`
+[exit 1]
+
+$ pinfold config edit
+pinfold config: $W/config/pinfold/projects/plain-3c28e416753b/pinfold.toml
+[exit 0]
+
+$ pinfold pi --version
+pinfold pi: scratch disks: home=pi-scratch-52ecc211cc6883a505d2fb40-home, work=pi-scratch-52ecc211cc6883a505d2fb40-work; empty work is removed on clean exit; retained disks can be removed with `pinfold disk rm NAME`
+1.5.2
+pinfold pi: empty scratch disks removed
+[exit 0]
+
+## Cleanup
+$ pinfold disk rm --all
+Removed pi-proj-b773c326fab5-home
+Removed pi-proj-b773c326fab5-project
+[exit 0]
+
+work root removed: yes
