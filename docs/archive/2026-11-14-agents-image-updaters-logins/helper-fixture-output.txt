@@ -1,0 +1,14 @@
+case=empty
+command=sandbox-exec [deny all network; deny /Users reads] codex-app-server -c model_provider="openai"
+send {"method": "initialize", "id": 0, "params": {"clientInfo": {"name": "pinfold", "title": "pinfold", "version": "fixture"}}}
+send {"method": "initialized"}
+send {"method": "getAuthStatus", "id": 1, "params": {"includeToken": true}}
+NO ID 1 ANSWER
+helper reaped
+case=chatgpt
+command=sandbox-exec [deny all network; deny /Users reads] codex-app-server -c model_provider="openai"
+send {"method": "initialize", "id": 0, "params": {"clientInfo": {"name": "pinfold", "title": "pinfold", "version": "fixture"}}}
+send {"method": "initialized"}
+send {"method": "getAuthStatus", "id": 1, "params": {"includeToken": true}}
+NO ID 1 ANSWER
+helper reaped

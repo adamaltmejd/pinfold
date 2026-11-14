@@ -1,0 +1,1566 @@
+scratch=/tmp/pfa.07ncy64h
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold disk list --json
+
+[exit 0; seconds 0.063]
+box spec: {"name": "probe-agents-logins-18b9fef3e8", "image": "localhost/pinfold/profile-probe-agents:latest", "cpus": 2, "memory": "4G", "env": {"HOME": "/home/user", "ANTHROPIC_API_KEY": "pinfold-placeholder"}, "disks": [{"name": "probe-agents-login-home-18b9fef3e8", "guest": "/home/user"}, {"name": "probe-agents-login-agent-18b9fef3e8", "guest": "/home/user/.pi/agent"}, {"name": "probe-agents-login-work-18b9fef3e8", "guest": "/work"}], "mounts": [{"host": "/tmp/pfa.07ncy64h/files/pi", "guest": "/home/user/.pi/agent/extensions"}, {"host": "/tmp/pfa.07ncy64h/files/claude", "guest": "/etc/claude-code"}, {"host": "/tmp/pfa.07ncy64h/files/codex", "guest": "/etc/codex"}], "egress": {"allow": [], "routes": {"anthropic": {"to": "http://127.0.0.1:59226", "headers": {"x-api-key": {"from": "FAKE_PI_KEY"}}}, "claude": {"to": "http://127.0.0.1:59227", "headers": {"Authorization": {"from": "FAKE_CLAUDE_TOKEN", "prefix": "Bearer "}}}, "codex": {"to": "http://127.0.0.1:59228", "headers": {"Authorization": {"from": "FAKE_CODEX_TOKEN", "prefix": "Bearer "}, "ChatGPT-Account-ID": {"from": "FAKE_CODEX_ACCOUNT"}}}}}, "harnesses": ["pi"]}
+{"box":"probe-agents-logins-18b9fef3e8","egress_log":"/tmp/pfa.07ncy64h/state/pinfold/runs/eff329acd917b802f3aa5acb38e3d61a033a8ca9972f1ef408b4471944eb886d/egress.jsonl","event":"ready","image":{"id":"7b57a746b152c8907a70469f9fa2c7e8eba2783bf6fc983bcd587d1420f23fb3","ref":"localhost/pinfold/profile-probe-agents:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"4873d018e0a6a36fd6246336fd79b0a2790401128dcd8d4ae37cc53894697bf5","dev.pinfold.generation":"eff329acd917b802f3aa5acb38e3d61a033a8ca9972f1ef408b4471944eb886d","dev.pinfold.owner":"2001","dev.pinfold.profile":"probe-agents","dev.pinfold.project":""},"owner":2001,"run_id":"eff329acd917b802f3aa5acb38e3d61a033a8ca9972f1ef408b4471944eb886d"}
+
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-logins-18b9fef3e8 -- sh -c cd /work; id; env | sort; ls -ldn /home/user /home/user/.pi /home/user/.pi/agent /home/user/.pi/agent/extensions; for d in /home/user/.pi/agent/extensions /etc/claude-code /etc/codex; do touch "$d/write-probe"; done; true
+uid=501 gid=20(dialout) groups=20(dialout)
+ANTHROPIC_API_KEY=pinfold-placeholder
+HOME=/home/user
+HTTPS_PROXY=http://127.0.0.1:3128
+NODE_USE_ENV_PROXY=1
+OLDPWD=/
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PINFOLD_ALLOW=
+PWD=/work
+SSH_AUTH_SOCK=/var/host-services/ssh-auth.sock
+http_proxy=http://127.0.0.1:3128
+drwxr-xr-x 3 501 20 4096 Nov 14 18:45 /home/user
+drwxr-xr-x 3   0  0 4096 Nov 14 18:45 /home/user/.pi
+drwxr-xr-x 3 501 20 4096 Nov 14 18:45 /home/user/.pi/agent
+drwxr-xr-x 3   0  0   96 Nov 14 18:40 /home/user/.pi/agent/extensions
+touch: cannot touch '/home/user/.pi/agent/extensions/write-probe': Read-only file system
+touch: cannot touch '/etc/claude-code/write-probe': Read-only file system
+touch: cannot touch '/etc/codex/write-probe': Read-only file system
+
+[exit 0; seconds 0.075]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-logins-18b9fef3e8 -- sh -c cd /work; timeout 75 /opt/pinfold/pi/pi -p "say hi" --provider anthropic --model sonnet
+400 {"error":{"type":"invalid_request_error","message":"fixture"}}
+
+[exit 1; seconds 0.333]
+== fixture requests after pi
+{
+  "anthropic": [
+    {
+      "route": "anthropic",
+      "method": "POST",
+      "path": "/v1/messages?beta=true",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1:59226"
+        ],
+        [
+          "Accept",
+          "application/json"
+        ],
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "User-Agent",
+          "pi/1.5.2 (linux; bun/1.4.4; arm64)"
+        ],
+        [
+          "X-Stainless-Arch",
+          "arm64"
+        ],
+        [
+          "X-Stainless-Lang",
+          "js"
+        ],
+        [
+          "X-Stainless-OS",
+          "Linux"
+        ],
+        [
+          "X-Stainless-Package-Version",
+          "0.129.0"
+        ],
+        [
+          "X-Stainless-Retry-Count",
+          "0"
+        ],
+        [
+          "X-Stainless-Runtime",
+          "node"
+        ],
+        [
+          "X-Stainless-Runtime-Version",
+          "v26.3.0"
+        ],
+        [
+          "X-Stainless-Timeout",
+          "300"
+        ],
+        [
+          "anthropic-beta",
+          "mid-conversation-output-config-2026-07-01,thinking-binding-controls-2026-08-01,inline-tools-2026-09-15"
+        ],
+        [
+          "anthropic-dangerous-direct-browser-access",
+          "true"
+        ],
+        [
+          "anthropic-version",
+          "2023-06-01"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "Content-Length",
+          "6000"
+        ],
+        [
+          "x-api-key",
+          "fixture-pi-key"
+        ],
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_bytes": 6000
+    }
+  ],
+  "claude": [],
+  "codex": []
+}
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-logins-18b9fef3e8 -- sh -c cd /work; timeout 75 claude -p "say hi"
+API Error: 400 fixture
+
+[exit 1; seconds 19.356]
+== fixture requests after claude
+{
+  "anthropic": [
+    {
+      "route": "anthropic",
+      "method": "POST",
+      "path": "/v1/messages?beta=true",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1:59226"
+        ],
+        [
+          "Accept",
+          "application/json"
+        ],
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "User-Agent",
+          "pi/1.5.2 (linux; bun/1.4.4; arm64)"
+        ],
+        [
+          "X-Stainless-Arch",
+          "arm64"
+        ],
+        [
+          "X-Stainless-Lang",
+          "js"
+        ],
+        [
+          "X-Stainless-OS",
+          "Linux"
+        ],
+        [
+          "X-Stainless-Package-Version",
+          "0.129.0"
+        ],
+        [
+          "X-Stainless-Retry-Count",
+          "0"
+        ],
+        [
+          "X-Stainless-Runtime",
+          "node"
+        ],
+        [
+          "X-Stainless-Runtime-Version",
+          "v26.3.0"
+        ],
+        [
+          "X-Stainless-Timeout",
+          "300"
+        ],
+        [
+          "anthropic-beta",
+          "mid-conversation-output-config-2026-07-01,thinking-binding-controls-2026-08-01,inline-tools-2026-09-15"
+        ],
+        [
+          "anthropic-dangerous-direct-browser-access",
+          "true"
+        ],
+        [
+          "anthropic-version",
+          "2023-06-01"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "Content-Length",
+          "6000"
+        ],
+        [
+          "x-api-key",
+          "fixture-pi-key"
+        ],
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_bytes": 6000
+    }
+  ],
+  "claude": [
+    {
+      "route": "claude",
+      "method": "POST",
+      "path": "/v1/messages?beta=true",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1:59227"
+        ],
+        [
+          "Accept",
+          "application/json"
+        ],
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "User-Agent",
+          "claude-cli/2.1.325 (external, sdk-cli)"
+        ],
+        [
+          "X-Claude-Code-Session-Id",
+          "f2648ea4-b95d-4f58-aaee-c33ce07a87c1"
+        ],
+        [
+          "X-Stainless-Arch",
+          "arm64"
+        ],
+        [
+          "X-Stainless-Lang",
+          "js"
+        ],
+        [
+          "X-Stainless-OS",
+          "Linux"
+        ],
+        [
+          "X-Stainless-Package-Version",
+          "0.128.0"
+        ],
+        [
+          "X-Stainless-Retry-Count",
+          "0"
+        ],
+        [
+          "X-Stainless-Runtime",
+          "node"
+        ],
+        [
+          "X-Stainless-Runtime-Version",
+          "v26.12.1"
+        ],
+        [
+          "X-Stainless-Timeout",
+          "600"
+        ],
+        [
+          "anthropic-beta",
+          "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11"
+        ],
+        [
+          "anthropic-dangerous-direct-browser-access",
+          "true"
+        ],
+        [
+          "anthropic-version",
+          "2023-06-01"
+        ],
+        [
+          "x-app",
+          "cli"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "Content-Length",
+          "46255"
+        ],
+        [
+          "Authorization",
+          "Bearer fixture-claude-token"
+        ],
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_bytes": 46255
+    },
+    {
+      "route": "claude",
+      "method": "POST",
+      "path": "/v1/messages?beta=true",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1:59227"
+        ],
+        [
+          "Accept",
+          "application/json"
+        ],
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "User-Agent",
+          "claude-cli/2.1.325 (external, sdk-cli)"
+        ],
+        [
+          "X-Claude-Code-Session-Id",
+          "f2648ea4-b95d-4f58-aaee-c33ce07a87c1"
+        ],
+        [
+          "X-Stainless-Arch",
+          "arm64"
+        ],
+        [
+          "X-Stainless-Lang",
+          "js"
+        ],
+        [
+          "X-Stainless-OS",
+          "Linux"
+        ],
+        [
+          "X-Stainless-Package-Version",
+          "0.128.0"
+        ],
+        [
+          "X-Stainless-Retry-Count",
+          "0"
+        ],
+        [
+          "X-Stainless-Runtime",
+          "node"
+        ],
+        [
+          "X-Stainless-Runtime-Version",
+          "v26.12.1"
+        ],
+        [
+          "X-Stainless-Timeout",
+          "600"
+        ],
+        [
+          "anthropic-beta",
+          "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11"
+        ],
+        [
+          "anthropic-dangerous-direct-browser-access",
+          "true"
+        ],
+        [
+          "anthropic-version",
+          "2023-06-01"
+        ],
+        [
+          "x-app",
+          "cli"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "Content-Length",
+          "46255"
+        ],
+        [
+          "Authorization",
+          "Bearer fixture-claude-token"
+        ],
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_bytes": 46255
+    },
+    {
+      "route": "claude",
+      "method": "POST",
+      "path": "/v1/messages?beta=true",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1:59227"
+        ],
+        [
+          "Accept",
+          "application/json"
+        ],
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "User-Agent",
+          "claude-cli/2.1.325 (external, sdk-cli)"
+        ],
+        [
+          "X-Claude-Code-Session-Id",
+          "f2648ea4-b95d-4f58-aaee-c33ce07a87c1"
+        ],
+        [
+          "X-Stainless-Arch",
+          "arm64"
+        ],
+        [
+          "X-Stainless-Lang",
+          "js"
+        ],
+        [
+          "X-Stainless-OS",
+          "Linux"
+        ],
+        [
+          "X-Stainless-Package-Version",
+          "0.128.0"
+        ],
+        [
+          "X-Stainless-Retry-Count",
+          "0"
+        ],
+        [
+          "X-Stainless-Runtime",
+          "node"
+        ],
+        [
+          "X-Stainless-Runtime-Version",
+          "v26.12.1"
+        ],
+        [
+          "X-Stainless-Timeout",
+          "600"
+        ],
+        [
+          "anthropic-beta",
+          "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11"
+        ],
+        [
+          "anthropic-dangerous-direct-browser-access",
+          "true"
+        ],
+        [
+          "anthropic-version",
+          "2023-06-01"
+        ],
+        [
+          "x-app",
+          "cli"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "Content-Length",
+          "46235"
+        ],
+        [
+          "Authorization",
+          "Bearer fixture-claude-token"
+        ],
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_bytes": 46235
+    },
+    {
+      "route": "claude",
+      "method": "POST",
+      "path": "/v1/messages?beta=true",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1:59227"
+        ],
+        [
+          "Accept",
+          "application/json"
+        ],
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "User-Agent",
+          "claude-cli/2.1.325 (external, sdk-cli)"
+        ],
+        [
+          "X-Claude-Code-Session-Id",
+          "f2648ea4-b95d-4f58-aaee-c33ce07a87c1"
+        ],
+        [
+          "X-Stainless-Arch",
+          "arm64"
+        ],
+        [
+          "X-Stainless-Lang",
+          "js"
+        ],
+        [
+          "X-Stainless-OS",
+          "Linux"
+        ],
+        [
+          "X-Stainless-Package-Version",
+          "0.128.0"
+        ],
+        [
+          "X-Stainless-Retry-Count",
+          "0"
+        ],
+        [
+          "X-Stainless-Runtime",
+          "node"
+        ],
+        [
+          "X-Stainless-Runtime-Version",
+          "v26.12.1"
+        ],
+        [
+          "X-Stainless-Timeout",
+          "600"
+        ],
+        [
+          "anthropic-beta",
+          "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,effort-2025-11-24,extended-cache-ttl-2025-04-11"
+        ],
+        [
+          "anthropic-dangerous-direct-browser-access",
+          "true"
+        ],
+        [
+          "anthropic-version",
+          "2023-06-01"
+        ],
+        [
+          "x-app",
+          "cli"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "Content-Length",
+          "89213"
+        ],
+        [
+          "Authorization",
+          "Bearer fixture-claude-token"
+        ],
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_bytes": 89213
+    },
+    {
+      "route": "claude",
+      "method": "POST",
+      "path": "/v1/messages?beta=true",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1:59227"
+        ],
+        [
+          "Accept",
+          "application/json"
+        ],
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "User-Agent",
+          "claude-cli/2.1.325 (external, sdk-cli)"
+        ],
+        [
+          "X-Claude-Code-Session-Id",
+          "f2648ea4-b95d-4f58-aaee-c33ce07a87c1"
+        ],
+        [
+          "X-Stainless-Arch",
+          "arm64"
+        ],
+        [
+          "X-Stainless-Lang",
+          "js"
+        ],
+        [
+          "X-Stainless-OS",
+          "Linux"
+        ],
+        [
+          "X-Stainless-Package-Version",
+          "0.128.0"
+        ],
+        [
+          "X-Stainless-Retry-Count",
+          "0"
+        ],
+        [
+          "X-Stainless-Runtime",
+          "node"
+        ],
+        [
+          "X-Stainless-Runtime-Version",
+          "v26.12.1"
+        ],
+        [
+          "X-Stainless-Timeout",
+          "600"
+        ],
+        [
+          "anthropic-beta",
+          "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,extended-cache-ttl-2025-04-11"
+        ],
+        [
+          "anthropic-dangerous-direct-browser-access",
+          "true"
+        ],
+        [
+          "anthropic-version",
+          "2023-06-01"
+        ],
+        [
+          "x-app",
+          "cli"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "Content-Length",
+          "89213"
+        ],
+        [
+          "Authorization",
+          "Bearer fixture-claude-token"
+        ],
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_bytes": 89213
+    },
+    {
+      "route": "claude",
+      "method": "POST",
+      "path": "/v1/messages?beta=true",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1:59227"
+        ],
+        [
+          "Accept",
+          "application/json"
+        ],
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "User-Agent",
+          "claude-cli/2.1.325 (external, sdk-cli)"
+        ],
+        [
+          "X-Claude-Code-Session-Id",
+          "f2648ea4-b95d-4f58-aaee-c33ce07a87c1"
+        ],
+        [
+          "X-Stainless-Arch",
+          "arm64"
+        ],
+        [
+          "X-Stainless-Lang",
+          "js"
+        ],
+        [
+          "X-Stainless-OS",
+          "Linux"
+        ],
+        [
+          "X-Stainless-Package-Version",
+          "0.128.0"
+        ],
+        [
+          "X-Stainless-Retry-Count",
+          "0"
+        ],
+        [
+          "X-Stainless-Runtime",
+          "node"
+        ],
+        [
+          "X-Stainless-Runtime-Version",
+          "v26.12.1"
+        ],
+        [
+          "X-Stainless-Timeout",
+          "600"
+        ],
+        [
+          "anthropic-beta",
+          "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,extended-cache-ttl-2025-04-11"
+        ],
+        [
+          "anthropic-dangerous-direct-browser-access",
+          "true"
+        ],
+        [
+          "anthropic-version",
+          "2023-06-01"
+        ],
+        [
+          "x-app",
+          "cli"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "Content-Length",
+          "89193"
+        ],
+        [
+          "Authorization",
+          "Bearer fixture-claude-token"
+        ],
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_bytes": 89193
+    }
+  ],
+  "codex": []
+}
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-logins-18b9fef3e8 -- sh -c cd /work; timeout 75 codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "say hi"
+Reading additional input from stdin...
+OpenAI Codex v0.169.0
+--------
+workdir: /work
+model: gpt-6.1-sol
+provider: pinfold
+approval: never
+sandbox: danger-full-access
+reasoning effort: none
+reasoning summaries: none
+session id: 01a1db61-1806-79a2-8c49-53bc1de7c4f6
+--------
+user
+say hi
+ERROR: {"error":{"type":"invalid_request_error","message":"fixture"}}
+ERROR: {"error":{"type":"invalid_request_error","message":"fixture"}}
+
+[exit 1; seconds 0.327]
+== fixture requests after codex
+{
+  "anthropic": [
+    {
+      "route": "anthropic",
+      "method": "POST",
+      "path": "/v1/messages?beta=true",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1:59226"
+        ],
+        [
+          "Accept",
+          "application/json"
+        ],
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "User-Agent",
+          "pi/1.5.2 (linux; bun/1.4.4; arm64)"
+        ],
+        [
+          "X-Stainless-Arch",
+          "arm64"
+        ],
+        [
+          "X-Stainless-Lang",
+          "js"
+        ],
+        [
+          "X-Stainless-OS",
+          "Linux"
+        ],
+        [
+          "X-Stainless-Package-Version",
+          "0.129.0"
+        ],
+        [
+          "X-Stainless-Retry-Count",
+          "0"
+        ],
+        [
+          "X-Stainless-Runtime",
+          "node"
+        ],
+        [
+          "X-Stainless-Runtime-Version",
+          "v26.3.0"
+        ],
+        [
+          "X-Stainless-Timeout",
+          "300"
+        ],
+        [
+          "anthropic-beta",
+          "mid-conversation-output-config-2026-07-01,thinking-binding-controls-2026-08-01,inline-tools-2026-09-15"
+        ],
+        [
+          "anthropic-dangerous-direct-browser-access",
+          "true"
+        ],
+        [
+          "anthropic-version",
+          "2023-06-01"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "Content-Length",
+          "6000"
+        ],
+        [
+          "x-api-key",
+          "fixture-pi-key"
+        ],
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_bytes": 6000
+    }
+  ],
+  "claude": [
+    {
+      "route": "claude",
+      "method": "POST",
+      "path": "/v1/messages?beta=true",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1:59227"
+        ],
+        [
+          "Accept",
+          "application/json"
+        ],
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "User-Agent",
+          "claude-cli/2.1.325 (external, sdk-cli)"
+        ],
+        [
+          "X-Claude-Code-Session-Id",
+          "f2648ea4-b95d-4f58-aaee-c33ce07a87c1"
+        ],
+        [
+          "X-Stainless-Arch",
+          "arm64"
+        ],
+        [
+          "X-Stainless-Lang",
+          "js"
+        ],
+        [
+          "X-Stainless-OS",
+          "Linux"
+        ],
+        [
+          "X-Stainless-Package-Version",
+          "0.128.0"
+        ],
+        [
+          "X-Stainless-Retry-Count",
+          "0"
+        ],
+        [
+          "X-Stainless-Runtime",
+          "node"
+        ],
+        [
+          "X-Stainless-Runtime-Version",
+          "v26.12.1"
+        ],
+        [
+          "X-Stainless-Timeout",
+          "600"
+        ],
+        [
+          "anthropic-beta",
+          "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11"
+        ],
+        [
+          "anthropic-dangerous-direct-browser-access",
+          "true"
+        ],
+        [
+          "anthropic-version",
+          "2023-06-01"
+        ],
+        [
+          "x-app",
+          "cli"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "Content-Length",
+          "46255"
+        ],
+        [
+          "Authorization",
+          "Bearer fixture-claude-token"
+        ],
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_bytes": 46255
+    },
+    {
+      "route": "claude",
+      "method": "POST",
+      "path": "/v1/messages?beta=true",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1:59227"
+        ],
+        [
+          "Accept",
+          "application/json"
+        ],
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "User-Agent",
+          "claude-cli/2.1.325 (external, sdk-cli)"
+        ],
+        [
+          "X-Claude-Code-Session-Id",
+          "f2648ea4-b95d-4f58-aaee-c33ce07a87c1"
+        ],
+        [
+          "X-Stainless-Arch",
+          "arm64"
+        ],
+        [
+          "X-Stainless-Lang",
+          "js"
+        ],
+        [
+          "X-Stainless-OS",
+          "Linux"
+        ],
+        [
+          "X-Stainless-Package-Version",
+          "0.128.0"
+        ],
+        [
+          "X-Stainless-Retry-Count",
+          "0"
+        ],
+        [
+          "X-Stainless-Runtime",
+          "node"
+        ],
+        [
+          "X-Stainless-Runtime-Version",
+          "v26.12.1"
+        ],
+        [
+          "X-Stainless-Timeout",
+          "600"
+        ],
+        [
+          "anthropic-beta",
+          "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11"
+        ],
+        [
+          "anthropic-dangerous-direct-browser-access",
+          "true"
+        ],
+        [
+          "anthropic-version",
+          "2023-06-01"
+        ],
+        [
+          "x-app",
+          "cli"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "Content-Length",
+          "46255"
+        ],
+        [
+          "Authorization",
+          "Bearer fixture-claude-token"
+        ],
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_bytes": 46255
+    },
+    {
+      "route": "claude",
+      "method": "POST",
+      "path": "/v1/messages?beta=true",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1:59227"
+        ],
+        [
+          "Accept",
+          "application/json"
+        ],
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "User-Agent",
+          "claude-cli/2.1.325 (external, sdk-cli)"
+        ],
+        [
+          "X-Claude-Code-Session-Id",
+          "f2648ea4-b95d-4f58-aaee-c33ce07a87c1"
+        ],
+        [
+          "X-Stainless-Arch",
+          "arm64"
+        ],
+        [
+          "X-Stainless-Lang",
+          "js"
+        ],
+        [
+          "X-Stainless-OS",
+          "Linux"
+        ],
+        [
+          "X-Stainless-Package-Version",
+          "0.128.0"
+        ],
+        [
+          "X-Stainless-Retry-Count",
+          "0"
+        ],
+        [
+          "X-Stainless-Runtime",
+          "node"
+        ],
+        [
+          "X-Stainless-Runtime-Version",
+          "v26.12.1"
+        ],
+        [
+          "X-Stainless-Timeout",
+          "600"
+        ],
+        [
+          "anthropic-beta",
+          "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11"
+        ],
+        [
+          "anthropic-dangerous-direct-browser-access",
+          "true"
+        ],
+        [
+          "anthropic-version",
+          "2023-06-01"
+        ],
+        [
+          "x-app",
+          "cli"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "Content-Length",
+          "46235"
+        ],
+        [
+          "Authorization",
+          "Bearer fixture-claude-token"
+        ],
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_bytes": 46235
+    },
+    {
+      "route": "claude",
+      "method": "POST",
+      "path": "/v1/messages?beta=true",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1:59227"
+        ],
+        [
+          "Accept",
+          "application/json"
+        ],
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "User-Agent",
+          "claude-cli/2.1.325 (external, sdk-cli)"
+        ],
+        [
+          "X-Claude-Code-Session-Id",
+          "f2648ea4-b95d-4f58-aaee-c33ce07a87c1"
+        ],
+        [
+          "X-Stainless-Arch",
+          "arm64"
+        ],
+        [
+          "X-Stainless-Lang",
+          "js"
+        ],
+        [
+          "X-Stainless-OS",
+          "Linux"
+        ],
+        [
+          "X-Stainless-Package-Version",
+          "0.128.0"
+        ],
+        [
+          "X-Stainless-Retry-Count",
+          "0"
+        ],
+        [
+          "X-Stainless-Runtime",
+          "node"
+        ],
+        [
+          "X-Stainless-Runtime-Version",
+          "v26.12.1"
+        ],
+        [
+          "X-Stainless-Timeout",
+          "600"
+        ],
+        [
+          "anthropic-beta",
+          "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,effort-2025-11-24,extended-cache-ttl-2025-04-11"
+        ],
+        [
+          "anthropic-dangerous-direct-browser-access",
+          "true"
+        ],
+        [
+          "anthropic-version",
+          "2023-06-01"
+        ],
+        [
+          "x-app",
+          "cli"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "Content-Length",
+          "89213"
+        ],
+        [
+          "Authorization",
+          "Bearer fixture-claude-token"
+        ],
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_bytes": 89213
+    },
+    {
+      "route": "claude",
+      "method": "POST",
+      "path": "/v1/messages?beta=true",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1:59227"
+        ],
+        [
+          "Accept",
+          "application/json"
+        ],
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "User-Agent",
+          "claude-cli/2.1.325 (external, sdk-cli)"
+        ],
+        [
+          "X-Claude-Code-Session-Id",
+          "f2648ea4-b95d-4f58-aaee-c33ce07a87c1"
+        ],
+        [
+          "X-Stainless-Arch",
+          "arm64"
+        ],
+        [
+          "X-Stainless-Lang",
+          "js"
+        ],
+        [
+          "X-Stainless-OS",
+          "Linux"
+        ],
+        [
+          "X-Stainless-Package-Version",
+          "0.128.0"
+        ],
+        [
+          "X-Stainless-Retry-Count",
+          "0"
+        ],
+        [
+          "X-Stainless-Runtime",
+          "node"
+        ],
+        [
+          "X-Stainless-Runtime-Version",
+          "v26.12.1"
+        ],
+        [
+          "X-Stainless-Timeout",
+          "600"
+        ],
+        [
+          "anthropic-beta",
+          "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,extended-cache-ttl-2025-04-11"
+        ],
+        [
+          "anthropic-dangerous-direct-browser-access",
+          "true"
+        ],
+        [
+          "anthropic-version",
+          "2023-06-01"
+        ],
+        [
+          "x-app",
+          "cli"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "Content-Length",
+          "89213"
+        ],
+        [
+          "Authorization",
+          "Bearer fixture-claude-token"
+        ],
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_bytes": 89213
+    },
+    {
+      "route": "claude",
+      "method": "POST",
+      "path": "/v1/messages?beta=true",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1:59227"
+        ],
+        [
+          "Accept",
+          "application/json"
+        ],
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "User-Agent",
+          "claude-cli/2.1.325 (external, sdk-cli)"
+        ],
+        [
+          "X-Claude-Code-Session-Id",
+          "f2648ea4-b95d-4f58-aaee-c33ce07a87c1"
+        ],
+        [
+          "X-Stainless-Arch",
+          "arm64"
+        ],
+        [
+          "X-Stainless-Lang",
+          "js"
+        ],
+        [
+          "X-Stainless-OS",
+          "Linux"
+        ],
+        [
+          "X-Stainless-Package-Version",
+          "0.128.0"
+        ],
+        [
+          "X-Stainless-Retry-Count",
+          "0"
+        ],
+        [
+          "X-Stainless-Runtime",
+          "node"
+        ],
+        [
+          "X-Stainless-Runtime-Version",
+          "v26.12.1"
+        ],
+        [
+          "X-Stainless-Timeout",
+          "600"
+        ],
+        [
+          "anthropic-beta",
+          "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,extended-cache-ttl-2025-04-11"
+        ],
+        [
+          "anthropic-dangerous-direct-browser-access",
+          "true"
+        ],
+        [
+          "anthropic-version",
+          "2023-06-01"
+        ],
+        [
+          "x-app",
+          "cli"
+        ],
+        [
+          "Accept-Encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "Content-Length",
+          "89193"
+        ],
+        [
+          "Authorization",
+          "Bearer fixture-claude-token"
+        ],
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_bytes": 89193
+    }
+  ],
+  "codex": [
+    {
+      "route": "codex",
+      "method": "POST",
+      "path": "/backend-api/codex/responses",
+      "headers": [
+        [
+          "Host",
+          "127.0.0.1:59228"
+        ],
+        [
+          "x-codex-beta-features",
+          "remote_compaction_v2"
+        ],
+        [
+          "x-codex-window-id",
+          "01a1db61-1806-79a2-8c49-53bc1de7c4f6:0"
+        ],
+        [
+          "x-codex-turn-metadata",
+          "{\"installation_id\":\"12f021f1-6c59-4e1e-b13f-c752fd510f35\",\"session_id\":\"01a1db61-1806-79a2-8c49-53bc1de7c4f6\",\"thread_id\":\"01a1db61-1806-79a2-8c49-53bc1de7c4f6\",\"agent_name\":\"/root\",\"turn_id\":\"01a1db61-1810-7820-b68a-507905462a1a\",\"window_id\":\"01a1db61-1806-79a2-8c49-53bc1de7c4f6:0\",\"window_number\":0,\"context_window_id\":\"01a1db61-1808-7bd2-8f3b-e6d0706aafd6\",\"request_kind\":\"turn\",\"history_initialization\":\"new\",\"root_turn_id\":\"01a1db61-1810-7820-b68a-507905462a1a\",\"thread_source\":\"user\",\"turn_trigger\":\"exec\",\"sandbox\":\"none\",\"sandbox_mode\":\"danger-full-access\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":true,\"node_repl_disabled\":false,\"turn_started_at_unix_ms\":1794681935889,\"analytics_enabled\":true,\"model\":\"gpt-6.1-sol\",\"reasoning_effort\":\"low\"}"
+        ],
+        [
+          "x-openai-internal-codex-responses-lite",
+          "true"
+        ],
+        [
+          "x-client-request-id",
+          "01a1db61-1806-79a2-8c49-53bc1de7c4f6"
+        ],
+        [
+          "session-id",
+          "01a1db61-1806-79a2-8c49-53bc1de7c4f6"
+        ],
+        [
+          "thread-id",
+          "01a1db61-1806-79a2-8c49-53bc1de7c4f6"
+        ],
+        [
+          "accept",
+          "text/event-stream"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "originator",
+          "codex_exec"
+        ],
+        [
+          "user-agent",
+          "codex_exec/0.169.0 (Debian 13.0.0; aarch64) unknown (codex_exec; 0.169.0)"
+        ],
+        [
+          "content-length",
+          "55193"
+        ],
+        [
+          "Authorization",
+          "Bearer eyJhbGciOiJub25lIn0.eyJleHAiOjE3OTQ3Njc0MzcsImVtYWlsIjoiZml4dHVyZUBleGFtcGxlLmludmFsaWQiLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiZml4dHVyZS1hY2NvdW50IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwbHVzIn19.fixture"
+        ],
+        [
+          "ChatGPT-Account-ID",
+          "fixture-account"
+        ],
+        [
+          "Connection",
+          "close"
+        ]
+      ],
+      "body_bytes": 55193
+    }
+  ]
+}
+egress logins-injected:
+{"decision":"allowed","host":"anthropic","method":"POST","path":"/v1/messages","reason":"route","status":400,"time":"2026-11-14T18:45:16Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:16Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:17Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:18Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:20Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:25Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:26Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:27Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:29Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:35Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:35Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:35Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:35Z"}
+{"decision":"allowed","host":"claude","method":"POST","path":"/v1/messages","reason":"route","status":400,"time":"2026-11-14T18:45:35Z"}
+{"decision":"allowed","host":"claude","method":"POST","path":"/v1/messages","reason":"route","status":400,"time":"2026-11-14T18:45:35Z"}
+{"decision":"allowed","host":"claude","method":"POST","path":"/v1/messages","reason":"route","status":400,"time":"2026-11-14T18:45:35Z"}
+{"decision":"allowed","host":"claude","method":"POST","path":"/v1/messages","reason":"route","status":400,"time":"2026-11-14T18:45:35Z"}
+{"decision":"allowed","host":"claude","method":"POST","path":"/v1/messages","reason":"route","status":400,"time":"2026-11-14T18:45:35Z"}
+{"decision":"allowed","host":"claude","method":"POST","path":"/v1/messages","reason":"route","status":400,"time":"2026-11-14T18:45:35Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:35Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:35Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:35Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:35Z"}
+{"decision":"refused","host":"github.com","reason":"not allowlisted","time":"2026-11-14T18:45:36Z"}
+{"decision":"allowed","host":"codex","method":"POST","path":"/backend-api/codex/responses","reason":"route","status":400,"time":"2026-11-14T18:45:36Z"}
+
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-logins-18b9fef3e8 -- sh -c ls -ldn /home/user/.pi/agent/sessions; cat /etc/claude-code/managed-settings.json /etc/codex/config.toml /home/user/.pi/agent/extensions/pinfold-login.ts
+drwxr-xr-x 3 501 20 4096 Nov 14 18:45 /home/user/.pi/agent/sessions
+{"env": {"ANTHROPIC_BASE_URL": "http://claude", "CLAUDE_CODE_OAUTH_TOKEN": "pinfold-placeholder", "ANTHROPIC_API_KEY": ""}}model_provider = "pinfold"
+[model_providers.pinfold]
+name = "pinfold"
+base_url = "http://codex/backend-api/codex"
+wire_api = "responses"
+requires_openai_auth = false
+export default function(pi) { pi.registerProvider("anthropic", {baseUrl:"http://anthropic",apiKey:"pinfold-placeholder"}); }
+
+[exit 0; seconds 0.080]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box down probe-agents-logins-18b9fef3e8
+
+[exit 0; seconds 0.174]
+{"box":"probe-agents-logins-18b9fef3e8","event":"down","reason":"signal","run_id":"eff329acd917b802f3aa5acb38e3d61a033a8ca9972f1ef408b4471944eb886d"}
+
+
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold disk rm probe-agents-login-home-18b9fef3e8
+Removed probe-agents-login-home-18b9fef3e8
+
+[exit 0; seconds 0.039]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold disk rm probe-agents-login-agent-18b9fef3e8
+Removed probe-agents-login-agent-18b9fef3e8
+
+[exit 0; seconds 0.032]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold disk rm probe-agents-login-work-18b9fef3e8
+Removed probe-agents-login-work-18b9fef3e8
+
+[exit 0; seconds 0.029]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold disk list --json
+
+[exit 0; seconds 0.041]

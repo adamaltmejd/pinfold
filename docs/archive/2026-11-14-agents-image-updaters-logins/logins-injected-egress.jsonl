@@ -1,0 +1,25 @@
+{"decision":"allowed","host":"anthropic","method":"POST","path":"/v1/messages","reason":"route","status":400,"time":"2026-11-14T18:45:16Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:16Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:17Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:18Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:20Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:25Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:26Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:27Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:29Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:35Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:35Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:35Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:35Z"}
+{"decision":"allowed","host":"claude","method":"POST","path":"/v1/messages","reason":"route","status":400,"time":"2026-11-14T18:45:35Z"}
+{"decision":"allowed","host":"claude","method":"POST","path":"/v1/messages","reason":"route","status":400,"time":"2026-11-14T18:45:35Z"}
+{"decision":"allowed","host":"claude","method":"POST","path":"/v1/messages","reason":"route","status":400,"time":"2026-11-14T18:45:35Z"}
+{"decision":"allowed","host":"claude","method":"POST","path":"/v1/messages","reason":"route","status":400,"time":"2026-11-14T18:45:35Z"}
+{"decision":"allowed","host":"claude","method":"POST","path":"/v1/messages","reason":"route","status":400,"time":"2026-11-14T18:45:35Z"}
+{"decision":"allowed","host":"claude","method":"POST","path":"/v1/messages","reason":"route","status":400,"time":"2026-11-14T18:45:35Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:35Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:35Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:35Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:45:35Z"}
+{"decision":"refused","host":"github.com","reason":"not allowlisted","time":"2026-11-14T18:45:36Z"}
+{"decision":"allowed","host":"codex","method":"POST","path":"/backend-api/codex/responses","reason":"route","status":400,"time":"2026-11-14T18:45:36Z"}

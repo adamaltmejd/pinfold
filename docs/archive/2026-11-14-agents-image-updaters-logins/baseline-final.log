@@ -1,0 +1,615 @@
+scratch=/tmp/pfa.07ncy64h
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold disk list --json
+
+[exit 0; seconds 0.123]
+box spec: {"name": "probe-agents-baseline-0e0a62d461", "image": "localhost/pinfold/profile-probe-agents:latest", "cpus": 2, "memory": "4G", "env": {"HOME": "/home/user"}, "disks": [{"name": "probe-agents-baseline-0e0a62d461-home", "guest": "/home/user"}, {"name": "probe-agents-baseline-0e0a62d461-work", "guest": "/work"}], "mounts": [], "egress": {"allow": [], "routes": {}}}
+{"box":"probe-agents-baseline-0e0a62d461","egress_log":"/tmp/pfa.07ncy64h/state/pinfold/runs/84749cab80f9be7df6abf38fc06d8c85acee4f020ac8714b1890f138b5ec129b/egress.jsonl","event":"ready","image":{"id":"4d0808e428ce688a5aacb103f8e7b0150272425b3469d26fb6044194e91d00c1","ref":"localhost/pinfold/profile-probe-agents:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"fdde4e1be751a30165c067298319a85a25fb65ef5384b09ec4e786835e9584f1","dev.pinfold.generation":"84749cab80f9be7df6abf38fc06d8c85acee4f020ac8714b1890f138b5ec129b","dev.pinfold.owner":"95448","dev.pinfold.profile":"probe-agents","dev.pinfold.project":""},"owner":95448,"run_id":"84749cab80f9be7df6abf38fc06d8c85acee4f020ac8714b1890f138b5ec129b"}
+
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-baseline-0e0a62d461 -- sh -c cd /work; id; env | sort; cat /usr/local/share/probe-agents/install-time /usr/local/share/probe-agents/packages /usr/local/share/probe-agents/cache-before /usr/local/share/probe-agents/cache-after; du -sk /usr/local/lib/node_modules/* /usr/local/bin/node; cat /usr/local/share/probe-agents/install.log
+uid=501 gid=20(dialout) groups=20(dialout)
+HOME=/home/user
+HTTPS_PROXY=http://127.0.0.1:3128
+NODE_USE_ENV_PROXY=1
+OLDPWD=/
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PWD=/work
+SSH_AUTH_SOCK=/var/host-services/ssh-auth.sock
+http_proxy=http://127.0.0.1:3128
+2026-11-14T18:35:03Z
+/usr/local/lib
++-- @anthropic-ai/claude-code@2.1.325
++-- @earendil-works/pi-coding-agent@1.5.2
++-- @openai/codex@0.169.0
++-- corepack@0.36.0
+`-- npm@11.19.1
+
+4	/root/.npm
+456996	/root/.npm
+356408	/usr/local/lib/node_modules/@anthropic-ai
+162804	/usr/local/lib/node_modules/@earendil-works
+412252	/usr/local/lib/node_modules/@openai
+804	/usr/local/lib/node_modules/corepack
+18488	/usr/local/lib/node_modules/npm
+120556	/usr/local/bin/node
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works%2fpi-coding-agent 65ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@openai%2fcodex 356ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/npm 437ms
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works%2fpi-coding-agent 48ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@openai%2fcodex 234ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/diff 23ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/jiti 35ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/yaml 25ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/chalk 26ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/ignore 26ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/semver 22ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/typebox 27ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/undici 70ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/minimatch 35ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/cross-spawn 20ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/highlight.js 31ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/lovely-mermaid 19ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/brace-expansion 20ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/hosted-git-info 22ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/proper-lockfile 19ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works%2fpi-ai 31ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works%2fpi-mcp 25ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/quickjs-wasi 182ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works%2fpi-tui 27ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works%2fpi-codemode 30ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works%2fpi-agent-core 32ms (cache miss)
+npm http cache https://registry.npmjs.org/@openai%2fcodex 25ms (cache hit)
+npm http cache https://registry.npmjs.org/@openai%2fcodex 18ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/@silvia-odwyer%2fphoton-node 218ms (cache miss)
+npm http cache https://registry.npmjs.org/@openai%2fcodex 24ms (cache hit)
+npm http cache https://registry.npmjs.org/@openai%2fcodex 69ms (cache hit)
+npm http cache https://registry.npmjs.org/@openai%2fcodex 19ms (cache hit)
+npm http cache https://registry.npmjs.org/@openai%2fcodex 111ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works%2fpi-schema 26ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/partial-json 19ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/openai 58ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@google%2fgenai 35ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/http-proxy-agent 18ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/https-proxy-agent 20ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@anthropic-ai%2fsdk 36ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@smithy%2fnode-http-handler 28ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works%2fpi-telemetry 57ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2fclient-bedrock-runtime 52ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/marked-cjk-friendly 16ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/marked 31ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/get-east-asian-width 17ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/balanced-match 17ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/which 19ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/path-key 15ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/shebang-command 15ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/lru-cache 29ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@isaacs%2fnonrecursive-glob-match 25ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/retry 14ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/graceful-fs 22ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/signal-exit 16ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2fcredential-provider-node 490ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@smithy%2fhash-node 42ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@smithy%2fsignature-v4 35ms (cache miss)
+npm http cache https://registry.npmjs.org/undici 4ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/ws 31ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/bufferutil 19ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/utf-8-validate 20ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/zod 79ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@modelcontextprotocol%2fsdk 33ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@cfworker%2fjson-schema 30ms (cache miss)
+npm http cache https://registry.npmjs.org/zod 5ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/standardwebhooks 16ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/tslib 21ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/json-schema-to-ts 38ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@smithy%2fcore 40ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2fcore 41ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@smithy%2ftypes 31ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2ftypes 38ms (cache miss)
+npm http cache https://registry.npmjs.org/@smithy%2fnode-http-handler 2ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2ftoken-providers 44ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@smithy%2ffetch-http-handler 34ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2fmiddleware-websocket 30ms (cache miss)
+npm http cache https://registry.npmjs.org/@aws-sdk%2fcredential-provider-node 3ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2fmiddleware-eventstream 56ms (cache miss)
+npm http cache https://registry.npmjs.org/ws 6ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2feventstream-handler-node 50ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/p-retry 23ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/protobufjs 28ms (cache miss)
+npm http cache https://registry.npmjs.org/@smithy%2ftypes 1ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/google-auth-library 48ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/debug 26ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/agent-base 19ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/proxy-agent-negotiate 16ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/proxy-agent-negotiate 15ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/ts-algebra 21ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/fast-sha256 18ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@stablelib%2fbase64 26ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@babel%2fruntime 136ms (cache miss)
+npm http cache https://registry.npmjs.org/@smithy%2fcore 10ms (cache hit)
+npm http cache https://registry.npmjs.org/@aws-sdk%2ftypes 1ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/bowser 25ms (cache miss)
+npm http cache https://registry.npmjs.org/@smithy%2fsignature-v4 1ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2fxml-builder 40ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws%2flambda-invoke-store 32ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2fcredential-provider-env 48ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2fcredential-provider-ini 86ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@smithy%2fcredential-provider-imds 30ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2fcredential-provider-http 41ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2fcredential-provider-sso 145ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2fcredential-provider-process 52ms (cache miss)
+npm http cache https://registry.npmjs.org/@smithy%2ffetch-http-handler 2ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2fcredential-provider-web-identity 50ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2fnested-clients 50ms (cache miss)
+npm http cache https://registry.npmjs.org/@aws-sdk%2fnested-clients 8ms (cache hit)
+npm http cache https://registry.npmjs.org/@aws-sdk%2ftoken-providers 3ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2fcredential-provider-login 27ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk%2fsignature-v4-multi-region 46ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/jws 18ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/gaxios 27ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/base64-js 15ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/ecdsa-sig-formatter 16ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/gcp-metadata 30ms (cache miss)
+npm http cache https://registry.npmjs.org/retry 2ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/google-logging-utils 17ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@types%2fretry 24ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/long 22ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs%2fpath 30ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs%2fpool 49ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs%2futf8 32ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs%2ffetch 42ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs%2ffloat 30ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs%2fbase64 26ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs%2fcodegen 29ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs%2faspromise 24ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs%2feventemitter 28ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@types%2fnode 837ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/shebang-regex 17ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/isexe 18ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/safe-buffer 18ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/extend 19ms (cache miss)
+npm http cache https://registry.npmjs.org/https-proxy-agent 1ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/json-bigint 19ms (cache miss)
+npm http cache https://registry.npmjs.org/google-logging-utils 1ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/node-fetch 35ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/jwa 16ms (cache miss)
+npm http cache https://registry.npmjs.org/agent-base 1ms (cache hit)
+npm http cache https://registry.npmjs.org/debug 2ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/fetch-blob 21ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/data-uri-to-buffer 23ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/formdata-polyfill 25ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/bignumber.js 23ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/kerberos 27ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/ms 25ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/buffer-equal-constant-time 19ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/node-domexception 18ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/web-streams-polyfill 33ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/undici-types 22ms (cache miss)
+npm http cache @openai/codex@https://registry.npmjs.org/@openai/codex/-/codex-0.169.0.tgz 0ms (cache hit)
+npm http cache @earendil-works/pi-coding-agent@https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.5.2.tgz 0ms (cache hit)
+npm http cache isexe@https://registry.npmjs.org/isexe/-/isexe-2.0.0.tgz 0ms (cache hit)
+npm http cache @stablelib/base64@https://registry.npmjs.org/@stablelib/base64/-/base64-1.0.1.tgz 0ms (cache hit)
+npm http cache shebang-regex@https://registry.npmjs.org/shebang-regex/-/shebang-regex-3.0.0.tgz 0ms (cache hit)
+npm http cache undici-types@https://registry.npmjs.org/undici-types/-/undici-types-8.9.0.tgz 0ms (cache hit)
+npm http cache fast-sha256@https://registry.npmjs.org/fast-sha256/-/fast-sha256-1.3.0.tgz 0ms (cache hit)
+npm http cache long@https://registry.npmjs.org/long/-/long-5.3.2.tgz 0ms (cache hit)
+npm http cache @protobufjs/utf8@https://registry.npmjs.org/@protobufjs/utf8/-/utf8-1.1.2.tgz 0ms (cache hit)
+npm http cache @protobufjs/pool@https://registry.npmjs.org/@protobufjs/pool/-/pool-1.1.0.tgz 0ms (cache hit)
+npm http cache @types/node@https://registry.npmjs.org/@types/node/-/node-26.6.6.tgz 0ms (cache hit)
+npm http cache @protobufjs/float@https://registry.npmjs.org/@protobufjs/float/-/float-1.0.2.tgz 0ms (cache hit)
+npm http cache @protobufjs/fetch@https://registry.npmjs.org/@protobufjs/fetch/-/fetch-1.1.1.tgz 0ms (cache hit)
+npm http cache @protobufjs/path@https://registry.npmjs.org/@protobufjs/path/-/path-1.1.2.tgz 0ms (cache hit)
+npm http cache @protobufjs/eventemitter@https://registry.npmjs.org/@protobufjs/eventemitter/-/eventemitter-1.1.1.tgz 0ms (cache hit)
+npm http cache @openai/codex-linux-arm64@https://registry.npmjs.org/@openai/codex/-/codex-0.169.0-linux-arm64.tgz 0ms (cache hit)
+npm http cache @protobufjs/base64@https://registry.npmjs.org/@protobufjs/base64/-/base64-1.1.2.tgz 0ms (cache hit)
+npm http cache @protobufjs/aspromise@https://registry.npmjs.org/@protobufjs/aspromise/-/aspromise-1.1.2.tgz 0ms (cache hit)
+npm http cache signal-exit@https://registry.npmjs.org/signal-exit/-/signal-exit-3.0.7.tgz 0ms (cache hit)
+npm http cache graceful-fs@https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.12.tgz 0ms (cache hit)
+npm http cache @types/retry@https://registry.npmjs.org/@types/retry/-/retry-0.12.0.tgz 0ms (cache hit)
+npm http cache retry@https://registry.npmjs.org/retry/-/retry-0.13.1.tgz 0ms (cache hit)
+npm http cache node-domexception@https://registry.npmjs.org/node-domexception/-/node-domexception-1.0.0.tgz 0ms (cache hit)
+npm http cache formdata-polyfill@https://registry.npmjs.org/formdata-polyfill/-/formdata-polyfill-4.0.10.tgz 0ms (cache hit)
+npm http cache web-streams-polyfill@https://registry.npmjs.org/web-streams-polyfill/-/web-streams-polyfill-3.3.3.tgz 0ms (cache hit)
+npm http cache fetch-blob@https://registry.npmjs.org/fetch-blob/-/fetch-blob-3.2.0.tgz 0ms (cache hit)
+npm http cache data-uri-to-buffer@https://registry.npmjs.org/data-uri-to-buffer/-/data-uri-to-buffer-4.0.1.tgz 0ms (cache hit)
+npm http cache @isaacs/nonrecursive-glob-match@https://registry.npmjs.org/@isaacs/nonrecursive-glob-match/-/nonrecursive-glob-match-1.1.0.tgz 0ms (cache hit)
+npm http cache jwa@https://registry.npmjs.org/jwa/-/jwa-2.0.1.tgz 0ms (cache hit)
+npm http cache buffer-equal-constant-time@https://registry.npmjs.org/buffer-equal-constant-time/-/buffer-equal-constant-time-1.0.1.tgz 0ms (cache hit)
+npm http cache @babel/runtime@https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.14.tgz 0ms (cache hit)
+npm http cache ts-algebra@https://registry.npmjs.org/ts-algebra/-/ts-algebra-2.0.0.tgz 0ms (cache hit)
+npm http cache proxy-agent-negotiate@https://registry.npmjs.org/proxy-agent-negotiate/-/proxy-agent-negotiate-1.1.0.tgz 0ms (cache hit)
+npm http cache bignumber.js@https://registry.npmjs.org/bignumber.js/-/bignumber.js-9.3.1.tgz 0ms (cache hit)
+npm http cache ms@https://registry.npmjs.org/ms/-/ms-2.1.3.tgz 0ms (cache hit)
+npm http cache debug@https://registry.npmjs.org/debug/-/debug-4.4.3.tgz 0ms (cache hit)
+npm http cache agent-base@https://registry.npmjs.org/agent-base/-/agent-base-9.0.0.tgz 0ms (cache hit)
+npm http cache lru-cache@https://registry.npmjs.org/lru-cache/-/lru-cache-11.5.3.tgz 0ms (cache hit)
+npm http cache json-bigint@https://registry.npmjs.org/json-bigint/-/json-bigint-1.0.0.tgz 0ms (cache hit)
+npm http cache node-fetch@https://registry.npmjs.org/node-fetch/-/node-fetch-3.3.2.tgz 0ms (cache hit)
+npm http cache safe-buffer@https://registry.npmjs.org/safe-buffer/-/safe-buffer-5.2.1.tgz 0ms (cache hit)
+npm http cache extend@https://registry.npmjs.org/extend/-/extend-3.0.2.tgz 0ms (cache hit)
+npm http cache jws@https://registry.npmjs.org/jws/-/jws-4.0.1.tgz 0ms (cache hit)
+npm http cache gcp-metadata@https://registry.npmjs.org/gcp-metadata/-/gcp-metadata-8.1.2.tgz 0ms (cache hit)
+npm http cache google-logging-utils@https://registry.npmjs.org/google-logging-utils/-/google-logging-utils-1.1.3.tgz 0ms (cache hit)
+npm http cache gaxios@https://registry.npmjs.org/gaxios/-/gaxios-7.3.1.tgz 0ms (cache hit)
+npm http cache https-proxy-agent@https://registry.npmjs.org/https-proxy-agent/-/https-proxy-agent-7.0.6.tgz 0ms (cache hit)
+npm http cache agent-base@https://registry.npmjs.org/agent-base/-/agent-base-7.1.4.tgz 0ms (cache hit)
+npm http cache ecdsa-sig-formatter@https://registry.npmjs.org/ecdsa-sig-formatter/-/ecdsa-sig-formatter-1.0.11.tgz 0ms (cache hit)
+npm http cache shebang-command@https://registry.npmjs.org/shebang-command/-/shebang-command-2.0.0.tgz 0ms (cache hit)
+npm http cache which@https://registry.npmjs.org/which/-/which-2.0.2.tgz 0ms (cache hit)
+npm http cache base64-js@https://registry.npmjs.org/base64-js/-/base64-js-1.5.1.tgz 0ms (cache hit)
+npm http cache path-key@https://registry.npmjs.org/path-key/-/path-key-3.1.1.tgz 0ms (cache hit)
+npm http cache balanced-match@https://registry.npmjs.org/balanced-match/-/balanced-match-4.0.4.tgz 0ms (cache hit)
+npm http cache ws@https://registry.npmjs.org/ws/-/ws-8.23.0.tgz 0ms (cache hit)
+npm http cache protobufjs@https://registry.npmjs.org/protobufjs/-/protobufjs-7.6.6.tgz 0ms (cache hit)
+npm http cache google-auth-library@https://registry.npmjs.org/google-auth-library/-/google-auth-library-10.9.1.tgz 0ms (cache hit)
+npm http cache marked-cjk-friendly@https://registry.npmjs.org/marked-cjk-friendly/-/marked-cjk-friendly-0.1.2.tgz 0ms (cache hit)
+npm http cache marked@https://registry.npmjs.org/marked/-/marked-18.0.11.tgz 0ms (cache hit)
+npm http cache p-retry@https://registry.npmjs.org/p-retry/-/p-retry-4.6.2.tgz 0ms (cache hit)
+npm http cache get-east-asian-width@https://registry.npmjs.org/get-east-asian-width/-/get-east-asian-width-1.6.0.tgz 0ms (cache hit)
+npm http cache @aws-sdk/nested-clients@https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.998.3.tgz 0ms (cache hit)
+npm http cache @aws-sdk/signature-v4-multi-region@https://registry.npmjs.org/@aws-sdk/signature-v4-multi-region/-/signature-v4-multi-region-3.996.52.tgz 0ms (cache hit)
+npm http cache @smithy/credential-provider-imds@https://registry.npmjs.org/@smithy/credential-provider-imds/-/credential-provider-imds-4.5.2.tgz 0ms (cache hit)
+npm http cache @smithy/node-http-handler@https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.14.2.tgz 0ms (cache hit)
+npm http cache @aws-sdk/token-providers@https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1166.0.tgz 0ms (cache hit)
+npm http cache @aws-sdk/credential-provider-process@https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.84.tgz 0ms (cache hit)
+npm http cache @aws-sdk/credential-provider-sso@https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.973.28.tgz 0ms (cache hit)
+npm http cache @aws-sdk/credential-provider-web-identity@https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.90.tgz 0ms (cache hit)
+npm http cache @aws-sdk/credential-provider-http@https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.86.tgz 0ms (cache hit)
+npm http cache @aws-sdk/credential-provider-env@https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.84.tgz 0ms (cache hit)
+npm http cache @smithy/node-http-handler@https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.14.2.tgz 0ms (cache hit)
+npm http cache @aws-sdk/credential-provider-login@https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.92.tgz 0ms (cache hit)
+npm http cache @smithy/signature-v4@https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.7.5.tgz 0ms (cache hit)
+npm http cache @aws-sdk/credential-provider-ini@https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.973.30.tgz 0ms (cache hit)
+npm http cache @aws/lambda-invoke-store@https://registry.npmjs.org/@aws/lambda-invoke-store/-/lambda-invoke-store-0.3.0.tgz 0ms (cache hit)
+npm http cache @smithy/core@https://registry.npmjs.org/@smithy/core/-/core-3.40.0.tgz 0ms (cache hit)
+npm http cache @smithy/fetch-http-handler@https://registry.npmjs.org/@smithy/fetch-http-handler/-/fetch-http-handler-5.8.1.tgz 0ms (cache hit)
+npm http cache @smithy/types@https://registry.npmjs.org/@smithy/types/-/types-4.20.0.tgz 0ms (cache hit)
+npm http cache tslib@https://registry.npmjs.org/tslib/-/tslib-2.9.1.tgz 0ms (cache hit)
+npm http cache @aws-sdk/types@https://registry.npmjs.org/@aws-sdk/types/-/types-3.975.1.tgz 0ms (cache hit)
+npm http cache @aws-sdk/token-providers@https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1127.0.tgz 0ms (cache hit)
+npm http cache @aws-sdk/xml-builder@https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.43.tgz 0ms (cache hit)
+npm http cache bowser@https://registry.npmjs.org/bowser/-/bowser-2.15.0.tgz 0ms (cache hit)
+npm http cache @aws-sdk/middleware-eventstream@https://registry.npmjs.org/@aws-sdk/middleware-eventstream/-/middleware-eventstream-3.972.38.tgz 0ms (cache hit)
+npm http cache @aws-sdk/middleware-websocket@https://registry.npmjs.org/@aws-sdk/middleware-websocket/-/middleware-websocket-3.972.66.tgz 0ms (cache hit)
+npm http cache @aws-sdk/eventstream-handler-node@https://registry.npmjs.org/@aws-sdk/eventstream-handler-node/-/eventstream-handler-node-3.972.42.tgz 0ms (cache hit)
+npm http cache @aws-sdk/core@https://registry.npmjs.org/@aws-sdk/core/-/core-3.981.0.tgz 0ms (cache hit)
+npm http cache standardwebhooks@https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.1.1.tgz 0ms (cache hit)
+npm http cache @aws-sdk/credential-provider-node@https://registry.npmjs.org/@aws-sdk/credential-provider-node/-/credential-provider-node-3.972.97.tgz 0ms (cache hit)
+npm http cache json-schema-to-ts@https://registry.npmjs.org/json-schema-to-ts/-/json-schema-to-ts-3.1.1.tgz 0ms (cache hit)
+npm http cache partial-json@https://registry.npmjs.org/partial-json/-/partial-json-0.1.7.tgz 0ms (cache hit)
+npm http cache openai@https://registry.npmjs.org/openai/-/openai-7.19.0.tgz 0ms (cache hit)
+npm http cache https-proxy-agent@https://registry.npmjs.org/https-proxy-agent/-/https-proxy-agent-9.1.0.tgz 0ms (cache hit)
+npm http cache @google/genai@https://registry.npmjs.org/@google/genai/-/genai-2.21.0.tgz 0ms (cache hit)
+npm http cache http-proxy-agent@https://registry.npmjs.org/http-proxy-agent/-/http-proxy-agent-9.1.0.tgz 0ms (cache hit)
+npm http cache @smithy/node-http-handler@https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.12.1.tgz 0ms (cache hit)
+npm http cache @earendil-works/pi-telemetry@https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.5.2.tgz 0ms (cache hit)
+npm http cache @aws-sdk/client-bedrock-runtime@https://registry.npmjs.org/@aws-sdk/client-bedrock-runtime/-/client-bedrock-runtime-3.1127.0.tgz 0ms (cache hit)
+npm http cache yaml@https://registry.npmjs.org/yaml/-/yaml-2.9.0.tgz 0ms (cache hit)
+npm http cache @earendil-works/pi-schema@https://registry.npmjs.org/@earendil-works/pi-schema/-/pi-schema-1.5.2.tgz 0ms (cache hit)
+npm http cache @anthropic-ai/sdk@https://registry.npmjs.org/@anthropic-ai/sdk/-/sdk-0.129.0.tgz 0ms (cache hit)
+npm http cache undici@https://registry.npmjs.org/undici/-/undici-8.12.3.tgz 0ms (cache hit)
+npm http cache typebox@https://registry.npmjs.org/typebox/-/typebox-1.3.27.tgz 0ms (cache hit)
+npm http cache quickjs-wasi@https://registry.npmjs.org/quickjs-wasi/-/quickjs-wasi-3.6.2.tgz 0ms (cache hit)
+npm http cache semver@https://registry.npmjs.org/semver/-/semver-7.8.5.tgz 0ms (cache hit)
+npm http cache proper-lockfile@https://registry.npmjs.org/proper-lockfile/-/proper-lockfile-4.1.2.tgz 0ms (cache hit)
+npm http cache minimatch@https://registry.npmjs.org/minimatch/-/minimatch-11.0.3.tgz 0ms (cache hit)
+npm http cache lovely-mermaid@https://registry.npmjs.org/lovely-mermaid/-/lovely-mermaid-0.3.3.tgz 0ms (cache hit)
+npm http cache retry@https://registry.npmjs.org/retry/-/retry-0.12.0.tgz 0ms (cache hit)
+npm http cache jiti@https://registry.npmjs.org/jiti/-/jiti-2.7.0.tgz 0ms (cache hit)
+npm http cache ignore@https://registry.npmjs.org/ignore/-/ignore-7.0.8.tgz 0ms (cache hit)
+npm http cache hosted-git-info@https://registry.npmjs.org/hosted-git-info/-/hosted-git-info-9.0.3.tgz 0ms (cache hit)
+npm http cache diff@https://registry.npmjs.org/diff/-/diff-8.0.4.tgz 0ms (cache hit)
+npm http cache highlight.js@https://registry.npmjs.org/highlight.js/-/highlight.js-10.7.3.tgz 0ms (cache hit)
+npm http cache cross-spawn@https://registry.npmjs.org/cross-spawn/-/cross-spawn-7.0.6.tgz 0ms (cache hit)
+npm http cache chalk@https://registry.npmjs.org/chalk/-/chalk-6.0.0.tgz 0ms (cache hit)
+npm http cache brace-expansion@https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.12.tgz 0ms (cache hit)
+npm http cache @silvia-odwyer/photon-node@https://registry.npmjs.org/@silvia-odwyer/photon-node/-/photon-node-0.3.4.tgz 0ms (cache hit)
+npm http cache @earendil-works/pi-mcp@https://registry.npmjs.org/@earendil-works/pi-mcp/-/pi-mcp-1.5.2.tgz 0ms (cache hit)
+npm http cache @earendil-works/pi-tui@https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.5.2.tgz 0ms (cache hit)
+npm http cache @earendil-works/pi-ai@https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.5.2.tgz 0ms (cache hit)
+npm http cache @protobufjs/codegen@https://registry.npmjs.org/@protobufjs/codegen/-/codegen-2.0.5.tgz 0ms (cache hit)
+npm http cache @earendil-works/pi-codemode@https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.5.2.tgz 0ms (cache hit)
+npm http cache @earendil-works/pi-agent-core@https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.5.2.tgz 0ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/isexe/-/isexe-2.0.0.tgz 33ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@openai/codex/-/codex-0.169.0.tgz 45ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs/base64/-/base64-1.1.2.tgz 61ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/fast-sha256/-/fast-sha256-1.3.0.tgz 66ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/shebang-regex/-/shebang-regex-3.0.0.tgz 66ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs/float/-/float-1.0.2.tgz 75ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs/path/-/path-1.1.2.tgz 75ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/long/-/long-5.3.2.tgz 80ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs/eventemitter/-/eventemitter-1.1.1.tgz 82ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@stablelib/base64/-/base64-1.0.1.tgz 85ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/signal-exit/-/signal-exit-3.0.7.tgz 85ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs/fetch/-/fetch-1.1.1.tgz 85ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs/pool/-/pool-1.1.0.tgz 86ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs/aspromise/-/aspromise-1.1.2.tgz 89ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.12.tgz 100ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@types/retry/-/retry-0.12.0.tgz 108ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/retry/-/retry-0.13.1.tgz 127ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs/utf8/-/utf8-1.1.2.tgz 134ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/jwa/-/jwa-2.0.1.tgz 133ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/undici-types/-/undici-types-8.9.0.tgz 137ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/data-uri-to-buffer/-/data-uri-to-buffer-4.0.1.tgz 135ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/formdata-polyfill/-/formdata-polyfill-4.0.10.tgz 136ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/fetch-blob/-/fetch-blob-3.2.0.tgz 136ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/buffer-equal-constant-time/-/buffer-equal-constant-time-1.0.1.tgz 137ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/extend/-/extend-3.0.2.tgz 137ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/ms/-/ms-2.1.3.tgz 137ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/proxy-agent-negotiate/-/proxy-agent-negotiate-1.1.0.tgz 137ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/safe-buffer/-/safe-buffer-5.2.1.tgz 143ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/agent-base/-/agent-base-7.1.4.tgz 142ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/shebang-command/-/shebang-command-2.0.0.tgz 143ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/base64-js/-/base64-js-1.5.1.tgz 145ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/ecdsa-sig-formatter/-/ecdsa-sig-formatter-1.0.11.tgz 145ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/which/-/which-2.0.2.tgz 145ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/json-bigint/-/json-bigint-1.0.0.tgz 148ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/agent-base/-/agent-base-9.0.0.tgz 148ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/jws/-/jws-4.0.1.tgz 148ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/debug/-/debug-4.4.3.tgz 150ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/https-proxy-agent/-/https-proxy-agent-7.0.6.tgz 152ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/gcp-metadata/-/gcp-metadata-8.1.2.tgz 155ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/path-key/-/path-key-3.1.1.tgz 155ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/p-retry/-/p-retry-4.6.2.tgz 155ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/bignumber.js/-/bignumber.js-9.3.1.tgz 162ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/marked-cjk-friendly/-/marked-cjk-friendly-0.1.2.tgz 162ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/google-logging-utils/-/google-logging-utils-1.1.3.tgz 168ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/node-fetch/-/node-fetch-3.3.2.tgz 169ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/balanced-match/-/balanced-match-4.0.4.tgz 172ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/get-east-asian-width/-/get-east-asian-width-1.6.0.tgz 174ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/node-domexception/-/node-domexception-1.0.0.tgz 178ms (cache miss)
+npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead
+npm http fetch GET 200 https://registry.npmjs.org/ws/-/ws-8.23.0.tgz 181ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/signature-v4-multi-region/-/signature-v4-multi-region-3.996.52.tgz 185ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.84.tgz 199ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.14.2.tgz 211ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1166.0.tgz 212ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@smithy/credential-provider-imds/-/credential-provider-imds-4.5.2.tgz 215ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.973.28.tgz 229ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.90.tgz 232ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.84.tgz 231ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.86.tgz 244ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws/lambda-invoke-store/-/lambda-invoke-store-0.3.0.tgz 264ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/ts-algebra/-/ts-algebra-2.0.0.tgz 267ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/gaxios/-/gaxios-7.3.1.tgz 274ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.973.30.tgz 276ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/marked/-/marked-18.0.11.tgz 282ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.7.5.tgz 284ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.14.2.tgz 286ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@smithy/fetch-http-handler/-/fetch-http-handler-5.8.1.tgz 302ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.92.tgz 308ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/google-auth-library/-/google-auth-library-10.9.1.tgz 311ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/tslib/-/tslib-2.9.1.tgz 311ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.14.tgz 320ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1127.0.tgz 322ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.43.tgz 331ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/middleware-eventstream/-/middleware-eventstream-3.972.38.tgz 336ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.1.1.tgz 350ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/eventstream-handler-node/-/eventstream-handler-node-3.972.42.tgz 361ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/credential-provider-node/-/credential-provider-node-3.972.97.tgz 366ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/partial-json/-/partial-json-0.1.7.tgz 367ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/middleware-websocket/-/middleware-websocket-3.972.66.tgz 367ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/types/-/types-3.975.1.tgz 370ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/https-proxy-agent/-/https-proxy-agent-9.1.0.tgz 385ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/http-proxy-agent/-/http-proxy-agent-9.1.0.tgz 394ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/bowser/-/bowser-2.15.0.tgz 394ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@smithy/types/-/types-4.20.0.tgz 402ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.12.1.tgz 433ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.5.2.tgz 469ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.998.3.tgz 505ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/json-schema-to-ts/-/json-schema-to-ts-3.1.1.tgz 510ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@isaacs/nonrecursive-glob-match/-/nonrecursive-glob-match-1.1.0.tgz 524ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@types/node/-/node-26.6.6.tgz 532ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/yaml/-/yaml-2.9.0.tgz 546ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/client-bedrock-runtime/-/client-bedrock-runtime-3.1127.0.tgz 552ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/proper-lockfile/-/proper-lockfile-4.1.2.tgz 565ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@aws-sdk/core/-/core-3.981.0.tgz 567ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/semver/-/semver-7.8.5.tgz 572ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works/pi-schema/-/pi-schema-1.5.2.tgz 626ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/retry/-/retry-0.12.0.tgz 628ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/minimatch/-/minimatch-11.0.3.tgz 690ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/hosted-git-info/-/hosted-git-info-9.0.3.tgz 721ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/protobufjs/-/protobufjs-7.6.6.tgz 745ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/ignore/-/ignore-7.0.8.tgz 741ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/cross-spawn/-/cross-spawn-7.0.6.tgz 763ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/lovely-mermaid/-/lovely-mermaid-0.3.3.tgz 773ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.12.tgz 797ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/chalk/-/chalk-6.0.0.tgz 799ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/diff/-/diff-8.0.4.tgz 859ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/lru-cache/-/lru-cache-11.5.3.tgz 1040ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/undici/-/undici-8.12.3.tgz 1048ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@protobufjs/codegen/-/codegen-2.0.5.tgz 1066ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/jiti/-/jiti-2.7.0.tgz 1069ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@smithy/core/-/core-3.40.0.tgz 1088ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/quickjs-wasi/-/quickjs-wasi-3.6.2.tgz 1135ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works/pi-mcp/-/pi-mcp-1.5.2.tgz 1136ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.5.2.tgz 1144ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/typebox/-/typebox-1.3.27.tgz 1172ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.5.2.tgz 1209ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/highlight.js/-/highlight.js-10.7.3.tgz 1243ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.5.2.tgz 1435ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@silvia-odwyer/photon-node/-/photon-node-0.3.4.tgz 1501ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/web-streams-polyfill/-/web-streams-polyfill-3.3.3.tgz 1549ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@google/genai/-/genai-2.21.0.tgz 1669ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@anthropic-ai/sdk/-/sdk-0.129.0.tgz 1698ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.5.2.tgz 1709ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/openai/-/openai-7.19.0.tgz 1946ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.5.2.tgz 2180ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@openai/codex/-/codex-0.169.0-linux-arm64.tgz 4149ms (cache miss)
+
+added 125 packages in 10s
+
+9 packages are looking for funding
+  run `npm fund` for details
+npm notice
+npm notice New major version of npm available! 11.19.1 -> 12.2.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.2
+npm notice To update run: npm install -g npm@12.2.2
+npm notice
+npm http fetch GET 200 https://registry.npmjs.org/@anthropic-ai%2fclaude-code 265ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@anthropic-ai%2fclaude-code 56ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@anthropic-ai%2fclaude-code-linux-x64 47ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@anthropic-ai%2fclaude-code-win32-x64 64ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@anthropic-ai%2fclaude-code-darwin-x64 31ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@anthropic-ai%2fclaude-code-linux-arm64 40ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@anthropic-ai%2fclaude-code-win32-arm64 33ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@anthropic-ai%2fclaude-code-darwin-arm64 43ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@anthropic-ai%2fclaude-code-linux-x64-musl 37ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@anthropic-ai%2fclaude-code-linux-arm64-musl 49ms (cache miss)
+npm http cache @anthropic-ai/claude-code-linux-arm64@https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64/-/claude-code-linux-arm64-2.1.325.tgz 0ms (cache hit)
+npm http cache @anthropic-ai/claude-code@https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.325.tgz 0ms (cache hit)
+npm http fetch GET 200 https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.325.tgz 227ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64/-/claude-code-linux-arm64-2.1.325.tgz 2681ms (cache miss)
+
+added 2 packages in 3s
+npm warn install-scripts 1 package has install scripts not yet covered by allowScripts:
+npm warn install-scripts   @anthropic-ai/claude-code@2.1.325 (postinstall: node install.cjs)
+npm warn install-scripts
+npm warn install-scripts Run `npm install -g --allow-scripts=@anthropic-ai/claude-code` to allow these scripts once, or `npm config set allow-scripts=@anthropic-ai/claude-code --location=user` to allow them for all global installs.
+
+[exit 0; seconds 0.148]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-baseline-0e0a62d461 -- sh -c pi --version
+1.5.2
+
+[exit 0; seconds 0.295]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-baseline-0e0a62d461 -- sh -c claude --version
+2.1.325 (Claude Code)
+
+[exit 0; seconds 0.112]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-baseline-0e0a62d461 -- sh -c codex --version
+codex-cli 0.169.0
+
+[exit 0; seconds 0.160]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-baseline-0e0a62d461 -- sh -c cd /work; timeout 35 pi -p "say hi" --provider anthropic --model sonnet
+No API key found for anthropic.
+
+Use /login to log into a provider via OAuth or API key. See:
+  /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/docs/providers.md
+  /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/docs/models.md
+
+[exit 1; seconds 0.221]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-baseline-0e0a62d461 -- sh -c cd /work; timeout 35 claude -p "say hi"
+Not logged in · Please run /login
+
+[exit 1; seconds 0.413]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-baseline-0e0a62d461 -- sh -c cd /work; timeout 35 codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "say hi"
+Reading additional input from stdin...
+OpenAI Codex v0.169.0
+--------
+workdir: /work
+model: gpt-6.1-sol
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: none
+reasoning summaries: none
+session id: 01a1db58-9665-7373-b102-6573171b0efe
+--------
+user
+say hi
+2026-11-14T18:36:18.424317Z ERROR codex_api::endpoint::responses_websocket: failed to connect to Responses WebSocket stage=Unknown
+2026-11-14T18:36:18.443335Z ERROR codex_api::endpoint::responses_websocket: failed to connect to Responses WebSocket stage=Unknown
+2026-11-14T18:36:18.660010Z ERROR codex_api::endpoint::responses_websocket: failed to connect to Responses WebSocket stage=Unknown
+ERROR: Reconnecting... 2/5
+2026-11-14T18:36:19.097308Z ERROR codex_api::endpoint::responses_websocket: failed to connect to Responses WebSocket stage=Unknown
+ERROR: Reconnecting... 3/5
+2026-11-14T18:36:19.932676Z ERROR codex_api::endpoint::responses_websocket: failed to connect to Responses WebSocket stage=Unknown
+ERROR: Reconnecting... 4/5
+2026-11-14T18:36:21.436493Z ERROR codex_api::endpoint::responses_websocket: failed to connect to Responses WebSocket stage=Unknown
+ERROR: Reconnecting... 5/5
+2026-11-14T18:36:24.778404Z ERROR codex_api::endpoint::responses_websocket: failed to connect to Responses WebSocket stage=Unknown
+warning: Falling back from WebSockets to HTTPS transport. stream disconnected before completion: URL error: Proxy connection failed: HTTP CONNECT failed with status 403
+ERROR: Reconnecting... waiting for network
+ERROR: Reconnecting... waiting for network
+ERROR: Reconnecting... waiting for network
+
+[exit 124; seconds 35.115]
+$ box exec probe-agents-baseline-0e0a62d461 --tty -- pi [18 second observation]
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────                                                                                                                        ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────/0.0%/0 (auto)                                                                                                    unknown ▀▀█  v1.5.2                                                                                                             █▀ █ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more                                    Press ctrl+o to show full startup help and loaded resources.                                                                                                                                                                                    Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.                                   Warning: No models available. Use /login to log into a provider via OAuth or API key. See:                                /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/docs/providers.md                                           /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/docs/models.md                                           
+[observation client exit -15]
+$ box exec probe-agents-baseline-0e0a62d461 --tty -- claude [18 second observation]
+WelcometoClaudeCodev2.1.325
+..........................................................
+
+*█████▓▓░
+*███▓░░░
+░░░░░░███▓░
+░░░░░░░░░░░░░███▓░
+░░░░░░░░░░░░░░░░░░░*██▓░░▓
+░▓▓███▓▓░
+ *░░░░
+ ░░░░░░░░
+ ░░░░░░░░░░░░░░░░
+ █████████*
+██▄█████▄██*
+ █████████*
+.......████..........................................
+
+UnabletoconnecttoAnthropicservices
+
+Failedtoconnecttoapi.anthropic.com:ERR_PROXY_TUNNEL
+
+AproxyisconfiguredviaHTTPS_PROXY.Checkthatitallowsconnectionstothehostabove.See
+https://code.claude.com/docs/en/network-config
+
+Pleasecheckyourinternetconnectionandnetworksettings.
+
+Note:ClaudeCodemightnotbeavailableinyourcountry.Checksupportedcountriesat
+https://anthropic.com/supported-countries
+B
+[observation client exit 1]
+$ box exec probe-agents-baseline-0e0a62d461 --tty -- codex [18 second observation]
+10;?11;?  Welcome to Codex, OpenAI's command-line coding agent   Choose how you want to use Codex. > 1. Sign in with ChatGPT     Usage included with Plus, Pro, Business, and Enterprise plans   2. Sign in with Device Code     Sign in from another device with a one-time code   3. Sign in another way     Use an API key or another provider   Press enter to continue                      
+[observation client exit -15]
+egress baseline:
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:36:18Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:36:18Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:18Z"}
+{"decision":"refused","host":"github.com","reason":"not allowlisted","time":"2026-11-14T18:36:18Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:18Z"}
+{"decision":"refused","host":"api.github.com","reason":"not allowlisted","time":"2026-11-14T18:36:18Z"}
+{"decision":"refused","host":"chatgpt.com","reason":"not allowlisted","time":"2026-11-14T18:36:18Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:18Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:19Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:20Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:21Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:24Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:24Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:25Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:25Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:26Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:27Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:32Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:33Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:33Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:34Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:36Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:46Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:46Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:46Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:47Z"}
+{"decision":"refused","host":"api.openai.com","reason":"not allowlisted","time":"2026-11-14T18:36:49Z"}
+{"decision":"refused","host":"pi.dev","reason":"not allowlisted","time":"2026-11-14T18:36:53Z"}
+{"decision":"refused","host":"pi.dev","reason":"not allowlisted","time":"2026-11-14T18:36:53Z"}
+{"decision":"refused","host":"raw.githubusercontent.com","reason":"not allowlisted","time":"2026-11-14T18:37:11Z"}
+{"decision":"refused","host":"platform.claude.com","reason":"not allowlisted","time":"2026-11-14T18:37:11Z"}
+{"decision":"refused","host":"api.anthropic.com","reason":"not allowlisted","time":"2026-11-14T18:37:11Z"}
+{"decision":"refused","host":"github.com","reason":"not allowlisted","time":"2026-11-14T18:37:14Z"}
+{"decision":"refused","host":"ab.chatgpt.com","reason":"not allowlisted","time":"2026-11-14T18:37:14Z"}
+{"decision":"refused","host":"raw.githubusercontent.com","reason":"not allowlisted","time":"2026-11-14T18:37:14Z"}
+{"decision":"refused","host":"api.github.com","reason":"not allowlisted","time":"2026-11-14T18:37:14Z"}
+{"decision":"refused","host":"api.github.com","reason":"not allowlisted","time":"2026-11-14T18:37:14Z"}
+{"decision":"refused","host":"chatgpt.com","reason":"not allowlisted","time":"2026-11-14T18:37:14Z"}
+
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box down probe-agents-baseline-0e0a62d461
+
+[exit 0; seconds 0.335]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold disk rm probe-agents-baseline-0e0a62d461-home
+Removed probe-agents-baseline-0e0a62d461-home
+
+[exit 0; seconds 0.057]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold disk rm probe-agents-baseline-0e0a62d461-work
+Removed probe-agents-baseline-0e0a62d461-work
+
+[exit 0; seconds 0.038]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold disk list --json
+
+[exit 0; seconds 0.022]

@@ -1,0 +1,112 @@
+scratch=/tmp/pfa.07ncy64h
+== cold
+$ df -g /
+Filesystem     1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s1s1       460   12        18    41%  486811 197032160    0%   /
+
+[exit 0; seconds 0.003]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold build --profile probe-agents
+pinfold: building profile probe-agents
+localhost/pinfold/profile-probe-agents:latest
+
+[exit 0; seconds 31.850]
+== warm
+$ df -g /
+Filesystem     1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s1s1       460   12        15    46%  486811 160025760    0%   /
+
+[exit 0; seconds 0.004]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold build --profile probe-agents
+pinfold: building profile probe-agents
+localhost/pinfold/profile-probe-agents:latest
+
+[exit 0; seconds 4.140]
+$ container image inspect localhost/pinfold/profile-probe-agents:latest
+[
+  {
+    "configuration" : {
+      "creationDate" : "2026-11-14T18:33:56Z",
+      "descriptor" : {
+        "annotations" : {
+          "com.apple.containerization.image.name" : "localhost/pinfold/profile-probe-agents:latest",
+          "io.containerd.image.name" : "localhost/pinfold/profile-probe-agents:latest",
+          "org.opencontainers.image.created" : "2026-11-14T18:34:21Z",
+          "org.opencontainers.image.ref.name" : "latest"
+        },
+        "digest" : "sha256:42a1230cabad745574c3c39490468f0ae1c8a770fb733155ee2b0cbc98f3d135",
+        "mediaType" : "application/vnd.oci.image.index.v1+json",
+        "size" : 375
+      },
+      "name" : "localhost/pinfold/profile-probe-agents:latest"
+    },
+    "id" : "42a1230cabad745574c3c39490468f0ae1c8a770fb733155ee2b0cbc98f3d135",
+    "variants" : [
+      {
+        "config" : {
+          "architecture" : "arm64",
+          "config" : {
+            "Cmd" : [
+              "bash"
+            ],
+            "Env" : [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Labels" : {
+              "dev.pinfold.base" : "",
+              "dev.pinfold.containerfile-sha256" : "7b8dbc504959e39de4ddc33d10c7c4ccd987f5866f38ea08d8c5780d5d55aa5a",
+              "dev.pinfold.profile" : "probe-agents",
+              "dev.pinfold.project" : ""
+            }
+          },
+          "created" : "2026-11-14T18:33:56.560863965Z",
+          "history" : [
+            {
+              "comment" : "debuerreotype 0.17",
+              "created" : "2026-11-04T21:23:39Z",
+              "created_by" : "# debian.sh --arch 'arm64' out/ 'trixie' '@1793827419'"
+            },
+            {
+              "comment" : "buildkit.dockerfile.v0",
+              "created" : "2026-11-14T18:29:56.84020943Z",
+              "created_by" : "RUN /bin/sh -c set -eux; export DEBIAN_FRONTEND=noninteractive;     apt-get update; apt-get upgrade -y;     apt-get install -y --no-install-recommends ca-certificates curl git ripgrep fd-find jq less;     ln -s /usr/bin/fdfind /usr/local/bin/fd;     git config --system user.name pi; git config --system user.email pi@pinfold.invalid;     rm -rf /var/lib/apt/lists/* # buildkit"
+            },
+            {
+              "comment" : "buildkit.dockerfile.v0",
+              "created" : "2026-11-14T18:30:01.650014209Z",
+              "created_by" : "RUN /bin/sh -c set -eux; apt-get update;     apt-get install -y --no-install-recommends xz-utils strace;     rm -rf /var/lib/apt/lists/*;     curl -fsSL https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt -o /tmp/sums;     file=$(awk '/linux-arm64.tar.xz$/ {print $2}' /tmp/sums);     curl -fsSL \"https://nodejs.org/dist/latest-v24.x/$file\" -o \"/tmp/$file\";     cd /tmp; grep \" $file$\" sums | sha256sum -c -;     tar -xJf \"$file\" --strip-components=1 -C /usr/local; rm -f \"$file\" sums # buildkit"
+            },
+            {
+              "comment" : "buildkit.dockerfile.v0",
+              "created" : "2026-11-14T18:33:56.288950882Z",
+              "created_by" : "RUN /bin/sh -c set -eux; mkdir -p /usr/local/share/probe-agents;     date -u +%Y-%m-%dT%H:%M:%SZ > /usr/local/share/probe-agents/install-time;     du -sk /root/.npm > /usr/local/share/probe-agents/cache-before;     npm install -g --ignore-scripts --loglevel=http @earendil-works/pi-coding-agent@latest @openai/codex@latest > /usr/local/share/probe-agents/install.log 2>&1;     npm install -g --loglevel=http @anthropic-ai/claude-code@latest >> /usr/local/share/probe-agents/install.log 2>&1;     npm list -g --depth=0 > /usr/local/share/probe-agents/packages;     du -sk /root/.npm > /usr/local/share/probe-agents/cache-after;     npm cache ls > /usr/local/share/probe-agents/cache-entries # buildkit"
+            },
+            {
+              "comment" : "buildkit.dockerfile.v0",
+              "created" : "2026-11-14T18:33:56.560863965Z",
+              "created_by" : "RUN /bin/sh -c find / -xdev -perm /6000 -type f -exec chmod a-s {} + # buildkit"
+            }
+          ],
+          "os" : "linux",
+          "rootfs" : {
+            "diff_ids" : [
+              "sha256:04e61ff9ed2c84e88795bf7562d69d0980188e2bb6d6152d6fe721383e10db9e",
+              "sha256:1ecae76ff75bf88980c9df1e09ffdc428fa5813c00b4530b5d9b3144eacd9ede",
+              "sha256:28d40c6137e1d19509308547cd1a8b74c6cb32e7582cccf4332f38cac3be6a4f",
+              "sha256:f8d7bc9abba1fae7600984f05ee7f9ecddb0522010df9a3e171f8382ecc70c6c",
+              "sha256:fec74c96458036542c4df3ade9aeb8837952f424af48e2654cad6f4c3e763a34"
+            ],
+            "type" : "layers"
+          }
+        },
+        "digest" : "sha256:4caa134a378a904d4123370da41a38ef6fcf395f4398c63959172498242e016d",
+        "platform" : {
+          "architecture" : "arm64",
+          "os" : "linux"
+        },
+        "size" : 503126444
+      }
+    ]
+  }
+]
+
+[exit 0; seconds 0.025]

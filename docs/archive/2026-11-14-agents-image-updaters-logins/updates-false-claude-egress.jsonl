@@ -1,0 +1,5 @@
+{"decision":"allowed","host":"pi.dev","reason":"allowlisted","time":"2026-11-14T18:39:20Z"}
+{"decision":"allowed","host":"pi.dev","reason":"allowlisted","time":"2026-11-14T18:39:21Z"}
+{"decision":"allowed","host":"registry.npmjs.org","reason":"allowlisted","time":"2026-11-14T18:39:22Z"}
+{"decision":"allowed","host":"registry.npmjs.org","reason":"allowlisted","time":"2026-11-14T18:39:22Z"}
+{"decision":"allowed","host":"api.anthropic.com","reason":"allowlisted","time":"2026-11-14T18:39:22Z"}

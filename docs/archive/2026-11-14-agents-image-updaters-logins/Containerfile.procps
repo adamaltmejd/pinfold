@@ -1,0 +1,26 @@
+ARG TARGETARCH
+FROM debian:trixie-slim AS base
+RUN set -eux; export DEBIAN_FRONTEND=noninteractive; \
+    apt-get update; apt-get upgrade -y; \
+    apt-get install -y --no-install-recommends ca-certificates curl git ripgrep fd-find jq less; \
+    ln -s /usr/bin/fdfind /usr/local/bin/fd; \
+    git config --system user.name pi; git config --system user.email pi@pinfold.invalid; \
+    rm -rf /var/lib/apt/lists/*
+RUN set -eux; apt-get update; \
+    apt-get install -y --no-install-recommends xz-utils strace procps; \
+    rm -rf /var/lib/apt/lists/*; \
+    curl -fsSL https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt -o /tmp/sums; \
+    file=$(awk '/linux-arm64.tar.xz$/ {print $2}' /tmp/sums); \
+    curl -fsSL "https://nodejs.org/dist/latest-v24.x/$file" -o "/tmp/$file"; \
+    cd /tmp; grep " $file$" sums | sha256sum -c -; \
+    tar -xJf "$file" --strip-components=1 -C /usr/local; rm -f "$file" sums
+RUN --mount=type=cache,id=probe-agents-npm-20261114-final,target=/root/.npm \
+    set -eux; mkdir -p /usr/local/share/probe-agents; \
+    date -u +%Y-%m-%dT%H:%M:%SZ > /usr/local/share/probe-agents/install-time; \
+    du -sk /root/.npm > /usr/local/share/probe-agents/cache-before; \
+    npm install -g --ignore-scripts --loglevel=http @earendil-works/pi-coding-agent@latest @openai/codex@latest > /usr/local/share/probe-agents/install.log 2>&1; \
+    npm install -g --loglevel=http @anthropic-ai/claude-code@latest >> /usr/local/share/probe-agents/install.log 2>&1; \
+    npm list -g --depth=0 > /usr/local/share/probe-agents/packages; \
+    du -sk /root/.npm > /usr/local/share/probe-agents/cache-after; \
+    npm cache ls > /usr/local/share/probe-agents/cache-entries
+RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} +
