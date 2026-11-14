@@ -74,4 +74,3 @@ $ pinfold disk rm --all
 Removed pi-proj-b004c5f501bb-home
 Removed pi-proj-b004c5f501bb-project
 [exit 0]
-

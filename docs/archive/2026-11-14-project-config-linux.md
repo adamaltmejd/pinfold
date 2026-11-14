@@ -98,7 +98,7 @@ It checks for at least 12 GiB free before building; 24 GiB was available.
 |---|---|---|
 | D, outside Git | `pi --version`, `config edit`, `config`, `build`: `not-git`, exit 1. Two state entries, the root and maintenance stamp. | No project configuration or state is created. |
 | A, no configuration | `pi --version`: `no-config`, exit 1; zero project-state directories. | A Git project requires host configuration. |
-| B, configured Git project | `config edit`: exit 0. `build`: probe image ref, exit 0. `pi --version`: `1.5.2`, exit 0. `push` and `fetch`: JSON success, exit 0. | A real box starts with the configured project; branch transfer works on Linux. |
+| B, configured Git project | `config edit`: exit 0. `build`: probe image ref, exit 0. `pi --version`: `1.5.2`, exit 0. `push` and `fetch`: JSON success, exit 0. | A real box starts with the configured project. `push` and `fetch` succeed on unchanged history; a transfer of new commits is not shown. |
 | E, other mounts | Change mounts to an `/etc` share, then `pi --version`: `spec`, exit 1. | The tested non-template mount is refused. |
 | C, cache inside project | Set a symlinked cache path into the project, then `pi --version`: `host-path-in-project`, exit 1; zero entries written there. Restore the external root: `1.5.2`, exit 0. | The host-path refusal and its positive control both work. |
 
@@ -147,11 +147,6 @@ The static debug build and normal shared build/artifact caches remain.
 This run's detached-job scripts and copied logs under `/tmp` were removed.
 No unrelated image, box, disk or previous scratch directory was removed.
 
-Local `RUSTC_WRAPPER= cargo build --locked`, `cargo fmt --check` and
-`RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings`
-passed. The wrapper was cleared because the local sandbox refused
-`sccache`; no repository tooling setting changed. Both shell scripts
-passed `bash -n`, and `git diff --check` passed. No `crates/` changes,
 tests, release, push or PR were made. The suspended suite and macOS runtime
 were not run. These are the listed Linux #294 cases, not full guarantee
 coverage or a security audit.
