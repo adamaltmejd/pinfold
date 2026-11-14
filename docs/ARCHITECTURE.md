@@ -774,7 +774,7 @@ network listener, no token: the socket identifies the box.
 
 ## Images
 
-An image is a toolchain; the harness is not baked in. Pi selects an explicit
+An image is a toolchain and may package agents. Pi selects an explicit
 `image`, otherwise the project's Containerfile, otherwise the profile's
 Containerfile. An explicit image and project Containerfile together refuse
 as `image-source-conflict` after layering. An explicit image overrides the
@@ -943,15 +943,19 @@ Built-in images use `debian:trixie-slim` and strip setuid/setgid bits.
 
 | Profile | Tools |
 |---|---|
-| `default` | shell, ca-certificates, git, curl, ripgrep, fd-find as `fd`, jq, less |
+| `default` | shell, ca-certificates, git, curl, ripgrep, fd-find as `fd`, jq, less, procps, standalone Pi, native Claude, Codex and its code-mode host |
 | `documents` | default tools plus Bun, AnyDoc and Poppler |
 | `full` | documents tools plus gh, fff (pi extension) and ponytail |
 
 Fixed recipe fragments under `profile/image/` form complete independent
 Containerfiles. A built-in never builds from another profile's image.
-Release assets use pinned `ADD --checksum` inputs for the selected
-architecture. Final images contain installed tools, without their archives.
-gh comes from GitHub's signed apt repository.
+Infrastructure and tool assets use pinned `ADD --checksum` inputs for the
+selected architecture. Agents resolve stable release metadata afresh at
+installation; version-addressed downloads use cache mounts and publisher
+integrity metadata where supplied. Codex and its code-mode host come from
+the same resolved release. Missing required assets fail installation.
+Final images contain installed tools, without their archives. gh comes
+from GitHub's signed apt repository.
 
 ## Pinned artifacts
 
@@ -1055,6 +1059,11 @@ with or without a TTY.
   each start. Changing a profile does not reset disks or overwrite saved seeds.
 - pinfold does not manage pi settings: `pi install` in a box changes that
   project home only.
+- Built-ins package all three agents on PATH. Missing-only home seeds
+  supply Pi's trust/settings defaults, Claude permission/sandbox defaults
+  and Codex approval/sandbox/update-check defaults. Supported updater
+  switches are recipe environment defaults. Route-generated system files
+  contain authentication configuration only.
 
 pi's two config levels both load in every run: the user level (pi's agent
 dir under `$HOME`, seeded from `home/`, with packages from `share/`) and

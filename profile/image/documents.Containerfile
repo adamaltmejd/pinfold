@@ -19,7 +19,7 @@ RUN set -eux; \
     tar -xzf /tmp/anydoc.tgz --strip-components=1 -C "${anydoc}/anydoc"; \
     tar -xzf /tmp/anydoc-*.tgz --strip-components=1 -C "${anydoc}/${native}"
 
-FROM base AS documents
+FROM agents AS documents
 COPY --from=bun-install /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=anydoc-install /opt/pinfold/anydoc /opt/pinfold/anydoc
 RUN set -eux; \

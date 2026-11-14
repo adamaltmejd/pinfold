@@ -134,6 +134,10 @@ and structured results.
 To rerun package-update steps, use `pinfold build --no-cache` or
 `pinfold build --profile NAME --no-cache`.
 
+Every built-in image includes standalone Pi, native Claude and Codex with
+its code-mode host on PATH. Home settings are seeded only when missing;
+rebuilding preserves edited settings. Update agents by rebuilding images.
+
 Linux build egress has its own allowlist. Add exact hosts with
 `pinfold build --allow HOST` or `pinfold image build … --allow HOST`.
 Apple builds reject `--allow` additions.
