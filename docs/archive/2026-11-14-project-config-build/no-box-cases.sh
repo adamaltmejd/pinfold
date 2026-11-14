@@ -129,6 +129,20 @@ ln -s "$W/proj/profile.toml" "$W/config3/pinfold/profiles/p/pinfold.toml"
 echo "the profile's pinfold.toml symlinked into the project:"
 XDG_CONFIG_HOME=$W/config3 PINFOLD_PROFILE=p run pinfold pi
 XDG_CONFIG_HOME=$W/config3 PINFOLD_PROFILE=p run pinfold build
+echo "the selected profile's directory symlinked into the project, for config edit:"
+mkdir -p "$W/config4/pinfold/profiles" "$W/proj/in-project"
+printf 'FROM scratch\n' > "$W/proj/in-project/Containerfile"
+ln -s "$W/proj/in-project" "$W/config4/pinfold/profiles/in-project"
+XDG_CONFIG_HOME=$W/config4 PINFOLD_PROFILE=in-project EDITOR=true run pinfold config edit
+echo "project files under config4: $(find "$W/config4/pinfold" -path '*/projects/*' | wc -l | tr -d ' ')"; echo
+echo "control, the same profile outside the project:"
+mkdir -p "$W/config5/pinfold/profiles/outside"; cp "$W/proj/in-project/Containerfile" "$W/config5/pinfold/profiles/outside/"
+XDG_CONFIG_HOME=$W/config5 PINFOLD_PROFILE=outside EDITOR=true run pinfold config edit
+echo "selected by the existing file's profile key, no PINFOLD_PROFILE:"
+mkdir -p "$W/config4/pinfold/projects/$PF"
+printf 'mounts = [{ host = ".", kind = "disk" }]\nprofile = "in-project"\n' > "$W/config4/pinfold/projects/$PF/pinfold.toml"
+XDG_CONFIG_HOME=$W/config4 EDITOR=true run pinfold config edit
+XDG_CONFIG_HOME=$W/config4 run pinfold build
 
 echo "## 12. A folder name with a newline"
 N="$W/new

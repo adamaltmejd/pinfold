@@ -14,9 +14,7 @@
 # image builds in the shared store when its state root's stamp is missing
 # or a day old. The script writes a fresh stamp into its state root, so
 # the pass does not run.
-#
-# Only syntax-checked (bash -n) by the build session: it could not run
-# `container` at all.
+
 set -u
 BIN=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 W=$(mktemp -d "${TMPDIR:-/tmp}/pfbox.XXXX")

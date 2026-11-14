@@ -42,13 +42,23 @@ pub fn project_dir(root: &Path) -> io::Result<PathBuf> {
 
 /// `pinfold config edit`'s first step: the project's configuration file,
 /// written with the project mount when it is missing. A Git project is
-/// checked first, as a run checks it, so nothing is created inside it.
+/// checked first, with the profile a run would select, so nothing is
+/// created inside it.
 pub fn create(root: &Path, repository: bool) -> io::Result<PathBuf> {
-    if repository {
-        check_host_paths(root, None)?;
-    }
     let dir = project_dir(root)?;
     let path = dir.join("pinfold.toml");
+    if repository {
+        // An unreadable or invalid file selects nothing; editing fixes it.
+        let file = read_optional(&path)
+            .ok()
+            .flatten()
+            .and_then(|bytes| Layer::parse(&bytes, "").ok())
+            .and_then(|layer| layer.profile);
+        let name = override_value("PINFOLD_PROFILE")?
+            .or(file)
+            .unwrap_or_else(|| DEFAULT_PROFILE.to_string());
+        check_host_paths(root, &Profile::load(&name)?)?;
+    }
     if read_optional(&path)?.is_some() {
         return Ok(path);
     }
@@ -185,7 +195,7 @@ impl Config {
         if !self.repository {
             return Ok(());
         }
-        check_host_paths(root, Some(&self.profile))
+        check_host_paths(root, &self.profile)
     }
 }
 
@@ -194,7 +204,7 @@ impl Config {
 /// project state is created: box content crosses into the project, so it
 /// must not reach them. Each file is named too, since resolving its
 /// directory does not follow a symlink below it.
-fn check_host_paths(root: &Path, profile: Option<&Profile>) -> io::Result<()> {
+fn check_host_paths(root: &Path, profile: &Profile) -> io::Result<()> {
     let root = fs::canonicalize(root)?;
     let config_dir = dirs::config_dir()?;
     let project = project_dir(&root)?;
@@ -208,15 +218,13 @@ fn check_host_paths(root: &Path, profile: Option<&Profile>) -> io::Result<()> {
         dirs::cache_dir()?,
         crate::core::ownership::host_dir()?,
     ];
-    if let Some(profile) = profile {
-        let dir = config_dir.join("profiles").join(&profile.name);
-        for file in ["pinfold.toml", "Containerfile", "home"] {
-            paths.push(dir.join(file));
-        }
-        paths.push(dir);
-        if let Some(share) = &profile.share {
-            paths.push(share.path()?);
-        }
+    let dir = config_dir.join("profiles").join(&profile.name);
+    for file in ["pinfold.toml", "Containerfile", "home"] {
+        paths.push(dir.join(file));
+    }
+    paths.push(dir);
+    if let Some(share) = &profile.share {
+        paths.push(share.path()?);
     }
     for path in paths {
         if dirs::resolve_host_path(&path)?.starts_with(&root) {

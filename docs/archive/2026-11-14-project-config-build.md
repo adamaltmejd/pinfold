@@ -3,7 +3,8 @@
 Date: 2026-11-14, on top of main 759574b. This is step 2 of
 `2026-11-12-project-box-plan.md`. The file records what the build
 session ran on its Mac with the real binary, and what it did not run.
-This version follows the operator's review of PR #299.
+This version follows the operator's review of PR #299 and a Codex
+review of 0d0d478.
 
 ## How it was run
 
@@ -20,9 +21,11 @@ This version follows the operator's review of PR #299.
   - Every case in it is refused before a box, or only reads.
 - Full output, with paths rewritten (`/Users/user`, `$TMPDIR`):
   `2026-11-14-project-config-build/no-box-output.txt`.
-- The session's sandbox denies Apple `container` ("Operation not
-  permitted"), so no box started. The cases that start one are in
-  `run-box-cases.sh` (below), not run.
+- No box started in this session. At first its sandbox denied Apple
+  `container` ("Operation not permitted"). After that changed, pinfold
+  run with the case's environment variables still could not reach
+  `container`. So Adam runs the cases that start a box, in
+  `run-box-cases.sh` (below), in his own terminal.
 - Linux was not run. The Linux `not-git` refusal is compiled only for
   Linux; clippy for `x86_64-unknown-linux-musl` was clean, nothing more.
 
@@ -97,6 +100,15 @@ This version follows the operator's review of PR #299.
       profile `p` has a plain `Containerfile`, and its `pinfold.toml`
       links to `proj/profile.toml`. With `PINFOLD_PROFILE=p`, `pi` and
       `build` are refused, naming it.
+    - **The selected profile's directory symlinked into the checkout,
+      for `config edit`** (the Codex finding): under a fourth config
+      root, the profile `in-project` is a symlink to `proj/in-project`.
+      `PINFOLD_PROFILE=in-project config edit` is refused, naming the
+      profile's `pinfold.toml`, and no project file is created. Control:
+      the same profile as a plain directory under a fifth config root;
+      `config edit` exits 0. With no `PINFOLD_PROFILE` and a project
+      file whose `profile` key is `in-project`, `config edit` and `build`
+      are both refused.
 12. **A folder name with a newline.** `config edit` in a Git project named
     `new\nline` exits 0. The file holds only the project mount.
 13. **macOS outside Git.** In `plain`, `config` exits 1 with
@@ -130,13 +142,12 @@ unchanged from main; it is reported to the operator, not fixed here.
 
 ## Not run
 
-All of these are "not run (sandbox)".
-`2026-11-14-project-config-build/run-box-cases.sh BINARY` runs them
-outside the sandbox; its output is added here before merge.
+The build session did not run these. Adam runs
+`2026-11-14-project-config-build/run-box-cases.sh BINARY` in his terminal;
+its output goes to `2026-11-14-project-config-build/box-output.txt` and is
+summarized here before merge.
 
 The script:
-- was only syntax-checked: `container system status` and
-  `container image inspect`, which it calls, were never run;
 - writes a fresh maintenance stamp into its state root;
 - uses the real cache root (pinned artifacts and the init), except for
   case C's refusal.
@@ -154,6 +165,10 @@ Cases:
 Also not run:
 - Linux: every project command outside Git refused as `not-git`. There
   was no Linux host in this session.
+- Killing `config edit` between writing its staging file and linking it
+  into place (review item 4). The hard link means the file is either
+  absent or complete; a killed run can leave a `.pinfold.toml.tmp-<pid>`
+  beside it. Not tested.
 - The assertions that move from guarantee 12 to 13 (the identity
   `pi <pi@pinfold.invalid>`, and the start's push and fast-forward). That
   code is unchanged and was not exercised.
