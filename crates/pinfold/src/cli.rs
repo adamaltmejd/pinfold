@@ -1334,6 +1334,9 @@ pub fn build(args: &[String]) -> io::Result<i32> {
         .transpose()?;
     let built = match project {
         Some((id, bytes)) => {
+            if let Some(profile) = &profile_built {
+                eprintln!("pinfold: profile published {}", profile.reference);
+            }
             // Record the rebuild's identity. Linux also binds its source to it.
             let base = profile_built.as_ref().and_then(|built| built.id.clone());
             #[cfg(target_os = "linux")]
@@ -1341,9 +1344,6 @@ pub fn build(args: &[String]) -> io::Result<i32> {
                 return Err(io::Error::other(
                     "image-base-changed: rebuilt profile identity unavailable",
                 ));
-            }
-            if let Some(profile) = &profile_built {
-                eprintln!("pinfold: profile published {}", profile.reference);
             }
             build(clean::PROJECT_LABEL, &id, &bytes, base)?
         }
