@@ -1,0 +1,292 @@
+Selected command/output excerpts. Missing lines are omitted, not empty output.
+Git argv lists are projections of execve attempts: -c pairs and PATH duplicates omitted.
+Fixture rows retain tools, instruction markers and complete returned tool results.
+G. Setup and Git command outcomes
+$ container run -d --name probe-git7-cc998876 --network none --read-only --cap-drop ALL --user 501:20 --cpus 4 --memory 4G --tmpfs /tmp -e HOME=/probe/home -e GIT_CONFIG_GLOBAL=/dev/null -e GIT_CONFIG_NOSYSTEM=1 -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e 'GIT_CONFIG_VALUE_0=*' -e GIT_AUTHOR_NAME=user -e GIT_AUTHOR_EMAIL=user@fixture.invalid -e GIT_COMMITTER_NAME=user -e GIT_COMMITTER_EMAIL=user@fixture.invalid -e PI_SKIP_VERSION_CHECK=1 -e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 -v $W:/probe -v $W/repo:/work -v $W/repo/.git:/work/.git:ro -v $W/repo/.git:/probe/repo/.git:ro -v $W/cases/status/.git:/probe/cases/status/.git:ro -v $W/cases/add/.git:/probe/cases/add/.git:ro -v $W/cases/commit/.git:/probe/cases/commit/.git:ro -v $W/cases/stash/.git:/probe/cases/stash/.git:ro -v $W/cases/checkout/.git:/probe/cases/checkout/.git:ro -v $W/cases/fetch/.git:/probe/cases/fetch/.git:ro -v $W/cases/gc/.git:/probe/cases/gc/.git:ro --entrypoint sleep localhost/pinfold/profile-probe-agents:latest infinity
+uid=501 gid=20(dialout) groups=20(dialout)
+git version 2.47.3
+1.5.2
+2.1.325 (Claude Code)
+codex-cli 0.169.0
+52 46 0:27 /20e89114d3a5326c1047f1b32e2c624e27e6 /work rw,relatime - virtiofs virtiofs rw
+56 52 0:27 /0a3dd217e671da25501bdd405778380fdebf /work/.git ro,relatime - virtiofs virtiofs rw
+CapBnd:	0000000000000000
+$ container exec -w /work probe-git7-cc998876 sh -c 'cd /probe/cases/status; git status'
+On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   a
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	untracked
+
+no changes added to commit (use "git add" and/or "git commit -a")
+[exit 0]
+host delta {"case": "status", "worktree": [], "git": []}
+host status M a
+?? untracked
+$ container exec -w /work probe-git7-cc998876 sh -c 'cd /probe/cases/add; git add a untracked'
+fatal: Unable to create '/probe/cases/add/.git/index.lock': Read-only file system
+[exit 128]
+host delta {"case": "add", "worktree": [], "git": []}
+host status M a
+?? untracked
+$ container exec -w /work probe-git7-cc998876 sh -c 'cd /probe/cases/commit; git commit -m fixture'
+fatal: Unable to create '/probe/cases/commit/.git/index.lock': Read-only file system
+[exit 128]
+host delta {"case": "commit", "worktree": [], "git": []}
+host status M  a
+?? untracked
+$ container exec -w /work probe-git7-cc998876 sh -c 'cd /probe/cases/stash; git stash push -u'
+error: could not write index
+[exit 1]
+host delta {"case": "stash", "worktree": [], "git": []}
+host status M a
+?? untracked
+$ container exec -w /work probe-git7-cc998876 sh -c 'cd /probe/cases/checkout; git checkout other'
+fatal: Unable to create '/probe/cases/checkout/.git/index.lock': Read-only file system
+[exit 128]
+host delta {"case": "checkout", "worktree": [], "git": []}
+host status M a
+?? untracked
+$ container exec -w /work probe-git7-cc998876 sh -c 'cd /probe/cases/fetch; git fetch origin'
+error: cannot open '.git/FETCH_HEAD': Read-only file system
+[exit 255]
+host delta {"case": "fetch", "worktree": [], "git": []}
+host status M a
+?? untracked
+$ container exec -w /work probe-git7-cc998876 sh -c 'cd /probe/cases/gc; git gc'
+fatal: Unable to create '/probe/cases/gc/.git/gc.pid.lock': Read-only file system
+[exit 128]
+host delta {"case": "gc", "worktree": [], "git": []}
+host status M a
+?? untracked
+$ container exec -w /work probe-git7-cc998876 sh -c 'cd /probe/cases/status; strace -f -e trace=%file -o /tmp/status.trace git status --short; rg "index.lock|EROFS" /tmp/status.trace'
+ M a
+?? untracked
+47    openat(AT_FDCWD, "/probe/cases/status/.git/index.lock", O_RDWR|O_CREAT|O_EXCL|O_CLOEXEC, 0666) = -1 EROFS (Read-only file system)
+[exit 0]
+
+N. No-model print sessions
+Fixture request count projection: {"pi": 1, "claude": 6, "codex": 1}
+[exit 0]
+[exit 0]
+[exit 0]
+[exit 0]
+[exit 0]
+fixture {"agent": "pi", "path": "/pi/v1/messages?beta=true", "tools": ["read", "bash", "edit", "write"], "markers": ["PROJECT_AGENTS", "PI_APPEND"], "tool_results": []}
+$ container exec -w /work probe-git7-0f81bba4 sh -c 'export HOME=/probe/home-pi CODEX_HOME=/probe/home-pi/.codex PI_CODING_AGENT_DIR=/probe/home-pi/.pi/agent ANTHROPIC_API_KEY=fixture-placeholder ANTHROPIC_BASE_URL=http://127.0.0.1:18080/claude; timeout 40 strace -f -s 300 -e trace=%file,process -o /probe/pi.trace pi --approve --no-extensions -p --provider fixture --model fixture "Run the requested command."'
+400 {"error":{"type":"invalid_request_error","message":"fixture: no model"}}
+[exit 1]
+pi Git exec argv (distinct; -c pairs omitted):
+44    openat(AT_FDCWD, "/work/AGENTS.md", O_RDONLY|O_CLOEXEC) = 21
+44    openat(AT_FDCWD, "/work/.pi/APPEND_SYSTEM.md", O_RDONLY|O_CLOEXEC) = 21
+pi remaining Git locks: []
+fixture {"agent": "claude", "path": "/claude/v1/messages?beta=true", "tools": ["Agent", "Bash", "Edit", "ListAgents", "Read", "ReportFindings", "ScheduleWakeup", "Skill", "ToolSearch", "Workflow", "DeferredToolPlaceholder", "Write"], "markers": ["PROJECT_CLAUDE", "CLAUDE_APPEND"], "tool_results": []}
+fixture {"agent": "claude", "path": "/claude/v1/messages?beta=true", "tools": ["Agent", "Bash", "CronCreate", "CronDelete", "CronList", "Edit", "EnterWorktree", "ExitWorktree", "ListAgents", "Monitor", "NotebookEdit", "Read", "ReportFindings", "ScheduleWakeup", "SendMessage", "Skill", "TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskUpdate", "WebFetch", "WebSearch", "Workflow", "Write"], "markers": ["PROJECT_CLAUDE", "CLAUDE_APPEND"], "tool_results": []}
+$ container exec -w /work probe-git7-0f81bba4 sh -c 'export HOME=/probe/home-claude CODEX_HOME=/probe/home-claude/.codex PI_CODING_AGENT_DIR=/probe/home-claude/.pi/agent ANTHROPIC_API_KEY=fixture-placeholder ANTHROPIC_BASE_URL=http://127.0.0.1:18080/claude; timeout 40 strace -f -s 300 -e trace=%file,process -o /probe/claude.trace claude -p --dangerously-skip-permissions --model claude-sonnet-4-5 --append-system-prompt-file /probe/append.txt "Run the requested command."'
+API Error: 400 fixture: no model
+[exit 1]
+claude Git exec argv (distinct; -c pairs omitted):
+["git", "ls-files", "--error-unmatch", "--", ":(icase).claude/settings.local.json"]
+["/usr/bin/git", "remote", "get-url", "origin"]
+["/usr/bin/git", "config", "--local", "--includes", "-z", "--list"]
+["/usr/bin/git", "rev-parse", "--is-inside-work-tree", "--show-cdup"]
+["/usr/bin/git", "--no-optional-locks", "log", "--oneline", "-n", "5"]
+["/usr/bin/git", "config", "user.name"]
+["/usr/bin/git", "remote"]
+["/usr/bin/git", "config", "--worktree", "--includes", "-z", "--list"]
+["/usr/bin/git", "--no-optional-locks", "status", "--short", "--ignore-submodules=dirty"]
+61    openat(AT_FDCWD, "/work/AGENTS.md", O_RDONLY|O_LARGEFILE|O_CLOEXEC|O_PATH <unfinished ...>
+61    openat(AT_FDCWD, "/work/CLAUDE.md", O_RDONLY|O_LARGEFILE|O_CLOEXEC|O_PATH <unfinished ...>
+claude remaining Git locks: []
+fixture {"agent": "codex", "path": "/codex/responses", "tools": ["exec_command", "write_stdin", "request_user_input", "view_image", "multi_agent_v1", "get_goal", "create_goal", "update_goal", null], "markers": ["PROJECT_AGENTS", "CODEX_HOME_AGENTS"], "tool_results": []}
+$ container exec -w /work probe-git7-0f81bba4 sh -c 'export HOME=/probe/home-codex CODEX_HOME=/probe/home-codex/.codex PI_CODING_AGENT_DIR=/probe/home-codex/.pi/agent ANTHROPIC_API_KEY=fixture-placeholder ANTHROPIC_BASE_URL=http://127.0.0.1:18080/claude; timeout 40 strace -f -s 300 -e trace=%file,process -o /probe/codex.trace codex exec --dangerously-bypass-approvals-and-sandbox --json "Run the requested command."'
+{"type":"turn.failed","error":{"message":"{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"fixture: no model\"}}"}}
+[exit 1]
+codex Git exec argv (distinct; -c pairs omitted):
+["/usr/bin/git", "ls-remote", "https://github.com/openai/plugins.git", "HEAD"]
+["/usr/lib/git-core/git", "remote-https", "https://github.com/openai/plugins.git", "https://github.com/openai/plugins.git"]
+["/usr/lib/git-core/git-remote-https", "https://github.com/openai/plugins.git", "https://github.com/openai/plugins.git"]
+["git", "rev-parse", "--git-dir"]
+["git", "rev-parse", "HEAD"]
+["git", "rev-parse", "--abbrev-ref", "HEAD"]
+["git", "remote", "get-url", "origin"]
+["git", "remote", "-v"]
+["git", "config", "--null", "--get", "core.fsmonitor"]
+["git", "status", "--porcelain", "--ignore-submodules=dirty"]
+101   openat(AT_FDCWD, "/probe/home-codex/.codex/AGENTS.md", O_RDONLY|O_LARGEFILE|O_CLOEXEC) = 40
+130   openat(AT_FDCWD, "/work/AGENTS.md", O_RDONLY|O_NONBLOCK|O_LARGEFILE|O_CLOEXEC <unfinished ...>
+codex remaining Git locks: []
+host worktree after agents:
+[exit 0]
+[exit 0]
+
+F. Fixture tool-call sessions
+Fixture request count projection: {"pi": 2, "claude": 2, "codex": 2}
+[exit 0]
+[exit 0]
+[exit 0]
+[exit 0]
+[exit 0]
+fixture {"agent": "pi", "path": "/pi/v1/messages?beta=true", "tools": ["read", "bash", "edit", "write"], "markers": ["PROJECT_AGENTS", "PI_APPEND"], "tool_results": []}
+fixture {"agent": "pi", "path": "/pi/v1/messages?beta=true", "tools": ["read", "bash", "edit", "write"], "markers": ["PROJECT_AGENTS", "PI_APPEND"], "tool_results": [{"type": "tool_result", "tool_use_id": "toolu_fixture", "content": "fatal: Unable to create '/work/.git/index.lock': Read-only file system\n\n\nCommand exited with code 128", "is_error": true, "cache_control": {"type": "ephemeral"}}]}
+$ container exec -w /work probe-git7-2c56c38c sh -c 'export HOME=/probe/home-pi CODEX_HOME=/probe/home-pi/.codex PI_CODING_AGENT_DIR=/probe/home-pi/.pi/agent ANTHROPIC_API_KEY=fixture-placeholder ANTHROPIC_BASE_URL=http://127.0.0.1:18080/claude; timeout 40 strace -f -s 300 -e trace=%file,process -o /probe/pi.trace pi --approve --no-extensions -p --provider fixture --model fixture "Run the requested command."'
+[exit 0]
+pi Git exec argv (distinct; -c pairs omitted):
+["git", "commit", "-m", "fixture"]
+56    openat(AT_FDCWD, "/work/.git/index.lock", O_RDWR|O_CREAT|O_EXCL|O_CLOEXEC, 0666) = -1 EROFS (Read-only file system)
+44    openat(AT_FDCWD, "/work/AGENTS.md", O_RDONLY|O_CLOEXEC) = 21
+44    openat(AT_FDCWD, "/work/.pi/APPEND_SYSTEM.md", O_RDONLY|O_CLOEXEC) = 21
+pi remaining Git locks: []
+fixture {"agent": "claude", "path": "/claude/v1/messages?beta=true", "tools": ["Agent", "Bash", "Edit", "ListAgents", "Read", "ReportFindings", "ScheduleWakeup", "Skill", "ToolSearch", "Workflow", "DeferredToolPlaceholder", "Write"], "markers": ["PROJECT_CLAUDE", "CLAUDE_APPEND"], "tool_results": []}
+fixture {"agent": "claude", "path": "/claude/v1/messages?beta=true", "tools": ["Agent", "Bash", "Edit", "ListAgents", "Read", "ReportFindings", "ScheduleWakeup", "Skill", "ToolSearch", "Workflow", "DeferredToolPlaceholder", "Write"], "markers": ["PROJECT_CLAUDE", "CLAUDE_APPEND"], "tool_results": [{"type": "tool_result", "content": "Exit code 128\nfatal: Unable to create '/work/.git/index.lock': Read-only file system\n\n<system-reminder>\n<total_tokens>14999998 tokens left</total_tokens>\n</system-reminder>", "is_error": true, "tool_use_id": "toolu_fixture", "cache_control": {"type": "ephemeral"}}]}
+$ container exec -w /work probe-git7-2c56c38c sh -c 'export HOME=/probe/home-claude CODEX_HOME=/probe/home-claude/.codex PI_CODING_AGENT_DIR=/probe/home-claude/.pi/agent ANTHROPIC_API_KEY=fixture-placeholder ANTHROPIC_BASE_URL=http://127.0.0.1:18080/claude; timeout 40 strace -f -s 300 -e trace=%file,process -o /probe/claude.trace claude -p --dangerously-skip-permissions --model claude-sonnet-4-5 --append-system-prompt-file /probe/append.txt "Run the requested command."'
+[exit 0]
+claude Git exec argv (distinct; -c pairs omitted):
+["git", "ls-files", "--error-unmatch", "--", ":(icase).claude/settings.local.json"]
+["/usr/bin/git", "remote", "get-url", "origin"]
+["/usr/bin/git", "config", "--local", "--includes", "-z", "--list"]
+["/usr/bin/git", "rev-parse", "--is-inside-work-tree", "--show-cdup"]
+["/usr/bin/git", "--no-optional-locks", "log", "--oneline", "-n", "5"]
+["/usr/bin/git", "config", "user.name"]
+["/usr/bin/git", "remote"]
+["/usr/bin/git", "config", "--worktree", "--includes", "-z", "--list"]
+["/usr/bin/git", "--no-optional-locks", "status", "--short", "--ignore-submodules=dirty"]
+["git", "commit", "-m", "fixture"]
+87    openat(AT_FDCWD, "/work/.git/index.lock", O_RDWR|O_CREAT|O_EXCL|O_CLOEXEC, 0666) = -1 EROFS (Read-only file system)
+62    openat(AT_FDCWD, "/work/AGENTS.md", O_RDONLY|O_LARGEFILE|O_CLOEXEC|O_PATH) = 14
+62    openat(AT_FDCWD, "/work/CLAUDE.md", O_RDONLY|O_LARGEFILE|O_CLOEXEC|O_PATH <unfinished ...>
+claude remaining Git locks: []
+fixture {"agent": "codex", "path": "/codex/responses", "tools": ["exec_command", "write_stdin", "request_user_input", "view_image", "multi_agent_v1", "get_goal", "create_goal", "update_goal", null], "markers": ["PROJECT_AGENTS", "CODEX_HOME_AGENTS"], "tool_results": []}
+fixture {"agent": "codex", "path": "/codex/responses", "tools": ["exec_command", "write_stdin", "request_user_input", "view_image", "multi_agent_v1", "get_goal", "create_goal", "update_goal", null], "markers": ["PROJECT_AGENTS", "CODEX_HOME_AGENTS"], "tool_results": [{"type": "function_call_output", "id": "fco_01a1db75-2be4-7b90-9f87-8e3c225e4df5", "call_id": "call_fixture", "output": "Chunk ID: 997128\nWall time: 0.0000 seconds\nProcess exited with code 128\nOriginal token count: 18\nOutput:\nfatal: Unable to create '/work/.git/index.lock': Read-only file system\n"}]}
+$ container exec -w /work probe-git7-2c56c38c sh -c 'export HOME=/probe/home-codex CODEX_HOME=/probe/home-codex/.codex PI_CODING_AGENT_DIR=/probe/home-codex/.pi/agent ANTHROPIC_API_KEY=fixture-placeholder ANTHROPIC_BASE_URL=http://127.0.0.1:18080/claude; timeout 40 strace -f -s 300 -e trace=%file,process -o /probe/codex.trace codex exec --dangerously-bypass-approvals-and-sandbox --json "Run the requested command."'
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/usr/bin/bash -lc 'git commit -m fixture'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/usr/bin/bash -lc 'git commit -m fixture'","aggregated_output":"fatal: Unable to create '/work/.git/index.lock': Read-only file system\n","exit_code":128,"status":"failed"}}
+{"type":"turn.completed","usage":{"input_tokens":2,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":0}}
+[exit 0]
+codex Git exec argv (distinct; -c pairs omitted):
+["/usr/bin/git", "ls-remote", "https://github.com/openai/plugins.git", "HEAD"]
+["/usr/lib/git-core/git", "remote-https", "https://github.com/openai/plugins.git", "https://github.com/openai/plugins.git"]
+["/usr/lib/git-core/git-remote-https", "https://github.com/openai/plugins.git", "https://github.com/openai/plugins.git"]
+["git", "rev-parse", "--git-dir"]
+["git", "rev-parse", "HEAD"]
+["git", "rev-parse", "--abbrev-ref", "HEAD"]
+["git", "remote", "get-url", "origin"]
+["git", "remote", "-v"]
+["git", "config", "--null", "--get", "core.fsmonitor"]
+["git", "status", "--porcelain", "--ignore-submodules=dirty"]
+["git", "commit", "-m", "fixture"]
+179   openat(AT_FDCWD, "/work/.git/index.lock", O_RDWR|O_CREAT|O_EXCL|O_CLOEXEC, 0666) = -1 EROFS (Read-only file system)
+106   openat(AT_FDCWD, "/probe/home-codex/.codex/AGENTS.md", O_RDONLY|O_LARGEFILE|O_CLOEXEC <unfinished ...>
+137   openat(AT_FDCWD, "/work/AGENTS.md", O_RDONLY|O_NONBLOCK|O_LARGEFILE|O_CLOEXEC <unfinished ...>
+codex remaining Git locks: []
+host worktree after agents:
+[exit 0]
+[exit 0]
+
+I1. Interactive pi
+[exit 0]
+[exit 0]
+[exit 0]
+[exit 0]
+[exit 0]
+$ container exec -i -t -e TERM=xterm-256color -w /work probe-git7-428e29c2 sh -c 'export HOME=/probe/home-pi CODEX_HOME=/probe/home-pi/.codex PI_CODING_AGENT_DIR=/probe/home-pi/.pi/agent ANTHROPIC_API_KEY=fixture-placeholder ANTHROPIC_BASE_URL=http://127.0.0.1:18080/claude; timeout --foreground -k 3 12 strace -f -s 300 -e trace=%file,process -o /probe/pi.trace pi --approve --no-extensions --provider fixture --model fixture "Run the requested command."'
+fixture {"agent": "pi", "path": "/pi/v1/messages?beta=true", "tools": ["read", "bash", "edit", "write"], "markers": ["PROJECT_AGENTS", "PI_APPEND"], "tool_results": []}
+[client exit 137; observation limited to 12s]
+UI error excerpt: fixture: no model
+pi Git exec argv (distinct; -c pairs omitted):
+44    openat(AT_FDCWD, "/work/.git/HEAD", O_RDONLY|O_CLOEXEC) = 25
+44    openat(AT_FDCWD, "/work/AGENTS.md", O_RDONLY|O_CLOEXEC) = 24
+44    openat(AT_FDCWD, "/work/.pi/APPEND_SYSTEM.md", O_RDONLY|O_CLOEXEC) = 24
+pi remaining Git locks: []
+
+I2. Interactive Claude and Codex
+Claude UI error excerpt: ●API Error: 400 fixture: no model
+[exit 0]
+[exit 0]
+[exit 0]
+[exit 0]
+[exit 0]
+$ container exec -i -t -e TERM=xterm-256color -w /work probe-git7-31983022 sh -c 'export HOME=/probe/home-claude CODEX_HOME=/probe/home-claude/.codex PI_CODING_AGENT_DIR=/probe/home-claude/.pi/agent ANTHROPIC_API_KEY=fixture-placeholder ANTHROPIC_BASE_URL=http://127.0.0.1:18080/claude; timeout --foreground -k 3 12 strace -f -s 300 -e trace=%file,process -o /probe/claude.trace claude --dangerously-skip-permissions --model claude-sonnet-4-5 --append-system-prompt-file /probe/append.txt "Run the requested command."'
+fixture UI accepted: fixture API key
+fixture UI accepted: Yes,Iaccept
+fixture {"agent": "claude", "path": "/claude/v1/messages?beta=true", "tools": ["Agent", "AskUserQuestion", "Bash", "Edit", "ListAgents", "Read", "ReportFindings", "ScheduleWakeup", "Skill", "ToolSearch", "Workflow", "DeferredToolPlaceholder", "Write"], "markers": ["PROJECT_CLAUDE", "CLAUDE_APPEND"], "tool_results": []}
+fixture {"agent": "claude", "path": "/claude/v1/messages?beta=true", "tools": ["Agent", "AskUserQuestion", "Bash", "CronCreate", "CronDelete", "CronList", "Edit", "EnterPlanMode", "EnterWorktree", "ExitPlanMode", "ExitWorktree", "ListAgents", "Monitor", "NotebookEdit", "Read", "ReportFindings", "ScheduleWakeup", "SendMessage", "Skill", "TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskUpdate", "WebFetch", "WebSearch", "Workflow", "Write"], "markers": ["PROJECT_CLAUDE", "CLAUDE_APPEND"], "tool_results": []}
+[client exit 137; observation limited to 12s]
+claude Git exec argv (distinct; -c pairs omitted):
+["/usr/bin/git", "remote", "get-url", "origin"]
+["/usr/bin/git", "remote"]
+["git", "ls-files", "--error-unmatch", "--", ":(icase).claude/settings.local.json"]
+["/usr/bin/git", "config", "--local", "--includes", "-z", "--list"]
+["/usr/bin/git", "rev-parse", "--is-inside-work-tree", "--show-cdup"]
+["/usr/bin/git", "--no-optional-locks", "log", "--oneline", "-n", "5"]
+["/usr/bin/git", "config", "user.name"]
+["/usr/bin/git", "config", "--get", "user.email"]
+["/usr/bin/git", "ls-files", "--recurse-submodules"]
+["/usr/bin/git", "config", "--worktree", "--includes", "-z", "--list"]
+["/usr/bin/git", "log", "-n", "1000", "--pretty=format:", "--name-only", "--diff-filter=M"]
+["/usr/bin/git", "--no-optional-locks", "status", "--short", "--ignore-submodules=dirty"]
+["/usr/bin/git", "ls-files", "--others", "--exclude-standard"]
+["/usr/bin/git", "config", "--includes", "--null", "--show-scope", "--get-regexp", "^(core\\.sshcommand|ssh\\.variant)$"]
+["/usr/bin/git", "clone", "--depth", "1", "--no-recurse-submodules", "--", "https://github.com/anthropics/claude-plugins-official.git", "/probe/home-claude/.claude/plugins/marketplaces/anthropics-claude-plugins-official..clone"]
+["/usr/lib/git-core/git", "remote-https", "origin", "https://github.com/anthropics/claude-plugins-official.git"]
+["/usr/lib/git-core/git-remote-https", "origin", "https://github.com/anthropics/claude-plugins-official.git"]
+["/usr/bin/git", "clone", "--depth", "1", "--no-recurse-submodules", "--", "git@github.com:anthropics/claude-plugins-official.git", "/probe/home-claude/.claude/plugins/marketplaces/anthropics-claude-plugins-official..clone"]
+51    openat(AT_FDCWD, "/work/.git/HEAD", O_RDONLY <unfinished ...>
+plugin Git write example: 74    openat(AT_FDCWD, "/probe/home-claude/.claude/plugins/marketplaces/anthropics-claude-plugins-official..clone/.git/description", O_WRONLY|O_CREAT|O_EXCL, 0666) = 5
+44    openat(AT_FDCWD, "/work/AGENTS.md", O_RDONLY|O_LARGEFILE|O_CLOEXEC|O_PATH) = 11
+44    openat(AT_FDCWD, "/work/CLAUDE.md", O_RDONLY|O_LARGEFILE|O_CLOEXEC|O_PATH) = 11
+claude remaining Git locks: []
+$ container exec -i -t -e TERM=xterm-256color -w /work probe-git7-31983022 sh -c 'export HOME=/probe/home-codex CODEX_HOME=/probe/home-codex/.codex PI_CODING_AGENT_DIR=/probe/home-codex/.pi/agent ANTHROPIC_API_KEY=fixture-placeholder ANTHROPIC_BASE_URL=http://127.0.0.1:18080/claude; timeout --foreground -k 3 12 strace -f -s 300 -e trace=%file,process -o /probe/codex.trace codex --dangerously-bypass-approvals-and-sandbox "Run the requested command."'
+fixture {"agent": "codex", "path": "/codex/responses", "tools": ["exec_command", "write_stdin", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "request_user_input", "view_image", "multi_agent_v1", "mcp__codex_tui", "get_goal", "create_goal", "update_goal", null], "markers": ["PROJECT_AGENTS", "CODEX_HOME_AGENTS"], "tool_results": []}
+fixture {"agent": "codex", "path": "/codex/responses", "tools": [], "markers": ["CODEX_HOME_AGENTS"], "tool_results": []}
+[client exit 137; observation limited to 12s]
+UI error excerpt: fixture: no model
+codex Git exec argv (distinct; -c pairs omitted):
+["/usr/bin/git", "ls-remote", "https://github.com/openai/plugins.git", "HEAD"]
+["/usr/lib/git-core/git", "remote-https", "https://github.com/openai/plugins.git", "https://github.com/openai/plugins.git"]
+["/usr/lib/git-core/git-remote-https", "https://github.com/openai/plugins.git", "https://github.com/openai/plugins.git"]
+["git", "rev-parse", "--git-dir"]
+["git", "rev-parse", "HEAD"]
+["git", "rev-parse", "--abbrev-ref", "HEAD"]
+["git", "remote", "get-url", "origin"]
+["git", "remote", "-v"]
+["git", "config", "--null", "--get", "core.fsmonitor"]
+["git", "status", "--porcelain", "--ignore-submodules=dirty"]
+199   openat(AT_FDCWD, "/work/.git/HEAD", O_RDONLY) = 3
+130   openat(AT_FDCWD, "/probe/home-codex/.codex/AGENTS.md", O_RDONLY|O_LARGEFILE|O_CLOEXEC) = 58
+202   openat(AT_FDCWD, "/work/AGENTS.md", O_RDONLY|O_NONBLOCK|O_LARGEFILE|O_CLOEXEC) = 56
+codex remaining Git locks: []
+host worktree after agents:
+[exit 0]
+[exit 0]
+
+S. Polls after host commits
+stale trial 0 [{"seconds": 0.594, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 1.038, "output": "host-0\n", "exit": 0}]
+stale trial 1 [{"seconds": 0.774, "output": "host-1\n", "exit": 0}]
+stale trial 2 [{"seconds": 0.997, "output": "host-2\n", "exit": 0}]
+stale trial 3 [{"seconds": 0.394, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.469, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.54, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.619, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.701, "output": "host-3\n", "exit": 0}]
+stale trial 4 [{"seconds": 0.06, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.117, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.174, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.23, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.279, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.326, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.395, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.446, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.501, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.572, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.651, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.707, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.757, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.814, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.873, "output": "?? .pi/\n?? AGENTS.md\n?? CLAUDE.md\n?? a\nfatal: your current branch 'main' does not have any commits yet\n", "exit": 128}, {"seconds": 0.943, "output": "host-4\n", "exit": 0}]
+host fsck:
+
+T. Large-repository status
+100000 generated files plus a; 4 guest CPUs; status includes untracked scan
+host iteration 0 seconds 0.332176 exit 0 output ''
+host iteration 1 seconds 0.188614 exit 0 output ''
+host iteration 2 seconds 0.202267 exit 0 output ''
+host iteration 3 seconds 0.178144 exit 0 output ''
+$ container exec probe-git7-22c793b7 node -e 'const cp=require('"'"'child_process'"'"');for(let i=0;i<4;i++){const t=performance.now();const r=cp.spawnSync('"'"'git'"'"',['"'"'-C'"'"','"'"'/probe/large'"'"','"'"'status'"'"','"'"'--porcelain'"'"'],{encoding:'"'"'utf8'"'"'});console.log(JSON.stringify({iteration:i,seconds:(performance.now()-t)/1000,exit:r.status,output:r.stdout,stderr:r.stderr}));}'
+{"iteration":0,"seconds":21.05275601,"exit":0,"output":"","stderr":""}
+{"iteration":1,"seconds":13.917773422999998,"exit":0,"output":"","stderr":""}
+{"iteration":2,"seconds":12.727880422999995,"exit":0,"output":"","stderr":""}
+{"iteration":3,"seconds":14.215537048000005,"exit":0,"output":"","stderr":""}
+
+P. Installed pi source inspection (one unmatched glob; command exit 2)
+/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.js:130:    const candidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.js:960:        const projectPath = join(this.cwd, CONFIG_DIR_NAME, "SYSTEM.md");
+/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.js:964:        const globalPath = join(this.agentDir, "SYSTEM.md");
+/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.js:971:        const projectPath = join(this.cwd, CONFIG_DIR_NAME, "APPEND_SYSTEM.md");
+/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.js:975:        const globalPath = join(this.agentDir, "APPEND_SYSTEM.md");

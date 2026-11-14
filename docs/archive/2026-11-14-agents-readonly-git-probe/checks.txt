@@ -1,0 +1,46 @@
+$ cargo build --locked
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.35s
+[exit 0]
+$ cargo fmt --check
+[exit 0]
+$ cargo clippy --all-targets --locked -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.13s
+[exit 0]
+$ git diff --check
+[exit 0]
+$ git -C $W/repo fsck --full
+[exit 0]
+$ git -C $W/cases/status fsck --full
+[exit 0]
+$ git -C $W/cases/add fsck --full
+[exit 0]
+$ git -C $W/cases/commit fsck --full
+[exit 0]
+$ git -C $W/cases/stash fsck --full
+[exit 0]
+$ git -C $W/cases/checkout fsck --full
+[exit 0]
+$ git -C $W/cases/fetch fsck --full
+[exit 0]
+$ git -C $W/cases/gc fsck --full
+[exit 0]
+$ XDG_CONFIG_HOME=$W/config XDG_STATE_HOME=$W/state PINFOLD_NO_UPDATE_CHECK=1 target/debug/pinfold --version
+pinfold 0.5.5
+[exit 0]
+$ git -C $W/stale/repo fsck --full
+[exit 0]
+trace projection print pi: index.lock mentions=0; /work/.git write attempts=0
+trace projection print claude: index.lock mentions=0; /work/.git write attempts=0
+trace projection print codex: index.lock mentions=0; /work/.git write attempts=0
+trace projection interactive pi: index.lock mentions=0; /work/.git write attempts=0
+trace projection interactive claude: index.lock mentions=0; /work/.git write attempts=0
+trace projection interactive codex: index.lock mentions=0; /work/.git write attempts=0
+Python compile(probe.py): passed; no bytecode written
+$ container list --all --format json [only probe-git7-*]
+[]
+$ container system status [status only]
+status              running
+$ container image inspect localhost/pinfold/profile-probe-agents:latest [id only]
+7b57a746b152c8907a70469f9fa2c7e8eba2783bf6fc983bcd587d1420f23fb3
+$ git diff --cached --check [completed record staged]
+[exit 0]
