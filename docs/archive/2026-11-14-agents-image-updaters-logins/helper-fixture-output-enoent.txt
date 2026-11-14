@@ -1,0 +1,17 @@
+case=empty
+command=sandbox-exec [deny all network; deny /Users reads] codex-app-server -c model_provider="openai"
+send {"method": "initialize", "id": 0, "params": {"clientInfo": {"name": "pinfold", "title": "pinfold", "version": "fixture"}}}
+send {"method": "initialized"}
+send {"method": "getAuthStatus", "id": 1, "params": {"includeToken": true}}
+receive {"id": 0, "result": {"userAgent": "pinfold/0.167.1 (Mac OS 27.2.1; arm64) unknown (pinfold; fixture)", "codexHome": "/private/tmp/pfh.298/empty", "platformFamily": "unix", "platformOs": "macos"}}
+receive {"id": 1, "result": {"authMethod": null, "authToken": null, "requiresOpenaiAuth": true}}
+helper reaped
+case=chatgpt
+command=sandbox-exec [deny all network; deny /Users reads] codex-app-server -c model_provider="openai"
+send {"method": "initialize", "id": 0, "params": {"clientInfo": {"name": "pinfold", "title": "pinfold", "version": "fixture"}}}
+send {"method": "initialized"}
+send {"method": "getAuthStatus", "id": 1, "params": {"includeToken": true}}
+receive {"id": 0, "result": {"userAgent": "pinfold/0.167.1 (Mac OS 27.2.1; arm64) unknown (pinfold; fixture)", "codexHome": "/private/tmp/pfh.298/chatgpt", "platformFamily": "unix", "platformOs": "macos"}}
+receive {"id": 1, "result": {"authMethod": "chatgpt", "authToken": "eyJhbGciOiJub25lIn0.eyJleHAiOjE3OTQ3Njc0MzcsImVtYWlsIjoiZml4dHVyZUBleGFtcGxlLmludmFsaWQiLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiZml4dHVyZS1hY2NvdW50IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwbHVzIn19.fixture", "requiresOpenaiAuth": true}}
+matches fixture token=True
+helper reaped

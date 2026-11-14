@@ -1,0 +1,90 @@
+Header projection from commit 96478c2; no new capture.
+For every request: method/path, all ordered names (duplicates preserved),
+and every credential-like name/value (authorization, api key, cookie, account, organisation).
+Other values, including generated session/installation/turn IDs, omitted.
+Helper JWT is unsigned, ends .fixture, and encodes fixture@example.invalid/fixture-account.
+Host/connection framing was already rewritten by proxy; this is upstream capture.
+
+SOURCE login-headers.json
+anthropic: 0 request(s)
+claude: 6 request(s)
+  1. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Authorization", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Connection"]
+  credential-like=[["Authorization", "Bearer pinfold-placeholder"]]
+  2. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Authorization", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Connection"]
+  credential-like=[["Authorization", "Bearer pinfold-placeholder"]]
+  3. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Authorization", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Connection"]
+  credential-like=[["Authorization", "Bearer pinfold-placeholder"]]
+  4. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Authorization", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Connection"]
+  credential-like=[["Authorization", "Bearer pinfold-placeholder"]]
+  5. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Authorization", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Connection"]
+  credential-like=[["Authorization", "Bearer pinfold-placeholder"]]
+  6. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Authorization", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Connection"]
+  credential-like=[["Authorization", "Bearer pinfold-placeholder"]]
+codex: 1 request(s)
+  1. POST /backend-api/codex/responses
+  names=["Host", "x-codex-beta-features", "x-codex-window-id", "x-codex-turn-metadata", "x-openai-internal-codex-responses-lite", "x-client-request-id", "session-id", "thread-id", "accept", "content-type", "originator", "user-agent", "content-length", "Connection"]
+  credential-like=[]
+
+SOURCE logins-native-headers.json
+anthropic: 1 request(s)
+  1. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Content-Type", "User-Agent", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-api-key", "Accept-Encoding", "Content-Length", "Connection"]
+  credential-like=[["x-api-key", "pinfold-placeholder"]]
+claude: 6 request(s)
+  1. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Authorization", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Connection"]
+  credential-like=[["Authorization", "Bearer pinfold-placeholder"]]
+  2. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Authorization", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Connection"]
+  credential-like=[["Authorization", "Bearer pinfold-placeholder"]]
+  3. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Authorization", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Connection"]
+  credential-like=[["Authorization", "Bearer pinfold-placeholder"]]
+  4. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Authorization", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Connection"]
+  credential-like=[["Authorization", "Bearer pinfold-placeholder"]]
+  5. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Authorization", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Connection"]
+  credential-like=[["Authorization", "Bearer pinfold-placeholder"]]
+  6. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Authorization", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Connection"]
+  credential-like=[["Authorization", "Bearer pinfold-placeholder"]]
+codex: 1 request(s)
+  1. POST /backend-api/codex/responses
+  names=["Host", "x-codex-beta-features", "x-codex-window-id", "x-codex-turn-metadata", "x-openai-internal-codex-responses-lite", "x-client-request-id", "session-id", "thread-id", "accept", "content-type", "originator", "user-agent", "content-length", "Connection"]
+  credential-like=[]
+
+SOURCE logins-injected-headers.json
+anthropic: 1 request(s)
+  1. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Content-Type", "User-Agent", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "Accept-Encoding", "Content-Length", "x-api-key", "Connection"]
+  credential-like=[["x-api-key", "fixture-pi-key"]]
+claude: 6 request(s)
+  1. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Authorization", "Connection"]
+  credential-like=[["Authorization", "Bearer fixture-claude-token"]]
+  2. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Authorization", "Connection"]
+  credential-like=[["Authorization", "Bearer fixture-claude-token"]]
+  3. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Authorization", "Connection"]
+  credential-like=[["Authorization", "Bearer fixture-claude-token"]]
+  4. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Authorization", "Connection"]
+  credential-like=[["Authorization", "Bearer fixture-claude-token"]]
+  5. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Authorization", "Connection"]
+  credential-like=[["Authorization", "Bearer fixture-claude-token"]]
+  6. POST /v1/messages?beta=true
+  names=["Host", "Accept", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version", "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Accept-Encoding", "Content-Length", "Authorization", "Connection"]
+  credential-like=[["Authorization", "Bearer fixture-claude-token"]]
+codex: 1 request(s)
+  1. POST /backend-api/codex/responses
+  names=["Host", "x-codex-beta-features", "x-codex-window-id", "x-codex-turn-metadata", "x-openai-internal-codex-responses-lite", "x-client-request-id", "session-id", "thread-id", "accept", "content-type", "originator", "user-agent", "content-length", "Authorization", "ChatGPT-Account-ID", "Connection"]
+  credential-like=[["Authorization", "Bearer eyJhbGciOiJub25lIn0.eyJleHAiOjE3OTQ3Njc0MzcsImVtYWlsIjoiZml4dHVyZUBleGFtcGxlLmludmFsaWQiLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiZml4dHVyZS1hY2NvdW50IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwbHVzIn19.fixture"], ["ChatGPT-Account-ID", "fixture-account"]]
