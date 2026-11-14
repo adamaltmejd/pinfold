@@ -1,5 +1,5 @@
-//! Pi configuration: a local file or global fallback, the selected profile,
-//! and the host environment.
+//! Pi configuration: the project's file under pinfold's host configuration
+//! directory, the selected profile, and the host environment.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -11,6 +11,8 @@ use serde::Deserialize;
 
 use crate::core::plan::Route;
 use crate::core::profile::Profile;
+use crate::dirs;
+use crate::pi::state::project_id;
 
 /// The built-in defaults (ARCHITECTURE.md, Configuration).
 const DEFAULT_PROFILE: &str = "default";
@@ -28,22 +30,35 @@ const DEFAULT_ALLOW: [&str; 9] = [
     "pi.dev",
 ];
 
+/// The only mount this step accepts: the project itself, as a disk. Inline,
+/// so keys appended to the file stay top-level.
+const PROJECT_MOUNT: &str = "mounts = [{ host = \".\", kind = \"disk\" }]\n";
+
+/// `~/.config/pinfold/projects/<id>/`: the project's configuration file
+/// and its optional recipe. A moved project has another id, so no file.
+pub fn project_dir(root: &Path) -> io::Result<PathBuf> {
+    Ok(dirs::config_dir()?.join("projects").join(project_id(root)))
+}
+
+/// The bytes `pinfold config edit` writes into a new configuration file.
+pub fn template(root: &Path) -> String {
+    format!(
+        "# pinfold configuration for {}\n{PROJECT_MOUNT}",
+        root.display()
+    )
+}
+
 /// The merged configuration for one project run.
 pub struct Config {
-    /// Whether the configuration folder is also a Git project to cross.
+    /// Whether the project is a Git checkout to cross.
     pub repository: bool,
-    /// The selected local or global file; absent when neither exists.
-    pub source: Option<PathBuf>,
+    /// The project's configuration file.
+    pub path: PathBuf,
     pub profile: Profile,
     pub image: Option<String>,
-    /// The project's Containerfile: its path from `.pinfold.toml`, relative
-    /// to the project root, and its bytes, read once at load time.
-    /// Trust hashes these bytes and the build
-    /// uses them, so a live box cannot swap the file in between.
-    pub containerfile: Option<(String, Vec<u8>)>,
-    /// The raw bytes of the project's `.pinfold.toml` that were parsed,
-    /// `None` when the file is absent. Trust hashes these bytes.
-    pub project_toml: Option<Vec<u8>>,
+    /// The project's `Containerfile` beside its configuration file: its path
+    /// and its bytes, read once at load time so a build uses what was read.
+    pub containerfile: Option<(PathBuf, Vec<u8>)>,
     pub allow: Vec<String>,
     pub routes: BTreeMap<String, Route>,
     pub cpus: f64,
@@ -70,44 +85,41 @@ impl Config {
             Err(error) if error.kind() == io::ErrorKind::NotFound => false,
             Err(error) => return Err(error),
         };
-        let local = root.join(".pinfold.toml");
-        let (project, project_toml, source) = match fs::symlink_metadata(&local) {
-            Ok(_) => {
-                let (layer, bytes) = Layer::read(&local)?;
-                // A dangling link is present, not permission to use global policy.
-                if bytes.is_none() {
-                    return Err(invalid(
-                        &local.display().to_string(),
-                        "file is not readable",
-                    ));
-                }
-                (layer, bytes, Some(local))
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let global = crate::dirs::config_dir()?.join("pinfold.toml");
-                let (layer, bytes) = Layer::read(&global)?;
-                if layer.containerfile.is_some() {
-                    return Err(invalid(
-                        &global.display().to_string(),
-                        "`containerfile` is a project key; select a profile for a reusable recipe",
-                    ));
-                }
-                let source = bytes.as_ref().map(|_| global);
-                (layer, None, source)
-            }
-            Err(error) => return Err(error),
+        let dir = project_dir(root)?;
+        let path = dir.join("pinfold.toml");
+        let source = path.display().to_string();
+        let Some(bytes) = read_optional(&path)? else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "no-config: {} has no configuration; run `pinfold config edit`",
+                    root.display()
+                ),
+            ));
         };
+        let project = Layer::parse(&bytes, &source)?;
+        match project.mounts.as_deref() {
+            Some([mount]) if mount.host == "." && mount.kind == "disk" => {}
+            _ => {
+                return Err(invalid(
+                    &source,
+                    &format!(
+                        "spec: `mounts` must be exactly {}",
+                        PROJECT_MOUNT.trim_end()
+                    ),
+                ));
+            }
+        }
         let top = project.over(Layer::from_env()?);
         let profile_name = top.profile.as_deref().unwrap_or(DEFAULT_PROFILE);
         let profile = Profile::load(profile_name)?;
         let profile_source = format!("profile {profile_name:?} pinfold.toml");
         let profile_layer = Layer::parse(&profile.config, &profile_source)?;
-        if profile_layer.containerfile.is_some() {
-            return Err(invalid(
-                &profile_source,
-                "`containerfile` is a project key; a profile's image is its own Containerfile",
-            ));
+        if profile_layer.mounts.is_some() {
+            return Err(invalid(&profile_source, "`mounts` is a project key"));
         }
+        let containerfile = read_optional(&dir.join("Containerfile"))?
+            .map(|bytes| (dir.join("Containerfile"), bytes));
         let merged = profile_layer.over(top);
         if let Some(image) = &merged.image {
             if image.is_empty() {
@@ -116,54 +128,24 @@ impl Config {
                     "image-invalid: image must not be empty",
                 ));
             }
-            if merged.containerfile.is_some() {
+            if containerfile.is_some() {
                 return Err(invalid(
                     "configuration",
-                    "image-source-conflict: image and project containerfile cannot be combined",
+                    "image-source-conflict: image and project Containerfile cannot be combined",
                 ));
             }
-        } else if merged.containerfile.is_none() && profile.containerfile.is_none() {
+        } else if containerfile.is_none() && profile.containerfile.is_none() {
             return Err(invalid(
                 "configuration",
                 "image-source-missing: select an image or supply a Containerfile",
             ));
         }
-        let containerfile = match merged.containerfile {
-            None => None,
-            Some(path) => {
-                if Path::new(&path).is_absolute() {
-                    return Err(invalid(
-                        ".pinfold.toml",
-                        &format!(
-                            "`containerfile` must be a path relative to the project root: {path:?}"
-                        ),
-                    ));
-                }
-                let joined = root.join(&path);
-                let read = |error: io::Error| {
-                    io::Error::new(error.kind(), format!("read {}: {error}", joined.display()))
-                };
-                // Resolve symlinks, so a path that stays under the root but
-                // leaves the project is refused too.
-                let canonical = fs::canonicalize(&joined).map_err(read)?;
-                if !canonical.starts_with(root) {
-                    return Err(invalid(
-                        ".pinfold.toml",
-                        &format!("`containerfile` must name a file inside the project: {path:?}"),
-                    ));
-                }
-                // Read the canonical path, the same one the check saw.
-                let bytes = fs::read(&canonical).map_err(read)?;
-                Some((path, bytes))
-            }
-        };
         Ok(Config {
             repository,
-            source,
+            path,
             profile,
             image: merged.image,
             containerfile,
-            project_toml,
             allow: merged
                 .allow
                 .unwrap_or_else(|| DEFAULT_ALLOW.iter().map(|host| host.to_string()).collect()),
@@ -179,6 +161,58 @@ impl Config {
                 .collect(),
         })
     }
+
+    /// Refuse a project mount that holds pinfold's own configuration, state
+    /// or cache, or the selected profile, before any state is created: box
+    /// content crosses into the project, so it must not reach them.
+    pub fn check_mounts(&self, root: &Path) -> io::Result<()> {
+        if !self.repository {
+            return Ok(());
+        }
+        let root = fs::canonicalize(root)?;
+        let config_dir = dirs::config_dir()?;
+        let mut paths = vec![
+            config_dir.join("profiles").join(&self.profile.name),
+            config_dir,
+            dirs::state_dir()?,
+            dirs::artifacts_dir()?,
+            dirs::cache_dir()?,
+            crate::core::ownership::host_dir()?,
+        ];
+        if let Some(share) = &self.profile.share {
+            paths.push(share.path()?);
+        }
+        for path in paths {
+            if dirs::resolve_host_path(&path)?.starts_with(&root) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!(
+                        "host-path-in-project: {} resolves inside {}",
+                        path.display(),
+                        root.display()
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A file's bytes, `None` when it is absent. A dangling symlink or an
+/// unreadable file is an error, never an absence.
+fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => match fs::symlink_metadata(path) {
+            Ok(_) => Err(invalid(&path.display().to_string(), "file is not readable")),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        },
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!("read {}: {error}", path.display()),
+        )),
+    }
 }
 
 /// One configuration layer. Every key is optional; an absent key does not
@@ -186,42 +220,27 @@ impl Config {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Layer {
-    /// Only the selected config file and `PINFOLD_PROFILE` select the profile; the
+    /// Only the project's file and `PINFOLD_PROFILE` select the profile; the
     /// profile's own file is read after the selection, so its value is
     /// ignored.
     profile: Option<String>,
     image: Option<String>,
-    containerfile: Option<String>,
+    mounts: Option<Vec<Mount>>,
     allow: Option<Vec<String>>,
     routes: Option<BTreeMap<String, Route>>,
     cpus: Option<f64>,
     memory: Option<String>,
 }
 
-impl Layer {
-    /// Read a `.pinfold.toml`; an absent file is an empty layer and `None`.
-    fn read(path: &Path) -> io::Result<(Layer, Option<Vec<u8>>)> {
-        match fs::read(path) {
-            Ok(bytes) => {
-                let layer = Layer::parse(&bytes, &path.display().to_string())?;
-                Ok((layer, Some(bytes)))
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                match fs::symlink_metadata(path) {
-                    Ok(_) => Err(invalid(&path.display().to_string(), "file is not readable")),
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                        Ok((Layer::default(), None))
-                    }
-                    Err(error) => Err(error),
-                }
-            }
-            Err(error) => Err(io::Error::new(
-                error.kind(),
-                format!("read {}: {error}", path.display()),
-            )),
-        }
-    }
+/// One `[[mounts]]` entry.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Mount {
+    host: String,
+    kind: String,
+}
 
+impl Layer {
     /// Parse one layer. `source` names the file in errors.
     fn parse(bytes: &[u8], source: &str) -> io::Result<Layer> {
         toml::from_slice(bytes).map_err(|error| invalid(source, &error.to_string()))
@@ -233,7 +252,7 @@ impl Layer {
         Ok(Layer {
             profile: override_value("PINFOLD_PROFILE")?,
             image: None,
-            containerfile: None,
+            mounts: None,
             allow: override_value("PINFOLD_ALLOW")?.as_deref().map(split_list),
             routes: override_value("PINFOLD_ROUTES")?
                 .as_deref()
@@ -254,7 +273,7 @@ impl Layer {
     fn over(mut self, higher: Layer) -> Layer {
         self.profile = higher.profile.or(self.profile);
         self.image = higher.image.or(self.image);
-        self.containerfile = higher.containerfile.or(self.containerfile);
+        self.mounts = higher.mounts.or(self.mounts);
         self.cpus = higher.cpus.or(self.cpus);
         self.memory = higher.memory.or(self.memory);
         self.allow = higher.allow.or(self.allow);

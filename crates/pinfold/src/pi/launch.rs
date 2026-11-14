@@ -19,7 +19,6 @@ use crate::core::runtime::runtime;
 use crate::core::{artifacts, crossing, disk, image, login, ownership, sha256_hex};
 use crate::pi::context::Context;
 use crate::pi::state::{self, canonical, project_id};
-use crate::trust;
 
 const HARNESS: &str = "pi";
 
@@ -27,6 +26,15 @@ const HARNESS: &str = "pi";
 pub fn run(args: &[String]) -> io::Result<i32> {
     let cwd = canonical(&env::current_dir()?)?;
     let context = Context::discover(&cwd)?;
+    if cfg!(target_os = "linux") && !context.repository {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "not-git: {} is not a git repository; a Linux project is a Git checkout",
+                context.root.display()
+            ),
+        ));
+    }
     let root = context.root.clone();
     utf8(&root, "project root")?;
     let config = Config::load(&root)?;
@@ -35,7 +43,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
             "git-discovery: repository changed during configuration",
         ));
     }
-    trust::check(&root, &config)?;
+    config.check_mounts(&root)?;
     context.verify()?;
     let id = project_id(&root);
     let _project = config
@@ -175,7 +183,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
     let root = project_root(&env::current_dir()?)?;
     require_repo(&root)?;
     let config = Config::load(&root)?;
-    trust::check(&root, &config)?;
+    config.check_mounts(&root)?;
     let id = project_id(&root);
     let [_, disk] = state::disk_names(&id);
     let guest = utf8(&root, "project root")?.to_string();
