@@ -33,7 +33,7 @@ The only final-recipe change from the Mac recipe is
 `linux-arm64.tar.xz` to `linux-x64.tar.xz`. Node's source remains `nodejs.org`.
 The per-build `--allow nodejs.org` uses the existing Linux interface. Neither
 the spec's list nor product code changed. Diagnostic RUNs are not in the
-retained final Containerfile. The isolated profile was restored afterward.
+retained final Containerfile.
 
 B2 was the first agent installation with an empty named npm cache; this
 was not a cold builder-store measurement. The VM already had a builder cache
@@ -83,7 +83,7 @@ for a cold store, other recipes, native installers or runtime updaters.
 B2 and B4 reproduce the converter scratch failure through the real CLI.
 The [host job](../../crates/pinfold/src/core/image/linux/job.rs) fixes
 the converter's work disk at 3 GiB. The converter's BuildKit cache and
-`root.tar` share that disk. This explains why the guest can exhaust space
+`root.tar` share that disk. This is the likely reason (inferred, no guest free-space measurement was taken) the guest can exhaust space
 while the VM host still has about 21 GiB free.
 
 There is a second, source-derived blocker, not a second observed runtime error.
