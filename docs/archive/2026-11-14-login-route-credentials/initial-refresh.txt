@@ -1,0 +1,11 @@
+First full run, macOS. Matrix cases passed; refresh probe exited 1.
+FAIL exactly one local OAuth refresh with expected synthetic grant
+FAIL expired/query refusals never reach fixture or refresh
+elapsed_seconds=139.050; failures=2
+First full run, Linux. The same two probe assertions failed; probe_exit=1.
+Linux elapsed_seconds=201.855; failures=2
+Both failed assertions assumed exactly one OAuth POST per helper lookup.
+The unconditional initial summary claiming one POST was not supported.
+Valid token comparisons, expiry/refusal reasons and early validation passed.
+The corrected probe measures OAuth count after the first route and requires
+that the second route and refused requests add no refresh exchanges.

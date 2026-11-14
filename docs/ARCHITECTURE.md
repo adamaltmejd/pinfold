@@ -71,6 +71,10 @@ Not protected:
 - CDN fronting beyond the SNI check (Host-header fronting needs TLS
   interception).
 - Allowlisted services that accept writes (GitHub with a token, registries).
+- A login route gives every process in the box the host login's authority
+  over every path at the selected origin. It does not restrict provider
+  operations, inspect request bodies, or prevent an upstream from returning
+  credentials in its response.
 - Configuration is keyed by the project id: the folder name, sanitised and
   cut to 32 bytes, and 12 hex digits of the canonical path's hash. Another
   repository placed at that path gets its configuration.
@@ -648,6 +652,38 @@ network listener, no token: the socket identifies the box.
   route's. The box gets only placeholders. Placeholder variables are set
   only in an exec for that harness (`box exec --harness`); files are
   mounted for the whole box. The spec's own `env` wins.
+
+  Every login route applies these rules. Validation precedes credential
+  refresh, DNS resolution and an upstream connection:
+
+  - Remove every occurrence of `Authorization`, `X-Api-Key`, `Api-Key`,
+    `X-Goog-Api-Key`, `X-Auth-Token`, `X-Access-Token`,
+    `ChatGPT-Account-ID`, `OpenAI-Organization`, `OpenAI-Project`, `Cookie`
+    and `Cookie2`, and every header whose name begins `Proxy-`, ignoring
+    ASCII case. Drop whole fields, including comma-separated values.
+  - Collect every `Connection` field before dropping hop-by-hop headers.
+    Split its values on commas, trim SP/HTAB, ignore empty members and
+    validate every remaining member as an HTTP token. Malformed options
+    return 400, reason `malformed request`. A nomination of `Content-Length`
+    returns 400, reason `ambiguous framing`. Remove other nominated guest
+    fields, ignoring ASCII case. Regenerate `Host` and append trusted
+    authentication after filtering; a nomination cannot suppress it.
+  - Split the raw query on `&` and `;`, then each field at its first `=`,
+    including fields without `=`. Strictly percent-decode names once,
+    map `+` to space, compare ignoring ASCII case and treating `_` as `-`.
+    Refuse these names with 403, reason `login credential query`: `key`,
+    `api_key`, `api-key`, `apikey`, `x-api-key`, `access_token`,
+    `refresh_token`, `id_token`, `auth_token`, `bearer_token`, `token`,
+    `client_secret`, `authorization`, `chatgpt-account-id`,
+    `openai-organization` and `openai-project`. Validate percent escapes
+    throughout the query; any invalid escape returns 400, reason
+    `malformed request`. Preserve accepted query bytes exactly. Do not
+    recursively decode, inspect bodies or restrict paths.
+
+  Only the trusted authentication fields below are appended. Guest and
+  host credentials are never merged. Refusal reasons contain no query
+  text, header values or helper output.
+
   - `claude`: `{ "login": "claude", "from": VAR }`, where `$VAR` is a
     `claude setup-token` token read once at start like an injecting route's.
     The route goes to `https://api.anthropic.com` with `Authorization:
@@ -692,14 +728,15 @@ network listener, no token: the socket identifies the box.
     |---|---|---|---|
     | `openrouter` | `openrouter` | `https://openrouter.ai` | `Authorization: Bearer $VAR` |
     | `openai` | `openai` | `https://api.openai.com` | `Authorization: Bearer $VAR` |
-    | `anthropic` | `anthropic` | `https://api.anthropic.com` | `x-api-key: $VAR`; a box-sent `Authorization` is removed |
-    | `anthropic-subscription` | `anthropic` | `https://api.anthropic.com` | `Authorization: Bearer $VAR`; a box-sent `x-api-key` is removed |
+    | `anthropic` | `anthropic` | `https://api.anthropic.com` | `X-Api-Key: $VAR` |
+    | `anthropic-subscription` | `anthropic` | `https://api.anthropic.com` | `Authorization: Bearer $VAR` |
     | `openai-codex` | `openai-codex` | `https://chatgpt.com` | `Authorization: Bearer` and `ChatGPT-Account-ID` from the host login |
 
-    The set header replaces any the box sent under that name. Other
-    headers, `anthropic-version` and `anthropic-beta` included, pass
-    unchanged. As for any route, every path under the origin is
-    forwarded, responses stream as received, and `Upgrade` is dropped.
+    Remaining headers, including `anthropic-version` and `anthropic-beta`
+    unless nominated by `Connection`, pass unchanged. Every path under
+    the origin is forwarded, responses stream as received, and `Upgrade`
+    is dropped. These rules cover only the named authentication channels,
+    not arbitrary upstream authentication conventions.
     For each pi login route pi's execs get a placeholder: P's key variable
     (`OPENROUTER_API_KEY`, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`) for
     the API-key forms; `ANTHROPIC_OAUTH_TOKEN` for `anthropic-subscription`.
@@ -1519,7 +1556,7 @@ what the rewritten suite must show. Testing policy is in `AGENTS.md`.
 | 20 | A caller can tell an OOM kill from a failure | On both runtimes stat reports the limits in force, every field is present, and `exec`'d processes start with `oom_score_adj` 1000. On Linux, the guest kernel's `MemTotal` is within 64 MiB under the box's memory. In one process and its fork+exec descendant, -999 is allowed, modern -1000 and legacy -17 return EACCES with unchanged scores, and legacy 15 succeeds. The service parent stays -1000. A sole workload at -999 touches a finite 1 GiB mapping in the 256 MiB box, exits 137, and stat's oom_kills rises; a fresh probe succeeds afterward. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
 | 23 | A caller builds an image from its own tree | Caller builds A and changed B report distinct refs, runtime-observed ids and the fixture label. After B moves latest, A's unique ref launches with A's COPYed bytes and latest launches with B's bytes; on Linux `ready` carries the image label. Linux A retains its successful outcome and both refs after an injected post-commit directory-sync EIO. Ordinary failed build F prints a tail bounded to 64 KiB after a 200,000-byte unterminated diagnostic, keeps the caller's final marker and leaves every caller ref-to-id mapping unchanged. |
-| 26 | A login route keeps the login on the host | Each login route's fixture receives exactly the host credential and none the box sent, in any case or number: claude's `from` token as Bearer; codex's login refreshed on the host when it lapses within 5 minutes, once across two XDG roots on one `CODEX_HOME`, the second reporting `login-busy`; pi's `openrouter`, `anthropic`, `anthropic-subscription` and `openai-codex` routes. Cancelling `up` during a stalled codex refresh reaps the helper and closes its refresh connection. `pi -p` through the `pi` shim and the `openrouter` route sends the profile's and the project's skills and the profile's allowlist. No token, key or account id is in the box's environment or files, its home disk, the state root or the egress log. Misconfigured routes are refused as `spec` or `login`. On macOS only, with a real login, codex completes one tool round trip through a route with no `to`. |
+| 26 | A login route keeps the login on the host | The upstream receives only host-supplied credentials through the named authentication channels. Fixtures cover claude, codex and all five pi forms: `openrouter`, `openai`, `anthropic`, `anthropic-subscription` and `openai-codex`. Mixed-case duplicates of every removed field and repeated `Connection` fields nominate authentication and metadata during a nonempty POST. Each fixture receives exactly the host authentication, no removed fields, unchanged remaining metadata and the exact body. Every forbidden query name, encoded and case variants, duplicates, empty values, fields without `=` and both separators get 403 / `login credential query` with no upstream request. Malformed percent escapes and `Connection` options get 400 / `malformed request`; nominated `Content-Length` gets 400 / `ambiguous framing`. Corrected requests succeed in the same box, preserving harmless encoded queries, `anthropic-version`, `anthropic-beta` and arbitrary non-model paths unless nominated. Generic injecting and host-service routes retain their authentication and query behavior. Codex and pi share credentials after refresh within 5 minutes of expiry; a lapsed token is refused with a valid-token control. Across two XDG roots on one `CODEX_HOME`, the second refresh reports `login-busy`. Cancelling `up` during a stalled refresh reaps the helper and closes its refresh connection. `pi -p` through the `pi` shim and the `openrouter` route sends the profile's and the project's skills and the profile's allowlist. No host token, key or account id is in the box's environment or files, its home disk, generated state, diagnostics or egress log; a deliberately reflecting upstream can return them. Misconfigured routes are refused as `spec` or `login`. On macOS only, with a real login, codex completes one tool round trip through a route with no `to`. |
 | 27 | Doctor reports without changing state | With and without a runtime and a project configuration, doctor leaves complete Pinfold-owned state/config/cache trees unchanged, including absent roots, and reports host configuration, and `no-config` and `host-path-in-project` as findings; so do `pinfold --version`, which prints the version, and `pinfold box list --help` with no runtime. Native runtime bookkeeping is outside those trees. Linux missing-kvm diagnostics use real failures. The Linux host keeps AppArmor's unprivileged user-namespace restriction on (`kernel.apparmor_restrict_unprivileged_userns` is 1); there a copy of pinfold outside its profile's path reports `userns-apparmor` and is refused as `runtime`; the profiled executable starts a box. |
 | 28 | Host updates are verified and atomic | A host HTTPS release fixture supplies a different valid executable. Wrong checksums preserve the original bytes/inode; a working command started during a held asset transfer also prevents replacement. After teardown the verified bytes replace the inode and preserve the invoked command symlink. |
 | 34 | Blocked route writes release the upstream | A small routed POST and response succeed. In concurrent connections, a guest stops reading a response and a host fixture stops reading an upload while sending a response. Both fixture connections close after the production write deadline while the guest holders remain alive. The upload producer's completion is timed independently to exclude an early failure followed by a read timeout. |
