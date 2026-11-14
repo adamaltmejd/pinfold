@@ -41,8 +41,10 @@ def run(args, timeout=180, cwd=None, check=False, quiet=False):
     return p
 
 def build(args, cwd=None, check=True):
-    run(['df', '-h' if LINUX else '-g', '/'], check=True)
-    if shutil.disk_usage('/').free < 12*1024**3: raise RuntimeError('under 12 GiB free')
+    run(['df', '-h', '/', '/tmp'] if LINUX else ['df', '-g', '/'], check=True)
+    free = shutil.disk_usage('/').free
+    emit('free-bytes='+str(free))
+    if not LINUX and free < 12*1024**3: raise RuntimeError('under 12 GiB free')
     p = run([P, *args], timeout=1200, cwd=cwd)
     for path in re.findall(r'egress log (\S+)', p.stderr):
         counts = {}
@@ -107,17 +109,27 @@ def down(box):
     if ready['egress_log']:
         for line in pathlib.Path(ready['egress_log']).read_text().splitlines(): emit('startup-audit '+line)
 
-def interactive(box, agent):
+def interactive(box, agent, seconds=15):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 36, 120, 0, 0))
-    command = [str(P), 'box', 'exec', box, '--tty', '--', 'sh', '-c', 'cd /tmp; timeout 15 '+agent]
+    command = [str(P), 'box', 'exec', box, '--tty', '--', 'sh', '-c', f'cd /tmp; timeout --foreground {seconds} '+agent]
     emit('$ '+' '.join(command)+' [no login choice submitted]')
+    def controlling_tty():
+        os.setsid()
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+        os.tcsetpgrp(0, os.getpgrp())
     proc = subprocess.Popen(command, env={**ENV, 'TERM': 'xterm-256color'}, stdin=slave, stdout=slave,
-                            stderr=slave, start_new_session=True)
-    os.close(slave); chunks = []; end = time.monotonic()+25
+                            stderr=slave, preexec_fn=controlling_tty)
+    os.close(slave); chunks = []; started = time.monotonic(); end = started+seconds+10
     while time.monotonic() < end:
         if select.select([master], [], [], min(1, max(0, end-time.monotonic())))[0]:
-            try: chunks.append(os.read(master, 65536))
+            try:
+                chunk = os.read(master, 65536)
+                if not chunk: break
+                chunks.append(chunk)
+                for query, reply in ((b'\x1b[6n', b'\x1b[1;1R'), (b'\x1b[c', b'\x1b[?1;2c'),
+                                     (b'\x1b[?u', b'\x1b[?0u'), (b'\x1b]11;?', b'\x1b]11;rgb:0000/0000/0000\x1b\\')):
+                    if query in chunk: os.write(master, reply)
             except OSError: break
         if proc.poll() is not None: break
     if proc.poll() is None: proc.terminate()
@@ -126,7 +138,8 @@ def interactive(box, agent):
     os.close(master)
     text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07)|\x1b.', '', b''.join(chunks).decode(errors='replace'))
     (W/(agent+'-startup.txt')).write_text(text)
-    emit('\n'.join(text.splitlines()[-14:])); emit('observation exit='+str(proc.returncode))
+    emit('\n'.join(text.splitlines()[-14:])); emit('observation bytes='+str(sum(map(len, chunks)))+f' seconds={time.monotonic()-started:.3f} exit='+str(proc.returncode))
+    return proc.returncode
 
 def project():
     path = W/'project'; path.mkdir(exist_ok=True)
@@ -143,7 +156,13 @@ def project():
 
 if MODE == 'build':
     profile = sys.argv[2]
-    for _ in range(int(sys.argv[3]) if len(sys.argv) > 3 else 1): build(['build', '--profile', profile])
+    for iteration in range(int(sys.argv[3]) if len(sys.argv) > 3 else 1):
+        build(['build', '--profile', profile])
+        box = up(profile)
+        try:
+            receipt = x(box[0], 'cat /opt/pinfold/agents/install.txt', check=True).stdout
+            (W/(profile+'-install-'+str(iteration)+'.txt')).write_text(receipt)
+        finally: down(box)
     refs('profile-'+profile)
 elif MODE == 'start':
     profile = sys.argv[2]
@@ -160,47 +179,75 @@ elif MODE == 'start':
         for agent in ('pi', 'claude', 'codex'):
             run([P, 'box', 'exec', box[0], '--harness', agent, '--', '/opt/pinfold/'+agent+'/'+agent, '--version'], check=True)
     finally: down(box)
+    if LINUX: run([P, 'disk', 'rm', box[0]+'-home'], check=True)
+elif MODE == 'mounted':
+    box = up(sys.argv[2], harness=True)
+    try:
+        for agent in ('pi', 'claude', 'codex'):
+            run([P, 'box', 'exec', box[0], '--harness', agent, '--', '/opt/pinfold/'+agent+'/'+agent, '--version'], check=True)
+    finally: down(box)
+elif MODE == 'updater':
+    box = up(sys.argv[2])
+    try:
+        x(box[0], 'cat /home/user/.codex/app-server-daemon/settings.json; grep check_for_update /home/user/.codex/config.toml', check=True)
+        if interactive(box[0], 'codex', 360) != 124: raise RuntimeError('Codex did not remain running through updater interval')
+    finally: down(box)
 elif MODE == 'home':
     profile = sys.argv[2]
     box = up(profile)
-    hashes = 'sha256sum /home/user/.pi/agent/settings.json /home/user/.claude/settings.json /home/user/.codex/config.toml'
+    hashes = 'sha256sum /home/user/.pi/agent/settings.json /home/user/.claude/settings.json /home/user/.codex/config.toml /home/user/.codex/app-server-daemon/settings.json'
     try:
         x(box[0], 'jq ".hideThinkingBlock = false" /home/user/.pi/agent/settings.json > /tmp/pi-settings; cat /tmp/pi-settings > /home/user/.pi/agent/settings.json; '
           'jq \'.fixture = "retained"\' /home/user/.claude/settings.json > /tmp/claude-settings; cat /tmp/claude-settings > /home/user/.claude/settings.json; '
+          'jq \'.fixture = "retained"\' /home/user/.codex/app-server-daemon/settings.json > /tmp/daemon-settings; cat /tmp/daemon-settings > /home/user/.codex/app-server-daemon/settings.json; '
           'printf "\\n# fixture retained\\n" >> /home/user/.codex/config.toml', check=True)
         before = x(box[0], hashes, check=True).stdout
     finally: down(box)
     build(['build', '--profile', profile])
     box = up(profile)
-    try: emit('edited-home-preserved='+str(before == x(box[0], hashes, check=True).stdout))
+    try:
+        same = before == x(box[0], hashes, check=True).stdout
+        emit('edited-home-preserved='+str(same))
+        if not same: raise RuntimeError('edited home changed')
     finally: down(box)
-elif MODE == 'project':
+elif MODE in ('project', 'launch-project'):
     path, recipe = project()
-    recipe.write_text('FROM localhost/pinfold/profile-full:latest\nRUN printf project-ready > /project-fixture\n')
-    build(['build'], cwd=path)
+    if MODE == 'project':
+        recipe.write_text('FROM localhost/pinfold/profile-full:latest\nRUN printf project-ready > /project-fixture\n')
+        build(['build'], cwd=path)
     report = json.loads(run([P, 'config'], cwd=path, check=True).stdout)
     box = up('full', report['image'])
     try: x(box[0], 'cat /project-fixture; pi --version; claude --version; codex --version', check=True)
     finally: down(box)
-elif MODE == 'fail':
-    profile = W/'c/pinfold/profiles/probe-pr2-failure'; profile.mkdir(parents=True, exist_ok=True)
-    recipe = profile/'Containerfile'; good = 'FROM localhost/pinfold/profile-full:latest\nRUN printf ready > /fixture\n'
-    recipe.write_text(good); build(['build', '--profile', 'probe-pr2-failure'])
-    before = refs('profile-probe-pr2-failure')
-    recipe.write_text(good+'RUN install /required-agent-missing /usr/local/bin/fixture\n')
-    failed = build(['build', '--profile', 'probe-pr2-failure'], check=False)
-    emit('profile-failure='+str(failed.returncode != 0)+' refs-preserved='+str(before == refs('profile-probe-pr2-failure')))
-    recipe.write_text(good); build(['build', '--profile', 'probe-pr2-failure'])
-    path, recipe = project(); report = json.loads(run([P, 'config'], cwd=path, check=True).stdout)
-    stem = report['image'].split('/')[-1].split(':')[0]; before = refs(stem)
-    if not before: raise RuntimeError('run project mode first for a published control')
-    refs('profile-full')
-    recipe.write_text('FROM localhost/pinfold/profile-full:latest\nRUN install /required-agent-missing /usr/local/bin/fixture\n')
-    failed = build(['build'], cwd=path, check=False)
-    emit('project-failure='+str(failed.returncode != 0)+' refs-preserved='+str(before == refs(stem)))
-    refs('profile-full')
-    recipe.write_text('FROM localhost/pinfold/profile-full:latest\nRUN printf project-ready > /project-fixture\n')
-    build(['build'], cwd=path)
+elif MODE in ('fail', 'fail-profile', 'fail-project'):
+    if MODE != 'fail-project':
+        profile = W/'c/pinfold/profiles/probe-pr2-failure'; profile.mkdir(parents=True, exist_ok=True)
+        recipe = profile/'Containerfile'; good = 'FROM localhost/pinfold/profile-full:latest\nRUN printf ready > /fixture\n'
+        recipe.write_text(good); build(['build', '--profile', 'probe-pr2-failure'])
+        before = refs('profile-probe-pr2-failure')
+        recipe.write_text(good+'RUN install /required-agent-missing /usr/local/bin/fixture\n')
+        failed = build(['build', '--profile', 'probe-pr2-failure'], check=False)
+        same = before == refs('profile-probe-pr2-failure')
+        emit('profile-failure='+str(failed.returncode != 0)+' refs-preserved='+str(same))
+        if not failed.returncode or "install: cannot stat '/required-agent-missing'" not in failed.stdout+failed.stderr or not same:
+            raise RuntimeError('intended profile installation failure not established')
+        if LINUX: subprocess.run([sys.executable, str(pathlib.Path(__file__).with_name('limits.py')), 'cache'], check=True)
+        recipe.write_text(good); build(['build', '--profile', 'probe-pr2-failure'])
+    if MODE != 'fail-profile':
+        path, recipe = project(); report = json.loads(run([P, 'config'], cwd=path, check=True).stdout)
+        stem = report['image'].split('/')[-1].split(':')[0]; before = refs(stem)
+        if not before: raise RuntimeError('run project mode first for a published control')
+        refs('profile-full')
+        recipe.write_text('FROM localhost/pinfold/profile-full:latest\nRUN install /required-agent-missing /usr/local/bin/fixture\n')
+        failed = build(['build'], cwd=path, check=False)
+        same = before == refs(stem)
+        emit('project-failure='+str(failed.returncode != 0)+' refs-preserved='+str(same))
+        if not failed.returncode or "install: cannot stat '/required-agent-missing'" not in failed.stdout+failed.stderr or not same or 'pinfold: profile published ' not in failed.stderr:
+            raise RuntimeError('intended project installation failure and separate publication not established')
+        refs('profile-full')
+        if LINUX: subprocess.run([sys.executable, str(pathlib.Path(__file__).with_name('limits.py')), 'cache'], check=True)
+        recipe.write_text('FROM localhost/pinfold/profile-full:latest\nRUN printf project-ready > /project-fixture\n')
+        build(['build'], cwd=path)
 elif MODE == 'caller':
     context = W/'caller'; context.mkdir(exist_ok=True)
     recipe = context/'Containerfile'
@@ -210,6 +257,32 @@ elif MODE == 'caller':
         box = up('full', 'localhost/pinfold/image-probe-pr2-caller:latest')
         try: x(box[0], 'cat /caller-install-time', check=True)
         finally: down(box)
+elif MODE == 'pi':
+    path, _ = project()
+    report = json.loads(run([P, 'config'], cwd=path, check=True).stdout)
+    for name in report['project']['disks'].values():
+        if name not in owned['disks']: owned['disks'].append(name)
+    save_owned()
+    run([P, 'pi', '--version'], cwd=path, check=True)
+elif MODE == 'egress':
+    if not LINUX: raise RuntimeError('build-host admission is Linux-only')
+    context = W/'egress'; context.mkdir(exist_ok=True); recipe = context/'Containerfile'
+    recipe.write_text('FROM debian:trixie-slim\nRUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates\nRUN curl -fsS https://example.com/ -o /egress-control\n')
+    args = ['image', 'build', 'probe-pr2-egress', '--containerfile', recipe, '--context', context]
+    before = refs('image-probe-pr2-egress')
+    if before: raise RuntimeError('egress image already exists before this case')
+    refused = build(args, check=False)
+    logs = re.findall(r'egress log (\S+)', refused.stderr)
+    rows = [json.loads(line) for line in pathlib.Path(logs[-1]).read_text().splitlines()]
+    denied = any(r.get('host') == 'example.com' and r.get('reason') == 'not allowlisted' for r in rows)
+    if refused.returncode == 0 or not denied or '403' not in refused.stdout+refused.stderr or before != refs('image-probe-pr2-egress'):
+        raise RuntimeError('build-host denial/no-publication not established')
+    admitted = build([*args, '--allow', 'example.com'])
+    logs = re.findall(r'egress log (\S+)', admitted.stderr)
+    rows = [json.loads(line) for line in pathlib.Path(logs[-1]).read_text().splitlines()]
+    if not any(r.get('host') == 'example.com' and r.get('decision') == 'allowed' for r in rows):
+        raise RuntimeError('explicit host admission not established')
+    emit('denied-host-403-and-reason=True admitted-control=True')
 elif MODE == 'cleanup':
     for name in owned['boxes']: run([P, 'box', 'down', name], check=True)
     inventory = run([P, 'disk', 'list', '--json'], check=True, quiet=True)
