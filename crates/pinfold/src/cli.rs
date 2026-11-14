@@ -16,7 +16,6 @@ use crate::core::runtime::{Runtime, runtime};
 use crate::core::{clean, disk, runs};
 use crate::dirs;
 use crate::pi::launch::utf8;
-use crate::trust;
 
 /// One line per verb from the CLI table in docs/ARCHITECTURE.md but `init`,
 /// which only the box runs, plus the options that answer before a verb is chosen: the syntax, three or more
@@ -30,14 +29,14 @@ pinfold fetch                    its pi box's branches into refs/remotes/pinfold
 pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this project's image, or a profile's; prints the ref
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]…   a caller's image from its own context; one JSON line
 pinfold image rm NAME            retire a caller image name; one JSON line
-pinfold allow                    trust this project's .pinfold.toml and Containerfile
 pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim unused disk space
-pinfold doctor                   runtime, kernel, image, artifacts, trust, config, disk use
+pinfold doctor                   runtime, kernel, image, artifacts, config, disk use
 pinfold artifacts                pinned harnesses as JSON
 pinfold apparmor-profile         the AppArmor profile for this executable (Linux)
 pinfold update [--check]         check for a release, or download and install it
 pinfold config [ROOT]            effective configuration and project facts as JSON
+pinfold config edit              create this project's configuration file if missing, and open it in $VISUAL or $EDITOR
 pinfold box …                    the process interface
 pinfold disk list [--json]       list managed disks
 pinfold disk rm NAME|--all [--json]   remove unattached disks
@@ -112,15 +111,6 @@ pub fn help(verb: &str, args: &[String]) -> bool {
         println!("{}", specific.unwrap_or_else(|| syntax(verb)));
     }
     asks
-}
-
-pub fn allow(args: &[String]) -> io::Result<i32> {
-    if !args.is_empty() {
-        return Err(usage("allow", "allow takes no arguments"));
-    }
-    let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
-    crate::trust::allow(&root)?;
-    Ok(0)
 }
 
 /// `pinfold attach`: bash, or the given command, in this project's running
@@ -997,12 +987,16 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(usage("doctor", "doctor takes no arguments"));
     }
-    let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
-    // The config must parse; a broken `.pinfold.toml` is itself the answer.
-    let config = Config::load(&root)?;
-    let project = crate::pi::state::project_id(&root);
+    let cwd = std::env::current_dir()?;
+    // Host diagnostics run anywhere; a project that cannot be configured
+    // is one finding among them.
+    let project = crate::pi::launch::project_root(&cwd)
+        .and_then(|root| Config::load(&root).map(|config| (root, config)));
 
-    println!("pinfold doctor: {}", root.display());
+    println!(
+        "pinfold doctor: {}",
+        project.as_ref().map_or(&cwd, |(root, _)| root).display()
+    );
 
     let runtime = runtime();
     println!("runtime: {}", runtime.describe());
@@ -1034,15 +1028,17 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         Err(error) => println!("kernel: unavailable: {error}"),
     }
 
-    let image = crate::pi::launch::resolve_image(&config, &project);
-    println!("image: {image}");
-    if runtime_ready || cfg!(target_os = "linux") {
-        match crate::pi::launch::ensure_image(&config, &image) {
-            Ok(()) => println!("  exists"),
-            Err(error) => println!("  {error}"),
+    if let Ok((root, config)) = &project {
+        let image = crate::pi::launch::resolve_image(config, &crate::pi::state::project_id(root));
+        println!("image: {image}");
+        if runtime_ready || cfg!(target_os = "linux") {
+            match crate::pi::launch::ensure_image(config, &image) {
+                Ok(()) => println!("  exists"),
+                Err(error) => println!("  {error}"),
+            }
+        } else {
+            println!("  unavailable: runtime check failed");
         }
-    } else {
-        println!("  unavailable: runtime check failed");
     }
 
     match pins_json() {
@@ -1050,7 +1046,10 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         Err(error) => println!("artifacts: unavailable: {error}"),
     }
 
-    println!("config: {}", config_report(&root, &config)?);
+    match &project {
+        Ok((root, config)) => println!("config: {}", config_report(root, config)?),
+        Err(error) => println!("config: {error}"),
+    }
 
     println!("disk:");
     if !runtime_ready && !cfg!(target_os = "linux") {
@@ -1120,15 +1119,42 @@ fn pins_json() -> io::Result<serde_json::Value> {
 /// Read-only: do not materialize profiles or record project state.
 pub fn config(args: &[String]) -> io::Result<i32> {
     let root = match args {
+        [edit] if edit == "edit" => return config_edit(),
         [] => crate::pi::launch::project_root(&std::env::current_dir()?)?,
         [root] => crate::pi::launch::project_root(Path::new(root))?,
         _ => {
-            return Err(usage("config", "config takes at most one project root"));
+            return Err(usage(
+                "config",
+                "config takes `edit` or at most one project root",
+            ));
         }
     };
     let config = Config::load(&root)?;
     println!("{}", config_report(&root, &config)?);
     Ok(0)
+}
+
+/// `pinfold config edit`: write the project's configuration file when it is
+/// missing, then open it in the user's editor and return its exit code.
+fn config_edit() -> io::Result<i32> {
+    let project = crate::pi::context::Context::discover(&std::env::current_dir()?)?;
+    let path = crate::config::create(&project.root, project.repository)?;
+    eprintln!("pinfold config: {}", path.display());
+    let editor = ["VISUAL", "EDITOR"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .find(|value| !value.is_empty())
+        .unwrap_or_else(|| "vi".into());
+    // The editor value may carry arguments (`code -w`), as shells expect.
+    let mut script = editor;
+    script.push(" \"$1\"");
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .arg("sh")
+        .arg(&path)
+        .status()?;
+    Ok(exit_code(status))
 }
 
 fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> {
@@ -1139,20 +1165,15 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
         Ok(resolved) => (Some(resolved.is_ok()), None),
         Err(error) => (None, Some(error.to_string())),
     };
-    let trust = match trust::check(root, config) {
-        Ok(()) => serde_json::json!({ "ok": true, "detail": "ok" }),
-        Err(error) => serde_json::json!({ "ok": false, "detail": error.to_string() }),
-    };
     Ok(serde_json::json!({
         "root": utf8(root, "project root")?,
-        "mode": if config.repository { "repository" } else { "scratch" },
-        "config_source": config.source.as_deref(),
+        "config": utf8(&config.path, "configuration file")?,
         "profile": &config.profile.name,
         "image": image,
         "image_source": config.image_source(),
         "image_built": image_built,
         "image_error": image_error,
-        "containerfile": if config.image.is_some() { None } else { Some(config.containerfile.as_ref().map_or("profile", |(path, _)| path.as_str())) },
+        "containerfile": if config.image.is_some() { None } else { Some(match &config.containerfile { Some((path, _)) => utf8(path, "project Containerfile")?, None => "profile" }) },
         "egress": { "allow": &config.allow, "routes": &config.routes },
         "cpus": config.cpus,
         "memory": &config.memory,
@@ -1162,7 +1183,6 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
             "home": crate::pi::state::HOME,
             "disks": if config.repository { Some(serde_json::json!({ "home": home_disk, "project": project_disk })) } else { None },
         },
-        "trust": trust,
     }))
 }
 
@@ -1234,8 +1254,8 @@ pub(crate) fn exit_code(status: ExitStatus) -> i32 {
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
 }
 
-/// Containerfile-only contexts keep project builds covered by trust.
-/// Other files in a profile directory are not build inputs.
+/// A build's context is its Containerfile alone. Other files in a profile
+/// or project configuration directory are not build inputs.
 pub fn build(args: &[String]) -> io::Result<i32> {
     let mut profile_name = None;
     let mut cache = true;
@@ -1266,9 +1286,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
         None => {
             let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
             let config = Config::load(&root)?;
-            // A project build is a run of its config: an untrusted change
-            // stops it like it stops `pinfold pi`.
-            trust::check(&root, &config)?;
+            config.check_mounts(&root)?;
             if config.image.is_some() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,

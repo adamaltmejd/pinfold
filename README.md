@@ -87,8 +87,10 @@ Put the `pi` symlink before other `pi` executables on `PATH`.
 
 In your working folder:
 
-1. If it has a `.pinfold.toml`, run `pinfold allow`, and again after the
-   file or the Containerfile it names changes.
+1. Create its configuration: `pinfold config edit`. It writes
+   `~/.config/pinfold/projects/<id>/pinfold.toml` and opens it in your
+   editor. A project without one is refused as `no-config`; so is a moved
+   or renamed project. A project recipe is a `Containerfile` beside it.
 2. Build the selected recipe: `pinfold build`. Without a project Containerfile
    it builds the profile's recipe; with one it builds the project's.
    An explicit `image` must already be present locally and needs no build.
@@ -118,7 +120,7 @@ provider = "openai-codex"
 ```
 
 The token and refresh stay on the host across independent Pi homes.
-An explicit local `routes` table replaces the profile's routes.
+An explicit project `routes` table replaces the profile's routes.
 For scripts, add `--json` to `pinfold disk` commands for exact byte counts
 and structured results.
 
@@ -138,8 +140,9 @@ commit local work (a WIP commit is enough) to send it in.
 `pinfold push` sends host branches in as `host/*`. Each `pi` start also pushes
 and fast-forwards the guest branch when clean and strictly behind.
 
-Outside Git, each invocation starts with fresh home and work disks and an
-empty `/work`; the invoking folder is not shared. See
+Outside Git on macOS, each invocation starts with fresh home and work disks
+and an empty `/work`; the invoking folder is not shared. On Linux a folder
+outside Git is refused as `not-git`. See
 [Configuration](docs/ARCHITECTURE.md#configuration) for precedence and recipes.
 
 On normal exit, Pi gives a bounded advisory summary of outstanding work,
@@ -168,8 +171,8 @@ pinfold build --profile documents
 PINFOLD_PROFILE=documents pi
 ```
 
-Set `profile = "documents"` in the project's `.pinfold.toml` to keep the
-selection, then run `pinfold allow`.
+Set `profile = "documents"` in the project's configuration
+(`pinfold config edit`) to keep the selection.
 
 To use another local image with a profile's settings:
 
@@ -180,7 +183,7 @@ image = "localhost/pinfold/image-research-tools:latest"
 
 `image` can also be a profile default. A project `image` overrides it;
 there is no environment override. An explicit image cannot be combined with
-project `containerfile`. Pi never pulls or builds on launch. With an explicit
+a project Containerfile. Pi never pulls or builds on launch. With an explicit
 image, `pinfold build` reports that there is no selected recipe to build.
 
 Custom profiles can omit `Containerfile` when an image or project recipe is
@@ -188,7 +191,7 @@ selected. Keep Pi settings, extensions and skills in their native files under
 `home/` and `share/`. Home seeds fill missing files; changing profiles keeps
 saved settings, sessions and disks. Shared files are read-only at every start.
 `pinfold config` reports `image_source` and the selected recipe, even without
-a runtime installed. Run `pinfold allow` after changing the project's image.
+a runtime installed.
 
 ## From another agent
 
@@ -228,7 +231,7 @@ Outside Git, each invocation already has fresh disks. Save wanted files with
 
 Disk removal refuses attached disks. The two removals are separate operations;
 serialize access to the project. Use `disk rm`, never delete state or volume
-files directly. Profiles, project trust and the selected image remain intact.
+files directly. Profiles, project configuration and the selected image remain intact.
 A `sync-failed` warning means source synchronization failed even if Pi starts.
 
 ## Configuration
