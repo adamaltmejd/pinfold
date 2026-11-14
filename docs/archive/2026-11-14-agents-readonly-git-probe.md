@@ -90,7 +90,7 @@ The traces cover file/process syscalls and child processes, not just the
 agent's own process. They show:
 
 - Pi print mode starts and loads instructions without executing Git.
-- Claude reads config, repository identity, recent log, tracked settings
+- Claude reads config, repository identity, recent log, whether a settings path is tracked
   and status. Its log and status calls use `--no-optional-locks`; status
   also uses `--short --ignore-submodules=dirty`.
 - Codex runs rev-parse, remote/config queries and
