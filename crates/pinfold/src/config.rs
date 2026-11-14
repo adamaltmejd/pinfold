@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -48,27 +48,33 @@ pub fn create(root: &Path, repository: bool) -> io::Result<PathBuf> {
     let dir = project_dir(root)?;
     let path = dir.join("pinfold.toml");
     if repository {
-        // An unreadable or invalid file selects nothing; editing fixes it.
+        // A file that cannot be read or parsed selects no profile, and a
+        // profile that cannot be loaded has no paths to check: the editor
+        // must still open to fix either.
         let file = read_optional(&path)
             .ok()
             .flatten()
             .and_then(|bytes| Layer::parse(&bytes, "").ok())
             .and_then(|layer| layer.profile);
-        let name = override_value("PINFOLD_PROFILE")?
-            .or(file)
-            .unwrap_or_else(|| DEFAULT_PROFILE.to_string());
-        check_host_paths(root, &Profile::load(&name)?)?;
+        let profile = Profile::load(&profile_name(file)?).ok();
+        check_paths_outside(root, profile.as_ref())?;
     }
     if read_optional(&path)?.is_some() {
         return Ok(path);
     }
     fs::create_dir_all(&dir)?;
     // Linking a complete file into place creates it in one step, and never
-    // replaces one a concurrent edit created.
+    // replaces one a concurrent edit created. `create_new` refuses a
+    // planted staging symlink.
     let staging = dir.join(format!(".pinfold.toml.tmp-{}", std::process::id()));
-    fs::write(&staging, PROJECT_MOUNT)?;
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staging)?
+        .write_all(PROJECT_MOUNT.as_bytes())?;
     let linked = fs::hard_link(&staging, &path);
-    fs::remove_file(&staging)?;
+    // A staging file left behind is harmless; the result is the link's.
+    let _ = fs::remove_file(&staging);
     match linked {
         Err(error) if error.kind() != io::ErrorKind::AlreadyExists => Err(error),
         _ => Ok(path),
@@ -124,7 +130,7 @@ impl Config {
                 ),
             ));
         };
-        let project = Layer::parse(&bytes, &source)?;
+        let mut project = Layer::parse(&bytes, &source)?;
         let expected = toml::from_str::<toml::Table>(PROJECT_MOUNT)
             .expect("the project mount is TOML")
             .remove("mounts");
@@ -137,9 +143,9 @@ impl Config {
                 ),
             ));
         }
+        let profile_name = profile_name(project.profile.take())?;
+        let profile = Profile::load(&profile_name)?;
         let top = project.over(Layer::from_env()?);
-        let profile_name = top.profile.as_deref().unwrap_or(DEFAULT_PROFILE);
-        let profile = Profile::load(profile_name)?;
         let profile_source = format!("profile {profile_name:?} pinfold.toml");
         let profile_layer = Layer::parse(&profile.config, &profile_source)?;
         if profile_layer.mounts.is_some() {
@@ -190,12 +196,12 @@ impl Config {
     }
 
     /// Refuse a Git project that holds what configures its boxes (see
-    /// [`check_host_paths`]).
-    pub fn check_mounts(&self, root: &Path) -> io::Result<()> {
+    /// [`check_paths_outside`]).
+    pub fn check_host_paths(&self, root: &Path) -> io::Result<()> {
         if !self.repository {
             return Ok(());
         }
-        check_host_paths(root, &self.profile)
+        check_paths_outside(root, Some(&self.profile))
     }
 }
 
@@ -204,7 +210,7 @@ impl Config {
 /// project state is created: box content crosses into the project, so it
 /// must not reach them. Each file is named too, since resolving its
 /// directory does not follow a symlink below it.
-fn check_host_paths(root: &Path, profile: &Profile) -> io::Result<()> {
+fn check_paths_outside(root: &Path, profile: Option<&Profile>) -> io::Result<()> {
     let root = fs::canonicalize(root)?;
     let config_dir = dirs::config_dir()?;
     let project = project_dir(&root)?;
@@ -218,13 +224,15 @@ fn check_host_paths(root: &Path, profile: &Profile) -> io::Result<()> {
         dirs::cache_dir()?,
         crate::core::ownership::host_dir()?,
     ];
-    let dir = config_dir.join("profiles").join(&profile.name);
-    for file in ["pinfold.toml", "Containerfile", "home"] {
-        paths.push(dir.join(file));
-    }
-    paths.push(dir);
-    if let Some(share) = &profile.share {
-        paths.push(share.path()?);
+    if let Some(profile) = profile {
+        let dir = config_dir.join("profiles").join(&profile.name);
+        for file in ["pinfold.toml", "Containerfile", "home"] {
+            paths.push(dir.join(file));
+        }
+        paths.push(dir);
+        if let Some(share) = &profile.share {
+            paths.push(share.path()?);
+        }
     }
     for path in paths {
         if dirs::resolve_host_path(&path)?.starts_with(&root) {
@@ -263,9 +271,8 @@ fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Layer {
-    /// Only the project's file and `PINFOLD_PROFILE` select the profile; the
-    /// profile's own file is read after the selection, so its value is
-    /// ignored.
+    /// Read from the project's file only, by [`profile_name`]; a profile's
+    /// own value is ignored.
     profile: Option<String>,
     image: Option<String>,
     /// Checked whole against the project mount, so any other value is
@@ -287,7 +294,7 @@ impl Layer {
     /// variable, even empty, sets its key.
     fn from_env() -> io::Result<Layer> {
         Ok(Layer {
-            profile: override_value("PINFOLD_PROFILE")?,
+            profile: None,
             image: None,
             mounts: None,
             allow: override_value("PINFOLD_ALLOW")?.as_deref().map(split_list),
@@ -308,7 +315,6 @@ impl Layer {
 
     /// `self` with `higher` applied over it.
     fn over(mut self, higher: Layer) -> Layer {
-        self.profile = higher.profile.or(self.profile);
         self.image = higher.image.or(self.image);
         self.cpus = higher.cpus.or(self.cpus);
         self.memory = higher.memory.or(self.memory);
@@ -316,6 +322,14 @@ impl Layer {
         self.routes = higher.routes.or(self.routes);
         self
     }
+}
+
+/// The selected profile: `PINFOLD_PROFILE`, else the project file's
+/// `profile`, else the default.
+fn profile_name(file: Option<String>) -> io::Result<String> {
+    Ok(override_value("PINFOLD_PROFILE")?
+        .or(file)
+        .unwrap_or_else(|| DEFAULT_PROFILE.to_string()))
 }
 
 fn override_value(name: &str) -> io::Result<Option<String>> {

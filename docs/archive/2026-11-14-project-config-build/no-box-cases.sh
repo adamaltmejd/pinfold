@@ -6,9 +6,16 @@
 # a fresh maintenance stamp first, so the daily pass (which prunes dead
 # boxes and old builds host-wide) does not run. Cases that start a box
 # are in run-box-cases.sh.
+#
+# PATH holds /usr/bin, /bin and a link to the caller's git only, so
+# pinfold cannot reach `container`: a refusal that fails to hold errors
+# instead of starting a box.
 set -u
 BIN=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 W=$(mktemp -d "${TMPDIR:-/tmp}/pf.XXXX")
+mkdir "$W/bin" && ln -s "$(command -v git)" "$W/bin/git"
+export PATH=$W/bin:/usr/bin:/bin
+if command -v container >/dev/null; then echo "container is on PATH; nothing run"; exit 1; fi
 export XDG_CONFIG_HOME=$W/config XDG_STATE_HOME=$W/state PINFOLD_NO_UPDATE_CHECK=1
 unset VISUAL EDITOR PINFOLD_PROFILE PINFOLD_ALLOW PINFOLD_ROUTES PINFOLD_CPUS PINFOLD_MEMORY
 for v in $(compgen -e | grep '^PINFOLD_ENV_'); do unset "$v"; done
@@ -143,6 +150,36 @@ mkdir -p "$W/config4/pinfold/projects/$PF"
 printf 'mounts = [{ host = ".", kind = "disk" }]\nprofile = "in-project"\n' > "$W/config4/pinfold/projects/$PF/pinfold.toml"
 XDG_CONFIG_HOME=$W/config4 EDITOR=true run pinfold config edit
 XDG_CONFIG_HOME=$W/config4 run pinfold build
+
+echo "## 14. config edit: a missing profile, a planted staging file, doctor"
+git init -q "$W/proj2"; cd "$W/proj2"
+# The project's directory name, from a throwaway config root.
+P2=$(basename "$(dirname "$(XDG_CONFIG_HOME=$W/probe EDITOR=true pinfold config edit 2>&1 | sed 's/^pinfold config: //')")")
+D2=$W/config/pinfold/projects/$P2
+mkdir -p "$D2"
+echo "a symlink planted at the staging name of pinfold's pid:"
+( ln -s "$W/planted" "$D2/.pinfold.toml.tmp-$BASHPID"; EDITOR=true exec "$BIN" config edit ) </dev/null 2>&1; echo "[exit $?]"
+echo "planted target exists: $([ -e "$W/planted" ] && echo yes || echo no)"
+echo "pinfold.toml exists: $([ -e "$D2/pinfold.toml" ] && echo yes || echo no)"; echo
+rm "$D2"/.pinfold.toml.tmp-*
+echo "control, no planted file:"
+EDITOR=true run pinfold config edit
+echo "staging files left: $(ls -A "$D2" | grep -c tmp)"; echo
+echo "the file names a missing profile:"
+printf 'mounts = [{ host = ".", kind = "disk" }]\nprofile = "nope"\n' > "$D2/pinfold.toml"
+run pinfold config
+EDITOR="head -n1" run pinfold config edit
+echo "PINFOLD_PROFILE names a missing profile:"
+PINFOLD_PROFILE=nope EDITOR="head -n1" run pinfold config edit
+printf 'mounts = [{ host = ".", kind = "disk" }]\n' > "$D2/pinfold.toml"
+echo "doctor with the project's file symlinked into the checkout (its config line and exit):"
+mv "$D2/pinfold.toml" "$W/proj2/policy.toml"; ln -s "$W/proj2/policy.toml" "$D2/pinfold.toml"
+pinfold doctor </dev/null 2>&1 | grep -E '^(config|image):'; echo "[exit ${PIPESTATUS[0]}]"
+run pinfold build
+echo "control, the file in place:"
+rm "$D2/pinfold.toml"; mv "$W/proj2/policy.toml" "$D2/pinfold.toml"
+pinfold doctor </dev/null 2>&1 | grep -E '^(config|image):' | cut -c1-60; echo "[exit ${PIPESTATUS[0]}]"; echo
+cd "$W/proj"
 
 echo "## 12. A folder name with a newline"
 N="$W/new

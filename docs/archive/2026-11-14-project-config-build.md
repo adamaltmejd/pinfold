@@ -3,7 +3,7 @@
 Date: 2026-11-14, on top of main 759574b. This is step 2 of
 `2026-11-12-project-box-plan.md`. The file records what the build
 session ran on its Mac with the real binary, and what it did not run.
-This version follows the operator's review of PR #299 and a Codex
+This version follows the operator's two reviews of PR #299 and a Codex
 review of 0d0d478.
 
 ## How it was run
@@ -18,8 +18,11 @@ review of 0d0d478.
     `PINFOLD_NO_UPDATE_CHECK=1`.
   - It creates a Git project (`proj`, one empty commit) and a plain folder
     (`plain`).
-  - Every case in it is refused before a box, or only reads.
-- Full output, with paths rewritten (`/Users/user`, `$TMPDIR`):
+  - Every case in it is refused before a box, or only reads. Its PATH is
+    `/usr/bin`, `/bin` and a link to git, so pinfold cannot reach
+    `container`; `config` then reports `image_built: null` with
+    `image_error` "container is not installed or not on PATH".
+- Full output, with the work root written as `$W`:
   `2026-11-14-project-config-build/no-box-output.txt`.
 - The cases that start a box are in `run-box-cases.sh` (Started boxes,
   below). It ran outside the sandbox through an exception for that
@@ -107,6 +110,21 @@ review of 0d0d478.
       `config edit` exits 0. With no `PINFOLD_PROFILE` and a project
       file whose `profile` key is `in-project`, `config edit` and `build`
       are both refused.
+14. **Second review.** In a fresh Git project `proj2`:
+    - **Planted staging file:** a symlink to a missing path sits at
+      `.pinfold.toml.tmp-<pid>` for pinfold's own pid. `config edit` exits
+      1 with `File exists`. The symlink's target is not created and
+      `pinfold.toml` does not exist. Control: after removing it,
+      `config edit` exits 0 and leaves no staging file.
+    - **A missing profile:** the file says `profile = "nope"`. `config`
+      exits 1 with `profile "nope" has no directory …`. `config edit` with
+      `EDITOR="head -n1"` runs the editor (it prints the file's first
+      line) and exits 0. With `PINFOLD_PROFILE=nope` the same.
+    - **doctor:** with the project's file symlinked into `proj2`, `doctor`
+      prints `config: host-path-in-project: …` and no `image:` line, and
+      exits 0; `build` exits 1 with the same token. Control: with the
+      file in place, `doctor` prints its `image:` line and the config
+      report.
 12. **A folder name with a newline.** `config edit` in a Git project named
     `new\nline` exits 0. The file holds only the project mount.
 13. **macOS outside Git.** In `plain`, `config` exits 1 with
@@ -141,8 +159,8 @@ unchanged from main; it is reported to the operator, not fixed here.
 ## Started boxes
 
 `2026-11-14-project-config-build/run-box-cases.sh target/debug/pinfold`,
-run from the worktree root at 71a60f4 with the debug build of 8437f32's
-code. Output: `2026-11-14-project-config-build/box-output.txt`, where `$W`
+run from the worktree root with the debug build of the second review's
+fixes. It was first run at 71a60f4 with the same results. Output: `2026-11-14-project-config-build/box-output.txt`, where `$W`
 is the script's work root.
 
 The script:

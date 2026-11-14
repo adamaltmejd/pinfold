@@ -34,7 +34,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
             "git-discovery: repository changed during configuration",
         ));
     }
-    config.check_mounts(&root)?;
+    config.check_host_paths(&root)?;
     context.verify()?;
     let id = project_id(&root);
     let _project = config
@@ -174,7 +174,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
     let root = project_root(&env::current_dir()?)?;
     require_repo(&root)?;
     let config = Config::load(&root)?;
-    config.check_mounts(&root)?;
+    config.check_host_paths(&root)?;
     let id = project_id(&root);
     let [_, disk] = state::disk_names(&id);
     let guest = utf8(&root, "project root")?.to_string();

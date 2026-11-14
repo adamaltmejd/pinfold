@@ -990,8 +990,11 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     let cwd = std::env::current_dir()?;
     // Host diagnostics run anywhere; a project that cannot be configured
     // is one finding among them.
-    let project = crate::pi::launch::project_root(&cwd)
-        .and_then(|root| Config::load(&root).map(|config| (root, config)));
+    let project = crate::pi::launch::project_root(&cwd).and_then(|root| {
+        let config = Config::load(&root)?;
+        config.check_host_paths(&root)?;
+        Ok((root, config))
+    });
 
     println!(
         "pinfold doctor: {}",
@@ -1286,7 +1289,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
         None => {
             let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
             let config = Config::load(&root)?;
-            config.check_mounts(&root)?;
+            config.check_host_paths(&root)?;
             if config.image.is_some() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
