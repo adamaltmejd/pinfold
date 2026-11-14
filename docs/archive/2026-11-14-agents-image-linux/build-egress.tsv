@@ -1,0 +1,26 @@
+# All audit decisions, grouped by exact host/decision/reason; only time omitted.
+# B1-B6 refer to results.txt. Each id names /tmp/pfl298/state/pinfold/runs/ID/egress.jsonl.
+# B1 68e9b8407d30579654e90487e2eae7fd93618ea01529d132990c6902993bad35
+# B2 5747e3e5c78f372e19bcc780d2bc88da52fc9849387039bf9c381a2fae8f2a81
+# B3 fda70236a58aa7a7dc6f7dcb12333792049d398637eea73570bc2af3f0fd5ffb
+# B4 3eaa38785a1adb4fc93b093916d29d5ba6d4972cdd3a425e440a64bd164118ca
+# B5 d451f1903a7b095aebf4056a6b36888b2ac8ec8a75d75e632932c8347adf7f62
+# B6 549cc0f55efd4a30a1cbf1ce99e426bcdee3d83c9edc9554d9677f6bad13a0a5
+case	host	decision	reason	count
+B1	auth.docker.io	allowed	allowlisted	1
+B1	deb.debian.org	allowed	allowlisted	62
+B1	registry-1.docker.io	allowed	allowlisted	1
+B1	nodejs.org	refused	not allowlisted	1
+B2	auth.docker.io	allowed	allowlisted	1
+B2	deb.debian.org	allowed	allowlisted	12
+B2	nodejs.org	allowed	allowlisted	2
+B2	registry-1.docker.io	allowed	allowlisted	1
+B2	registry.npmjs.org	allowed	allowlisted	17
+B3	auth.docker.io	allowed	allowlisted	1
+B3	registry-1.docker.io	allowed	allowlisted	1
+B4	auth.docker.io	allowed	allowlisted	1
+B4	registry-1.docker.io	allowed	allowlisted	1
+B5	auth.docker.io	allowed	allowlisted	1
+B5	registry-1.docker.io	allowed	allowlisted	1
+B6	auth.docker.io	allowed	allowlisted	1
+B6	registry-1.docker.io	allowed	allowlisted	1
