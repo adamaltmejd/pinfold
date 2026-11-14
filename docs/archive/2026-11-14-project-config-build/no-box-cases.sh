@@ -77,6 +77,16 @@ XDG_STATE_HOME=$W/statelink/missing/state XDG_CONFIG_HOME=$W/config2 run $BIN pi
 XDG_STATE_HOME=$W/statelink/missing/state XDG_CONFIG_HOME=$W/config2 run $BIN build
 XDG_STATE_HOME=$W/statelink/missing/state XDG_CONFIG_HOME=$W/config2 run $BIN push
 echo "created under the symlinked state root (the daily maintenance pass runs before the verb):"; find "$W/proj/link-target" ; echo
+echo "## 11b. The project's file or Containerfile symlinked into the project"
+mkdir -p "$W/config3/pinfold/projects/$PF"
+cp "$F" "$W/proj/policy.toml"; ln -s "$W/proj/policy.toml" "$W/config3/pinfold/projects/$PF/pinfold.toml"
+XDG_CONFIG_HOME=$W/config3 run $BIN pi
+XDG_CONFIG_HOME=$W/config3 run $BIN build
+XDG_CONFIG_HOME=$W/config3 run $BIN push
+rm "$W/config3/pinfold/projects/$PF/pinfold.toml"; cp "$F" "$W/config3/pinfold/projects/$PF/pinfold.toml"
+printf 'FROM localhost/pinfold/profile-default:latest\n' > "$W/proj/Recipe"; ln -s "$W/proj/Recipe" "$W/config3/pinfold/projects/$PF/Containerfile"
+XDG_CONFIG_HOME=$W/config3 run $BIN pi
+XDG_CONFIG_HOME=$W/config3 run $BIN build
 echo "control: the same project with external roots passes the check:"
 run $BIN pi
 run $BIN build

@@ -8,10 +8,19 @@
 # It creates boxes only through pinfold, which removes each on exit. It
 # uses no credentials. If the container service was stopped, it starts it
 # and stops it again at the end.
+#
+# pinfold's daily maintenance pass prunes dead boxes host-wide and old
+# image builds in the shared store when its state root's stamp is missing
+# or a day old. The script writes a fresh stamp into each state root it
+# uses, so the pass does not run.
+#
+# Only syntax-checked (bash -n) by the build session: it could not run
+# `container` at all.
 set -u
 BIN=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 W=$(mktemp -d "${TMPDIR:-/tmp}/pfbox.XXXX")
 export XDG_CONFIG_HOME=$W/config XDG_STATE_HOME=$W/state PINFOLD_NO_UPDATE_CHECK=1
+mkdir -p "$W/state/pinfold" && touch "$W/state/pinfold/maintenance"
 unset VISUAL EDITOR PINFOLD_PROFILE PINFOLD_ALLOW PINFOLD_ROUTES
 run() { echo "\$ $*"; "$@" </dev/null 2>&1; echo "[exit $?]"; echo; }
 boxes() { container list --all --format json 2>/dev/null | grep -o '"dev.pinfold.project":"[^"]*"' | sort; }
@@ -45,7 +54,8 @@ run "$BIN" push
 run "$BIN" fetch
 
 echo "## C. host-path-in-project: refused before a box; external roots run"
-mkdir -p "$W/proj/inside"
+mkdir -p "$W/proj/inside/missing/state/pinfold"
+touch "$W/proj/inside/missing/state/pinfold/maintenance"
 ln -s "$W/proj/inside" "$W/statelink"
 mkdir -p "$W/config2/pinfold"; cp -R "$W/config/pinfold/projects" "$W/config2/pinfold/"
 before=$(boxes)

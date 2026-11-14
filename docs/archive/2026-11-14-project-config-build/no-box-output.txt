@@ -1,39 +1,39 @@
 ## 1. No configuration
 $ pinfold config
-pinfold config: no-config: $TMPDIR/pf.z9jm/proj has no configuration; run `pinfold config edit`
+pinfold config: no-config: $TMPDIR/pf.AAbY/proj has no configuration; run `pinfold config edit`
 [exit 1]
 
 $ pinfold pi
 pinfold: maintenance: boxes: container list --all --format json: Error: The operation couldn’t be completed. Operation not permitted
 pinfold: maintenance: images: container image list --format json: Error: The operation couldn’t be completed. Operation not permitted
-pinfold pi: no-config: $TMPDIR/pf.z9jm/proj has no configuration; run `pinfold config edit`
+pinfold pi: no-config: $TMPDIR/pf.AAbY/proj has no configuration; run `pinfold config edit`
 [exit 1]
 
 $ pinfold build
-pinfold build: no-config: $TMPDIR/pf.z9jm/proj has no configuration; run `pinfold config edit`
+pinfold build: no-config: $TMPDIR/pf.AAbY/proj has no configuration; run `pinfold config edit`
 [exit 1]
 
 $ pinfold push
-pinfold push: no-config: $TMPDIR/pf.z9jm/proj has no configuration; run `pinfold config edit`
+pinfold push: no-config: $TMPDIR/pf.AAbY/proj has no configuration; run `pinfold config edit`
 [exit 1]
 
 $ pinfold fetch
-pinfold fetch: no-config: $TMPDIR/pf.z9jm/proj has no configuration; run `pinfold config edit`
+pinfold fetch: no-config: $TMPDIR/pf.AAbY/proj has no configuration; run `pinfold config edit`
 [exit 1]
 
 $ pinfold doctor
-pinfold doctor: no-config: $TMPDIR/pf.z9jm/proj has no configuration; run `pinfold config edit`
+pinfold doctor: no-config: $TMPDIR/pf.AAbY/proj has no configuration; run `pinfold config edit`
 [exit 1]
 
 state/config trees after refusals:
-find: $TMPDIR/pf.z9jm/config: No such file or directory
-$TMPDIR/pf.z9jm/state
-$TMPDIR/pf.z9jm/state/pinfold
-$TMPDIR/pf.z9jm/state/pinfold/maintenance
+find: $TMPDIR/pf.AAbY/config: No such file or directory
+$TMPDIR/pf.AAbY/state
+$TMPDIR/pf.AAbY/state/pinfold
+$TMPDIR/pf.AAbY/state/pinfold/maintenance
 
 ## 2. A .pinfold.toml in the project is not read
 $ pinfold config
-pinfold config: no-config: $TMPDIR/pf.z9jm/proj has no configuration; run `pinfold config edit`
+pinfold config: no-config: $TMPDIR/pf.AAbY/proj has no configuration; run `pinfold config edit`
 [exit 1]
 
 ## 3. pinfold allow is gone
@@ -67,61 +67,61 @@ pinfold config edit
 [exit 0]
 
 $ pinfold config edit
-pinfold config: $TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/pinfold.toml
+pinfold config: $TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/pinfold.toml
 [exit 0]
 
-file: $TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/pinfold.toml
-# pinfold configuration for $TMPDIR/pf.z9jm/proj
+file: $TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/pinfold.toml
+# pinfold configuration for $TMPDIR/pf.AAbY/proj
 mounts = [{ host = ".", kind = "disk" }]
 
 $ pinfold config
-{"config":"$TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/pinfold.toml","containerfile":"profile","cpus":4.0,"egress":{"allow":["api.anthropic.com","platform.claude.com","api.openai.com","auth.openai.com","chatgpt.com","openrouter.ai","opencode.ai","registry.npmjs.org","pi.dev"],"routes":{}},"env":[],"image":"localhost/pinfold/profile-default:latest","image_built":false,"image_error":null,"image_source":"profile","memory":"8G","mounts":[{"host":".","kind":"disk"}],"profile":"default","project":{"disks":{"home":"pi-proj-705afd5c13e4-home","project":"pi-proj-705afd5c13e4-project"},"home":"/home/pi","id":"proj-705afd5c13e4"},"root":"$TMPDIR/pf.z9jm/proj"}
+{"config":"$TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/pinfold.toml","containerfile":"profile","cpus":4.0,"egress":{"allow":["api.anthropic.com","platform.claude.com","api.openai.com","auth.openai.com","chatgpt.com","openrouter.ai","opencode.ai","registry.npmjs.org","pi.dev"],"routes":{}},"env":[],"image":"localhost/pinfold/profile-default:latest","image_built":false,"image_error":null,"image_source":"profile","memory":"8G","mounts":[{"host":".","kind":"disk"}],"profile":"default","project":{"disks":{"home":"pi-proj-163ef20fadcb-home","project":"pi-proj-163ef20fadcb-project"},"home":"/home/pi","id":"proj-163ef20fadcb"},"root":"$TMPDIR/pf.AAbY/proj"}
 [exit 0]
 
 $ pinfold config edit
-pinfold config: $TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/pinfold.toml
+pinfold config: $TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/pinfold.toml
 [exit 0]
 
 existing file unchanged
 
 $ pinfold config edit
-pinfold config: $TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/pinfold.toml
+pinfold config: $TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/pinfold.toml
 [exit 1]
 
 $ pinfold config edit
-pinfold config: $TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/pinfold.toml
-# pinfold configuration for $TMPDIR/pf.z9jm/proj
+pinfold config: $TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/pinfold.toml
+# pinfold configuration for $TMPDIR/pf.AAbY/proj
 [exit 0]
 
 ## 5. Mount validation
 kind share:
 $ pinfold config
-pinfold config: $TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/pinfold.toml: spec: `mounts` must be exactly mounts = [{ host = ".", kind = "disk" }]
+pinfold config: $TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/pinfold.toml: spec: `mounts` must be exactly mounts = [{ host = ".", kind = "disk" }]
 [exit 1]
 
 host /tmp:
 $ pinfold config
-pinfold config: $TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/pinfold.toml: spec: `mounts` must be exactly mounts = [{ host = ".", kind = "disk" }]
+pinfold config: $TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/pinfold.toml: spec: `mounts` must be exactly mounts = [{ host = ".", kind = "disk" }]
 [exit 1]
 
 table form of the project mount:
 $ pinfold config
-{"config":"$TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/pinfold.toml","containerfile":"profile","cpus":4.0,"egress":{"allow":["api.anthropic.com","platform.claude.com","api.openai.com","auth.openai.com","chatgpt.com","openrouter.ai","opencode.ai","registry.npmjs.org","pi.dev"],"routes":{}},"env":[],"image":"localhost/pinfold/profile-default:latest","image_built":false,"image_error":null,"image_source":"profile","memory":"8G","mounts":[{"host":".","kind":"disk"}],"profile":"default","project":{"disks":{"home":"pi-proj-705afd5c13e4-home","project":"pi-proj-705afd5c13e4-project"},"home":"/home/pi","id":"proj-705afd5c13e4"},"root":"$TMPDIR/pf.z9jm/proj"}
+{"config":"$TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/pinfold.toml","containerfile":"profile","cpus":4.0,"egress":{"allow":["api.anthropic.com","platform.claude.com","api.openai.com","auth.openai.com","chatgpt.com","openrouter.ai","opencode.ai","registry.npmjs.org","pi.dev"],"routes":{}},"env":[],"image":"localhost/pinfold/profile-default:latest","image_built":false,"image_error":null,"image_source":"profile","memory":"8G","mounts":[{"host":".","kind":"disk"}],"profile":"default","project":{"disks":{"home":"pi-proj-163ef20fadcb-home","project":"pi-proj-163ef20fadcb-project"},"home":"/home/pi","id":"proj-163ef20fadcb"},"root":"$TMPDIR/pf.AAbY/proj"}
 [exit 0]
 
 no mounts:
 $ pinfold config
-pinfold config: $TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/pinfold.toml: spec: `mounts` must be exactly mounts = [{ host = ".", kind = "disk" }]
+pinfold config: $TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/pinfold.toml: spec: `mounts` must be exactly mounts = [{ host = ".", kind = "disk" }]
 [exit 1]
 
 two mounts:
 $ pinfold config
-pinfold config: $TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/pinfold.toml: spec: `mounts` must be exactly mounts = [{ host = ".", kind = "disk" }]
+pinfold config: $TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/pinfold.toml: spec: `mounts` must be exactly mounts = [{ host = ".", kind = "disk" }]
 [exit 1]
 
 unknown mount key:
 $ pinfold config
-pinfold config: $TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/pinfold.toml: TOML parse error at line 1, column 40
+pinfold config: $TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/pinfold.toml: TOML parse error at line 1, column 40
   |
 1 | mounts = [{ host = ".", kind = "disk", guest = "/x" }]
   |                                        ^^^^^
@@ -131,7 +131,7 @@ unknown field `guest`, expected `host` or `kind`
 
 old containerfile key:
 $ pinfold config
-pinfold config: $TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/pinfold.toml: TOML parse error at line 2, column 1
+pinfold config: $TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/pinfold.toml: TOML parse error at line 2, column 1
   |
 2 | containerfile = "Containerfile"
   | ^^^^^^^^^^^^^
@@ -146,7 +146,7 @@ pinfold config: profile "withmounts" pinfold.toml: `mounts` is a project key
 
 ## 7. Project recipe beside the file
 $ pinfold config
-{"config":"$TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/pinfold.toml","containerfile":"$TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/Containerfile","cpus":4.0,"egress":{"allow":["only.example"],"routes":{}},"env":[],"image":"localhost/pinfold/project-proj-705afd5c13e4:latest","image_built":false,"image_error":null,"image_source":"project","memory":"8G","mounts":[{"host":".","kind":"disk"}],"profile":"default","project":{"disks":{"home":"pi-proj-705afd5c13e4-home","project":"pi-proj-705afd5c13e4-project"},"home":"/home/pi","id":"proj-705afd5c13e4"},"root":"$TMPDIR/pf.z9jm/proj"}
+{"config":"$TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/pinfold.toml","containerfile":"$TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/Containerfile","cpus":4.0,"egress":{"allow":["only.example"],"routes":{}},"env":[],"image":"localhost/pinfold/project-proj-163ef20fadcb:latest","image_built":false,"image_error":null,"image_source":"project","memory":"8G","mounts":[{"host":".","kind":"disk"}],"profile":"default","project":{"disks":{"home":"pi-proj-163ef20fadcb-home","project":"pi-proj-163ef20fadcb-project"},"home":"/home/pi","id":"proj-163ef20fadcb"},"root":"$TMPDIR/pf.AAbY/proj"}
 [exit 0]
 
 $ pinfold config
@@ -155,40 +155,61 @@ pinfold config: configuration: image-source-conflict: image and project Containe
 
 ## 8. Dangling configuration symlink
 $ pinfold config
-pinfold config: $TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/pinfold.toml: file is not readable
+pinfold config: $TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/pinfold.toml: file is not readable
 [exit 1]
 
 ## 9. Global pinfold.toml is not read
 $ pinfold config
-{"config":"$TMPDIR/pf.z9jm/config/pinfold/projects/proj-705afd5c13e4/pinfold.toml","containerfile":"profile","cpus":4.0,"egress":{"allow":["api.anthropic.com","platform.claude.com","api.openai.com","auth.openai.com","chatgpt.com","openrouter.ai","opencode.ai","registry.npmjs.org","pi.dev"],"routes":{}},"env":[],"image":"localhost/pinfold/profile-default:latest","image_built":false,"image_error":null,"image_source":"profile","memory":"8G","mounts":[{"host":".","kind":"disk"}],"profile":"default","project":{"disks":{"home":"pi-proj-705afd5c13e4-home","project":"pi-proj-705afd5c13e4-project"},"home":"/home/pi","id":"proj-705afd5c13e4"},"root":"$TMPDIR/pf.z9jm/proj"}
+{"config":"$TMPDIR/pf.AAbY/config/pinfold/projects/proj-163ef20fadcb/pinfold.toml","containerfile":"profile","cpus":4.0,"egress":{"allow":["api.anthropic.com","platform.claude.com","api.openai.com","auth.openai.com","chatgpt.com","openrouter.ai","opencode.ai","registry.npmjs.org","pi.dev"],"routes":{}},"env":[],"image":"localhost/pinfold/profile-default:latest","image_built":false,"image_error":null,"image_source":"profile","memory":"8G","mounts":[{"host":".","kind":"disk"}],"profile":"default","project":{"disks":{"home":"pi-proj-163ef20fadcb-home","project":"pi-proj-163ef20fadcb-project"},"home":"/home/pi","id":"proj-163ef20fadcb"},"root":"$TMPDIR/pf.AAbY/proj"}
 [exit 0]
 
 ## 10. A moved copy is a new project
 $ pinfold config
-pinfold config: no-config: $TMPDIR/pf.z9jm/proj-moved has no configuration; run `pinfold config edit`
+pinfold config: no-config: $TMPDIR/pf.AAbY/proj-moved has no configuration; run `pinfold config edit`
 [exit 1]
 
 ## 11. host-path-in-project
 $ pinfold pi
 pinfold: maintenance: boxes: container list --all --format json: Error: The operation couldn’t be completed. Operation not permitted
 pinfold: maintenance: images: container image list --format json: Error: The operation couldn’t be completed. Operation not permitted
-pinfold pi: host-path-in-project: $TMPDIR/pf.z9jm/statelink/missing/state/pinfold resolves inside $TMPDIR/pf.z9jm/proj
+pinfold pi: host-path-in-project: $TMPDIR/pf.AAbY/statelink/missing/state/pinfold resolves inside $TMPDIR/pf.AAbY/proj
 [exit 1]
 
 $ pinfold build
-pinfold build: host-path-in-project: $TMPDIR/pf.z9jm/statelink/missing/state/pinfold resolves inside $TMPDIR/pf.z9jm/proj
+pinfold build: host-path-in-project: $TMPDIR/pf.AAbY/statelink/missing/state/pinfold resolves inside $TMPDIR/pf.AAbY/proj
 [exit 1]
 
 $ pinfold push
-pinfold push: host-path-in-project: $TMPDIR/pf.z9jm/statelink/missing/state/pinfold resolves inside $TMPDIR/pf.z9jm/proj
+pinfold push: host-path-in-project: $TMPDIR/pf.AAbY/statelink/missing/state/pinfold resolves inside $TMPDIR/pf.AAbY/proj
 [exit 1]
 
 created under the symlinked state root (the daily maintenance pass runs before the verb):
-$TMPDIR/pf.z9jm/proj/link-target
-$TMPDIR/pf.z9jm/proj/link-target/missing
-$TMPDIR/pf.z9jm/proj/link-target/missing/state
-$TMPDIR/pf.z9jm/proj/link-target/missing/state/pinfold
-$TMPDIR/pf.z9jm/proj/link-target/missing/state/pinfold/maintenance
+$TMPDIR/pf.AAbY/proj/link-target
+$TMPDIR/pf.AAbY/proj/link-target/missing
+$TMPDIR/pf.AAbY/proj/link-target/missing/state
+$TMPDIR/pf.AAbY/proj/link-target/missing/state/pinfold
+$TMPDIR/pf.AAbY/proj/link-target/missing/state/pinfold/maintenance
+
+## 11b. The project's file or Containerfile symlinked into the project
+$ pinfold pi
+pinfold pi: host-path-in-project: $TMPDIR/pf.AAbY/config3/pinfold/projects/proj-163ef20fadcb/pinfold.toml resolves inside $TMPDIR/pf.AAbY/proj
+[exit 1]
+
+$ pinfold build
+pinfold build: host-path-in-project: $TMPDIR/pf.AAbY/config3/pinfold/projects/proj-163ef20fadcb/pinfold.toml resolves inside $TMPDIR/pf.AAbY/proj
+[exit 1]
+
+$ pinfold push
+pinfold push: host-path-in-project: $TMPDIR/pf.AAbY/config3/pinfold/projects/proj-163ef20fadcb/pinfold.toml resolves inside $TMPDIR/pf.AAbY/proj
+[exit 1]
+
+$ pinfold pi
+pinfold pi: host-path-in-project: $TMPDIR/pf.AAbY/config3/pinfold/projects/proj-163ef20fadcb/Containerfile resolves inside $TMPDIR/pf.AAbY/proj
+[exit 1]
+
+$ pinfold build
+pinfold build: host-path-in-project: $TMPDIR/pf.AAbY/config3/pinfold/projects/proj-163ef20fadcb/Containerfile resolves inside $TMPDIR/pf.AAbY/proj
+[exit 1]
 
 control: the same project with external roots passes the check:
 $ pinfold pi
@@ -203,19 +224,19 @@ pinfold build: the container build failed
 
 ## 12. macOS outside Git
 $ pinfold config
-pinfold config: no-config: $TMPDIR/pf.z9jm/plain has no configuration; run `pinfold config edit`
+pinfold config: no-config: $TMPDIR/pf.AAbY/plain has no configuration; run `pinfold config edit`
 [exit 1]
 
 $ pinfold config edit
-pinfold config: $TMPDIR/pf.z9jm/config/pinfold/projects/plain-de8b1af8335e/pinfold.toml
+pinfold config: $TMPDIR/pf.AAbY/config/pinfold/projects/plain-ce04b3500f3f/pinfold.toml
 [exit 0]
 
 $ pinfold config
-{"config":"$TMPDIR/pf.z9jm/config/pinfold/projects/plain-de8b1af8335e/pinfold.toml","containerfile":"profile","cpus":4.0,"egress":{"allow":["api.anthropic.com","platform.claude.com","api.openai.com","auth.openai.com","chatgpt.com","openrouter.ai","opencode.ai","registry.npmjs.org","pi.dev"],"routes":{}},"env":[],"image":"localhost/pinfold/profile-default:latest","image_built":false,"image_error":null,"image_source":"profile","memory":"8G","mounts":[{"host":".","kind":"disk"}],"profile":"default","project":{"disks":null,"home":"/home/pi","id":"plain-de8b1af8335e"},"root":"$TMPDIR/pf.z9jm/plain"}
+{"config":"$TMPDIR/pf.AAbY/config/pinfold/projects/plain-ce04b3500f3f/pinfold.toml","containerfile":"profile","cpus":4.0,"egress":{"allow":["api.anthropic.com","platform.claude.com","api.openai.com","auth.openai.com","chatgpt.com","openrouter.ai","opencode.ai","registry.npmjs.org","pi.dev"],"routes":{}},"env":[],"image":"localhost/pinfold/profile-default:latest","image_built":false,"image_error":null,"image_source":"profile","memory":"8G","mounts":[{"host":".","kind":"disk"}],"profile":"default","project":{"disks":null,"home":"/home/pi","id":"plain-ce04b3500f3f"},"root":"$TMPDIR/pf.AAbY/plain"}
 [exit 0]
 
 $ pinfold pi
 pinfold pi: image localhost/pinfold/profile-default:latest is missing; run `pinfold build --profile default`
 [exit 1]
 
-workdir: $TMPDIR/pf.z9jm
+workdir: $TMPDIR/pf.AAbY

@@ -182,6 +182,11 @@ impl Config {
         if let Some(share) = &self.profile.share {
             paths.push(share.path()?);
         }
+        // The project's own directory and files, each of which may be a
+        // symlink the config root's resolution does not follow.
+        paths.push(self.path.clone());
+        paths.extend(self.path.parent().map(Path::to_path_buf));
+        paths.extend(self.containerfile.as_ref().map(|(path, _)| path.clone()));
         for path in paths {
             if dirs::resolve_host_path(&path)?.starts_with(&root) {
                 return Err(io::Error::new(

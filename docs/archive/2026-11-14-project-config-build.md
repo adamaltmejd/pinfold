@@ -99,7 +99,15 @@ ran on its Mac with the real binary, and what it did not run.
     and stopped at the lock directory
     (`Operation not permitted (os error 1)`). `build` passed it and
     stopped at the container build.
-12. **macOS outside Git.** In `plain`:
+12. **The project's own files symlinked into the project.** Under a third
+    config root, the project's `pinfold.toml` is a symlink to
+    `proj/policy.toml`. `pi`, `build` and `push` each exit 1 with
+    `host-path-in-project: …/projects/proj-<hash>/pinfold.toml resolves inside …/proj`.
+    With a plain file there and the `Containerfile` a symlink to
+    `proj/Recipe`, `pi` and `build` exit 1 naming the `Containerfile`.
+    The first version of this change missed this case; review found it
+    before the PR.
+13. **macOS outside Git.** In `plain`:
     - `config` exits 1 with `no-config`;
     - `EDITOR=true pinfold config edit` exits 0;
     - `config` then exits 0, with `project.disks` null;
@@ -119,7 +127,11 @@ Checks:
 
 All of these are "not run (sandbox)".
 `2026-11-14-project-config-build/run-box-cases.sh BINARY` runs them
-outside the sandbox; its output is added here before merge.
+outside the sandbox; its output is added here before merge. The script
+was only syntax-checked: `container system status` and
+`container image inspect`, which it calls, were never run. It writes a
+fresh maintenance stamp into each state root it uses, so the daily pass
+does not prune boxes or images host-wide.
 
 - A. A project with no configuration creates no box.
 - B. A configured Git project starts (`pinfold pi --version`), and `push`
