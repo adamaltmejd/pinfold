@@ -6,7 +6,8 @@
       "./target/debug/pinfold *",
       "./target/release/pinfold *",
       "codex *",
-      "labvm *"
+      "labvm *",
+      "bash docs/archive/*/run-box-cases.sh *"
     ],
     "filesystem": {
       "allowWrite": ["/private/tmp/pinfold-501"]
