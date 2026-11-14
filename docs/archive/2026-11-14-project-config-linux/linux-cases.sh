@@ -6,6 +6,9 @@ set -u
 BIN=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 W=$(mktemp -d /tmp/pfl.XXXX)
 export XDG_CONFIG_HOME=$W/config XDG_STATE_HOME=$W/state PINFOLD_NO_UPDATE_CHECK=1
+export PINFOLD_CPUS=2 PINFOLD_MEMORY=1G
+mkdir -p "$XDG_STATE_HOME/pinfold"
+touch "$XDG_STATE_HOME/pinfold/maintenance"
 unset VISUAL EDITOR
 pinfold() { "$BIN" "$@"; }
 scrub() { sed -e "s#$W#\$W#g" -e "s#$HOME#~#g" -e "s#$(id -un)#user#g"; }
@@ -29,7 +32,15 @@ run pinfold pi --version
 echo "project state dirs: $(ls "$W/state/pinfold/projects" 2>/dev/null | wc -l)"; echo
 
 echo "## B. Configured Git project starts (positive control)"
+run pinfold profile new probe-linux294 --from default
+export PINFOLD_PROFILE=probe-linux294
 EDITOR=true run pinfold config edit
+df -BG /
+AVAILABLE=$(df -B1 --output=avail / | tail -1)
+if (( AVAILABLE < 12 * 1024 * 1024 * 1024 )); then
+    echo "under 12 GiB free; build not run"
+    exit 1
+fi
 run pinfold build
 run pinfold pi --version
 run pinfold push

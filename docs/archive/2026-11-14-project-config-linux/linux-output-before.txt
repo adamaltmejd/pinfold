@@ -1,0 +1,69 @@
+## D. Outside Git: refused as not-git, nothing created
+$ pinfold pi --version
+pinfold pi: not-git: $W/plain is not a git repository; a Linux project is a Git checkout
+[exit 1]
+
+$ pinfold config edit
+pinfold config: not-git: $W/plain is not a git repository; a Linux project is a Git checkout
+[exit 1]
+
+$ pinfold config
+pinfold config: not-git: $W/plain is not a git repository; a Linux project is a Git checkout
+[exit 1]
+
+$ pinfold build
+pinfold build: not-git: $W/plain is not a git repository; a Linux project is a Git checkout
+[exit 1]
+
+entries under config and state roots: 2
+
+## A. No configuration: refused
+$ pinfold pi --version
+pinfold pi: no-config: $W/proj has no configuration; run `pinfold config edit`
+[exit 1]
+
+project state dirs: 0
+
+## B. Configured Git project starts (positive control)
+$ pinfold config edit
+pinfold config: $W/config/pinfold/projects/proj-e1e5118deb92/pinfold.toml
+[exit 0]
+
+$ pinfold build
+pinfold: building profile default
+pinfold: build run 175e44bf23902eebeba0831c401b4da7ac3f4359f57c1095010dc3092b976236; egress log $W/state/pinfold/runs/175e44bf23902eebeba0831c401b4da7ac3f4359f57c1095010dc3092b976236/egress.jsonl
+builder exited before handshakepinfold build: the BuildKit build failed
+[exit 1]
+
+$ pinfold pi --version
+pinfold pi: image localhost/pinfold/profile-default:latest is missing; run `pinfold build --profile default`
+[exit 1]
+
+$ pinfold push
+pinfold push: this project has no project disk yet; start it with `pinfold pi`
+[exit 1]
+
+$ pinfold fetch
+pinfold fetch: this project has no project disk yet; start it with `pinfold pi`
+[exit 1]
+
+## E. mounts other than the template: refused as spec
+1:mounts = [{ host = "/etc", kind = "share" }]
+$ pinfold pi --version
+pinfold pi: $W/config/pinfold/projects/proj-e1e5118deb92/pinfold.toml: spec: `mounts` must be exactly mounts = [{ host = ".", kind = "disk" }]
+[exit 1]
+
+## C. host-path-in-project: refused; external roots run
+$ pinfold pi --version
+pinfold pi: host-path-in-project: $W/cachelink/missing/cache/pinfold/artifacts resolves inside $W/proj
+[exit 1]
+
+under proj/inside: 0 entries
+
+$ pinfold pi --version
+pinfold pi: image localhost/pinfold/profile-default:latest is missing; run `pinfold build --profile default`
+[exit 1]
+
+## Cleanup
+$ pinfold disk rm --all
+[exit 0]

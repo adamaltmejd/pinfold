@@ -1,0 +1,75 @@
+$ git rev-parse HEAD
+7379a7334f166388f8c314beaff320da62878c1c
+$ git status --short
+$ uname -r
+6.12.107+deb13-cloud-amd64
+$ df -BG /
+Filesystem     1G-blocks  Used Available Use% Mounted on
+/dev/sda1            32G    8G       23G  25% /
+$ free -m
+               total        used        free      shared  buff/cache   available
+Mem:            3922         420        1766           0        2022        3502
+Swap:              0           0           0
+$ RUSTC_WRAPPER= cargo build --locked --target x86_64-unknown-linux-musl
+   Compiling libc v0.2.191
+   Compiling proc-macro2 v1.0.107
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.15
+   Compiling unicode-ident v1.0.27
+   Compiling quote v1.0.47
+   Compiling serde_core v1.0.229
+   Compiling cc v1.11.1
+   Compiling cfg-if v1.0.5
+   Compiling ring v0.17.14
+   Compiling typenum v1.20.1
+   Compiling hybrid-array v0.4.15
+   Compiling syn v3.0.10
+   Compiling autocfg v1.5.1
+   Compiling memoffset v0.9.1
+   Compiling zmij v1.0.23
+   Compiling zeroize v1.9.1
+   Compiling cfg_aliases v0.2.2
+   Compiling nix v0.31.3
+   Compiling rustls-pki-types v1.16.0
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling getrandom v0.2.17
+   Compiling serde_json v1.0.154
+   Compiling untrusted v0.9.0
+   Compiling const-oid v0.10.3
+   Compiling serde v1.0.229
+   Compiling digest v0.11.3
+   Compiling serde_derive v1.0.229
+   Compiling errno v0.3.14
+   Compiling bitflags v2.13.2
+   Compiling httparse v1.10.1
+   Compiling rustls v0.23.46
+   Compiling cpufeatures v0.3.1
+   Compiling itoa v1.0.19
+   Compiling winnow v1.0.5
+   Compiling memchr v2.8.3
+   Compiling toml_parser v1.1.5+spec-1.1.0
+   Compiling sha2 v0.11.1
+   Compiling signal-hook-registry v1.4.8
+   Compiling rustls-webpki v0.103.16
+   Compiling tokio-macros v2.7.2
+   Compiling serde_spanned v1.1.3
+   Compiling toml_datetime v1.1.3+spec-1.1.0
+   Compiling mio v1.2.4
+   Compiling socket2 v0.6.5
+   Compiling once_cell v1.21.4
+   Compiling pinfold v0.5.5 (/home/user/pinfold/crates/pinfold)
+   Compiling pin-project-lite v0.2.17
+   Compiling subtle v2.6.1
+   Compiling openssl-probe v0.2.2
+   Compiling bytes v1.12.1
+   Compiling rustls-native-certs v0.8.5
+   Compiling tokio v1.54.1
+   Compiling toml v1.2.1+spec-1.1.0
+   Compiling pinfold-init v0.5.5 (/home/user/pinfold/crates/pinfold-init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 39.04s
+build exit:
+0
+$ file target/x86_64-unknown-linux-musl/debug/pinfold
+target/x86_64-unknown-linux-musl/debug/pinfold: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), static-pie linked, BuildID[sha1]=c0a3f327668776aecee3e0786384d5d2e15aa434, with debug_info, not stripped
+$ readelf -l target/x86_64-unknown-linux-musl/debug/pinfold (interpreter)

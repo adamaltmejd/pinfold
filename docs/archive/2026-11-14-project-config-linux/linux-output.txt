@@ -25,32 +25,37 @@ pinfold pi: no-config: $W/proj has no configuration; run `pinfold config edit`
 project state dirs: 0
 
 ## B. Configured Git project starts (positive control)
-$ pinfold config edit
-pinfold config: $W/config/pinfold/projects/proj-e1e5118deb92/pinfold.toml
+$ pinfold profile new probe-linux294 --from default
 [exit 0]
 
+$ pinfold config edit
+pinfold config: $W/config/pinfold/projects/proj-b004c5f501bb/pinfold.toml
+[exit 0]
+
+Filesystem     1G-blocks  Used Available Use% Mounted on
+/dev/sda1            32G    7G       24G  22% /
 $ pinfold build
-pinfold: building profile default
-pinfold: build run 175e44bf23902eebeba0831c401b4da7ac3f4359f57c1095010dc3092b976236; egress log $W/state/pinfold/runs/175e44bf23902eebeba0831c401b4da7ac3f4359f57c1095010dc3092b976236/egress.jsonl
-builder exited before handshakepinfold build: the BuildKit build failed
-[exit 1]
+pinfold: building profile probe-linux294
+pinfold: build run f8e10f49d58968b0a7a1a135b7ca9305e3a97bd5620f7e190f9826dca76f7731; egress log $W/state/pinfold/runs/f8e10f49d58968b0a7a1a135b7ca9305e3a97bd5620f7e190f9826dca76f7731/egress.jsonl
+localhost/pinfold/profile-probe-linux294:latest
+[exit 0]
 
 $ pinfold pi --version
-pinfold pi: image localhost/pinfold/profile-default:latest is missing; run `pinfold build --profile default`
-[exit 1]
+1.5.2
+[exit 0]
 
 $ pinfold push
-pinfold push: this project has no project disk yet; start it with `pinfold pi`
-[exit 1]
+{"box":"pi-proj-b004c5f501bb-26019","event":"pushed","refs":{"refs/remotes/host/master":"46976ef34ab9575456487e0e6e5a624cdbc78abb"},"remote":"host"}
+[exit 0]
 
 $ pinfold fetch
-pinfold fetch: this project has no project disk yet; start it with `pinfold pi`
-[exit 1]
+{"box":"pi-proj-b004c5f501bb-26043","event":"fetched","refs":{"refs/remotes/pinfold/master":"46976ef34ab9575456487e0e6e5a624cdbc78abb"},"remote":"pinfold"}
+[exit 0]
 
 ## E. mounts other than the template: refused as spec
 1:mounts = [{ host = "/etc", kind = "share" }]
 $ pinfold pi --version
-pinfold pi: $W/config/pinfold/projects/proj-e1e5118deb92/pinfold.toml: spec: `mounts` must be exactly mounts = [{ host = ".", kind = "disk" }]
+pinfold pi: $W/config/pinfold/projects/proj-b004c5f501bb/pinfold.toml: spec: `mounts` must be exactly mounts = [{ host = ".", kind = "disk" }]
 [exit 1]
 
 ## C. host-path-in-project: refused; external roots run
@@ -61,10 +66,12 @@ pinfold pi: host-path-in-project: $W/cachelink/missing/cache/pinfold/artifacts r
 under proj/inside: 0 entries
 
 $ pinfold pi --version
-pinfold pi: image localhost/pinfold/profile-default:latest is missing; run `pinfold build --profile default`
-[exit 1]
+1.5.2
+[exit 0]
 
 ## Cleanup
 $ pinfold disk rm --all
+Removed pi-proj-b004c5f501bb-home
+Removed pi-proj-b004c5f501bb-project
 [exit 0]
 
