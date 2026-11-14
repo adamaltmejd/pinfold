@@ -147,6 +147,6 @@ The static debug build and normal shared build/artifact caches remain.
 This run's detached-job scripts and copied logs under `/tmp` were removed.
 No unrelated image, box, disk or previous scratch directory was removed.
 
-tests, release, push or PR were made. The suspended suite and macOS runtime
+No `crates/` change and no test was made. The suspended suite and macOS runtime
 were not run. These are the listed Linux #294 cases, not full guarantee
 coverage or a security audit.
