@@ -4,7 +4,6 @@ mod core;
 mod dirs;
 mod init;
 mod pi;
-mod trust;
 mod update;
 
 use std::io;
@@ -51,7 +50,6 @@ fn main() -> ExitCode {
         // PID 1 never returns, so it never reaches `report`.
         "init" => |args| init::run(args),
         "box" => cli::run,
-        "allow" => cli::allow,
         "attach" => cli::attach,
         "build" => cli::build,
         "image" => cli::image,

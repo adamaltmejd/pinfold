@@ -148,7 +148,8 @@ pub(crate) fn canonical(path: &Path) -> io::Result<PathBuf> {
     })
 }
 
-/// The id for an already canonical `root`. Trust records use the same id.
+/// The id for an already canonical `root`. The project's configuration
+/// directory uses the same id.
 pub fn project_id(root: &Path) -> String {
     let mut name = root
         .file_name()

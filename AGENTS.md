@@ -16,7 +16,7 @@ rules for changing the repository.
   compatibility paths, or speedups that haven't been measured to matter.
   Delete rather than keep.
 - The controls in ARCHITECTURE.md (Always applied, the proxy rules, the
-  threat model's controls, trust) are exact. Weakening one is a spec change, never an
+  threat model's controls) are exact. Weakening one is a spec change, never an
   implementation detail.
 - Security lives in the pinfold binary. Nothing in an image, the profile or
   a pi extension is security-relevant.
@@ -69,7 +69,7 @@ The rules below govern the rewrite.
   boxes, and observes from outside (exit codes, output, host files, the
   egress log) or acts from inside through `pinfold box exec`. The e2e crate
   never imports pinfold's internals; its only seams are a user's: the CLI,
-  env vars, `.pinfold.toml`, and the box spec.
+  env vars, pinfold's host configuration, and the box spec.
 - **A fixed list.** One test per guarantee in ARCHITECTURE.md, named for it
   (`box_has_no_route_to_host`, not `test_network_3`). A new test needs a new
   guarantee. A bug is a scenario its guarantee was missing: the fix extends

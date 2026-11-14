@@ -1,0 +1,207 @@
+# Project configuration build (#294)
+
+Date: 2026-11-14, on top of main 759574b. This is step 2 of
+`2026-11-12-project-box-plan.md`. The file records what the build
+session ran on its Mac with the real binary, and what it did not run.
+This version follows the operator's two reviews of PR #299 and a Codex
+review of 0d0d478.
+
+## How it was run
+
+- Binary: `cargo build` (debug) of this branch, on macOS arm64.
+- Script: `2026-11-14-project-config-build/no-box-cases.sh BINARY`.
+  - It makes a fresh directory under `$TMPDIR` and sets `XDG_CONFIG_HOME`
+    and `XDG_STATE_HOME` inside it.
+  - It writes a fresh maintenance stamp into the state root first, so the
+    daily pass does not run.
+  - It unsets pinfold's environment overrides and sets
+    `PINFOLD_NO_UPDATE_CHECK=1`.
+  - It creates a Git project (`proj`, one empty commit) and a plain folder
+    (`plain`).
+  - Every case in it is refused before a box, or only reads. Its PATH is
+    `/usr/bin`, `/bin` and a link to git, so pinfold cannot reach
+    `container`; `config` then reports `image_built: null` with
+    `image_error` "container is not installed or not on PATH".
+- Full output, with the work root written as `$W`:
+  `2026-11-14-project-config-build/no-box-output.txt`.
+- The cases that start a box are in `run-box-cases.sh` (Started boxes,
+  below). It ran outside the sandbox through an exception for that
+  script.
+- Linux was not run. The Linux `not-git` refusal is compiled only for
+  Linux; clippy for `x86_64-unknown-linux-musl` was clean, nothing more.
+
+## Observed
+
+1. **No configuration.** In `proj` with no file, `config`, `pi`, `build`,
+   `push` and `fetch` each exit 1 with
+   `no-config: …/proj has no configuration; run `pinfold config edit``.
+   Afterwards the config root does not exist and no project state
+   directory exists. `doctor` exits 0, prints its host report and a
+   `config: no-config: …` line.
+2. **`.pinfold.toml` is not read.** With `allow = ["example.com"]` in
+   `proj/.pinfold.toml` and no host file, `config` exits 1 with `no-config`.
+3. **`pinfold allow` is gone.** It prints the usage and exits 1. The usage
+   has no `allow` line and has a `config edit` line.
+4. **`config edit`.** `config edit --help` prints `pinfold config edit`,
+   exit 0. `EDITOR=true pinfold config edit` exits 0. It writes
+   `$XDG_CONFIG_HOME/pinfold/projects/proj-<hash>/pinfold.toml`, holding
+   exactly `mounts = [{ host = ".", kind = "disk" }]`, and nothing else in
+   that directory. `config` then exits 0. Its report has `config` (the
+   file) and no `mode`, `config_source`, `trust` or `mounts`. After
+   `allow = ["only.example"]` is appended, a second `config edit` leaves
+   the file byte-identical (cmp). `EDITOR=false` exits 1.
+   `VISUAL="head -n1" EDITOR=false` runs VISUAL and exits 0.
+5. **Mount validation.** Each of these exits 1 with
+   `spec: `mounts` must be exactly mounts = [{ host = ".", kind = "disk" }]`:
+   - `kind = "share"`
+   - `host = "/tmp"`
+   - `mounts = "x"`
+   - `host = 1`
+   - a missing `kind`
+   - an extra `guest` key
+   - two entries
+   - no `mounts`
+
+   The `[[mounts]]` table form of the project entry is accepted (exit 0).
+   The old top-level `containerfile` key is refused, naming it.
+6. **A profile's `mounts`.** A user profile `withmounts` whose
+   `pinfold.toml` holds the project mount, selected with
+   `PINFOLD_PROFILE`, exits 1 with
+   `profile "withmounts" pinfold.toml: `mounts` is a project key`.
+7. **Project recipe.** A `Containerfile` beside the file makes `config`
+   report `image_source` `project`. Adding `image = …` exits 1 with
+   `image-source-conflict`. With `image = …` and no Containerfile, `build`
+   exits 1 with `image-no-recipe`.
+8. **Dangling symlink.** The file is a symlink to a missing path.
+   - Target inside the project: `config` exits 1 with
+     `file is not readable`. `config edit` exits 1 with
+     `host-path-in-project` and does not create the target.
+   - Target outside the project: `config edit` exits 1 with
+     `file is not readable` and does not create the target.
+9. **No global file.** `$XDG_CONFIG_HOME/pinfold/pinfold.toml` holds
+   `allow = ["global.example"]`, and the project file has no `allow`.
+   `config` reports the built-in default list.
+10. **Moved project.** A copy of `proj` at `proj-moved` exits 1 with
+    `no-config`.
+11. **`host-path-in-project`.** Each refusal below exits 1 with
+    `host-path-in-project: <path> resolves inside …/proj`.
+    - **Cache root through a symlink:** `XDG_CACHE_HOME` is
+      `cachelink/missing/cache`. `cachelink` is a symlink to
+      `proj/link-target`, and `missing` does not exist. `pi`, `build` and
+      `push` are refused, naming `…/cache/pinfold/artifacts`. Nothing is
+      created under `link-target`.
+    - **Config root inside the checkout:** `XDG_CONFIG_HOME` is
+      `proj/cfg`. `config edit` is refused, and `proj/cfg` is not created.
+    - **The project's file symlinked into the checkout:** under a third
+      config root, `pinfold.toml` links to `proj/policy.toml`. `pi`,
+      `build` and `push` are refused, naming it.
+    - **The project's `Containerfile` symlinked into the checkout:**
+      `pi` and `build` are refused, naming it.
+    - **A user profile's `pinfold.toml` symlinked into the checkout:**
+      profile `p` has a plain `Containerfile`, and its `pinfold.toml`
+      links to `proj/profile.toml`. With `PINFOLD_PROFILE=p`, `pi` and
+      `build` are refused, naming it.
+    - **The selected profile's directory symlinked into the checkout,
+      for `config edit`** (the Codex finding): under a fourth config
+      root, the profile `in-project` is a symlink to `proj/in-project`.
+      `PINFOLD_PROFILE=in-project config edit` is refused, naming the
+      profile's `pinfold.toml`, and no project file is created. Control:
+      the same profile as a plain directory under a fifth config root;
+      `config edit` exits 0. With no `PINFOLD_PROFILE` and a project
+      file whose `profile` key is `in-project`, `config edit` and `build`
+      are both refused.
+14. **Second review.** In a fresh Git project `proj2`:
+    - **Planted staging file:** a symlink to a missing path sits at
+      `.pinfold.toml.tmp-<pid>` for pinfold's own pid. `config edit` exits
+      1 with `File exists`. The symlink's target is not created and
+      `pinfold.toml` does not exist. Control: after removing it,
+      `config edit` exits 0 and leaves no staging file.
+    - **A missing profile:** the file says `profile = "nope"`. `config`
+      exits 1 with `profile "nope" has no directory …`. `config edit` with
+      `EDITOR="head -n1"` runs the editor (it prints the file's first
+      line) and exits 0. With `PINFOLD_PROFILE=nope` the same.
+    - **doctor:** with the project's file symlinked into `proj2`, `doctor`
+      prints `config: host-path-in-project: …` and no `image:` line, and
+      exits 0; `build` exits 1 with the same token. Control: with the
+      file in place, `doctor` prints its `image:` line and the config
+      report.
+12. **A folder name with a newline.** `config edit` in a Git project named
+    `new\nline` exits 0. The file holds only the project mount.
+13. **macOS outside Git.** In `plain`, `config` exits 1 with
+    `no-config`. `EDITOR=true pinfold config edit` exits 0, and `config`
+    then exits 0.
+
+Checks:
+- `cargo fmt --check` and `cargo clippy --all-targets --locked -- -D warnings`
+  are clean on macOS.
+- `cargo clippy --target x86_64-unknown-linux-musl --all-targets --locked -- -D warnings`
+  is clean. It was run with `RUSTC_WRAPPER` unset and with
+  `CC_x86_64_unknown_linux_musl` set to a wrapper. The wrapper drops
+  cc-rs's `--target=` and runs `zig cc -target x86_64-linux-musl`.
+
+## Earlier run, corrected
+
+The first version of this record (commit b0a27ee) also ran some controls
+that passed the configuration gates. It said `pi` "stopped at the lock
+directory" and that a scratch `pi` stopped at the image because of the
+sandbox. Both were inferred: the outputs were
+`Operation not permitted (os error 1)` and
+`image localhost/pinfold/profile-default:latest is missing`, and neither
+names a cause. Those controls now live in `run-box-cases.sh`.
+
+That run also reported `image_built: false` with `image_error: null`
+while `container` was denied. `service::inspect` treats any nonzero exit
+of `container image inspect` as "not resolved", so a denied or stopped
+service reads as "not built". Guarantee 18 expects `image_built: null`
+and an `image_error` when the probe is unavailable. That code is
+unchanged from main; it is reported to the operator, not fixed here.
+
+## Started boxes
+
+`2026-11-14-project-config-build/run-box-cases.sh target/debug/pinfold`,
+run from the worktree root with the debug build of the second review's
+fixes. It was first run at 71a60f4 with the same results. Output: `2026-11-14-project-config-build/box-output.txt`, where `$W`
+is the script's work root.
+
+The script:
+- uses a work root under `/tmp`. The first attempt, under macOS's
+  `$TMPDIR`, failed every start with `proxy socket …/proxy.sock: path must
+  be shorter than SUN_LEN`. That run's refusals behaved as below;
+- writes a fresh maintenance stamp into its state root;
+- uses the real cache root (pinned artifacts and the init), except for
+  case C's refusal;
+- reused the existing `localhost/pinfold/profile-default:latest`. No image
+  was built, pulled or deleted;
+- found the container service running and left it running. Afterwards
+  only `buildkit` was listed.
+
+Observed:
+- **A. No configuration.** `pi --version` in a Git project exits 1 with
+  `no-config`. The box list is unchanged, and no project state directory
+  exists.
+- **B. Configured Git project.** `config edit` exits 0. `pi --version`
+  prints the harness version and exits 0. `push` reports `pushed` with
+  `refs/remotes/host/master` at the host commit. `fetch` reports `fetched`
+  with `refs/remotes/pinfold/master` at the same commit. Both exit 0.
+- **C. Cache root inside the project.** With `XDG_CACHE_HOME` reaching
+  `proj/inside` through a symlink with a missing suffix, `pi` exits 1 with
+  `host-path-in-project`, naming the artifacts root. The box list is
+  unchanged, and nothing is created under `proj/inside`. With the real
+  cache root, the same project's `pi --version` exits 0.
+- **D. macOS outside Git.** In a plain folder, `pi --version` exits 1 with
+  `no-config`. After `config edit`, it starts a scratch box, prints the
+  version, removes the empty scratch disks and exits 0.
+- **Cleanup.** `disk rm --all` removed the project's two disks. The script
+  removed its work root.
+
+## Not run
+
+- Linux: every project command outside Git refused as `not-git`. There
+  was no Linux host in this session.
+- Killing `config edit` between writing its staging file and linking it
+  into place (review item 4). The hard link means the file is either
+  absent or complete; a killed run can leave a `.pinfold.toml.tmp-<pid>`
+  beside it. Not tested.
+- The assertions that move from guarantee 12 to 13 (the identity
+  `pi <pi@pinfold.invalid>`, and the start's push and fast-forward). That
+  code is unchanged and was not exercised beyond case B.

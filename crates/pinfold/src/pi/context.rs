@@ -1,4 +1,4 @@
-//! The folder that supplies Pi configuration, and whether Git crosses it.
+//! The project: its root folder, and whether Git crosses it.
 
 use std::fs;
 use std::io;
@@ -44,6 +44,15 @@ impl Context {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error),
             }
+        }
+        if cfg!(target_os = "linux") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "not-git: {} is not a git repository; a Linux project is a Git checkout",
+                    cwd.display()
+                ),
+            ));
         }
         Ok(Self {
             root: cwd,

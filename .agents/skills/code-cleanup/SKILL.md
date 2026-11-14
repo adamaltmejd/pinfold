@@ -64,7 +64,7 @@ largest model (in Claude, Opus); the spec and the user-facing docs take
 the tier below that (in Claude, Sonnet), never the smallest. Modules:
 `cli`, `core/box`, `core/runtime` (all three files), `core/proxy`,
 `core/clean` with `core/image` and `core/artifacts`, `config` with
-`dirs`, `trust` and `init`, `pi/`, `crates/e2e/src/lib.rs`, and the spec
+`dirs` and `init`, `pi/`, `crates/e2e/src/lib.rs`, and the spec
 (ARCHITECTURE.md, `profile/`). The test files are the
 `test-audit` skill's: run its sweep in the same message and merge its
 list into step 3.
@@ -94,7 +94,7 @@ Tags:
 - `shrink:` same logic, fewer lines, including a special case on a shared
   path that a general change to the mechanism removes. Show the form.
 - `spec:` a cut that touches a control (the Always applied list, the proxy
-  rules, the threat model's controls, trust), removes a feature, or deletes
+  rules, the threat model's controls), removes a feature, or deletes
   a guarantee row. Not the agent's call; it goes to Adam.
 
 Examples, invented to show the shape:
