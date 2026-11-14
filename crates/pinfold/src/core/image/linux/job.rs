@@ -154,7 +154,7 @@ impl Inputs {
             .iter()
             .map(|index| self.contexts[*index].digest.as_str())
             .collect();
-        let mut budget = InputBudget::new(LOCAL_BASE_BYTES);
+        let mut budget = InputBudget::new(catalog::METADATA_BYTES);
         for image in self
             .metadata
             .iter()

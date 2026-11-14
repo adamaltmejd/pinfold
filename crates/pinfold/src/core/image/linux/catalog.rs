@@ -16,10 +16,11 @@ use crate::core::image::ImageInfo;
 use crate::core::{hex, ownership, sha256_hex};
 use crate::dirs;
 
-use super::{LOCAL_BASE_BYTES, OCI_BYTES, ROOT_BYTES};
+use super::{OCI_BYTES, ROOT_BYTES};
 
 const HEADER_MAX: usize = 8 << 10;
 const JSON_MAX: u64 = 1 << 20;
+pub(super) const METADATA_BYTES: u64 = 512 << 20;
 const OBJECT_MAX: usize = 4096;
 const INDEX: &str = "application/vnd.oci.image.index.v1+json";
 const MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
@@ -997,7 +998,7 @@ pub fn base_metadata(cancel: &AtomicBool) -> io::Result<Vec<BaseMetadata>> {
         }
         total = total
             .checked_add(manifest.len() as u64 + config.len() as u64)
-            .filter(|total| *total <= LOCAL_BASE_BYTES)
+            .filter(|total| *total <= METADATA_BYTES)
             .ok_or_else(|| invalid("resource: local base metadata size"))?;
         snapshots.push(BaseMetadata {
             id: id.to_string(),

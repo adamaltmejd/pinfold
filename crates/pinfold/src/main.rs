@@ -2,6 +2,8 @@ mod cli;
 mod config;
 mod core;
 mod dirs;
+#[cfg(target_os = "linux")]
+mod image_limits;
 mod init;
 mod pi;
 mod update;

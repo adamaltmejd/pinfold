@@ -27,10 +27,6 @@ use nix::sys::signal::{SigHandler, SigSet, Signal};
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "init/builder.rs"]
 mod builder;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub(crate) const IMAGE_ROOT_BYTES: u64 = 2 << 30;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub(crate) const IMAGE_OCI_BYTES: u64 = 1 << 30;
 #[path = "init/export.rs"]
 pub(crate) mod export;
 #[cfg(target_os = "linux")]

@@ -17,7 +17,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::firecracker::{self, FAILED, READY, write_frame};
-use super::{IMAGE_OCI_BYTES as OCI_BYTES, IMAGE_ROOT_BYTES as ROOT_BYTES};
+use crate::image_limits::{OCI_BYTES, ROOT_BYTES};
 
 const PATH: &str = "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const PROXY: &str = "http://127.0.0.1:3128";
