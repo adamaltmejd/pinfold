@@ -117,10 +117,6 @@ pub struct Target {
     pub authority: String,
 }
 
-/// A login route's target, its headers with values, and the box-sent
-/// header names it removes.
-pub type Resolved = (Target, Vec<(String, String)>, &'static [&'static str]);
-
 impl Inject {
     /// The parsed target and each header with its value from this process's
     /// environment. Errors name the header and the variable, never a value.
@@ -183,15 +179,13 @@ pub struct PiProvider {
 }
 
 pub enum PiCredential {
-    /// The proxy sets `header` to `prefix` and `$VAR`, and removes the
-    /// box-sent `strip` headers besides. The box's `key` holds
-    /// `placeholder`.
+    /// The proxy sets `header` to `prefix` and `$VAR`. The box's `key`
+    /// holds `placeholder`.
     Key {
         key: &'static str,
         placeholder: &'static str,
         header: &'static str,
         prefix: &'static str,
-        strip: &'static [&'static str],
     },
     /// The host's Codex login sets the headers, as for a codex login route.
     /// pinfold's extension gives pi `placeholder` as the provider's `apiKey`.
@@ -209,7 +203,6 @@ pub const PI_PROVIDERS: [PiProvider; 5] = [
             placeholder: LOGIN_PLACEHOLDER,
             header: "Authorization",
             prefix: "Bearer ",
-            strip: &[],
         },
     },
     PiProvider {
@@ -222,7 +215,6 @@ pub const PI_PROVIDERS: [PiProvider; 5] = [
             placeholder: LOGIN_PLACEHOLDER,
             header: "Authorization",
             prefix: "Bearer ",
-            strip: &[],
         },
     },
     PiProvider {
@@ -235,9 +227,6 @@ pub const PI_PROVIDERS: [PiProvider; 5] = [
             placeholder: LOGIN_PLACEHOLDER,
             header: "x-api-key",
             prefix: "",
-            // Anthropic also reads a bearer token, which must not travel
-            // beside the key.
-            strip: &["Authorization"],
         },
     },
     PiProvider {
@@ -252,7 +241,6 @@ pub const PI_PROVIDERS: [PiProvider; 5] = [
             placeholder: "sk-ant-oat-pinfold-placeholder",
             header: "Authorization",
             prefix: "Bearer ",
-            strip: &["x-api-key"],
         },
     },
     PiProvider {
@@ -354,24 +342,18 @@ impl Login {
     }
 
     /// claude's or pi's dialed target and credential header, from this
-    /// process's environment once at start, and the box-sent headers to
-    /// remove besides. The target and the value rules are
-    /// [`Inject::resolve`]'s.
-    pub fn resolve(&self) -> Result<Resolved, String> {
-        let (header, prefix, strip) = if self.is_pi() {
+    /// process's environment once at start. The target and the value rules
+    /// are [`Inject::resolve`]'s.
+    pub fn resolve(&self) -> Result<(Target, Vec<(String, String)>), String> {
+        let (header, prefix) = if self.is_pi() {
             match self.pi_provider()?.credential {
-                PiCredential::Key {
-                    header,
-                    prefix,
-                    strip,
-                    ..
-                } => (header, prefix, strip),
+                PiCredential::Key { header, prefix, .. } => (header, prefix),
                 PiCredential::HostCodex { .. } => {
                     return Err("its token comes from the host's Codex login".to_string());
                 }
             }
         } else {
-            ("Authorization", "Bearer ", &[][..])
+            ("Authorization", "Bearer ")
         };
         let from = self.from.clone().unwrap_or_default();
         if std::env::var_os(&from).is_some_and(|value| value.is_empty()) {
@@ -387,8 +369,7 @@ impl Login {
                 },
             )]),
         };
-        let (target, headers) = inject.resolve()?;
-        Ok((target, headers, strip))
+        inject.resolve()
     }
 
     /// The environment a login route adds to its harness's execs, beside the

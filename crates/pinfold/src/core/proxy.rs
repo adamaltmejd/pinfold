@@ -87,12 +87,12 @@ enum Upstream {
     /// A host service at `host:port`, dialed unchecked. The box's own
     /// authority stays the Host header.
     Address(Target),
-    /// An injecting route's target and its headers, values already read,
-    /// and the box-sent headers it removes besides.
+    /// An injecting route's target and its headers, values already read.
+    /// Static login routes apply the login credential policy.
     Inject {
         target: Target,
         headers: Vec<(String, String)>,
-        strip: &'static [&'static str],
+        login: bool,
     },
     /// The target of a login route on the host's Codex login; its headers
     /// come from the live token on each request. Every such route in a box
@@ -126,7 +126,7 @@ impl Rules {
                     Upstream::Inject {
                         target,
                         headers,
-                        strip: &[],
+                        login: false,
                     }
                 }
                 Route::Login(login) if login.uses_host_codex() => Upstream::Codex {
@@ -134,11 +134,11 @@ impl Rules {
                     login: codex.clone().expect("up resolves a Codex login's token"),
                 },
                 Route::Login(login) => {
-                    let (target, headers, strip) = login.resolve().map_err(io::Error::other)?;
+                    let (target, headers) = login.resolve().map_err(io::Error::other)?;
                     Upstream::Inject {
                         target,
                         headers,
-                        strip,
+                        login: true,
                     }
                 }
             };
@@ -346,26 +346,39 @@ fn route(client: &mut UnixStream, log: &AuditLog, request: &Plain, upstream: &Up
         });
         record(log, &request.host, "allowed", "route", Some(fields))
     };
-    let (target, host, headers, strip) = match upstream {
-        Upstream::Address(target) => (target, &request.authority, Cow::Borrowed(&[][..]), &[][..]),
+    let login_policy = matches!(
+        upstream,
+        Upstream::Inject { login: true, .. } | Upstream::Codex { .. }
+    );
+    let remove = if login_policy {
+        match login_removals(request) {
+            Ok(remove) => remove,
+            Err((status, reason)) => return refuse(client, log, &request.host, status, reason),
+        }
+    } else {
+        Vec::new()
+    };
+    let (target, host, headers) = match upstream {
+        Upstream::Address(target) => (target, &request.authority, Cow::Borrowed(&[][..])),
         Upstream::Inject {
-            target,
-            headers,
-            strip,
-        } => (
-            target,
-            &target.authority,
-            Cow::Borrowed(headers.as_slice()),
-            *strip,
-        ),
+            target, headers, ..
+        } => (target, &target.authority, Cow::Borrowed(headers.as_slice())),
         Upstream::Codex { target, login } => match login.headers() {
-            Some(headers) => (target, &target.authority, Cow::Owned(headers), &[][..]),
+            Some(headers) => (target, &target.authority, Cow::Owned(headers)),
             None => return refuse(client, log, &request.host, 403, "login lapsed"),
         },
     };
     if !target.https {
         let server = dial((target.host.as_str(), target.port)).map(DeadlineStream::new);
-        let _ = forward(client, server, request, host, &headers, strip, &mut report);
+        let _ = forward(
+            client,
+            server,
+            request,
+            host,
+            &headers,
+            &remove,
+            &mut report,
+        );
         return;
     }
     let Some(address) = resolve_checked(client, log, &request.host, &target.host, target.port)
@@ -373,7 +386,15 @@ fn route(client: &mut UnixStream, log: &AuditLog, request: &Plain, upstream: &Up
         return;
     };
     let server = dial_tls(address, &target.host);
-    let _ = forward(client, server, request, host, &headers, strip, &mut report);
+    let _ = forward(
+        client,
+        server,
+        request,
+        host,
+        &headers,
+        &remove,
+        &mut report,
+    );
 }
 
 /// Resolve once and check every address before anything is dialed. A
@@ -471,6 +492,8 @@ struct Plain {
     port: u16,
     /// The headers to forward, hop-by-hop headers removed.
     headers: Vec<(String, String)>,
+    /// Raw Connection fields, before hop-by-hop removal.
+    connection: Vec<Vec<u8>>,
     /// The request body length, from the one Content-Length.
     content_length: u64,
 }
@@ -498,7 +521,11 @@ fn parse_plain(
     };
     let mut content_length = None;
     let mut forwarded = Vec::new();
+    let mut connection = Vec::new();
     for header in headers {
+        if header.name.eq_ignore_ascii_case("connection") {
+            connection.push(header.value.to_vec());
+        }
         if header.name.eq_ignore_ascii_case("transfer-encoding") {
             return Err("ambiguous framing");
         }
@@ -526,8 +553,113 @@ fn parse_plain(
         host: url.host,
         port: url.port,
         headers: forwarded,
+        connection,
         content_length: content_length.unwrap_or(0),
     })
+}
+
+/// Validate login channels before asking the helper or contacting upstream.
+/// Only guest fields are removed; trusted headers are appended afterward.
+fn login_removals(request: &Plain) -> Result<Vec<&str>, (u16, &'static str)> {
+    let mut remove = Vec::new();
+    for value in &request.connection {
+        let value = std::str::from_utf8(value).map_err(|_| (400, "malformed request"))?;
+        for option in value
+            .split(',')
+            .map(|option| option.trim_matches([' ', '\t']))
+        {
+            if option.is_empty() {
+                continue;
+            }
+            if !option
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+            {
+                return Err((400, "malformed request"));
+            }
+            if option.eq_ignore_ascii_case("content-length") {
+                return Err((400, "ambiguous framing"));
+            }
+            remove.push(option);
+        }
+    }
+    if let Some((_, query)) = request.target.split_once('?') {
+        let mut forbidden = false;
+        for field in query.split(['&', ';']) {
+            let (name, value) = field.split_once('=').unwrap_or((field, ""));
+            let mut name = query_decode(name).ok_or((400, "malformed request"))?;
+            query_decode(value).ok_or((400, "malformed request"))?;
+            for byte in &mut name {
+                *byte = match byte {
+                    b'_' => b'-',
+                    _ => byte.to_ascii_lowercase(),
+                };
+            }
+            forbidden |= [
+                "key",
+                "api-key",
+                "apikey",
+                "x-api-key",
+                "access-token",
+                "refresh-token",
+                "id-token",
+                "auth-token",
+                "bearer-token",
+                "token",
+                "client-secret",
+                "authorization",
+                "chatgpt-account-id",
+                "openai-organization",
+                "openai-project",
+            ]
+            .iter()
+            .any(|known| name == known.as_bytes());
+        }
+        if forbidden {
+            return Err((403, "login credential query"));
+        }
+    }
+    const CREDENTIALS: [&str; 11] = [
+        "Authorization",
+        "X-Api-Key",
+        "Api-Key",
+        "X-Goog-Api-Key",
+        "X-Auth-Token",
+        "X-Access-Token",
+        "ChatGPT-Account-ID",
+        "OpenAI-Organization",
+        "OpenAI-Project",
+        "Cookie",
+        "Cookie2",
+    ];
+    remove.extend(request.headers.iter().filter_map(|(name, _)| {
+        (CREDENTIALS
+            .iter()
+            .any(|known| name.eq_ignore_ascii_case(known))
+            || name
+                .get(..6)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("proxy-")))
+        .then_some(name.as_str())
+    }));
+    Ok(remove)
+}
+
+/// Decode query bytes once, including strict escapes in parameter values.
+fn query_decode(value: &str) -> Option<Vec<u8>> {
+    let mut decoded = Vec::with_capacity(value.len());
+    let mut bytes = value.bytes();
+    while let Some(byte) = bytes.next() {
+        decoded.push(match byte {
+            b'%' => {
+                let high = char::from(bytes.next()?).to_digit(16)?;
+                let low = char::from(bytes.next()?).to_digit(16)?;
+                (high * 16 + low) as u8
+            }
+            b'+' => b' ',
+            _ => byte,
+        });
+    }
+    Some(decoded)
 }
 
 /// Forward one parsed request with `host` as its Host header, then its
@@ -536,7 +668,7 @@ fn parse_plain(
 /// upstream's status code once its status line has arrived, or `None` when
 /// the exchange ends first. One request per
 /// connection. Each injected header replaces any the box sent under the
-/// same name, and a box-sent header named in `strip` is dropped. There is
+/// same name, and a box-sent header named in `remove` is dropped. There is
 /// no upstream half-close: over TLS a close_notify before the response
 /// would end the exchange, and the server's close ends the response, with
 /// or without its own close_notify.
@@ -546,7 +678,7 @@ fn forward(
     request: &Plain,
     host: &str,
     inject: &[(String, String)],
-    strip: &[&str],
+    remove: &[&str],
     report: &mut dyn FnMut(Option<u16>) -> io::Result<()>,
 ) -> io::Result<()> {
     let Some(mut server) = server else {
@@ -568,7 +700,7 @@ fn forward(
             !inject
                 .iter()
                 .map(|(injected, _)| injected.as_str())
-                .chain(strip.iter().copied())
+                .chain(remove.iter().copied())
                 .any(|dropped| dropped.eq_ignore_ascii_case(name))
         })
         .chain(inject)
