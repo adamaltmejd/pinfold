@@ -1,0 +1,47 @@
+Implementation: 2fbad3d (pinfold 0.5.5)
+Both hosts: rustc 1.99.1 (58cf8f9c3 2026-10-13), cargo 1.99.1 (5f94df478 2026-08-27)
+
+macOS: Darwin 27.2.0 arm64; Python 3.15.2
+$ container --version
+container CLI version 1.7.1 (build: release, commit: unspeci)
+$ cargo build --locked
+error: sccache: Operation not permitted (os error 1)
+$ RUSTC_WRAPPER= cargo build --locked
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.88s
+$ RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.68s
+$ cargo fmt --check
+exit=0
+$ git diff --check
+exit=0
+
+Linux: Linux 6.12.107+deb13-cloud-amd64 x86_64
+Commands below executed through labvm exec -- bash -lc '...'.
+Existing lease expiry: 2026-11-15 00:48:50 UTC; stop boundary 00:28:50 UTC.
+Existing clone HEAD: 277b4368c58bd34e000938d28e8345c4f9e9ab02.
+$ git diff 277b4368c58bd34e000938d28e8345c4f9e9ab02 e2c9824 -- crates
+empty (the intervening commits contain documentation only)
+Transferred the local binary patch in base64; git apply --check then git apply.
+The changed source hashes matched on both hosts:
+f1e6f561e23dcd21b498aa20faadebc6040cf4488896c4d56aa8ab649af07a84  core/proxy.rs
+74078caaf7bd97dee8cff24e34c8ff807c7be1c231c473f0f1bdd8f8b160bce4  core/plan.rs
+$ cargo build --locked --target x86_64-unknown-linux-musl
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.91s
+$ cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.26s
+exit=0
+$ cargo fmt --check
+exit=0
+$ file target/x86_64-unknown-linux-musl/debug/pinfold
+ELF 64-bit LSB pie executable, x86-64, static-pie linked, with debug_info, not stripped
+$ readelf -l target/x86_64-unknown-linux-musl/debug/pinfold | sed -n '/INTERP/p'
+empty (no ELF interpreter)
+
+Capability boxes on both existing images:
+box up with image, cpus=2, memory=1G, no disks/harnesses/egress; hold stdin open.
+$ pinfold box exec probe-credentials-capabilities -- sh -c 'for c in sh curl sha256sum python3; do command -v "$c" || true; done'
+/usr/bin/sh
+/usr/bin/curl
+/usr/bin/sha256sum
+No python3. Both boxes ended with down / stdin-closed. Scratch state removed.
+The final probe therefore generates shell commands on the host.

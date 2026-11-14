@@ -1,0 +1,26 @@
+command: probe.py PINFOLD EXISTING_IMAGE; mode=full; scratch=$W; image=localhost/pinfold/profile-probe-agents:latest
+binary=pinfold 0.5.5
+pins=[{"name":"pi","version":"1.5.2","cached":true},{"name":"claude","version":"2.1.322","cached":true},{"name":"codex","version":"0.167.1","cached":true}]
+ready shared; image=localhost/pinfold/profile-probe-agents:latest
+claude: 200=14, 400=8, 403=512; observed_credential_counts=authorization:1; refused_upstream_requests=0; checks=passed
+codex: 200=14, 400=8, 403=512; observed_credential_counts=authorization:1,chatgpt-account-id:1; refused_upstream_requests=0; checks=passed
+pi-codex: 200=14, 400=8, 403=512; observed_credential_counts=authorization:1,chatgpt-account-id:1; refused_upstream_requests=0; checks=passed
+pi-openai: 200=14, 400=8, 403=512; observed_credential_counts=authorization:1; refused_upstream_requests=0; checks=passed
+pi-router: 200=14, 400=8, 403=512; observed_credential_counts=authorization:1; refused_upstream_requests=0; checks=passed
+pi-anthropic: 200=14, 400=8, 403=512; observed_credential_counts=x-api-key:1; refused_upstream_requests=0; checks=passed
+inject: 200=2, 400=0, 403=0; observed_credential_counts=x-api-key:2,api-key:2,x-goog-api-key:2,x-auth-token:2,x-access-token:2,chatgpt-account-id:2,openai-organization:2,openai-project:2,cookie:2,cookie2:2,proxy-fixture:2,authorization:1; refused_upstream_requests=0; checks=passed
+service: 200=2, 400=0, 403=0; observed_credential_counts=authorization:2,x-api-key:2,api-key:2,x-goog-api-key:2,x-auth-token:2,x-access-token:2,chatgpt-account-id:2,openai-organization:2,openai-project:2,cookie:2,cookie2:2,proxy-fixture:2; refused_upstream_requests=0; checks=passed
+shared: guest/harness environment, home, generated files, live state, reflection checks=passed
+shared: fixture_requests=88; audit_decisions=3208
+ready subscription; image=localhost/pinfold/profile-probe-agents:latest
+pi-subscription: 200=14, 400=8, 403=512; observed_credential_counts=authorization:1; refused_upstream_requests=0; checks=passed
+subscription: guest/harness environment, home, generated files, live state, reflection checks=passed
+subscription: fixture_requests=14; audit_decisions=534
+ready refresh; image=localhost/pinfold/profile-probe-agents:latest
+refresh fixture: oauth_posts=5; grant_checks=[{"refresh_matches":true,"grant_matches":true},{"refresh_matches":true,"grant_matches":true},{"refresh_matches":true,"grant_matches":true},{"refresh_matches":true,"grant_matches":true},{"refresh_matches":true,"grant_matches":true}]; all_grants_match=True
+refresh: checks=passed; oauth_posts=5; shared refreshed token controls=4; expired refusals=2; query-before-token refusals=2; pre-refresh query/Connection refusals=2
+refresh: base/harness environment, home, generated files, live state/audit marker checks=passed; synthetic auth store excluded
+cleanup: own boxes stopped; own disks removed; no image built or removed
+elapsed_seconds=101.022; failures=0
+probe_exit=0
+inventory: remaining own boxes=0; remaining own volumes=0
