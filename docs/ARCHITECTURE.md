@@ -866,7 +866,8 @@ A stop after those physical barriers does not make the cache unclean again.
 Daemon and RUN use the production proxy and audit. Initial build hosts are
 `registry-1.docker.io`, `auth.docker.io`, `production.cloudfront.docker.com`,
 `docker-images-prod.s3.dualstack.us-east-1.amazonaws.com`,
-`deb.debian.org`, `github.com`, `release-assets.githubusercontent.com`,
+`deb.debian.org`, `github.com`, `api.github.com`,
+`release-assets.githubusercontent.com`, `downloads.claude.ai`,
 `registry.npmjs.org` and `cli.github.com`. Linux `build` and `image build`
 accept repeatable `--allow HOST` exact DNS additions, independently of agent
 policy. A recipe grants no network authority. Denials retain the proxy's
@@ -918,6 +919,12 @@ graph. No external descriptor URL or unreferenced object is admitted.
 Admit one direct runnable manifest. Attachments, attestation manifests,
 nested indexes and unsupported media are refused rather than ignored.
 
+The converter has a 7 GiB work disk. A completed raw root is at most
+2 GiB. An admitted image's aggregate OCI payload is at most 1 GiB;
+selected local-base payloads together are at most 1 GiB. Caller context
+retains its separate 512 MiB bound. Snapshot accounting includes filesystem
+allocation and directory overhead.
+
 The fresh independent converter receives only the host's validated read-only OCI layout,
 has no egress, and uses pinned BuildKit flattening plus guest tar and
 mkfs.ext4. Conversion uses the admitted layers without executing inherited
@@ -964,6 +971,9 @@ Final images contain installed tools, without their archives. gh comes
 from GitHub's signed apt repository.
 
 ## Pinned artifacts
+
+Agent pins describe the mounted launch path. Image agents resolve at build
+time; their executables report their installed versions.
 
 Artifact and update downloads share a bounded HTTPS-only downloader.
 It ignores curl configuration, rejects HTTP redirects, caps artifact
@@ -1581,7 +1591,7 @@ what the rewritten suite must show. Testing policy is in `AGENTS.md`.
 | 42 | Run records are retained within bounds | With inactive runs padded on the host past 128 MiB in valid decision lines, `clean` removes the oldest inactive run, keeps the newest, and leaves a live run's log unchanged. Once the newest is aged 15 days on the host, `clean` removes it (`inspect` exits 3), while a live run aged the same stays `available` and its log keeps appending. With that live log padded to 128 MiB minus one byte, the next real route request stops the owner with `audit-log`, exit 1, and leaves the log length unchanged. |
 | 43 | The VMM reaches only its own box | Linux only. With two boxes up, each VMM is a child of its `box up` and runs as the user with `CapBnd` 0 and `NoNewPrivs` 1; its user, mount, PID, network, IPC and UTS namespaces differ from `box up`'s; its root, read through `/proc/PID/root`, holds its own disk and not the other box's disk; none of its mount points is under the user's home; its fds 0–2 are `/dev/null` and none is under the home; SIGKILL of `box up` ends the VM. |
 
-| 44 | Linux image work stays in its own VM | During an audited RUN, SIGINT ends the build with exit 1 and one failed line whose log names `cancelled`; its VMM ends and public refs stay unchanged. The next ordinary build succeeds in the same cache. Real RUN observes the approved rootful OCI role, no_new_privs, disabled user namespaces and only loopback. In the same build, an explicit api.github.com addition succeeds and example.com gets proxy 403 with its denial audited. Cache-mount exhaustion fails with unchanged public refs; its next ordinary build succeeds without manual cache cleanup. After clean removes the idle cache and the pinned builder is unavailable, the completed image still launches and reads its fixture. |
+| 44 | Linux image work stays in its own VM | During an audited RUN, SIGINT ends the build with exit 1 and one failed line whose log names `cancelled`; its VMM ends and public refs stay unchanged. The next ordinary build succeeds in the same cache. Real RUN observes the approved rootful OCI role, no_new_privs, disabled user namespaces and only loopback. In the same build, api.github.com succeeds and example.com gets proxy 403 with its denial audited; explicitly admitting example.com permits it. Cache-mount exhaustion fails with unchanged public refs; its next ordinary build succeeds without manual cache cleanup. Roots, aggregate OCI payloads and selected local-base inputs above the former 512 MiB limit build and launch within their separate bounds. Exceeding each enlarged output bound fails without publication; its smaller control succeeds. Caller context retains its separate bound. After clean removes the idle cache and the pinned builder is unavailable, the completed above-old-limit image still launches and reads its fixture. |
 
 | 45 | Disk export writes only the requested new destination | While its box runs, export of its disk refuses as disk-in-use. After teardown, the same disk exports nested file bytes, executable mode and a symlink as a link without touching its target. Existing destinations refuse unchanged; a missing disk refuses as disk-missing and creates no disk. A special file refuses and leaves no destination; removing it makes the same disk export successfully. |
 | 46 | Pi reports retained work without copying it | Normal repository exit reports commits on a non-current branch and tracked/untracked work distinctly, without importing guest work. A later run still reports retained work. Scratch exit reports work-disk paths and sizes but not home files or file contents. Guest control characters are escaped and large listings are truncated within the output bound. |

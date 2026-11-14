@@ -12,6 +12,9 @@ use super::{BuildRequest, ImageInfo, ImageService};
 use crate::core::{artifacts, ownership, sha256_hex};
 use crate::dirs;
 
+pub(crate) use crate::init::{IMAGE_OCI_BYTES as OCI_BYTES, IMAGE_ROOT_BYTES as ROOT_BYTES};
+pub(crate) const LOCAL_BASE_BYTES: u64 = 1 << 30;
+
 pub struct Linux;
 
 pub fn cache_name() -> io::Result<String> {

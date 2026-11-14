@@ -20,6 +20,7 @@ use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 
 use super::catalog::{self, Publication, Verified};
+use super::{LOCAL_BASE_BYTES, OCI_BYTES};
 use crate::core::image::BuildRequest;
 use crate::core::ownership::{self, Claim};
 use crate::core::plan::{Egress, Plan};
@@ -28,7 +29,7 @@ use crate::core::{artifacts, clean, pipe, proxy, runs, sha256_hex};
 use crate::init::firecracker::{BOOT, BOOT_PORT, FAILED, READY, write_frame};
 
 const CACHE_BYTES: u64 = 8 << 30;
-const WORK_BYTES: u64 = 3 << 30;
+const WORK_BYTES: u64 = 7 << 30;
 const JOB_TIME: Duration = Duration::from_secs(300);
 const INPUT_BYTES: u64 = 512 << 20;
 const JSON_BYTES: usize = 1 << 20;
@@ -40,7 +41,9 @@ const BUILD_HOSTS: &[&str] = &[
     "docker-images-prod.s3.dualstack.us-east-1.amazonaws.com",
     "deb.debian.org",
     "github.com",
+    "api.github.com",
     "release-assets.githubusercontent.com",
+    "downloads.claude.ai",
     "registry.npmjs.org",
     "cli.github.com",
 ];
@@ -121,7 +124,7 @@ impl Inputs {
             .collect()
     }
 
-    fn config(&mut self, bytes: &[u8], input_bytes: u64) -> io::Result<&[u8]> {
+    fn config(&mut self, bytes: &[u8]) -> io::Result<&[u8]> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Query {
@@ -151,7 +154,7 @@ impl Inputs {
             .iter()
             .map(|index| self.contexts[*index].digest.as_str())
             .collect();
-        let mut budget = InputBudget { bytes: input_bytes };
+        let mut budget = InputBudget::new(LOCAL_BASE_BYTES);
         for image in self
             .metadata
             .iter()
@@ -167,12 +170,22 @@ impl Inputs {
     }
 }
 
-#[derive(Default)]
 struct InputBudget {
     bytes: u64,
+    limit: u64,
+}
+
+impl Default for InputBudget {
+    fn default() -> Self {
+        Self::new(INPUT_BYTES)
+    }
 }
 
 impl InputBudget {
+    fn new(limit: u64) -> Self {
+        Self { bytes: 0, limit }
+    }
+
     fn charge(&mut self, bytes: u64) -> io::Result<()> {
         let allocated = bytes
             .max(1)
@@ -182,7 +195,7 @@ impl InputBudget {
         self.bytes = self
             .bytes
             .checked_add(allocated)
-            .filter(|bytes| *bytes <= INPUT_BYTES)
+            .filter(|bytes| *bytes <= self.limit)
             .ok_or_else(|| io::Error::other("resource: build input size"))?;
         Ok(())
     }
@@ -625,14 +638,14 @@ fn select_bases(
     let ids: BTreeSet<_> = selected.values().map(|base| base.digest.clone()).collect();
     let bases = catalog::lease_bases(&ids, cancel)?;
     private_dir(&input.join("bases"))?;
-    let mut budget = InputBudget { bytes: input_bytes };
+    let mut base_budget = InputBudget::new(LOCAL_BASE_BYTES);
     let mut layouts = BTreeMap::new();
     for (index, (id, path, _lease)) in bases.iter().enumerate() {
         check_cancel(cancel)?;
         let relative = format!("bases/{index}");
         let target = input.join(&relative);
         private_dir(&target)?;
-        copy_tree(path, &target, cancel, &mut budget)?;
+        copy_tree(path, &target, cancel, &mut base_budget)?;
         layouts.insert(id.clone(), format!("/selected/{relative}"));
     }
     let mut contexts = Vec::new();
@@ -640,6 +653,10 @@ fn select_bases(
         base.directory = layouts[&base.digest].clone();
         contexts.push(base);
     }
+    let mut budget = InputBudget {
+        bytes: input_bytes,
+        ..InputBudget::default()
+    };
     write_job(
         input,
         &Job {
@@ -661,7 +678,7 @@ fn select_bases(
 
 fn prepare_conversion(verified: &Verified, state: &Path, cancel: &AtomicBool) -> io::Result<()> {
     let input = state.join("conversion-input");
-    let mut budget = InputBudget::default();
+    let mut base_budget = InputBudget::new(OCI_BYTES);
     for path in ["context", "recipe", "bases/0"] {
         private_dir(&input.join(path))?;
     }
@@ -669,9 +686,15 @@ fn prepare_conversion(verified: &Verified, state: &Path, cancel: &AtomicBool) ->
         &verified.directory,
         &input.join("bases/0"),
         cancel,
-        &mut budget,
+        &mut base_budget,
     )?;
-    let conversion_id = conversion_base(&input.join("bases/0"), &verified.id, cancel, &mut budget)?;
+    let conversion_id = conversion_base(
+        &input.join("bases/0"),
+        &verified.id,
+        cancel,
+        &mut base_budget,
+    )?;
+    let mut budget = InputBudget::default();
     budget.charge(4096)?;
     fs::write(
         input.join("recipe/Dockerfile"),
@@ -896,7 +919,7 @@ async fn run_job(
                 match kind {
                 b'Q' if lookup_open => {
                     let mut inputs = inputs.lock().map_err(|_| io::Error::other("builder inputs poisoned"))?;
-                    let config = inputs.config(&payload, input_bytes)?;
+                    let config = inputs.config(&payload)?;
                     write_frame(&mut reader, b'R', config)?;
                 },
                 b'L' if lookup_open => {
@@ -1239,10 +1262,13 @@ fn input_disk(input: &Path, disk: &Path, cancel: &AtomicBool) -> io::Result<()> 
 }
 
 fn selected_bytes() -> io::Result<u64> {
-    // Each charged entry costs at least 4 KiB. Include three uncharged tree
-    // roots, then apply input_disk's existing filesystem/inode overhead.
+    // Context and selected bases have independent limits. Each charged entry
+    // costs at least 4 KiB; include the uncharged tree roots before overhead.
     let overflow = || io::Error::other("resource: build input reservation");
-    let entries = (INPUT_BYTES / 4096).checked_add(3).ok_or_else(overflow)?;
+    let bytes = INPUT_BYTES
+        .checked_add(LOCAL_BASE_BYTES)
+        .ok_or_else(overflow)?;
+    let entries = (bytes / 4096).checked_add(3).ok_or_else(overflow)?;
     let kib = entries.checked_mul(4).ok_or_else(overflow)?;
     kib.checked_add(kib / 10)
         .and_then(|kib| kib.checked_add(entries / 4))
