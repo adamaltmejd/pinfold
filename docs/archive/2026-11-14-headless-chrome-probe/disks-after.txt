@@ -1,3 +1,0 @@
-$ /Users/user/code/.cache/pinfold-work/mac-chrome/target/debug/pinfold disk list --json
-
-exit=0; elapsed_seconds=0.021

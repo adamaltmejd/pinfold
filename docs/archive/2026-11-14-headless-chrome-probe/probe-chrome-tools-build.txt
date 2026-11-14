@@ -1,5 +1,0 @@
-$ /Users/user/code/.cache/pinfold-work/mac-chrome/target/debug/pinfold build --profile probe-chrome-tools
-pinfold: building profile probe-chrome-tools
-localhost/pinfold/profile-probe-chrome-tools:latest
-
-exit=0; elapsed_seconds=22.404

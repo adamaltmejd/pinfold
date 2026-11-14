@@ -1,3 +1,0 @@
-$ /Users/user/code/.cache/pinfold-work/mac-chrome/target/debug/pinfold box exec probe-chrome-observe -- sh -c cat > /workspace/guest.py
-
-exit=0; elapsed_seconds=0.072

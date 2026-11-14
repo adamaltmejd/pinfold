@@ -2,31 +2,31 @@
 
 Date: 2026-11-14. Ticket #298, project-box plan probe 4. Repository
 `2a9bf28`, branch `probe/mac-chrome`. Apple container 1.7.1, arm64.
-The binary was built in this clone with `cargo build --locked`.
+This is the original probe's record, condensed without rerunning a box.
 
 ## Result
 
-Chromium 156.0.8078.79 starts and renders JavaScript with its own sandbox
-off. The box keeps the host UID, empty capabilities, `no_new_privs`, a
-read-only root and only loopback. GitHub answers through pinfold's proxy.
-The proxy refuses example.com and the observed background HTTP requests.
-A guest-only remote debugging port works for navigation, evaluation,
-screenshots and PDF output.
+Chromium 156.0.8078.79 starts and renders JavaScript with its sandbox off.
+The observed processes keep the host's numeric UID/GID, empty capability
+sets and `NoNewPrivs: 1`. The root is read-only and only loopback exists.
+GitHub answers through pinfold's proxy. It refuses example.com and the
+observed background HTTP requests. Guest-only CDP supports navigation,
+evaluation, screenshots and PDF output.
 
-Chromium does not send every network operation through the HTTP proxy.
-It also makes direct UDP connectivity probes. All five observed external
-UDP connects failed with `ENETUNREACH`. No successful bypass was observed.
-This is a bounded observation, not proof about every future browser task.
+Chromium also attempted five external UDP connects outside the proxy.
+All failed with `ENETUNREACH`. No successful bypass was observed. This is
+a bounded observation, not proof about future browser tasks.
 
-## Setup and reproduction
+## Evidence and reproduction
 
-The adjacent [record directory](2026-11-14-headless-chrome-probe/) contains
-the scripts, recipes, box specs and output. Commands in the logs use
-`/Users/user`; `$W` is the probe's private, short `/private/tmp/pfc.*` root.
-No host login, credential file, harness or injecting route was used.
-The box allowlist was exactly `api.github.com`.
+The adjacent [directory](2026-11-14-headless-chrome-probe/) keeps three
+recipes, five probe scripts, the HTML fixture and [output.txt](2026-11-14-headless-chrome-probe/output.txt).
+The output names its original source files. It distinguishes raw excerpts,
+selected fields and summaries of the full logs reviewed before deletion.
+Full logs, duplicate copies and binary files are no longer retained.
+The scripts and recipes are unchanged. No box was rerun for this edit.
 
-The entry points, from the clone's root, were:
+The original entry points, from the clone's root, were:
 
 ```sh
 RUSTC_WRAPPER= cargo build --locked
@@ -34,288 +34,171 @@ python3 docs/archive/2026-11-14-headless-chrome-probe/build.py
 python3 docs/archive/2026-11-14-headless-chrome-probe/run.py
 python3 docs/archive/2026-11-14-headless-chrome-probe/run.py explicit-proxy
 python3 docs/archive/2026-11-14-headless-chrome-probe/minimal.py
-python3 docs/archive/2026-11-14-headless-chrome-probe/pack.py
-python3 docs/archive/2026-11-14-headless-chrome-probe/analyze.py
 python3 docs/archive/2026-11-14-headless-chrome-probe/finish.py
 ```
 
-The second `run.py` invocation repeats the working browser case to recover
-artifacts after the export-script error described below. Reproduction
-needs the real container service. These scripts build only probe-owned
-profiles. `build.py` creates isolated XDG config and state, leaves the real
-cache selected, disables update checks and stamps maintenance before its
-first pinfold command. `run.py` holds `box up` stdin open and waits for
-`ready`. Work and home are separate 1 GiB disks, with 2 GiB box memory.
-`minimal.py` uses the Chromium image without the observation tools.
-`finish.py` removes the scratch root and its temporary `scratch-path`
-pointer only after boxes and disks are absent.
+The second `run.py` invocation recovered artifacts after the export error
+below. The scripts need the real container service. They generate the box
+specs and outputs; those generated files are omitted here. Removed
+`pack.py` and `analyze.py` only compressed or summarized logs.
+
+`build.py` creates isolated XDG config/state under a short `/private/tmp/pfc.*`
+root, keeps the real cache, disables update checks and stamps maintenance
+before its first pinfold command. `run.py` holds `box up` stdin open and
+waits for `ready`. Home and work are separate 1 GiB disks; memory is 2 GiB.
+`minimal.py` uses the plain Chromium image. `finish.py` checks boxes/disks
+are absent before removing scratch state. No host login, credential file,
+harness or injecting route was used. The allowlist was only `api.github.com`.
 
 ## Build cost and hosts
 
-`pinfold profile new probe-chrome-base` copied the built-in default
-recipe. `pinfold build --profile probe-chrome-base` built it under a new
-name. `probe-chrome` extends that local image with Debian's Chromium,
-using `apt-get install --no-install-recommends chromium`. A separate
-`probe-chrome-tools` image adds strace and Python for observation and CDP.
-Each recipe strips setuid/setgid bits after installation.
+`probe-chrome-base` copied the default profile recipe. `probe-chrome`
+adds Debian Chromium with `--no-install-recommends`. The separate
+`probe-chrome-tools` adds strace and Python. Recipes strip setuid/setgid bits.
 
-| Profile | Build seconds | Runtime-reported arm64 variant bytes | MiB |
-|---|---:|---:|---:|
-| probe-chrome-base | 9.518 | 71,037,562 | 67.75 |
-| probe-chrome | 40.477 | 348,154,131 | 332.03 |
-| probe-chrome-tools | 22.404 | 360,315,141 | 343.62 |
+| Profile | Build seconds | Runtime arm64 variant bytes |
+|---|---:|---:|
+| probe-chrome-base | 9.518 | 71,037,562 |
+| probe-chrome | 40.477 | 348,154,131 |
+| probe-chrome-tools | 22.404 | 360,315,141 |
 
-Chromium adds 277,116,569 reported image bytes, or 264.28 MiB.
-The tools add another 12,161,010 bytes, or 11.60 MiB. These are the
-runtime's variant sizes, not the image's unpacked filesystem size or
-physical allocation on this Mac. Apt reported 194 MB of package downloads
-and 752 MB of additional installed space for Chromium and its dependencies.
-`du -sh /usr/lib/chromium` reported 379M; the plain image's accessible
-root files occupied 906M. The latter measurement had permission denials.
+Chromium adds 264.28 MiB; tools add 11.60 MiB. These are runtime variant
+sizes, not unpacked sizes or physical allocation. Apt reported 194 MB
+downloads and 752 MB additional installed space. `/usr/lib/chromium` was
+379M; accessible root files were 906M, with permission denials.
+These single builds shared a cache; the base apt layer was already cached.
+Free space before the builds was 14, 13 and 25 GiB, above the 12 GiB floor.
 
-These are single builds with a shared cache. The base's apt layer was
-already cached, as its image history shows. They are not cold-build
-benchmarks. Free disk before the three image builds was 14, 13 and 25 GiB;
-all passed the required 12 GiB floor. No other builder's images were
-modified or pruned.
+The full apt HTTP diagnostics named only `deb.debian.org`, with no redirect
+host. Installing Chromium needed no Google download host. This inventories
+apt requests, not all build traffic. Apple builds have unrestricted egress;
+no shared-builder packet capture or Linux build run was made.
 
-The recipes save apt HTTP acquisition diagnostics inside the image.
-`probe-chrome-apt.txt` and `probe-chrome-tools-apt.txt` contain only
-`deb.debian.org` as HTTP Host, with no redirect host. Chromium therefore
-needed no additional application download host beyond the Debian mirror
-already used by the default recipe. No Google download host was needed
-to install the browser. This inventories apt requests, not all build
-traffic. Apple's build networking is unrestricted; no packet capture of
-the shared builder, registry refresh or registry authentication traffic
-was taken. Linux build egress was not run.
+## Startup, controls and navigation
 
-## Startup flags and controls
+The plain image's `chromium --headless --no-sandbox
+--user-data-dir=/home/user/minimal --dump-dom https://api.github.com/`
+returned GitHub's JSON and exited 0. Debian's package used pinfold's proxy
+environment without an explicit flag. The traced case also succeeded with
+`--proxy-server=http://127.0.0.1:3128`.
 
-The plain image succeeded with this command and exited 0:
+Without `--no-sandbox`, `--headless --dump-dom about:blank` exited 1 with
+`No usable sandbox!`. The optional chromium-sandbox package was absent;
+user namespaces were disabled. This does not test every sandbox arrangement.
+Debian's launcher added `--disable-dev-shm-usage` with 64 MiB `/dev/shm`.
+Its effective flags are summarized in output.txt. The probe added no
+background-networking, QUIC or WebRTC policy disablement.
 
-```sh
-pinfold box exec probe-chrome-minimal -- chromium \
-  --headless --no-sandbox --user-data-dir=/home/user/minimal \
-  --dump-dom https://api.github.com/
-```
+The `/proc` snapshot covered browser, zygotes, GPU, network, storage and
+renderer processes: UID 501, GID 20, all capability sets zero, no new
+privileges. Host numeric IDs matched. Root writes failed with errno 30;
+`user.max_user_namespaces` was 0. The file scan printed no setuid/setgid
+file, but its traversal was incomplete and exited 1. Profiles were on the
+home disk. D-Bus and mDNS diagnostics did not prevent the demonstrated work.
 
-Its output contained GitHub's JSON document. No explicit proxy flag was
-needed by this Debian package: pinfold's supplied proxy environment was
-enough. The traced case also succeeded with
-`--proxy-server=http://127.0.0.1:3128`. That flag makes the intended proxy
-explicit but was not a prerequisite observed here.
+In the same box CDP observed GitHub HTTP 200 at `127.0.0.1:3128`, HTTPS
+example.com `net::ERR_TUNNEL_CONNECTION_FAILED`, and HTTP example.com
+`HTTP ERROR 403` / `net::ERR_HTTP_RESPONSE_CODE_FAILURE`. The retained proxy
+entries name `allowlisted` or `not allowlisted`. The earlier environment-only
+case also returned GitHub HTTP 200.
 
-Without `--no-sandbox`, `--headless --dump-dom about:blank` exited 1:
+## Background traffic and bypass observation
 
-```text
-No usable sandbox!
-```
+The final fresh-profile run lasted about 73 seconds: navigation/rendering,
+12 seconds of WebRTC gathering and another 60 seconds of observation.
+strace followed descendants with `-f -e trace=network`; NetLog used
+capture mode Everything. Proxy logs alone cannot show bypass attempts.
 
-This package did not include the optional chromium-sandbox package, and
-the box disables user namespaces. This case establishes the failure of
-the installed package, not every possible Chromium sandbox arrangement.
+All 15 final egress entries remain. They show GitHub allowed twice;
+example.com refused five times; clients2.google.com and redirector.gvt1.com
+once each; update.googleapis.com four times; optimizationguide-pa.googleapis.com
+once. One empty-host refusal was `header timeout`; its initiating browser
+task was not established. Counts include retries and repeated tunnels.
+The earlier environment-only and plain runs added no host. NetLog paths
+identify time, dictionary, component-update and model requests. The
+observed background HTTP requests reached the proxy and were refused.
 
-The launcher automatically added `--disable-dev-shm-usage` because
-`/dev/shm` was 64 MiB. Its shipped `/etc/chromium.d/dev-shm` applies that
-flag below 3.8 GB. It also supplied `--disable-pings`, `--media-router=0`,
-`--no-default-browser-check`, `--enable-gpu-rasterization`,
-`--show-component-extension-options`, `--enable-remote-extensions` and an
-empty `--load-extension`. The recorded process command lines show the
-effective flags. This is stock Debian launcher behavior, not an upstream
-Chrome default. No additional `--disable-background-networking`,
-`--disable-quic` or WebRTC policy was applied by the probe.
+The retained external syscall lines include three UDP connects to
+`[2001:4860:4860::8888]:443`, one to `8.8.8.8:53` and one to
+`[2001:4860:4860::8888]:53`, including its resumed failure. All failed.
+The IPv6 port-443 probes correlate with NetLog IPv6 reachability checks;
+port-53 calls occurred during WebRTC work. No DNS payload followed them.
+These were connectivity attempts, not successful DNS, DoH, QUIC or STUN.
+AF_UNIX IPC, AF_NETLINK discovery and loopback traffic were separate.
+The full-trace audit counted 15 loopback proxy connects.
 
-`explicit-proxy.jsonl.txt` records `/proc` observations from the browser,
-zygotes, GPU, network, storage and renderer processes: UID 501, GID 20,
-all capability sets zero and `NoNewPrivs: 1`. It also records:
+NetLog had no DoH servers and disabled secure DNS transactions. The full-log
+audit found no DoH or distinct Safe Browsing request and only QUIC pool
+bookkeeping/shutdown, with no session or handshake. This does not show
+Safe Browsing is disabled or predict later traffic.
 
-```text
-interfaces: ["lo"]
-/dev/vdb / ext4 ro,relatime 0 0
-user.max_user_namespaces: 0
-[Errno 30] Read-only file system: '/probe-chrome-write'
-```
-
-The observed UID/GID matched `id` in `guest-facts.txt` and the host's
-numeric IDs in `checks.txt`. Writable browser
-profiles lived only on the home disk. The scan printed no setuid/setgid
-file. The broader facts command exited 1 because its filesystem traversal
-was not wholly readable; it is not a complete privileged filesystem audit.
-Missing D-Bus services and a failed mDNS responder produced diagnostics,
-but did not prevent navigation or rendering.
-
-## Allowed and denied navigation
-
-The CDP driver navigated to GitHub, then HTTPS and HTTP example.com, in
-the same box. It recorded GitHub HTTP 200 with remote address
-`127.0.0.1:3128`. HTTPS example.com returned
-`net::ERR_TUNNEL_CONNECTION_FAILED`; HTTP example.com displayed
-`HTTP ERROR 403` and CDP returned `net::ERR_HTTP_RESPONSE_CODE_FAILURE`.
-These matched the proxy decisions in `egress.jsonl`:
-
-```json
-{"decision":"allowed","host":"api.github.com","reason":"allowlisted","time":"2026-11-14T18:33:40Z"}
-{"decision":"refused","host":"example.com","reason":"not allowlisted","time":"2026-11-14T18:33:40Z"}
-```
-
-The earlier environment-only case also recorded GitHub HTTP 200 and
-the same allowlisted decision. Its stdout is `env-only.jsonl.txt` and
-its separate log snapshot is `env-only-egress.jsonl`.
-
-## Automatic traffic and bypass observation
-
-The final traced case started with a fresh browser profile and background
-networking enabled. It ran for about 73 seconds: navigation and rendering,
-a 12-second WebRTC case, then a further 60-second observation interval.
-strace followed all descendants with `-f -e trace=network`; Chrome also
-wrote NetLog with capture mode Everything. The egress log alone cannot
-show attempts that bypass the proxy.
-
-Every host in the final egress log is below. The earlier environment-only
-and plain-image runs added no other host.
-
-| Host | Final decisions | Observed URL or purpose |
-|---|---|---|
-| api.github.com | 2 allowed, `allowlisted` | Explicit navigation |
-| example.com | 5 refused, `not allowlisted` | Explicit denied navigation |
-| clients2.google.com | 1 refused, `not allowlisted` | `/time/1/current` |
-| redirector.gvt1.com | 1 refused, `not allowlisted` | `/edgedl/chrome/dict/en-us-10-2.bdic` |
-| update.googleapis.com | 4 refused, `not allowlisted` | HTTP/HTTPS POST `/service/update2/json` |
-| optimizationguide-pa.googleapis.com | 1 refused, `not allowlisted` | POST `/v1:GetModels` |
-
-One additional decision had an empty host and reason `header timeout`.
-It names no destination; its precise initiating browser task was not
-established. Denial counts include browser retries and repeated tunnels.
-They are not counts of distinct pages. Complete lines are retained.
-
-All observed background HTTP requests reached the proxy and were refused.
-NetLog identifies component update requests and later retries. It does
-not show a distinct Safe Browsing service request. That does not establish
-that Safe Browsing is disabled, or how its later requests would behave.
-
-strace also records these non-loopback UDP connects:
-
-| Destination | Count | Result |
-|---|---:|---|
-| `[2001:4860:4860::8888]:443` | 3 | `ENETUNREACH` |
-| `8.8.8.8:53` | 1 | `ENETUNREACH` |
-| `[2001:4860:4860::8888]:53` | 1 | `ENETUNREACH` |
-
-The three IPv6 port-443 calls correlate with NetLog's
-`HOST_RESOLVER_MANAGER_IPV6_REACHABILITY_CHECK`. The port-53 calls occur
-during the WebRTC work. No DNS payload followed them. They are direct
-connectivity probes, not evidence of successful DNS queries, DoH, QUIC or
-STUN traffic. They bypass the HTTP proxy as attempted operations, but
-the guest has no route for them. No direct external connection succeeded.
-AF_UNIX IPC, AF_NETLINK interface discovery and guest loopback CDP/proxy
-connections were considered separately. `analysis.json` lists the
-external call sites and the 15 loopback proxy connects.
-
-NetLog's DNS configuration had no DoH servers and
-`can_use_secure_dns_transactions: false`. No DoH request was observed.
-QUIC events were pool bookkeeping and shutdown, with no QUIC session or
-handshake. The UDP port-443 probes above are not QUIC sessions.
-
-The fixture explicitly created an `RTCPeerConnection` and data channel
-with `stun:example.com:3478`. After 12 seconds it was still gathering,
-with no ICE candidates or error events. strace showed no port-3478
-traffic. With only loopback, the case produced no ICE candidates or STUN
-traffic; why gathering remained pending was not established. It does not
-establish WebRTC's proxy behavior on a network
-that permits such an exchange. No successful bypass was seen here.
+The fixture created a data channel with `stun:example.com:3478`. After
+12 seconds gathering remained pending, with no candidates or error events.
+The full trace had no port-3478 traffic. Why gathering remained pending
+was not established. This does not establish WebRTC proxy behavior on a
+network permitting an exchange. The retained result omits transient SDP.
 
 ## Rendering and agent control
 
-The project disk held `fixture.html`, whose JavaScript changed the text
-to `JavaScript rendered: 42` and drew three colored canvas blocks.
-The plain image wrote `/workspace/minimal.png` with Chromium's
-`--screenshot` flag and exited 0. It was exported after box teardown
-and is retained as `minimal.png`.
+The fixture changed its text to `JavaScript rendered: 42` and drew three
+colored canvas blocks. The plain image's screenshot command exited 0.
+CDP `Runtime.evaluate`, `Page.captureScreenshot` and `Page.printToPDF`
+produced artifacts on the work disk, exported after teardown.
+The original visual inspection found the rendered text and blocks.
+Removed binary files showed:
 
-The traced run used CDP `Runtime.evaluate`, `Page.captureScreenshot` and
-`Page.printToPDF`. It wrote `work/rendered.png` and `work/rendered.pdf`
-on the project disk. `disk export` copied them to a new host destination
-after `box down`. Both images and the rendered PDF were inspected
-visually. `pdftotext` found the rendered value 42; `pdfinfo` reported a
-one-page, 21,077-byte PDF. The extracted text and preview are retained.
+| File | Bytes | Content |
+|---|---:|---|
+| minimal.png | 19,035 | Plain-image rendering of the fixture |
+| work/rendered.png | 19,176 | CDP rendering of the fixture |
+| work/rendered.pdf | 21,077 | One-page fixture PDF; extracted text included 42 |
+| pdf-preview.png | 24,455 | Raster preview of that PDF |
 
-An agent in the box can start:
+The three compressed syscall traces were also removed; the relevant final
+calls and full-log audit summaries remain in output.txt.
 
-```sh
-chromium --headless --no-sandbox --user-data-dir=/home/user/chrome \
-  --proxy-server=http://127.0.0.1:3128 \
-  --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
-  about:blank
-```
+`guest.py` starts Chromium with loopback debugging on port 9222, waits for
+`DevTools listening on ...`, reads `/json/version`, creates a page with
+`PUT /json/new?about:blank` and uses its WebSocket URL. Its stdlib driver
+bypasses the proxy for loopback CDP. A host agent can invoke it through
+`pinfold box exec`; no host debugging port is exposed. Pinfold HTTP routes
+drop WebSocket Upgrade, so a proxy route is not a CDP transport.
 
-It waits for Chromium's `DevTools listening on ...` readiness line,
-reads `http://127.0.0.1:9222/json/version`, creates a page with
-`PUT /json/new?about:blank`, then connects to its returned WebSocket URL.
-`guest.py` demonstrates navigation, JS evaluation and export with only
-Python's standard library. A host agent can invoke that driver with
-`pinfold box exec`; no debugging port is exposed on the host. Direct guest
-HTTP clients must bypass their proxy for this loopback service, as the
-driver's explicit empty ProxyHandler does. Pinfold's HTTP routes drop
-WebSocket Upgrade, so a proxy route is not a CDP transport.
+## Failures and limits
 
-## Failures, limits and owner decisions
+The default build failed before compilation because sccache was denied.
+Clearing `RUSTC_WRAPPER` built the binary in 22.13 seconds. Runtime access
+needed execution outside the tool sandbox. The first driver's reason-phrase
+check rejected Chromium's valid HTTP 101 `WebSocket Protocol Handshake`;
+both attempts stopped before navigation. It now checks status and accept.
 
-The default host `cargo build --locked` failed before compilation because
-sccache was not permitted by the sandbox. Clearing `RUSTC_WRAPPER` built
-the real binary in 22.13 seconds. Runtime access also needed execution
-outside the tool sandbox. These were host execution constraints.
+The next run completed browser cases but export failed with
+`destination-exists`. The script then removed its disks, losing that run's
+artifacts. The final run used a new destination and exported successfully.
+The retained script keeps disks if export fails. These were probe errors.
 
-The first driver incorrectly required the HTTP 101 reason phrase
-`Switching Protocols`; Chromium used `WebSocket Protocol Handshake`.
-Both first attempts stopped before navigation. The driver now checks
-status 101 and Sec-WebSocket-Accept. Their output and traces remain in
-`failed-driver-handshake/`.
+Owner decision: this supports an optional Chromium image on macOS, not a
+built-in profile or background-service policy. No allowlist expansion is
+proposed. Chromium's sandbox stays off as project-box plan decision 5
+requests; renderer isolation is not established.
 
-The next run completed its browser cases but reused the first export
-destination. Pinfold correctly refused it as `destination-exists`.
-The probe script then removed its disks, losing that run's new artifacts.
-Its stdout and egress log remain in `completed-cdp-export-failed/`.
-The final run used a new destination and retained its artifacts. The
-script now refuses to remove disks if export fails. These are probe-script
-errors, not pinfold failures.
-
-Owner decision: this establishes a workable optional Chromium image on
-macOS. It does not decide whether to add it to a built-in profile or which
-background services should be disabled for product use. None of the
-denied Google hosts is needed by the demonstrated workflow. No allowlist
-expansion is proposed. Chrome's sandbox remains off as decision 5 of the
-project-box plan requests; the probe does not establish renderer isolation.
-
-Not established: Linux; Google Chrome or Playwright; long-running or
-scheduled update behavior; a distinct Safe Browsing request; forced DoH
-or QUIC traffic; a working WebRTC/STUN exchange; a complete packet-level
-build host inventory; or behavior under large pages and memory pressure.
-No implementation, default profile, security control or test was changed.
+Not established: Linux, Google Chrome/Playwright, long-running updates,
+a distinct Safe Browsing request, forced DoH/QUIC, working WebRTC/STUN,
+a complete build traffic inventory, large pages or memory pressure.
+No implementation, default profile, security control or test changed.
 
 ## Retained resources and checks
 
-The only repository changes are this dated record and its scripts,
-recipes, specs, raw output and rendered artifacts. Host usernames were
-normalized. A browser-bundled vendor key in a locally denied optimization
-URL was redacted; no user credential was supplied. Raw syscall traces are
-gzip-compressed losslessly. `pack.py` verifies decompression before
-removing their text copies.
+Original cleanup found no probe boxes or disks and removed scratch state.
+The running container service was left running. The three probe images
+were left with `latest` and a unique tag: base `18e7fcd48b493cb8-90632`,
+Chromium `18e7fcd68a33cee0-90693`, tools `18e7fcdff9315390-90978`.
+Their full names and IDs remain in output.txt. These are historical
+observations; this edit did not query or alter runtime resources.
 
-All probe boxes and all four named disks were removed. The scratch config,
-state and exports were removed. The container service was already running
-and remains running. Other builders' resources and buildkit were left
-alone. `cleanup.txt` records the final empty probe-box and disk inventories.
-
-The three images remain, each with `latest` and its unique build tag:
-
-| Repository | Unique tag |
-|---|---|
-| localhost/pinfold/profile-probe-chrome-base | 18e7fcd48b493cb8-90632 |
-| localhost/pinfold/profile-probe-chrome | 18e7fcd68a33cee0-90693 |
-| localhost/pinfold/profile-probe-chrome-tools | 18e7fcdff9315390-90978 |
-
-Their IDs and full inventory are in `images-left.json`.
-`cargo fmt --check` passed. `RUSTC_WRAPPER= cargo clippy --all-targets
---locked -- -D warnings` passed. No test was added or run; the suite is
-suspended. The record is committed on the working branch. Nothing was
-pushed and no PR was opened.
+The original fmt and clippy checks passed. No test was added or run.
+Retained text was checked for real usernames and local-network host names
+or addresses. Home paths use `/Users/user` or `/home/user`; IP literals
+are loopback or the public DNS probe destinations above. URL queries,
+WebRTC SDP and bundled vendor-key material are omitted from excerpts.
+Nothing was pushed and no PR was opened.

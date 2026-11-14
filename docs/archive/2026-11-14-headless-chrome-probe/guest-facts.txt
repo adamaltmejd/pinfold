@@ -1,8 +1,0 @@
-$ /Users/user/code/.cache/pinfold-work/mac-chrome/target/debug/pinfold box exec probe-chrome-observe -- sh -c chromium --version; df -h /dev/shm; id; du -sh /usr/lib/chromium; find / -xdev -perm /6000 -type f 2>/dev/null
-Chromium 156.0.8078.79 built on Debian GNU/Linux 13 (trixie)
-Filesystem      Size  Used Avail Use% Mounted on
-tmpfs            64M     0   64M   0% /dev/shm
-uid=501 gid=20(dialout) groups=20(dialout)
-379M	/usr/lib/chromium
-
-exit=1; elapsed_seconds=0.223
