@@ -27,24 +27,34 @@ already reported as `image-outdated` at launch. The spec states the platform dis
 
 ## Measurements and bounds
 
-Original probe cohort, before cache-mount removal. Bytes. Mac is runtime variant size; Linux OCI is index.json plus admitted blobs, root is
-completed raw length. These are not unique storage costs. Every row uses Pi 1.5.2, Claude stable 2.1.311 and Codex 0.169.0.
+Fresh read-only size queries are retained with exact image identities in the results files. Mac is runtime variant size; Linux OCI is
+index.json plus all admitted blobs, and Linux root length matches the host file. These are not unique storage costs.
 
-| Profile | Mac variant | Linux OCI | Linux root | Linux s | Converter allocated peak |
-|---|---:|---:|---:|---:|---:|
-| default | 470400916 | 462738711 | 1262822400 | 150.138 | 5051985920 |
-| documents | 541090658 | 533171087 | 1428290560 | 174.487 | 5724315648 |
-| full | 557764880 | 552973666 | 1487130624 | 178.668 | 5958373376 |
+| Profile | Mac variant | Linux OCI | Linux root |
+|---|---:|---:|---:|
+| default | 470400578 | 462738281 | 1262831616 |
+| documents | 541090658 | 533170725 | 1428272128 |
+| full | 557764880 | 552973697 | 1487130624 |
 
-Mac builds took 38.269/44.216/46.978 s. Linux full/project passed in 279.037 s, with converter peak 5959266304. Individual timings, not
-benchmarks. `measure.py` samples backing-file st_blocks without reading guest disks.
+The separate original Linux build cohort is supported by retained catalog snapshots and sampler output. Peaks are the largest st_blocks ×
+512 sample every 0.1 s, not guest used-space measurements. Build times exclude launch.
 
-Selected whole-GiB bounds: work 7, raw root 2, OCI 1, selected bases 1. All recipes built under 6/2/1/1. The unchanged 2049 MiB root fixture
-exhausted 6 GiB scratch before its guard; 7 GiB reached `resource: converted root size`. The OCI fixture has two 576 MiB random layers,
-overwriting one file; each blob fits but their aggregate does not. Two separately admitted 634022340-byte bases exceed the combined input
-limit. All guards preserved refs and passed corrected smaller build/launch controls. The root control was 704655360 bytes; OCI control
-payload 701151536; derived one-base control payload 634022772. Caller context 512 MiB, artifact downloads 512 MiB, cache 8 GiB, deadlines
-and JSON/object limits remain unchanged. Snapshot overhead is documented.
+| Profile | Original catalog root | Build s | Sampled allocated peak |
+|---|---:|---:|---:|
+| default | 1262822400 | 150.138 | 5051985920 |
+| documents | 1428290560 | 174.487 | 5724315648 |
+| full | 1487130624 | 178.668 | 5958373376 |
+
+Mac original build times were 38.269/44.216/46.978 s for default/documents/full. Original Mac size and Linux OCI outputs were not retained;
+their historical values are replaced by fresh queries above. Retained project output shows 279.037 s for its profile-plus-project build and
+a maximum sample of 5959266304 across both conversions. The documents remeasurement built in 170.722 s, sampled 5725097984, and launched;
+its first attempt ran out of host disk, then passed unchanged after own-caller cleanup.
+
+Fixed GiB bounds: work 7, root 2, OCI 1, selected bases 1; 7 is not proven minimal. Six-GiB exhaustion was observed during development; the
+retained 76.892 s tar ENOSPC excerpt does not log the work-disk size, so that configuration is not retained proof and was not rerun. Seven
+GiB reached `resource: converted root size` for the 2049 MiB fixture. Two 576 MiB random layers and two 634022340-byte local bases reached
+their respective aggregate guards. All three guards preserved refs and passed corrected controls. Context/artifact downloads remain 512 MiB,
+cache 8 GiB; JSON/object limits and deadlines remain unchanged.
 
 ## Commands and outcomes
 
@@ -58,6 +68,7 @@ was read, and no lease acquired/released.
 | `cargo build --locked` | Passed, embedded ARM musl init | Musl target passed; no ELF INTERP |
 | `cargo fmt --check`; `git diff --check` | Passed | Passed |
 | `cargo clippy --all-targets --locked -- -D warnings` | Passed | Musl target passed |
+| `cargo zigbuild --all-targets --locked --target aarch64-unknown-linux-musl` | Full ARM musl cross-build passed | Not run on VM |
 | `probe.py build default/documents/full` | All passed | All passed |
 | `agents.py default/documents/full` | Nine tool exchanges passed | Nine passed |
 | Codex companion; binary writes | Real companion, fallback disabled; writes refused | Same, passed |
@@ -75,7 +86,7 @@ was read, and no lease acquired/released.
 | Post-decision `build default; start default; agents.py default` | Build 41.581 s; all three agents started and completed fixture commands | Build 152.558 s; all three passed |
 
 Fixture success means a valid tool response, a named guest file and a second model request containing its result, never HTTP 400. Full loads
-ffgrep/fffind. Source patch SHA-256 matches on both hosts: 0ea32124f638add74124b38259d237ee5def3a2ac0b3b0fe1447a5f4a2405f50.
+ffgrep/fffind. Source patch SHA-256 matches on both hosts: 319a1afda7d3b20198de96c79dc4f004d67db7fb08de85fed84f2db9d04198af.
 
 ## Findings and freshness decision
 
@@ -98,12 +109,17 @@ prune occurred. Initial cancellation published nothing.
 
 Mac owned boxes/disks are removed; its images/shared builder remain. Names: profile-default/documents/full, profile-probe-pr2-failure,
 project-project-1766f2850109 and image-probe-pr2-caller (localhost/pinfold). Linux owned boxes/disks are removed. It retains
-profile-default, profile-full, project-project-d7f66ec20ade, image-probe-pr2-caller and image-probe-pr2-egress under localhost/pinfold.
-Earlier own default/documents/failure and obsolete full/project revisions were retired under actual catalog/image locks. The original
+profile-default, profile-documents, profile-full, project-project-d7f66ec20ade and image-probe-pr2-egress under localhost/pinfold. Earlier
+own default/documents/failure and obsolete full/project revisions were retired under actual catalog/image locks. The original
 profile-probe-linux294 identity 7a76df9a… remains unchanged. Earlier Linux cases finished by 22:36 UTC. The follow-up finished by 22:50 UTC,
-before the 00:28 cutoff; its lease remains active. No case was omitted for time or capacity.
+before the 00:28 cutoff; review checks and the documents remeasurement also finished before that cutoff. The owned caller fixture was
+removed for space; boxes/disks are cleaned and the lease remains active.
+
+Review restored the separate catalog manifest/config and selected-config caps to 512 MiB: measured catalog metadata is 44864 bytes, so no
+case justifies 1 GiB. Shared root/OCI constants now compile once per binary at its consumer's platform boundary. Guarantee 23 and README
+state download-on-every-build and the profile publication warning; no other managed download-reuse claim remains.
 
 Caller changes: larger built-ins and permission/updater defaults; fresh managed RUN, profile-first builds and stderr publication report;
 managed no-cache flag removal; 7/2/1/1 Linux bounds and two build hosts. No JSON key or box-schema change. Mounted launches remain. Commits:
 15da4ca, 5d688ab, a61c787, 85981a1; 2359a04 started the record; 0f0badc adds collectors and 7af6811 records their results. This follow-up
-drops download reuse by operator decision.
+drops download reuse by operator decision. Review source fixes are 940313d; metadata remains bounded at the original 512 MiB.

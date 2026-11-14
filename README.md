@@ -135,6 +135,8 @@ Managed builds rerun recipe RUN steps on each invocation. Built-in recipes
 resolve stable agent releases when rebuilt. Use `pinfold build` or
 `pinfold build --profile NAME` to update.
 A project build first rebuilds its selected profile recipe when present.
+A project build republishes that profile; other projects using it report
+`image-outdated` at their next launch if its identity changed.
 The two images publish separately; a failed project build can leave the
 rebuilt profile published. Caller `image build` retains its layer cache
 and `--no-cache` option.
