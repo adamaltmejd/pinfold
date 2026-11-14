@@ -1,0 +1,29 @@
+{
+  "name": "probe-chrome-minimal",
+  "labels": {
+    "org.pinfold.probe": "chrome"
+  },
+  "profile": "probe-chrome",
+  "disks": [
+    {
+      "name": "probe-chrome-minimal-home",
+      "guest": "/home/user",
+      "size": "1G"
+    },
+    {
+      "name": "probe-chrome-minimal-work",
+      "guest": "/workspace",
+      "size": "1G"
+    }
+  ],
+  "env": {
+    "HOME": "/home/user",
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  },
+  "egress": {
+    "allow": [
+      "api.github.com"
+    ]
+  },
+  "memory": "2G"
+}

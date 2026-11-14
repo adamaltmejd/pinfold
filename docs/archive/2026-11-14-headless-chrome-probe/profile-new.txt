@@ -1,0 +1,3 @@
+$ /Users/user/code/.cache/pinfold-work/mac-chrome/target/debug/pinfold profile new probe-chrome-base
+
+exit=0; elapsed_seconds=0.327

@@ -1,0 +1,31 @@
+{
+  "name": "probe-chrome-observe",
+  "labels": {
+    "org.pinfold.probe": "chrome"
+  },
+  "profile": "probe-chrome",
+  "image": "localhost/pinfold/profile-probe-chrome-tools:latest",
+  "disks": [
+    {
+      "name": "probe-chrome-home",
+      "guest": "/home/user",
+      "size": "1G"
+    },
+    {
+      "name": "probe-chrome-work",
+      "guest": "/workspace",
+      "size": "1G"
+    }
+  ],
+  "env": {
+    "HOME": "/home/user",
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  },
+  "egress": {
+    "allow": [
+      "api.github.com"
+    ]
+  },
+  "cpus": 4,
+  "memory": "2G"
+}

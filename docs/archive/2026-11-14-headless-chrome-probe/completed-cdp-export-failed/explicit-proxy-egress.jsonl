@@ -1,0 +1,22 @@
+{"decision":"refused","host":"clients2.google.com","reason":"not allowlisted","time":"2026-11-14T18:31:50Z"}
+{"decision":"refused","host":"redirector.gvt1.com","reason":"not allowlisted","time":"2026-11-14T18:31:50Z"}
+{"decision":"refused","host":"update.googleapis.com","reason":"not allowlisted","time":"2026-11-14T18:31:50Z"}
+{"decision":"refused","host":"update.googleapis.com","reason":"not allowlisted","time":"2026-11-14T18:31:50Z"}
+{"decision":"allowed","host":"api.github.com","reason":"allowlisted","time":"2026-11-14T18:31:50Z"}
+{"decision":"allowed","host":"api.github.com","reason":"allowlisted","time":"2026-11-14T18:31:50Z"}
+{"decision":"refused","host":"clients2.google.com","reason":"not allowlisted","time":"2026-11-14T18:31:51Z"}
+{"decision":"refused","host":"redirector.gvt1.com","reason":"not allowlisted","time":"2026-11-14T18:31:51Z"}
+{"decision":"refused","host":"update.googleapis.com","reason":"not allowlisted","time":"2026-11-14T18:31:51Z"}
+{"decision":"refused","host":"update.googleapis.com","reason":"not allowlisted","time":"2026-11-14T18:31:51Z"}
+{"decision":"allowed","host":"api.github.com","reason":"allowlisted","time":"2026-11-14T18:31:51Z"}
+{"decision":"allowed","host":"api.github.com","reason":"allowlisted","time":"2026-11-14T18:31:51Z"}
+{"decision":"refused","host":"example.com","reason":"not allowlisted","time":"2026-11-14T18:31:52Z"}
+{"decision":"refused","host":"example.com","reason":"not allowlisted","time":"2026-11-14T18:31:52Z"}
+{"decision":"refused","host":"example.com","reason":"not allowlisted","time":"2026-11-14T18:31:52Z"}
+{"decision":"refused","host":"example.com","reason":"not allowlisted","time":"2026-11-14T18:31:52Z"}
+{"decision":"refused","host":"example.com","reason":"not allowlisted","time":"2026-11-14T18:31:52Z"}
+{"decision":"refused","host":"example.com","reason":"not allowlisted","time":"2026-11-14T18:31:52Z"}
+{"decision":"refused","host":"optimizationguide-pa.googleapis.com","reason":"not allowlisted","time":"2026-11-14T18:32:01Z"}
+{"decision":"refused","host":"","reason":"header timeout","time":"2026-11-14T18:32:02Z"}
+{"decision":"refused","host":"update.googleapis.com","reason":"not allowlisted","time":"2026-11-14T18:32:51Z"}
+{"decision":"refused","host":"update.googleapis.com","reason":"not allowlisted","time":"2026-11-14T18:32:51Z"}

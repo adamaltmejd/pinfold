@@ -1,0 +1,6 @@
+Headless Chromium in pinfold
+JavaScript rendered: 42
+
+Local fixture. No external assets or credentials.
+
+

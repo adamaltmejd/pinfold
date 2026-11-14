@@ -1,0 +1,4 @@
+$ /Users/user/code/.cache/pinfold-work/mac-chrome/target/debug/pinfold disk rm probe-chrome-work --json
+{"disk":"probe-chrome-work","event":"removed","existed":true}
+
+exit=0; elapsed_seconds=0.038

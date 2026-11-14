@@ -1,0 +1,715 @@
+$ /Users/user/code/.cache/pinfold-work/mac-chrome/target/debug/pinfold box exec probe-chrome-observe -- cat /opt/probe-chrome-tools/build.log
++ export DEBIAN_FRONTEND=noninteractive
++ apt-get -o Debug::Acquire::http=true update
+GET /debian/dists/trixie/InRelease HTTP/1.1
+Host: deb.debian.org
+Cache-Control: max-age=0
+Accept: text/*
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+Answer for: http://deb.debian.org/debian/dists/trixie/InRelease
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 140421
+Server: Apache
+X-Content-Type-Options: nosniff
+X-Frame-Options: sameorigin
+Referrer-Policy: no-referrer
+X-Xss-Protection: 1
+Permissions-Policy: interest-cohort=()
+Last-Modified: Sat, 12 Sep 2026 07:59:10 GMT
+ETag: "22485-65b4493787114"
+X-Clacks-Overhead: GNU Terry Pratchett
+Cache-Control: public, max-age=120
+Backend: 4qpvL1tJyeV1P6Tmf0Lj8g--F_accum_debian_backend_mirrors_debian_org
+Via: 1.1 varnish, 1.1 varnish
+Accept-Ranges: bytes
+Date: Sat, 14 Nov 2026 18:30:15 GMT
+Age: 1
+X-Served-By: cache-ams-eham8680050-AMS, cache-bma-essb1270054-BMA
+X-Cache: HIT, HIT
+X-Cache-Hits: 2003543, 1
+X-Timer: S1794681016.951437,VS0,VE5
+
+Get:1 http://deb.debian.org/debian trixie InRelease [140 kB]
+GET /debian/dists/trixie-updates/InRelease HTTP/1.1
+Host: deb.debian.org
+Cache-Control: max-age=0
+Accept: text/*
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+Answer for: http://deb.debian.org/debian/dists/trixie-updates/InRelease
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 47340
+Server: Apache
+X-Content-Type-Options: nosniff
+X-Frame-Options: sameorigin
+Referrer-Policy: no-referrer
+X-Xss-Protection: 1
+Permissions-Policy: interest-cohort=()
+Last-Modified: Sat, 14 Nov 2026 14:14:40 GMT
+ETag: "b8ec-6603d2a65a089"
+X-Clacks-Overhead: GNU Terry Pratchett
+Cache-Control: public, max-age=120
+Backend: 4qpvL1tJyeV1P6Tmf0Lj8g--F_conova_debian_backend_mirrors_debian_org
+Via: 1.1 varnish, 1.1 varnish
+Accept-Ranges: bytes
+Date: Sat, 14 Nov 2026 18:30:15 GMT
+Age: 48
+X-Served-By: cache-ams-eham8680087-AMS, cache-bma-essb1270054-BMA
+X-Cache: HIT, HIT
+X-Cache-Hits: 23152, 8
+X-Timer: S1794681016.977212,VS0,VE0
+
+Get:2 http://deb.debian.org/debian trixie-updates InRelease [47.3 kB]
+GET /debian-security/dists/trixie-security/InRelease HTTP/1.1
+Host: deb.debian.org
+Cache-Control: max-age=0
+Accept: text/*
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+Answer for: http://deb.debian.org/debian-security/dists/trixie-security/InRelease
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 43409
+Server: Apache
+X-Content-Type-Options: nosniff
+X-Frame-Options: sameorigin
+Referrer-Policy: no-referrer
+X-Xss-Protection: 1
+Permissions-Policy: interest-cohort=()
+Last-Modified: Sat, 14 Nov 2026 17:40:32 GMT
+ETag: "a991-660400a9c8317"
+Cache-Control: public, max-age=120
+Expires: Sat, 14 Nov 2026 17:42:57 GMT
+X-Clacks-Overhead: GNU Terry Pratchett
+Backend: 4qpvL1tJyeV1P6Tmf0Lj8g--F_villa_security_backend_mirrors_debian_org
+Via: 1.1 varnish, 1.1 varnish
+Accept-Ranges: bytes
+Date: Sat, 14 Nov 2026 18:30:15 GMT
+Age: 76
+X-Served-By: cache-ams-eham8680052-AMS, cache-bma-essb1270054-BMA
+X-Cache: HIT, HIT
+X-Cache-Hits: 4520, 8
+X-Timer: S1794681016.985217,VS0,VE0
+
+Get:3 http://deb.debian.org/debian-security trixie-security InRelease [43.4 kB]
+GET /debian/dists/trixie/main/binary-arm64/by-hash/SHA256/be16b37b2f740f066ea93d35d56f04f94d63693e5a3eb421b052bf86fae75bcd HTTP/1.1
+Host: deb.debian.org
+Cache-Control: max-age=0
+Accept: text/*
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+Answer for: http://deb.debian.org/debian/dists/trixie/main/binary-arm64/by-hash/SHA256/be16b37b2f740f066ea93d35d56f04f94d63693e5a3eb421b052bf86fae75bcd
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 9614192
+server: Apache
+x-content-type-options: nosniff
+x-frame-options: sameorigin
+referrer-policy: no-referrer
+x-xss-protection: 1
+permissions-policy: interest-cohort=()
+last-modified: Sat, 12 Sep 2026 07:29:52 GMT
+etag: "92b370-65b442ab06177"
+x-clacks-overhead: GNU Terry Pratchett
+cache-control: public, max-age=2592000
+backend: 4qpvL1tJyeV1P6Tmf0Lj8g--F_conova_debian_backend_mirrors_debian_org
+via: 1.1 varnish, 1.1 varnish
+accept-ranges: bytes
+age: 2091891
+date: Sat, 14 Nov 2026 18:30:15 GMT
+x-served-by: cache-ams-eham8680072-AMS, cache-bma-essb1270054-BMA
+x-cache: HIT, HIT
+x-cache-hits: 24, 0
+x-timer: S1794681016.996884,VS0,VE1
+
+Get:4 http://deb.debian.org/debian trixie/main arm64 Packages [9614 kB]
+GET /debian/dists/trixie-updates/main/binary-arm64/by-hash/SHA256/eea860c5dea11680e64299adb2736c2367c4235763a66f2b70ca61ce1b51978a HTTP/1.1
+Host: deb.debian.org
+Cache-Control: max-age=0
+Accept: text/*
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+GET /debian-security/dists/trixie-security/main/binary-arm64/by-hash/SHA256/fda5fc4cee08952ff0ab3092893c32cb9c98e7e57f9478c5c2afc11a9bdfd448 HTTP/1.1
+Host: deb.debian.org
+Cache-Control: max-age=0
+Accept: text/*
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+Answer for: http://deb.debian.org/debian/dists/trixie-updates/main/binary-arm64/by-hash/SHA256/eea860c5dea11680e64299adb2736c2367c4235763a66f2b70ca61ce1b51978a
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 1108
+Server: Apache
+X-Content-Type-Options: nosniff
+X-Frame-Options: sameorigin
+Referrer-Policy: no-referrer
+X-Xss-Protection: 1
+Permissions-Policy: interest-cohort=()
+Last-Modified: Thu, 05 Nov 2026 13:57:46 GMT
+ETag: "454-65f87e15bf472"
+X-Clacks-Overhead: GNU Terry Pratchett
+Cache-Control: public, max-age=2592000
+Backend: 4qpvL1tJyeV1P6Tmf0Lj8g--F_skroutz_debian_backend_mirrors_debian_org
+Via: 1.1 varnish, 1.1 varnish
+Accept-Ranges: bytes
+Date: Sat, 14 Nov 2026 18:30:16 GMT
+Age: 791582
+X-Served-By: cache-ams-eham8680090-AMS, cache-bma-essb1270070-BMA
+X-Cache: HIT, HIT
+X-Cache-Hits: 38, 53391
+X-Timer: S1794681016.112362,VS0,VE0
+
+Get:5 http://deb.debian.org/debian trixie-updates/main arm64 Packages [1108 B]
+Answer for: http://deb.debian.org/debian-security/dists/trixie-security/main/binary-arm64/by-hash/SHA256/fda5fc4cee08952ff0ab3092893c32cb9c98e7e57f9478c5c2afc11a9bdfd448
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 304556
+Server: Apache
+X-Content-Type-Options: nosniff
+X-Frame-Options: sameorigin
+Referrer-Policy: no-referrer
+X-Xss-Protection: 1
+Permissions-Policy: interest-cohort=()
+Last-Modified: Sat, 14 Nov 2026 17:40:05 GMT
+ETag: "4a5ac-6604008fe14da"
+Cache-Control: public, max-age=2592000
+Expires: Sat, 14 Nov 2026 17:42:58 GMT
+X-Clacks-Overhead: GNU Terry Pratchett
+Backend: 4qpvL1tJyeV1P6Tmf0Lj8g--F_accum_security_backend_mirrors_debian_org
+Via: 1.1 varnish, 1.1 varnish
+Accept-Ranges: bytes
+Date: Sat, 14 Nov 2026 18:30:16 GMT
+Age: 2957
+X-Served-By: cache-ams-eham8680054-AMS, cache-bma-essb1270070-BMA
+X-Cache: HIT, HIT
+X-Cache-Hits: 27, 181
+X-Timer: S1794681016.112763,VS0,VE0
+
+Get:6 http://deb.debian.org/debian-security trixie-security/main arm64 Packages [305 kB]
+Fetched 10.2 MB in 1s (12.3 MB/s)
+Reading package lists...
++ apt-get -o Debug::Acquire::http=true install -y --no-install-recommends strace python3
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  libpython3-stdlib libpython3.13-minimal libpython3.13-stdlib libreadline8t64
+  media-types netbase python3-minimal python3.13 python3.13-minimal
+  readline-common
+Suggested packages:
+  python3-doc python3-tk python3-venv python3.13-venv python3.13-doc binutils
+  binfmt-support readline-doc
+The following NEW packages will be installed:
+  libpython3-stdlib libpython3.13-minimal libpython3.13-stdlib libreadline8t64
+  media-types netbase python3 python3-minimal python3.13 python3.13-minimal
+  readline-common strace
+GET /debian/pool/main/p/python3.13/libpython3.13-minimal_3.13.5-2%2bdeb13u5_arm64.deb HTTP/1.1
+Host: deb.debian.org
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+Answer for: http://deb.debian.org/debian/pool/main/p/python3.13/libpython3.13-minimal_3.13.5-2%2bdeb13u5_arm64.deb
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 856328
+server: Apache
+x-content-type-options: nosniff
+x-frame-options: sameorigin
+referrer-policy: no-referrer
+x-xss-protection: 1
+permissions-policy: interest-cohort=()
+last-modified: Sat, 05 Sep 2026 19:09:40 GMT
+etag: "d1108-65ac12083b611"
+x-clacks-overhead: GNU Terry Pratchett
+cache-control: public, max-age=2592000
+content-type: application/vnd.debian.binary-package
+backend: 4qpvL1tJyeV1P6Tmf0Lj8g--F_conova_debian_backend_mirrors_debian_org
+via: 1.1 varnish, 1.1 varnish
+accept-ranges: bytes
+age: 274744
+date: Sat, 14 Nov 2026 18:30:18 GMT
+x-served-by: cache-ams-eham8680071-AMS, cache-bma-essb1270024-BMA
+x-cache: HIT, HIT
+x-cache-hits: 21, 0
+x-timer: S1794681018.123889,VS0,VE1
+
+0 upgraded, 12 newly installed, 0 to remove and 0 not upgraded.
+Need to get 7148 kB of archives.
+After this operation, 27.8 MB of additional disk space will be used.
+Get:1 http://deb.debian.org/debian trixie/main arm64 libpython3.13-minimal arm64 3.13.5-2+deb13u5 [856 kB]
+GET /debian/pool/main/p/python3.13/python3.13-minimal_3.13.5-2%2bdeb13u5_arm64.deb HTTP/1.1
+Host: deb.debian.org
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+GET /debian/pool/main/p/python3-defaults/python3-minimal_3.13.5-1_arm64.deb HTTP/1.1
+Host: deb.debian.org
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+GET /debian/pool/main/m/media-types/media-types_13.0.0_all.deb HTTP/1.1
+Host: deb.debian.org
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+GET /debian/pool/main/n/netbase/netbase_6.5_all.deb HTTP/1.1
+Host: deb.debian.org
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+GET /debian/pool/main/r/readline/readline-common_8.2-6_all.deb HTTP/1.1
+Host: deb.debian.org
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+GET /debian/pool/main/r/readline/libreadline8t64_8.2-6_arm64.deb HTTP/1.1
+Host: deb.debian.org
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+GET /debian/pool/main/p/python3.13/libpython3.13-stdlib_3.13.5-2%2bdeb13u5_arm64.deb HTTP/1.1
+Host: deb.debian.org
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+GET /debian/pool/main/p/python3.13/python3.13_3.13.5-2%2bdeb13u5_arm64.deb HTTP/1.1
+Host: deb.debian.org
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+GET /debian/pool/main/p/python3-defaults/libpython3-stdlib_3.13.5-1_arm64.deb HTTP/1.1
+Host: deb.debian.org
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+GET /debian/pool/main/p/python3-defaults/python3_3.13.5-1_arm64.deb HTTP/1.1
+Host: deb.debian.org
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+Answer for: http://deb.debian.org/debian/pool/main/p/python3.13/python3.13-minimal_3.13.5-2%2bdeb13u5_arm64.deb
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 2008016
+server: Apache
+x-content-type-options: nosniff
+x-frame-options: sameorigin
+referrer-policy: no-referrer
+x-xss-protection: 1
+permissions-policy: interest-cohort=()
+last-modified: Sat, 05 Sep 2026 19:09:41 GMT
+etag: "1ea3d0-65ac12085d8f1"
+x-clacks-overhead: GNU Terry Pratchett
+cache-control: public, max-age=2592000
+content-type: application/vnd.debian.binary-package
+backend: 4qpvL1tJyeV1P6Tmf0Lj8g--F_skroutz_debian_backend_mirrors_debian_org
+via: 1.1 varnish, 1.1 varnish
+accept-ranges: bytes
+age: 858423
+date: Sat, 14 Nov 2026 18:30:18 GMT
+x-served-by: cache-ams-eham8680038-AMS, cache-bma-essb1270021-BMA
+x-cache: HIT, HIT
+x-cache-hits: 33, 0
+x-timer: S1794681018.181077,VS0,VE1
+
+Get:2 http://deb.debian.org/debian trixie/main arm64 python3.13-minimal arm64 3.13.5-2+deb13u5 [2008 kB]
+GET /debian/pool/main/s/strace/strace_6.13%2bds-1_arm64.deb HTTP/1.1
+Host: deb.debian.org
+User-Agent: Debian APT-HTTP/1.3 (3.0.4)
+
+
+Answer for: http://deb.debian.org/debian/pool/main/p/python3-defaults/python3-minimal_3.13.5-1_arm64.deb
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 27244
+Server: Apache
+X-Content-Type-Options: nosniff
+X-Frame-Options: sameorigin
+Referrer-Policy: no-referrer
+X-Xss-Protection: 1
+Permissions-Policy: interest-cohort=()
+Last-Modified: Mon, 30 Jun 2025 09:35:05 GMT
+ETag: "6a6c-638c6be31c885"
+X-Clacks-Overhead: GNU Terry Pratchett
+Cache-Control: public, max-age=2592000
+Content-Type: application/vnd.debian.binary-package
+Backend: 4qpvL1tJyeV1P6Tmf0Lj8g--F_conova_debian_backend_mirrors_debian_org
+Via: 1.1 varnish, 1.1 varnish
+Accept-Ranges: bytes
+Date: Sat, 14 Nov 2026 18:30:18 GMT
+Age: 849215
+X-Served-By: cache-ams2100134-AMS, cache-bma-essb1270027-BMA
+X-Cache: HIT, HIT
+X-Cache-Hits: 28, 48
+X-Timer: S1794681018.183586,VS0,VE0
+
+Get:3 http://deb.debian.org/debian trixie/main arm64 python3-minimal arm64 3.13.5-1 [27.2 kB]
+Answer for: http://deb.debian.org/debian/pool/main/m/media-types/media-types_13.0.0_all.deb
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 29336
+Server: Apache
+X-Content-Type-Options: nosniff
+X-Frame-Options: sameorigin
+Referrer-Policy: no-referrer
+X-Xss-Protection: 1
+Permissions-Policy: interest-cohort=()
+Last-Modified: Sat, 08 Mar 2025 02:09:55 GMT
+ETag: "7298-62fcb3c3a7ca5"
+X-Clacks-Overhead: GNU Terry Pratchett
+Cache-Control: public, max-age=2592000
+Content-Type: application/vnd.debian.binary-package
+Via: 1.1 varnish, 1.1 varnish
+x-req-url: recv="/debian/pool/main/m/media-types/media-types_13.0.0_all.deb",deliver="/debian/pool/main/m/media-types/media-types_13.0.0_all.deb"
+Backend: fastlyshield--shield_cache_ams21081_AMS
+Accept-Ranges: bytes
+Date: Sat, 14 Nov 2026 18:30:18 GMT
+Age: 2067909
+X-Served-By: cache-ams21081-AMS, cache-bma-essb1270027-BMA
+X-Cache: HIT, HIT
+X-Cache-Hits: 2069, 868
+X-Timer: S1794681018.184165,VS0,VE0
+
+Answer for: http://deb.debian.org/debian/pool/main/n/netbase/netbase_6.5_all.deb
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 12436
+Server: Apache
+X-Content-Type-Options: nosniff
+X-Frame-Options: sameorigin
+Referrer-Policy: no-referrer
+X-Xss-Protection: 1
+Permissions-Policy: interest-cohort=()
+Last-Modified: Sun, 16 Mar 2025 00:32:18 GMT
+ETag: "3094-6306acdd35e6b"
+X-Clacks-Overhead: GNU Terry Pratchett
+Cache-Control: public, max-age=2592000
+Content-Type: application/vnd.debian.binary-package
+Via: 1.1 varnish, 1.1 varnish
+Accept-Ranges: bytes
+Date: Sat, 14 Nov 2026 18:30:18 GMT
+Age: 1488294
+X-Served-By: cache-ams2100134-AMS, cache-bma-essb1270027-BMA
+X-Cache: HIT, HIT
+X-Cache-Hits: 109, 699
+X-Timer: S1794681018.184527,VS0,VE0
+
+Answer for: http://deb.debian.org/debian/pool/main/r/readline/readline-common_8.2-6_all.deb
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 69360
+Server: Apache
+X-Content-Type-Options: nosniff
+X-Frame-Options: sameorigin
+Referrer-Policy: no-referrer
+X-Xss-Protection: 1
+Permissions-Policy: interest-cohort=()
+Last-Modified: Fri, 13 Dec 2024 14:03:36 GMT
+ETag: "10ef0-629274c0a344b"
+X-Clacks-Overhead: GNU Terry Pratchett
+Cache-Control: public, max-age=2592000
+Content-Type: application/vnd.debian.binary-package
+Via: 1.1 varnish, 1.1 varnish
+Backend: fastlyshield--shield_cache_ams21029_AMS
+Accept-Ranges: bytes
+Date: Sat, 14 Nov 2026 18:30:18 GMT
+Age: 265389
+X-Served-By: cache-ams21029-AMS, cache-bma-essb1270027-BMA
+X-Cache: HIT, HIT
+X-Cache-Hits: 2241, 66
+X-Timer: S1794681018.184908,VS0,VE0
+
+Get:4 http://deb.debian.org/debian trixie/main arm64 media-types all 13.0.0 [29.3 kB]
+Get:5 http://deb.debian.org/debian trixie/main arm64 netbase all 6.5 [12.4 kB]
+Get:6 http://deb.debian.org/debian trixie/main arm64 readline-common all 8.2-6 [69.4 kB]
+Answer for: http://deb.debian.org/debian/pool/main/r/readline/libreadline8t64_8.2-6_arm64.deb
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 159264
+server: Apache
+x-content-type-options: nosniff
+x-frame-options: sameorigin
+referrer-policy: no-referrer
+x-xss-protection: 1
+permissions-policy: interest-cohort=()
+last-modified: Fri, 13 Dec 2024 15:04:11 GMT
+etag: "26e20-6292824bb9506"
+x-clacks-overhead: GNU Terry Pratchett
+cache-control: public, max-age=2592000
+content-type: application/vnd.debian.binary-package
+backend: 4qpvL1tJyeV1P6Tmf0Lj8g--F_skroutz_debian_backend_mirrors_debian_org
+via: 1.1 varnish, 1.1 varnish
+accept-ranges: bytes
+age: 271262
+date: Sat, 14 Nov 2026 18:30:18 GMT
+x-served-by: cache-ams2100111-AMS, cache-bma-essb1270027-BMA
+x-cache: HIT, HIT
+x-cache-hits: 299, 0
+x-timer: S1794681018.185334,VS0,VE1
+
+Get:7 http://deb.debian.org/debian trixie/main arm64 libreadline8t64 arm64 8.2-6 [159 kB]
+Answer for: http://deb.debian.org/debian/pool/main/p/python3.13/libpython3.13-stdlib_3.13.5-2%2bdeb13u5_arm64.deb
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 1894712
+server: Apache
+x-content-type-options: nosniff
+x-frame-options: sameorigin
+referrer-policy: no-referrer
+x-xss-protection: 1
+permissions-policy: interest-cohort=()
+last-modified: Sat, 05 Sep 2026 19:09:40 GMT
+etag: "1ce938-65ac12083b611"
+x-clacks-overhead: GNU Terry Pratchett
+cache-control: public, max-age=2592000
+content-type: application/vnd.debian.binary-package
+backend: 4qpvL1tJyeV1P6Tmf0Lj8g--F_skroutz_debian_backend_mirrors_debian_org
+via: 1.1 varnish, 1.1 varnish
+accept-ranges: bytes
+age: 2081676
+date: Sat, 14 Nov 2026 18:30:18 GMT
+x-served-by: cache-ams-eham8680040-AMS, cache-bma-essb1270069-BMA
+x-cache: HIT, HIT
+x-cache-hits: 102, 0
+x-timer: S1794681018.215712,VS0,VE1
+
+Get:8 http://deb.debian.org/debian trixie/main arm64 libpython3.13-stdlib arm64 3.13.5-2+deb13u5 [1895 kB]
+Answer for: http://deb.debian.org/debian/pool/main/p/python3.13/python3.13_3.13.5-2%2bdeb13u5_arm64.deb
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 757492
+server: Apache
+x-content-type-options: nosniff
+x-frame-options: sameorigin
+referrer-policy: no-referrer
+x-xss-protection: 1
+permissions-policy: interest-cohort=()
+last-modified: Sat, 05 Sep 2026 19:09:41 GMT
+etag: "b8ef4-65ac12085e891"
+x-clacks-overhead: GNU Terry Pratchett
+cache-control: public, max-age=2592000
+content-type: application/vnd.debian.binary-package
+backend: 4qpvL1tJyeV1P6Tmf0Lj8g--F_conova_debian_backend_mirrors_debian_org
+via: 1.1 varnish, 1.1 varnish
+accept-ranges: bytes
+age: 852014
+date: Sat, 14 Nov 2026 18:30:18 GMT
+x-served-by: cache-ams-eham8680074-AMS, cache-bma-essb1270033-BMA
+x-cache: HIT, HIT
+x-cache-hits: 21, 0
+x-timer: S1794681018.223226,VS0,VE4
+
+Get:9 http://deb.debian.org/debian trixie/main arm64 python3.13 arm64 3.13.5-2+deb13u5 [757 kB]
+Answer for: http://deb.debian.org/debian/pool/main/p/python3-defaults/libpython3-stdlib_3.13.5-1_arm64.deb
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 10180
+Server: Apache
+X-Content-Type-Options: nosniff
+X-Frame-Options: sameorigin
+Referrer-Policy: no-referrer
+X-Xss-Protection: 1
+Permissions-Policy: interest-cohort=()
+Last-Modified: Mon, 30 Jun 2025 09:35:05 GMT
+ETag: "27c4-638c6be31c885"
+X-Clacks-Overhead: GNU Terry Pratchett
+Cache-Control: public, max-age=2592000
+Content-Type: application/vnd.debian.binary-package
+Backend: 4qpvL1tJyeV1P6Tmf0Lj8g--F_conova_debian_backend_mirrors_debian_org
+Via: 1.1 varnish, 1.1 varnish
+Accept-Ranges: bytes
+Date: Sat, 14 Nov 2026 18:30:18 GMT
+Age: 1038646
+X-Served-By: cache-ams-eham8680075-AMS, cache-bma-essb1270064-BMA
+X-Cache: HIT, HIT
+X-Cache-Hits: 2465, 762
+X-Timer: S1794681018.248894,VS0,VE0
+
+Get:10 http://deb.debian.org/debian trixie/main arm64 libpython3-stdlib arm64 3.13.5-1 [10.2 kB]
+Answer for: http://deb.debian.org/debian/pool/main/p/python3-defaults/python3_3.13.5-1_arm64.deb
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 28244
+Server: Apache
+X-Content-Type-Options: nosniff
+X-Frame-Options: sameorigin
+Referrer-Policy: no-referrer
+X-Xss-Protection: 1
+Permissions-Policy: interest-cohort=()
+Last-Modified: Mon, 30 Jun 2025 09:35:05 GMT
+ETag: "6e54-638c6be31d825"
+X-Clacks-Overhead: GNU Terry Pratchett
+Cache-Control: public, max-age=2592000
+Content-Type: application/vnd.debian.binary-package
+Backend: 4qpvL1tJyeV1P6Tmf0Lj8g--F_conova_debian_backend_mirrors_debian_org
+Via: 1.1 varnish, 1.1 varnish
+x-req-url: recv="/debian/pool/main/p/python3-defaults/python3_3.13.5-1_arm64.deb",deliver="/debian/pool/main/p/python3-defaults/python3_3.13.5-1_arm64.deb"
+Accept-Ranges: bytes
+Date: Sat, 14 Nov 2026 18:30:18 GMT
+Age: 1524697
+X-Served-By: cache-ams2100089-AMS, cache-bma-essb1270064-BMA
+X-Cache: HIT, HIT
+X-Cache-Hits: 14, 6138
+X-Timer: S1794681018.250042,VS0,VE0
+
+Get:11 http://deb.debian.org/debian trixie/main arm64 python3 arm64 3.13.5-1 [28.2 kB]
+Answer for: http://deb.debian.org/debian/pool/main/s/strace/strace_6.13%2bds-1_arm64.deb
+HTTP/1.1 200 OK
+Connection: keep-alive
+Content-Length: 1295248
+server: Apache
+x-content-type-options: nosniff
+x-frame-options: sameorigin
+referrer-policy: no-referrer
+x-xss-protection: 1
+permissions-policy: interest-cohort=()
+last-modified: Mon, 10 Feb 2025 01:06:21 GMT
+etag: "13c390-62dbf510707a0"
+x-clacks-overhead: GNU Terry Pratchett
+cache-control: public, max-age=2592000
+content-type: application/vnd.debian.binary-package
+backend: 4qpvL1tJyeV1P6Tmf0Lj8g--F_conova_debian_backend_mirrors_debian_org
+via: 1.1 varnish, 1.1 varnish
+accept-ranges: bytes
+age: 616939
+date: Sat, 14 Nov 2026 18:30:18 GMT
+x-served-by: cache-ams-eham8680099-AMS, cache-bma-essb1270064-BMA
+x-cache: HIT, HIT
+x-cache-hits: 248, 0
+x-timer: S1794681018.251348,VS0,VE1
+
+Get:12 http://deb.debian.org/debian trixie/main arm64 strace arm64 6.13+ds-1 [1295 kB]
+Fetched 7148 kB in 0s (40.8 MB/s)
+Selecting previously unselected package libpython3.13-minimal:arm64.
+(Reading database ... 
+(Reading database ... 5%
+(Reading database ... 10%
+(Reading database ... 15%
+(Reading database ... 20%
+(Reading database ... 25%
+(Reading database ... 30%
+(Reading database ... 35%
+(Reading database ... 40%
+(Reading database ... 45%
+(Reading database ... 50%
+(Reading database ... 55%
+(Reading database ... 60%
+(Reading database ... 65%
+(Reading database ... 70%
+(Reading database ... 75%
+(Reading database ... 80%
+(Reading database ... 85%
+(Reading database ... 90%
+(Reading database ... 95%
+(Reading database ... 100%
+(Reading database ... 14700 files and directories currently installed.)
+Preparing to unpack .../libpython3.13-minimal_3.13.5-2+deb13u5_arm64.deb ...
+Unpacking libpython3.13-minimal:arm64 (3.13.5-2+deb13u5) ...
+Selecting previously unselected package python3.13-minimal.
+Preparing to unpack .../python3.13-minimal_3.13.5-2+deb13u5_arm64.deb ...
+Unpacking python3.13-minimal (3.13.5-2+deb13u5) ...
+Setting up libpython3.13-minimal:arm64 (3.13.5-2+deb13u5) ...
+Setting up python3.13-minimal (3.13.5-2+deb13u5) ...
+Selecting previously unselected package python3-minimal.
+(Reading database ... 
+(Reading database ... 5%
+(Reading database ... 10%
+(Reading database ... 15%
+(Reading database ... 20%
+(Reading database ... 25%
+(Reading database ... 30%
+(Reading database ... 35%
+(Reading database ... 40%
+(Reading database ... 45%
+(Reading database ... 50%
+(Reading database ... 55%
+(Reading database ... 60%
+(Reading database ... 65%
+(Reading database ... 70%
+(Reading database ... 75%
+(Reading database ... 80%
+(Reading database ... 85%
+(Reading database ... 90%
+(Reading database ... 95%
+(Reading database ... 100%
+(Reading database ... 15024 files and directories currently installed.)
+Preparing to unpack .../0-python3-minimal_3.13.5-1_arm64.deb ...
+Unpacking python3-minimal (3.13.5-1) ...
+Selecting previously unselected package media-types.
+Preparing to unpack .../1-media-types_13.0.0_all.deb ...
+Unpacking media-types (13.0.0) ...
+Selecting previously unselected package netbase.
+Preparing to unpack .../2-netbase_6.5_all.deb ...
+Unpacking netbase (6.5) ...
+Selecting previously unselected package readline-common.
+Preparing to unpack .../3-readline-common_8.2-6_all.deb ...
+Unpacking readline-common (8.2-6) ...
+Selecting previously unselected package libreadline8t64:arm64.
+Preparing to unpack .../4-libreadline8t64_8.2-6_arm64.deb ...
+Adding 'diversion of /lib/aarch64-linux-gnu/libhistory.so.8 to /lib/aarch64-linux-gnu/libhistory.so.8.usr-is-merged by libreadline8t64'
+Adding 'diversion of /lib/aarch64-linux-gnu/libhistory.so.8.2 to /lib/aarch64-linux-gnu/libhistory.so.8.2.usr-is-merged by libreadline8t64'
+Adding 'diversion of /lib/aarch64-linux-gnu/libreadline.so.8 to /lib/aarch64-linux-gnu/libreadline.so.8.usr-is-merged by libreadline8t64'
+Adding 'diversion of /lib/aarch64-linux-gnu/libreadline.so.8.2 to /lib/aarch64-linux-gnu/libreadline.so.8.2.usr-is-merged by libreadline8t64'
+Unpacking libreadline8t64:arm64 (8.2-6) ...
+Selecting previously unselected package libpython3.13-stdlib:arm64.
+Preparing to unpack .../5-libpython3.13-stdlib_3.13.5-2+deb13u5_arm64.deb ...
+Unpacking libpython3.13-stdlib:arm64 (3.13.5-2+deb13u5) ...
+Selecting previously unselected package python3.13.
+Preparing to unpack .../6-python3.13_3.13.5-2+deb13u5_arm64.deb ...
+Unpacking python3.13 (3.13.5-2+deb13u5) ...
+Selecting previously unselected package libpython3-stdlib:arm64.
+Preparing to unpack .../7-libpython3-stdlib_3.13.5-1_arm64.deb ...
+Unpacking libpython3-stdlib:arm64 (3.13.5-1) ...
+Setting up python3-minimal (3.13.5-1) ...
+Selecting previously unselected package python3.
+(Reading database ... 
+(Reading database ... 5%
+(Reading database ... 10%
+(Reading database ... 15%
+(Reading database ... 20%
+(Reading database ... 25%
+(Reading database ... 30%
+(Reading database ... 35%
+(Reading database ... 40%
+(Reading database ... 45%
+(Reading database ... 50%
+(Reading database ... 55%
+(Reading database ... 60%
+(Reading database ... 65%
+(Reading database ... 70%
+(Reading database ... 75%
+(Reading database ... 80%
+(Reading database ... 85%
+(Reading database ... 90%
+(Reading database ... 95%
+(Reading database ... 100%
+(Reading database ... 15516 files and directories currently installed.)
+Preparing to unpack .../python3_3.13.5-1_arm64.deb ...
+Unpacking python3 (3.13.5-1) ...
+Selecting previously unselected package strace.
+Preparing to unpack .../strace_6.13+ds-1_arm64.deb ...
+Unpacking strace (6.13+ds-1) ...
+Setting up media-types (13.0.0) ...
+Setting up strace (6.13+ds-1) ...
+Setting up netbase (6.5) ...
+Setting up readline-common (8.2-6) ...
+Setting up libreadline8t64:arm64 (8.2-6) ...
+Setting up libpython3.13-stdlib:arm64 (3.13.5-2+deb13u5) ...
+Setting up libpython3-stdlib:arm64 (3.13.5-1) ...
+Setting up python3.13 (3.13.5-2+deb13u5) ...
+Setting up python3 (3.13.5-1) ...
+Processing triggers for libc-bin (2.41-12+deb13u4) ...
+Processing triggers for systemd (257.13-1~deb13u1) ...
++ rm -rf /var/lib/apt/lists/auxfiles /var/lib/apt/lists/deb.debian.org_debian-security_dists_trixie-security_InRelease /var/lib/apt/lists/deb.debian.org_debian-security_dists_trixie-security_main_binary-arm64_Packages.lz4 /var/lib/apt/lists/deb.debian.org_debian_dists_trixie-updates_InRelease /var/lib/apt/lists/deb.debian.org_debian_dists_trixie-updates_main_binary-arm64_Packages.lz4 /var/lib/apt/lists/deb.debian.org_debian_dists_trixie_InRelease /var/lib/apt/lists/deb.debian.org_debian_dists_trixie_main_binary-arm64_Packages.lz4 /var/lib/apt/lists/lock /var/lib/apt/lists/partial
++ find / -xdev -perm /6000 -type f -exec chmod a-s {} +
+
+exit=0; elapsed_seconds=0.064

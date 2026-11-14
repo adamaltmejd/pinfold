@@ -1,0 +1,5 @@
+$ df -g /
+Filesystem     1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s1s1       460   12        14    48%  486811 147708160    0%   /
+
+exit=0; elapsed_seconds=0.003

@@ -1,0 +1,3 @@
+$ /Users/user/code/.cache/pinfold-work/mac-chrome/target/debug/pinfold box list --label org.pinfold.probe=chrome
+
+exit=0; elapsed_seconds=0.022

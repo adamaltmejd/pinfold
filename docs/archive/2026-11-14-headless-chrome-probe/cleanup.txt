@@ -1,0 +1,11 @@
+$ /Users/user/code/.cache/pinfold-work/mac-chrome/target/debug/pinfold box list --label org.pinfold.probe=chrome
+exit=0
+
+$ /Users/user/code/.cache/pinfold-work/mac-chrome/target/debug/pinfold disk list --json
+exit=0
+
+$ container image list --format json
+Filtered to the probe-chrome repositories in images-left.json.
+exit=0
+
+Removed only the probe scratch root. Container service left running.

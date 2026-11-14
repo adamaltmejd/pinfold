@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>pinfold Chromium probe</title>
+<style>
+  body { margin: 48px; font: 22px sans-serif; color: #152b42; background: #edf4f8; }
+  main { padding: 32px; background: white; border: 3px solid #246a8a; max-width: 620px; }
+  h1 { font-size: 32px; } #result { color: #14613d; font-weight: bold; }
+</style>
+<main>
+  <h1>Headless Chromium in pinfold</h1>
+  <p id="result">JavaScript has not run</p>
+  <canvas width="500" height="140"></canvas>
+  <p>Local fixture. No external assets or credentials.</p>
+</main>
+<script>
+  document.querySelector('#result').textContent = `JavaScript rendered: ${6 * 7}`;
+  const context = document.querySelector('canvas').getContext('2d');
+  ['#246a8a', '#31a47b', '#e7a93c'].forEach((color, index) => {
+    context.fillStyle = color;
+    context.fillRect(index * 165, 20, 140, 100);
+  });
+</script>

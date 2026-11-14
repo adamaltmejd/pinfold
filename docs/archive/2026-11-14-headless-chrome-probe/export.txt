@@ -1,0 +1,4 @@
+$ /Users/user/code/.cache/pinfold-work/mac-chrome/target/debug/pinfold disk export probe-chrome-work $W/export-6261dfe9dc0208e90870368f5c74dcfcc9b9aa9d613f7c8caf9f77300f5ff663 --image localhost/pinfold/profile-probe-chrome-tools:latest --json
+{"destination":"$W/export-6261dfe9dc0208e90870368f5c74dcfcc9b9aa9d613f7c8caf9f77300f5ff663","disk":"probe-chrome-work","event":"exported"}
+
+exit=0; elapsed_seconds=0.805

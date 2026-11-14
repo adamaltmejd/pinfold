@@ -1,0 +1,42 @@
+$ cargo build --locked
+error: process didn't exit successfully: `sccache rustc -vV` (exit status: 2)
+sccache: error: Operation not permitted (os error 1)
+exit=101
+
+$ RUSTC_WRAPPER= cargo build --locked
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.13s
+exit=0
+
+$ cargo fmt --check
+[no output]
+exit=0
+
+$ RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.73s
+exit=0
+
+$ pdfinfo docs/archive/2026-11-14-headless-chrome-probe/work/rendered.pdf
+Title: pinfold Chromium probe
+Producer: Skia/PDF m156
+Pages: 1
+Page size: 612 x 792 pts (letter)
+File size: 21077 bytes
+PDF version: 1.4
+exit=0
+
+$ pdftotext docs/archive/2026-11-14-headless-chrome-probe/work/rendered.pdf docs/archive/2026-11-14-headless-chrome-probe/pdf-text.txt
+exit=0
+
+$ pdftoppm -scale-to 1000 -png -singlefile docs/archive/2026-11-14-headless-chrome-probe/work/rendered.pdf docs/archive/2026-11-14-headless-chrome-probe/pdf-preview
+exit=0
+
+Build, clippy and pdfinfo output above is the relevant excerpt.
+Screenshot and PDF preview visually inspected: rendered value 42 and three colored blocks.
+
+$ id -u
+501
+exit=0
+
+$ id -g
+20
+exit=0

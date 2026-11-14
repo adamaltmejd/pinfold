@@ -1,0 +1,77 @@
+$ container image inspect localhost/pinfold/profile-probe-chrome-base:latest
+[
+  {
+    "configuration" : {
+      "creationDate" : "2026-11-14T18:29:33Z",
+      "descriptor" : {
+        "annotations" : {
+          "com.apple.containerization.image.name" : "localhost/pinfold/profile-probe-chrome-base:latest",
+          "io.containerd.image.name" : "localhost/pinfold/profile-probe-chrome-base:latest",
+          "org.opencontainers.image.created" : "2026-11-14T18:29:33Z",
+          "org.opencontainers.image.ref.name" : "latest"
+        },
+        "digest" : "sha256:2fb99d524a9823cfaaea25f7c4155941f991d3f6231b3c3dc8b5e86e4b793326",
+        "mediaType" : "application/vnd.oci.image.index.v1+json",
+        "size" : 374
+      },
+      "name" : "localhost/pinfold/profile-probe-chrome-base:latest"
+    },
+    "id" : "2fb99d524a9823cfaaea25f7c4155941f991d3f6231b3c3dc8b5e86e4b793326",
+    "variants" : [
+      {
+        "config" : {
+          "architecture" : "arm64",
+          "config" : {
+            "Cmd" : [
+              "bash"
+            ],
+            "Env" : [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Labels" : {
+              "dev.pinfold.base" : "",
+              "dev.pinfold.containerfile-sha256" : "219a537cd424e4188e5bfeb292740edb02f2baec485b9f2ff87163c192300dbb",
+              "dev.pinfold.profile" : "probe-chrome-base",
+              "dev.pinfold.project" : ""
+            }
+          },
+          "created" : "2026-11-14T18:29:33.607622627Z",
+          "history" : [
+            {
+              "comment" : "debuerreotype 0.17",
+              "created" : "2026-11-04T21:23:39Z",
+              "created_by" : "# debian.sh --arch 'arm64' out/ 'trixie' '@1793827419'"
+            },
+            {
+              "comment" : "buildkit.dockerfile.v0",
+              "created" : "2026-11-10T14:40:24.155199549Z",
+              "created_by" : "RUN /bin/sh -c set -eux;     export DEBIAN_FRONTEND=noninteractive;     apt-get update;     apt-get upgrade -y;     apt-get install -y --no-install-recommends         ca-certificates curl git ripgrep fd-find jq less;     ln -s /usr/bin/fdfind /usr/local/bin/fd;     git config --system user.name pi;     git config --system user.email pi@pinfold.invalid;     rm -rf /var/lib/apt/lists/* # buildkit"
+            },
+            {
+              "comment" : "buildkit.dockerfile.v0",
+              "created" : "2026-11-14T18:29:33.607622627Z",
+              "created_by" : "RUN /bin/sh -c find / -xdev -perm /6000 -type f -exec chmod a-s {} + # buildkit"
+            }
+          ],
+          "os" : "linux",
+          "rootfs" : {
+            "diff_ids" : [
+              "sha256:04e61ff9ed2c84e88795bf7562d69d0980188e2bb6d6152d6fe721383e10db9e",
+              "sha256:f6b313b4ac197cdcb779a75cc3f053e061827b62715a172889dcf1cd50338c4b",
+              "sha256:f5aa332bc398c91bbc381d4f1650768623a3aedd6299378ab79bee123de0fa31"
+            ],
+            "type" : "layers"
+          }
+        },
+        "digest" : "sha256:8c92f1c5b87ff68ce6a177fa52fdaaac9b473de47ec87b3de49f2414b8491dbc",
+        "platform" : {
+          "architecture" : "arm64",
+          "os" : "linux"
+        },
+        "size" : 71037562
+      }
+    ]
+  }
+]
+
+exit=0; elapsed_seconds=0.021
