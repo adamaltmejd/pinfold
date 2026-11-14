@@ -26,15 +26,6 @@ const HARNESS: &str = "pi";
 pub fn run(args: &[String]) -> io::Result<i32> {
     let cwd = canonical(&env::current_dir()?)?;
     let context = Context::discover(&cwd)?;
-    if cfg!(target_os = "linux") && !context.repository {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "not-git: {} is not a git repository; a Linux project is a Git checkout",
-                context.root.display()
-            ),
-        ));
-    }
     let root = context.root.clone();
     utf8(&root, "project root")?;
     let config = Config::load(&root)?;

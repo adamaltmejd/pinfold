@@ -40,12 +40,29 @@ pub fn project_dir(root: &Path) -> io::Result<PathBuf> {
     Ok(dirs::config_dir()?.join("projects").join(project_id(root)))
 }
 
-/// The bytes `pinfold config edit` writes into a new configuration file.
-pub fn template(root: &Path) -> String {
-    format!(
-        "# pinfold configuration for {}\n{PROJECT_MOUNT}",
-        root.display()
-    )
+/// `pinfold config edit`'s first step: the project's configuration file,
+/// written with the project mount when it is missing. A Git project is
+/// checked first, as a run checks it, so nothing is created inside it.
+pub fn create(root: &Path, repository: bool) -> io::Result<PathBuf> {
+    if repository {
+        check_host_paths(root, None)?;
+    }
+    let dir = project_dir(root)?;
+    let path = dir.join("pinfold.toml");
+    if read_optional(&path)?.is_some() {
+        return Ok(path);
+    }
+    fs::create_dir_all(&dir)?;
+    // Linking a complete file into place creates it in one step, and never
+    // replaces one a concurrent edit created.
+    let staging = dir.join(format!(".pinfold.toml.tmp-{}", std::process::id()));
+    fs::write(&staging, PROJECT_MOUNT)?;
+    let linked = fs::hard_link(&staging, &path);
+    fs::remove_file(&staging)?;
+    match linked {
+        Err(error) if error.kind() != io::ErrorKind::AlreadyExists => Err(error),
+        _ => Ok(path),
+    }
 }
 
 /// The merged configuration for one project run.
@@ -98,17 +115,17 @@ impl Config {
             ));
         };
         let project = Layer::parse(&bytes, &source)?;
-        match project.mounts.as_deref() {
-            Some([mount]) if mount.host == "." && mount.kind == "disk" => {}
-            _ => {
-                return Err(invalid(
-                    &source,
-                    &format!(
-                        "spec: `mounts` must be exactly {}",
-                        PROJECT_MOUNT.trim_end()
-                    ),
-                ));
-            }
+        let expected = toml::from_str::<toml::Table>(PROJECT_MOUNT)
+            .expect("the project mount is TOML")
+            .remove("mounts");
+        if project.mounts != expected {
+            return Err(invalid(
+                &source,
+                &format!(
+                    "spec: `mounts` must be exactly {}",
+                    PROJECT_MOUNT.trim_end()
+                ),
+            ));
         }
         let top = project.over(Layer::from_env()?);
         let profile_name = top.profile.as_deref().unwrap_or(DEFAULT_PROFILE);
@@ -162,45 +179,58 @@ impl Config {
         })
     }
 
-    /// Refuse a project mount that holds pinfold's own configuration, state
-    /// or cache, or the selected profile, before any state is created: box
-    /// content crosses into the project, so it must not reach them.
+    /// Refuse a Git project that holds what configures its boxes (see
+    /// [`check_host_paths`]).
     pub fn check_mounts(&self, root: &Path) -> io::Result<()> {
         if !self.repository {
             return Ok(());
         }
-        let root = fs::canonicalize(root)?;
-        let config_dir = dirs::config_dir()?;
-        let mut paths = vec![
-            config_dir.join("profiles").join(&self.profile.name),
-            config_dir,
-            dirs::state_dir()?,
-            dirs::artifacts_dir()?,
-            dirs::cache_dir()?,
-            crate::core::ownership::host_dir()?,
-        ];
-        if let Some(share) = &self.profile.share {
+        check_host_paths(root, Some(&self.profile))
+    }
+}
+
+/// Refuse a project root that holds pinfold's own configuration, state or
+/// cache, the project's configuration, or what `profile` reads, before any
+/// project state is created: box content crosses into the project, so it
+/// must not reach them. Each file is named too, since resolving its
+/// directory does not follow a symlink below it.
+fn check_host_paths(root: &Path, profile: Option<&Profile>) -> io::Result<()> {
+    let root = fs::canonicalize(root)?;
+    let config_dir = dirs::config_dir()?;
+    let project = project_dir(&root)?;
+    let mut paths = vec![
+        project.join("pinfold.toml"),
+        project.join("Containerfile"),
+        project,
+        config_dir.clone(),
+        dirs::state_dir()?,
+        dirs::artifacts_dir()?,
+        dirs::cache_dir()?,
+        crate::core::ownership::host_dir()?,
+    ];
+    if let Some(profile) = profile {
+        let dir = config_dir.join("profiles").join(&profile.name);
+        for file in ["pinfold.toml", "Containerfile", "home"] {
+            paths.push(dir.join(file));
+        }
+        paths.push(dir);
+        if let Some(share) = &profile.share {
             paths.push(share.path()?);
         }
-        // The project's own directory and files, each of which may be a
-        // symlink the config root's resolution does not follow.
-        paths.push(self.path.clone());
-        paths.extend(self.path.parent().map(Path::to_path_buf));
-        paths.extend(self.containerfile.as_ref().map(|(path, _)| path.clone()));
-        for path in paths {
-            if dirs::resolve_host_path(&path)?.starts_with(&root) {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!(
-                        "host-path-in-project: {} resolves inside {}",
-                        path.display(),
-                        root.display()
-                    ),
-                ));
-            }
-        }
-        Ok(())
     }
+    for path in paths {
+        if dirs::resolve_host_path(&path)?.starts_with(&root) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "host-path-in-project: {} resolves inside {}",
+                    path.display(),
+                    root.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// A file's bytes, `None` when it is absent. A dangling symlink or an
@@ -230,19 +260,13 @@ struct Layer {
     /// ignored.
     profile: Option<String>,
     image: Option<String>,
-    mounts: Option<Vec<Mount>>,
+    /// Checked whole against the project mount, so any other value is
+    /// refused as `spec`.
+    mounts: Option<toml::Value>,
     allow: Option<Vec<String>>,
     routes: Option<BTreeMap<String, Route>>,
     cpus: Option<f64>,
     memory: Option<String>,
-}
-
-/// One `[[mounts]]` entry.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Mount {
-    host: String,
-    kind: String,
 }
 
 impl Layer {
@@ -278,7 +302,6 @@ impl Layer {
     fn over(mut self, higher: Layer) -> Layer {
         self.profile = higher.profile.or(self.profile);
         self.image = higher.image.or(self.image);
-        self.mounts = higher.mounts.or(self.mounts);
         self.cpus = higher.cpus.or(self.cpus);
         self.memory = higher.memory.or(self.memory);
         self.allow = higher.allow.or(self.allow);

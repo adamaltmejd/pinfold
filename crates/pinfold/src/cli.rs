@@ -987,12 +987,16 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(usage("doctor", "doctor takes no arguments"));
     }
-    let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
-    // The config must parse; a missing or broken file is itself the answer.
-    let config = Config::load(&root)?;
-    let project = crate::pi::state::project_id(&root);
+    let cwd = std::env::current_dir()?;
+    // Host diagnostics run anywhere; a project that cannot be configured
+    // is one finding among them.
+    let project = crate::pi::launch::project_root(&cwd)
+        .and_then(|root| Config::load(&root).map(|config| (root, config)));
 
-    println!("pinfold doctor: {}", root.display());
+    println!(
+        "pinfold doctor: {}",
+        project.as_ref().map_or(&cwd, |(root, _)| root).display()
+    );
 
     let runtime = runtime();
     println!("runtime: {}", runtime.describe());
@@ -1024,15 +1028,17 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         Err(error) => println!("kernel: unavailable: {error}"),
     }
 
-    let image = crate::pi::launch::resolve_image(&config, &project);
-    println!("image: {image}");
-    if runtime_ready || cfg!(target_os = "linux") {
-        match crate::pi::launch::ensure_image(&config, &image) {
-            Ok(()) => println!("  exists"),
-            Err(error) => println!("  {error}"),
+    if let Ok((root, config)) = &project {
+        let image = crate::pi::launch::resolve_image(config, &crate::pi::state::project_id(root));
+        println!("image: {image}");
+        if runtime_ready || cfg!(target_os = "linux") {
+            match crate::pi::launch::ensure_image(config, &image) {
+                Ok(()) => println!("  exists"),
+                Err(error) => println!("  {error}"),
+            }
+        } else {
+            println!("  unavailable: runtime check failed");
         }
-    } else {
-        println!("  unavailable: runtime check failed");
     }
 
     match pins_json() {
@@ -1040,7 +1046,10 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         Err(error) => println!("artifacts: unavailable: {error}"),
     }
 
-    println!("config: {}", config_report(&root, &config)?);
+    match &project {
+        Ok((root, config)) => println!("config: {}", config_report(root, config)?),
+        Err(error) => println!("config: {error}"),
+    }
 
     println!("disk:");
     if !runtime_ready && !cfg!(target_os = "linux") {
@@ -1128,24 +1137,8 @@ pub fn config(args: &[String]) -> io::Result<i32> {
 /// `pinfold config edit`: write the project's configuration file when it is
 /// missing, then open it in the user's editor and return its exit code.
 fn config_edit() -> io::Result<i32> {
-    let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
-    let dir = crate::config::project_dir(&root)?;
-    let path = dir.join("pinfold.toml");
-    fs::create_dir_all(&dir)?;
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-    {
-        Ok(mut file) => file.write_all(crate::config::template(&root).as_bytes())?,
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(error) => {
-            return Err(io::Error::new(
-                error.kind(),
-                format!("create {}: {error}", path.display()),
-            ));
-        }
-    }
+    let project = crate::pi::context::Context::discover(&std::env::current_dir()?)?;
+    let path = crate::config::create(&project.root, project.repository)?;
     eprintln!("pinfold config: {}", path.display());
     let editor = ["VISUAL", "EDITOR"]
         .into_iter()
@@ -1175,7 +1168,6 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
     Ok(serde_json::json!({
         "root": utf8(root, "project root")?,
         "config": utf8(&config.path, "configuration file")?,
-        "mounts": [{ "host": ".", "kind": "disk" }],
         "profile": &config.profile.name,
         "image": image,
         "image_source": config.image_source(),

@@ -231,7 +231,7 @@ Outside Git, each invocation already has fresh disks. Save wanted files with
 
 Disk removal refuses attached disks. The two removals are separate operations;
 serialize access to the project. Use `disk rm`, never delete state or volume
-files directly. Profiles, project trust and the selected image remain intact.
+files directly. Profiles, project configuration and the selected image remain intact.
 A `sync-failed` warning means source synchronization failed even if Pi starts.
 
 ## Configuration
