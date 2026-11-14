@@ -166,6 +166,11 @@ drop WebSocket Upgrade, so a proxy route is not a CDP transport.
 
 ## Failures and limits
 
+The full strace and NetLog captures and the analyser are not kept here;
+`output.txt` holds summaries and the direct connects that failed. The
+bypass result is therefore what one 73-second run observed, not a proof
+that Chromium never sends UDP or QUIC outside the proxy.
+
 The default build failed before compilation because sccache was denied.
 Clearing `RUSTC_WRAPPER` built the binary in 22.13 seconds. Runtime access
 needed execution outside the tool sandbox. The first driver's reason-phrase
