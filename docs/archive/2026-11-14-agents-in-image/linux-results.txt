@@ -1,22 +1,84 @@
-$ df -h /
-Filesystem      Size  Used Avail Use% Mounted on
-/dev/sda1        32G   11G   20G  37% /
-
-[exit 0; seconds 0.001]
+[measure.py build default]
 $ /home/user/pinfold/target/x86_64-unknown-linux-musl/debug/pinfold build --profile default
-pinfold: building profile default
-pinfold: build run e012da8819953a2f006fe4d1088a4952acba5d20db8b8d3a06a72d09471e701e; egress log /tmp/pfi.pr2linux/s/pinfold/runs/e012da8819953a2f006fe4d1088a4952acba5d20db8b8d3a06a72d09471e701e/egress.jsonl
-image-output cancelledpinfold build: the BuildKit build failed
-
-[exit 1; seconds 124.064]
+[exit 0; seconds 150.138]
+[measure.py build documents]
+$ /home/user/pinfold/target/x86_64-unknown-linux-musl/debug/pinfold build --profile documents
+[exit 0; seconds 174.487]
+[measure.py build full]
+$ /home/user/pinfold/target/x86_64-unknown-linux-musl/debug/pinfold build --profile full
+[exit 0; seconds 178.668]
+[native download chain: full profile/project; complete package receipt]
 audit count=2 {"decision": "allowed", "host": "api.github.com", "reason": "allowlisted"}
-audit count=1 {"decision": "allowed", "host": "auth.docker.io", "reason": "allowlisted"}
-audit count=53 {"decision": "allowed", "host": "deb.debian.org", "reason": "allowlisted"}
 audit count=3 {"decision": "allowed", "host": "downloads.claude.ai", "reason": "allowlisted"}
 audit count=3 {"decision": "allowed", "host": "github.com", "reason": "allowlisted"}
-audit count=1 {"decision": "allowed", "host": "registry-1.docker.io", "reason": "allowlisted"}
 audit count=3 {"decision": "allowed", "host": "release-assets.githubusercontent.com", "reason": "allowlisted"}
-    Checking pinfold-init v0.5.5 (/home/user/pinfold/crates/pinfold-init)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.65s
-exit=0
+agent download: https://github.com/openai/codex/releases/download/rust-v0.169.0/codex-package-x86_64-unknown-linux-musl.tar.gz
+[agents.py default/documents/full, selected real outputs]
+pi successful-tool-exchange=True
+claude successful-tool-exchange=True
+codex successful-tool-exchange=True
+pi successful-tool-exchange=True
+claude successful-tool-exchange=True
+codex successful-tool-exchange=True
+pi successful-tool-exchange=True
+claude successful-tool-exchange=True
+codex successful-tool-exchange=True
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"/usr/bin/bash -lc 'printf fixture-codex-command-ok > /home/user/codex-fixture; cat /home/user/codex-fixture; ps -eo args | grep \"[c]odex-code-mode-host\"'","aggregated_output":"fixture-codex-command-ok/opt/pinfold/agents/codex/bin/codex-code-mode-host --listen grpc+stdio://\n","exit_code":0,"status":"completed"}}
+pi-binary-write-refused
+claude-binary-write-refused
+codex-binary-write-refused
+[limits.py root]
+resource: converted root size
+refs-before={"localhost/pinfold/image-probe-pr2-limit-root:18e8059751411943-44322": "sha256:92eac9409a18de87674b342659bbb40dda7bdc19e3e467583bcdcf70b34c8b0b", "localhost/pinfold/image-probe-pr2-limit-root:18e805c788f9a16e-45055": "sha256:92eac9409a18de87674b342659bbb40dda7bdc19e3e467583bcdcf70b34c8b0b", "localhost/pinfold/image-probe-pr2-limit-root:latest": "sha256:92eac9409a18de87674b342659bbb40dda7bdc19e3e467583bcdcf70b34c8b0b"} refs-after={"localhost/pinfold/image-probe-pr2-limit-root:18e8059751411943-44322": "sha256:92eac9409a18de87674b342659bbb40dda7bdc19e3e467583bcdcf70b34c8b0b", "localhost/pinfold/image-probe-pr2-limit-root:18e805c788f9a16e-45055": "sha256:92eac9409a18de87674b342659bbb40dda7bdc19e3e467583bcdcf70b34c8b0b", "localhost/pinfold/image-probe-pr2-limit-root:latest": "sha256:92eac9409a18de87674b342659bbb40dda7bdc19e3e467583bcdcf70b34c8b0b"}
+control id=sha256:92eac9409a18de87674b342659bbb40dda7bdc19e3e467583bcdcf70b34c8b0b root_bytes=704655360 oci_bytes=30379809
+launch-ok
+[limits.py oci]
+resource: image output file
+refs-before={"localhost/pinfold/image-probe-pr2-limit-oci:18e8065d556df341-46120": "sha256:49fbda65d9998116f820752f581ad64530026c618af08721944f27e2ae6fb835", "localhost/pinfold/image-probe-pr2-limit-oci:latest": "sha256:49fbda65d9998116f820752f581ad64530026c618af08721944f27e2ae6fb835"} refs-after={"localhost/pinfold/image-probe-pr2-limit-oci:18e8065d556df341-46120": "sha256:49fbda65d9998116f820752f581ad64530026c618af08721944f27e2ae6fb835", "localhost/pinfold/image-probe-pr2-limit-oci:latest": "sha256:49fbda65d9998116f820752f581ad64530026c618af08721944f27e2ae6fb835"}
+control id=sha256:897951acb9652f760e4f55b17afcb86716a1aa879210e8ebc08a7b37f517517b root_bytes=852294656 oci_bytes=701151536
+launch-ok
+[limits.py bases]
+resource: build input size
+refs-before={"localhost/pinfold/image-probe-pr2-limit-derived:18e807197730fe94-46546": "sha256:9a6659d4f49e8c2f41704fa34f08b0558845027810c538ae886403e018ff37bc", "localhost/pinfold/image-probe-pr2-limit-derived:latest": "sha256:9a6659d4f49e8c2f41704fa34f08b0558845027810c538ae886403e018ff37bc"} refs-after={"localhost/pinfold/image-probe-pr2-limit-derived:18e807197730fe94-46546": "sha256:9a6659d4f49e8c2f41704fa34f08b0558845027810c538ae886403e018ff37bc", "localhost/pinfold/image-probe-pr2-limit-derived:latest": "sha256:9a6659d4f49e8c2f41704fa34f08b0558845027810c538ae886403e018ff37bc"}
+control id=sha256:351495bc162bb8f0763cfcc989b6d4bdc7bee2c88c876815dbd1b6f1506172d3 root_bytes=778475520 oci_bytes=634022772
+launch-ok
+[probe.py home default]
+edited-home-preserved=True
+[profile failure and corrected build]
+#6 0.105 install: cannot stat '/required-agent-missing': No such file or directory
+profile-failure=True refs-preserved=True
+$ /home/user/pinfold/target/x86_64-unknown-linux-musl/debug/pinfold build --profile probe-pr2-failure
+[exit 0; seconds 119.730]
+[project failure and corrected launch]
+pinfold: profile published localhost/pinfold/profile-full:18e808b24ae110d9-48533
+project-failure=True refs-preserved=True
+project-ready1.5.2
+2.1.311 (Claude Code)
+codex-cli 0.169.0
+[caller: cached, cached, --no-cache; timestamps then IDs]
+1794695015056309447
+1794695015056309447
+1794695159496934536
+sha256:c3177d530fd301ed6054946cadd4cb68690d610b6d91350a3e71c1c039f62619
+sha256:c3177d530fd301ed6054946cadd4cb68690d610b6d91350a3e71c1c039f62619
+sha256:2a136aaadae7676aa8f88c1947aabbf2c80949852c8577100e3265b755169f79
+[build host denial and explicit admission]
+audit count=1 {"decision": "refused", "host": "example.com", "reason": "not allowlisted"}
+audit count=1 {"decision": "allowed", "host": "example.com", "reason": "allowlisted"}
+denied-host-403-and-reason=True admitted-control=True
+[actual project Pi entrypoint]
+$ /home/user/pinfold/target/x86_64-unknown-linux-musl/debug/pinfold pi --version
+[exit 0; seconds 9.482]
+1.5.2
+[six-minute Codex onboarding, no login submitted]
+    "updater": { "autoUpdateEnabled": false }
+check_for_update_on_startup = false
+observation bytes=5447 seconds=360.024 exit=124
+startup-audit {"decision":"refused","host":"ab.chatgpt.com","reason":"not allowlisted","time":"2026-11-14T22:33:46Z"}
+[final fmt/musl Clippy/static ELF; cleanup]
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.35s
+readelf-no-interpreter=True
+Removed pi-project-d7f66ec20ade-home
+Removed pi-project-d7f66ec20ade-project
+baseline-unchanged=True sha256:7a76df9a1bf093743a7486ef023bd32fd60f456102addd10c6a9fbb6a80bf761
 

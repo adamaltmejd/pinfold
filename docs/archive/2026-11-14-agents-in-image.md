@@ -1,110 +1,118 @@
-# Agents in the image: PR 2 draft stopped at Apple source binding
+# Standalone agents and fresh managed builds: PR 2
 
-2026-11-14. Ticket #278, PR 2. Starting source `837e16a`.
-This is incomplete work, not an accepted implementation or measured capacity.
-The product changes remain uncommitted. No test, dependency, release or push.
-Evidence: [collector and selected output](2026-11-14-agents-in-image/).
+2026-11-14. Ticket #278. Starting source `837e16a`. Independent acceptance passed; download reuse remains unmet. No
+test, dependency, release, push or PR. Evidence: [manual collectors and selected
+output](2026-11-14-agents-in-image/).
 
-## Required decision
+## Operator decision
 
-The plan requires rebuilding a selected profile and freezing its resulting
-identity for the project build. The draft CLI does both on Linux: its
-`dev.pinfold.base` value binds native source discovery to that identity.
-Apple records the same label but its builder still resolves the recipe's
-mutable reference. A concurrent profile publication can move `:latest`
-before the project builder resolves it. The label is not source binding.
-This was found by source review, not reproduced with a racing CLI run.
+Identity freezing is a Linux mechanism. Apple records `dev.pinfold.base` but its native builder resolves the
+profile tag, as before this PR. No host-wide lock or extra Apple source binding is added. A concurrent rebuild uses that
+user's profile image; a changed profile digest is already reported as `image-outdated` at launch. The spec states
+the platform distinction.
 
-Apple container 1.7.1's `build --help` offers build arguments but no
-named-context or source-policy binding. Its native resolver fetches the
-recipe reference ([source](https://github.com/apple/container/blob/1.7.1/Sources/ContainerBuild/BuildImageResolver.swift)).
-A literal rewrite cannot safely handle arbitrary existing recipes:
-ARG expansion, continuations, stage shadowing, external COPY/mount sources
-and heredocs need native parsing.
+## Implementation
 
-Proposed decision: a host-wide per-profile publication lock across the
-profile rebuild and dependent project build. Every managed publisher of
-that profile must use it. It prevents concurrent pinfold retagging, not
-direct `container` retagging. Strict identity binding against external
-retagging needs a larger native resolver/buildctl design or an approved
-recipe restriction. Neither alternative was implemented. The brief says
-to stop rather than improvise a different design; an operator question
-was submitted. No further image build was started after this finding.
+- All built-ins contain Pi/assets, native Claude and the complete same-release
+  Codex package on PATH; procps is added and hardening stays last.
+- Stable metadata is fresh; publisher SHA-256 verifies version-addressed assets.
+  Missing assets fail. A receipt records time, versions and download hits.
+- Missing-only seeds hold Pi trust/settings, Claude permission/sandbox and Codex
+  approval/sandbox/version-check/daemon-updater defaults. Pi/Claude switches
+  are in recipe environment. Old mounts, pins, auth files/helper remain.
+- Managed RUN reruns; projects rebuild profiles first and report publication.
+  Linux binds the result. Managed no-cache is removed; caller caching/flag
+  and Context::Alone remain. README/spec describe these changes.
+- Separate Linux budgets cover inputs, conversion, transfer, publication/reuse.
+  Aggregate preflight before READY retains independent streaming/host checks.
+  Build hosts add only api.github.com/downloads.claude.ai; agent hosts stay.
 
-## Draft changes
+## Measurements and bounds
 
-- Agent recipe fragment: complete standalone Pi assets, native Claude,
-  Codex and code-mode host from one resolved release, PATH links.
-- Fresh stable metadata resolution, publisher SHA-256 verification,
-  version-addressed cache downloads, nonsecret installation receipt.
-- All built-ins include agents; hardening stays last; base adds procps.
-- Missing-only Claude/Codex convenience seeds, existing Pi settings,
-  recipe updater defaults. Route authentication files are unchanged.
-- Managed builds rerun RUN, rebuild dependent profiles, report the
-  separately published profile, and remove managed `build --no-cache`.
-  Caller build cache semantics are unchanged.
-- Linux root/OCI/selected-base budgets are separate from context and
-  artifact downloads; converter work is enlarged. Build hosts add exactly
-  `api.github.com` and `downloads.claude.ai`.
-- Shared image limits live in init data so both the host and standalone
-  init compile. Their target condition excludes Apple's ARM init.
-- README/spec/guarantees are draft updates, including numerical bounds.
-- Manual collector covers planned cases but only the runs below occurred.
+Bytes. Mac is runtime variant size; Linux OCI is index.json plus admitted blobs, root is completed raw length.
+These are not unique storage costs. Every row uses Pi 1.5.2, Claude stable 2.1.311 and Codex 0.169.0.
 
-## Commands and results
+| Profile | Mac variant | Linux OCI | Linux root | Linux s | Converter allocated peak |
+|---|---:|---:|---:|---:|---:|
+| default | 470400916 | 462738711 | 1262822400 | 150.138 | 5051985920 |
+| documents | 541090658 | 533171087 | 1428290560 | 174.487 | 5724315648 |
+| full | 557764880 | 552973666 | 1487130624 | 178.668 | 5958373376 |
 
-All pinfold runs used isolated config/state at `/tmp/pfi.pr2mac` or
-`/tmp/pfi.pr2linux`, the real cache and a fresh maintenance stamp.
-No login route or real credential was used. Linux used the existing lease
-only through `labvm exec -- bash -lc '...'`; no acquire/release occurred.
-The VM's pre-existing PR 1 dirty patch matched the local files by SHA-256
-and was saved separately before the PR 2 patch was applied.
+Mac builds took 38.269/44.216/46.978 s. Linux full/project passed in 279.037 s, with converter peak 5959266304.
+Individual timings, not benchmarks. `measure.py` samples backing-file st_blocks without reading guest disks.
 
-| Command/case | Result |
-|---|---|
-| `cargo build --locked` on Mac | Passed. Embedded ARM musl init built. |
-| `cargo build --locked --target x86_64-unknown-linux-musl` on VM | Passed. `readelf -l` has no INTERP; file reports static PIE. |
-| `cargo fmt --check`; `git diff --check` | Passed. |
-| `cargo clippy --all-targets --locked -- -D warnings` | Passed after correcting shared-constant target gating. |
-| Linux Clippy with `--target x86_64-unknown-linux-musl` | Passed. |
-| Collector `build default` on Mac | Passed, 62.412 s. Preflight `df -g /`: 49 GiB free. |
-| Collector `start default` on Mac | Three PATH version commands passed. Installed-binary writes refused. All three old mounted `--harness` version commands passed. |
-| TTY no-login starts | No useful screen captured. Timeout/termination is not proof of normal agent operation or companion-dependent startup. |
-| Linux collector `build default` | Cancelled deliberately at the design gate after 124.064 s; exit 1, `image-output cancelled`. No completed Linux image measured. |
-| Cleanup | Mac owned box ended and owned disk removed; isolated disk inventory empty. Linux build/VMM ended; no Linux box/disk was started. Lease left active. |
+Selected whole-GiB bounds: work 7, raw root 2, OCI 1, selected bases 1. All recipes built under 6/2/1/1. The
+unchanged 2049 MiB root fixture exhausted 6 GiB scratch before its guard; 7 GiB reached `resource: converted root
+size`. The OCI fixture has two 576 MiB random layers, overwriting one file; each blob fits but their aggregate does
+not. Two separately admitted 634022340-byte bases exceed the combined input limit. All guards preserved refs and
+passed corrected smaller build/launch controls. The root control was 704655360 bytes; OCI control payload
+701151536; derived one-base control payload 634022772. Caller context 512 MiB, artifact downloads 512 MiB, cache 8
+GiB, deadlines and JSON/object limits remain unchanged. Snapshot overhead is documented.
 
-The first Linux compile exposed an invalid `crate::core` import from
-standalone init. Sharing the constants through init fixed it. Mac Clippy
-then exposed unused Linux constants in ARM init; narrowing their target
-condition fixed that. These were draft implementation faults.
+## Commands and outcomes
 
-## Measurements, retained image and gaps
+Use `PROBE_ROOT=/tmp/pfi.pr2mac` or `/tmp/pfi.pr2linux`: isolated config/state, a fresh maintenance stamp, real
+cache and PINFOLD_NO_UPDATE_CHECK=1. Mac checks `df -g /` before each build; stop below 12 GiB. Linux checks `/`
+and 2 GiB tmpfs `/tmp`, uses only `labvm exec -- bash -lc '…'`, setsid/nohup for long jobs, 2 CPUs and 1 GiB boxes.
+Credentials/homes/fixtures are synthetic; no real login was read, and no lease acquired/released.
 
-Mac default runtime variant size: 421,490,285 bytes (401.96 MiB).
-Guest `du -sk`: `/usr` 220,028 KiB; `/opt` 768,516 KiB. These are different
-measurements, not completed Linux root size or unique host storage cost.
-Installed versions: Pi 1.5.2, Claude stable 2.1.311, Codex 0.169.0.
-Mounted controls: Pi 1.5.2, Claude 2.1.322, Codex 0.167.1.
+| Command/case | Mac | Linux |
+|---|---|---|
+| `cargo build --locked` | Passed, embedded ARM musl init | Musl target passed; no ELF INTERP |
+| `cargo fmt --check`; `git diff --check` | Passed | Passed |
+| `cargo clippy --all-targets --locked -- -D warnings` | Passed | Musl target passed |
+| `probe.py build default/documents/full` | All passed | All passed |
+| `agents.py default/documents/full` | Nine tool exchanges passed | Nine passed |
+| Codex companion; binary writes | Real companion, fallback disabled; writes refused | Same, passed |
+| `probe.py start`, each profile | Pi UI, Codex sign-in; Claude connectivity | Same, passed |
+| Existing mounted `--harness` | Pi 1.5.2, Claude 2.1.322, Codex 0.167.1 | All three/profile passed |
+| `probe.py home default` | Four edited seeds preserved | Four preserved |
+| `probe.py project` | Full first, project built/launched | Same; recorded base identity matches |
+| `probe.py fail` or split failure modes | Intended failures, refs preserved, corrections passed | Both intended failures, preserved refs and corrected launches passed |
+| `probe.py caller` | Cached timestamps/id equal; no-cache changes both | Cached timestamp/id equal; no-cache changed both |
+| `limits.py root/oci/bases` | Linux-only | All guards, refs and corrected controls passed |
+| `limits.py cache` | Shared Mac cache untouched | Exact idle cache removed under actual lock; refs unchanged; full launched |
+| `probe.py egress` | Linux-only | 403/reason/no publication; admitted build passed |
+| `probe.py pi` | Actual project entrypoint version passed | 1.5.2 through actual entrypoint |
+| `probe.py updater full` | Six minutes completed | 360.024 s completed; same initial/analytics pattern |
 
-Retained new Mac image: `localhost/pinfold/profile-default:latest`, unique
-ref `localhost/pinfold/profile-default:18e80232dff943d0-42611`, id
-`c76d1021b67074b528e5734fb11d3fa150be82fced4ade36aaa7be58a1a1940a`.
-No other image was explicitly removed. Shared service/cache remain.
+Fixture success means a valid tool response, a named guest file and a second model request containing its result,
+never HTTP 400. Full loads ffgrep/fffind. Source patch SHA-256 matches on both hosts:
+bb4979dff36f8c8c36142d62001f5214120c2e8036ef34869307e973e49174eb.
 
-Draft bounds remain proposals: work 8 GiB; raw root, aggregate OCI and
-selected bases 2 GiB each; caller context 512 MiB. They are not established
-as adequate or minimal. No completed Linux measurements are available.
-Linux audited discovery contacted exactly the seven hosts/counts retained
-in `linux-results.txt`; no complete cold download-chain claim is made.
+## Findings and remaining gate
 
-Not run: documents/full builds on either platform, successful Linux
-build/agent launch, repeated freshness/cache controls, full-derived
-project, settings preservation, failed-install corrected controls,
-enlarged-bound failures, cache-removal launch, denied/admitted host pair,
-caller cache controls, successful companion operation or updater-traffic
-proof. The existing mounted path was rechecked only on Mac.
+Two unchanged Mac global no-cache builds resolved metadata and installed, but downloaded assets again. BuildKit
+intentionally prunes IgnoreCache mounts
+([source](https://github.com/moby/buildkit/blob/v0.34.1/solver/llbsolver/vertex.go)). Unchanged-version download
+reuse is unmet; Linux paired reuse proof is pending that decision. Retain this path, or apply the reviewed 23-line fresh
+BUILDKIT_SANDBOX_HOSTNAME patch to invalidate RUN keys while retaining named mounts. It is not applied.
 
-Caller changes in the draft: larger built-in images; managed RUN executes
-every time; a project may rebuild/publish two images independently;
-managed `build --no-cache` is removed. No CLI JSON/schema change or guest
-launch-path removal. These changes are not ready for acceptance.
+Codex exec worked with two binaries but its TUI required the complete native package. Upstream copies it into home.
+TUI checks and daemon updater are off. Six-minute onboarding on both hosts showed initial plugin hosts, then only
+ab.chatgpt.com analytics at 1/2/5 minutes, no later version host. Initial TLS paths remain unobserved; plugin
+bootstrap uses GitHub/API/ChatGPT too
+([source](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core-plugins/src/startup_sync.rs)).
+
+The OCI refusal initially became invalid JSON after READY; preflight fixed its diagnostic. Linux hit
+cache/host-disk exhaustion without publication. Idle-cache removal and own-image retirement allowed unchanged cases
+to pass. Three Codex homes filled tmpfs: mounted full failed twice, and a later VMM was OOM-killed (kernel log).
+Removing only those homes made the same full mounted case pass. No product packing or capacity case was weakened.
+Mac reached its disk threshold; home cleanup/storage reclamation restored room. No manual Mac cache prune occurred.
+Initial cancellation published nothing.
+
+## Retention and caller changes
+
+Mac owned boxes/disks are removed; its images/shared builder remain. Names: profile-default/documents/full,
+profile-probe-pr2-failure, project-project-1766f2850109 and image-probe-pr2-caller (localhost/pinfold). Linux owned
+boxes/disks are removed. It retains profile-full, project-project-d7f66ec20ade, image-probe-pr2-caller and
+image-probe-pr2-egress under localhost/pinfold. Completed own default/documents/failure and obsolete full/project
+revisions were retired under actual catalog/image locks. The original profile-probe-linux294 identity 7a76df9a…
+remains unchanged. Independent Linux cases finished by 22:36 UTC, before the 00:28 cutoff; its lease remains
+active. No case was omitted for time or capacity.
+
+Caller changes: larger built-ins and permission/updater defaults; fresh managed RUN, profile-first builds and
+stderr publication report; managed no-cache flag removal; 7/2/1/1 Linux bounds and two build hosts. No JSON key or
+box-schema change. Mounted launches remain. Commits: 15da4ca, 5d688ab, a61c787, 85981a1; 2359a04 started the
+record; 0f0badc adds collectors. This commit closes the independent verification record; the freshness proposal
+stays unapplied.

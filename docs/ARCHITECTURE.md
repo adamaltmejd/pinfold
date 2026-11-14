@@ -795,7 +795,7 @@ A project recipe typically `FROM`s the profile image.
   resolve and install their selected agents at build time. A project build
   first rebuilds its selected profile recipe when present. Linux freezes
   that image's identity for the project build. Download cache mounts may
-  persist; launch never installs agents. Profile and project publication
+  persist; launch never installs image agents. Profile and project publication
   are separate operations: a failed project build may leave a successfully
   rebuilt profile published, reported on stderr.
 - A build's identity is its unique tag, never an image label. Every

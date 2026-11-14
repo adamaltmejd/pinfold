@@ -131,8 +131,9 @@ An explicit project `routes` table replaces the profile's routes.
 For scripts, add `--json` to `pinfold disk` commands for exact byte counts
 and structured results.
 
-Managed builds rerun recipe RUN steps and resolve agent releases on each
-invocation. Use `pinfold build` or `pinfold build --profile NAME` to update.
+Managed builds rerun recipe RUN steps on each invocation. Built-in recipes
+resolve stable agent releases when rebuilt. Use `pinfold build` or
+`pinfold build --profile NAME` to update.
 A project build first rebuilds its selected profile recipe when present.
 The two images publish separately; a failed project build can leave the
 rebuilt profile published. Caller `image build` retains its layer cache
@@ -140,7 +141,7 @@ and `--no-cache` option.
 
 Every built-in image includes standalone Pi, native Claude and Codex with
 its code-mode host on PATH. Home settings are seeded only when missing;
-rebuilding preserves edited settings. Update agents by rebuilding images.
+rebuilding preserves edited settings.
 
 Linux build egress has its own allowlist. Add exact hosts with
 `pinfold build --allow HOST` or `pinfold image build … --allow HOST`.

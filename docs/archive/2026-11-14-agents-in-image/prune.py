@@ -24,9 +24,13 @@ for identity in ids:
     matches = [r for r,i in refs.items() if i == identity]
     assert matches and (retire or all(not r.endswith(':latest') for r in matches))
     profile = data['images'][identity]['labels']['dev.pinfold.profile']
-    assert profile in ('default', 'documents', 'full', 'probe-pr2-failure')
+    assert profile in ('default', 'documents', 'full', 'probe-pr2-failure', '')
+    family = 'profile-'+profile
+    if not profile:
+        project = data['images'][identity]['labels']['dev.pinfold.project']
+        assert project == 'project-d7f66ec20ade'; family = 'project-'+project
     assert not retire or profile in ('default', 'documents', 'probe-pr2-failure')
-    assert all(r.startswith('localhost/pinfold/profile-'+profile+':') and (r.endswith(':latest') or int(r.rsplit(':',1)[1].split('-')[0],16) >= start) for r in matches)
+    assert all(r.startswith('localhost/pinfold/'+family+':') and (r.endswith(':latest') or int(r.rsplit(':',1)[1].split('-')[0],16) >= start) for r in matches)
     assert any(not r.endswith(':latest') for r in matches)
     lock(identity); directory = cache/identity[7:]
     assert not directory.is_symlink() and stat.S_IMODE(directory.stat().st_mode) == 0o700
