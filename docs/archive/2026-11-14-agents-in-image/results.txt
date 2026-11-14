@@ -1,0 +1,57 @@
+[build.log: original complete-package build command/results grouped by profile]
+{"lines": ["$ /home/user/pinfold/target/debug/pinfold build --profile default", "[exit 0; seconds 38.269]"]}
+{"lines": ["$ /home/user/pinfold/target/debug/pinfold build --profile full", "[exit 0; seconds 46.978]"]}
+{"lines": ["$ /home/user/pinfold/target/debug/pinfold build --profile documents", "[exit 0; seconds 44.216]"]}
+[default-install-0.txt: native package receipt]
+resolved_at_utc=2026-11-14T20:26:22Z
+agent download: https://github.com/openai/codex/releases/download/rust-v0.169.0/codex-package-aarch64-unknown-linux-musl.tar.gz
+installed agents: pi=v1.5.2 claude=2.1.311 codex=rust-v0.169.0
+[agents.log: default, full and documents each emitted these three lines]
+pi successful-tool-exchange=True
+claude successful-tool-exchange=True
+codex successful-tool-exchange=True
+[agents.log: observed companion process and binary write refusals]
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"/usr/bin/bash -lc 'printf fixture-codex-command-ok > /home/user/codex-fixture; cat /home/user/codex-fixture; ps -eo args | grep \"[c]odex-code-mode-host\"'","aggregated_output":"fixture-codex-command-ok/opt/pinfold/agents/codex/bin/codex-code-mode-host --listen grpc+stdio://\n","exit_code":0,"status":"completed"}}
+{"lines": ["pi-binary-write-refused", "claude-binary-write-refused", "codex-binary-write-refused"]}
+[home.log: four edited seeds; rebuild and restart]
+$ /home/user/pinfold/target/debug/pinfold box exec probe-pr2-pr2mac-default -- sh -c set -eu; sha256sum /home/user/.pi/agent/settings.json /home/user/.claude/settings.json /home/user/.codex/config.toml /home/user/.codex/app-server-daemon/settings.json
+edited-home-preserved=True
+[launch-project.log: rebuilt full-derived project launch]
+{"lines": ["project-ready1.5.2", "2.1.311 (Claude Code)", "codex-cli 0.169.0"]}
+[fail.log: failure boundaries and corrected project]
+profile-failure=True refs-preserved=True
+pinfold: profile published localhost/pinfold/profile-full:18e8040d837b9ce8-61462
+#5 0.041 install: cannot stat '/required-agent-missing': No such file or directory
+[exit 1; seconds 53.199]
+project-failure=True refs-preserved=True
+$ /home/user/pinfold/target/debug/pinfold build
+localhost/pinfold/project-project-1766f2850109:latest
+pinfold: profile published localhost/pinfold/profile-full:18e80419ee7be870-61582
+[exit 0; seconds 55.120]
+[caller.log: default, unchanged default, then --no-cache timestamp outputs]
+1794688665763220759
+1794688665763220759
+1794688675925006763
+[start.log: retained mounted launch paths]
+{"lines": ["$ /home/user/pinfold/target/debug/pinfold box exec probe-pr2-pr2mac-documents --harness pi -- /opt/pinfold/pi/pi --version", "1.5.2"]}
+{"lines": ["$ /home/user/pinfold/target/debug/pinfold box exec probe-pr2-pr2mac-documents --harness claude -- /opt/pinfold/claude/claude --version", "2.1.322 (Claude Code)"]}
+{"lines": ["$ /home/user/pinfold/target/debug/pinfold box exec probe-pr2-pr2mac-documents --harness codex -- /opt/pinfold/codex/codex --version", "codex-cli 0.167.1"]}
+[pi.log: project shim]
+$ /home/user/pinfold/target/debug/pinfold pi --version
+1.5.2
+[updater.log: six-minute normal Codex onboarding; no login submitted]
+    "updater": { "autoUpdateEnabled": false }
+check_for_update_on_startup = false
+observation bytes=5459 seconds=360.082 exit=124
+startup-audit {"decision":"refused","host":"api.github.com","reason":"not allowlisted","time":"2026-11-14T20:54:04Z"}
+startup-audit {"decision":"refused","host":"ab.chatgpt.com","reason":"not allowlisted","time":"2026-11-14T20:59:04Z"}
+[post-decision: probe.py build default; start default; agents.py default]
+{"lines": ["[exit 0; seconds 41.581]", "pi successful-tool-exchange=True", "claude successful-tool-exchange=True", "codex successful-tool-exchange=True"]}
+[fresh read-only container image list --format json; arm64 variant sizes]
+{"id": "cf81b3c683bc9d2ec4e9d62bca0e0036b040a0505d12ae67b7b9e46a1624524d", "ref": "localhost/pinfold/profile-default:latest", "variant_bytes": 470400578}
+{"id": "ab9187888dc40d5edb74c599affc785c97d5df010d787eddf5bb0b30cf00893f", "ref": "localhost/pinfold/profile-documents:latest", "variant_bytes": 541090658}
+{"id": "4280bcc13eedca65eb71f50856eee8c9dedebfd1c2f09c01791804a9a7b58e2b", "ref": "localhost/pinfold/profile-full:latest", "variant_bytes": 557764880}
+[review: cargo fmt --check; cargo clippy --all-targets --locked -- -D warnings]
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.83s
+[review: cargo zigbuild --all-targets --locked --target aarch64-unknown-linux-musl]
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.35s

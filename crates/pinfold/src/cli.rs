@@ -26,7 +26,7 @@ pinfold pi [pi args…]            pi in a box for this project; `pi` is a symli
 pinfold attach [cmd…]            bash (or cmd) in this project's running pi box
 pinfold push                     this checkout's branches into its pi box as refs/remotes/host/*
 pinfold fetch                    its pi box's branches into refs/remotes/pinfold/*
-pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this project's image, or a profile's; prints the ref
+pinfold build [--profile NAME] [--allow HOST]…   build this project's image, or a profile's; prints the ref
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]…   a caller's image from its own context; one JSON line
 pinfold image rm NAME            retire a caller image name; one JSON line
 pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
@@ -1261,7 +1261,6 @@ pub(crate) fn exit_code(status: ExitStatus) -> i32 {
 /// or project configuration directory are not build inputs.
 pub fn build(args: &[String]) -> io::Result<i32> {
     let mut profile_name = None;
-    let mut cache = true;
     let mut allow = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -1277,7 +1276,6 @@ pub fn build(args: &[String]) -> io::Result<i32> {
                     .ok_or_else(|| usage("build", "--allow needs a host"))?
                     .clone(),
             ),
-            "--no-cache" => cache = false,
             option => {
                 return Err(usage("build", &format!("unknown build option {option:?}")));
             }
@@ -1310,56 +1308,49 @@ pub fn build(args: &[String]) -> io::Result<i32> {
         ));
     }
     let images = image::service();
-    // A project image records the profile image it was built from, so
-    // `pinfold pi` warns when the selected profile image moves past it.
-    let (label, source, containerfile, base) = match &project {
-        Some((id, bytes)) => (
-            clean::PROJECT_LABEL,
-            id,
-            bytes.as_slice(),
-            if profile_recipe.is_some() {
-                images
-                    .resolve_image(&profile.image_ref())?
-                    .ok()
-                    .map(|image| image.id)
-            } else {
-                image::refresh_base(images, bytes)?;
-                None
+    let build = |label, source: &str, bytes: &[u8], base: Option<String>| {
+        image::refresh_base(images, bytes)?;
+        image::build(
+            images,
+            Build {
+                label: Some(label),
+                source,
+                context: Context::Alone(bytes),
+                cache: false,
+                labels: base
+                    .map(|digest| (clean::BASE_LABEL.to_string(), digest))
+                    .into_iter()
+                    .collect(),
+                allow: allow.clone(),
             },
-        ),
-        None => {
-            let bytes = profile_recipe.expect("a profile build has a recipe");
-            image::refresh_base(images, bytes)?;
-            (clean::PROFILE_LABEL, &profile.name, bytes, None)
-        }
-    };
-    let built = image::build(
-        images,
-        Build {
-            label: Some(label),
-            source,
-            context: Context::Alone(containerfile),
-            cache,
-            labels: base
-                .map(|digest| (clean::BASE_LABEL.to_string(), digest))
-                .into_iter()
-                .collect(),
-            allow,
-        },
-    )?;
-    match built {
-        Ok(built) => {
-            println!("{}", built.latest);
-            Ok(0)
-        }
-        Err(output) => {
+        )?
+        .map_err(|output| {
             eprint!("{output}");
-            Err(io::Error::other(format!(
-                "the {} build failed",
-                images.program()
-            )))
+            io::Error::other(format!("the {} build failed", images.program()))
+        })
+    };
+    let profile_built = profile_recipe
+        .map(|bytes| build(clean::PROFILE_LABEL, &profile.name, bytes, None))
+        .transpose()?;
+    let built = match project {
+        Some((id, bytes)) => {
+            if let Some(profile) = &profile_built {
+                eprintln!("pinfold: profile published {}", profile.reference);
+            }
+            // Record the rebuild's identity. Linux also binds its source to it.
+            let base = profile_built.as_ref().and_then(|built| built.id.clone());
+            #[cfg(target_os = "linux")]
+            if profile_built.is_some() && base.is_none() {
+                return Err(io::Error::other(
+                    "image-base-changed: rebuilt profile identity unavailable",
+                ));
+            }
+            build(clean::PROJECT_LABEL, &id, &bytes, base)?
         }
-    }
+        None => profile_built.expect("a profile build has a recipe"),
+    };
+    println!("{}", built.latest);
+    Ok(0)
 }
 
 pub fn image(args: &[String]) -> io::Result<i32> {

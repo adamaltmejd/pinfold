@@ -1,3 +1,6 @@
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[path = "../../pinfold/src/image_limits.rs"]
+mod image_limits;
 #[path = "../../pinfold/src/init.rs"]
 mod init;
 

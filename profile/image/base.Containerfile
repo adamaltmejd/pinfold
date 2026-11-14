@@ -6,7 +6,7 @@ RUN set -eux; \
     apt-get update; \
     apt-get upgrade -y; \
     apt-get install -y --no-install-recommends \
-        ca-certificates curl git ripgrep fd-find jq less; \
+        ca-certificates curl git ripgrep fd-find jq less procps; \
     ln -s /usr/bin/fdfind /usr/local/bin/fd; \
     git config --system user.name pi; \
     git config --system user.email pi@pinfold.invalid; \

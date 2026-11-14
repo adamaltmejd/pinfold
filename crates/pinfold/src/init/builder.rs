@@ -17,12 +17,12 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::firecracker::{self, FAILED, READY, write_frame};
+use crate::image_limits::{OCI_BYTES, ROOT_BYTES};
 
 const PATH: &str = "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const PROXY: &str = "http://127.0.0.1:3128";
 const SOCKET: &str = "unix:///run/buildkit/buildkitd.sock";
 const LOG_BYTES: usize = 64 * 1024;
-const OUTPUT_BYTES: u64 = 512 * 1024 * 1024;
 const JSON_BYTES: u64 = 1024 * 1024;
 const CAPABILITIES: u64 = 0xa82425fb;
 
@@ -150,19 +150,33 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
     // No RUN descendant may keep changing an output after its daemon exited.
     stop_work()?;
     nix::unistd::sync();
-    write_frame(host, READY, &[])?;
-    match job.phase {
-        Phase::Convert => send(host, b'D', output)?,
+    let (files, limit) = match job.phase {
+        Phase::Convert => (vec![(b'D', output.to_path_buf())], ROOT_BYTES),
         Phase::Build => {
-            send(host, b'I', &output.join("index.json"))?;
             let mut blobs =
                 fs::read_dir(output.join("blobs/sha256"))?.collect::<Result<Vec<_>, _>>()?;
             blobs.sort_by_key(|entry| entry.file_name());
-            for blob in blobs {
-                send(host, b'B', &blob.path())?;
-            }
-            fs::remove_dir_all(output)?;
+            let mut files = vec![(b'I', output.join("index.json"))];
+            files.extend(blobs.into_iter().map(|entry| (b'B', entry.path())));
+            (files, OCI_BYTES)
         }
+    };
+    // Refuse before READY switches the receiver to the image stream.
+    let mut total = 0_u64;
+    for (_, path) in &files {
+        let metadata = fs::symlink_metadata(path)?;
+        total = total
+            .checked_add(metadata.len())
+            .filter(|size| metadata.is_file() && *size <= limit)
+            .ok_or_else(|| io::Error::other("resource: image output file"))?;
+    }
+    write_frame(host, READY, &[])?;
+    let mut remaining = limit;
+    for (kind, path) in files {
+        send(host, kind, &path, &mut remaining)?;
+    }
+    if job.phase == Phase::Build {
+        fs::remove_dir_all(output)?;
     }
     finish(host, None, selected_mounted)
 }
@@ -626,7 +640,7 @@ fn convert(log: Arc<Mutex<Tail>>) -> io::Result<()> {
         .and_then(|size| size.checked_add(entries / 4))
         .and_then(|size| size.checked_add(16384))
         .and_then(|size| size.checked_mul(1024))
-        .filter(|&size| size <= OUTPUT_BYTES)
+        .filter(|&size| size <= ROOT_BYTES)
         .ok_or_else(|| io::Error::other("resource: converted root size"))?;
     let file = File::create("/work/root.ext4")?;
     file.set_len(size)?;
@@ -663,9 +677,9 @@ fn tree_blocks(path: &Path, seen: &mut BTreeSet<(u64, u64)>) -> io::Result<(u64,
     Ok((blocks, entries))
 }
 
-fn send(host: &mut UnixStream, kind: u8, path: &Path) -> io::Result<()> {
+fn send(host: &mut UnixStream, kind: u8, path: &Path, remaining: &mut u64) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
-    if !metadata.is_file() || metadata.len() > OUTPUT_BYTES {
+    if !metadata.is_file() || metadata.len() > *remaining {
         return Err(io::Error::other("resource: image output file"));
     }
     let mut file = File::open(path)?;
@@ -678,7 +692,7 @@ fn send(host: &mut UnixStream, kind: u8, path: &Path) -> io::Result<()> {
             break;
         }
         size += count as u64;
-        if size > OUTPUT_BYTES {
+        if size > *remaining {
             return Err(io::Error::other("resource: image output file"));
         }
         sha.update(&buffer[..count]);
@@ -694,6 +708,7 @@ fn send(host: &mut UnixStream, kind: u8, path: &Path) -> io::Result<()> {
     if sent != size {
         return Err(io::Error::other("image output changed"));
     }
+    *remaining -= size;
     Ok(())
 }
 

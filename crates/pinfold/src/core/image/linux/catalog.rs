@@ -16,10 +16,12 @@ use crate::core::image::ImageInfo;
 use crate::core::{hex, ownership, sha256_hex};
 use crate::dirs;
 
+use super::{OCI_BYTES, ROOT_BYTES};
+
 const HEADER_MAX: usize = 8 << 10;
 const JSON_MAX: u64 = 1 << 20;
+pub(super) const METADATA_BYTES: u64 = 512 << 20;
 const OBJECT_MAX: usize = 4096;
-const PAYLOAD_MAX: u64 = 512 << 20;
 const INDEX: &str = "application/vnd.oci.image.index.v1+json";
 const MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
 const CONFIG: &str = "application/vnd.oci.image.config.v1+json";
@@ -163,7 +165,7 @@ pub fn receive_root(stream: &mut impl Read, path: &Path) -> io::Result<(String, 
     let received = (|| {
         let (kind, bytes) = frame_header(stream)?;
         let header: Header = serde_json::from_slice(&bytes).map_err(invalid_json)?;
-        if kind != b'D' || header.size == 0 || header.size > PAYLOAD_MAX {
+        if kind != b'D' || header.size == 0 || header.size > ROOT_BYTES {
             return Err(invalid("image-output: root frame or size limit"));
         }
         copy_checked(stream, &mut file, header.size, &header.digest, None)?;
@@ -222,7 +224,7 @@ pub fn receive(
             let digest = digest_hex(&header.digest)?;
             total = total
                 .checked_add(header.size)
-                .filter(|total| *total <= PAYLOAD_MAX)
+                .filter(|total| *total <= OCI_BYTES)
                 .ok_or_else(|| invalid("image-output: payload limit"))?;
             let path = match kind {
                 b'I' if !indexed && objects.is_empty() => {
@@ -693,7 +695,11 @@ pub fn root(id: &str) -> io::Result<(PathBuf, Vec<(String, String)>)> {
 fn verify_root(id: &str, image: &Image) -> io::Result<PathBuf> {
     let path = root_path(id, image)?;
     let metadata = fs::symlink_metadata(&path)?;
-    if !metadata.is_file() || metadata.len() != image.root_bytes {
+    if !metadata.is_file()
+        || image.root_bytes == 0
+        || image.root_bytes > ROOT_BYTES
+        || metadata.len() != image.root_bytes
+    {
         return Err(invalid(
             "image-root: completed root missing or damaged; rebuild image",
         ));
@@ -796,7 +802,7 @@ fn verify_layout(
         return Err(invalid("image-store: invalid OCI layout version"));
     }
     let mut objects = BTreeMap::new();
-    let mut total = 0u64;
+    let mut total = fs::symlink_metadata(path.join("index.json"))?.len();
     for entry in fs::read_dir(path.join("blobs/sha256"))? {
         check_cancel(cancel)?;
         let entry = entry?;
@@ -809,7 +815,7 @@ fn verify_layout(
         let metadata = fs::symlink_metadata(entry.path())?;
         total = total
             .checked_add(metadata.len())
-            .filter(|total| *total <= PAYLOAD_MAX)
+            .filter(|total| *total <= OCI_BYTES)
             .ok_or_else(|| invalid("image-store: payload limit"))?;
         if !metadata.is_file() || objects.len() >= OBJECT_MAX {
             return Err(invalid("image-store: invalid object or object limit"));
@@ -841,7 +847,8 @@ pub fn publish(
     check_cancel(Some(cancel))?;
     digest_hex(&verified.id)?;
     digest_hex(root_sha)?;
-    if root_bytes > PAYLOAD_MAX
+    if root_bytes == 0
+        || root_bytes > ROOT_BYTES
         || tags.is_empty()
         || tags.iter().any(|tag| {
             !tag.starts_with("localhost/pinfold/") || tag.chars().any(char::is_whitespace)
@@ -991,7 +998,7 @@ pub fn base_metadata(cancel: &AtomicBool) -> io::Result<Vec<BaseMetadata>> {
         }
         total = total
             .checked_add(manifest.len() as u64 + config.len() as u64)
-            .filter(|total| *total <= PAYLOAD_MAX)
+            .filter(|total| *total <= METADATA_BYTES)
             .ok_or_else(|| invalid("resource: local base metadata size"))?;
         snapshots.push(BaseMetadata {
             id: id.to_string(),

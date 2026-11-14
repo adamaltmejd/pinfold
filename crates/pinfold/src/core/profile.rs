@@ -8,16 +8,31 @@ use std::path::{Path, PathBuf};
 use crate::dirs;
 
 const BASE: &[u8] = include_bytes!("../../../../profile/image/base.Containerfile");
+const AGENTS: &[u8] = include_bytes!("../../../../profile/image/agents.Containerfile");
 const BUN: &[u8] = include_bytes!("../../../../profile/image/bun.Containerfile");
 const DOCUMENTS: &[u8] = include_bytes!("../../../../profile/image/documents.Containerfile");
 const FULL: &[u8] = include_bytes!("../../../../profile/image/full.Containerfile");
 const HARDEN: &[u8] = include_bytes!("../../../../profile/image/harden.Containerfile");
 const CONFIG: &[u8] = include_bytes!("../../../../profile/pinfold.toml");
 const FULL_CONFIG: &[u8] = include_bytes!("../../../../profile/full/pinfold.toml");
-const HOME: &[(&str, &[u8])] = &[(
-    ".pi/agent/settings.json",
-    include_bytes!("../../../../profile/home/.pi/agent/settings.json"),
-)];
+const HOME: &[(&str, &[u8])] = &[
+    (
+        ".pi/agent/settings.json",
+        include_bytes!("../../../../profile/home/.pi/agent/settings.json"),
+    ),
+    (
+        ".claude/settings.json",
+        include_bytes!("../../../../profile/home/.claude/settings.json"),
+    ),
+    (
+        ".codex/config.toml",
+        include_bytes!("../../../../profile/home/.codex/config.toml"),
+    ),
+    (
+        ".codex/app-server-daemon/settings.json",
+        include_bytes!("../../../../profile/home/.codex/app-server-daemon/settings.json"),
+    ),
+];
 const OPERATING_CONTEXT: (&str, &[u8]) = (
     "pi/extensions/operating-context.ts",
     include_bytes!("../../../../profile/share/pi/extensions/operating-context.ts"),
@@ -128,10 +143,14 @@ impl Profile {
     /// A named built-in, even when a user's profile overrides it.
     pub fn builtin(name: &str) -> io::Result<Profile> {
         let (fragments, config, share): (&[&[u8]], &[u8], _) = match name {
-            "default" => (&[BASE, HARDEN], CONFIG, DEFAULT_SHARE),
-            "documents" => (&[BASE, BUN, DOCUMENTS, HARDEN], CONFIG, DOCUMENTS_SHARE),
+            "default" => (&[BASE, AGENTS, HARDEN], CONFIG, DEFAULT_SHARE),
+            "documents" => (
+                &[BASE, AGENTS, BUN, DOCUMENTS, HARDEN],
+                CONFIG,
+                DOCUMENTS_SHARE,
+            ),
             "full" => (
-                &[BASE, BUN, DOCUMENTS, FULL, HARDEN],
+                &[BASE, AGENTS, BUN, DOCUMENTS, FULL, HARDEN],
                 FULL_CONFIG,
                 FULL_SHARE,
             ),
@@ -168,6 +187,7 @@ impl Profile {
 pub fn builtin_hash() -> io::Result<String> {
     Ok(super::sha256_hex(serde_json::to_vec(&(
         BASE,
+        AGENTS,
         BUN,
         DOCUMENTS,
         FULL,
