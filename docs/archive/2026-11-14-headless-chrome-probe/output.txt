@@ -1,0 +1,124 @@
+Selected output from the original runs; no box rerun. Source names refer to the parent commit.
+Raw lines unless marked projection/summary. Projections omit unrelated fields; summaries are offline counts.
+
+# Build: runtime.txt, *-build.txt, *-image.json.txt, *-disk.txt (projections)
+container system status: status=running; client.version=server.version=1.7.1; host.architecture=arm64
+Base image history: apt layer created 2026-11-10T14:40:24.155199549Z (cached before this build).
+profile | build exit | seconds | arm64 variant bytes | free GiB before build
+probe-chrome-base | 0 | 9.518 | 71037562 | 14
+probe-chrome | 0 | 40.477 | 348154131 | 13
+probe-chrome-tools | 0 | 22.404 | 360315141 | 25
+
+# Apt diagnostics: *-apt.txt (summary of all HTTP Host/Location lines; exact package totals)
+probe-chrome: Host=["deb.debian.org"]; Location=[]
+probe-chrome-tools: Host=["deb.debian.org"]; Location=[]
+Need to get 194 MB of archives.
+After this operation, 752 MB of additional disk space will be used.
+
+# Guest facts and plain-image cases: guest-facts.txt, minimal.txt (command/output excerpts)
+Chromium 156.0.8078.79 built on Debian GNU/Linux 13 (trixie)
+tmpfs            64M     0   64M   0% /dev/shm
+uid=501 gid=20(dialout) groups=20(dialout)
+379M	/usr/lib/chromium
+guest-facts.txt: exit=1 (find traversal suppressed permission errors; no setuid/setgid file printed)
+$ pinfold box exec probe-chrome-minimal -- chromium --headless --user-data-dir=/home/user/sandbox-on --dump-dom about:blank
+[6:6:1114/183414.221104:ERROR:content/browser/zygote_host/zygote_host_impl_linux.cc:130] No usable sandbox! If this is a Debian system, please install the chromium-sandbox package to solve this problem. If you are running on Ubuntu 23.10+ or another Linux distro that has disabled unprivileged user namespaces with AppArmor, see https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md. If you want to live dangerously and need an immediate workaround, you can try using --no-sandbox.
+exit=1
+$ pinfold box exec probe-chrome-minimal -- chromium --headless --no-sandbox --user-data-dir=/home/user/minimal --dump-dom https://api.github.com/
+  "current_user_url": "https://api.github.com/user",
+exit=0
+$ pinfold box exec probe-chrome-minimal -- chromium --headless --no-sandbox --user-data-dir=/home/user/minimal-render --screenshot=/workspace/minimal.png file:///workspace/fixture.html
+19035 bytes written to file /workspace/minimal.png
+exit=0
+du: cannot read directory '/root': Permission denied
+906M	/ (accessible root files only)
+
+# CDP controls: explicit-proxy.jsonl.txt (projections; snapshot before navigation)
+Browser cmdline selected flags: --disable-dev-shm-usage --disable-pings --media-router=0 --no-default-browser-check --enable-gpu-rasterization --show-component-extension-options --enable-remote-extensions --load-extension=
+process_controls: pid | role | Uid (all four) | Gid (all four) | CapInh/Prm/Eff/Bnd/Amb | NoNewPrivs
+32 | browser | 501/501/501/501 | 20/20/20/20 | 0/0/0/0/0 | 1
+51 | zygote | 501/501/501/501 | 20/20/20/20 | 0/0/0/0/0 | 1
+52 | zygote | 501/501/501/501 | 20/20/20/20 | 0/0/0/0/0 | 1
+73 | gpu-process | 501/501/501/501 | 20/20/20/20 | 0/0/0/0/0 | 1
+74 | network.mojom.NetworkService | 501/501/501/501 | 20/20/20/20 | 0/0/0/0/0 | 1
+91 | storage.mojom.StorageService | 501/501/501/501 | 20/20/20/20 | 0/0/0/0/0 | 1
+123 | renderer | 501/501/501/501 | 20/20/20/20 | 0/0/0/0/0 | 1
+132 | renderer | 501/501/501/501 | 20/20/20/20 | 0/0/0/0/0 | 1
+133 | renderer | 501/501/501/501 | 20/20/20/20 | 0/0/0/0/0 | 1
+162 | renderer | 501/501/501/501 | 20/20/20/20 | 0/0/0/0/0 | 1
+{"kind":"interfaces","value":["lo"]}
+{"kind":"root_mount","value":["/dev/vdb / ext4 ro,relatime 0 0"]}
+{"kind":"user_max_user_namespaces","value":"0"}
+{"kind":"root_write","value":"[Errno 30] Read-only file system: '/probe-chrome-write'"}
+{"kind":"ready_seconds","value":0.41}
+{"kind":"chrome_exit","value":0}
+{"kind":"elapsed_seconds","value":73.634}
+
+# Navigation/rendering: explicit-proxy.jsonl.txt and env-only.jsonl.txt (projections)
+explicit-proxy.jsonl.txt: {"url":"https://api.github.com/","status":200,"remoteIPAddress":"127.0.0.1","remotePort":3128}
+explicit-proxy.jsonl.txt: {"errorText":"net::ERR_TUNNEL_CONNECTION_FAILED"}
+explicit-proxy.jsonl.txt: document.body.innerText includes "HTTP ERROR 403"
+explicit-proxy.jsonl.txt: {"url":"http://example.com/","status":403,"remoteIPAddress":"127.0.0.1","remotePort":3128}
+explicit-proxy.jsonl.txt: {"errorText":"net::ERR_HTTP_RESPONSE_CODE_FAILURE"}
+{"kind":"rendered_state","value":{"result":{"type":"string","value":"JavaScript rendered: 42"}}}
+webrtc (SDP omitted): {"state":"gathering","events":[]}
+env-only.jsonl.txt: {"url":"https://api.github.com/","status":200,"remoteIPAddress":"127.0.0.1","remotePort":3128}
+
+# Final egress.jsonl: all 15 entries (retries included)
+{"decision":"refused","host":"clients2.google.com","reason":"not allowlisted","time":"2026-11-14T18:33:40Z"}
+{"decision":"refused","host":"redirector.gvt1.com","reason":"not allowlisted","time":"2026-11-14T18:33:40Z"}
+{"decision":"refused","host":"update.googleapis.com","reason":"not allowlisted","time":"2026-11-14T18:33:40Z"}
+{"decision":"refused","host":"update.googleapis.com","reason":"not allowlisted","time":"2026-11-14T18:33:40Z"}
+{"decision":"allowed","host":"api.github.com","reason":"allowlisted","time":"2026-11-14T18:33:40Z"}
+{"decision":"allowed","host":"api.github.com","reason":"allowlisted","time":"2026-11-14T18:33:40Z"}
+{"decision":"refused","host":"example.com","reason":"not allowlisted","time":"2026-11-14T18:33:40Z"}
+{"decision":"refused","host":"example.com","reason":"not allowlisted","time":"2026-11-14T18:33:40Z"}
+{"decision":"refused","host":"example.com","reason":"not allowlisted","time":"2026-11-14T18:33:40Z"}
+{"decision":"refused","host":"example.com","reason":"not allowlisted","time":"2026-11-14T18:33:40Z"}
+{"decision":"refused","host":"example.com","reason":"not allowlisted","time":"2026-11-14T18:33:41Z"}
+{"decision":"refused","host":"optimizationguide-pa.googleapis.com","reason":"not allowlisted","time":"2026-11-14T18:33:50Z"}
+{"decision":"refused","host":"","reason":"header timeout","time":"2026-11-14T18:33:50Z"}
+{"decision":"refused","host":"update.googleapis.com","reason":"not allowlisted","time":"2026-11-14T18:34:40Z"}
+{"decision":"refused","host":"update.googleapis.com","reason":"not allowlisted","time":"2026-11-14T18:34:40Z"}
+
+# Final strace: every external connect, plus resumed result (original line numbers)
+1142: 116   connect(19, {sa_family=AF_INET6, sin6_port=htons(443), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "2001:4860:4860::8888", &sin6_addr), sin6_scope_id=0}, 28) = -1 ENETUNREACH (Network is unreachable)
+16487: 116   connect(29, {sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("8.8.8.8")}, 16) = -1 ENETUNREACH (Network is unreachable)
+16494: 116   connect(29, {sa_family=AF_INET6, sin6_port=htons(53), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "2001:4860:4860::8888", &sin6_addr), sin6_scope_id=0}, 28 <unfinished ...>
+16496: 116   <... connect resumed>)            = -1 ENETUNREACH (Network is unreachable)
+16683: 116   connect(29, {sa_family=AF_INET6, sin6_port=htons(443), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "2001:4860:4860::8888", &sin6_addr), sin6_scope_id=0}, 28) = -1 ENETUNREACH (Network is unreachable)
+17177: 116   connect(27, {sa_family=AF_INET6, sin6_port=htons(443), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "2001:4860:4860::8888", &sin6_addr), sin6_scope_id=0}, 28) = -1 ENETUNREACH (Network is unreachable)
+
+# Full-log audit summaries: final strace and NetLog (offline; full logs removed)
+strace: 15 loopback proxy connects; five external UDP connects, all ENETUNREACH; no external sendto/sendmsg, no port 3478.
+NetLog: no distinct Safe Browsing/DoH request; no QUIC session/handshake. Only QUIC pool events: {"QUIC_SESSION_POOL_MARK_ALL_ACTIVE_SESSIONS_GOING_AWAY":1,"QUIC_SESSION_POOL_CLOSE_ALL_SESSIONS":2}
+DNS_CONFIG_CHANGED (projection): {"can_use_secure_dns_transactions":false,"doh_config":{"servers":[]}}
+DNS_CONFIG_CHANGED (projection): {"can_use_secure_dns_transactions":false,"doh_config":{"servers":[]}}
+URL_REQUEST_START_JOB paths (queries omitted): GET clients2.google.com/time/1/current; GET redirector.gvt1.com/edgedl/chrome/dict/en-us-10-2.bdic; POST update.googleapis.com/service/update2/json (HTTP/HTTPS, retried); POST optimizationguide-pa.googleapis.com/v1:GetModels.
+Earlier env-only/minimal egress: no host beyond the final six named hosts (summary of both full logs).
+
+# Failures: failed-driver-handshake/*jsonl.txt; completed-cdp-export-failed/export.txt
+Both initial CDP attempts: RuntimeError: HTTP/1.1 101 WebSocket Protocol Handshake; exit=1 (driver reason-phrase check).
+pinfold disk: destination-exists: export destination already exists
+exit=1; elapsed_seconds=0.010
+
+# Artifacts/cleanup: export.txt, checks.txt, cleanup.txt, images-left.json (excerpts/projections)
+{"destination":"$W/export-6261dfe9dc0208e90870368f5c74dcfcc9b9aa9d613f7c8caf9f77300f5ff663","disk":"probe-chrome-work","event":"exported"}
+Pages: 1; File size: 21077 bytes (pdfinfo projection)
+pdftotext: JavaScript rendered: 42
+Screenshot and PDF preview visually inspected: rendered value 42 and three colored blocks.
+$ pinfold box list --label org.pinfold.probe=chrome; pinfold disk list --json (each: empty stdout, exit=0)
+Removed only the probe scratch root. Container service left running.
+localhost/pinfold/profile-probe-chrome-base:18e7fcd48b493cb8-90632 id=2fb99d524a9823cfaaea25f7c4155941f991d3f6231b3c3dc8b5e86e4b793326
+localhost/pinfold/profile-probe-chrome-base:latest id=2fb99d524a9823cfaaea25f7c4155941f991d3f6231b3c3dc8b5e86e4b793326
+localhost/pinfold/profile-probe-chrome-tools:18e7fcdff9315390-90978 id=57261499bc75ae909e88dc161d4bab0055e9c3caf56fef52684f2a3352fdf5c3
+localhost/pinfold/profile-probe-chrome-tools:latest id=57261499bc75ae909e88dc161d4bab0055e9c3caf56fef52684f2a3352fdf5c3
+localhost/pinfold/profile-probe-chrome:18e7fcd68a33cee0-90693 id=b6ed9322c29bc96cf47598a4e7e5d8a7a2d4b8f4af18d583b4d3392837583e61
+localhost/pinfold/profile-probe-chrome:latest id=b6ed9322c29bc96cf47598a4e7e5d8a7a2d4b8f4af18d583b4d3392837583e61
+
+# Original host checks: checks.txt (selected output)
+cargo build --locked: sccache: error: Operation not permitted (os error 1); exit=101
+RUSTC_WRAPPER= cargo build --locked: Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.13s; exit=0
+cargo fmt --check: [no output]; exit=0
+RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings: Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.73s; exit=0
+id -u: 501; id -g: 20 (host numeric IDs)
