@@ -1,0 +1,15 @@
+{
+  "sandbox": {
+    "excludedCommands": [
+      "container *",
+      "pinfold *",
+      "./target/debug/pinfold *",
+      "./target/release/pinfold *",
+      "codex *",
+      "labvm *"
+    ],
+    "filesystem": {
+      "allowWrite": ["/private/tmp/pinfold-501"]
+    }
+  }
+}
