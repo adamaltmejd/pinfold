@@ -23,6 +23,9 @@ B/U/L/H/C lines: [results.txt](2026-11-14-agents-image-updaters-logins/results.t
 P references: [primary public sources](2026-11-14-agents-image-updaters-logins/public-updater-evidence.md).
 Header evidence: [headers.txt](2026-11-14-agents-image-updaters-logins/headers.txt).
 These are decisions, not authorization to change the spec or allowlists.
+The updater options do not cover Claude's traffic default, which turns its
+automatic updates off (see below). The owner's decisions of 2026-11-14 are on
+ticket #278: rebuild to update, in-box updaters off.
 
 ## Updater and installer hosts
 
@@ -76,7 +79,7 @@ The script isolates XDG config/state, stamps maintenance, disables update checks
 checks 12 GiB free before builds, and uses random probe box/disk names with
 preflight disk inventory. The real cache and shared builder were retained.
 Recipe variants must be copied to `Containerfile` before the corresponding build.
-The helper fixture must precede the injecting mode, which reads its output file.
+The injecting mode replays the committed fixture token file; it does not read a new helper run's output.
 `PROBE_LOG` selects a distinct log filename for repeated modes.
 
 ## Image and cache observations
