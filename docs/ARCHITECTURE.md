@@ -794,10 +794,10 @@ A project recipe typically `FROM`s the profile image.
   Managed builds execute recipe RUN steps on every invocation. Recipes
   resolve and install their selected agents at build time. A project build
   first rebuilds its selected profile recipe when present. Linux freezes
-  that image's identity for the project build. Download cache mounts may
-  persist; launch never installs image agents. Profile and project publication
-  are separate operations: a failed project build may leave a successfully
-  rebuilt profile published, reported on stderr.
+  that image's identity for the project build. Built-in recipes download
+  their agents on every managed build; launch never installs image agents.
+  Profile and project publication are separate operations: a failed project
+  build may leave a successfully rebuilt profile published, reported on stderr.
 - A build's identity is its unique tag, never an image label. Every
   build is tagged `<repo>:<build>` and moves the stable `<repo>:latest` to
   it. A caller build whose layers and labels are unchanged returns the
@@ -963,10 +963,10 @@ Built-in images use `debian:trixie-slim` and strip setuid/setgid bits.
 Fixed recipe fragments under `profile/image/` form complete independent
 Containerfiles. A built-in never builds from another profile's image.
 Infrastructure and tool assets use pinned `ADD --checksum` inputs for the
-selected architecture. Agents resolve stable release metadata afresh at
-installation; version-addressed downloads use cache mounts and publisher
-integrity metadata where supplied. Codex and its code-mode host come from
-the same resolved release. Missing required assets fail installation.
+selected architecture. Agents resolve stable release metadata afresh and
+download on every managed build, using publisher integrity metadata where
+supplied. Codex and its code-mode host come from the same resolved release.
+Missing required assets fail installation.
 Final images contain installed tools, without their archives. gh comes
 from GitHub's signed apt repository.
 

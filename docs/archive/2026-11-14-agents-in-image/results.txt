@@ -63,3 +63,8 @@ check_for_update_on_startup = false
 observation bytes=5459 seconds=360.082 exit=124
 startup-audit {"decision":"refused","host":"api.github.com","reason":"not allowlisted","time":"2026-11-14T20:54:04Z"}
 startup-audit {"decision":"refused","host":"ab.chatgpt.com","reason":"not allowlisted","time":"2026-11-14T20:59:04Z"}
+[post-decision: probe.py build default; start default; agents.py default]
+[exit 0; seconds 41.581]
+pi successful-tool-exchange=True
+claude successful-tool-exchange=True
+codex successful-tool-exchange=True

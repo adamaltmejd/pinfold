@@ -81,4 +81,9 @@ readelf-no-interpreter=True
 Removed pi-project-d7f66ec20ade-home
 Removed pi-project-d7f66ec20ade-project
 baseline-unchanged=True sha256:7a76df9a1bf093743a7486ef023bd32fd60f456102addd10c6a9fbb6a80bf761
+[post-decision: probe.py build default; start default; agents.py default]
+[exit 0; seconds 152.558]
+pi successful-tool-exchange=True
+claude successful-tool-exchange=True
+codex successful-tool-exchange=True
 
