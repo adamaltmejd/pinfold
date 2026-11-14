@@ -17,13 +17,17 @@
 
 set -u
 BIN=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
-W=$(mktemp -d "${TMPDIR:-/tmp}/pfbox.XXXX")
+# Short, so box sockets under the state root fit in a unix socket path;
+# macOS's $TMPDIR is too long.
+W=$(cd "$(mktemp -d /tmp/pfbox.XXXX)" && pwd -P)
 export XDG_CONFIG_HOME=$W/config XDG_STATE_HOME=$W/state PINFOLD_NO_UPDATE_CHECK=1
 unset VISUAL EDITOR PINFOLD_PROFILE PINFOLD_ALLOW PINFOLD_ROUTES PINFOLD_CPUS PINFOLD_MEMORY
 for v in $(compgen -e | grep '^PINFOLD_ENV_'); do unset "$v"; done
 mkdir -p "$W/state/pinfold" && touch "$W/state/pinfold/maintenance"
 pinfold() { "$BIN" "$@"; }
-run() { echo "\$ $*"; "$@" </dev/null 2>&1; echo "[exit $?]"; echo; }
+# Output names the work root $W and the home ~, so it needs no scrubbing.
+scrub() { sed -e "s#$W#\$W#g" -e "s#${W#/private}#\$W#g" -e "s#$HOME#~#g"; }
+run() { echo "\$ $*"; "$@" </dev/null 2>&1 | scrub; echo "[exit ${PIPESTATUS[0]}]"; echo; }
 boxes() { container list --all --format json 2>/dev/null | grep -o '"dev.pinfold.project":"[^"]*"' | sort; }
 
 started=0
@@ -73,4 +77,5 @@ run pinfold pi --version
 echo "## Cleanup"
 run pinfold disk rm --all
 [ $started = 1 ] && container system stop
-echo "workdir: $W"
+rm -rf "$W"
+echo "work root removed: $([ -e "$W" ] && echo no || echo yes)"
