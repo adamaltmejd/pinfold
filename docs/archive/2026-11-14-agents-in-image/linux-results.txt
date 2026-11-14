@@ -1,0 +1,22 @@
+$ df -h /
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sda1        32G   11G   20G  37% /
+
+[exit 0; seconds 0.001]
+$ /home/user/pinfold/target/x86_64-unknown-linux-musl/debug/pinfold build --profile default
+pinfold: building profile default
+pinfold: build run e012da8819953a2f006fe4d1088a4952acba5d20db8b8d3a06a72d09471e701e; egress log /tmp/pfi.pr2linux/s/pinfold/runs/e012da8819953a2f006fe4d1088a4952acba5d20db8b8d3a06a72d09471e701e/egress.jsonl
+image-output cancelledpinfold build: the BuildKit build failed
+
+[exit 1; seconds 124.064]
+audit count=2 {"decision": "allowed", "host": "api.github.com", "reason": "allowlisted"}
+audit count=1 {"decision": "allowed", "host": "auth.docker.io", "reason": "allowlisted"}
+audit count=53 {"decision": "allowed", "host": "deb.debian.org", "reason": "allowlisted"}
+audit count=3 {"decision": "allowed", "host": "downloads.claude.ai", "reason": "allowlisted"}
+audit count=3 {"decision": "allowed", "host": "github.com", "reason": "allowlisted"}
+audit count=1 {"decision": "allowed", "host": "registry-1.docker.io", "reason": "allowlisted"}
+audit count=3 {"decision": "allowed", "host": "release-assets.githubusercontent.com", "reason": "allowlisted"}
+    Checking pinfold-init v0.5.5 (/home/user/pinfold/crates/pinfold-init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.65s
+exit=0
+

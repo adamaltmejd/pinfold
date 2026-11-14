@@ -1,0 +1,95 @@
+macOS default build, collector raw output:
+$ df -g /
+Filesystem     1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s1s1       460   12        49    21%  486811 521735000    0%   /
+
+[exit 0; seconds 0.003]
+$ /home/user/pinfold/target/debug/pinfold build --profile default
+localhost/pinfold/profile-default:latest
+pinfold: building profile default
+
+[exit 0; seconds 62.412]
+$ container image list --format json
+[exit 0; seconds 0.048]
+refs {"localhost/pinfold/profile-default:18e5870956aadf68-5967": "ae6f1273f1836a19225b840e0f8de4350ba667c04d77c2e0379269c863cfca71", "localhost/pinfold/profile-default:18e80232dff943d0-42611": "c76d1021b67074b528e5734fb11d3fa150be82fced4ade36aaa7be58a1a1940a", "localhost/pinfold/profile-default:latest": "c76d1021b67074b528e5734fb11d3fa150be82fced4ade36aaa7be58a1a1940a"}
+
+macOS start selected raw output:
+$ /home/user/pinfold/target/debug/pinfold box exec probe-pr2-pr2mac-default -- sh -c set -eu; command -v pi claude codex; pi --version; claude --version; codex --version; cat /opt/pinfold/agents/install.txt
+1.5.2
+2.1.311 (Claude Code)
+codex-cli 0.169.0
+resolved_at_utc=2026-11-14T20:07:56Z
+agent download: https://github.com/earendil-works/pi/releases/download/v1.5.2/pi-linux-arm64.tar.gz
+agent download: https://downloads.claude.ai/claude-code-releases/2.1.311/linux-arm64/claude
+agent download: https://github.com/openai/codex/releases/download/rust-v0.169.0/codex-aarch64-unknown-linux-musl.tar.gz
+agent download: https://github.com/openai/codex/releases/download/rust-v0.169.0/codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz
+installed agents: pi=v1.5.2 claude=2.1.311 codex=rust-v0.169.0
+220028	/usr
+768516	/opt
+293658808 /opt/pinfold/agents/claude/claude
+290069784 /opt/pinfold/agents/codex/codex
+72018272 /opt/pinfold/agents/codex/codex-code-mode-host
+122997752 /opt/pinfold/agents/pi/pi
+$ /home/user/pinfold/target/debug/pinfold box exec probe-pr2-pr2mac-default -- sh -c set -eu; if printf fixture >> "$(command -v pi)"; then echo unexpected-binary-write; exit 1; else echo binary-write-refused; fi
+binary-write-refused
+sh: 1: cannot create /usr/local/bin/pi: Permission denied
+observation exit=-15
+$ /home/user/pinfold/target/debug/pinfold box exec probe-pr2-pr2mac-default -- sh -c set -eu; command -v pi claude codex; pi --version; claude --version; codex --version; cat /opt/pinfold/agents/install.txt
+1.5.2
+2.1.311 (Claude Code)
+codex-cli 0.169.0
+resolved_at_utc=2026-11-14T20:07:56Z
+agent download: https://github.com/earendil-works/pi/releases/download/v1.5.2/pi-linux-arm64.tar.gz
+agent download: https://downloads.claude.ai/claude-code-releases/2.1.311/linux-arm64/claude
+agent download: https://github.com/openai/codex/releases/download/rust-v0.169.0/codex-aarch64-unknown-linux-musl.tar.gz
+agent download: https://github.com/openai/codex/releases/download/rust-v0.169.0/codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz
+installed agents: pi=v1.5.2 claude=2.1.311 codex=rust-v0.169.0
+220028	/usr
+768516	/opt
+293658808 /opt/pinfold/agents/claude/claude
+290069784 /opt/pinfold/agents/codex/codex
+72018272 /opt/pinfold/agents/codex/codex-code-mode-host
+122997752 /opt/pinfold/agents/pi/pi
+$ /home/user/pinfold/target/debug/pinfold box exec probe-pr2-pr2mac-default -- sh -c set -eu; if printf fixture >> "$(command -v claude)"; then echo unexpected-binary-write; exit 1; else echo binary-write-refused; fi
+binary-write-refused
+sh: 1: cannot create /usr/local/bin/claude: Permission denied
+observation exit=124
+$ /home/user/pinfold/target/debug/pinfold box exec probe-pr2-pr2mac-default -- sh -c set -eu; command -v pi claude codex; pi --version; claude --version; codex --version; cat /opt/pinfold/agents/install.txt
+1.5.2
+2.1.311 (Claude Code)
+codex-cli 0.169.0
+resolved_at_utc=2026-11-14T20:07:56Z
+agent download: https://github.com/earendil-works/pi/releases/download/v1.5.2/pi-linux-arm64.tar.gz
+agent download: https://downloads.claude.ai/claude-code-releases/2.1.311/linux-arm64/claude
+agent download: https://github.com/openai/codex/releases/download/rust-v0.169.0/codex-aarch64-unknown-linux-musl.tar.gz
+agent download: https://github.com/openai/codex/releases/download/rust-v0.169.0/codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz
+installed agents: pi=v1.5.2 claude=2.1.311 codex=rust-v0.169.0
+220028	/usr
+768516	/opt
+293658808 /opt/pinfold/agents/claude/claude
+290069784 /opt/pinfold/agents/codex/codex
+72018272 /opt/pinfold/agents/codex/codex-code-mode-host
+122997752 /opt/pinfold/agents/pi/pi
+$ /home/user/pinfold/target/debug/pinfold box exec probe-pr2-pr2mac-default -- sh -c set -eu; if printf fixture >> "$(command -v codex)"; then echo unexpected-binary-write; exit 1; else echo binary-write-refused; fi
+binary-write-refused
+sh: 1: cannot create /usr/local/bin/codex: Permission denied
+observation exit=124
+$ /home/user/pinfold/target/debug/pinfold box exec probe-pr2-pr2mac-default --harness pi -- /opt/pinfold/pi/pi --version
+1.5.2
+$ /home/user/pinfold/target/debug/pinfold box exec probe-pr2-pr2mac-default --harness claude -- /opt/pinfold/claude/claude --version
+2.1.322 (Claude Code)
+$ /home/user/pinfold/target/debug/pinfold box exec probe-pr2-pr2mac-default --harness codex -- /opt/pinfold/codex/codex --version
+codex-cli 0.167.1
+macOS cleanup, collector raw output:
+$ /home/user/pinfold/target/debug/pinfold box down probe-pr2-pr2mac-default
+
+[exit 0; seconds 0.024]
+$ /home/user/pinfold/target/debug/pinfold disk list --json
+[exit 0; seconds 0.031]
+$ /home/user/pinfold/target/debug/pinfold disk rm probe-pr2-pr2mac-default-home
+Removed probe-pr2-pr2mac-default-home
+
+[exit 0; seconds 0.052]
+$ /home/user/pinfold/target/debug/pinfold disk list --json
+
+[exit 0; seconds 0.028]
