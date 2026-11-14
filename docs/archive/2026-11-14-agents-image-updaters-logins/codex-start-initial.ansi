@@ -1,3 +1,0 @@
-[?2004h[>4;0m[>7u[?1004h[?u[c[6n]10;?\]11;?\[?2026h[?25l[?1049h[>4;0m[>7u[?1007l[?1000h[?1002h[?1003h[?1006h[?25l[1;1H[J[?2026l[0 q[?1006l[?1015l[?1003l[?1002l[?1000l[<1u[?1007l[?1049l[<1u[<u[>4;0m[?2004l[?1004l[0 q[?25hError: failed to record pid-managed app-server process 214 startup: failed to invoke ps for pid-managed app server: No such file or directory (os error 2)
-To work without the background server, rerun the same command with --no-daemon (including resume or fork and its arguments).
-[?25l[?25h

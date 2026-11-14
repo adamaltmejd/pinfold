@@ -1,0 +1,189 @@
+Selected evidence from commit 96478c2; no commands rerun.
+Source line numbers refer to LF-delimited originals in that commit.
+Blank lines omitted. Host paths use /Users/user; trace pointers are elided.
+JSON projections below name the fields retained; no request bodies retained.
+
+[B1] build.log:8,12,19,23
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold build --profile probe-agents
+[exit 0; seconds 70.044]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold build --profile probe-agents
+[exit 0; seconds 4.423]
+
+[B2] build-corrected.log:8,12,19,23
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold build --profile probe-agents
+[exit 0; seconds 31.850]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold build --profile probe-agents
+[exit 0; seconds 4.140]
+
+[B3] build-final.log:8,12,19,23
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold build --profile probe-agents
+[exit 0; seconds 52.095]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold build --profile probe-agents
+[exit 0; seconds 5.154]
+
+[B4] refresh.log:8,12
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold build --profile probe-agents --no-cache
+[exit 0; seconds 50.611]
+
+[B5] build-script-allowed.log:8,12,19,23
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold build --profile probe-agents
+[exit 0; seconds 27.523]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold build --profile probe-agents
+[exit 0; seconds 3.555]
+
+[B6] inventory.log:9,11,12,13,17,18,19,20,27,28,168,169,309
+2026-11-14T18:37:43Z
++-- @anthropic-ai/claude-code@2.1.325
++-- @earendil-works/pi-coding-agent@1.5.2
++-- @openai/codex@0.169.0
+457000	/root/.npm
+457104	/root/.npm
+v24.22.3
+11.19.1
+npm http cache https://registry.npmjs.org/@earendil-works%2fpi-coding-agent 6ms (cache hit)
+npm http cache https://registry.npmjs.org/@openai%2fcodex 10ms (cache hit)
+npm http cache @earendil-works/pi-coding-agent@https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.5.2.tgz 0ms (cache hit)
+npm http cache @openai/codex-linux-arm64@https://registry.npmjs.org/@openai/codex/-/codex-0.169.0-linux-arm64.tgz 0ms (cache hit)
+npm http cache @anthropic-ai/claude-code@https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.325.tgz 0ms (cache hit)
+
+[B7] baseline-final.log:26,27,435,436,459
+4	/root/.npm
+456996	/root/.npm
+npm http fetch GET 200 https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.5.2.tgz 2180ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@openai/codex/-/codex-0.169.0-linux-arm64.tgz 4149ms (cache miss)
+npm http fetch GET 200 https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.325.tgz 227ms (cache miss)
+
+[B8] baseline.log:465,538,542
+Error: claude native binary not installed.
+pinfold init exec: claude: Exec format error (os error 8)
+10;?11;?Error: failed to record pid-managed app-server process 214 startup: failed to invoke ps for pid-managed app server: No such file or directory (os error 2)
+
+[B9] baseline-final.log:469,470,472,473,474,476,477,478,480,482,529,546,548,560
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-baseline-0e0a62d461 -- sh -c pi --version
+1.5.2
+[exit 0; seconds 0.295]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-baseline-0e0a62d461 -- sh -c claude --version
+2.1.325 (Claude Code)
+[exit 0; seconds 0.112]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-baseline-0e0a62d461 -- sh -c codex --version
+codex-cli 0.169.0
+[exit 0; seconds 0.160]
+No API key found for anthropic.
+WelcometoClaudeCodev2.1.325
+UnabletoconnecttoAnthropicservices
+Failedtoconnecttoapi.anthropic.com:ERR_PROXY_TUNNEL
+10;?11;?  Welcome to Codex, OpenAI's command-line coding agent   Choose how you want to use Codex. > 1. Sign in with ChatGPT     Usage included with Plus, Pro, Business, and Enterprise plans   2. Sign in with Device Code     Sign in from another device with a one-time code   3. Sign in another way     Use an API key or another provider   Press enter to continue
+
+[B10] baseline-final.log:465,466
+npm warn install-scripts
+npm warn install-scripts Run `npm install -g --allow-scripts=@anthropic-ai/claude-code` to allow these scripts once, or `npm config set allow-scripts=@anthropic-ai/claude-code --location=user` to allow them for all global installs.
+
+[B11] build-script-allowed.log: container image inspect; selected fields
+{"id": "7b57a746b152c8907a70469f9fa2c7e8eba2783bf6fc983bcd587d1420f23fb3", "variant_size": 503641218, "install_RUN_created": "2026-11-14T18:37:49.243780512Z"}
+inventory.log:9 (install-time after unchanged rebuild): 2026-11-14T18:37:43Z
+
+[U1] updates.log:197,198,200,203,206,207,216,218,219,220,225,238
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-updates-true-742220670e -- sh -c cd /work; timeout 75 strace -f -e trace=file -o /tmp/pi.trace pi update --self
+pi is already up to date (v1.5.2)
+[exit 0; seconds 0.495]
+60    mkdirat(AT_FDCWD, "/tmp/node-compile-cache/v24.22.3-arm64-964aae3f-501", 0777) = -1 EEXIST (File exists)
+60    mkdirat(AT_FDCWD, "/home/user/.pi/agent", 0777) = 0
+60    mkdirat(AT_FDCWD, "/home/user/.pi/agent/trust.json.lock", 0777) = 0
+{"decision":"allowed","host":"pi.dev","reason":"allowlisted","time":"2026-11-14T18:39:13Z"}
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-updates-true-742220670e -- sh -c cd /work; timeout 75 strace -f -e trace=file -o /tmp/pi-force.trace pi update --self --force
+error: pi cannot self-update this installation.
+This installation is managed by a global npm install, but the install path is not writable. Update it yourself with: npm --prefix /usr/local install -g --ignore-scripts --min-release-age=0 @earendil-works/pi-coding-agent@1.5.2
+[exit 1; seconds 0.654]
+85    faccessat(AT_FDCWD, "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent", W_OK) = -1 EACCES (Permission denied)
+
+[U2] updates.log:256,257,262,264,352,358,362
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-updates-true-742220670e -- sh -c cd /work; timeout 75 strace -f -e trace=file -o /tmp/claude.trace claude update
+Current version: 2.1.325
+Claude Code is up to date (2.1.325)
+[exit 0; seconds 1.196]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-updates-true-742220670e -- sh -c cd /work; timeout 75 strace -f -e trace=file -o /tmp/codex.trace npm install -g @openai/codex@latest
+npm error rofs EROFS: read-only file system, rename '/usr/local/lib/node_modules/@openai/codex' -> '/usr/local/lib/node_modules/@openai/.codex-vdnmINeK'
+[exit 226; seconds 1.756]
+
+[U3] updates.log:652,653,655,673,674,675,680,693,711,712,722,724,813,819,823
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-updates-false-742220670e -- sh -c cd /work; timeout 75 strace -f -e trace=file -o /tmp/pi.trace pi update --self
+pi is already up to date (v1.5.2)
+[exit 0; seconds 0.486]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-updates-false-742220670e -- sh -c cd /work; timeout 75 strace -f -e trace=file -o /tmp/pi-force.trace pi update --self --force
+error: pi cannot self-update this installation.
+This installation is managed by a global npm install, but the install path is not writable. Update it yourself with: npm --prefix /usr/local install -g --ignore-scripts --min-release-age=0 @earendil-works/pi-coding-agent@1.5.2
+[exit 1; seconds 0.646]
+85    faccessat(AT_FDCWD, "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent", W_OK) = -1 EACCES (Permission denied)
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-updates-false-742220670e -- sh -c cd /work; timeout 75 strace -f -e trace=file -o /tmp/claude.trace claude update
+Current version: 2.1.325
+Claude Code is up to date (2.1.325)
+[exit 0; seconds 1.289]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-updates-false-742220670e -- sh -c cd /work; timeout 75 strace -f -e trace=file -o /tmp/codex.trace npm install -g @openai/codex@latest
+npm error rofs EROFS: read-only file system, rename '/usr/local/lib/node_modules/@openai/codex' -> '/usr/local/lib/node_modules/@openai/.codex-vdnmINeK'
+[exit 226; seconds 1.758]
+
+[U4] claude-fixture.log:8,14,20,47,54,57,58,61,65,68
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-claude-fixture-177392b06f -- sh -c cd /work; timeout 75 strace -f -e trace=file -o /tmp/claude.trace claude update
+New version available: 999.0.0 (current: 2.1.325)
+[exit 1; seconds 1.673]
+39    execve("/usr/local/bin/npm", ["npm", "view", "@anthropic-ai/claude-code@latest", "version", "--prefer-online"], <fixture-pointer> /* 15 vars */) = 0
+53    execve("/usr/local/bin/npm", ["npm", "install", "-g", "@anthropic-ai/claude-code@999.0."...], <fixture-pointer> /* 15 vars */) = 0
+64    renameat(AT_FDCWD, "/usr/local/bin/claude", AT_FDCWD, "/usr/local/bin/.claude-X3ObDFPy") = -1 EROFS (Read-only file system)
+62    renameat(AT_FDCWD, "/usr/local/lib/node_modules/@anthropic-ai/claude-code", AT_FDCWD, "/usr/local/lib/node_modules/@anthropic-ai/.claude-code-1devilah") = -1 EROFS (Read-only file system)
+13    renameat(AT_FDCWD, "/home/user/.claude/.last-update-result.json.tmp.e4052811", AT_FDCWD, "/home/user/.claude/.last-update-result.json") = 0
+2.1.325 (Claude Code)
+fixture registry requests: [{"method": "GET", "path": "/@anthropic-ai%2fclaude-code"}, {"method": "GET", "path": "/@anthropic-ai%2fclaude-code"}]
+
+[U5] updates-*-egress.jsonl: adjacent-snapshot differences (decision,host,reason)
+defaults=true pi: [["allowed", "pi.dev", "allowlisted"]]
+defaults=true pi-force: [["allowed", "pi.dev", "allowlisted"]]
+defaults=true claude: [["allowed", "registry.npmjs.org", "allowlisted"], ["allowed", "registry.npmjs.org", "allowlisted"]]
+defaults=true codex: [["allowed", "registry.npmjs.org", "allowlisted"]]
+defaults=false pi: [["allowed", "pi.dev", "allowlisted"]]
+defaults=false pi-force: [["allowed", "pi.dev", "allowlisted"]]
+defaults=false claude: [["allowed", "registry.npmjs.org", "allowlisted"], ["allowed", "registry.npmjs.org", "allowlisted"], ["allowed", "api.anthropic.com", "allowlisted"]]
+defaults=false codex: [["allowed", "registry.npmjs.org", "allowlisted"]]
+
+[L1] logins.log:19,20,21,22,23,24,25,28,29,1275
+drwxr-xr-x 3 501 20 4096 Nov 14 18:40 /home/user
+drwxr-xr-x 3   0  0 4096 Nov 14 18:40 /home/user/.pi
+drwxr-xr-x 3 501 20 4096 Nov 14 18:40 /home/user/.pi/agent
+drwxr-xr-x 3   0  0   96 Nov 14 18:40 /home/user/.pi/agent/extensions
+touch: cannot touch '/home/user/.pi/agent/extensions/write-probe': Read-only file system
+touch: cannot touch '/etc/claude-code/write-probe': Read-only file system
+touch: cannot touch '/etc/codex/write-probe': Read-only file system
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box exec probe-agents-logins-61a9ac4f66 -- sh -c cd /work; timeout 75 pi -p "say hi" --provider anthropic --model sonnet
+Connection error.: Proxy response (403) !== 200 when HTTP Tunneling (UND_ERR_ABORTED)
+drwxr-xr-x 3 501 20 4096 Nov 14 18:40 /home/user/.pi/agent/sessions
+
+[L2] logins-native.log:20,21,22,23,24,25,26,1528
+drwxr-xr-x 3 501 20 4096 Nov 14 18:43 /home/user
+drwxr-xr-x 3   0  0 4096 Nov 14 18:43 /home/user/.pi
+drwxr-xr-x 3 501 20 4096 Nov 14 18:43 /home/user/.pi/agent
+drwxr-xr-x 3   0  0   96 Nov 14 18:40 /home/user/.pi/agent/extensions
+touch: cannot touch '/home/user/.pi/agent/extensions/write-probe': Read-only file system
+touch: cannot touch '/etc/claude-code/write-probe': Read-only file system
+touch: cannot touch '/etc/codex/write-probe': Read-only file system
+drwxr-xr-x 3 501 20 4096 Nov 14 18:43 /home/user/.pi/agent/sessions
+
+[L3] logins-egress.jsonl: refused anthropic rows (all four)
+{"decision":"refused","host":"anthropic","reason":"route","time":"2026-11-14T18:40:44Z"}
+{"decision":"refused","host":"anthropic","reason":"route","time":"2026-11-14T18:40:46Z"}
+{"decision":"refused","host":"anthropic","reason":"route","time":"2026-11-14T18:40:50Z"}
+{"decision":"refused","host":"anthropic","reason":"route","time":"2026-11-14T18:40:58Z"}
+
+[H1] helper-checksum.log:1
+d8ccd88f64b776bbf8d330a46a0d2d80eae7580dcd981e0f97070eae58a4bf63  /tmp/pfh.298/helper.tar.gz
+
+[C1] cleanup.log:2,4,5,7,12,13
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold box list --label dev.pinfold.profile=probe-agents
+[exit 0; seconds 0.069]
+$ /Users/user/code/.cache/pinfold-work/mac-agents/target/debug/pinfold disk list --json
+[exit 0; seconds 0.020]
+$ container system status [status only]
+status              running
+
+[C2] cleanup.log:9-11 projection (name,id)
+{"name": "localhost/pinfold/profile-probe-agents:18e7fd48409e6cc8-96704", "id": "7b57a746b152c8907a70469f9fa2c7e8eba2783bf6fc983bcd587d1420f23fb3"}
+{"name": "localhost/pinfold/profile-probe-agents:18e7fd4e9d7d2d98-97194", "id": "7b57a746b152c8907a70469f9fa2c7e8eba2783bf6fc983bcd587d1420f23fb3"}
+{"name": "localhost/pinfold/profile-probe-agents:latest", "id": "7b57a746b152c8907a70469f9fa2c7e8eba2783bf6fc983bcd587d1420f23fb3"}
