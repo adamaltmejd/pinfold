@@ -1,0 +1,43 @@
+$ df -g /System/Volumes/Data (before reviewed build)
+Available 55 GiB
+$ RUSTC_WRAPPER= ZIG_GLOBAL_CACHE_DIR=/tmp/pinfold-step4a-zig ZIG_LOCAL_CACHE_DIR=/tmp/pinfold-step4a-zig-local cargo build --locked
+   Compiling pinfold-init v0.5.5 (/Users/user/code/.cache/pinfold-work/step4a/crates/pinfold-init)
+   Compiling pinfold v0.5.5 (/Users/user/code/.cache/pinfold-work/step4a/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.90s
+$ cargo fmt --check
+exit=0
+$ RUSTC_WRAPPER= ZIG_GLOBAL_CACHE_DIR=/tmp/pinfold-step4a-zig ZIG_LOCAL_CACHE_DIR=/tmp/pinfold-step4a-zig-local cargo clippy --all-targets --locked -- -D warnings
+   Compiling pinfold v0.5.5 (/Users/user/code/.cache/pinfold-work/step4a/crates/pinfold)
+    Checking pinfold-init v0.5.5 (/Users/user/code/.cache/pinfold-work/step4a/crates/pinfold-init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.37s
+$ cargo build --locked --target x86_64-unknown-linux-musl && cargo fmt --check && cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings
+   Compiling pinfold v0.5.5 (/home/user/pinfold/crates/pinfold)
+   Compiling pinfold-init v0.5.5 (/home/user/pinfold/crates/pinfold-init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.90s
+   Compiling pinfold v0.5.5 (/home/user/pinfold/crates/pinfold)
+    Checking pinfold-init v0.5.5 (/home/user/pinfold/crates/pinfold-init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.52s
+checks-status=0
+$ cmp /tmp/pinfold-review-full2.patch /tmp/pinfold-review-source-final.patch
+exit=0; final local source equals the source checked on Linux.
+Updater fixture construction (both hosts): copy crates/, profile/, Cargo.toml,
+Cargo.lock and rust-toolchain.toml into a scratch workspace. Change only
+workspace.package.version and the pinfold/pinfold-init lock entries to 0.0.0.
+Mac: CARGO_TARGET_DIR=/tmp/pfreview-old-target cargo build --locked --manifest-path /tmp/pfreview-old-src/Cargo.toml
+Linux (cwd scratch workspace): cargo build --locked --target x86_64-unknown-linux-musl
+No branch version, dependency, production code path or installed binary changed.
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 37.45s
+version-build-status=0
+
+Explicit isolated cleanup (disk list, require no attachments, disk rm --all --json, disk list empty):
+isolated-root=pfreview.1mn9x_fz removed=2 attached=0 disks-after=0
+isolated-root=pfreview.9y06tb8c removed=0 attached=0 disks-after=0
+isolated-root=pfreview.hauqc2nf removed=0 attached=0 disks-after=0
+isolated-root=pfreviewtty.shp2h2bj removed=0 attached=0 disks-after=0
+isolated-root=pfreviewtty.id8v9czt removed=2 attached=0 disks-after=0
+isolated-root=pfreviewtty.9iuojwhq removed=0 attached=0 disks-after=0
+isolated-root=pfreviewstart.iqsny6mk removed=0 attached=0 disks-after=0
+isolated-root=pfreviewstart.8pmyxt1z removed=0 attached=0 disks-after=0
+isolated-root=pfcmd.7z2_ns3z removed=10 attached=0 disks-after=0
+Linux explicit cleanup removed8 disks from acceptance root; other named roots already empty.
+Final observed free: Mac54 GiB, Linux24G. Existing images retained; VM lease not released.

@@ -1,0 +1,14 @@
+Apple
+$ $W/'install\npinfold: FORGED'/pinfold update; planted staging conflict
+exit=1 stdout=b'' stderr=b'pinfold update: cannot stage update beside $W/install\\npinfold: FORGED/pinfold: File exists (os error 17)\n'
+$ $W/'install\npinfold: FORGED'/pinfold update; conflict removed
+exit=0 stdout=b'Updated pinfold 0.0.0 to 0.5.5 at $W/install\\npinfold: FORGED/pinfold.\n' stderr=b'Downloading pinfold 0.5.5\xe2\x80\xa6\n'
+replacement --version: b'pinfold 0.5.5\n'
+PASS updater path diagnostics; only disposable executable replaced
+Linux
+$ $W/'install\npinfold: FORGED'/pinfold update; planted staging conflict
+exit=1 stdout=b'' stderr=b'pinfold update: cannot stage update beside $W/install\\npinfold: FORGED/pinfold: File exists (os error 17)\n'
+$ $W/'install\npinfold: FORGED'/pinfold update; conflict removed
+exit=0 stdout=b'Updated pinfold 0.0.0 to 0.5.5 at $W/install\\npinfold: FORGED/pinfold.\n' stderr=b'Downloading pinfold 0.5.5\xe2\x80\xa6\n'
+replacement --version: b'pinfold 0.5.5\n'
+PASS updater path diagnostics; only disposable executable replaced

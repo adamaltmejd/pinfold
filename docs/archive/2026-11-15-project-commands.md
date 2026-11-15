@@ -2,8 +2,11 @@
 
 2026-11-15. PR 1 of PLAN.md, against 2b7364a. Implements #295's command
 frontend and #302/#315. Implementation commit: 7e5eec8.
-The foreground owner remains; joining and detached
-ownership are not implemented. No departure from the fixed PR 1 decisions.
+The foreground owner remains; joining and detached ownership are not
+implemented. The initial no-departure claim was incorrect: fresh-disk
+`lost+found` cleanup was removed outside the plan. The
+[review correction](2026-11-15-project-command-review.md) records its
+restoration and the missed status, cwd, path and terminal cases.
 
 ## Implementation
 
