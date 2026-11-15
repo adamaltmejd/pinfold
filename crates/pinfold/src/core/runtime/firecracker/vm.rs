@@ -245,10 +245,17 @@ impl Vm {
             request.push(u8::from(*fresh));
             request.push(u8::from(*deferred));
         }
+        // Population precedes nested attachments, so its streams follow the
+        // same stable parent-first order as the guest's mount traversal.
+        let mut fills = fills.to_vec();
+        for fill in &mut fills {
+            fill.guest = crate::core::plan::guest_path(&fill.guest);
+        }
+        fills.sort_by_key(|fill| fill.guest.components().count());
         let filled = fills
             .iter()
-            .map(|fill| (&fill.guest, false))
-            .chain(seeding.map(|seeding| (&seeding.guest, true)));
+            .map(|fill| (fill.guest.clone(), false))
+            .chain(seeding.map(|seeding| (crate::core::plan::guest_path(&seeding.guest), true)));
         let filled: Vec<_> = filled.collect();
         request.extend((filled.len() as u32).to_be_bytes());
         for (guest, missing) in filled {
@@ -280,7 +287,7 @@ impl Vm {
                 listener,
                 Boot {
                     request,
-                    fills: fills.to_vec(),
+                    fills,
                     seeding: seeding.cloned(),
                     env: env(plan, prepared.image_env),
                 },

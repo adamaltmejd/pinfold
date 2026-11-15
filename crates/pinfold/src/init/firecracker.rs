@@ -230,6 +230,22 @@ fn parse_request(payload: &[u8]) -> io::Result<Request> {
         }
         directories.push((disk, relative));
     }
+    for attachment in attachments.iter().filter(|attachment| attachment.deferred) {
+        let backing = attachments
+            .iter()
+            .filter(|backing| !backing.deferred && attachment.guest.starts_with(&backing.guest))
+            .max_by_key(|backing| backing.guest.components().count());
+        if let Some(backing) = backing
+            && backing.writable
+            && !directories.iter().any(|(disk, relative)| {
+                *disk == backing.guest && disk.join(relative) == attachment.guest
+            })
+        {
+            return Err(io::Error::other(
+                "a deferred mount below a writable disk requires directory preparation",
+            ));
+        }
+    }
     fields.end()?;
     attachments.sort_by_key(|attachment| attachment.guest.components().count());
     Ok(Request {
@@ -414,10 +430,8 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
                     Some(Gid::from_raw(request.gid)),
                 )?;
             }
-        }
-        if !deferred {
             for (guest, missing) in &request.fills {
-                if !missing {
+                if !missing && *guest == attachment.guest {
                     populate_disk(root, guest, host, request.uid, request.gid)?;
                 }
             }
