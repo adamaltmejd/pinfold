@@ -105,6 +105,12 @@ A simultaneous second launch refuses as `disk-in-use`. Arguments after
 pass through; project setup failure or external teardown before observed completion uses 125. CMD owns stdout;
 pinfold diagnostics use stderr.
 
+Apple TTY execution uses a private host PTY; pinfold owns the caller's
+terminal settings and forwards input and window changes. Runtime sockets
+use private directories under `/tmp/pinfold-<uid>` (`/private/tmp` on macOS),
+independently of XDG state-root length. Unsafe socket paths refuse as
+`runtime-path`.
+
 For reusable Codex subscription login, sign in with Codex on the host and
 put this in the selected profile's `pinfold.toml`:
 

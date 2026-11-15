@@ -56,7 +56,7 @@ pub fn start(
     log: PathBuf,
 ) -> io::Result<oneshot::Receiver<()>> {
     let rules = Arc::new(Rules::new(egress, codex)?);
-    let listener = UnixListener::bind(socket).map_err(|error| {
+    let listener = crate::core::runtime::sockets::bind(socket).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("proxy socket {}: {error}", socket.display()),

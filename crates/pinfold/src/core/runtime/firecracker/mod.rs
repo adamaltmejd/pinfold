@@ -8,7 +8,7 @@ mod vsock;
 
 use std::fs;
 use std::io;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -29,14 +29,6 @@ use crate::dirs;
 pub struct Firecracker;
 
 impl Firecracker {
-    /// The box's 0700 vsock socket directory.
-    fn vsock_dir(state_dir: &Path) -> io::Result<PathBuf> {
-        let dir = state_dir.join("vsock");
-        fs::create_dir_all(&dir)?;
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
-        Ok(dir)
-    }
-
     /// The ownership record of the box `list` names `name`.
     fn record(name: &str) -> io::Result<ownership::Record> {
         ownership::record(name)?.ok_or_else(|| {
@@ -52,10 +44,6 @@ impl Runtime for Firecracker {
             return Err(io::Error::other(missing.join("; ")));
         }
         Ok(())
-    }
-
-    fn proxy_socket(&self, state_dir: &Path) -> io::Result<PathBuf> {
-        Ok(Self::vsock_dir(state_dir)?.join("v.sock_3128"))
     }
 
     fn finish_start(
@@ -89,7 +77,8 @@ impl Runtime for Firecracker {
         context: &ExecContext<'_>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        let code = vsock::exec(&Self::record(name)?.state_dir, context, argv)?;
+        let sockets = super::sockets::Sockets::open(&Self::record(name)?.generation)?;
+        let code = vsock::exec(&sockets, context, argv)?;
         Ok(exit_status(code))
     }
 
@@ -111,8 +100,9 @@ impl Runtime for Firecracker {
 
     fn stat(&self, name: &str) -> io::Result<BoxStat> {
         let record = Self::record(name)?;
+        let sockets = super::sockets::Sockets::open(&record.generation)?;
         let memory = record.described.and_then(|described| described.memory);
-        let [current, peak, pids, pids_max, oom_kills] = vsock::stat(&record.state_dir)?;
+        let [current, peak, pids, pids_max, oom_kills] = vsock::stat(&sockets)?;
         Ok(BoxStat {
             name: name.to_string(),
             oom_kills,

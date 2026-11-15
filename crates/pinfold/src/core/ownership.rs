@@ -2,7 +2,7 @@
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::net::UnixStream as BlockingStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -13,6 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::core::pipe::remaining;
+use crate::core::runtime::sockets::{self, Sockets};
 use crate::core::{absent_ok, sha256_hex};
 
 pub const GENERATION_LABEL: &str = "dev.pinfold.generation";
@@ -25,15 +26,7 @@ pub fn host_dir() -> io::Result<PathBuf> {
 }
 
 fn root() -> io::Result<PathBuf> {
-    let path = host_dir()?;
-    match fs::DirBuilder::new().mode(0o700).create(&path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error),
-    }
-    let metadata = fs::symlink_metadata(&path)?;
-    check_private(&metadata, metadata.is_dir(), "directory")?;
-    Ok(path)
+    sockets::host().map(|(path, _)| path)
 }
 
 /// Refuse a host ownership `what` of the wrong kind, another user's, or
@@ -170,8 +163,9 @@ pub fn remove_record(name: &str, generation: &str) -> io::Result<()> {
     if let Some(record) = record(name)?
         && record.generation == generation
     {
+        Sockets::remove(generation)?;
         absent_ok(fs::remove_dir_all(&record.state_dir))?;
-        absent_ok(fs::remove_file(socket(name)?))?;
+        sockets::remove_socket(&socket(name)?)?;
         absent_ok(fs::remove_file(path(&format!("box:{name}"), "owner")?))?;
     }
     Ok(())
@@ -184,6 +178,7 @@ pub struct Claim {
     _lock: Flock<File>,
     record: Option<Record>,
     listener: Option<UnixListener>,
+    sockets: Option<Sockets>,
     request: Option<UnixStream>,
     running: bool,
 }
@@ -207,6 +202,7 @@ impl Claim {
             _lock: lock,
             record: None,
             listener: None,
+            sockets: None,
             request: None,
             running: false,
         }))
@@ -227,10 +223,14 @@ impl Claim {
             described: None,
         });
         fs::create_dir_all(state_dir)?;
+        self.publish()?;
+        self.sockets = Some(Sockets::create(self.generation())?);
         let endpoint = socket(&self.name)?;
-        absent_ok(fs::remove_file(&endpoint))?;
-        self.listener = Some(UnixListener::bind(endpoint)?);
-        self.publish()
+        sockets::remove_socket(&endpoint)?;
+        let listener = sockets::bind(&endpoint)?;
+        listener.set_nonblocking(true)?;
+        self.listener = Some(UnixListener::from_std(listener)?);
+        Ok(())
     }
 
     /// Record the disks this generation attaches. The caller holds each
@@ -251,6 +251,10 @@ impl Claim {
             &path(&format!("box:{}", self.name), "owner")?,
             &serde_json::to_vec(self.record.as_ref().unwrap())?,
         )
+    }
+
+    pub fn sockets(&self) -> &Sockets {
+        self.sockets.as_ref().expect("prepared sockets")
     }
 
     pub fn generation(&self) -> &str {
@@ -312,7 +316,7 @@ impl Drop for Claim {
             let _ = fs::remove_dir_all(&record.state_dir);
         }
         if self.record.is_some() {
-            let _ = socket(&self.name).and_then(|socket| absent_ok(fs::remove_file(socket)));
+            let _ = socket(&self.name).and_then(|socket| sockets::remove_socket(&socket));
         }
     }
 }

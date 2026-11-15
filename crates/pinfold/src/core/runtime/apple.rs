@@ -34,6 +34,9 @@ pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
 /// Apple `container`.
 pub struct Apple;
 
+#[cfg(not(target_os = "linux"))]
+mod tty;
+
 /// `container exec -i` changes its inherited stdin's shared file flags.
 /// Save them in the command owner, which can outlive an interrupted exec.
 #[cfg(not(target_os = "linux"))]
@@ -382,12 +385,17 @@ impl Runtime for Apple {
         context: &ExecContext<'_>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        let _raw = if context.tty {
-            super::terminal::Raw::enter()?
+        let size = if context.tty {
+            super::terminal::window()?
         } else {
             None
         };
-        exec_command(name, init, context, argv)?
+        let command = exec_command(name, init, context, argv, size)?;
+        #[cfg(not(target_os = "linux"))]
+        if context.tty {
+            return tty::exec(command, size, context.cancel);
+        }
+        { command }
             .status()
             .map_err(|error| spawn_error("container", error))
     }
@@ -399,7 +407,12 @@ impl Runtime for Apple {
         context: &ExecContext<'_>,
         argv: &[String],
     ) -> io::Result<std::process::Command> {
-        exec_command(name, init, context, argv)
+        let size = if context.tty {
+            super::terminal::window()?
+        } else {
+            None
+        };
+        exec_command(name, init, context, argv, size)
     }
 
     /// A networkless helper owns fresh roots, then drops privileges to
@@ -554,6 +567,7 @@ fn exec_command(
     init: &Path,
     context: &ExecContext<'_>,
     argv: &[String],
+    size: Option<(u16, u16)>,
 ) -> io::Result<std::process::Command> {
     let mut command = std::process::Command::new("container");
     command.args(["exec", "-i"]);
@@ -565,7 +579,7 @@ fn exec_command(
     if context.tty {
         command.arg("-t");
         // Init applies a known initial size before a fast command starts.
-        metadata.window = super::terminal::window()?;
+        metadata.window = size;
         metadata.term = std::env::var_os("TERM").map(|value| value.as_bytes().to_vec());
         metadata.colorterm = std::env::var_os("COLORTERM").map(|value| value.as_bytes().to_vec());
     } else {

@@ -1,7 +1,9 @@
 //! Host terminal setup shared by the execution transports.
 
 use std::io::{self, IsTerminal};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use nix::libc;
 
@@ -54,6 +56,13 @@ pub(crate) fn restore() -> io::Result<()> {
     }
     state.saved = None;
     Ok(())
+}
+
+pub(crate) fn cancel() {
+    STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .ended = true;
 }
 
 pub(super) struct Raw;
@@ -109,5 +118,58 @@ impl Raw {
 impl Drop for Raw {
     fn drop(&mut self) {
         let _ = restore();
+    }
+}
+
+/// The write end of the SIGWINCH self-pipe, -1 when none is installed.
+static WINCH: AtomicI32 = AtomicI32::new(-1);
+
+extern "C" fn on_winch(_: libc::c_int) {
+    let fd = WINCH.load(Ordering::Relaxed);
+    if fd >= 0 {
+        // SAFETY: write is async-signal-safe; the pipe is non-blocking.
+        unsafe { libc::write(fd, [0u8].as_ptr().cast(), 1) };
+    }
+}
+
+/// A SIGWINCH handler that writes a byte to `read`'s pipe, restored on
+/// drop.
+pub(super) struct Winch {
+    pub(super) read: io::PipeReader,
+    _write: OwnedFd,
+    previous: libc::sigaction,
+}
+
+impl Winch {
+    pub(super) fn install() -> io::Result<Winch> {
+        let (read, write) = io::pipe()?;
+        let write = OwnedFd::from(write);
+        crate::core::pipe::nonblocking(&write, "window-size")?;
+        WINCH.store(write.as_raw_fd(), Ordering::Relaxed);
+        // SAFETY: installs a handler that makes only async-signal-safe calls.
+        let previous = unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = on_winch as extern "C" fn(libc::c_int) as usize;
+            action.sa_flags = libc::SA_RESTART;
+            let mut previous: libc::sigaction = std::mem::zeroed();
+            if libc::sigaction(libc::SIGWINCH, &action, &mut previous) < 0 {
+                WINCH.store(-1, Ordering::Relaxed);
+                return Err(io::Error::last_os_error());
+            }
+            previous
+        };
+        Ok(Winch {
+            read,
+            _write: write,
+            previous,
+        })
+    }
+}
+
+impl Drop for Winch {
+    fn drop(&mut self) {
+        // SAFETY: restores the action `install` replaced.
+        unsafe { libc::sigaction(libc::SIGWINCH, &self.previous, std::ptr::null_mut()) };
+        WINCH.store(-1, Ordering::Relaxed);
     }
 }

@@ -418,6 +418,7 @@ fn start(plan: &Plan) -> io::Result<(Pid, OwnedFd)> {
         unsafe {
             libc::close(alive_write);
             libc::close(report_read);
+            libc::umask(0o077);
         }
         let failure = match enter(plan, alive_read) {
             Err(failure) => failure,
@@ -430,7 +431,11 @@ fn start(plan: &Plan) -> io::Result<(Pid, OwnedFd)> {
                         Ok(()) => {
                             // SAFETY: argv and envp are NUL-terminated arrays
                             // of C strings that outlive the call.
-                            unsafe { libc::execve(argv[0], argv.as_ptr(), envp.as_ptr()) };
+                            unsafe {
+                                // Unix bind starts from 0777; the VMM's sockets are 0600.
+                                libc::umask(0o177);
+                                libc::execve(argv[0], argv.as_ptr(), envp.as_ptr())
+                            };
                             (step("exec Firecracker"), 0, Errno::last())
                         }
                     },

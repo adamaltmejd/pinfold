@@ -3,32 +3,25 @@
 
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI32, Ordering};
+
 use std::time::Duration;
 
-use nix::libc;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 
-use crate::core::runtime::terminal::{Raw, window};
+use crate::core::runtime::sockets::Sockets;
+use crate::core::runtime::terminal::{Raw, Winch, window};
 
 use crate::init::firecracker::{
     CONTROL_PORT, ENV, ENV_SET, EXEC, EXEC_PORT, EXIT, FAILED, RESIZE, STAT, STDERR, STDIN,
     STDIN_END, STDOUT, UNMOUNT, read_frame, write_frame,
 };
 
-/// The VM's vsock socket in a box's state dir. A host listener for port
-/// `N` is this path with `_N`.
-pub fn socket(state_dir: &Path) -> PathBuf {
-    state_dir.join("vsock").join("v.sock")
-}
-
 /// A host-initiated connection to the guest's `port`.
-pub fn connect(state_dir: &Path, port: u32) -> io::Result<UnixStream> {
-    let mut stream = UnixStream::connect(socket(state_dir))?;
+pub fn connect(sockets: &Sockets, port: u32) -> io::Result<UnixStream> {
+    let mut stream = UnixStream::connect(sockets.vsock_dir()?.join("v.sock"))?;
     // Box work runs as the exec service's user and can stop it from
     // answering, so every request has a deadline; `exec` lifts it after
     // the handshake.
@@ -79,8 +72,8 @@ fn put_pairs(payload: &mut Vec<u8>, pairs: &[(OsString, OsString)]) {
 }
 
 /// Give the exec service the box's environment, once.
-pub fn set_env(state_dir: &Path, vars: &[(OsString, OsString)]) -> io::Result<()> {
-    let mut stream = connect(state_dir, EXEC_PORT)?;
+pub fn set_env(sockets: &Sockets, vars: &[(OsString, OsString)]) -> io::Result<()> {
+    let mut stream = connect(sockets, EXEC_PORT)?;
     let mut payload = Vec::new();
     put_pairs(&mut payload, vars);
     write_frame(&mut stream, ENV, &payload)?;
@@ -89,8 +82,8 @@ pub fn set_env(state_dir: &Path, vars: &[(OsString, OsString)]) -> io::Result<()
 
 /// The work cgroup's memory current and peak, pids current and max, and
 /// OOM kills.
-pub fn stat(state_dir: &Path) -> io::Result<[Option<u64>; 5]> {
-    let mut stream = connect(state_dir, EXEC_PORT)?;
+pub fn stat(sockets: &Sockets) -> io::Result<[Option<u64>; 5]> {
+    let mut stream = connect(sockets, EXEC_PORT)?;
     write_frame(&mut stream, STAT, &[])?;
     let payload = answer(&mut stream, STAT)?;
     let mut values = [None; 5];
@@ -106,8 +99,8 @@ pub fn stat(state_dir: &Path) -> io::Result<[Option<u64>; 5]> {
 }
 
 /// Ask PID 1 to kill the work cgroup, sync and unmount every attachment.
-pub fn unmount(state_dir: &Path) -> io::Result<()> {
-    let mut stream = connect(state_dir, CONTROL_PORT)?;
+pub fn unmount(sockets: &Sockets) -> io::Result<()> {
+    let mut stream = connect(sockets, CONTROL_PORT)?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     write_frame(&mut stream, UNMOUNT, &[])?;
     answer(&mut stream, crate::init::firecracker::CLEAN).map(drop)
@@ -117,12 +110,12 @@ pub fn unmount(state_dir: &Path) -> io::Result<()> {
 /// its exit code, or `128+n` for signal `n`. The client stays in pinfold's
 /// process.
 pub fn exec(
-    state_dir: &Path,
+    sockets: &Sockets,
     context: &crate::core::runtime::ExecContext<'_>,
     argv: &[String],
 ) -> io::Result<i32> {
     let tty = context.tty;
-    let mut connection = connect(state_dir, EXEC_PORT)?;
+    let mut connection = connect(sockets, EXEC_PORT)?;
     // A command runs as long as it runs.
     connection.set_read_timeout(None)?;
     let mut metadata = crate::init::ExecMetadata {
@@ -265,58 +258,5 @@ fn read_fd(fd: BorrowedFd, buffer: &mut [u8]) -> io::Result<usize> {
             Err(nix::errno::Errno::EINTR) => continue,
             result => return result.map_err(io::Error::from),
         }
-    }
-}
-
-/// The write end of the SIGWINCH self-pipe, -1 when none is installed.
-static WINCH: AtomicI32 = AtomicI32::new(-1);
-
-extern "C" fn on_winch(_: libc::c_int) {
-    let fd = WINCH.load(Ordering::Relaxed);
-    if fd >= 0 {
-        // SAFETY: write is async-signal-safe; the pipe is non-blocking.
-        unsafe { libc::write(fd, [0u8].as_ptr().cast(), 1) };
-    }
-}
-
-/// A SIGWINCH handler that writes a byte to `read`'s pipe, restored on
-/// drop.
-struct Winch {
-    read: io::PipeReader,
-    _write: OwnedFd,
-    previous: libc::sigaction,
-}
-
-impl Winch {
-    fn install() -> io::Result<Winch> {
-        let (read, write) = io::pipe()?;
-        let write = OwnedFd::from(write);
-        crate::core::pipe::nonblocking(&write, "window-size")?;
-        WINCH.store(write.as_raw_fd(), Ordering::Relaxed);
-        // SAFETY: installs a handler that makes only async-signal-safe calls.
-        let previous = unsafe {
-            let mut action: libc::sigaction = std::mem::zeroed();
-            action.sa_sigaction = on_winch as extern "C" fn(libc::c_int) as usize;
-            action.sa_flags = libc::SA_RESTART;
-            let mut previous: libc::sigaction = std::mem::zeroed();
-            if libc::sigaction(libc::SIGWINCH, &action, &mut previous) < 0 {
-                WINCH.store(-1, Ordering::Relaxed);
-                return Err(io::Error::last_os_error());
-            }
-            previous
-        };
-        Ok(Winch {
-            read,
-            _write: write,
-            previous,
-        })
-    }
-}
-
-impl Drop for Winch {
-    fn drop(&mut self) {
-        // SAFETY: restores the action `install` replaced.
-        unsafe { libc::sigaction(libc::SIGWINCH, &self.previous, std::ptr::null_mut()) };
-        WINCH.store(-1, Ordering::Relaxed);
     }
 }
