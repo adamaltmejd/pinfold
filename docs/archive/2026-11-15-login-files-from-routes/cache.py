@@ -75,8 +75,9 @@ if MODE=='observe': observe(sys.argv[2] if len(sys.argv)>2 else 'localhost/pinfo
 elif MODE=='pairdefault':
     ref='localhost/pinfold/profile-default:latest'; ids=[]; sizes=[]
     for i in range(2):
-        build(['--profile','default']); ids.append(identity(ref)); sizes.append(backing()); observe(ref)
+        build(['--profile','default']); ids.append(identity(ref)); sizes.append(backing())
     check(ids[0]==ids[1],'unchanged managed image identity'); emit('unchanged-pair stable-id=true builder-bytes='+json.dumps(sizes))
+    check(LINUX or sizes[1]-sizes[0]<=64*1024**2,'cached Mac builder growth exceeds tens of MiB'); observe(ref)
     path=copied('probe-cache-native'); good=path.read_text(); ref='localhost/pinfold/profile-probe-cache-native:latest'; before=identity(ref)
     try:
         path.write_text(good+'\nRUN echo fixture-native-cache-stop >&2; exit 42\n'); p,_=build(['--profile','probe-cache-native'],required=False)

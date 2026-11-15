@@ -28,3 +28,4 @@ PRODUCT-SOURCE-CONTENT-ID=d2ff3d214e42881d1d6a85534da43f4847837f84a396880238d106
 After A/B Mac fresh-home startup: ready generated-mounts=3 startup-seconds=1.363; startup owned box/home removed.
 After A/B Linux fresh-home startup: ready generated-mounts=3 startup-seconds=6.561; startup owned box/home removed. Command: accept.route for Claude, Codex and Pi-anthropic fixtures; accept.up; read all three generated files; accept.down; disk rm.
 STATIC-MUSL-NO-INTERP after A/B; final product source fingerprint still matches both hosts. Mac all-generated startup used the same collector calls.
+Final e1f525e: cargo fmt --check passed both; Mac cargo build --locked 11.88s, Clippy --all-targets --locked -- -D warnings 5.89s; Linux target Clippy 22.15s, exit=0. PRODUCT-SOURCE-CONTENT-ID=6fdf1fc359433cd5203248f053a5f13826e2ce0715f7df20706211bbad030888 files=21, identical both hosts. Final Mac all-generated fresh-home startup=1.477s; owned box/home removed.
