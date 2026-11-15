@@ -1,0 +1,39 @@
+$ retirement.py real musl binary
+EXTERNAL-RETIREMENT {"case": "box-before-delete", "barrier": "before-source-instruction", "pid": 16923, "generation": "09627121516cbc05ab806fff05cd5eef9565242610649c62dd758b6bd2a4fad7", "retiring": true, "owner_exists": true, "state_dir": "$W/s/pinfold/boxes/3ed203f73d437a76", "state_exists": true}
+$ $BIN ['box', 'exec', 'probe-retirement-16918-box-before-delete', '--', 'printf', 'RETIREMENT-CONTROL']; exit=0 stdout=b'RETIREMENT-CONTROL' stderr-tail=b''
+box-before-delete: down recovery and same-name real exec/down succeeded; prior claim, state and sockets absent
+EXTERNAL-RETIREMENT {"case": "box-state-gone", "barrier": "before-source-instruction", "pid": 16971, "generation": "faf9ae5772ce8951ef759250f553df156c25f0f4cbb444910d6e9344fdbc0f0c", "retiring": true, "owner_exists": true, "state_dir": "$W/s/pinfold/boxes/443f4b7ce8a265f5", "state_exists": false}
+$ $BIN ['box', 'exec', 'probe-retirement-16918-box-state-gone', '--', 'printf', 'RETIREMENT-CONTROL']; exit=0 stdout=b'RETIREMENT-CONTROL' stderr-tail=b''
+box-state-gone: prune recovery and same-name real exec/down succeeded; prior claim, state and sockets absent
+EXTERNAL-RETIREMENT {"case": "box-owner-gone", "barrier": "before-source-instruction", "pid": 17019, "generation": "86514a4a1b770c2742253062ab248add3485c61feb96610d19f3aedf57454961", "retiring": true, "owner_exists": true, "state_dir": "$W/s/pinfold/boxes/8887a031f90a2d67", "state_exists": false}
+EXTERNAL-RETIREMENT {"case": "box-owner-gone", "barrier": "after-owner-unlink-return", "pid": 17019, "generation": "86514a4a1b770c2742253062ab248add3485c61feb96610d19f3aedf57454961", "retiring": true, "owner_exists": false, "state_dir": "$W/s/pinfold/boxes/8887a031f90a2d67", "state_exists": false}
+$ $BIN ['box', 'exec', 'probe-retirement-16918-box-owner-gone', '--', 'printf', 'RETIREMENT-CONTROL']; exit=0 stdout=b'RETIREMENT-CONTROL' stderr-tail=b''
+box-owner-gone: up recovery and same-name real exec/down succeeded; prior claim, state and sockets absent
+EXTERNAL-RETIREMENT {"case": "builder-before-delete", "barrier": "before-source-instruction", "pid": 17058, "generation": "731f2d0d4390efdae8f888659fb39f414b250e55c49ac5dfa566310729eb98f4", "retiring": true, "owner_exists": true, "state_dir": "/home/user/.cache/pinfold/builder/1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd/job", "state_exists": true}
+builder-before-delete: next real image build succeeded; prior builder claim absent; retained image name=probe-retirement-16918-builder-before-delete
+EXTERNAL-RETIREMENT {"case": "builder-state-gone", "barrier": "before-source-instruction", "pid": 17117, "generation": "ae1903ec28cb50dafb77e3612ffeb2140442654d59a84c943425ae6c3ecc6244", "retiring": true, "owner_exists": true, "state_dir": "/home/user/.cache/pinfold/builder/1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd/job", "state_exists": false}
+builder-state-gone: next real image build succeeded; prior builder claim absent; retained image name=probe-retirement-16918-builder-state-gone
+PASS retirement publication, state-deletion and owner-unlink crash boundaries on real boxes/builders
+$ isolation.py real musl binary
+$ $BIN ['box', 'exec', 'probe-retirement-17288-healthy', '--', 'printf', 'UNRELATED-READY-CONTROL']; exit=0 stdout=b'UNRELATED-READY-CONTROL' stderr-tail=b'pinfold: box inventory "probe-retirement-17288-unknown": unknown VMM liveness: Permission denied (os error 13)\n'
+2 other identity unreadable at healthy finish_start after guest READY: healthy ready/exec/down exit0
+2 unknown identity inventory reports unknown, preserves owner/marker and refuses its disk removal as disk-in-use
+$ $BIN ['box', 'exec', 'probe-retirement-17288-witness', '--', 'printf', 'LIVE-WITNESS']; exit=0 stdout=b'LIVE-WITNESS' stderr-tail=b''
+2 inventory snapshot -> concurrent down removed state/claim -> recheck skipped retired generation; live witness exec0
+PASS isolated readiness, unknown identity/disk protection and retirement snapshot race controls
+$ Linux cargo fmt --check: exit0; no output
+$ Linux strict all-target musl Clippy: exit0
+   Compiling pinfold v0.5.5 (/home/user/pinfold/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.57s
+$ final owned runtime inventory: 0 bytes
+$ ended.py and final check
+owned VMM killed at ready: exit=1 stdout=b'{"box":"probe-retirement-18694-ended","detail":"exit status: 137","event":"down","reason":"exited","run_id":"b8be15c10e1e9c1d6151741ac32931ec704adca448caa4024828d152c7dee6ef"}\n' stderr=b''
+$ $BIN ['box', 'exec', 'probe-retirement-18694-ended', '--', 'printf', 'RETIREMENT-CONTROL']; exit=0 stdout=b'RETIREMENT-CONTROL' stderr-tail=b''
+$ $BIN ['box', 'down', 'probe-retirement-18694-ended']; exit=0 stdout=b'' stderr-tail=b''
+corrected owner exit=0 stdout=b'{"box":"probe-retirement-18694-ended","event":"down","reason":"signal","run_id":"e22a706fdad34f65efbd0545f0d1f2d9258ead5ddb7ecfcf073a09ba2634ae5d"}\n' stderr=b''
+PASS already-ended owned VMM awaited, retirement completed, same-name execution control succeeded
+LAST-CLIPPY
+   Compiling pinfold v0.5.5 (/home/user/pinfold/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.06s
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sda1        32G  5.0G   26G  17% /
