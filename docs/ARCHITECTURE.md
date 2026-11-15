@@ -677,6 +677,9 @@ owner record is atomically marked retiring and synced with its directory
 before any generation resources are deleted. Box and builder cleanup resume
 from that record even after the identity tree is gone. The owner record and
 its retirement evidence are unlinked last and the directory is synced.
+Readiness inspects only its own claim. Inventory reports per-box errors and
+rechecks retirement before treating a missing identity as unknown. Unknown
+liveness retains disk ownership and is reported as `unknown`.
 
 ## Egress proxy
 

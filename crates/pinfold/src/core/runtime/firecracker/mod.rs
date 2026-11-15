@@ -35,6 +35,39 @@ impl Firecracker {
             io::Error::new(io::ErrorKind::NotFound, format!("no box named {name:?}"))
         })
     }
+
+    fn state(record: &ownership::Record) -> io::Result<Option<VmmState>> {
+        if record.retiring {
+            return Ok(None);
+        }
+        match vmm_state(&record.state_dir) {
+            Ok(state) => Ok(Some(state)),
+            Err(error) => {
+                // Retirement is published before the identity file is removed.
+                let current = ownership::record(&record.name)?;
+                if current.is_none_or(|current| {
+                    current.generation != record.generation || current.retiring
+                }) {
+                    Ok(None)
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    fn info(record: ownership::Record, running: Option<bool>) -> Option<BoxInfo> {
+        let described = record.described?;
+        Some(BoxInfo {
+            running: running == Some(true),
+            stopped: running == Some(false),
+            id: record.name,
+            labels: described.labels,
+            image_id: described.image_id,
+            image_ref: described.image_ref,
+            created: described.created,
+        })
+    }
 }
 
 impl Runtime for Firecracker {
@@ -53,10 +86,15 @@ impl Runtime for Firecracker {
         _proxy_socket: Option<&Path>,
         _seeding: Option<&Seeding>,
     ) -> io::Result<BoxInfo> {
-        // The boot protocol already applied fills and seeds before ready.
-        self.list()?
-            .into_iter()
-            .find(|box_| box_.id == name)
+        // The owner holds this name. Other boxes cannot decide its readiness.
+        let record = Self::record(name)?;
+        let running = match Self::state(&record)? {
+            Some(VmmState::Alive) => Some(true),
+            Some(VmmState::Dead) => Some(false),
+            Some(VmmState::NotStarted) | None => None,
+        };
+        running
+            .and_then(|running| Self::info(record, Some(running)))
             .ok_or_else(|| {
                 io::Error::other(format!(
                     "the runtime does not list box {name:?} after ready"
@@ -68,12 +106,9 @@ impl Runtime for Firecracker {
     // before removing the files it could still use.
     fn down(&self, name: &str) -> io::Result<()> {
         if let Some(record) = ownership::record(name)? {
-            if record.retiring {
-                return Ok(());
-            }
-            match vmm_state(&record.state_dir)? {
-                VmmState::NotStarted | VmmState::Dead => {}
-                VmmState::Alive => {
+            match Self::state(&record)? {
+                Some(VmmState::NotStarted | VmmState::Dead) | None => {}
+                Some(VmmState::Alive) => {
                     return Err(io::Error::other("the orphan VMM is still running"));
                 }
             }
@@ -133,27 +168,30 @@ impl Runtime for Firecracker {
     /// runtime is asked, so nothing can stall it.
     fn list(&self) -> io::Result<Vec<BoxInfo>> {
         let mut boxes = Vec::new();
-        for record in ownership::records()? {
-            if record.retiring {
+        for result in ownership::record_results()? {
+            let record = match result {
+                Ok(record) => record,
+                Err(error) => {
+                    eprintln!("pinfold: box inventory: {error}");
+                    continue;
+                }
+            };
+            if record.described.is_none() {
                 continue;
             }
-            let Some(described) = record.described else {
-                continue;
+            let running = match Self::state(&record) {
+                Ok(Some(VmmState::NotStarted) | None) => continue,
+                Ok(Some(VmmState::Alive)) => Some(true),
+                Ok(Some(VmmState::Dead)) => Some(false),
+                Err(error) => {
+                    eprintln!("pinfold: box inventory {:?}: {error}", record.name);
+                    // Unknown liveness must retain this generation's disk claims.
+                    None
+                }
             };
-            let running = match vmm_state(&record.state_dir)? {
-                VmmState::NotStarted => continue,
-                VmmState::Alive => true,
-                VmmState::Dead => false,
-            };
-            boxes.push(BoxInfo {
-                running,
-                stopped: !running,
-                id: record.name,
-                labels: described.labels,
-                image_id: described.image_id,
-                image_ref: described.image_ref,
-                created: described.created,
-            });
+            if let Some(box_) = Self::info(record, running) {
+                boxes.push(box_);
+            }
         }
         Ok(boxes)
     }

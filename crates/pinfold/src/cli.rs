@@ -404,7 +404,7 @@ fn list(args: &[String]) -> io::Result<i32> {
                 "owner": owner,
                 "owner_alive": owner_alive,
                 "created": box_.created,
-                "state": if box_.running { "running" } else { "stopped" },
+                "state": if box_.running { "running" } else if box_.stopped { "stopped" } else { "unknown" },
             })
         );
     }
