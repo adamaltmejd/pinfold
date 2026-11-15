@@ -758,8 +758,8 @@ impl Plan {
                 )));
             }
         }
-        // A Firecracker VM's drives are vda to vdz; the init and root disks
-        // take the first two.
+        // The pinned x86_64 VMM supports 17 VirtIO devices. Init, root and
+        // vsock take three.
         if cfg!(target_os = "linux") && guests.len() > MAX_ATTACHMENTS {
             return Err(invalid(format!(
                 "a box attaches at most {MAX_ATTACHMENTS} disks and mounts, pinfold's own mounts included; this one has {}",
@@ -771,7 +771,7 @@ impl Plan {
 }
 
 /// The disks and mounts one Linux box attaches.
-const MAX_ATTACHMENTS: usize = 24;
+const MAX_ATTACHMENTS: usize = 14;
 
 /// Refuse the first entry under `dir` the user cannot read: a directory
 /// it cannot list or a file it cannot open. Symlinks are copied as links.

@@ -84,3 +84,6 @@ readonly ancestor with deeper writable HOME backing passed
 $ accept.allow_controls() without login routes
 PINFOLD_ALLOW without harness/login routes: comma-list default and explicit override passed
 17604 write(1, "2026-11-15T06:32:02.476363387 [anonymous-instance:main] RunWithoutApiError error: Failed to build MicroVM from Json: Could not Start MicroVM from one single json: Could not attach device: MMIO transport error: Failed to allocate requested resource: The requested resource is not available.\n", 290) = 290
+$ actual origin/main baseline collector; /tmp/pf3-main-capacity.log
+origin/main a99c3be attachments=14 event=ready detail=exec-control
+origin/main a99c3be attachments=15 event=failed detail=box exited before ready: exit status: 1

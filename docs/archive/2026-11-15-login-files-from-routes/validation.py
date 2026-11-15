@@ -110,9 +110,9 @@ try:
     remove_disk(s)
     if sys.platform.startswith('linux'):
         s=base(); s['egress']['routes']['claude']={'login':'claude','from':'FIXTURE_TOKEN','to':'http://127.0.0.1:9'}
-        s['mounts']=[{'host':str(F),'guest':'/fixture-'+str(i)} for i in range(22)]
+        s['mounts']=[{'host':str(F),'guest':'/fixture-'+str(i)} for i in range(12)]
         up(s,'refused','spec'); s['mounts'].pop(); cycle(s)
-        emit('Linux attachment 25 refused; attachment 24 (21 caller + home + two generated) passed')
+        emit('Linux attachment 15 refused; attachment 14 (11 caller + home + two generated) passed')
     parent=base(); parent.pop('egress'); parent['env']['HOME']='/state'; parent['disks'][0]['guest']='/state'
     up(parent); x(parent,'mkdir -p /state/home'); down(parent)
     child=base(); child['env']['HOME']='/state/home'; child['disks'][0]['guest']='/state/home'
