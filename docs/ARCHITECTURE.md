@@ -666,6 +666,12 @@ name is preserved unchanged. Once the runtime is removed and reaped, its
 name-locked dead claim is retired. Pruning reports each failure and continues.
 Cleanup inventories generation socket directories and sweeps inactive
 generation-authorized directories without records under the same checks.
+Before publishing a Linux box claim, the owner durably records that no VMM has
+started. A VMM child waits on a pipe before entering its jail. The owner
+atomically replaces and syncs its identity before releasing that child;
+EOF exits without exec. Cleanup requires that known pre-start state or a
+complete identity proving the VMM ended. Unknown liveness preserves the
+generation's resources.
 
 ## Egress proxy
 

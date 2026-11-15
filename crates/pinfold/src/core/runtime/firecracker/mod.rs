@@ -7,7 +7,7 @@ pub(crate) mod vm;
 mod vsock;
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -67,10 +67,13 @@ impl Runtime for Firecracker {
     // An orphan is not our child to reap. Confirm its recorded VMM ended
     // before removing the files it could still use.
     fn down(&self, name: &str) -> io::Result<()> {
-        if let Some(record) = ownership::record(name)?
-            && vmm_alive(&record.state_dir)
-        {
-            return Err(io::Error::other("the orphan VMM is still running"));
+        if let Some(record) = ownership::record(name)? {
+            match vmm_state(&record.state_dir)? {
+                VmmState::NotStarted | VmmState::Dead => {}
+                VmmState::Alive => {
+                    return Err(io::Error::other("the orphan VMM is still running"));
+                }
+            }
         }
         Ok(())
     }
@@ -126,25 +129,27 @@ impl Runtime for Firecracker {
     /// pinfold's own claims whose VMM started, running while it lives. No
     /// runtime is asked, so nothing can stall it.
     fn list(&self) -> io::Result<Vec<BoxInfo>> {
-        Ok(ownership::records()?
-            .into_iter()
-            .filter_map(|record| {
-                if !vmm_file(&record.state_dir).exists() {
-                    return None;
-                }
-                let described = record.described?;
-                let running = vmm_alive(&record.state_dir);
-                Some(BoxInfo {
-                    running,
-                    stopped: !running,
-                    id: record.name,
-                    labels: described.labels,
-                    image_id: described.image_id,
-                    image_ref: described.image_ref,
-                    created: described.created,
-                })
-            })
-            .collect())
+        let mut boxes = Vec::new();
+        for record in ownership::records()? {
+            let Some(described) = record.described else {
+                continue;
+            };
+            let running = match vmm_state(&record.state_dir)? {
+                VmmState::NotStarted => continue,
+                VmmState::Alive => true,
+                VmmState::Dead => false,
+            };
+            boxes.push(BoxInfo {
+                running,
+                stopped: !running,
+                id: record.name,
+                labels: described.labels,
+                image_id: described.image_id,
+                image_ref: described.image_ref,
+                created: described.created,
+            });
+        }
+        Ok(boxes)
     }
 
     fn list_disks(&self) -> io::Result<Vec<DiskInfo>> {
@@ -251,34 +256,90 @@ fn vmm_file(state_dir: &Path) -> PathBuf {
     state_dir.join("vmm")
 }
 
-fn record_vmm(state_dir: &Path, pid: Pid) -> io::Result<()> {
-    let started = start_time(pid).ok_or_else(|| io::Error::other("the VMM ended at once"))?;
-    fs::write(vmm_file(state_dir), format!("{} {started}\n", pid.as_raw()))
+pub(crate) fn prepare_vmm(state_dir: &Path) -> io::Result<()> {
+    write_identity(state_dir, b"not-started\n")
 }
 
-/// Whether the VMM `record_vmm` named still runs.
-fn vmm_alive(state_dir: &Path) -> bool {
-    let Ok(text) = fs::read_to_string(vmm_file(state_dir)) else {
-        return false;
-    };
+fn record_vmm(state_dir: &Path, pid: Pid) -> io::Result<()> {
+    let started = start_time(pid)?.ok_or_else(|| io::Error::other("the VMM ended at once"))?;
+    write_identity(
+        state_dir,
+        format!("{} {started}\n", pid.as_raw()).as_bytes(),
+    )
+}
+
+fn write_identity(state_dir: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temporary = state_dir.join("vmm.tmp");
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    fs::rename(&temporary, vmm_file(state_dir))?;
+    fs::File::open(state_dir)?.sync_all()
+}
+
+enum VmmState {
+    NotStarted,
+    Alive,
+    Dead,
+}
+
+/// An unreadable or incomplete identity never proves resource release.
+fn vmm_state(state_dir: &Path) -> io::Result<VmmState> {
+    fn unknown(error: impl std::fmt::Display) -> io::Error {
+        io::Error::other(format!("unknown VMM liveness: {error}"))
+    }
+    let text = fs::read_to_string(vmm_file(state_dir)).map_err(unknown)?;
+    if text == "not-started\n" {
+        return Ok(VmmState::NotStarted);
+    }
     let mut fields = text.split_whitespace();
-    let (Some(Ok(pid)), Some(started)) = (fields.next().map(str::parse::<i32>), fields.next())
-    else {
-        return false;
+    let (Some(Ok(pid)), Some(Ok(started)), None) = (
+        fields.next().map(str::parse::<i32>),
+        fields.next().map(str::parse::<u64>),
+        fields.next(),
+    ) else {
+        return Err(unknown("invalid identity"));
     };
-    start_time(Pid::from_raw(pid)).is_some_and(|now| now == started)
+    if pid <= 0 || started == 0 || text != format!("{pid} {started}\n") {
+        return Err(unknown("invalid identity"));
+    }
+    Ok(
+        if start_time(Pid::from_raw(pid)).map_err(unknown)? == Some(started) {
+            VmmState::Alive
+        } else {
+            VmmState::Dead
+        },
+    )
 }
 
 /// A live process's start time from `/proc/PID/stat`; None for a zombie or
 /// no process.
-fn start_time(pid: Pid) -> Option<String> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+fn start_time(pid: Pid) -> io::Result<Option<u64>> {
+    let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let invalid = || io::Error::other("invalid VMM process identity");
     // Fields after the command, which may hold spaces, start at the state.
-    let mut fields = stat.rsplit_once(')')?.1.split_whitespace();
-    let state = fields.next()?;
+    let mut fields = stat
+        .rsplit_once(')')
+        .ok_or_else(invalid)?
+        .1
+        .split_whitespace();
+    let state = fields.next().ok_or_else(invalid)?;
     if state == "Z" || state == "X" {
-        return None;
+        return Ok(None);
     }
     // starttime is field 22; the state is field 3.
-    fields.nth(18).map(str::to_string)
+    fields
+        .nth(18)
+        .ok_or_else(invalid)?
+        .parse()
+        .map(Some)
+        .map_err(|_| invalid())
 }

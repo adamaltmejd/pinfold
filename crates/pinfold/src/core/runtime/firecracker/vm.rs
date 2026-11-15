@@ -273,17 +273,19 @@ impl Vm {
 
         let root = state_dir.join("jail");
         fs::create_dir_all(&root)?;
-        let vmm = jail::spawn(&jail::Jail {
-            root: &root,
-            firecracker: &prepared.vmm.firecracker,
-            kernel: &prepared.vmm.kernel,
-            root_disk: &prepared.root_disk,
-            init_disk: &prepared.init_disk,
-            disks: &drives,
-            vsock: vsock_directory,
-            config: &config_path,
-        })?;
-        super::record_vmm(&state_dir, vmm.pid)?;
+        let vmm = jail::spawn(
+            &jail::Jail {
+                root: &root,
+                firecracker: &prepared.vmm.firecracker,
+                kernel: &prepared.vmm.kernel,
+                root_disk: &prepared.root_disk,
+                init_disk: &prepared.init_disk,
+                disks: &drives,
+                vsock: vsock_directory,
+                config: &config_path,
+            },
+            &state_dir,
+        )?;
         Ok(Vm {
             vmm,
             boot: Some((

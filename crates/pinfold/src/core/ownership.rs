@@ -239,6 +239,8 @@ impl Claim {
             sockets::bind_at(&host, endpoint.file_name().expect("shutdown socket name"))?;
         listener.set_nonblocking(true)?;
         self.listener = Some(UnixListener::from_std(listener)?);
+        #[cfg(target_os = "linux")]
+        crate::core::runtime::firecracker::prepare_vmm(state_dir)?;
         self.publish()?;
         self.sockets = Some(Sockets::create(self.generation())?);
         Ok(())

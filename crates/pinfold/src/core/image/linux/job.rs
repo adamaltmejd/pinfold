@@ -861,16 +861,21 @@ async fn run_job(
     let jail_root = state.join("jail");
     private_dir(&jail_root)?;
     let vsock_directory = crate::core::runtime::sockets::checked_directory(&vsock)?;
-    let mut child = jail::spawn(&jail::Jail {
-        root: &jail_root,
-        firecracker: &prepared.vmm.firecracker,
-        kernel: &prepared.vmm.kernel,
-        root_disk: &prepared.root,
-        init_disk: &prepared.init,
-        disks: &drives,
-        vsock: &vsock_directory,
-        config: &config_path,
-    })?;
+    let mut child = jail::spawn(
+        &jail::Jail {
+            root: &jail_root,
+            firecracker: &prepared.vmm.firecracker,
+            kernel: &prepared.vmm.kernel,
+            root_disk: &prepared.root,
+            init_disk: &prepared.init,
+            disks: &drives,
+            vsock: &vsock_directory,
+            config: &config_path,
+        },
+        state
+            .parent()
+            .expect("builder phase directory has a parent"),
+    )?;
     let deadline = Instant::now() + JOB_TIME;
     // All fallible work after spawn is inside this future. Every result flows
     // through kill/wait below before the caller can release ownership.
