@@ -111,6 +111,10 @@ pub(crate) fn checked_directory(path: &Path) -> io::Result<File> {
 }
 
 pub(crate) fn host() -> io::Result<(PathBuf, File)> {
+    open_host(true)?.ok_or_else(|| failure("host socket directory disappeared"))
+}
+
+fn open_host(create: bool) -> io::Result<Option<(PathBuf, File)>> {
     let path = crate::core::ownership::host_dir()?;
     let parent = path.parent().expect("host directory has a parent");
     let mut base = File::open("/")?;
@@ -124,14 +128,19 @@ pub(crate) fn host() -> io::Result<(PathBuf, File)> {
         return Err(failure("unsafe host socket parent"));
     }
     let leaf = path.file_name().expect("host directory has a name");
-    if let Err(error) = mkdir_at(&base, leaf)
+    if create
+        && let Err(error) = mkdir_at(&base, leaf)
         && error.kind() != io::ErrorKind::AlreadyExists
     {
         return Err(failure(error));
     }
-    let directory = directory_at(&base, leaf).map_err(failure)?;
+    let directory = match directory_at(&base, leaf) {
+        Err(error) if !create && error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(failure(error)),
+        Ok(directory) => directory,
+    };
     check(&directory, true)?;
-    Ok((path, directory))
+    Ok(Some((path, directory)))
 }
 
 fn generation_name(generation: &str) -> io::Result<String> {
@@ -308,7 +317,9 @@ impl Sockets {
     }
 
     pub fn leftovers(protected: &BTreeSet<String>) -> io::Result<Vec<(String, PathBuf)>> {
-        let (path, host) = host()?;
+        let Some((path, host)) = open_host(false)? else {
+            return Ok(Vec::new());
+        };
         let mut leftovers = Vec::new();
         for leaf in entries(&host)? {
             let bytes = leaf.as_bytes();
@@ -584,26 +595,38 @@ pub(crate) fn bind_at(
     {
         address.sun_len = length as _;
     }
-    let fd =
-        syscall(unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) }).map_err(failure)?;
+    #[cfg(target_os = "linux")]
+    let socket_type = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+    #[cfg(target_os = "macos")]
+    let socket_type = libc::SOCK_STREAM;
+    let fd = syscall(unsafe { libc::socket(libc::AF_UNIX, socket_type, 0) })?;
     // SAFETY: socket returned a new descriptor owned here.
     let socket = unsafe { File::from_raw_fd(fd) };
-    syscall(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) }).map_err(failure)?;
-    let (read, write) = nix::unistd::pipe().map_err(failure)?;
-    for pipe in [&read, &write] {
-        syscall(unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) })
-            .map_err(failure)?;
-    }
-    let pid = syscall(unsafe { libc::fork() }).map_err(failure)?;
+    #[cfg(target_os = "macos")]
+    syscall(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) })?;
+    #[cfg(target_os = "linux")]
+    let (read, write) = nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC)?;
+    #[cfg(target_os = "macos")]
+    let (read, write) = {
+        let pipes = nix::unistd::pipe()?;
+        for pipe in [&pipes.0, &pipes.1] {
+            syscall(unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) })?;
+        }
+        pipes
+    };
+    let pid = syscall(unsafe { libc::fork() })?;
     if pid == 0 {
         // Only async-signal-safe syscalls run between fork and _exit. The
         // child isolates cwd and umask from the multithreaded owner.
         unsafe {
             libc::umask(0o177);
-            let result = if libc::fchdir(directory.as_raw_fd()) < 0 {
-                -1
+            let (stage, result) = if libc::fchdir(directory.as_raw_fd()) < 0 {
+                (1i32, -1)
             } else {
-                libc::bind(fd, (&address as *const libc::sockaddr_un).cast(), length)
+                (
+                    2i32,
+                    libc::bind(fd, (&address as *const libc::sockaddr_un).cast(), length),
+                )
             };
             #[cfg(target_os = "macos")]
             let error = if result < 0 { *libc::__error() } else { 0 };
@@ -613,17 +636,18 @@ pub(crate) fn bind_at(
             } else {
                 0
             };
+            let report = [stage, error];
             libc::write(
                 write.as_raw_fd(),
-                (&error as *const i32).cast(),
-                std::mem::size_of::<i32>(),
+                report.as_ptr().cast(),
+                std::mem::size_of_val(&report),
             );
             libc::_exit(0);
         }
     }
     drop(write);
-    let mut error = [0u8; 4];
-    let received = File::from(read).read_exact(&mut error);
+    let mut report = [0u8; 8];
+    let received = File::from(read).read_exact(&mut report);
     let mut status = 0;
     loop {
         let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
@@ -631,16 +655,25 @@ pub(crate) fn bind_at(
             break;
         }
         if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-            return Err(failure(io::Error::last_os_error()));
+            return Err(io::Error::last_os_error());
         }
     }
-    received.map_err(failure)?;
-    let error = i32::from_ne_bytes(error);
+    received?;
+    let stage = i32::from_ne_bytes(report[..4].try_into().unwrap());
+    let error = i32::from_ne_bytes(report[4..].try_into().unwrap());
     if error != 0 {
-        return Err(failure(io::Error::from_raw_os_error(error)));
+        let operation = if stage == 1 {
+            "enter socket directory"
+        } else {
+            "bind socket"
+        };
+        return Err(failure(format!(
+            "{operation}: {}",
+            io::Error::from_raw_os_error(error)
+        )));
     }
     check_socket(directory, OsStr::from_bytes(leaf.as_bytes()), false, true)?;
-    syscall(unsafe { libc::listen(fd, 128) }).map_err(failure)?;
+    syscall(unsafe { libc::listen(fd, 128) })?;
     use std::os::fd::IntoRawFd;
     Ok(unsafe { std::os::unix::net::UnixListener::from_raw_fd(socket.into_raw_fd()) })
 }

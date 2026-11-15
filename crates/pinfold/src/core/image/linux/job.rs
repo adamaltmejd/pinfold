@@ -1,6 +1,7 @@
 //! A finite build transaction. The VMM sees only its fixed role's disks.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
@@ -843,7 +844,13 @@ async fn run_job(
     for name in ["v.sock".to_string(), format!("v.sock_{BOOT_PORT}")] {
         crate::core::absent_ok(fs::remove_file(vsock.join(name)))?;
     }
-    let listener = UnixListener::bind(vsock.join(format!("v.sock_{BOOT_PORT}")))?;
+    let vsock_directory = crate::core::runtime::sockets::checked_directory(&vsock)?;
+    let listener = crate::core::runtime::sockets::bind_at(
+        &vsock_directory,
+        OsStr::new(&format!("v.sock_{BOOT_PORT}")),
+    )?;
+    listener.set_nonblocking(true)?;
+    let listener = UnixListener::from_std(listener)?;
     let mut drives = vec![(work.to_path_buf(), true), (disk, false)];
     if handoff.is_some() {
         drives.push((selected_disk.clone(), false));
@@ -860,7 +867,6 @@ async fn run_job(
     fs::write(&config_path, config.to_string())?;
     let jail_root = state.join("jail");
     private_dir(&jail_root)?;
-    let vsock_directory = crate::core::runtime::sockets::checked_directory(&vsock)?;
     let mut child = jail::spawn(
         &jail::Jail {
             root: &jail_root,
