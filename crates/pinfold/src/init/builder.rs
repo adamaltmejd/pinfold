@@ -31,6 +31,7 @@ const CAPABILITIES: u64 = 0xa82425fb;
 struct Job {
     phase: Phase,
     cache: bool,
+    build_arg: Option<(String, String)>,
     labels: BTreeMap<String, String>,
     bases: Vec<Base>,
 }
@@ -497,6 +498,9 @@ fn frontend_command(job: &Job, input: &str, discovery: bool) -> io::Result<Comma
         "--opt",
         "cgroup-parent=/work/jobs",
     ]);
+    if let Some((name, value)) = &job.build_arg {
+        build.arg("--opt").arg(format!("build-arg:{name}={value}"));
+    }
     if job.phase != Phase::Convert {
         build.args(["--opt", "image-resolve-mode=pull"]);
         for name in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {

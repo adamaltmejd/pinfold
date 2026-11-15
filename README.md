@@ -123,6 +123,10 @@ The token and refresh stay on the host across independent Pi homes.
 Login routes remove guest authentication headers and Connection-nominated
 fields before adding host authentication. Named credential query parameters
 are refused; malformed query escapes and Connection options are refused too.
+Login routes generate native configuration for the whole box. Claude and Codex
+use system configuration; Pi autoloads a read-only extension under its writable
+home. Agent configuration precedence still applies. Launch agents through PATH.
+
 Each login route grants every process in the box the host login's authority
 over every path at its origin. It does not inspect request bodies or prevent
 a reflecting upstream from returning credentials. See
@@ -131,9 +135,11 @@ An explicit project `routes` table replaces the profile's routes.
 For scripts, add `--json` to `pinfold disk` commands for exact byte counts
 and structured results.
 
-Managed builds rerun recipe RUN steps on each invocation. Built-in recipes
-resolve stable agent releases when rebuilt. Use `pinfold build` or
-`pinfold build --profile NAME` to update.
+Managed builds re-resolve stable agent releases through the built-in profile
+recipes every time. Installation
+reruns when a resolved version changes; other steps use the layer cache.
+Use `pinfold build` or `pinfold build --profile NAME` to update.
+Add `--no-cache` to force the full recipe to run. Launch never installs agents.
 A project build first rebuilds its selected profile recipe when present.
 A project build republishes that profile; other projects using it report
 `image-outdated` at their next launch if its identity changed.

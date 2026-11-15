@@ -19,7 +19,7 @@ if [ -n "$builder" ]; then
   container exec buildkit buildctl prune --all --keep-storage 4096 >/dev/null
 fi
 
-# The binary recreates its embedded init cheaply. Current harnesses stay cached.
+# The binary recreates its embedded init cheaply. The host helper stays cached.
 rm -rf "$cache/pinfold/artifacts/init"
 if [ -d "$cache" ]; then
   cache_kb=$(du -sk "$cache" | awk '{print $1}')

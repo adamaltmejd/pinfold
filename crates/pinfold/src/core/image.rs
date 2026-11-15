@@ -117,6 +117,9 @@ pub fn build(images: &dyn ImageService, build: Build) -> io::Result<Result<Built
     let latest = format!("{repository}:latest");
     let reference = format!("{repository}:{id}");
     let tags = [latest.clone(), reference.clone()];
+    // Declared only by the agent resolver stage; other layers keep their cache.
+    let build_arg = matches!(&build.context, Context::Alone(_))
+        .then_some(("PINFOLD_AGENT_RESOLVE", id.as_str()));
     let request = |context: &Path, containerfile: &Path| {
         eprintln!("pinfold: building {stem} {}", build.source);
         images.build(&BuildRequest {
@@ -126,6 +129,7 @@ pub fn build(images: &dyn ImageService, build: Build) -> io::Result<Result<Built
             labels: &labels,
             cache: build.cache,
             allow: &build.allow,
+            build_arg,
         })
     };
     let result = match build.context {

@@ -1,0 +1,31 @@
+$ RUSTC_WRAPPER= ZIG_GLOBAL_CACHE_DIR=/tmp/pf3-zig-global ZIG_LOCAL_CACHE_DIR=/tmp/pf3-zig-local cargo build --locked
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.11s
+$ cargo fmt --check; cargo clippy --all-targets --locked -- -D warnings; git diff --check
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.63s; fmt/diff exit=0
+$ labvm exec -- bash -lc '... cargo build --locked --target x86_64-unknown-linux-musl; cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings; cargo fmt --check'
+LINUX-CHECKS-PASSED; musl Clippy finished in 10.93s; fmt exit=0
+MAIN-ELF-INTERPRETER=none (readelf -l completed successfully)
+HOST-HELPER-MACHINE=Mach-O arm64; metadata host-darwin-arm64; executable=codex-app-server
+HOST-HELPER-MACHINE=ELF x86-64; metadata host-linux-x64; executable=codex-app-server
+SOURCE-CONTENT-ID=755308bcad8db1028819d0db39a681db510987b4949ccafe53d93b673a40d5a4 files=19 (same on both hosts)
+$ PINFOLD_NO_UPDATE_CHECK=1 XDG_CONFIG_HOME=/tmp/pf3.linux/c XDG_STATE_HOME=/tmp/pf3.linux/s pinfold build --profile default
+PROFILE-BUILD-SECONDS=209; PROFILE-READY; localhost/pinfold/profile-default:latest
+$ accept.up() with fresh home and three login kinds, idle runtime; then accept.down() and disk rm
+Mac: ready generated-mounts=3 startup-seconds=2.267; Linux: ready generated-mounts=3 startup-seconds=5.427
+MAC-OWNED-STATE-ROOTS=25 remaining-disks=0; container list --all: no containers
+LINUX-OWNED-STATE-ROOTS=11 remaining-disks=0; no pinfold/firecracker processes
+Mac df -g /System/Volumes/Data: Available 16 GiB; Linux df -h: / 22G available, /tmp 2.0G available
+Build-start df observations on Mac: 21 GiB (cargo build), 20 GiB (later build), 18 GiB (final Clippy); no build below 12 GiB.
+$ labvm acquire --ttl 3h; lease active, expires_at=2026-11-15T09:18:13Z; not released
+PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
+DEBIAN-SETUP-PACKAGES=build-essential,musl-tools,git,rustup,zstd installed
+$ file codex.path (Mac); readelf -h codex.path (Linux), from pinfold artifacts
+MAC-IDLE-IMAGE=cf81b3c683bc9d2ec4e9d62bca0e0036b040a0505d12ae67b7b9e46a1624524d
+LINUX-IDLE-IMAGE=sha256:c3fcc7196383513c54357c498ed5455059310b66aedf8cba9fa1b41c036bf9e2
+After A/B: Mac cargo fmt --check exit=0; cargo clippy --all-targets --locked -- -D warnings finished in 1.75s.
+Linux cargo build --locked --target x86_64-unknown-linux-musl finished in 11.61s; fmt exit=0; target Clippy finished in 4.11s, exit=0.
+PRODUCT-SOURCE-CONTENT-ID=d2ff3d214e42881d1d6a85534da43f4847837f84a396880238d106f614c44044 files=21 (same on both hosts, includes profile recipe).
+After A/B Mac fresh-home startup: ready generated-mounts=3 startup-seconds=1.363; startup owned box/home removed.
+After A/B Linux fresh-home startup: ready generated-mounts=3 startup-seconds=6.561; startup owned box/home removed. Command: accept.route for Claude, Codex and Pi-anthropic fixtures; accept.up; read all three generated files; accept.down; disk rm.
+STATIC-MUSL-NO-INTERP after A/B; final product source fingerprint still matches both hosts. Mac all-generated startup used the same collector calls.
+Final e1f525e: cargo fmt --check passed both; Mac cargo build --locked 11.88s, Clippy --all-targets --locked -- -D warnings 5.89s; Linux target Clippy 22.15s, exit=0. PRODUCT-SOURCE-CONTENT-ID=6fdf1fc359433cd5203248f053a5f13826e2ce0715f7df20706211bbad030888 files=21, identical both hosts. Final Mac all-generated fresh-home startup=1.477s; owned box/home removed.

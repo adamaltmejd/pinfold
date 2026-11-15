@@ -17,8 +17,7 @@ use nix::unistd::Pid;
 
 pub use vm::{Prepared, Vm, prepare};
 
-use crate::core::artifacts::VMM;
-use crate::core::disk::{Fill, Seeding};
+use crate::core::disk::{Directory, Fill, Seeding};
 use crate::core::ownership;
 use crate::core::plan::Plan;
 use crate::core::runtime::{BoxInfo, BoxStat, DiskInfo, MemoryStat, PidsStat, Runtime, output};
@@ -62,7 +61,6 @@ impl Runtime for Firecracker {
         name: &str,
         _init: &Path,
         _proxy_socket: Option<&Path>,
-        _fills: &[Fill],
         _seeding: Option<&Seeding>,
     ) -> io::Result<BoxInfo> {
         // The boot protocol already applied fills and seeds before ready.
@@ -88,10 +86,9 @@ impl Runtime for Firecracker {
         _init: &Path,
         tty: bool,
         workdir: Option<&Path>,
-        env: &[(String, String)],
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        let code = vsock::exec(&Self::record(name)?.state_dir, tty, workdir, env, argv)?;
+        let code = vsock::exec(&Self::record(name)?.state_dir, tty, workdir, argv)?;
         Ok(exit_status(code))
     }
 
@@ -213,6 +210,8 @@ impl Runtime for Firecracker {
         _plan: &Plan,
         _init: &Path,
         _generation: &str,
+        _directories: &[Directory],
+        _fills: &[Fill],
     ) -> io::Result<()> {
         Ok(())
     }
@@ -232,7 +231,7 @@ impl Runtime for Firecracker {
     }
 
     fn version(&self) -> io::Result<String> {
-        Ok(VMM.version.clone())
+        Ok(crate::core::artifacts::vmm_version().to_owned())
     }
 }
 

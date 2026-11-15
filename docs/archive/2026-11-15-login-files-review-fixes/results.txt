@@ -1,0 +1,31 @@
+$ BASELINE=1 P=/tmp/pfr-baseline python3 review.py private [Mac]
+event=failed detail=prepare writable disks: pinfold init setup: Permission denied (os error 13)
+P2-a reproduced: reused0700 Pi home fails EACCES; plain no-Pi recovery starts; owned boxes/disks removed.
+$ BASELINE=1 P=/tmp/pfr-baseline python3 review.py nested [Linux]
+populate /a: prepare as the box user: File exists (os error 17); parent-with-child and parent-with-caller-mount starts failed.
+P2-b reproduced startup failure, not overwrite; nested reused disk content unchanged; host caller content unchanged.
+$ P=/tmp/pfr-baseline python3 review.py rollback [Linux, native RLIMIT_FSIZE=512KiB; SIGXFSZ ignored]
+event=failed detail=File too large (os error 27); following readonly up: event=refused reason=disk-unclean; writable recovery starts.
+$ BASELINE=1 P=/tmp/pfr-baseline python3 review.py normalized [Linux]
+event=failed detail=guest path /alias/../a must be plain, absolute and below /
+$ P=<fixed binary> python3 review.py private,nested,normalized,multifresh [separate invocations, both platforms]
+P2-a reused0700 Pi home restart passed; mode/content retained.
+P2-b parent fill before reused nested disk passed; nested reused disk content unchanged; fresh parent underlay fully populated.
+nested caller mount passed; host content unchanged; hidden parent copy intact.
+P3-4 normalized fill destination passed; reversed nested fresh fills keep metadata and stream order; owned boxes/disks removed.
+$ P=<fixed Linux binary> python3 review.py rollback; same EFBIG/disk-unclean/recovery outcome as baseline.
+$ P=<fixed binary> python3 validation.py "$P"; python3 accept.py; python3 extra.py [both platforms]
+validation cases passed; validation owned boxes/disks removed.
+guest-home-env-generated-files state-audit diagnostics host-marker-scans=true; all acceptance cases passed.
+real helper hostile-config forced-provider=true held-refresh-cancel=true connection-closed=true child-reaped=true; extra acceptance cases passed; owned boxes/disks removed.
+$ P=<fixed Linux binary> python3 review.py terminal
+P3-1 persistent env, nonTTY/TTY TERM COLORTERM, window and exit7 passed.
+$ P=<baseline then fixed Mac binary> python3 review.py terminal
+Both observations: exit=7 output=guest-term|guest-color|kept, window=0 0; stronger contract assertion fails identically. No fix claimed.
+$ cargo fmt --check; cargo clippy --all-targets --locked -- -D warnings [Mac]
+fmt exit=0; Clippy finished in 2.79s, exit=0; cargo build --locked finished in 3.61s.
+$ cargo fmt --check; cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings [Linux]
+fmt exit=0; Clippy finished in 2.68s, exit=0; target build finished in 30.47s; readelf: no INTERP.
+host-helper rename preserves all pin values (tomllib equality against 1c45ce0:harnesses.toml); updater Python AST and runner bash -n pass.
+review product source SHA256=17becb45069b5df5e441edad9bc64b91700d4f5c386b83993a19219984011f21 entries=25, same both hosts; includes deleted-path markers and the new helper file.
+Cleanup: Mac 40 checked state roots, zero disks, buildkit only; Linux 11 review roots plus 21 earlier roots, zero disks, no pinfold/firecracker processes. Data free: Mac64GiB, Linux9.2GiB; no image builds or removals. Protected-path diff empty.

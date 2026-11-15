@@ -1,0 +1,92 @@
+$ python3 validation.py target/x86_64-unknown-linux-musl/debug/pinfold
+HOME missing refusal(spec) and corrected writable HOME passed
+HOME relative refusal(spec) and corrected writable HOME passed
+HOME outside refusal(spec) and corrected writable HOME passed
+HOME comma refusal(spec) and corrected writable HOME passed
+HOME readonly refusal(spec) and writable correction passed
+generated collision /etc/claude-code refusal(spec) and corrected mount passed
+generated collision /etc/claude-code/child refusal(spec) and corrected mount passed
+generated collision /etc/a/../claude-code refusal(spec) and corrected mount passed
+generated collision /etc refusal(spec) and corrected mount passed
+generated collision /home/user/.pi/agent/extensions refusal(spec) and corrected mount passed
+generated collision /home/user/.pi/agent/extensions/pinfold-login/child refusal(spec) and corrected mount passed
+legacy flag exit=1 diagnostic=pinfold box: unknown exec option "--harness"
+legacy key and flag refused; corrected spec and command passed
+fresh from containing .pi/settings plus Pi route passed; reused home not repopulated; ownership/mode retained
+observed failed reason=None detail=prepare /home/user/.pi/agent/extensions/pinfold-login: prepare as the box user: Exited(Pid(580), 1): Not a directory (os error 20): exit status: 137
+observed refused reason=disk-unclean detail=disk "probe-pr3-v-fjhxi6ix-13-home" was not detached cleanly; attach it writable once to recover it
+reused symlink refused without target writes; unclean refusal, writable recovery and same-home correction passed
+observed failed reason=None detail=prepare /home/user/.pi/agent/extensions/pinfold-login: prepare as the box user: Exited(Pid(581), 1): Not a directory (os error 20): exit status: 137
+observed refused reason=disk-unclean detail=disk "probe-pr3-v-fjhxi6ix-13-home" was not detached cleanly; attach it writable once to recover it
+reused file refused without target writes; unclean refusal, writable recovery and same-home correction passed
+$ P=target/x86_64-unknown-linux-musl/debug/pinfold python3 accept.py
+ready generated-mounts=3 startup-seconds=9.797
+fresh-single-home explicit-image no-profile absent-passwd=true
+image agents: 1.5.2; 2.1.311 (Claude Code); codex-cli 0.169.0
+generated-files readonly=true sibling-home writable=true
+pi-anthropic successful-tool-exchange=true host-auth=True requests=2
+claude-login successful-tool-exchange=true host-auth=True requests=2
+codex-login successful-tool-exchange=true host-auth=True requests=2
+pi-openai successful-tool-exchange=true host-auth=True requests=2
+pi-router successful-tool-exchange=true host-auth=True requests=2
+pi-codex successful-tool-exchange=true host-auth=True requests=2
+pi-anthropic successful-tool-exchange=true host-auth=True requests=2
+pi-anthropic successful-tool-exchange=true host-auth=True requests=2
+hostile-project successful-tool-exchange=true host-auth=False requests=2
+stored-and-explicit guest keys replaced by login route; hostile project override completed with no host authentication
+pi-codex successful-tool-exchange=true host-auth=True requests=2
+codex-login successful-tool-exchange=true host-auth=True requests=2
+simultaneous Codex and Pi fixture exchanges passed; requests synchronized at host fixture
+agent-launches-agent=true inherited-proxy-and-allow=true host-markers-absent=true sibling-extension-loaded=true
+pi-anthropic successful-tool-exchange=true host-auth=True requests=2
+pi-subscription successful-tool-exchange=true host-auth=True requests=2
+reused-home settings-preserved=true renamed-and-removed-routes-absent=true
+pi-subscription successful-tool-exchange=true host-auth=True requests=2
+nonstandard-HOME writable-ancestor-disk=true successful-tool-exchange=true
+guest-home-env-generated-files state-audit diagnostics host-marker-scans=true; all acceptance cases passed
+owned box stopped; home-disk-cleanup-exit=0; scratch=$W
+$ python3 gates.py target/x86_64-unknown-linux-musl/debug/pinfold
+1.5.2
+2.1.311 (Claude Code)
+codex-cli 0.169.0
+pi subdirectory autoload exit=1 requests=[["managed", "/v1/messages?beta=true", false, true]]
+pi stored credential with extension exit=1 requests=[["managed", "/v1/messages?beta=true", false, false]]
+claude managed over user and environment exit=1 requests=[["managed", "/v1/messages?beta=true", true, false], ["managed", "/v1/messages?beta=true", true, false], ["managed", "/v1/messages?beta=true", true, false], ["managed", "/v1/messages?beta=true", true, false], ["managed", "/v1/messages?beta=true", true, false], ["managed", "/v1/messages?beta=true", true, false]]
+codex system config exit=1 requests=[["managed", "/backend-api/codex/responses", false, false]]
+codex user over system exit=1 requests=[["override", "/responses", false, false]]
+codex explicit over user exit=1 requests=[["managed", "/backend-api/codex/responses", false, false]]
+pi project extension precedence exit=1 requests=[["override", "/v1/messages?beta=true", false, false]]
+pi explicit key with project extension exit=1 requests=[["override", "/v1/messages?beta=true", false, false]]
+claude managed over explicit/project settings exit=1 requests=[["managed", "/v1/messages?beta=true", true, false], ["managed", "/v1/messages?beta=true", true, false], ["managed", "/v1/messages?beta=true", true, false], ["managed", "/v1/messages?beta=true", true, false], ["managed", "/v1/messages?beta=true", true, false], ["managed", "/v1/messages?beta=true", true, false]]
+codex project model_provider ignored; user wins exit=1 requests=[["override", "/responses", false, false]]
+codex explicit over user and ignored project exit=1 requests=[["managed", "/backend-api/codex/responses", false, false]]
+gates passed; HTTP 400 establishes configuration selection only, not inference
+gate box and home disk removed; scratch=/tmp/pf3.iedvb78v
+$ P=target/x86_64-unknown-linux-musl/debug/pinfold python3 extra.py
+artifacts helper architecture=host-linux-x64 cached=true no-guest-agent-pins=true
+interactive cd /tmp; timeout --foreground -k 2s 8s pi --provider anthropic --model claude-sonnet-4-5 recognized=true bytes=4519
+interactive cd /tmp; timeout --foreground -k 2s 8s claude recognized=true bytes=1829
+interactive cd /tmp; timeout --foreground -k 2s 8s codex recognized=true bytes=6326
+launch record no-harness=true PINFOLD_ALLOW default-and-explicit-control=true
+pinfold pi --version PATH launch passed
+pinfold attach command PATH and environment passed
+interactive pi recognized=true bytes=2149
+project entrypoint home/work disks removed
+real helper hostile-config forced-provider=true held-refresh-cancel=true connection-closed=true child-reaped=true
+extra acceptance cases passed; owned boxes/disks removed
+$ P=target/x86_64-unknown-linux-musl/debug/pinfold python3 capacity.py
+attachments=14 event=ready reason=None detail=exec-control-passed
+attachments=15 event=failed reason=None detail=box exited before ready: exit status: 1
+attachments=24 event=failed reason=None detail=box exited before ready: exit status: 1
+attachments=25 event=refused reason=spec detail=invalid box spec: a box attaches at most 24 disks and mounts, pinfold's own mounts included; this one has 25
+capacity owned boxes/disks removed; attachment-24 acceptance remains failed
+readonly ancestor with deeper writable HOME backing passed
+$ accept.allow_controls() without login routes
+PINFOLD_ALLOW without harness/login routes: comma-list default and explicit override passed
+17604 write(1, "2026-11-15T06:32:02.476363387 [anonymous-instance:main] RunWithoutApiError error: Failed to build MicroVM from Json: Could not Start MicroVM from one single json: Could not attach device: MMIO transport error: Failed to allocate requested resource: The requested resource is not available.\n", 290) = 290
+$ actual origin/main baseline collector; /tmp/pf3-main-capacity.log
+origin/main a99c3be attachments=14 event=ready detail=exec-control
+origin/main a99c3be attachments=15 event=failed detail=box exited before ready: exit status: 1
+attachments=14 event=ready reason=None detail=exec-control-passed
+attachments=15 event=refused reason=spec detail=invalid box spec: a box attaches at most 14 disks and mounts, pinfold's own mounts included; this one has 15
+capacity owned boxes/disks removed; attachment 14 passed and 15 refused as spec

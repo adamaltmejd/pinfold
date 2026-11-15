@@ -1,0 +1,21 @@
+# The pinned Codex host helper, embedded in the binary at build time.
+# Each tar.gz archive contains the executable installed at `as`, relative
+# to <os-arch>/. These assets never enter a box.
+
+[[host_helper]]
+name = "codex"
+version = "0.167.1"
+
+[[host_helper.asset]]
+os-arch = "host-darwin-arm64"
+url = "https://github.com/openai/codex/releases/download/rust-v0.167.1/codex-app-server-aarch64-apple-darwin.tar.gz"
+sha256 = "d8ccd88f64b776bbf8d330a46a0d2d80eae7580dcd981e0f97070eae58a4bf63"
+install = "tar.gz"
+as = "codex-app-server"
+
+[[host_helper.asset]]
+os-arch = "host-linux-x64"
+url = "https://github.com/openai/codex/releases/download/rust-v0.167.1/codex-app-server-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "009fce8607080643ad4773d3eceee58a1ad35df8e1af7c015313d04473b8dbe1"
+install = "tar.gz"
+as = "codex-app-server"

@@ -12,11 +12,11 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -178,23 +178,52 @@ fn exit_with(verb: &str, result: io::Result<()>) -> ! {
     }
 }
 
-const SETUP_USAGE: &str = "usage: pinfold init setup [--own UID:GID DIR]...";
+const SETUP_USAGE: &str = "usage: pinfold init setup [--own UID:GID DIR]... [--user UID:GID [--fill ROOT]... [--mkdir ROOT RELATIVE]...]";
 
-/// `init setup [--own UID:GID DIR]…`, run as root with only `CAP_CHOWN` on
-/// Apple: give each new disk's root to the box user.
+/// Own only fresh disk roots, then drop privileges before preparing paths.
 fn setup(args: &[String]) -> io::Result<()> {
     let mut args = args.iter();
+    let mut ownership = Vec::new();
+    let mut directories = Vec::new();
+    let mut fills = Vec::new();
+    let mut user = None;
+    let owner = |text: &str| -> io::Result<(u32, u32)> {
+        text.split_once(':')
+            .and_then(|(uid, gid)| Some((uid.parse().ok()?, gid.parse().ok()?)))
+            .ok_or_else(|| io::Error::other(SETUP_USAGE))
+    };
     while let Some(option) = args.next() {
-        let (Some(owner), Some(dir)) = (args.next(), args.next()) else {
-            return Err(io::Error::other(SETUP_USAGE));
-        };
-        let owner = (option == "--own")
-            .then(|| owner.split_once(':'))
-            .flatten()
-            .and_then(|(uid, gid)| Some((uid.parse().ok()?, gid.parse().ok()?)));
-        let Some((uid, gid)) = owner else {
-            return Err(io::Error::other(SETUP_USAGE));
-        };
+        match option.as_str() {
+            "--own" => {
+                let (Some(user), Some(dir)) = (args.next(), args.next()) else {
+                    return Err(io::Error::other(SETUP_USAGE));
+                };
+                ownership.push((owner(user)?, dir));
+            }
+            "--user" if user.is_none() => {
+                user = Some(owner(
+                    args.next().ok_or_else(|| io::Error::other(SETUP_USAGE))?,
+                )?);
+            }
+            "--mkdir" => {
+                let (Some(root), Some(relative)) = (args.next(), args.next()) else {
+                    return Err(io::Error::other(SETUP_USAGE));
+                };
+                let relative = Path::new(relative);
+                check_relative_directory(relative)?;
+                directories.push((Path::new(root), relative));
+            }
+            "--fill" => {
+                let root = args.next().ok_or_else(|| io::Error::other(SETUP_USAGE))?;
+                fills.push(Path::new(root));
+            }
+            _ => return Err(io::Error::other(SETUP_USAGE)),
+        }
+    }
+    if (!directories.is_empty() || !fills.is_empty()) && user.is_none() {
+        return Err(io::Error::other(SETUP_USAGE));
+    }
+    for ((uid, gid), dir) in ownership {
         // This helper owns only newly created volumes, before population.
         // Nonempty recovery directories stay intact and block empty cleanup.
         let _ = fs::remove_dir(Path::new(dir).join("lost+found"));
@@ -203,6 +232,76 @@ fn setup(args: &[String]) -> io::Result<()> {
             Some(nix::unistd::Uid::from_raw(uid)),
             Some(nix::unistd::Gid::from_raw(gid)),
         )?;
+    }
+    if let Some((uid, gid)) = user {
+        drop_identity(uid, gid)?;
+    }
+    let mut input = io::stdin().lock();
+    for root in fills {
+        let root = open_directory(root)?;
+        nix::unistd::fchdir(&root)?;
+        receive_into(Path::new("."), &mut input, false)?;
+    }
+    for (root, relative) in directories {
+        make_directories(open_directory(root)?, relative)?;
+    }
+    Ok(())
+}
+
+fn open_directory(path: &Path) -> io::Result<OwnedFd> {
+    use nix::fcntl::OFlag;
+    Ok(nix::fcntl::open(
+        path,
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        nix::sys::stat::Mode::empty(),
+    )?)
+}
+
+fn check_relative_directory(relative: &Path) -> io::Result<()> {
+    if relative.as_os_str().is_empty()
+        || !relative
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
+    {
+        return Err(io::Error::other(
+            "directory preparation path must be plain and relative",
+        ));
+    }
+    Ok(())
+}
+
+/// Descriptor-relative traversal keeps a reused disk's symlinks out of setup.
+fn make_directories(mut root: OwnedFd, relative: &Path) -> io::Result<()> {
+    use nix::fcntl::OFlag;
+    use nix::sys::stat::Mode;
+    check_relative_directory(relative)?;
+    for part in relative.components() {
+        let name = part.as_os_str();
+        match nix::sys::stat::mkdirat(&root, name, Mode::from_bits_truncate(0o755)) {
+            Ok(()) | Err(nix::errno::Errno::EEXIST) => {}
+            Err(error) => return Err(error.into()),
+        }
+        root = nix::fcntl::openat(
+            &root,
+            name,
+            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )?;
+    }
+    Ok(())
+}
+
+fn drop_identity(uid: u32, gid: u32) -> io::Result<()> {
+    // nix does not expose setgroups on Apple, where this module also compiles.
+    if unsafe { nix::libc::setgroups(0, std::ptr::null()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    nix::unistd::setgid(nix::unistd::Gid::from_raw(gid))?;
+    nix::unistd::setuid(nix::unistd::Uid::from_raw(uid))?;
+    #[cfg(target_os = "linux")]
+    {
+        firecracker::set_capabilities(None)?;
+        nix::sys::prctl::set_no_new_privs()?;
     }
     Ok(())
 }

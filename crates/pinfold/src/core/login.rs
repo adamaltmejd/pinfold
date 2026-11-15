@@ -1,6 +1,6 @@
 //! A codex login route's token: asked of the pinned host helper, checked,
 //! and held in the proxy's memory only. Also the files a login route's
-//! harness reads in the box: codex's config and pi's extension.
+//! agents read in the box. Renderers never receive resolved credentials.
 
 use std::fs::{File, TryLockError};
 use std::io::{self, Write};
@@ -12,7 +12,7 @@ use nix::poll::PollFlags;
 use std::time::{Duration, Instant};
 
 use crate::core::pipe::{self, nonblocking, remaining, wait_ready};
-use crate::core::plan::{PiCredential, PiProvider};
+use crate::core::plan::{LOGIN_PLACEHOLDER, PiCredential, PiProvider};
 use crate::core::{artifacts, now, ownership};
 
 /// Within this much of `exp`, the proxy asks the helper again. Codex's own
@@ -83,11 +83,8 @@ impl Codex {
 /// serializes every ask, so two boxes never spend one refresh token at once.
 /// Errors never hold the token.
 pub fn token_from_helper(cancel: Option<&AtomicBool>) -> Result<Token, String> {
-    let codex = artifacts::harness("codex").expect("codex is pinned");
-    let helper = codex
-        .install_os_arch(artifacts::HOST_OS_ARCH, cancel)
-        .map_err(|error| format!("install the codex host helper: {error}"))?
-        .join("codex-app-server");
+    let helper = artifacts::codex_helper(cancel)
+        .map_err(|error| format!("install the codex host helper: {error}"))?;
     let deadline = Instant::now() + HELPER_TIMEOUT;
     let _lock = lock(deadline, cancel).map_err(|error| format!("lock the codex login: {error}"))?;
     let status = ask(&helper, deadline, cancel)
@@ -286,27 +283,36 @@ pub fn codex_config(route: &str) -> String {
     )
 }
 
-/// The guest directory that holds pi's login extension.
-pub const PI_LOGIN_DIR: &str = "/opt/pinfold/login";
+/// Claude's system settings carry only the route and placeholders.
+pub const CLAUDE_CONFIG_DIR: &str = "/etc/claude-code";
 
-/// The extension's guest path, which the pi layer passes to pi with `-e`.
-pub const PI_EXTENSION: &str = "/opt/pinfold/login/pi.ts";
+pub fn claude_config(route: &str) -> String {
+    serde_json::json!({"env": {
+        "ANTHROPIC_BASE_URL": format!("http://{route}"),
+        "CLAUDE_CODE_OAUTH_TOKEN": LOGIN_PLACEHOLDER,
+        "ANTHROPIC_API_KEY": "",
+    }})
+    .to_string()
+}
 
-/// The box's `pi.ts`: points each pi login route's provider at its route,
-/// below the base path of the provider's built-in URL, and gives an
-/// `openai-codex` route's provider its placeholder key. It holds no secret;
-/// the proxy adds the credential.
+/// The single autoload entry under the writable home; sibling extensions remain.
+pub const PI_LOGIN_DIR: &str = ".pi/agent/extensions/pinfold-login";
+
+/// Point each provider at its route and supply its nonsecret placeholder.
 pub fn pi_extension(routes: &[(&str, &PiProvider)]) -> String {
     let mut calls = String::new();
     for (route, provider) in routes {
         // A JSON value is a JavaScript literal.
         let name = serde_json::Value::from(provider.pi);
-        let mut config = serde_json::json!({
+        let placeholder = match provider.credential {
+            PiCredential::Key { placeholder, .. } | PiCredential::HostCodex { placeholder } => {
+                placeholder
+            }
+        };
+        let config = serde_json::json!({
             "baseUrl": format!("http://{route}{}", provider.base_path),
+            "apiKey": placeholder,
         });
-        if let PiCredential::HostCodex { placeholder } = provider.credential {
-            config["apiKey"] = placeholder.into();
-        }
         calls.push_str(&format!("  pi.registerProvider({name}, {config});\n"));
     }
     format!("export default function (pi) {{\n{calls}}}\n")

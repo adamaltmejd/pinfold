@@ -3,10 +3,11 @@
 //! PID 1 connects to the host's boot port, reads the box's tree from the
 //! BOOT frame, mounts it, sets `user.max_user_namespaces` to 0 and forks
 //! the exec service as the box user with every capability set empty, in
-//! the root-owned work cgroup. It keeps only `CAP_SYS_ADMIN`, then only
-//! reaps and answers the unmount at `down`. The exec service copies each
-//! new disk's `from` stream (the `init receive` format) from the boot
-//! connection, relays `127.0.0.1:3128` to the host's port 3128 when the
+//! the root-owned work cgroup. Preparation populates fresh disks as that
+//! user before attaching generated configuration. PID 1 then keeps only
+//! `CAP_SYS_ADMIN`, reaps and answers the unmount at `down`. The exec service
+//! copies missing profile seeds from the boot connection and relays
+//! `127.0.0.1:3128` to the host's port 3128 when the
 //! box has a proxy, reports ready, and serves exec and stat. PID 1 reads no byte past BOOT.
 //!
 //! Every connection carries frames: a kind byte, a u32 big-endian payload
@@ -16,8 +17,9 @@
 //!
 //! - Boot (guest dials host port [`BOOT_PORT`]): host sends BOOT (uid u32,
 //!   gid u32, relay u8 for a box with a proxy, root device, attachment
-//!   count u32, then device, guest path, writable u8, fresh u8 each; fill count
-//!   u32, then each fill's guest path and a missing u8), then each fill's
+//!   count u32, then device, guest path, writable u8, fresh u8, deferred u8 each; fill count
+//!   u32, then each fill's guest path and a missing u8; directory count u32,
+//!   then each directory's disk guest root and relative path), then each fill's
 //!   copy stream: a new disk's `from`, or
 //!   with missing, the profile's seeds, each written only when absent. The
 //!   guest answers READY or FAILED (text).
@@ -25,7 +27,7 @@
 //!   ENV (count u32, name and value each) sets the box's environment once,
 //!   answered ENV_SET; an EXEC that arrives first waits for it. EXEC is
 //!   argv (count u32, strings), workdir (empty for `/`), tty u8, rows u16,
-//!   cols u16, then extra env pairs (count u32), followed by STDIN,
+//!   cols u16, then TERM and COLORTERM (present u8, string when present), followed by STDIN,
 //!   STDIN_END and RESIZE (rows u16, cols u16) frames; the guest sends
 //!   STDOUT, STDERR and finally EXIT (i32). STAT is answered STAT with the
 //!   work cgroup's memory current and peak, pids current and max, and OOM
@@ -158,6 +160,8 @@ struct Request {
     attachments: Vec<Attachment>,
     /// Each fill's guest path and whether it writes only what is missing.
     fills: Vec<(PathBuf, bool)>,
+    /// Paths created as the box user before their read-only mount attaches.
+    directories: Vec<(PathBuf, PathBuf)>,
 }
 
 struct Attachment {
@@ -165,6 +169,7 @@ struct Attachment {
     guest: PathBuf,
     writable: bool,
     fresh: bool,
+    deferred: bool,
 }
 
 fn parse_request(payload: &[u8]) -> io::Result<Request> {
@@ -180,11 +185,66 @@ fn parse_request(payload: &[u8]) -> io::Result<Request> {
             guest: guest_path(&mut fields)?,
             writable: fields.u8()? != 0,
             fresh: fields.u8()? != 0,
+            deferred: fields.u8()? != 0,
         });
     }
     let mut fills = Vec::new();
     for _ in 0..fields.u32()? {
         fills.push((guest_path(&mut fields)?, fields.u8()? != 0));
+    }
+    for (guest, missing) in &fills {
+        if !missing
+            && !attachments.iter().any(|attachment| {
+                attachment.guest == *guest
+                    && attachment.writable
+                    && attachment.fresh
+                    && !attachment.deferred
+            })
+        {
+            return Err(io::Error::other(
+                "initial population requires a fresh writable disk",
+            ));
+        }
+    }
+    if attachments
+        .iter()
+        .any(|attachment| attachment.deferred && attachment.writable)
+    {
+        return Err(io::Error::other("a deferred mount must be read-only"));
+    }
+    let mut directories = Vec::new();
+    for _ in 0..fields.u32()? {
+        let disk = guest_path(&mut fields)?;
+        let relative = PathBuf::from(OsString::from_vec(fields.bytes()?.to_vec()));
+        super::check_relative_directory(&relative)?;
+        if !attachments
+            .iter()
+            .any(|attachment| attachment.guest == disk && attachment.writable)
+            || !attachments
+                .iter()
+                .any(|attachment| attachment.guest == disk.join(&relative) && attachment.deferred)
+        {
+            return Err(io::Error::other(
+                "directory preparation has no writable disk or mount",
+            ));
+        }
+        directories.push((disk, relative));
+    }
+    for attachment in attachments.iter().filter(|attachment| attachment.deferred) {
+        let backing = attachments
+            .iter()
+            .filter(|backing| !backing.deferred && attachment.guest.starts_with(&backing.guest))
+            .max_by_key(|backing| backing.guest.components().count());
+        if let Some(backing) = backing
+            && backing.writable
+            && !directories.iter().any(|(disk, relative)| {
+                *disk == backing.guest && disk.join(relative) == attachment.guest
+            })
+        {
+            return Err(io::Error::other(
+                "a deferred mount below a writable disk requires directory preparation",
+            ));
+        }
     }
     fields.end()?;
     attachments.sort_by_key(|attachment| attachment.guest.components().count());
@@ -195,6 +255,7 @@ fn parse_request(payload: &[u8]) -> io::Result<Request> {
         root,
         attachments,
         fills,
+        directories,
     })
 }
 
@@ -236,6 +297,11 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
             || request.gid != 0
             || request.root != "/dev/vdb"
             || !request.fills.is_empty()
+            || !request.directories.is_empty()
+            || request
+                .attachments
+                .iter()
+                .any(|attachment| attachment.deferred)
             || request
                 .attachments
                 .iter()
@@ -321,40 +387,54 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
     )?;
     mount_at(root, "/dev/shm", "tmpfs", "tmpfs", nodev, Some("mode=1777"))?;
     mount_at(root, "/tmp", "tmpfs", "tmpfs", nodev, Some("mode=1777"))?;
-    for attachment in &request.attachments {
-        if builder && attachment.guest == Path::new("/selected") {
-            // The host populates this fixed read-only device after discovery.
-            // Do not probe it before that host-authorized transition.
-            fs::create_dir(root.join("selected"))?;
-            continue;
-        }
-        let flags = if attachment.writable {
-            nodev
-        } else {
-            nodev | MsFlags::MS_RDONLY
-        };
-        // pinfold's disks leave their inode tables uninitialized, and a
-        // disk's host image grows only with what the box writes.
-        let target = mount_at(
-            root,
-            attachment.guest.as_os_str(),
-            &attachment.device,
-            "ext4",
-            flags,
-            Some("noinit_itable"),
-        )?;
-        if attachment.writable {
-            if attachment.fresh {
+    for deferred in [false, true] {
+        for attachment in request
+            .attachments
+            .iter()
+            .filter(|attachment| attachment.deferred == deferred)
+        {
+            if builder && attachment.guest == Path::new("/selected") {
+                // The host populates this fixed read-only device after discovery.
+                // Do not probe it before that host-authorized transition.
+                fs::create_dir(root.join("selected"))?;
+                continue;
+            }
+            let flags = if attachment.writable {
+                nodev
+            } else {
+                nodev | MsFlags::MS_RDONLY
+            };
+            for (disk, relative) in &request.directories {
+                if disk.join(relative) == attachment.guest {
+                    prepare_directory(root, disk, relative, request.uid, request.gid)?;
+                }
+            }
+            // pinfold's disks leave their inode tables uninitialized, and a
+            // disk's host image grows only with what the box writes.
+            let target = mount_at(
+                root,
+                attachment.guest.as_os_str(),
+                &attachment.device,
+                "ext4",
+                flags,
+                Some("noinit_itable"),
+            )?;
+            if attachment.writable && attachment.fresh {
                 // Only a newly formatted disk, before copies or guest work.
                 // rmdir cannot discard recovered files; failed removal leaves
                 // the directory for the strict scratch inspection to retain.
                 let _ = fs::remove_dir(target.join("lost+found"));
+                nix::unistd::chown(
+                    &target,
+                    Some(Uid::from_raw(request.uid)),
+                    Some(Gid::from_raw(request.gid)),
+                )?;
             }
-            nix::unistd::chown(
-                &target,
-                Some(Uid::from_raw(request.uid)),
-                Some(Gid::from_raw(request.gid)),
-            )?;
+            for (guest, missing) in &request.fills {
+                if !missing && *guest == attachment.guest {
+                    populate_disk(root, guest, host, request.uid, request.gid)?;
+                }
+            }
         }
     }
     nix::mount::mount(
@@ -471,6 +551,68 @@ fn mount_at(
     }
     mount(source, &target, fstype, flags, data)?;
     Ok(target)
+}
+
+/// The child has no box work or threads and cannot regain root. An open
+/// disk descriptor avoids the private staging tree's root-only ancestors.
+fn prepare_directory(
+    root: &Path,
+    disk: &Path,
+    relative: &Path,
+    uid: u32,
+    gid: u32,
+) -> io::Result<()> {
+    let directory = super::open_directory(&root.join(disk.strip_prefix("/").unwrap()))?;
+    as_box_user(uid, gid, || super::make_directories(directory, relative)).map_err(|error| {
+        io::Error::other(format!(
+            "prepare {}: {error}",
+            disk.join(relative).display()
+        ))
+    })
+}
+
+fn populate_disk(
+    root: &Path,
+    disk: &Path,
+    host: &mut UnixStream,
+    uid: u32,
+    gid: u32,
+) -> io::Result<()> {
+    let directory = super::open_directory(&root.join(disk.strip_prefix("/").unwrap()))?;
+    as_box_user(uid, gid, || {
+        nix::unistd::fchdir(&directory)?;
+        // Unbuffered reads leave the next fill or seed stream for its owner.
+        super::receive_into(Path::new("."), host, false)
+    })
+    .map_err(|error| io::Error::other(format!("populate {}: {error}", disk.display())))
+}
+
+fn as_box_user(uid: u32, gid: u32, operation: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+    let (mut errors, mut report) = io::pipe()?;
+    // Safety: prepare runs before PID 1 starts threads or ordinary box work.
+    let child = match unsafe { nix::unistd::fork() }? {
+        ForkResult::Child => {
+            drop(errors);
+            let result = super::drop_identity(uid, gid).and_then(|()| operation());
+            if let Err(error) = result {
+                let _ = write!(report, "{error}");
+                process::exit(1);
+            }
+            process::exit(0);
+        }
+        ForkResult::Parent { child } => child,
+    };
+    drop(report);
+    let mut detail = String::new();
+    let read = errors.read_to_string(&mut detail);
+    let status = nix::sys::wait::waitpid(child, None)?;
+    read?;
+    if status != nix::sys::wait::WaitStatus::Exited(child, 0) {
+        return Err(io::Error::other(format!(
+            "prepare as the box user: {status:?}: {detail}"
+        )));
+    }
+    Ok(())
 }
 
 fn loopback_up() -> io::Result<()> {
@@ -666,6 +808,9 @@ fn exec_service(request: &Request, host: UnixStream, mut dropped: io::PipeReader
     let started = (|| -> io::Result<(OwnedFd, Option<TcpListener>)> {
         become_box_user(request.uid, request.gid)?;
         for (fill, missing) in &request.fills {
+            if !missing {
+                continue;
+            }
             super::receive_into(fill, &mut host, *missing).map_err(|error| {
                 io::Error::other(format!("copy into {}: {error}", fill.display()))
             })?;
@@ -796,7 +941,12 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
     let workdir = fields.os()?;
     let tty = fields.u8()? != 0;
     let (rows, cols) = (fields.u16()?, fields.u16()?);
-    let extra = pairs(&mut fields)?;
+    let mut terminal = Vec::new();
+    for name in ["TERM", "COLORTERM"] {
+        if fields.u8()? != 0 {
+            terminal.push((OsString::from(name), fields.os()?));
+        }
+    }
     fields.end()?;
     let Some(program) = argv.first() else {
         return Err(io::Error::other("an exec without argv"));
@@ -804,7 +954,7 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
 
     // `init exec` restores the environment from Apple's transport names, so
     // a name that itself carries the prefix arrives exactly.
-    let transport = vars.into_iter().chain(extra).map(|(name, value)| {
+    let transport = vars.into_iter().chain(terminal).map(|(name, value)| {
         let mut key = OsString::from(super::BOX_ENV_PREFIX);
         key.push(name);
         let hex: String = value

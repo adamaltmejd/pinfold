@@ -15,7 +15,7 @@ use crate::core::plan::{Disk, Env, Login, Mount, Plan, Route, valid_name};
 use crate::core::profile::{Profile, Seed};
 use crate::core::runs::{self, Terminal};
 use crate::core::runtime::{self, BoxInfo, Child, Prepared, runtime};
-use crate::core::{artifacts, disk, login, ownership, proxy};
+use crate::core::{disk, login, ownership, proxy};
 use crate::dirs;
 
 /// A started box, owned by this process.
@@ -171,32 +171,30 @@ impl Box {
         // or resolved.
         plan.validate()
             .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
-        // Pinfold adds the harness mounts, a codex login's config dir and pi's
-        // login extension in `start`, and the profile's `share/` below.
-        // Check every guest path, the spec's and these, before `home_disk`
-        // picks the disk behind `$HOME`, so a clash is refused as spec and
-        // no tie can hide it.
-        let harnesses: Vec<PathBuf> = plan
-            .harnesses
-            .iter()
-            .map(|name| artifacts::guest(name))
-            .collect();
-        let codex_config = plan
-            .logins()
-            .any(|(_, login)| login.is_codex())
-            .then(|| Path::new(login::CODEX_CONFIG_DIR));
-        let pi_login = plan
-            .logins()
-            .any(|(_, login)| login.is_pi())
-            .then(|| Path::new(login::PI_LOGIN_DIR));
-        let extra: Vec<&Path> = harnesses
-            .iter()
-            .map(PathBuf::as_path)
-            .chain(codex_config)
-            .chain(pi_login)
-            .collect();
-        plan.validate_guests(&extra)
+        let destinations =
+            login_destinations(plan).map_err(|error| refused(plan, RefusalReason::Spec, error))?;
+        let extra: Vec<&Path> = destinations.iter().map(PathBuf::as_path).collect();
+        validate_generated(plan, &extra)
             .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
+        let directories = generated_directories(plan, &destinations);
+
+        // The profile's image, share and home seeds are the box's to apply;
+        // the runtime sees the resolved plan. Resolving writes nothing; the
+        // seeds wait until the name is claimed.
+        let mut plan = plan.clone();
+        let mut profile = resolve_profile(&mut plan)
+            .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
+        let seeds = profile.as_mut().and_then(|profile| {
+            (!profile.home.is_empty()).then(|| std::mem::take(&mut profile.home))
+        });
+        // The `share/` mount is known only now.
+        if profile
+            .as_ref()
+            .is_some_and(|profile| profile.share.is_some())
+        {
+            validate_generated(&plan, &extra)
+                .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
+        }
 
         // A login route's token is read before the claim, so a missing
         // variable or an unusable Codex login refuses as `login` and leaves
@@ -216,25 +214,7 @@ impl Box {
             result = &mut resolving => result,
         }
         .map_err(|error| io::Error::other(format!("login worker failed: {error}")))?
-        .map_err(|error| refused(plan, RefusalReason::Login, error))?;
-
-        // The profile's image, share and home seeds are the box's to apply;
-        // the runtime sees the resolved plan. Resolving writes nothing; the
-        // seeds wait until the name is claimed.
-        let mut plan = plan.clone();
-        let mut profile = resolve_profile(&mut plan)
-            .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
-        let seeds = profile.as_mut().and_then(|profile| {
-            (!profile.home.is_empty()).then(|| std::mem::take(&mut profile.home))
-        });
-        // The `share/` mount is known only now.
-        if profile
-            .as_ref()
-            .is_some_and(|profile| profile.share.is_some())
-        {
-            plan.validate_guests(&extra)
-                .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
-        }
+        .map_err(|error| refused(&plan, RefusalReason::Login, error))?;
 
         let runtime = runtime();
         runtime
@@ -314,7 +294,14 @@ impl Box {
         claim.prepare(&state_dir)?;
         // Disk refusals come after the name claim; returning drops the
         // claim, which removes its record and state.
-        let claimed = match disk::claim(runtime, &mut claim, &plan, init, existing_only) {
+        let claimed = match disk::claim(
+            runtime,
+            &mut claim,
+            &plan,
+            init,
+            existing_only,
+            &directories,
+        ) {
             Ok(claimed) => claimed,
             Err(Ok((reason, detail))) => return Err(refused(&plan, reason, detail)),
             Err(Err(error)) => return Err(error.into()),
@@ -341,6 +328,7 @@ impl Box {
         claim.starting();
         let mut progress = Starting {
             claimed,
+            directories,
             ..Starting::default()
         };
         let starting = async {
@@ -589,9 +577,10 @@ struct Starting {
     preparing: Option<tokio::task::JoinHandle<Result<(Plan, Prepared), Stop>>>,
     /// The disks claimed for the box, which a failed start releases.
     claimed: disk::Claimed,
+    directories: Vec<disk::Directory>,
 }
 
-/// The start after the claim: harness, seeds, proxy, runtime, readiness.
+/// The start after the claim: route files, seeds, proxy, runtime, readiness.
 /// The runtime child goes into `child` as soon as it exists, so a failure, or
 /// a signal at any await, removes exactly that. Returns the box's labels as
 /// the runtime reports them, and the egress log the proxy was given (`None`
@@ -605,8 +594,7 @@ async fn start(
     codex: Option<login::Token>,
     progress: &mut Starting,
 ) -> Result<(BoxInfo, Option<PathBuf>), Stop> {
-    // Fetch the harnesses after the claim. Early refusals download nothing;
-    // alias admission follows preparation.
+    // Render nonsecret route files only after the claim.
     let mut resolved = plan.clone();
     let preparation_dir = state_dir.to_path_buf();
     let cancel = progress.cancel.clone();
@@ -614,8 +602,10 @@ async fn start(
     let worker = progress
         .preparing
         .insert(tokio::task::spawn_blocking(move || {
-            resolve_harnesses(&mut resolved, &preparation_dir, &cancel)?;
-            let prepared = runtime::prepare(&resolved, &preparation_dir, &image_id, &cancel)?;
+            let generated = login_destinations(&resolved).map_err(io::Error::other)?;
+            prepare_logins(&mut resolved, &preparation_dir)?;
+            let prepared =
+                runtime::prepare(&resolved, &preparation_dir, &image_id, &cancel, &generated)?;
             Ok((resolved, prepared))
         }));
     let prepared = worker
@@ -650,19 +640,14 @@ async fn start(
         socket.as_deref(),
         &progress.claimed.fills,
         seeding,
+        &progress.directories,
     )?);
     tokio::select! {
         biased;
         _ = audit_failure(&mut progress.audit) => return Err(Stop::Failed(io::Error::other("audit-log: egress logging failed"))),
         ready = child.ready() => ready.map_err(Stop::NotReady)?,
     }
-    let actual = runtime.finish_start(
-        &plan.name,
-        init,
-        socket.as_deref(),
-        &progress.claimed.fills,
-        seeding,
-    )?;
+    let actual = runtime.finish_start(&plan.name, init, socket.as_deref(), seeding)?;
     Ok((actual, egress_log))
 }
 
@@ -686,12 +671,6 @@ fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json
             .collect();
         serde_json::json!({ "allow": &egress.allow, "routes": routes })
     });
-    let harnesses: Vec<serde_json::Value> = plan
-        .harnesses
-        .iter()
-        .filter_map(|name| artifacts::harness(name))
-        .map(|harness| serde_json::json!({ "name": &harness.name, "version": &harness.version }))
-        .collect();
     let mounts: Vec<serde_json::Value> = plan
         .mounts
         .iter()
@@ -722,7 +701,6 @@ fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json
         },
         "image": { "id": &observed.image_id, "ref": image_ref },
         "profile": &plan.profile,
-        "harnesses": harnesses,
         "labels": &observed.labels,
         "mounts": mounts,
         "disks": disks,
@@ -748,39 +726,95 @@ async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
     }
 }
 
-/// The file in a box's state dir that maps each of its harnesses to the
-/// environment an exec for that harness adds.
-const HARNESS_ENV: &str = "harnesses.json";
-
-/// The environment an exec for `harness` adds in box `name`: the harness's
-/// pinned defaults and its login routes' placeholders, less the names the
-/// spec sets. `None` when the box does not list `harness`.
-pub fn harness_env(name: &str, harness: &str) -> io::Result<Option<Vec<(String, String)>>> {
-    let bytes = match fs::read(dirs::box_state_dir(name)?.join(HARNESS_ENV)) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let mut envs: BTreeMap<String, Vec<(String, String)>> =
-        serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-    Ok(envs.remove(harness))
+/// Destinations and HOME are checked before any preparation or credential lookup.
+fn login_destinations(plan: &Plan) -> Result<Vec<PathBuf>, String> {
+    let mut destinations = Vec::new();
+    if plan.logins().any(|(_, login)| login.login == "claude") {
+        destinations.push(login::CLAUDE_CONFIG_DIR.into());
+    }
+    if plan.logins().any(|(_, login)| login.is_codex()) {
+        destinations.push(login::CODEX_CONFIG_DIR.into());
+    }
+    if plan.logins().any(|(_, login)| login.is_pi()) {
+        let home = home_disk(plan, Vec::new()).map_err(|error| error.to_string())?;
+        destinations.push(home.guest.join(home.relative).join(login::PI_LOGIN_DIR));
+    }
+    Ok(destinations)
 }
 
-/// Fold the spec's harnesses into the plan: install each pinned harness if
-/// it is not cached, mount it read-only, and record the environment its
-/// execs add in [`HARNESS_ENV`]. That holds no secret: pinned defaults and
-/// placeholders. `PINFOLD_ALLOW` is box-wide. The spec's own env wins over
-/// both. A codex login's config and pi's login extension are written into
-/// the box's state dir and mounted read-only at `/etc/codex` and
-/// `/opt/pinfold/login`.
-fn resolve_harnesses(
-    plan: &mut Plan,
-    state_dir: &Path,
-    cancel: &std::sync::atomic::AtomicBool,
-) -> io::Result<()> {
-    if plan.harnesses.is_empty() {
-        return Ok(());
+fn validate_generated(plan: &Plan, extra: &[&Path]) -> Result<(), String> {
+    plan.validate_guests(extra)?;
+    for destination in extra {
+        let destination = crate::core::plan::guest_path(destination);
+        for mount in &plan.mounts {
+            let guest = crate::core::plan::guest_path(&mount.guest);
+            if guest.starts_with(&destination) || destination.starts_with(&guest) {
+                return Err(format!(
+                    "mount {} conflicts with generated directory {}",
+                    guest.display(),
+                    destination.display()
+                ));
+            }
+        }
+        for disk in &plan.disks {
+            let guest = crate::core::plan::guest_path(&disk.guest);
+            if guest.starts_with(&destination) {
+                return Err(format!(
+                    "disk {} conflicts with generated directory {}",
+                    guest.display(),
+                    destination.display()
+                ));
+            }
+        }
+        if plan
+            .disks
+            .iter()
+            .filter(|disk| destination.starts_with(crate::core::plan::guest_path(&disk.guest)))
+            .max_by_key(|disk| {
+                crate::core::plan::guest_path(&disk.guest)
+                    .components()
+                    .count()
+            })
+            .is_some_and(|disk| disk.readonly)
+        {
+            return Err(format!(
+                "generated directory {} is on a read-only disk",
+                destination.display()
+            ));
+        }
+        if extra.iter().any(|other| {
+            let other = crate::core::plan::guest_path(other);
+            other != destination
+                && (other.starts_with(&destination) || destination.starts_with(other))
+        }) {
+            return Err("generated configuration directories overlap".into());
+        }
     }
+    Ok(())
+}
+
+fn generated_directories(plan: &Plan, destinations: &[PathBuf]) -> Vec<disk::Directory> {
+    destinations
+        .iter()
+        .filter_map(|destination| {
+            plan.disks
+                .iter()
+                .filter_map(|disk| {
+                    let guest = crate::core::plan::guest_path(&disk.guest);
+                    Some((
+                        guest.clone(),
+                        destination.strip_prefix(&guest).ok()?.to_path_buf(),
+                    ))
+                })
+                .max_by_key(|(guest, _)| guest.components().count())
+                .map(|(disk, relative)| disk::Directory { disk, relative })
+        })
+        .collect()
+}
+
+/// Render route names and provider metadata, never resolved credentials.
+fn prepare_logins(plan: &mut Plan, state_dir: &Path) -> io::Result<()> {
+    let destinations = login_destinations(plan).map_err(io::Error::other)?;
     let logins: Vec<(String, Login)> = plan
         .logins()
         .map(|(route, login)| (route.to_owned(), login.clone()))
@@ -793,56 +827,42 @@ fn resolve_harnesses(
     plan.env
         .entry("PINFOLD_ALLOW".to_owned())
         .or_insert(Env::Exact(allow));
-    let mut envs = BTreeMap::new();
-    for name in plan.harnesses.clone() {
-        let harness = artifacts::harness(&name).expect("validate refuses an unknown harness");
-        plan.mounts.push(Mount {
-            host: harness.install(Some(cancel))?,
-            guest: artifacts::guest(&name),
-        });
-        // The first default for a name wins: the harness's, then its login
-        // routes' placeholders.
-        let mut env = BTreeMap::new();
-        let defaults = harness
-            .env
-            .iter()
-            .map(|(name, value)| (name.clone(), value.clone()))
-            .chain(
-                logins
-                    .iter()
-                    .filter(|(_, login)| login.login == name)
-                    .flat_map(|(route, login)| login.env(route))
-                    .map(|(name, value)| (name.to_owned(), value)),
-            );
-        for (name, value) in defaults {
-            if !plan.env.contains_key(&name) && !runtime::ALWAYS_APPLIED.contains(&name.as_str()) {
-                env.entry(name).or_insert(value);
-            }
-        }
-        envs.insert(name, env.into_iter().collect::<Vec<_>>());
-    }
-    fs::write(state_dir.join(HARNESS_ENV), serde_json::to_vec(&envs)?)?;
-    if let Some((route, _)) = logins.iter().find(|(_, login)| login.is_codex()) {
-        let dir = state_dir.join("codex");
-        fs::create_dir_all(&dir)?;
-        fs::write(dir.join("config.toml"), login::codex_config(route))?;
-        plan.mounts.push(Mount {
-            host: dir,
-            guest: PathBuf::from(login::CODEX_CONFIG_DIR),
-        });
-    }
-    let mut pi_logins = Vec::new();
-    for (route, login) in logins.iter().filter(|(_, login)| login.is_pi()) {
-        let provider = login.pi_provider().map_err(io::Error::other)?;
-        pi_logins.push((route.as_str(), provider));
-    }
-    if !pi_logins.is_empty() {
-        let dir = state_dir.join("login");
-        fs::create_dir_all(&dir)?;
-        fs::write(dir.join("pi.ts"), login::pi_extension(&pi_logins))?;
+    for destination in destinations {
+        let (name, file, contents) = if destination == Path::new(login::CLAUDE_CONFIG_DIR) {
+            let (route, _) = logins
+                .iter()
+                .find(|(_, login)| login.login == "claude")
+                .expect("Claude route");
+            (
+                "claude",
+                "managed-settings.json",
+                login::claude_config(route),
+            )
+        } else if destination == Path::new(login::CODEX_CONFIG_DIR) {
+            let (route, _) = logins
+                .iter()
+                .find(|(_, login)| login.is_codex())
+                .expect("Codex route");
+            ("codex", "config.toml", login::codex_config(route))
+        } else {
+            let routes = logins
+                .iter()
+                .filter(|(_, login)| login.is_pi())
+                .map(|(route, login)| {
+                    Ok((
+                        route.as_str(),
+                        login.pi_provider().map_err(io::Error::other)?,
+                    ))
+                })
+                .collect::<io::Result<Vec<_>>>()?;
+            ("login", "index.ts", login::pi_extension(&routes))
+        };
+        let dir = state_dir.join(name);
+        fs::create_dir(&dir)?;
+        fs::write(dir.join(file), contents)?;
         plan.mounts.push(Mount {
             host: dir,
-            guest: PathBuf::from(login::PI_LOGIN_DIR),
+            guest: destination,
         });
     }
     Ok(())
@@ -892,18 +912,32 @@ fn home_disk(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
     let refuse = |why: String| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("profile {name:?} seeds $HOME, but {why}"),
+            format!("HOME for profile {name:?} or Pi autoload: {why}"),
         )
     };
     let Some(Env::Exact(home)) = plan.env.get("HOME") else {
         return Err(refuse("the box spec has no exact HOME env entry".into()));
     };
     let home = Path::new(home);
+    if !home.is_absolute()
+        || home
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(refuse("HOME must be an absolute plain path".into()));
+    }
     let Some((disk, relative)) = plan
         .disks
         .iter()
-        .filter_map(|disk| Some((disk, home.strip_prefix(&disk.guest).ok()?)))
-        .max_by_key(|(disk, _)| disk.guest.components().count())
+        .filter_map(|disk| {
+            let guest = crate::core::plan::guest_path(&disk.guest);
+            Some((disk, home.strip_prefix(&guest).ok()?.to_path_buf()))
+        })
+        .max_by_key(|(disk, _)| {
+            crate::core::plan::guest_path(&disk.guest)
+                .components()
+                .count()
+        })
     else {
         return Err(refuse(format!("$HOME={} is not on a disk", home.display())));
     };
@@ -926,7 +960,7 @@ fn home_disk(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
         )));
     }
     Ok(Seeding {
-        guest: disk.guest.clone(),
+        guest: crate::core::plan::guest_path(&disk.guest),
         relative: relative.to_path_buf(),
         seeds,
     })

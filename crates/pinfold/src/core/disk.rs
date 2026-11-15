@@ -47,6 +47,13 @@ pub struct Seeding {
     pub seeds: Vec<Seed>,
 }
 
+/// A directory prepared as the box user below a writable disk.
+#[derive(Clone)]
+pub struct Directory {
+    pub disk: PathBuf,
+    pub relative: PathBuf,
+}
+
 /// What [`claim`] did: the disks it created, the copies they need, and the
 /// writable disks it newly marked unclean.
 #[derive(Default)]
@@ -125,6 +132,7 @@ pub fn claim(
     plan: &Plan,
     init: &Path,
     existing_only: bool,
+    directories: &[Directory],
 ) -> Result<Claimed, Result<(RefusalReason, String), io::Error>> {
     let (name, disks) = (plan.name.as_str(), plan.disks.as_slice());
     if disks.is_empty() {
@@ -209,8 +217,6 @@ pub fn claim(
             runtime.create_disk(&disk.name, disk.bytes())?;
             created.push(disk.clone());
         }
-        let names: Vec<&str> = created.iter().map(|disk| disk.name.as_str()).collect();
-        runtime.own_disks(&names, plan, init, claim.generation())?;
         for disk in disks.iter().filter(|disk| !disk.readonly) {
             if !unclean(&disk.name)? {
                 mark(&disk.name, UNCLEAN)?;
@@ -225,7 +231,27 @@ pub fn claim(
                     readonly: disk.readonly,
                 })
                 .collect(),
-        )
+        )?;
+        // Preparation may write reused disks before ordinary startup.
+        // A failed or interrupted preparation must not roll their dirty marks back.
+        claimed.marked.retain(|name| {
+            !disks.iter().any(|disk| {
+                disk.name == *name
+                    && directories.iter().any(|directory| {
+                        directory.disk == crate::core::plan::guest_path(&disk.guest)
+                    })
+            })
+        });
+        let names: Vec<&str> = created.iter().map(|disk| disk.name.as_str()).collect();
+        runtime.own_disks(
+            &names,
+            plan,
+            init,
+            claim.generation(),
+            directories,
+            &claimed.fills,
+        )?;
+        Ok(())
     })();
     if let Err(error) = result {
         claimed.created = created;

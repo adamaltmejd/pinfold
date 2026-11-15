@@ -26,13 +26,13 @@ pinfold pi [pi args…]            pi in a box for this project; `pi` is a symli
 pinfold attach [cmd…]            bash (or cmd) in this project's running pi box
 pinfold push                     this checkout's branches into its pi box as refs/remotes/host/*
 pinfold fetch                    its pi box's branches into refs/remotes/pinfold/*
-pinfold build [--profile NAME] [--allow HOST]…   build this project's image, or a profile's; prints the ref
+pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this project's image, or a profile's; prints the ref
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]…   a caller's image from its own context; one JSON line
 pinfold image rm NAME            retire a caller image name; one JSON line
 pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
 pinfold clean [--dry-run] [--unused AGE]   reclaim unused disk space
 pinfold doctor                   runtime, kernel, image, artifacts, config, disk use
-pinfold artifacts                pinned harnesses as JSON
+pinfold artifacts                pinned host helper and infrastructure as JSON
 pinfold apparmor-profile         the AppArmor profile for this executable (Linux)
 pinfold update [--check]         check for a release, or download and install it
 pinfold config [ROOT]            effective configuration and project facts as JSON
@@ -47,7 +47,7 @@ pinfold --help                   print this usage";
 /// The process interface's verbs, which the table above does not spell out.
 const BOX_USAGE: &str = "\
 pinfold box up < spec.json
-pinfold box exec BOX [--tty] [--harness NAME] -- argv…
+pinfold box exec BOX [--tty] -- argv…
 pinfold box stat BOX
 pinfold box down BOX
 pinfold box list --label KEY[=VALUE]…
@@ -145,8 +145,7 @@ pub fn attach(args: &[String]) -> io::Result<i32> {
     let runtime = runtime();
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
     let init = artifacts::init()?;
-    let env = crate::core::r#box::harness_env(&name, "pi")?.unwrap_or_default();
-    let status = runtime.exec(&name, &init, tty, Some(&cwd), &env, &argv)?;
+    let status = runtime.exec(&name, &init, tty, Some(&cwd), &argv)?;
     Ok(exit_code(status))
 }
 
@@ -307,26 +306,16 @@ fn refused_box(refusal: &Refusal) -> i32 {
 }
 
 fn exec(args: &[String]) -> io::Result<i32> {
-    let (name, tty, harness, argv) = parse_exec(args)?;
+    let (name, tty, argv) = parse_exec(args)?;
     let runtime = runtime();
     if !present(runtime, "exec", &name)? {
         return Ok(3);
     }
-    let env = match &harness {
-        Some(harness) => match crate::core::r#box::harness_env(&name, harness)? {
-            Some(env) => env,
-            None => {
-                eprintln!("pinfold box exec: box {name:?} has no harness {harness:?}");
-                return Ok(3);
-            }
-        },
-        None => Vec::new(),
-    };
     // A TTY only makes sense when both ends are terminals; `--tty` forces it
     // for callers that drive pinfold through their own pty.
     let tty = tty || (io::stdin().is_terminal() && io::stdout().is_terminal());
     let init = artifacts::init()?;
-    let status = runtime.exec(&name, &init, tty, None, &env, &argv)?;
+    let status = runtime.exec(&name, &init, tty, None, &argv)?;
     Ok(exit_code(status))
 }
 
@@ -1189,26 +1178,17 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
     }))
 }
 
-fn parse_exec(args: &[String]) -> io::Result<(String, bool, Option<String>, Vec<String>)> {
+fn parse_exec(args: &[String]) -> io::Result<(String, bool, Vec<String>)> {
     let mut args = args.iter();
     let name = args
         .next()
         .ok_or_else(|| usage("box", "exec needs a box name"))?
         .clone();
     let mut tty = false;
-    let mut harness = None;
     loop {
         match args.next().map(String::as_str) {
             Some("--") => break,
             Some("--tty") => tty = true,
-            Some("--harness") => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| usage("box", "exec option \"--harness\" needs a value"))?;
-                if harness.replace(value.clone()).is_some() {
-                    return Err(usage("box", "exec takes --harness once"));
-                }
-            }
             Some(option) => {
                 return Err(usage("box", &format!("unknown exec option {option:?}")));
             }
@@ -1219,7 +1199,7 @@ fn parse_exec(args: &[String]) -> io::Result<(String, bool, Option<String>, Vec<
     if argv.is_empty() {
         return Err(usage("box", "exec needs a command after `--`"));
     }
-    Ok((name, tty, harness, argv))
+    Ok((name, tty, argv))
 }
 
 fn single_name(args: &[String], verb: &str) -> io::Result<String> {
@@ -1260,11 +1240,13 @@ pub(crate) fn exit_code(status: ExitStatus) -> i32 {
 /// A build's context is its Containerfile alone. Other files in a profile
 /// or project configuration directory are not build inputs.
 pub fn build(args: &[String]) -> io::Result<i32> {
+    let mut cache = true;
     let mut profile_name = None;
     let mut allow = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--no-cache" => cache = false,
             "--profile" if profile_name.is_none() => {
                 profile_name = Some(
                     args.next()
@@ -1316,7 +1298,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
                 label: Some(label),
                 source,
                 context: Context::Alone(bytes),
-                cache: false,
+                cache,
                 labels: base
                     .map(|digest| (clean::BASE_LABEL.to_string(), digest))
                     .into_iter()

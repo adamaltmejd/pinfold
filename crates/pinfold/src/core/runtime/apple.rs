@@ -16,7 +16,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
-use crate::core::disk::{self, Fill, Seeding};
+use crate::core::disk::{self, Directory, Fill, Seeding};
 use crate::core::image::service::inspect;
 use crate::core::image::{BuildRequest, ImageInfo, ImageService};
 use crate::core::plan::Plan;
@@ -256,7 +256,6 @@ impl Runtime for Apple {
         name: &str,
         init: &Path,
         proxy_socket: Option<&Path>,
-        fills: &[Fill],
         seeding: Option<&Seeding>,
     ) -> io::Result<BoxInfo> {
         // Init can report ready before Apple records the box running.
@@ -264,9 +263,6 @@ impl Runtime for Apple {
         let actual = wait_until_running(name)?;
         if proxy_socket.is_some() {
             make_proxy_connectable(name)?;
-        }
-        for fill in fills {
-            copy_in(name, init, &fill.guest, false, |out| disk::send(fill, out))?;
         }
         if let Some(seeding) = seeding {
             copy_in(name, init, &seeding.guest, true, |out| {
@@ -384,10 +380,9 @@ impl Runtime for Apple {
         init: &Path,
         tty: bool,
         workdir: Option<&Path>,
-        env: &[(String, String)],
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        exec_command(name, init, tty, workdir, env, argv)
+        exec_command(name, init, tty, workdir, argv)
             .status()
             .map_err(|error| spawn_error("container", error))
     }
@@ -400,19 +395,21 @@ impl Runtime for Apple {
         workdir: Option<&Path>,
         argv: &[String],
     ) -> std::process::Command {
-        exec_command(name, init, tty, workdir, &[], argv)
+        exec_command(name, init, tty, workdir, argv)
     }
 
-    /// A transient helper owns only the new disks, under the caller's
-    /// name claim. It runs without network and with only CAP_CHOWN.
+    /// A networkless helper owns fresh roots, then drops privileges to
+    /// prepare generated-mount parents on fresh and reused disks.
     fn own_disks(
         &self,
         names: &[&str],
         plan: &Plan,
         init: &Path,
         generation: &str,
+        directories: &[Directory],
+        fills: &[Fill],
     ) -> io::Result<()> {
-        if names.is_empty() {
+        if names.is_empty() && directories.is_empty() {
             return Ok(());
         }
         let name = &plan.name;
@@ -430,31 +427,86 @@ impl Runtime for Apple {
         let owner = format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid());
         let mut command = std::process::Command::new("container");
         command
-            .args(["run", "--progress", "none", "--network", "none"])
+            .args(["run", "-i", "--progress", "none", "--network", "none"])
             .args(["--read-only", "--cap-drop", "ALL", "--cap-add", "CAP_CHOWN"])
             .args(["--name", name])
             .args(["--user", "0:0", "--mount"])
             .arg(init_mount(init));
+        if !directories.is_empty() || !fills.is_empty() {
+            command.args(["--cap-add", "CAP_SETUID", "--cap-add", "CAP_SETGID"]);
+        }
         for (key, value) in &labels {
             command.arg("--label").arg(format!("{key}={value}"));
         }
         let mut setup: Vec<OsString> = vec!["init".into(), "setup".into()];
-        for (index, name) in names.iter().enumerate() {
+        let disks: Vec<_> = plan
+            .disks
+            .iter()
+            .filter(|disk| {
+                names.contains(&disk.name.as_str())
+                    || directories.iter().any(|directory| {
+                        directory.disk == crate::core::plan::guest_path(&disk.guest)
+                    })
+            })
+            .collect();
+        for (index, disk) in disks.iter().enumerate() {
             let guest = format!("/pinfold-disk/{index}");
             command.arg("--mount").arg(format!(
                 "type=volume,source={},target={guest}",
-                volume(name)?
+                volume(&disk.name)?
             ));
-            setup.extend(["--own".into(), owner.clone().into(), guest.into()]);
+            if names.contains(&disk.name.as_str()) {
+                setup.extend(["--own".into(), owner.clone().into(), guest.into()]);
+            }
         }
-        let result = command
-            .arg("--entrypoint")
-            .arg(init)
-            .arg(image)
-            .args(setup)
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|error| spawn_error("container", error));
+        if !directories.is_empty() || !fills.is_empty() {
+            setup.extend(["--user".into(), owner.into()]);
+        }
+        for fill in fills {
+            let index = disks
+                .iter()
+                .position(|disk| {
+                    crate::core::plan::guest_path(&disk.guest)
+                        == crate::core::plan::guest_path(&fill.guest)
+                })
+                .ok_or_else(|| io::Error::other("initial population has no disk"))?;
+            setup.extend(["--fill".into(), format!("/pinfold-disk/{index}").into()]);
+        }
+        for directory in directories {
+            let index = disks
+                .iter()
+                .position(|disk| directory.disk == crate::core::plan::guest_path(&disk.guest))
+                .ok_or_else(|| io::Error::other("directory preparation has no disk"))?;
+            setup.extend([
+                "--mkdir".into(),
+                format!("/pinfold-disk/{index}").into(),
+                directory.relative.clone().into_os_string(),
+            ]);
+        }
+        let result = (|| -> io::Result<std::process::Output> {
+            let mut child = command
+                .arg("--entrypoint")
+                .arg(init)
+                .arg(image)
+                .args(setup)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| spawn_error("container", error))?;
+            let sent = (|| {
+                let mut input = child.stdin.take().expect("setup stdin is piped");
+                for fill in fills {
+                    disk::send(fill, &mut input)?;
+                }
+                Ok::<_, io::Error>(())
+            })();
+            let output = child.wait_with_output()?;
+            if output.status.success() {
+                sent?;
+            }
+            Ok(output)
+        })();
         // The box reuses the helper's name, so the helper must be gone first.
         // Apple reports a container `running` for a moment after `run` returns,
         // and `rm` refuses it then; `run --rm` removes it just as late. `stop`
@@ -473,7 +525,7 @@ impl Runtime for Apple {
                 ),
             };
             return Err(io::Error::other(format!(
-                "give new disks to the box user: {}{leftover}",
+                "prepare writable disks: {}{leftover}",
                 String::from_utf8_lossy(&result.stderr).trim()
             )));
         }
@@ -492,21 +544,16 @@ impl Runtime for Apple {
     }
 }
 
-/// `container exec` of `argv` through init, with `env` added under transport
-/// names as the host's `TERM` is.
+/// `container exec` of `argv` through init, preserving terminal identity on a TTY.
 fn exec_command(
     name: &str,
     init: &Path,
     tty: bool,
     workdir: Option<&Path>,
-    env: &[(String, String)],
     argv: &[String],
 ) -> std::process::Command {
     let mut command = std::process::Command::new("container");
     command.args(["exec", "-i"]);
-    for (variable, value) in env {
-        guest_env(&mut command, variable, OsStr::new(value));
-    }
     if tty {
         // Keep the host's terminal identity: the runtime otherwise
         // reports its own `TERM`.
@@ -819,7 +866,12 @@ impl ImageService for Apple {
         crate::core::image::check_build_allow(request.allow)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let cache_flags: &[&str] = if request.cache { &[] } else { &["--no-cache"] };
-        crate::core::image::service::build("container", cache_flags, request)
+        let result = crate::core::image::service::build("container", cache_flags, request)?;
+        // Return deleted temporary blocks without pruning cached layers.
+        if output(&["container", "clean", "buildkit"]).is_err() {
+            eprintln!("pinfold: could not reclaim unused builder blocks");
+        }
+        Ok(result)
     }
 
     fn program(&self) -> &'static str {
