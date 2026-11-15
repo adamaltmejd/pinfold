@@ -15,6 +15,7 @@ use crate::core::profile::{self, Profile};
 use crate::core::runtime::{Runtime, runtime};
 use crate::core::{clean, disk, runs};
 use crate::dirs;
+use crate::formatting::terminal_text;
 use crate::pi::launch::utf8;
 
 /// One line per verb from the CLI table in docs/ARCHITECTURE.md but `init`,
@@ -22,8 +23,7 @@ use crate::pi::launch::utf8;
 /// spaces, the description. Printed on stdout by `--help`, on stderr for a
 /// malformed invocation, and one line at a time by [`syntax`].
 pub const USAGE: &str = "\
-pinfold pi [pi args…]            pi in a box for this project; `pi` is a symlink to this
-pinfold attach [cmd…]            bash (or cmd) in this project's running pi box
+pinfold -- CMD [args…]           run a command in this project's box
 pinfold push                     this checkout's branches into its pi box as refs/remotes/host/*
 pinfold fetch                    its pi box's branches into refs/remotes/pinfold/*
 pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this project's image, or a profile's; prints the ref
@@ -59,7 +59,7 @@ pinfold box fetch BOX --repo GUEST_REPO --into REPO";
 pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
     result.unwrap_or_else(|error| {
         eprintln!("pinfold {verb}: {error}");
-        1
+        if verb == "--" { 125 } else { 1 }
     })
 }
 
@@ -89,20 +89,13 @@ fn syntax(verb: &str) -> String {
         .join("\n")
 }
 
-/// Whether `args` hold a `--help`/`-h` before any `--`; if so, print
-/// `verb`'s syntax from [`syntax`] on stdout, touching no runtime and no
-/// state, as top-level `--help` does. `attach` counts one only as its
-/// command's first word (`attach ls --help` gives `--help` to `ls`), and
-/// `pi`'s arguments are all pi's.
+/// Print help for host verbs without interpreting project-command argv.
 pub fn help(verb: &str, args: &[String]) -> bool {
-    let asks = match verb {
-        "pi" => false,
-        "attach" => matches!(args.first(), Some(first) if first == "--help" || first == "-h"),
-        _ => args
+    let asks = verb != "--"
+        && args
             .iter()
             .take_while(|arg| arg.as_str() != "--")
-            .any(|arg| arg == "--help" || arg == "-h"),
-    };
+            .any(|arg| arg == "--help" || arg == "-h");
     if asks {
         let specific = args
             .first()
@@ -111,42 +104,6 @@ pub fn help(verb: &str, args: &[String]) -> bool {
         println!("{}", specific.unwrap_or_else(|| syntax(verb)));
     }
     asks
-}
-
-/// `pinfold attach`: bash, or the given command, in this project's running
-/// pi box, the box that attaches its project disk. The box's owner keeps
-/// its lifetime; attach streams one exec and adds none of its own.
-pub fn attach(args: &[String]) -> io::Result<i32> {
-    let mut argv = match args {
-        [dashes, rest @ ..] if dashes == "--" => rest.to_vec(),
-        _ => args.to_vec(),
-    };
-    if argv.is_empty() {
-        argv.push("bash".to_string());
-    }
-    let cwd = fs::canonicalize(std::env::current_dir()?)?;
-    let root = crate::pi::launch::project_root(&cwd)?;
-    let [_, project] = crate::pi::state::disk_names(&crate::pi::state::project_id(&root));
-    let name = match crate::pi::launch::project_box(&project)? {
-        crate::pi::launch::Holder::Ready(name) => name,
-        crate::pi::launch::Holder::Starting(name) => {
-            return Err(io::Error::other(format!(
-                "disk-in-use: {}",
-                crate::pi::launch::starting(&name, &project)
-            )));
-        }
-        crate::pi::launch::Holder::None => {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "no running pi box for this project; start one with `pinfold pi`",
-            ));
-        }
-    };
-    let runtime = runtime();
-    let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-    let init = artifacts::init()?;
-    let status = runtime.exec(&name, &init, tty, Some(&cwd), &argv)?;
-    Ok(exit_code(status))
 }
 
 pub fn run(args: &[String]) -> io::Result<i32> {
@@ -315,7 +272,15 @@ fn exec(args: &[String]) -> io::Result<i32> {
     // for callers that drive pinfold through their own pty.
     let tty = tty || (io::stdin().is_terminal() && io::stdout().is_terminal());
     let init = artifacts::init()?;
-    let status = runtime.exec(&name, &init, tty, None, &argv)?;
+    let status = runtime.exec(
+        &name,
+        &init,
+        &crate::core::runtime::ExecContext {
+            tty,
+            ..Default::default()
+        },
+        &argv,
+    )?;
     Ok(exit_code(status))
 }
 
@@ -695,12 +660,6 @@ fn remove_disk(runtime: &dyn Runtime, name: &str, json: bool) -> io::Result<i32>
             1
         }),
         disk::Removal::Removed { existed } => {
-            if let Err(error) = crate::pi::state::forget_scratch_origin(name) {
-                eprintln!(
-                    "pinfold disk rm: origin cleanup: {}",
-                    terminal_text(&error.to_string())
-                );
-            }
             if json {
                 println!(
                     "{}",
@@ -720,18 +679,6 @@ fn remove_disk(runtime: &dyn Runtime, name: &str, json: bool) -> io::Result<i32>
             Ok(0)
         }
     }
-}
-
-fn terminal_text(text: &str) -> String {
-    let mut escaped = String::new();
-    for ch in text.chars() {
-        if ch.is_control() {
-            escaped.extend(ch.escape_default());
-        } else {
-            escaped.push(ch);
-        }
-    }
-    escaped
 }
 
 fn human_size(bytes: u64) -> String {
@@ -970,7 +917,7 @@ fn parse_age(value: &str) -> io::Result<Duration> {
         .ok_or_else(invalid)
 }
 
-/// `pinfold doctor`: print one report of what `pinfold pi` depends on and
+/// `pinfold doctor`: print one report of what project commands depend on and
 /// what state it is in. Reads only: nothing is created, downloaded or fixed.
 pub fn doctor(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
@@ -987,7 +934,12 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
 
     println!(
         "pinfold doctor: {}",
-        project.as_ref().map_or(&cwd, |(root, _)| root).display()
+        terminal_text(
+            &project
+                .as_ref()
+                .map_or(&cwd, |(root, _)| root)
+                .to_string_lossy()
+        )
     );
 
     let runtime = runtime();
@@ -1097,7 +1049,7 @@ pub fn apparmor_profile(args: &[String]) -> io::Result<i32> {
         .ok_or_else(|| {
             io::Error::other(format!(
                 "{} cannot be named in an AppArmor profile",
-                exe.display()
+                terminal_text(&exe.to_string_lossy())
             ))
         })?;
     println!("abi <abi/4.0>,\n\n\"{path}\" flags=(unconfined) {{\n  userns,\n}}");
@@ -1130,8 +1082,8 @@ pub fn config(args: &[String]) -> io::Result<i32> {
 /// missing, then open it in the user's editor and return its exit code.
 fn config_edit() -> io::Result<i32> {
     let project = crate::pi::context::Context::discover(&std::env::current_dir()?)?;
-    let path = crate::config::create(&project.root, project.repository)?;
-    eprintln!("pinfold config: {}", path.display());
+    let path = crate::config::create(&project.root)?;
+    eprintln!("pinfold config: {}", terminal_text(&path.to_string_lossy()));
     let editor = ["VISUAL", "EDITOR"]
         .into_iter()
         .filter_map(std::env::var_os)
@@ -1173,7 +1125,7 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
         "project": {
             "id": project,
             "home": crate::pi::state::HOME,
-            "disks": if config.repository { Some(serde_json::json!({ "home": home_disk, "project": project_disk })) } else { None },
+            "disks": { "home": home_disk, "project": project_disk },
         },
     }))
 }
@@ -1466,7 +1418,10 @@ fn profile_new(args: &[String]) -> io::Result<()> {
     fs::create_dir(&target).map_err(|error| {
         io::Error::new(
             error.kind(),
-            format!("profile {name:?} at {}: {error}", target.display()),
+            format!(
+                "profile {name:?} at {}: {error}",
+                terminal_text(&target.to_string_lossy())
+            ),
         )
     })?;
     let result = source.and_then(|source| profile::write_profile(&source, &target));

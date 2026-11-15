@@ -20,7 +20,9 @@ pub use vm::{Prepared, Vm, prepare};
 use crate::core::disk::{Directory, Fill, Seeding};
 use crate::core::ownership;
 use crate::core::plan::Plan;
-use crate::core::runtime::{BoxInfo, BoxStat, DiskInfo, MemoryStat, PidsStat, Runtime, output};
+use crate::core::runtime::{
+    BoxInfo, BoxStat, DiskInfo, ExecContext, MemoryStat, PidsStat, Runtime, output,
+};
 use crate::dirs;
 
 /// Firecracker, run by pinfold itself.
@@ -84,11 +86,10 @@ impl Runtime for Firecracker {
         &self,
         name: &str,
         _init: &Path,
-        tty: bool,
-        workdir: Option<&Path>,
+        context: &ExecContext<'_>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        let code = vsock::exec(&Self::record(name)?.state_dir, tty, workdir, argv)?;
+        let code = vsock::exec(&Self::record(name)?.state_dir, context, argv)?;
         Ok(exit_status(code))
     }
 
@@ -97,16 +98,15 @@ impl Runtime for Firecracker {
         &self,
         name: &str,
         _init: &Path,
-        _tty: bool,
-        _workdir: Option<&Path>,
+        _context: &ExecContext<'_>,
         argv: &[String],
-    ) -> std::process::Command {
+    ) -> io::Result<std::process::Command> {
         let mut command = std::process::Command::new("/proc/self/exe");
         command
             .process_group(0)
             .args(["box", "exec", name, "--"])
             .args(argv);
-        command
+        Ok(command)
     }
 
     fn stat(&self, name: &str) -> io::Result<BoxStat> {

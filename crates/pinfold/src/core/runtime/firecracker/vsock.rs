@@ -116,10 +116,10 @@ pub fn unmount(state_dir: &Path) -> io::Result<()> {
 /// process.
 pub fn exec(
     state_dir: &Path,
-    tty: bool,
-    workdir: Option<&Path>,
+    context: &crate::core::runtime::ExecContext<'_>,
     argv: &[String],
 ) -> io::Result<i32> {
+    let tty = context.tty;
     let mut connection = connect(state_dir, EXEC_PORT)?;
     // A command runs as long as it runs.
     connection.set_read_timeout(None)?;
@@ -131,7 +131,9 @@ pub fn exec(
     }
     put(
         &mut payload,
-        workdir.map_or(&[][..], |dir| dir.as_os_str().as_bytes()),
+        context
+            .cwd
+            .map_or(&[][..], |dir| dir.as_os_str().as_bytes()),
     );
     payload.push(u8::from(tty));
     payload.extend(rows.to_be_bytes());
@@ -142,6 +144,10 @@ pub fn exec(
         if let Some(value) = value {
             put(&mut payload, value.as_bytes());
         }
+    }
+    payload.push(u8::from(context.agent.is_some()));
+    if let Some(agent) = context.agent {
+        put(&mut payload, agent.as_bytes());
     }
     write_frame(&mut connection, EXEC, &payload)?;
 

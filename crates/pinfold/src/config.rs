@@ -12,6 +12,7 @@ use serde::Deserialize;
 use crate::core::plan::Route;
 use crate::core::profile::Profile;
 use crate::dirs;
+use crate::formatting::terminal_text;
 use crate::pi::state::project_id;
 
 /// The built-in defaults (ARCHITECTURE.md, Configuration).
@@ -41,24 +42,22 @@ pub fn project_dir(root: &Path) -> io::Result<PathBuf> {
 }
 
 /// `pinfold config edit`'s first step: the project's configuration file,
-/// written with the project mount when it is missing. A Git project is
+/// written with the project mount when it is missing. The project is
 /// checked first, with the profile a run would select, so nothing is
 /// created inside it.
-pub fn create(root: &Path, repository: bool) -> io::Result<PathBuf> {
+pub fn create(root: &Path) -> io::Result<PathBuf> {
     let dir = project_dir(root)?;
     let path = dir.join("pinfold.toml");
-    if repository {
-        // A file that cannot be read or parsed selects no profile, and a
-        // profile that cannot be loaded has no paths to check: the editor
-        // must still open to fix either.
-        let file = read_optional(&path)
-            .ok()
-            .flatten()
-            .and_then(|bytes| Layer::parse(&bytes, "").ok())
-            .and_then(|layer| layer.profile);
-        let profile = Profile::load(&profile_name(file)?).ok();
-        check_paths_outside(root, profile.as_ref())?;
-    }
+    // A file that cannot be read or parsed selects no profile, and a
+    // profile that cannot be loaded has no paths to check: the editor
+    // must still open to fix either.
+    let file = read_optional(&path)
+        .ok()
+        .flatten()
+        .and_then(|bytes| Layer::parse(&bytes, "").ok())
+        .and_then(|layer| layer.profile);
+    let profile = Profile::load(&profile_name(file)?).ok();
+    check_paths_outside(root, profile.as_ref())?;
     if read_optional(&path)?.is_some() {
         return Ok(path);
     }
@@ -120,13 +119,13 @@ impl Config {
         };
         let dir = project_dir(root)?;
         let path = dir.join("pinfold.toml");
-        let source = path.display().to_string();
+        let source = terminal_text(&path.to_string_lossy());
         let Some(bytes) = read_optional(&path)? else {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
                     "no-config: {} has no configuration; run `pinfold config edit`",
-                    root.display()
+                    terminal_text(&root.to_string_lossy())
                 ),
             ));
         };
@@ -195,12 +194,9 @@ impl Config {
         })
     }
 
-    /// Refuse a Git project that holds what configures its boxes (see
+    /// Refuse a project that holds what configures its boxes (see
     /// [`check_paths_outside`]).
     pub fn check_host_paths(&self, root: &Path) -> io::Result<()> {
-        if !self.repository {
-            return Ok(());
-        }
         check_paths_outside(root, Some(&self.profile))
     }
 }
@@ -240,8 +236,8 @@ fn check_paths_outside(root: &Path, profile: Option<&Profile>) -> io::Result<()>
                 io::ErrorKind::PermissionDenied,
                 format!(
                     "host-path-in-project: {} resolves inside {}",
-                    path.display(),
-                    root.display()
+                    terminal_text(&path.to_string_lossy()),
+                    terminal_text(&root.to_string_lossy())
                 ),
             ));
         }
@@ -255,13 +251,16 @@ fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
     match fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => match fs::symlink_metadata(path) {
-            Ok(_) => Err(invalid(&path.display().to_string(), "file is not readable")),
+            Ok(_) => Err(invalid(
+                &terminal_text(&path.to_string_lossy()),
+                "file is not readable",
+            )),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
         },
         Err(error) => Err(io::Error::new(
             error.kind(),
-            format!("read {}: {error}", path.display()),
+            format!("read {}: {error}", terminal_text(&path.to_string_lossy())),
         )),
     }
 }

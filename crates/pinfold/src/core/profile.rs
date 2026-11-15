@@ -135,7 +135,10 @@ impl Profile {
         Self::builtin(name).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("profile {name:?} has no directory {}", root.display()),
+                format!(
+                    "profile {name:?} has no directory {}",
+                    crate::formatting::terminal_text(&root.to_string_lossy())
+                ),
             )
         })
     }
@@ -208,7 +211,10 @@ fn load_dir(name: &str, root: &Path) -> io::Result<Profile> {
         fs::read(&path).map_err(|error| {
             io::Error::new(
                 error.kind(),
-                format!("profile {name:?}: read {}: {error}", path.display()),
+                format!(
+                    "profile {name:?}: read {}: {error}",
+                    crate::formatting::terminal_text(&path.to_string_lossy())
+                ),
             )
         })
     };

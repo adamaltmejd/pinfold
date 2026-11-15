@@ -62,7 +62,7 @@ pub fn run(name: &str, destination: &Path, image: Option<&str>) -> io::Result<i3
             Err(error) => return Err(error.into()),
         };
         let args = ["/proc/self/exe".to_string(), "init".to_string(), "send".to_string(), "/export".to_string()];
-        let mut command = runtime::runtime().exec_command(&plan.name, &init, false, None, &args);
+        let mut command = runtime::runtime().exec_command(&plan.name, &init, &runtime::ExecContext::default(), &args)?;
         command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
         let mut active_file = None;
         let copied = match tokio::process::Command::from(command).kill_on_drop(true).spawn() {

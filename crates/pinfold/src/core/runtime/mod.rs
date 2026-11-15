@@ -204,6 +204,14 @@ pub struct DiskInfo {
     pub allocated: u64,
 }
 
+/// Metadata for one command, independent of the box's environment.
+#[derive(Default)]
+pub struct ExecContext<'a> {
+    pub cwd: Option<&'a Path>,
+    pub tty: bool,
+    pub agent: Option<&'a str>,
+}
+
 /// One OS's box runtime. Command lines and VM configurations are built as
 /// data.
 pub trait Runtime: Sync {
@@ -241,8 +249,7 @@ pub trait Runtime: Sync {
         &self,
         name: &str,
         init: &Path,
-        tty: bool,
-        workdir: Option<&Path>,
+        context: &ExecContext<'_>,
         argv: &[String],
     ) -> io::Result<ExitStatus>;
 
@@ -251,10 +258,9 @@ pub trait Runtime: Sync {
         &self,
         name: &str,
         init: &Path,
-        tty: bool,
-        workdir: Option<&Path>,
+        context: &ExecContext<'_>,
         argv: &[String],
-    ) -> std::process::Command;
+    ) -> io::Result<std::process::Command>;
 
     /// One box's OOM kills, memory and pids facts. `name` is the box
     /// `list` names. Fields the runtime cannot answer are `None`.

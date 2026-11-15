@@ -27,7 +27,8 @@
 //!   ENV (count u32, name and value each) sets the box's environment once,
 //!   answered ENV_SET; an EXEC that arrives first waits for it. EXEC is
 //!   argv (count u32, strings), workdir (empty for `/`), tty u8, rows u16,
-//!   cols u16, then TERM and COLORTERM (present u8, string when present), followed by STDIN,
+//!   cols u16, then TERM and COLORTERM (present u8, string when present),
+//!   agent label (present u8, string when present), followed by STDIN,
 //!   STDIN_END and RESIZE (rows u16, cols u16) frames; the guest sends
 //!   STDOUT, STDERR and finally EXIT (i32). STAT is answered STAT with the
 //!   work cgroup's memory current and peak, pids current and max, and OOM
@@ -420,10 +421,6 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
                 Some("noinit_itable"),
             )?;
             if attachment.writable && attachment.fresh {
-                // Only a newly formatted disk, before copies or guest work.
-                // rmdir cannot discard recovered files; failed removal leaves
-                // the directory for the strict scratch inspection to retain.
-                let _ = fs::remove_dir(target.join("lost+found"));
                 nix::unistd::chown(
                     &target,
                     Some(Uid::from_raw(request.uid)),
@@ -941,11 +938,22 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
     let workdir = fields.os()?;
     let tty = fields.u8()? != 0;
     let (rows, cols) = (fields.u16()?, fields.u16()?);
-    let mut terminal = Vec::new();
-    for name in ["TERM", "COLORTERM"] {
+    let mut metadata = super::ExecMetadata {
+        window: tty.then_some((rows, cols)),
+        ..Default::default()
+    };
+    for value in [&mut metadata.term, &mut metadata.colorterm] {
         if fields.u8()? != 0 {
-            terminal.push((OsString::from(name), fields.os()?));
+            *value = Some(fields.os()?.as_bytes().to_vec());
         }
+    }
+    if fields.u8()? != 0 {
+        metadata.agent = Some(
+            fields
+                .os()?
+                .into_string()
+                .map_err(|_| io::Error::other("non-UTF-8 agent label"))?,
+        );
     }
     fields.end()?;
     let Some(program) = argv.first() else {
@@ -954,7 +962,7 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
 
     // `init exec` restores the environment from Apple's transport names, so
     // a name that itself carries the prefix arrives exactly.
-    let transport = vars.into_iter().chain(terminal).map(|(name, value)| {
+    let transport = vars.into_iter().map(|(name, value)| {
         let mut key = OsString::from(super::BOX_ENV_PREFIX);
         key.push(name);
         let hex: String = value
@@ -973,6 +981,7 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
         .args(&argv)
         .env_clear()
         .envs(transport)
+        .env(super::EXEC_METADATA, metadata.encode())
         .current_dir(if workdir.is_empty() {
             OsStr::new("/")
         } else {

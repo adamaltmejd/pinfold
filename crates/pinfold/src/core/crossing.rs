@@ -15,7 +15,7 @@ use std::process::{Child, Command, Output, Stdio};
 
 use crate::core::r#box::RefusalReason;
 use crate::core::plan::valid_name;
-use crate::core::runtime::Runtime;
+use crate::core::runtime::{ExecContext, Runtime};
 use crate::dirs;
 
 /// A fetched bundle larger than this is refused as `limit`.
@@ -119,10 +119,9 @@ pub fn push(
     let mut command = runtime.exec_command(
         name,
         init,
-        false,
-        None,
+        &ExecContext::default(),
         &script(PUSH_SCRIPT, [guest_repo, remote]),
-    );
+    )?;
     command
         .stdin(File::open(&bundle.path)?)
         .stdout(Stdio::null())
@@ -156,8 +155,12 @@ pub fn fetch(
         .stdout,
     )
     .into_owned();
-    let mut command =
-        runtime.exec_command(name, init, false, None, &script(FETCH_SCRIPT, [guest_repo]));
+    let mut command = runtime.exec_command(
+        name,
+        init,
+        &ExecContext::default(),
+        &script(FETCH_SCRIPT, [guest_repo]),
+    )?;
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
