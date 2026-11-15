@@ -211,11 +211,11 @@ fn setup(args: &[String]) -> io::Result<()> {
                 };
                 let relative = Path::new(relative);
                 check_relative_directory(relative)?;
-                directories.push((open_directory(Path::new(root))?, relative));
+                directories.push((Path::new(root), relative));
             }
             "--fill" => {
                 let root = args.next().ok_or_else(|| io::Error::other(SETUP_USAGE))?;
-                fills.push(open_directory(Path::new(root))?);
+                fills.push(Path::new(root));
             }
             _ => return Err(io::Error::other(SETUP_USAGE)),
         }
@@ -238,11 +238,12 @@ fn setup(args: &[String]) -> io::Result<()> {
     }
     let mut input = io::stdin().lock();
     for root in fills {
+        let root = open_directory(root)?;
         nix::unistd::fchdir(&root)?;
         receive_into(Path::new("."), &mut input, false)?;
     }
     for (root, relative) in directories {
-        make_directories(root, relative)?;
+        make_directories(open_directory(root)?, relative)?;
     }
     Ok(())
 }
