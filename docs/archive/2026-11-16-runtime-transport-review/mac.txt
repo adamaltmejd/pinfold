@@ -1,0 +1,39 @@
+$ apple-review.py $BIN $IMAGE $MAIN809
+F4 closed stdout/stderr: main809=[141, 141]; fixed=[141, 141]; no infrastructure125
+F6 full nonblocking stderr: diagnostic failure exits125 without panic; same-descriptor command control exits0
+F3 native exit=0 observed through kqueue; caller output undrained; client signal=True result=0
+F3 native exit=23 observed through kqueue; caller output undrained; client signal=True result=23
+F5 native exit=23 observed through kqueue; caller output undrained; client signal=False result=23
+G1 native run killed at observed spawn before ready; startup failed and cleanup completed without hanging
+F3 forced-TTY pending1MiB input and immediate native exit: observed status=0
+F3 forced-TTY pending1MiB input and immediate native exit: observed status=23
+observed caller=/dev/ttys001 private=/dev/ttys007 iflag=801 oflag=3 lflag=41
+F1/F2 live private slave distinct, noncanonical, noecho, nosignals; parent master CLOEXEC; initialraw/atomic windows inspected
+F1 real forced-TTY wire retained CR, INTR and NUL exactly; guest exit0
+G2/G3 guest console stderr 96KiB completed; unexpected exit reports escaped last64KiB including TAIL-END
+G3 same console stderr on requested down is not printed; owner exit=0
+PASS selected real Apple review cases; fixture disks removed
+$ before-review34bb76a completed-status control
+F3 native exit=0 observed through kqueue; caller output undrained; client SIGTERM result=143
+$ mac-final-foreground
+exit=143 foreground-helper-settings-untouched=True; host-SIGTTOU=default; handed=True
+$ mac-final-tty
+PASS terminal review cases
+$ mac-final-terminal
+blocked-output queued=0; pinfold exited before draining
+PASS selected extra terminal cases; blocked-output=True
+PASS immediate dimensions, terminal identity, resize, termios and mutable-flag restoration
+$ mac-final-redirected
+PASS non-raw terminal preservation, execute-only cwd, symlink refusal and plain cwd
+$ mac-final-startup
+native run startup failure: exit=1; native diagnostic surfaced; newline/ESC escaped; 96KiB input truncated at 64KiB; state contains no diagnostic
+non-TTY early stdin closure: 1MiB input, observed exit=23
+non-TTY independent input: guest closed stdout, read all 1MiB, separate stderr count=1048576, exit=0
+corrected native startup: ready; stdin EOF teardown exit=0
+$ mac-final-lifecycle
+state-root-bytes=218; runtime=/private/tmp/pinfold-501/r-90891e03b1046ceaca85553a51b54805; modes=0700/0600
+A/B long-root crash recovery: unverifiable old prefix preserved byte for byte; fresh generation ran; restored complete marker allowed later cleanup; live witness survived
+binary I/O: all 1024 bytes equal; stderr separate
+PASS common cases; work=$W
+PR1 driver exit=0; stderr=b''
+PASS long-root lifecycle, private sockets and compatibility controls

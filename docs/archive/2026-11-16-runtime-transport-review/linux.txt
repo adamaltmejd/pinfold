@@ -1,0 +1,46 @@
+$ crash-windows.py $BIN $IMAGE; final full driver
+EXTERNAL-BARRIER {"case": "before-marker", "source_line": 156, "generation": "57644406e67d830ad7d96d4be1a7713203fedf40d8ff8eff3f2eb2ba63e3741d", "pid": 26566, "entries": [{"name": ".r-57644406e67d830ad7d96d4be1a7713203fedf40d8ff8eff3f2eb2ba63e3741d", "mode": "0o700", "socket": false, "children": []}, {"name": "cb3a08fe3bd10682a7771c5b246423513b39a289bd7cd990dca2aab6eee6fe7d.sock", "mode": "0o600", "socket": true, "children": []}]}
+$ '$BIN' box exec probe-crash-26561-before-marker -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+EXTERNAL-BARRIER {"case": "empty-marker", "source_line": 163, "generation": "a0bd4250322fda741034fb5789eeed25fc9dc5563976bc994765e0b2a6237404", "pid": 26603, "entries": [{"name": ".r-a0bd4250322fda741034fb5789eeed25fc9dc5563976bc994765e0b2a6237404", "mode": "0o700", "socket": false, "children": ["generation"]}, {"name": "54c7c89650da33ebc4afb5490b8f65cc2650a162f760265b60713f450c04bd7f.sock", "mode": "0o600", "socket": true, "children": []}]}
+$ '$BIN' box exec probe-crash-26561-empty-marker -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+EXTERNAL-BARRIER {"case": "after-marker-unlink", "source_line": 470, "generation": "a5995c55e8d72ccd75591e9b20f783da8792b38b0e86cb55eab2f5b9db33df0c", "pid": 26634, "entries": [{"name": ".d-a5995c55e8d72ccd75591e9b20f783da8792b38b0e86cb55eab2f5b9db33df0c", "mode": "0o700", "socket": false, "children": []}, {"name": "d71162d08caf3e21921319c64f11edfa0e40f23008a1a6a9350d6c461a0d66a7.sock", "mode": "0o600", "socket": true, "children": []}]}
+$ '$BIN' box exec probe-crash-26561-after-marker-unlink -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+EXTERNAL-BARRIER {"case": "bound-socket", "source_line": 637, "generation": "497f33224781286267976f85f922b2c9f850e44db1e1c1b15b5654d1cdd7754d", "pid": 26675, "entries": [{"name": "r-497f33224781286267976f85f922b2c9", "mode": "0o700", "socket": false, "children": ["generation", "v"]}, {"name": "86047c363f9ca45780393b84a5e17fc461f0e0d553e76477a8d6fa700a78febc.sock", "mode": "0o600", "socket": true, "children": []}, {"name": "v.sock_3128", "mode": "0o600", "socket": true, "children": []}]}
+$ '$BIN' box exec probe-crash-26561-bound-socket -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+EXTERNAL-BARRIER {"case": "legacy-wide-bind", "source_line": 383, "generation": "a77c081a70b345461acc0b60f5436bcf03ff0fdcaf5304dc3102bc6b0881bd20", "pid": 26710, "entries": [{"name": "r-a77c081a70b345461acc0b60f5436bcf", "mode": "0o700", "socket": false, "children": ["generation", "v"]}, {"name": "03e358f29818deb8d10017820f1edbdfe4bb00791a2f4a258df9f5bf72bd6a4d.sock", "mode": "0o755", "socket": true, "children": []}]}
+$ '$BIN' box exec probe-crash-26561-legacy-wide-bind -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+A legacy34bb76a killed after bind before chmod; wider socket recovered by fixed prune/start
+corrupt owner JSON stayed generic failed; fixture bytes unchanged
+$ '$BIN' box exec probe-crash-26561-corrupt-record -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+EXTERNAL-BARRIER {"case": "published-down", "source_line": 243, "generation": "e475e71e5a2e965700a927dea80de68dfc75ab6a06e14009a49bc2de03e704a8", "pid": 26764, "entries": [{"name": "1633d7d4f73b7dc8c034454601bf4368a005a67b28853685f36beb43006edd52.sock", "mode": "0o600", "socket": true, "children": []}], "down_connected": true, "down_wait": "unix_stream_read_generic"}
+$ '$BIN' box exec probe-crash-26561-published-down -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+EXTERNAL-BARRIER {"case": "retained-connect", "source_line": 275, "generation": "ec092f54b37c317f91aba350a597b1d31e8c763eaae133e1957b86108c381649", "pid": 26808, "entries": [{"name": "r-ec092f54b37c317f91aba350a597b1d3", "mode": "0o700", "socket": false, "children": ["generation", "v"]}, {"name": "1653cff9c29764afe318263d9fed63b235f22af3494cc2a022c2bccf77bd79b0.sock", "mode": "0o600", "socket": true, "children": []}, {"name": "v.sock", "mode": "0o600", "socket": true, "children": []}, {"name": "v.sock_1000", "mode": "0o600", "socket": true, "children": []}, {"name": "v.sock_3128", "mode": "0o600", "socket": true, "children": []}], "moved": "/tmp/pinfold-1000/probe-retained-ec092f54b37c317f91aba350a597b1d31e8c763eaae133e1957b86108c381649"}
+retained descriptor connected to real guest after path replacement; target bytes and entries unchanged
+EXTERNAL-BARRIER {"case": "retained-mount", "source_line": 151, "generation": "7fe12f3f41f26cbc61d33dd962be27304704dcf11a1727f1c045a22258194817", "pid": 26817, "entries": [{"name": "r-7fe12f3f41f26cbc61d33dd962be2730", "mode": "0o700", "socket": false, "children": ["generation", "v"]}, {"name": "15d26f4ffb11cffcc89caf486fcd6927ff4768ef6d904ee6ea9909adde5e638b.sock", "mode": "0o600", "socket": true, "children": []}, {"name": "v.sock_1000", "mode": "0o600", "socket": true, "children": []}, {"name": "v.sock_3128", "mode": "0o600", "socket": true, "children": []}], "moved": "/tmp/pinfold-1000/probe-retained-7fe12f3f41f26cbc61d33dd962be27304704dcf11a1727f1c045a22258194817"}
+B source-name replacement before namespace clone: VMM mounted retained inode; restored name booted and tore down; target unchanged
+EXTERNAL-BARRIER {"case": "continue-a", "source_line": 637, "generation": "43ac31cb73a1e6e593000978a4b9122b7324dc90c6ae4a391cacb81eab6b934d", "pid": 26839, "entries": [{"name": "r-43ac31cb73a1e6e593000978a4b9122b", "mode": "0o700", "socket": false, "children": ["generation", "v"]}, {"name": "fd631a0d8426ef59da668cef79b0ee874d084be1b458eaab9b654708d6ad7928.sock", "mode": "0o600", "socket": true, "children": []}, {"name": "v.sock_3128", "mode": "0o600", "socket": true, "children": []}]}
+EXTERNAL-BARRIER {"case": "continue-b", "source_line": 637, "generation": "08967dd3e51fcbaa616d11770b6e175f462b67359106495ad7d1279eb04d67ba", "pid": 26852, "entries": [{"name": "r-08967dd3e51fcbaa616d11770b6e175f", "mode": "0o700", "socket": false, "children": ["generation", "v"]}, {"name": "f108b723a7f423351c8d289f4075a8a15b9b864ffb6f31e4cb4715eb214ece2f.sock", "mode": "0o600", "socket": true, "children": []}, {"name": "v.sock_3128", "mode": "0o600", "socket": true, "children": []}]}
+exit=0 stdout=b'' stderr=b'pinfold: prune "probe-crash-26561-continue-b": runtime-path: socket generation is unverifiable\n'
+A prune continued after first unverifiable dead record, retired both claims, removed later valid generation and preserved foreign bytes
+EXTERNAL-BARRIER {"case": "decode-a", "source_line": 637, "generation": "66a31058b025ef99db49495d8edbe0b5bb64b2fb9345b2bb3792ed221ba85920", "pid": 26868, "entries": [{"name": "r-66a31058b025ef99db49495d8edbe0b5", "mode": "0o700", "socket": false, "children": ["generation", "v"]}, {"name": "2fa8dca79f068269dfc70111f86644bfe226686ad47b051a3586500deffd5781.sock", "mode": "0o600", "socket": true, "children": []}, {"name": "v.sock_3128", "mode": "0o600", "socket": true, "children": []}]}
+EXTERNAL-BARRIER {"case": "decode-b", "source_line": 637, "generation": "9a0eb8f620cfd09d74c57bd2646d1f0026cc99323c4c3baba108cda4021875ca", "pid": 26881, "entries": [{"name": "r-9a0eb8f620cfd09d74c57bd2646d1f00", "mode": "0o700", "socket": false, "children": ["generation", "v"]}, {"name": "02c029a996fbf9acbf1be572294d8a954b2afe1e0b324c33c6be2303b0a1b6cb.sock", "mode": "0o600", "socket": true, "children": []}, {"name": "v.sock_3128", "mode": "0o600", "socket": true, "children": []}]}
+exit=1 stdout=b'' stderr=b'pinfold: prune: ownership record Some("02c029a996fbf9acbf1be572294d8a954b2afe1e0b324c33c6be2303b0a1b6cb.owner"): EOF while parsing an object at line 1 column 1\npinfold: socket cleanup: recordless sweep skipped because an ownership record is unreadable\npinfold box: ownership record Some("02c029a996fbf9acbf1be572294d8a954b2afe1e0b324c33c6be2303b0a1b6cb.owner"): EOF while parsing an object at line 1 column 1\n'
+A malformed first owner JSON reported; later valid dead claim pruned; corrupt record and its generation bytes preserved; record-less sweep stayed closed
+$ '$BIN' box exec probe-crash-26561-decode-b -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+$ '$BIN' box exec probe-crash-26561-decode-a -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+recordless generation directories: measured delta=92 expected fixture bytes=92; full-role/marked leftovers swept; unverifiable prefix bytes preserved
+PASS real crash windows, generic failure, early down, retained connect and leftover inventory/sweep
+B root-owned parent0777 without sticky: real CLI refused runtime-path
+B same private parent corrected1777: real CLI succeeded; no host mounts or shared stores changed
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sda1        32G  6.5G   24G  22% /
+published-down={"case": "published-down", "down_connected": true, "down_err": "", "down_exit": 0, "down_out": "", "down_wait": "unix_stream_read_generic", "entries": [{"children": [], "mode": "0o600", "name": "1633d7d4f73b7dc8c034454601bf4368a005a67b28853685f36beb43006edd52.sock", "socket": true}], "exit": 0, "generation": "e475e71e5a2e965700a927dea80de68dfc75ab6a06e14009a49bc2de03e704a8", "pid": 26764, "source_line": 243}

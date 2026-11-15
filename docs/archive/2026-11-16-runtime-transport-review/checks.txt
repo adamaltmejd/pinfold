@@ -1,0 +1,21 @@
+$ macOS: RUSTC_WRAPPER= cargo build --locked
+Finished dev profile in 2.54s; exit=0
+$ macOS: RUSTC_WRAPPER= cargo fmt --check
+exit=0
+$ macOS: RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings
+Finished dev profile in 1.23s; exit=0
+$ Linux: cargo build --locked --target x86_64-unknown-linux-musl
+   Compiling pinfold v0.5.5 (/home/user/pinfold-transport/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.90s
+   Compiling pinfold v0.5.5 (/home/user/pinfold-transport/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.17s
+$ Linux: cargo fmt --check
+exit=0; no output
+$ Linux: cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings
+exit=0; completed output above
+$ /usr/sbin/DevToolsSecurity -status (with native access)
+Developer mode is currently disabled.
+$ fixture cleanup: each review driver's isolated disk rm --all --json
+8 review fixture roots: all exit=0; 8 leftover fixture disks removed
+$ df: Mac Data 36 GiB available; Linux 24 GiB available
+No image created/removed; active Linux lease retained; no push or PR.
