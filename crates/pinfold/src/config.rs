@@ -222,7 +222,7 @@ fn check_paths_outside(root: &Path, profile: Option<&Profile>) -> io::Result<()>
     ];
     if let Some(profile) = profile {
         let dir = config_dir.join("profiles").join(&profile.name);
-        for file in ["pinfold.toml", "Containerfile", "home"] {
+        for file in ["pinfold.toml", "Containerfile", "home", "share"] {
             paths.push(dir.join(file));
         }
         paths.push(dir);

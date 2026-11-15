@@ -24,8 +24,8 @@ use crate::pi::launch::utf8;
 /// malformed invocation, and one line at a time by [`syntax`].
 pub const USAGE: &str = "\
 pinfold -- CMD [args…]           run a command in this project's box
-pinfold push                     this checkout's branches into its pi box as refs/remotes/host/*
-pinfold fetch                    its pi box's branches into refs/remotes/pinfold/*
+pinfold push                     this checkout's branches into its box as refs/remotes/host/*
+pinfold fetch                    its box's branches into refs/remotes/pinfold/*
 pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this project's image, or a profile's; prints the ref
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]…   a caller's image from its own context; one JSON line
 pinfold image rm NAME            retire a caller image name; one JSON line

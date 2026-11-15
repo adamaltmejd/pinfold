@@ -10,6 +10,7 @@ use std::time::Duration;
 use nix::fcntl::{Flock, FlockArg};
 use serde::{Deserialize, Serialize};
 
+use crate::formatting::terminal_text;
 use crate::{cli, core, dirs};
 
 const REPOSITORY: &str = "https://api.github.com/repos/adamaltmejd/pinfold";
@@ -199,7 +200,10 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     fs::create_dir(&staging).map_err(|error| {
         io::Error::new(
             error.kind(),
-            format!("cannot stage update beside {}: {error}", path.display()),
+            format!(
+                "cannot stage update beside {}: {error}",
+                terminal_text(&path.to_string_lossy())
+            ),
         )
     })?;
     let result = install(&release, &path, &staging);
@@ -207,7 +211,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     result?;
     println!(
         "Updated pinfold {VERSION} to {release} at {}.",
-        path.display()
+        terminal_text(&path.to_string_lossy())
     );
     Ok(0)
 }
