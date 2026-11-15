@@ -87,3 +87,6 @@ PINFOLD_ALLOW without harness/login routes: comma-list default and explicit over
 $ actual origin/main baseline collector; /tmp/pf3-main-capacity.log
 origin/main a99c3be attachments=14 event=ready detail=exec-control
 origin/main a99c3be attachments=15 event=failed detail=box exited before ready: exit status: 1
+attachments=14 event=ready reason=None detail=exec-control-passed
+attachments=15 event=refused reason=spec detail=invalid box spec: a box attaches at most 14 disks and mounts, pinfold's own mounts included; this one has 15
+capacity owned boxes/disks removed; attachment 14 passed and 15 refused as spec

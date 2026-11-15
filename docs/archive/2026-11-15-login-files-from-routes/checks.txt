@@ -22,3 +22,9 @@ DEBIAN-SETUP-PACKAGES=build-essential,musl-tools,git,rustup,zstd installed
 $ file codex.path (Mac); readelf -h codex.path (Linux), from pinfold artifacts
 MAC-IDLE-IMAGE=cf81b3c683bc9d2ec4e9d62bca0e0036b040a0505d12ae67b7b9e46a1624524d
 LINUX-IDLE-IMAGE=sha256:c3fcc7196383513c54357c498ed5455059310b66aedf8cba9fa1b41c036bf9e2
+After A/B: Mac cargo fmt --check exit=0; cargo clippy --all-targets --locked -- -D warnings finished in 1.75s.
+Linux cargo build --locked --target x86_64-unknown-linux-musl finished in 11.61s; fmt exit=0; target Clippy finished in 4.11s, exit=0.
+PRODUCT-SOURCE-CONTENT-ID=d2ff3d214e42881d1d6a85534da43f4847837f84a396880238d106f614c44044 files=21 (same on both hosts, includes profile recipe).
+After A/B Mac fresh-home startup: ready generated-mounts=3 startup-seconds=1.363; startup owned box/home removed.
+After A/B Linux fresh-home startup: ready generated-mounts=3 startup-seconds=6.561; startup owned box/home removed. Command: accept.route for Claude, Codex and Pi-anthropic fixtures; accept.up; read all three generated files; accept.down; disk rm.
+STATIC-MUSL-NO-INTERP after A/B; final product source fingerprint still matches both hosts. Mac all-generated startup used the same collector calls.

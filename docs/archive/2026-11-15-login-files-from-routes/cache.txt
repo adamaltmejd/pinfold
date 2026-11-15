@@ -1,0 +1,43 @@
+$ container build --help; container builder --help; container builder status; container list --all
+Apple 1.7.1 exposes global --no-cache and --build-arg, no per-stage no-cache filter; ARG fallback used on both platforms.
+No build running; builder absent. Plain builder stop returned notFound; plain builder delete exited 0. No --force.
+$ df -g /System/Volumes/Data
+before reset: Available 16; after reset: Available 16; before first managed build: Available 15
+$ pinfold build --profile default [macOS, isolated /tmp/pfb.mac config/state]
+first-managed-default exit=0 seconds=42.939
+image id=5c0f8720149aecf267b1c9c00237c962864e75969f592e6adbd3fe312cd9a426 size=470400025
+$ du -sk '/Users/user/Library/Application Support/com.apple.container/containers/buildkit'
+2695560
+$ df -g /System/Volumes/Data
+after first build: Available 11; Mac builds paused under 12 GiB, then resumed at Available 18.
+$ P=target/debug/pinfold PROBE_ROOT=/tmp/pfb.cache python3 cache.py pairdefault [macOS]
+managed-build args=["--profile", "default"] exit=0 seconds=8.643
+managed-build args=["--profile", "default"] exit=0 seconds=5.345
+unchanged-pair stable-id=true builder-bytes=[3164450816, 3543425024]
+successful-default-build-native-history exit=0; #4 CACHED; #5 0.048 resolving stable agent releases; #6 CACHED; #7 CACHED; #8 CACHED
+native-progress resolve-executed=True base-cached=True installer-state=CACHED [failed final RUN, no publication; platform-prefix parser corrected]
+$ P=target/x86_64-unknown-linux-musl/debug/pinfold PROBE_ROOT=/tmp/pfb.cache python3 cache.py pairdefault [Linux]
+first-managed-default seconds=157.977 exit=0
+managed-build args=["--profile", "default"] exit=0 seconds=30.559 audit-discovery=4 audit-assets=0 audit-debian=0
+managed-build args=["--profile", "default"] exit=0 seconds=30.71 audit-discovery=4 audit-assets=0 audit-debian=0
+unchanged-pair stable-id=true id=sha256:38a58fe2971548ca980f1f7a01cd38d01cde80987fa6fa23a201434eb036cd61
+native-progress resolve-executed=True base-cached=True installer-state=CACHED
+$ python3 cache.py changed [Linux, isolated publisher-release probe]
+publisher-confirmed existing stable release v1.5.1; native-progress resolve-executed=True base-cached=True installer-state=DONE
+changed-release installer-executed apt-cached corrected-publication=true; published Pi=1.5.1 Claude=2.1.311 Codex=0.169.0
+$ python3 cache.py nocache [Linux]
+managed-build args=["--profile", "default", "--no-cache"] exit=0 seconds=151.937 audit-discovery=5 audit-assets=4 audit-debian=53
+managed --no-cache completed full rebuild; image-changed=true Debian-network=True
+$ python3 cache.py fullprojectpair [Linux]
+First attempt: profile published; project failed with No space left on device. The fixed 8 GiB cache held prior release/no-cache probe layers.
+Idle leased-VM cache.ext4 removed; published images retained. Full image launched afterwards with Pi1.5.2/Claude2.1.311/Codex0.169.0.
+managed-build args=[] exit=0 seconds=282.093 audit-discovery=5 audit-assets=6 audit-debian=120
+managed-build args=[] exit=0 seconds=77.319 audit-discovery=4 audit-assets=0 audit-debian=0
+full-derived-project pair-stable=true profile=sha256:9a27917b0585d315f03f58f6d491300edcf30c0b77e36d15b46ff47d8019508e project=sha256:15d209f8b6b81054f9e8eb85c3f5c580bb2b92dcaa128bd8c19656c541fd7bd1 launch-no-image-outdated=true
+project-failure refs-preserved=true profile-publication-reported=true corrected-build=true (failure 46.247s; correction 68.911s)
+$ python3 cache.py missing [Linux]; initial probe expected a 404 line, but the bounded native tail retains curl HTTP exit 22, not the status text; corrected the observer and repeated.
+missing-download curl-HTTP-exit22 refs-preserved=true corrected-build=true (failure 10.809s; correction 31.076s)
+$ python3 cache.py denied [Linux]; initial admitted control exhausted host backing space; idle cache reset and checkout Cargo intermediates removed; all images retained.
+denied-host HTTP403 reason=not allowlisted refs-preserved=true explicitly-admitted-correction=true (37.098s denied; 92.907s admitted)
+Final: MAC owned-state-roots=28 remaining-disks=0; container list --all: buildkit only. LINUX owned-state-roots=17 remaining-disks=0; no pinfold/firecracker processes.
+Final df: Mac Data Available 13 GiB; Linux / 9.9G and /tmp 1.9G available. Linux cache resets were between cases; the full-project pair retained its cache throughout.
