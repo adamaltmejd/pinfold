@@ -589,14 +589,23 @@ process. Getting further needs a host kernel bug.
   succeed. Initial guest dimensions are applied once before CMD; a required
   guest terminal ioctl failure fails execution.
 - The foreground project command owns its terminal and command transport.
-  Apple TTY execution gives the native client a private host PTY; only
-  pinfold changes the caller's terminal. No native Apple client holds a
+  Apple TTY execution gives the native client a private host PTY, opened
+  close-on-exec with its slave raw before spawn; only pinfold changes the
+  caller's terminal. No native Apple client holds a
   caller-terminal descriptor. Non-TTY Apple execution uses separate pipes.
   The box-owning native client's stderr is piped. Startup diagnostics retain
-  at most 64 KiB in memory, are escaped with the shared helper when printed,
-  and are never written to a file. Cancellation and teardown close that pipe
-  before reaping the client. Linux uses pinfold's vsock transport. Non-TTY
-  execution preserves separate byte streams.
+  at most 64 KiB in memory. Before ready, stdout EOF or native-client exit
+  starts a one-second failure deadline even if a descendant holds stderr.
+  After ready, stderr drains continuously and retains its latest 64 KiB in
+  memory, reported only on an unexpected native-client exit. Diagnostics
+  are escaped with the shared helper when printed and never written to a
+  file. Cancellation and teardown close that pipe before reaping the client.
+  Linux uses pinfold's vsock transport. Non-TTY execution preserves separate
+  byte streams. Closing a non-TTY output consumer closes its native pipe so
+  the native client observes SIGPIPE; pinfold retains the client's status.
+  An observed native exec status survives later relay failure or cancellation.
+  After native exec exits, remaining output drains to EOF or a one-second
+  deadline; a descendant holding an endpoint cannot retain the client.
   Both platforms restore only termios this execution changed. Restoration
   checks that its process group owns the foreground terminal before writing.
   A non-raw execution leaves later terminal settings alone. Handled

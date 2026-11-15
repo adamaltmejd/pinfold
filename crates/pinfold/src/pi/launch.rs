@@ -453,10 +453,16 @@ fn run_box(
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         #[cfg(not(target_os = "linux"))]
         let exec_cancel = cancel.clone();
+        #[cfg(not(target_os = "linux"))]
+        let exec_started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(not(target_os = "linux"))]
+        let worker_started = exec_started.clone();
         let mut exec = tokio::task::spawn_blocking(move || {
             if repository {
                 sync(&name, &init, &root);
             }
+            #[cfg(not(target_os = "linux"))]
+            worker_started.store(true, std::sync::atomic::Ordering::SeqCst);
             let context = ExecContext {
                 cwd: Some(&workdir),
                 tty,
@@ -467,7 +473,8 @@ fn run_box(
             };
             box_runtime.exec(&name, &init, &context, &argv)
         });
-        let (ended, completed) = tokio::select! {
+        #[allow(unused_mut)]
+        let (mut ended, mut completed) = tokio::select! {
             // A completed command wins over a concurrent stop.
             biased;
             status = &mut exec => (status
@@ -483,8 +490,20 @@ fn run_box(
             }), false),
             signal = signals.recv() => (Ok((Shutdown::Signal.terminal(), 128 + signal as i32)), false),
         };
-        cancel.store(true, std::sync::atomic::Ordering::Release);
+        cancel.store(true, std::sync::atomic::Ordering::SeqCst);
         crate::core::runtime::terminal::cancel();
+        #[cfg(not(target_os = "linux"))]
+        if !completed && exec_started.load(std::sync::atomic::Ordering::SeqCst) {
+            // A sync still in progress needs teardown first. A started exec is
+            // cancellable and restores shared flags before teardown diagnostics.
+            if let Ok(Ok(status)) = (&mut exec).await {
+                ended = Ok((
+                    Terminal { reason: "sessions-ended", detail: Some(status.to_string()) },
+                    cli::exit_code(status),
+                ));
+            }
+            completed = true;
+        }
         // A failed teardown must preserve an observed command failure.
         let (terminal, code) = match ended {
             Ok((terminal, code)) => (Some(terminal), Ok(code)),

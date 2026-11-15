@@ -109,7 +109,9 @@ Apple TTY execution uses a private host PTY; pinfold owns the caller's
 terminal settings and forwards input and window changes. Native Apple clients
 hold no caller-terminal descriptors; non-TTY streams use separate pipes.
 The box-owning client's startup diagnostics stay in memory, bounded to 64 KiB,
-and are escaped when printed. Cancellation and teardown close its stderr pipe.
+and are escaped when printed. After ready, its latest 64 KiB of stderr stays
+in memory and is printed, escaped, only if the box ends unexpectedly.
+Cancellation and teardown close its stderr pipe.
 
 Runtime sockets use private directories under `/tmp/pinfold-<uid>` (`/private/tmp` on macOS),
 independently of XDG state-root length. Unsafe socket paths refuse as

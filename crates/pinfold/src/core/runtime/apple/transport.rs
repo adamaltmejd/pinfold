@@ -1,14 +1,17 @@
 //! Native exec uses private endpoints; pinfold alone holds caller stdio.
 
-use std::io;
+use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use nix::libc;
 
 use crate::core::runtime::terminal::{Raw, Winch, window};
+
+const EXIT_DRAIN: Duration = Duration::from_secs(1);
 
 pub(super) fn exec(
     mut command: Command,
@@ -16,7 +19,7 @@ pub(super) fn exec(
     tty: bool,
     cancel: Option<&AtomicBool>,
 ) -> io::Result<ExitStatus> {
-    let cancelled = || cancel.is_some_and(|flag| flag.load(Ordering::Acquire));
+    let cancelled = || cancel.is_some_and(|flag| flag.load(Ordering::SeqCst));
     let interrupted = || io::Error::new(io::ErrorKind::Interrupted, "terminal execution cancelled");
     if cancelled() {
         return Err(interrupted());
@@ -80,12 +83,25 @@ pub(super) fn exec(
         let mut output = Buffer::new();
         let mut errors = Buffer::new();
         let (mut stdin_open, mut output_open, mut stderr_open) = (true, true, true);
+        let mut drain = None;
         loop {
-            if cancelled() {
-                return Err(interrupted());
-            }
             if status.is_none() {
                 status = client.0.try_wait()?;
+                if status.is_some() {
+                    drain = Some(Instant::now() + EXIT_DRAIN);
+                    stdin_open = false;
+                    input.discard();
+                    if !tty {
+                        client.close(input_fd);
+                    }
+                    input_fd = -1;
+                }
+            }
+            if cancelled() {
+                return status.map_or_else(|| Err(interrupted()), Ok);
+            }
+            if drain.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Ok(status.expect("drain follows observed exit"));
             }
             if let Some(status) = status
                 && !output_open
@@ -113,7 +129,13 @@ pub(super) fn exec(
                 ),
             ];
             // A finite poll lets cancellation interrupt even a full host output pipe.
-            let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, 100) };
+            let timeout = drain.map_or(100, |deadline| {
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis()
+                    .min(100) as i32
+            });
+            let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
             if ready < 0 {
                 let error = io::Error::last_os_error();
                 if error.kind() == io::ErrorKind::Interrupted {
@@ -146,21 +168,45 @@ pub(super) fn exec(
             if fds[3].revents != 0
                 && let Err(error) = input.write(input_fd)
             {
-                if !tty && error.raw_os_error() == Some(libc::EPIPE) {
+                if matches!(error.raw_os_error(), Some(libc::EPIPE | libc::EIO)) {
                     stdin_open = false;
-                    input.start = input.end;
+                    input.discard();
+                    if !tty {
+                        client.close(input_fd);
+                    }
+                    input_fd = -1;
                 } else {
                     return Err(error);
                 }
             }
-            if fds[4].revents != 0 {
-                output.write(1)?;
+            if fds[4].revents != 0
+                && let Err(error) = output.write(1)
+            {
+                if !tty && error.raw_os_error() == Some(libc::EPIPE) {
+                    output.discard();
+                    output_open = false;
+                    client.close(output_fd);
+                } else {
+                    return Err(error);
+                }
             }
-            if fds[5].revents != 0 {
-                errors.write(2)?;
+            if fds[5].revents != 0
+                && let Err(error) = errors.write(2)
+            {
+                if !tty && error.raw_os_error() == Some(libc::EPIPE) {
+                    errors.discard();
+                    stderr_open = false;
+                    client.close(error_fd);
+                } else {
+                    return Err(error);
+                }
             }
-            if !tty && !stdin_open && input.empty() && input_fd >= 0 {
-                client.1.retain(|fd| fd.as_raw_fd() != input_fd);
+            if tty && !output_open {
+                stdin_open = false;
+                input.discard();
+                input_fd = -1;
+            } else if !tty && !stdin_open && input.empty() && input_fd >= 0 {
+                client.close(input_fd);
                 input_fd = -1;
             }
         }
@@ -168,9 +214,9 @@ pub(super) fn exec(
     // The client is reaped before restoring shared caller file flags.
     let restored = flags.restore();
     let result = match (result, status) {
-        (Err(error), Some(status)) if !status.success() => {
+        (Err(error), Some(status)) => {
             if error.kind() != io::ErrorKind::Interrupted {
-                eprintln!("pinfold: terminal transport: {error}");
+                notice(format_args!("terminal transport: {error}"));
             }
             Ok(status)
         }
@@ -183,7 +229,7 @@ pub(super) fn exec(
             if result.as_ref().is_ok_and(ExitStatus::success) {
                 Err(error)
             } else {
-                eprintln!("pinfold: {error}");
+                notice(&error);
                 result
             }
         }
@@ -212,25 +258,47 @@ fn resize(fd: RawFd, (rows, cols): (u16, u16)) -> io::Result<()> {
 }
 
 fn private_pty(size: Option<(u16, u16)>) -> io::Result<(OwnedFd, OwnedFd)> {
-    let (mut master, mut slave) = (-1, -1);
-    // SAFETY: openpty fills two descriptors; no name or inherited termios is requested.
+    // CLOEXEC is part of each open, including before another thread can fork.
+    let master = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
+    if master < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let master = unsafe { OwnedFd::from_raw_fd(master) };
+    if unsafe { libc::grantpt(master.as_raw_fd()) } < 0
+        || unsafe { libc::unlockpt(master.as_raw_fd()) } < 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // Darwin has no ptsname_r; the ioctl fills a caller-owned name buffer.
+    let mut name = [0 as libc::c_char; 128];
     if unsafe {
-        libc::openpty(
-            &mut master,
-            &mut slave,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
+        libc::ioctl(
+            master.as_raw_fd(),
+            libc::TIOCPTYGNAME as _,
+            name.as_mut_ptr(),
         )
     } < 0
     {
         return Err(io::Error::last_os_error());
     }
-    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
-    for fd in [&master, &slave] {
-        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
+    let slave = unsafe {
+        libc::open(
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+        )
+    };
+    if slave < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let slave = unsafe { OwnedFd::from_raw_fd(slave) };
+    let mut raw: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(slave.as_raw_fd(), &mut raw) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    unsafe { libc::cfmakeraw(&mut raw) };
+    // Early input must not echo, transform, or signal the private foreground group.
+    if unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &raw) } < 0 {
+        return Err(io::Error::last_os_error());
     }
     if let Some(size) = size {
         resize(master.as_raw_fd(), size)?;
@@ -239,6 +307,17 @@ fn private_pty(size: Option<(u16, u16)>) -> io::Result<(OwnedFd, OwnedFd)> {
 }
 
 struct Client(Child, Vec<OwnedFd>);
+
+impl Client {
+    fn close(&mut self, fd: RawFd) {
+        self.1.retain(|endpoint| endpoint.as_raw_fd() != fd);
+    }
+}
+
+fn notice(message: impl std::fmt::Display) {
+    // Restoration can fail with stderr still nonblocking or already closed.
+    let _ = writeln!(io::stderr().lock(), "pinfold: {message}");
+}
 
 impl Drop for Client {
     fn drop(&mut self) {
@@ -271,7 +350,7 @@ impl Flags {
         });
         if let Err(error) = configured {
             if let Err(restore) = flags.restore() {
-                eprintln!("pinfold: restore terminal file flags: {restore}");
+                notice(format_args!("restore terminal file flags: {restore}"));
             }
             return Err(error);
         }
@@ -311,6 +390,10 @@ impl Buffer {
     }
     fn empty(&self) -> bool {
         self.start == self.end
+    }
+
+    fn discard(&mut self) {
+        self.start = self.end;
     }
 
     fn read(&mut self, fd: RawFd) -> io::Result<bool> {

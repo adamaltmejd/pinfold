@@ -58,7 +58,7 @@ pinfold box fetch BOX --repo GUEST_REPO --into REPO";
 
 pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
     result.unwrap_or_else(|error| {
-        eprintln!("pinfold {verb}: {error}");
+        let _ = writeln!(io::stderr(), "pinfold {verb}: {error}");
         if verb == "--" { 125 } else { 1 }
     })
 }
