@@ -1,4 +1,4 @@
-//! Apple's native client owns only this private terminal, never the caller's.
+//! Native exec uses private endpoints; pinfold alone holds caller stdio.
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -13,6 +13,7 @@ use crate::core::runtime::terminal::{Raw, Winch, window};
 pub(super) fn exec(
     mut command: Command,
     size: Option<(u16, u16)>,
+    tty: bool,
     cancel: Option<&AtomicBool>,
 ) -> io::Result<ExitStatus> {
     let cancelled = || cancel.is_some_and(|flag| flag.load(Ordering::Acquire));
@@ -20,30 +21,34 @@ pub(super) fn exec(
     if cancelled() {
         return Err(interrupted());
     }
-    let (master, slave) = private_pty(size)?;
-    let winch = Winch::install()?;
-    let _raw = Raw::enter()?;
-    crate::core::pipe::nonblocking(&master, "private terminal")?;
-    let master_fd = master.as_raw_fd();
+    let private = tty.then(|| private_pty(size)).transpose()?;
+    let winch = tty.then(Winch::install).transpose()?;
+    let _raw = if tty { Raw::enter()? } else { None };
     let mut flags = Flags::nonblocking(&[0, 1, 2])?;
     let mut status = None;
     let result = (|| {
-        command
-            .stdin(Stdio::from(slave.try_clone()?))
-            .stdout(Stdio::from(slave))
-            .stderr(Stdio::piped());
-        // SAFETY: only async-signal-safe syscalls run between fork and exec.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() < 0
-                    || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0
-                    || libc::tcsetpgrp(0, libc::getpgrp()) < 0
-                {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
+        let master = if let Some((master, slave)) = private {
+            command
+                .stdin(Stdio::from(slave.try_clone()?))
+                .stdout(Stdio::from(slave));
+            // SAFETY: only async-signal-safe syscalls run between fork and exec.
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() < 0
+                        || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0
+                        || libc::tcsetpgrp(0, libc::getpgrp()) < 0
+                    {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            Some(master)
+        } else {
+            command.stdin(Stdio::piped()).stdout(Stdio::piped());
+            None
+        };
+        command.stderr(Stdio::piped());
         if cancelled() {
             return Err(interrupted());
         }
@@ -51,15 +56,30 @@ pub(super) fn exec(
             command
                 .spawn()
                 .map_err(|error| super::spawn_error("container", error))?,
-            Some(master),
+            Vec::new(),
         );
         drop(command);
-        let stderr = client.0.stderr.take().expect("native stderr is piped");
-        crate::core::pipe::nonblocking(&stderr, "native stderr")?;
+        let (mut input_fd, output_fd) = if let Some(master) = master {
+            let fd = master.as_raw_fd();
+            client.1.push(master);
+            (fd, fd)
+        } else {
+            let input = OwnedFd::from(client.0.stdin.take().expect("native stdin is piped"));
+            let output = OwnedFd::from(client.0.stdout.take().expect("native stdout is piped"));
+            let fds = (input.as_raw_fd(), output.as_raw_fd());
+            client.1.extend([input, output]);
+            fds
+        };
+        let stderr = OwnedFd::from(client.0.stderr.take().expect("native stderr is piped"));
+        let error_fd = stderr.as_raw_fd();
+        client.1.push(stderr);
+        for endpoint in &client.1 {
+            crate::core::pipe::nonblocking(endpoint, "native exec")?;
+        }
         let mut input = Buffer::new();
         let mut output = Buffer::new();
         let mut errors = Buffer::new();
-        let (mut stdin_open, mut master_open, mut stderr_open) = (true, true, true);
+        let (mut stdin_open, mut output_open, mut stderr_open) = (true, true, true);
         loop {
             if cancelled() {
                 return Err(interrupted());
@@ -68,7 +88,7 @@ pub(super) fn exec(
                 status = client.0.try_wait()?;
             }
             if let Some(status) = status
-                && !master_open
+                && !output_open
                 && !stderr_open
                 && output.empty()
                 && errors.empty()
@@ -76,17 +96,21 @@ pub(super) fn exec(
                 return Ok(status);
             }
             let mut fds = [
-                pollfd(0, stdin_open && master_open && input.empty(), libc::POLLIN),
-                pollfd(master_fd, master_open && output.empty(), libc::POLLIN),
                 pollfd(
-                    stderr.as_raw_fd(),
-                    stderr_open && errors.empty(),
+                    0,
+                    stdin_open && input_fd >= 0 && (!tty || output_open) && input.empty(),
                     libc::POLLIN,
                 ),
-                pollfd(master_fd, master_open && !input.empty(), libc::POLLOUT),
+                pollfd(output_fd, output_open && output.empty(), libc::POLLIN),
+                pollfd(error_fd, stderr_open && errors.empty(), libc::POLLIN),
+                pollfd(input_fd, input_fd >= 0 && !input.empty(), libc::POLLOUT),
                 pollfd(1, !output.empty(), libc::POLLOUT),
                 pollfd(2, !errors.empty(), libc::POLLOUT),
-                pollfd(winch.read.as_raw_fd(), true, libc::POLLIN),
+                pollfd(
+                    winch.as_ref().map_or(-1, |winch| winch.read.as_raw_fd()),
+                    winch.is_some(),
+                    libc::POLLIN,
+                ),
             ];
             // A finite poll lets cancellation interrupt even a full host output pipe.
             let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, 100) };
@@ -97,7 +121,7 @@ pub(super) fn exec(
                 }
                 return Err(error);
             }
-            if fds[6].revents != 0 {
+            if let Some(winch) = winch.as_ref().filter(|_| fds[6].revents != 0) {
                 let mut bytes = [0; 64];
                 unsafe {
                     libc::read(
@@ -107,26 +131,37 @@ pub(super) fn exec(
                     )
                 };
                 if let Some(size) = window()? {
-                    resize(master_fd, size)?;
+                    resize(output_fd, size)?;
                 }
             }
             if fds[0].revents != 0 {
                 stdin_open = input.read(0)?;
             }
             if fds[1].revents != 0 {
-                master_open = output.read(master_fd)?;
+                output_open = output.read(output_fd)?;
             }
             if fds[2].revents != 0 {
-                stderr_open = errors.read(stderr.as_raw_fd())?;
+                stderr_open = errors.read(error_fd)?;
             }
-            if fds[3].revents != 0 {
-                input.write(master_fd)?;
+            if fds[3].revents != 0
+                && let Err(error) = input.write(input_fd)
+            {
+                if !tty && error.raw_os_error() == Some(libc::EPIPE) {
+                    stdin_open = false;
+                    input.start = input.end;
+                } else {
+                    return Err(error);
+                }
             }
             if fds[4].revents != 0 {
                 output.write(1)?;
             }
             if fds[5].revents != 0 {
                 errors.write(2)?;
+            }
+            if !tty && !stdin_open && input.empty() && input_fd >= 0 {
+                client.1.retain(|fd| fd.as_raw_fd() != input_fd);
+                input_fd = -1;
             }
         }
     })();
@@ -203,13 +238,13 @@ fn private_pty(size: Option<(u16, u16)>) -> io::Result<(OwnedFd, OwnedFd)> {
     Ok((master, slave))
 }
 
-struct Client(Child, Option<OwnedFd>);
+struct Client(Child, Vec<OwnedFd>);
 
 impl Drop for Client {
     fn drop(&mut self) {
         let _ = self.0.kill();
         // Closing the master releases a native client draining its slave on exit.
-        self.1.take();
+        self.1.clear();
         let _ = self.0.wait();
     }
 }

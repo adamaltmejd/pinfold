@@ -1,8 +1,12 @@
-$ python3 terminal-cases.py $BIN localhost/pinfold/profile-default:latest diagnose
+$ git archive 809fc36 Cargo.toml Cargo.lock rust-toolchain.toml crates profile | tar -x -C /tmp/pfrt-main/src
+$ RUSTC_WRAPPER= cargo build --locked --manifest-path /tmp/pfrt-main/src/Cargo.toml
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.06s
+$ python3 terminal-cases.py /tmp/pfrt-main/src/target/debug/pinfold $IMAGE diagnose
 extra-terminal platform=darwin
-BLOCKED_CLIENT=75440 queued=0
-BLOCKED_CHILDREN=['75520 75440 S+   -      /opt/homebrew/Cellar/container/1.7.1_1/libexec/container']
-RuntimeError: blocked client did not exit before draining
+BLOCKED_CLIENT=83757 queued=0
+AssertionError
+baseline: kqueue NOTE_EXIT did not arrive by the 60-second harness deadline
+$ samples from the first transport implementation, before the approved extension
 $ sample <remaining native child> 1 10 -file native.sample
 +                       86 mach_msg_overwrite  (in libsystem_kernel.dylib) + 480  [0x1852aca28]
 +                   86 closure #2 in static ProgressBar.restoreCursorAtExit()  (in container) + 340  [0x103f0d434]

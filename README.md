@@ -106,8 +106,12 @@ pass through; project setup failure or external teardown before observed complet
 pinfold diagnostics use stderr.
 
 Apple TTY execution uses a private host PTY; pinfold owns the caller's
-terminal settings and forwards input and window changes. Runtime sockets
-use private directories under `/tmp/pinfold-<uid>` (`/private/tmp` on macOS),
+terminal settings and forwards input and window changes. Native Apple clients
+hold no caller-terminal descriptors; non-TTY streams use separate pipes.
+The box-owning client's startup diagnostics stay in memory, bounded to 64 KiB,
+and are escaped when printed. Cancellation and teardown close its stderr pipe.
+
+Runtime sockets use private directories under `/tmp/pinfold-<uid>` (`/private/tmp` on macOS),
 independently of XDG state-root length. Unsafe socket paths refuse as
 `runtime-path`.
 

@@ -590,8 +590,13 @@ process. Getting further needs a host kernel bug.
   guest terminal ioctl failure fails execution.
 - The foreground project command owns its terminal and command transport.
   Apple TTY execution gives the native client a private host PTY; only
-  pinfold changes the caller's terminal. Linux uses pinfold's vsock
-  transport. Non-TTY execution preserves separate byte streams.
+  pinfold changes the caller's terminal. No native Apple client holds a
+  caller-terminal descriptor. Non-TTY Apple execution uses separate pipes.
+  The box-owning native client's stderr is piped. Startup diagnostics retain
+  at most 64 KiB in memory, are escaped with the shared helper when printed,
+  and are never written to a file. Cancellation and teardown close that pipe
+  before reaping the client. Linux uses pinfold's vsock transport. Non-TTY
+  execution preserves separate byte streams.
   Both platforms restore only termios this execution changed. Restoration
   checks that its process group owns the foreground terminal before writing.
   A non-raw execution leaves later terminal settings alone. Handled

@@ -494,7 +494,7 @@ fn run_box(
         let down = box_.down(terminal).await;
         // Apple must reap its native client before main restores shared flags.
         #[cfg(not(target_os = "linux"))]
-        if tty && !completed {
+        if !completed {
             let _ = exec.await;
         }
         #[cfg(target_os = "linux")]

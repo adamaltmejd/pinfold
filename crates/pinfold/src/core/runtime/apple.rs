@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 #[cfg(not(target_os = "linux"))]
 use nix::libc;
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::process::{Child, ChildStderr, Command};
 
 use crate::core::disk::{self, Directory, Fill, Seeding};
 use crate::core::image::service::inspect;
@@ -26,6 +26,7 @@ use crate::core::runtime::{
 };
 use crate::core::{clean, ownership};
 use crate::dirs;
+use crate::formatting::terminal_text;
 use crate::init::BOX_ENV_PREFIX;
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
@@ -35,7 +36,7 @@ pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
 pub struct Apple;
 
 #[cfg(not(target_os = "linux"))]
-mod tty;
+mod transport;
 
 /// `container exec -i` changes its inherited stdin's shared file flags.
 /// Save them in the command owner, which can outlive an interrupted exec.
@@ -109,7 +110,8 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
         .arg(format!("{uid}:{gid}"))
         .args(["--progress", "none"])
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped());
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(socket) = proxy_socket {
         // Off-label: the runtime treats the socket as an SSH agent and
         // forwards it to GUEST_PROXY_SOCKET.
@@ -155,7 +157,10 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
         .args(proxy_socket.map(|_| GUEST_PROXY_SOCKET));
     command
         .spawn()
-        .map(Client)
+        .map(|mut child| {
+            let stderr = child.stderr.take();
+            Client(child, stderr)
+        })
         .map_err(|error| spawn_error("container", error))
 }
 
@@ -187,7 +192,9 @@ fn init_mount(init: &Path) -> OsString {
 
 /// The attached `container run` process that owns a box.
 #[cfg_attr(target_os = "linux", expect(dead_code))]
-pub struct Client(Child);
+pub struct Client(Child, Option<ChildStderr>);
+
+const STARTUP_DIAGNOSTICS: usize = 64 * 1024;
 
 #[cfg_attr(target_os = "linux", expect(dead_code))]
 impl Client {
@@ -199,12 +206,34 @@ impl Client {
             .take()
             .ok_or("the runtime did not pipe the box's stdout")?;
         let mut lines = BufReader::new(stdout).lines();
+        let mut diagnostics = Vec::with_capacity(STARTUP_DIAGNOSTICS);
+        let mut bytes = [0; 8192];
+        let mut ended = false;
         loop {
-            match lines.next_line().await {
-                Ok(Some(line)) if line == "ready" => break,
-                Ok(Some(_)) => {}
-                Ok(None) => return Err("box exited before ready".to_string()),
-                Err(error) => return Err(format!("box output failed: {error}")),
+            if ended && self.1.is_none() {
+                let diagnostic = terminal_text(&String::from_utf8_lossy(&diagnostics));
+                return Err(if diagnostic.is_empty() {
+                    "box exited before ready".to_string()
+                } else {
+                    format!("box exited before ready: {diagnostic}")
+                });
+            }
+            tokio::select! {
+                line = lines.next_line(), if !ended => match line {
+                    Ok(Some(line)) if line == "ready" => break,
+                    Ok(Some(_)) => {}
+                    Ok(None) => ended = true,
+                    Err(error) => return Err(format!("box output failed: {error}")),
+                },
+                read = async { self.1.as_mut().unwrap().read(&mut bytes).await }, if self.1.is_some() => {
+                    match read {
+                        Ok(0) | Err(_) => { self.1.take(); }
+                        Ok(count) => {
+                            let keep = count.min(STARTUP_DIAGNOSTICS - diagnostics.len());
+                            diagnostics.extend_from_slice(&bytes[..keep]);
+                        }
+                    }
+                }
             }
         }
         // Keep the pipe drained so a talkative box cannot block on it.
@@ -214,12 +243,21 @@ impl Client {
 
     /// Wait until the box ends on its own or is stopped.
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
-        self.0.wait().await
+        let mut bytes = [0; 8192];
+        loop {
+            tokio::select! {
+                status = self.0.wait() => return status,
+                read = async { self.1.as_mut().unwrap().read(&mut bytes).await }, if self.1.is_some() => {
+                    if !matches!(read, Ok(1..)) { self.1.take(); }
+                }
+            }
+        }
     }
 
     /// Stop and remove a ready box. True when the stop was one pinfold
     /// requested of a running box, which syncs its disks.
     pub async fn down(&mut self, name: &str) -> io::Result<bool> {
+        self.1.take();
         let requested = matches!(self.0.try_wait(), Ok(None));
         // Runtime removal waits for attached output to close. Keep its
         // drain running on the owner while the runtime command blocks.
@@ -235,6 +273,7 @@ impl Client {
     /// Stop a start that ended before ready and remove its box, returning
     /// whether the stop synced its disks and how the box ended.
     pub async fn abort(mut self, name: &str) -> (io::Result<bool>, io::Result<ExitStatus>) {
+        self.1.take();
         let requested = matches!(self.0.try_wait(), Ok(None));
         // The client goes first, so one still creating the box cannot
         // finish after the removal. The box exists by name even when
@@ -392,9 +431,8 @@ impl Runtime for Apple {
         };
         let command = exec_command(name, init, context, argv, size)?;
         #[cfg(not(target_os = "linux"))]
-        if context.tty {
-            return tty::exec(command, size, context.cancel);
-        }
+        return transport::exec(command, size, context.tty, context.cancel);
+        #[cfg(target_os = "linux")]
         { command }
             .status()
             .map_err(|error| spawn_error("container", error))

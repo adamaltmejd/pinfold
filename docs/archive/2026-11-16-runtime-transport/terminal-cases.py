@@ -16,8 +16,8 @@ source = source.replace('                    pidfd = os.pidfd_open(cmd_pid)', ''
                         queue.control([select.kevent(cmd_pid, filter=select.KQ_FILTER_PROC,
                             flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT, fflags=select.KQ_NOTE_EXIT)], 0, 0)
                         os.kill(cmd_pid, signal.SIGTERM)
-                        events = queue.control(None, 1, 5 if len(args)>3 and args[3]=='diagnose' else max(0, deadline-time.monotonic()))
-                        if not events and len(args)>3 and args[3]=='diagnose':
+                        events = queue.control(None, 1, 5 if case_mode=='diagnose' else max(0, deadline-time.monotonic()))
+                        if not events and case_mode=='diagnose':
                             processes = sp.check_output(['ps','-axo','pid,ppid,stat,wchan,comm']).decode()
                             children = [x for x in processes.splitlines() if len(x.split())>1 and x.split()[1]==str(cmd_pid)]
                             emit('BLOCKED_CHILDREN=' + repr(children))
@@ -40,6 +40,7 @@ source = source.replace('    # The real kernel refuses only', '''    if sys.plat
         return
     # The real kernel refuses only''')
 args = sys.argv[:]
+case_mode = args[3] if len(args)>3 else 'all'
 sys.argv = [args[0], args[1], args[2], 'fixed']
 exec(compile(source, str(base/'2026-11-15-project-command-review/tty-review.py'), 'exec'))
 emit('extra-terminal platform=' + sys.platform)
