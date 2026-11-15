@@ -80,16 +80,22 @@ pi 200 route
 
 ## What this establishes
 
-- Claude Code with a `claude` route, Codex with a `codex` route, and pi
-  with an `openai-codex` pi route each completed a model exchange and a
-  tool call with a real subscription login held on the host.
-- The Claude token was not in the box's environment, the generated files,
-  the home disk or the egress log.
-- In run 2, the only JWT-shaped string in the generated files and on the
-  home disk was pinfold's public placeholder.
+- The scripts reported PASS and exit 0 for Claude Code and Codex in run 1
+  and for pi in run 2: each agent exited 0 and its requested file existed
+  in the box with the expected content. Each route shows HTTP 200 rows.
+- Run 1's scans reported no literal Claude token in the inspected
+  environment, generated files, home disk or egress log.
+- Run 2's scans reported only pinfold's public placeholder as a JWT-shaped
+  string in the generated files and on the home disk.
 
 ## What it does not establish
 
+- The output does not identify the credentials used or show tool-call
+  traces. The boxes held no other login, and the routes were the only
+  configured path to the providers.
+- The scripts and their scan coverage are not included here. The results
+  do not exclude encoded credentials, unsearched locations or exposure
+  before the scan ran. Run 2 has no environment or egress-log scan.
 - Run 1's home disk held Claude's and Codex's state as well. Its JWT hit
   was not classified, so "only placeholder" is shown for a pi-only home.
 - pi and Codex were not run at the same time on the shared host login.
