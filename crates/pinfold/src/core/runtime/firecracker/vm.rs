@@ -19,7 +19,7 @@ use crate::core::image::{ImageService, linux};
 use crate::core::plan::Plan;
 use crate::core::runtime::output;
 use crate::core::runtime::sockets::Sockets;
-use crate::init::firecracker::{BOOT, BOOT_PORT, FAILED, READY, read_frame, write_frame};
+use crate::init::firecracker::{BOOT, FAILED, READY, read_frame, write_frame};
 
 /// Exactly these: no secret ever reaches a kernel command line.
 const BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=1 pci=off init=/pinfold -- init boot";
@@ -203,9 +203,8 @@ impl Vm {
     ) -> io::Result<Vm> {
         let state_dir = prepared.state_dir;
         let sockets = prepared.sockets;
-        let vsock_dir = sockets.vsock_dir()?;
-        let boot_socket = vsock_dir.join(format!("v.sock_{BOOT_PORT}"));
-        let listener = crate::core::runtime::sockets::bind(&boot_socket)?;
+        let vsock_directory = sockets.vsock_directory()?;
+        let listener = sockets.bind_boot()?;
         listener.set_nonblocking(true)?;
         let listener = UnixListener::from_std(listener)?;
 
@@ -281,7 +280,7 @@ impl Vm {
             root_disk: &prepared.root_disk,
             init_disk: &prepared.init_disk,
             disks: &drives,
-            vsock: &vsock_dir,
+            vsock: vsock_directory,
             config: &config_path,
         })?;
         super::record_vmm(&state_dir, vmm.pid)?;

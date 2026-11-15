@@ -163,10 +163,11 @@ pub fn remove_record(name: &str, generation: &str) -> io::Result<()> {
     if let Some(record) = record(name)?
         && record.generation == generation
     {
-        Sockets::remove(generation)?;
+        let cleanup = Sockets::remove(generation);
         absent_ok(fs::remove_dir_all(&record.state_dir))?;
         sockets::remove_socket(&socket(name)?)?;
         absent_ok(fs::remove_file(path(&format!("box:{name}"), "owner")?))?;
+        cleanup?;
     }
     Ok(())
 }
@@ -210,7 +211,14 @@ impl Claim {
 
     pub fn prepare(&mut self, state_dir: &Path) -> io::Result<()> {
         if let Some(old) = record(&self.name)? {
-            remove_record(&self.name, &old.generation)?;
+            #[cfg(target_os = "linux")]
+            crate::core::runtime::runtime().down(&self.name)?;
+            if let Err(error) = remove_record(&self.name, &old.generation) {
+                if record(&self.name)?.is_some() {
+                    return Err(error);
+                }
+                eprintln!("pinfold: socket cleanup: {error}");
+            }
         }
         absent_ok(fs::remove_dir_all(state_dir))?;
         let mut random = [0; 16];
@@ -223,13 +231,16 @@ impl Claim {
             described: None,
         });
         fs::create_dir_all(state_dir)?;
-        self.publish()?;
-        self.sockets = Some(Sockets::create(self.generation())?);
         let endpoint = socket(&self.name)?;
         sockets::remove_socket(&endpoint)?;
-        let listener = sockets::bind(&endpoint)?;
+        let (_, host) = sockets::host()?;
+        sockets::check_length(&endpoint)?;
+        let listener =
+            sockets::bind_at(&host, endpoint.file_name().expect("shutdown socket name"))?;
         listener.set_nonblocking(true)?;
         self.listener = Some(UnixListener::from_std(listener)?);
+        self.publish()?;
+        self.sockets = Some(Sockets::create(self.generation())?);
         Ok(())
     }
 
@@ -399,8 +410,14 @@ pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<bool> {
     ))
 }
 
-/// Published generations across every Pinfold state root.
+/// Published generations across every Pinfold state root. Consumers that
+/// decide ownership fail closed when any record cannot be read.
 pub fn records() -> io::Result<Vec<Record>> {
+    record_results()?.into_iter().collect()
+}
+
+/// Maintenance can report a bad record and still examine independent claims.
+pub fn record_results() -> io::Result<Vec<io::Result<Record>>> {
     let mut records = Vec::new();
     for entry in crate::dirs::entries(&host_dir()?)? {
         let path = entry.path();
@@ -410,12 +427,18 @@ pub fn records() -> io::Result<Vec<Record>> {
         {
             continue;
         }
-        // A record removed since the listing belongs to a box that ended.
-        match fs::read(&path) {
-            Ok(bytes) => records.push(serde_json::from_slice(&bytes).map_err(io::Error::other)?),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
+        let decoded = match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other),
+            // A record removed since the listing belongs to a box that ended.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => Err(error),
+        };
+        records.push(decoded.map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("ownership record {:?}: {error}", path.file_name()),
+            )
+        }));
     }
     Ok(records)
 }

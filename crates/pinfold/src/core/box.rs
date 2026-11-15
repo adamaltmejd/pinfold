@@ -277,7 +277,7 @@ impl Box {
             _ = signals.recv() => return Err(UpError::Signal),
             claim = ownership::Claim::take(&plan.name) => claim,
         }
-        .map_err(|error| refused(&plan, RefusalReason::RuntimePath, error.to_string()))?
+        .map_err(|error| ownership_error(&plan, error))?
         .ok_or_else(|| {
             refused(
                 &plan,
@@ -295,7 +295,7 @@ impl Box {
         }
         claim
             .prepare(&state_dir)
-            .map_err(|error| refused(&plan, RefusalReason::RuntimePath, error.to_string()))?;
+            .map_err(|error| ownership_error(&plan, error))?;
         // Disk refusals come after the name claim; returning drops the
         // claim, which removes its record and state.
         let claimed = match disk::claim(
@@ -628,7 +628,12 @@ async fn start(
         Some(egress) => {
             let socket = progress.sockets.proxy()?;
             let log = runs::egress_log(&plan.labels[ownership::GENERATION_LABEL])?;
-            progress.audit = Audit::Waiting(proxy::start(&socket, egress, codex, log.clone())?);
+            progress.audit = Audit::Waiting(proxy::start(
+                progress.sockets.bind_proxy()?,
+                egress,
+                codex,
+                log.clone(),
+            )?);
             egress_log = Some(log);
             Some(socket)
         }
@@ -992,4 +997,12 @@ async fn audit_failure(audit: &mut Audit) {
         return;
     }
     std::future::pending::<()>().await;
+}
+
+fn ownership_error(plan: &Plan, error: io::Error) -> UpError {
+    if runtime::sockets::is_path_error(&error) {
+        refused(plan, RefusalReason::RuntimePath, error.to_string())
+    } else {
+        UpError::Other(error)
+    }
 }

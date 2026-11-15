@@ -331,7 +331,7 @@ async fn run_transaction(
     let proxy_socket = vsock.join("v.sock_3128");
     let egress_log = runs::egress_log(&generation)?;
     let mut audit = proxy::start(
-        &proxy_socket,
+        crate::core::runtime::sockets::bind(&proxy_socket)?,
         &Egress {
             allow: hosts,
             routes: BTreeMap::new(),
@@ -343,7 +343,6 @@ async fn run_transaction(
         "pinfold: build run {generation}; egress log {}",
         egress_log.display()
     );
-    fs::set_permissions(proxy_socket, fs::Permissions::from_mode(0o600))?;
     let built = run_job(
         &state.join("build"),
         &prepared,
@@ -861,6 +860,7 @@ async fn run_job(
     fs::write(&config_path, config.to_string())?;
     let jail_root = state.join("jail");
     private_dir(&jail_root)?;
+    let vsock_directory = crate::core::runtime::sockets::checked_directory(&vsock)?;
     let mut child = jail::spawn(&jail::Jail {
         root: &jail_root,
         firecracker: &prepared.vmm.firecracker,
@@ -868,7 +868,7 @@ async fn run_job(
         root_disk: &prepared.root,
         init_disk: &prepared.init,
         disks: &drives,
-        vsock: &vsock,
+        vsock: &vsock_directory,
         config: &config_path,
     })?;
     let deadline = Instant::now() + JOB_TIME;

@@ -5,6 +5,7 @@
 //! argument is built before it, and the child never allocates.
 
 use std::ffi::{CStr, CString, c_char};
+use std::fs::File;
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
@@ -55,7 +56,7 @@ pub struct Jail<'a> {
     /// the VM writes it: the box's disks, and its mounts' images.
     pub disks: &'a [(PathBuf, bool)],
     /// The directory that holds the vsock socket and its host listeners.
-    pub vsock: &'a Path,
+    pub vsock: &'a File,
     /// The VM configuration file, read with `--config-file`.
     pub config: &'a Path,
 }
@@ -139,7 +140,21 @@ pub fn spawn(jail: &Jail) -> io::Result<Vmm> {
     std::thread::Builder::new()
         .name("vmm".into())
         .spawn(move || {
-            let (pid, _alive) = match start(&plan) {
+            let started = (|| {
+                if let Some(vsock) = &plan.vsock {
+                    // Clone the mount namespace only after this thread has its
+                    // own cwd pinned to the retained directory. The kernel then
+                    // rebases that cwd onto the child's copy of the mount.
+                    nix::sched::unshare(CloneFlags::CLONE_FS).map_err(|error| {
+                        io::Error::other(format!("VMM jail: isolate cwd: {error}"))
+                    })?;
+                    nix::unistd::fchdir(vsock).map_err(|error| {
+                        io::Error::other(format!("VMM jail: enter socket directory: {error}"))
+                    })?;
+                }
+                start(&plan)
+            })();
+            let (pid, _alive) = match started {
                 Ok(started) => started,
                 Err(error) => {
                     let _ = started_tx.send(Err(error));
@@ -183,6 +198,8 @@ struct Plan {
     /// The tmpfs root, on the host's side of `pivot_root`.
     root: CString,
     binds: Vec<Bind>,
+    /// Retained through child mounting; absent for the namespace probe.
+    vsock: Option<File>,
     /// `None` for the probe, which exits after mounting its tmpfs.
     exec: Option<Exec>,
 }
@@ -212,6 +229,7 @@ impl Plan {
             // In the probe's own mount namespace, over the host's root.
             root: c"/".to_owned(),
             binds: Vec::new(),
+            vsock: None,
             exec: None,
         })
     }
@@ -245,7 +263,7 @@ impl Plan {
             read_only(jail.init_disk, INIT_DISK)?,
             read_only(jail.config, CONFIG)?,
             writable(Path::new(KVM), KVM, false)?,
-            writable(jail.vsock, VSOCK, true)?,
+            writable(Path::new("."), VSOCK, true)?,
         ];
         let mut rules = vec![
             (
@@ -287,6 +305,7 @@ impl Plan {
             gid_map,
             root: cstring(jail.root)?,
             binds,
+            vsock: Some(jail.vsock.try_clone()?),
             exec: Some(Exec {
                 dev: target("/dev")?,
                 rules,

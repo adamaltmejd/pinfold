@@ -21,7 +21,7 @@ use crate::init::firecracker::{
 
 /// A host-initiated connection to the guest's `port`.
 pub fn connect(sockets: &Sockets, port: u32) -> io::Result<UnixStream> {
-    let mut stream = UnixStream::connect(sockets.vsock_dir()?.join("v.sock"))?;
+    let mut stream = sockets.connect()?;
     // Box work runs as the exec service's user and can stop it from
     // answering, so every request has a deadline; `exec` lifts it after
     // the handshake.

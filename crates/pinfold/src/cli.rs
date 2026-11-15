@@ -416,8 +416,15 @@ fn prune(args: &[String]) -> io::Result<i32> {
         return Err(usage("box", "prune takes no arguments"));
     }
     let runtime = runtime();
-    let boxes = clean::boxes(runtime)?;
+    let boxes = match clean::boxes(runtime) {
+        Ok(boxes) => boxes,
+        Err(error) => {
+            clean::prune_leftover_states(runtime)?;
+            return Err(error);
+        }
+    };
     let removed = clean::prune_boxes(runtime, &boxes)?;
+    clean::prune_leftover_states(runtime)?;
     for dead in &removed {
         println!(
             "{}",

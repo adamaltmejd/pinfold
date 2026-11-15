@@ -64,9 +64,14 @@ impl Runtime for Firecracker {
             })
     }
 
-    // The VMM ends with its owner's thread (PR_SET_PDEATHSIG), so an owner
-    // that is gone left no VM; its state goes with its record.
-    fn down(&self, _name: &str) -> io::Result<()> {
+    // An orphan is not our child to reap. Confirm its recorded VMM ended
+    // before removing the files it could still use.
+    fn down(&self, name: &str) -> io::Result<()> {
+        if let Some(record) = ownership::record(name)?
+            && vmm_alive(&record.state_dir)
+        {
+            return Err(io::Error::other("the orphan VMM is still running"));
+        }
         Ok(())
     }
 

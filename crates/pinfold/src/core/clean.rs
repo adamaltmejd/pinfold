@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use nix::fcntl::Flock;
 
 use crate::core::image::{ImageInfo, ImageService, service};
+use crate::core::runtime::sockets::Sockets;
 use crate::core::runtime::{BoxInfo, Runtime, runtime};
 use crate::core::{artifacts, ownership, runs};
 use crate::dirs;
@@ -184,11 +185,16 @@ pub fn remove_orphan(
 pub fn prune_boxes(runtime: &dyn Runtime, boxes: &Boxes) -> io::Result<Vec<DeadBox>> {
     let mut removed = Vec::new();
     for box_ in &boxes.dead {
-        let Some(lock) = ownership::try_name_lock(&box_.id)? else {
-            continue;
-        };
-        if remove_orphan(runtime, &box_.id, box_.generation.as_deref(), &lock)? {
-            removed.push(box_.clone());
+        let result = (|| {
+            let Some(lock) = ownership::try_name_lock(&box_.id)? else {
+                return Ok(false);
+            };
+            remove_orphan(runtime, &box_.id, box_.generation.as_deref(), &lock)
+        })();
+        match result {
+            Ok(true) => removed.push(box_.clone()),
+            Ok(false) => {}
+            Err(error) => eprintln!("pinfold: prune {:?}: {error}", box_.id),
         }
     }
     Ok(removed)
@@ -196,22 +202,79 @@ pub fn prune_boxes(runtime: &dyn Runtime, boxes: &Boxes) -> io::Result<Vec<DeadB
 
 /// Measured leftovers; removal must reacquire ownership and recheck.
 pub fn leftover_socket_dirs() -> io::Result<Vec<PathBuf>> {
-    let mut dirs = Vec::new();
+    let mut protected = BTreeSet::new();
     for record in ownership::records()? {
-        if !ownership::name_alive(&record.name)? {
-            dirs.push(record.state_dir);
+        if ownership::name_alive(&record.name)? {
+            protected.insert(record.generation);
         }
     }
-    Ok(dirs)
+    Ok(Sockets::leftovers(&protected)?
+        .into_iter()
+        .map(|(_, path)| path)
+        .collect())
 }
 
 pub fn prune_leftover_states(runtime: &dyn Runtime) -> io::Result<()> {
-    for record in ownership::records()? {
-        let Some(_lock) = ownership::try_name_lock(&record.name)? else {
-            continue;
+    let mut corrupt = false;
+    for result in ownership::record_results()? {
+        let record = match result {
+            Ok(record) => record,
+            Err(error) => {
+                corrupt = true;
+                eprintln!("pinfold: prune: {error}");
+                continue;
+            }
         };
-        if runtime.list()?.iter().all(|box_| box_.id != record.name) {
-            ownership::remove_record(&record.name, &record.generation)?;
+        let result = (|| {
+            let Some(_lock) = ownership::try_name_lock(&record.name)? else {
+                return Ok(());
+            };
+            #[cfg(target_os = "linux")]
+            runtime.down(&record.name)?;
+            #[cfg(not(target_os = "linux"))]
+            if runtime.list()?.iter().any(|box_| box_.id == record.name) {
+                return Ok(());
+            }
+            ownership::remove_record(&record.name, &record.generation)
+        })();
+        if let Err(error) = result {
+            eprintln!("pinfold: prune {:?}: {error}", record.name);
+        }
+    }
+    if corrupt {
+        eprintln!(
+            "pinfold: socket cleanup: recordless sweep skipped because an ownership record is unreadable"
+        );
+        return Ok(());
+    }
+    let protected = match ownership::records() {
+        Ok(records) => records
+            .into_iter()
+            .map(|record| record.generation)
+            .collect(),
+        Err(error) => {
+            eprintln!("pinfold: socket cleanup: recordless sweep skipped: {error}");
+            return Ok(());
+        }
+    };
+    for (generation, _) in Sockets::leftovers(&protected)? {
+        let result = (|| {
+            // Publication precedes generation-directory creation. A directory
+            // with no matching claim cannot belong to an unpublished start.
+            if ownership::records()?
+                .iter()
+                .any(|record| record.generation == generation)
+                || runtime
+                    .list()?
+                    .iter()
+                    .any(|box_| box_.labels.get(ownership::GENERATION_LABEL) == Some(&generation))
+            {
+                return Ok(());
+            }
+            Sockets::remove(&generation)
+        })();
+        if let Err(error) = result {
+            eprintln!("pinfold: socket cleanup: {error}");
         }
     }
     Ok(())
