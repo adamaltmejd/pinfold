@@ -1,0 +1,60 @@
+$ vmm-gate.py final musl binary
+VMM-BARRIER {"case": "before-clone", "children": [], "children_ended": true, "identity": "not-started\n", "temporary": null}
+$ '$BIN' box exec probe-crash-28516-before-clone -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+before-clone: prune and same-name start/exec/down succeeded
+VMM-BARRIER {"case": "before-identity", "children": [{"exe": "$BIN", "pid": 28570, "wait": "pipe_read"}], "children_ended": true, "identity": "not-started\n", "temporary": null}
+$ '$BIN' box exec probe-crash-28516-before-identity -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+before-identity: prune and same-name start/exec/down succeeded
+VMM-BARRIER {"case": "temporary-empty", "children": [{"exe": "$BIN", "pid": 28609, "wait": "pipe_read"}], "children_ended": true, "identity": "not-started\n", "temporary": ""}
+$ '$BIN' box exec probe-crash-28516-temporary-empty -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+temporary-empty: prune and same-name start/exec/down succeeded
+VMM-BARRIER {"case": "temporary-complete", "children": [{"exe": "$BIN", "pid": 28647, "wait": "pipe_read"}], "children_ended": true, "identity": "not-started\n", "temporary": "28647 1040432\n"}
+$ '$BIN' box exec probe-crash-28516-temporary-complete -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+temporary-complete: prune and same-name start/exec/down succeeded
+VMM-BARRIER {"case": "durable-before-release", "children": [{"exe": "$BIN", "pid": 28685, "wait": "pipe_read"}], "children_ended": true, "identity": "28685 1040936\n", "temporary": null}
+$ '$BIN' box exec probe-crash-28516-durable-before-release -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+durable-before-release: prune and same-name start/exec/down succeeded
+VMM-BARRIER {"case": "released", "children": [{"exe": "$BIN", "pid": 28722, "wait": "0"}], "children_ended": true, "identity": "28722 1041432\n", "temporary": null}
+$ '$BIN' box exec probe-crash-28516-released -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+released: prune and same-name start/exec/down succeeded
+exit=1 stdout=b'' stderr=b'pinfold: prune "probe-crash-28516-unknown": unknown VMM liveness: No such file or directory (os error 2)\npinfold box: unknown VMM liveness: No such file or directory (os error 2)\n'
+unknown missing: pruning refused, owner record and generation marker unchanged
+exit=1 stdout=b'' stderr=b'pinfold: prune "probe-crash-28516-unknown": unknown VMM liveness: invalid identity\npinfold box: unknown VMM liveness: invalid identity\n'
+unknown partial: pruning refused, owner record and generation marker unchanged
+exit=1 stdout=b'' stderr=b'pinfold: prune "probe-crash-28516-unknown": unknown VMM liveness: Permission denied (os error 13)\npinfold box: unknown VMM liveness: Permission denied (os error 13)\n'
+unknown unreadable: pruning refused, owner record and generation marker unchanged
+$ '$BIN' box exec probe-crash-28516-unknown -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+PASS durable VMM gate crash windows and unknown-liveness refusal/control
+$ inventory
+3 command=['doctor'] exit=0 host_directory_absent=True
+3 command=['clean', '--dry-run'] exit=0 host_directory_absent=True
+3 mutation control: absent disk rm succeeded and created checked H mode0700; private namespace only
+$ fork2
+$ gdb syscall-entry barrier: suppress only bind helper fork; kernel returns ENOSYS
+gdb exit=0 owner stdout=b'{"box":"probe-crash-28393-fork-refusal","detail":"Function not implemented (os error 38)","event":"failed"}\n' stderr=b''
+$ '$BIN' box exec probe-crash-28393-fork-refusal -- printf CORRECTED-CONTROL
+exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+$ '$BIN' box down probe-crash-28393-fork-refusal
+exit=0 stdout=b'' stderr=b''
+owner exit=0 stdout=b'{"box":"probe-crash-28393-fork-refusal","event":"down","reason":"signal","run_id":"95a95b47d5753d881035bd83ef723f9d4bbfc10b2212df5a03dbf505f3657b88"}\n' stderr=b''
+$ builder
+$ gdb image build: source barriers replace only our retained socket-directory pathname, then restore before VMM spawn
+gdb exit=0 build stdout=b'{"base":null,"event":"built","id":"sha256:4d1b34f0dc9fb0b8bbf8f81ec1c83f659480d2eae53d041d78d2778b5baac19a","image":"probe-rereview-boot-28423","labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"","dev.pinfold.profile":"","dev.pinfold.project":""},"latest":"localhost/pinfold/image-probe-rereview-boot-28423:latest","ref":"localhost/pinfold/image-probe-rereview-boot-28423:18e85861d1b0db0e-28428"}\n'
+5 BOOT socket0600 under umask022; bind used retained directory; symlink target unchanged; real RUN build succeeded
+$ '$BIN' box exec probe-crash-28423-built-control -- cat /probe-boot-marker
+exit=0 stdout=b'BOOT-BUILD-CONTROL' stderr=b''
+$ '$BIN' box down probe-crash-28423-built-control
+exit=0 stdout=b'' stderr=b''
+owner exit=0 stdout=b'{"box":"probe-crash-28423-built-control","event":"down","reason":"signal","run_id":"1291aad89a732b9f074c83bba0bef92d1badb92854826aa4a8cd63e10ba1c532"}\n' stderr=b''
+5 built-image execution control passed; retained own image localhost/pinfold/image-probe-rereview-boot-28423:latest
+$ Linux cargo fmt --check: exit0; no output
+$ Linux cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings: exit0
+   Compiling pinfold v0.5.5 (/home/user/pinfold-transport/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.39s

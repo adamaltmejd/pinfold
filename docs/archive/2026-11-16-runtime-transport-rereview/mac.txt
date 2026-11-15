@@ -1,0 +1,15 @@
+real owner ready name=probe-apple-prune-34996-one pid=34997 generation=e38f8fce69bc8fc2c35142d29d1ed5c2bb335056997064c7192444d7db2b9832
+real owner ready name=probe-apple-prune-34996-two pid=35047 generation=91af386129494bf03e08b09efb7c172b37fa00aae9c710d7898badca99a0840a
+owner SIGKILL name=probe-apple-prune-34996-one exit=-9; native pipes closed without waiting for orphan EOF
+owner SIGKILL name=probe-apple-prune-34996-two exit=-9; native pipes closed without waiting for orphan EOF
+native container list before corruption: both real orphans present, iteration order=['probe-apple-prune-34996-two', 'probe-apple-prune-34996-one']
+$ $BIN ['box', 'prune']; exit=0 stdout=b'{"box":"probe-apple-prune-34996-one","event":"pruned","owner":34997}\n' stderr=b'pinfold: box inventory "probe-apple-prune-34996-two": EOF while parsing an object at line 1 column 1\npinfold: prune: ownership record Some("2b6194207278cf93f16952c01debe6b5230980ab94b3d7403e6f42c57feb66d4.owner"): EOF while parsing an object at line 1 column 1\npinfold: socket cleanup: recordless sweep skipped because an ownership record is unreadable\n'
+public prune diagnosed the first malformed owner, preserved its real container and marker bytes, and removed the later valid real orphan, generation and state
+$ $BIN ['box', 'prune']; exit=0 stdout=b'{"box":"probe-apple-prune-34996-two","event":"pruned","owner":35047}\n' stderr=b''
+repaired owner JSON; public prune removed both fixture containers and generation directories
+real owner ready name=probe-apple-prune-34996-two pid=35185 generation=9c8d29c76f9e5ff24d32f624b419f259004867801dc1f53fbe942386a071ef67
+$ $BIN ['box', 'exec', 'probe-apple-prune-34996-two', '--', 'printf', 'CORRECTED-CONTROL']; exit=0 stdout=b'CORRECTED-CONTROL' stderr=b''
+corrected owner EOF exit=0 stdout=b'{"box":"probe-apple-prune-34996-two","event":"down","reason":"stdin-closed","run_id":"9c8d29c76f9e5ff24d32f624b419f259004867801dc1f53fbe942386a071ef67"}\n' stderr=b''
+PASS Apple real orphan corruption isolation, repair, corrected exec and EOF teardown
+$ $BIN ['box', 'down', 'probe-apple-prune-34996-one']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['box', 'down', 'probe-apple-prune-34996-two']; exit=0 stdout=b'' stderr=b''
