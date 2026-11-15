@@ -90,3 +90,8 @@ Later resize-ioctl failure forwarding was reviewed, not fault-injected;
 the initial guest ioctl failure was exercised on both hosts. The suite
 remains suspended. No push, PR or release was made. All named disposable
 disks were removed; existing images and the active VM lease were retained.
+
+The subsequent three-finding re-review is recorded in
+[the re-review record](2026-11-15-project-command-rereview.md). It fixes the
+non-raw restore, ready-exec precedence and execute-only cwd failures. Its
+extra Apple raw foreground-handoff case remains unresolved.

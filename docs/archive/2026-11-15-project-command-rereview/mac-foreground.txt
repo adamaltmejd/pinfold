@@ -1,0 +1,10 @@
+$ python3 foreground-case.py $BIN localhost/pinfold/profile-default:latest
+$ $BIN -- sh -c 'echo READY; read line; exec tail -f /dev/null'; hand foreground to helper; helper stty canonical -echo; SIGTERM pinfold
+expected=[2049, 3, 19200, 449, 9600, 9600, [4, 255, 255, 127, 23, 21, 18, 255, 3, 28, 26, 25, 17, 19, 22, 15, 1, 0, 20, 255]] observed=[2049, 2, 19200, 65, 9600, 9600, [4, 255, 255, 127, 23, 21, 18, 255, 3, 28, 26, 25, 17, 19, 22, 15, 1, 0, 20, 255]]
+exit=143 foreground-helper-settings-untouched=False; host-SIGTTOU=default; handed=True
+cleanup-exit=0 fixture=/private/tmp/pffg.dqnkvlqm
+Traceback (most recent call last):
+  File "/Users/user/code/.cache/pinfold-work/step4a/docs/archive/2026-11-15-project-command-rereview/foreground-case.py", line 76, in <module>
+    assert os.waitstatus_to_exitcode(status)==0 and handed
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError
