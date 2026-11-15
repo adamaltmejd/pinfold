@@ -55,6 +55,8 @@ pub struct BuildRequest<'a> {
     pub cache: bool,
     /// Additional explicit build-egress hosts; independent of agent egress.
     pub allow: &'a [String],
+    /// One managed-build argument; absent for caller builds.
+    pub build_arg: Option<(&'a str, &'a str)>,
 }
 
 /// Native image build, resolution, inventory and cache operations.
@@ -132,6 +134,9 @@ pub(crate) fn build(
         .args(cache_flags)
         .arg("--file")
         .arg(request.containerfile);
+    if let Some((name, value)) = request.build_arg {
+        command.arg("--build-arg").arg(format!("{name}={value}"));
+    }
     for tag in request.tags {
         command.arg("--tag").arg(tag);
     }

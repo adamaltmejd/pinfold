@@ -72,6 +72,7 @@ impl Phase {
 struct Job<'a> {
     phase: Phase,
     cache: bool,
+    build_arg: Option<&'a (String, String)>,
     labels: &'a BTreeMap<String, String>,
     bases: Vec<Base>,
 }
@@ -80,6 +81,7 @@ struct Request {
     context: PathBuf,
     containerfile: PathBuf,
     cache: bool,
+    build_arg: Option<(String, String)>,
     labels: BTreeMap<String, String>,
     tags: Vec<String>,
     allow: Vec<String>,
@@ -99,6 +101,7 @@ struct Prepared {
 
 #[derive(Default)]
 struct Inputs {
+    build_arg: Option<(String, String)>,
     contexts: Vec<Base>,
     metadata: Vec<catalog::BaseMetadata>,
     served: BTreeSet<usize>,
@@ -237,6 +240,9 @@ async fn transaction(request: &BuildRequest<'_>) -> io::Result<Result<(), String
         context: request.context.to_path_buf(),
         containerfile: request.containerfile.to_path_buf(),
         cache: request.cache,
+        build_arg: request
+            .build_arg
+            .map(|(name, value)| (name.to_owned(), value.to_owned())),
         labels: request.labels.clone(),
         tags: request.tags.to_vec(),
         allow: request.allow.to_vec(),
@@ -539,6 +545,7 @@ fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<P
         &Job {
             phase: Phase::Build,
             cache: request.cache,
+            build_arg: request.build_arg.as_ref(),
             labels: &BTreeMap::new(),
             bases: contexts.clone(),
         },
@@ -561,6 +568,7 @@ fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<P
         cache: request.cache,
         input_bytes: context_bytes,
         inputs: Arc::new(Mutex::new(Inputs {
+            build_arg: request.build_arg.clone(),
             contexts,
             metadata: bases,
             ..Inputs::default()
@@ -662,6 +670,7 @@ fn select_bases(
         &Job {
             phase: Phase::Build,
             cache,
+            build_arg: inputs.build_arg.as_ref(),
             labels,
             bases: contexts,
         },
@@ -705,6 +714,7 @@ fn prepare_conversion(verified: &Verified, state: &Path, cancel: &AtomicBool) ->
         &Job {
             phase: Phase::Convert,
             cache: false,
+            build_arg: None,
             labels: &verified.labels,
             bases: vec![Base {
                 reference: "prepared".into(),

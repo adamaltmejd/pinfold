@@ -26,7 +26,7 @@ pinfold pi [pi args…]            pi in a box for this project; `pi` is a symli
 pinfold attach [cmd…]            bash (or cmd) in this project's running pi box
 pinfold push                     this checkout's branches into its pi box as refs/remotes/host/*
 pinfold fetch                    its pi box's branches into refs/remotes/pinfold/*
-pinfold build [--profile NAME] [--allow HOST]…   build this project's image, or a profile's; prints the ref
+pinfold build [--profile NAME] [--allow HOST]… [--no-cache]   build this project's image, or a profile's; prints the ref
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]…   a caller's image from its own context; one JSON line
 pinfold image rm NAME            retire a caller image name; one JSON line
 pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
@@ -1240,11 +1240,13 @@ pub(crate) fn exit_code(status: ExitStatus) -> i32 {
 /// A build's context is its Containerfile alone. Other files in a profile
 /// or project configuration directory are not build inputs.
 pub fn build(args: &[String]) -> io::Result<i32> {
+    let mut cache = true;
     let mut profile_name = None;
     let mut allow = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--no-cache" => cache = false,
             "--profile" if profile_name.is_none() => {
                 profile_name = Some(
                     args.next()
@@ -1296,7 +1298,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
                 label: Some(label),
                 source,
                 context: Context::Alone(bytes),
-                cache: false,
+                cache,
                 labels: base
                     .map(|digest| (clean::BASE_LABEL.to_string(), digest))
                     .into_iter()
