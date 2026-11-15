@@ -504,7 +504,7 @@ fn run_box(
             if repository {
                 sync(&name, &init, &root);
             }
-            box_runtime.exec(&name, &init, tty, Some(&workdir), &[], &argv)
+            box_runtime.exec(&name, &init, tty, Some(&workdir), &argv)
         });
         let ended = tokio::select! {
             status = exec => status

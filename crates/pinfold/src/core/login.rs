@@ -12,7 +12,7 @@ use nix::poll::PollFlags;
 use std::time::{Duration, Instant};
 
 use crate::core::pipe::{self, nonblocking, remaining, wait_ready};
-use crate::core::plan::{PiCredential, PiProvider};
+use crate::core::plan::{LOGIN_PLACEHOLDER, PiCredential, PiProvider};
 use crate::core::{artifacts, now, ownership};
 
 /// Within this much of `exp`, the proxy asks the helper again. Codex's own
@@ -289,7 +289,7 @@ pub const CLAUDE_CONFIG_DIR: &str = "/etc/claude-code";
 pub fn claude_config(route: &str) -> String {
     serde_json::json!({"env": {
         "ANTHROPIC_BASE_URL": format!("http://{route}"),
-        "CLAUDE_CODE_OAUTH_TOKEN": "pinfold-placeholder",
+        "CLAUDE_CODE_OAUTH_TOKEN": LOGIN_PLACEHOLDER,
         "ANTHROPIC_API_KEY": "",
     }})
     .to_string()

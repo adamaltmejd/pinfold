@@ -256,7 +256,6 @@ impl Runtime for Apple {
         name: &str,
         init: &Path,
         proxy_socket: Option<&Path>,
-        fills: &[Fill],
         seeding: Option<&Seeding>,
     ) -> io::Result<BoxInfo> {
         // Init can report ready before Apple records the box running.
@@ -264,9 +263,6 @@ impl Runtime for Apple {
         let actual = wait_until_running(name)?;
         if proxy_socket.is_some() {
             make_proxy_connectable(name)?;
-        }
-        for fill in fills {
-            copy_in(name, init, &fill.guest, false, |out| disk::send(fill, out))?;
         }
         if let Some(seeding) = seeding {
             copy_in(name, init, &seeding.guest, true, |out| {
@@ -384,10 +380,9 @@ impl Runtime for Apple {
         init: &Path,
         tty: bool,
         workdir: Option<&Path>,
-        env: &[(String, String)],
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        exec_command(name, init, tty, workdir, env, argv)
+        exec_command(name, init, tty, workdir, argv)
             .status()
             .map_err(|error| spawn_error("container", error))
     }
@@ -400,7 +395,7 @@ impl Runtime for Apple {
         workdir: Option<&Path>,
         argv: &[String],
     ) -> std::process::Command {
-        exec_command(name, init, tty, workdir, &[], argv)
+        exec_command(name, init, tty, workdir, argv)
     }
 
     /// A networkless helper owns fresh roots, then drops privileges to
@@ -549,21 +544,16 @@ impl Runtime for Apple {
     }
 }
 
-/// `container exec` of `argv` through init, with `env` added under transport
-/// names as the host's `TERM` is.
+/// `container exec` of `argv` through init, preserving terminal identity on a TTY.
 fn exec_command(
     name: &str,
     init: &Path,
     tty: bool,
     workdir: Option<&Path>,
-    env: &[(String, String)],
     argv: &[String],
 ) -> std::process::Command {
     let mut command = std::process::Command::new("container");
     command.args(["exec", "-i"]);
-    for (variable, value) in env {
-        guest_env(&mut command, variable, OsStr::new(value));
-    }
     if tty {
         // Keep the host's terminal identity: the runtime otherwise
         // reports its own `TERM`.

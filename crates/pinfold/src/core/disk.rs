@@ -251,8 +251,6 @@ pub fn claim(
             directories,
             &claimed.fills,
         )?;
-        #[cfg(not(target_os = "linux"))]
-        claimed.fills.clear();
         Ok(())
     })();
     if let Err(error) = result {

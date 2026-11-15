@@ -61,7 +61,6 @@ impl Runtime for Firecracker {
         name: &str,
         _init: &Path,
         _proxy_socket: Option<&Path>,
-        _fills: &[Fill],
         _seeding: Option<&Seeding>,
     ) -> io::Result<BoxInfo> {
         // The boot protocol already applied fills and seeds before ready.
@@ -87,10 +86,9 @@ impl Runtime for Firecracker {
         _init: &Path,
         tty: bool,
         workdir: Option<&Path>,
-        env: &[(String, String)],
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        let code = vsock::exec(&Self::record(name)?.state_dir, tty, workdir, env, argv)?;
+        let code = vsock::exec(&Self::record(name)?.state_dir, tty, workdir, argv)?;
         Ok(exit_status(code))
     }
 

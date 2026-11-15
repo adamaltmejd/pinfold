@@ -135,8 +135,11 @@ sysctl rather than the failing call.
    disk's `from` is size-checked here. Record writable disks unclean and their
    attachments before any preparation write. A fresh disk is populated from
    its initial source first, as the box user. Reused disks are never populated
-   again. Then create missing generated-mount parents, and only then attach
-   generated configuration. Preparation never marks a disk clean. An ordinary
+   again. On Linux each fresh disk is populated immediately after its own
+   mount, before deeper attachments. Then create missing generated-mount parents, and only then attach
+   generated configuration. Preparation never marks a disk clean. On Linux a
+   failed start may retain a reused disk’s unclean mark before BOOT even when
+   no disk was written. An ordinary
    directory population already created is retained; a symlink or non-directory
    anywhere along the generated path fails startup. Before attaching generated
    configuration below a writable disk, pinfold creates missing parent directories as the
@@ -987,7 +990,7 @@ It ignores curl configuration, rejects HTTP redirects, caps artifact
 transfers at 512 MiB and 5 minutes, and checks SHA-256 before installation.
 Cancellation kills and reaps the transfer before startup cleanup.
 
-`crates/pinfold/harnesses.toml`, embedded at build time, pins the Codex
+`crates/pinfold/host-helper.toml`, embedded at build time, pins the Codex
 host helper's version and host-architecture assets. The verified installer
 keeps it in `~/.cache/pinfold/artifacts/codex/<version>/<host-os-arch>/`.
 A missing recorded file reinstalls it. A checksum mismatch fails the login.

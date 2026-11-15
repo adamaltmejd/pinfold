@@ -647,13 +647,7 @@ async fn start(
         _ = audit_failure(&mut progress.audit) => return Err(Stop::Failed(io::Error::other("audit-log: egress logging failed"))),
         ready = child.ready() => ready.map_err(Stop::NotReady)?,
     }
-    let actual = runtime.finish_start(
-        &plan.name,
-        init,
-        socket.as_deref(),
-        &progress.claimed.fills,
-        seeding,
-    )?;
+    let actual = runtime.finish_start(&plan.name, init, socket.as_deref(), seeding)?;
     Ok((actual, egress_log))
 }
 

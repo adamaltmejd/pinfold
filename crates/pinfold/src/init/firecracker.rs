@@ -27,7 +27,7 @@
 //!   ENV (count u32, name and value each) sets the box's environment once,
 //!   answered ENV_SET; an EXEC that arrives first waits for it. EXEC is
 //!   argv (count u32, strings), workdir (empty for `/`), tty u8, rows u16,
-//!   cols u16, then extra env pairs (count u32), followed by STDIN,
+//!   cols u16, then TERM and COLORTERM (present u8, string when present), followed by STDIN,
 //!   STDIN_END and RESIZE (rows u16, cols u16) frames; the guest sends
 //!   STDOUT, STDERR and finally EXIT (i32). STAT is answered STAT with the
 //!   work cgroup's memory current and peak, pids current and max, and OOM
@@ -941,7 +941,12 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
     let workdir = fields.os()?;
     let tty = fields.u8()? != 0;
     let (rows, cols) = (fields.u16()?, fields.u16()?);
-    let extra = pairs(&mut fields)?;
+    let mut terminal = Vec::new();
+    for name in ["TERM", "COLORTERM"] {
+        if fields.u8()? != 0 {
+            terminal.push((OsString::from(name), fields.os()?));
+        }
+    }
     fields.end()?;
     let Some(program) = argv.first() else {
         return Err(io::Error::other("an exec without argv"));
@@ -949,7 +954,7 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
 
     // `init exec` restores the environment from Apple's transport names, so
     // a name that itself carries the prefix arrives exactly.
-    let transport = vars.into_iter().chain(extra).map(|(name, value)| {
+    let transport = vars.into_iter().chain(terminal).map(|(name, value)| {
         let mut key = OsString::from(super::BOX_ENV_PREFIX);
         key.push(name);
         let hex: String = value

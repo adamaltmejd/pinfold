@@ -26,7 +26,7 @@ pinfold pi [pi args…]            pi in a box for this project; `pi` is a symli
 pinfold attach [cmd…]            bash (or cmd) in this project's running pi box
 pinfold push                     this checkout's branches into its pi box as refs/remotes/host/*
 pinfold fetch                    its pi box's branches into refs/remotes/pinfold/*
-pinfold build [--profile NAME] [--allow HOST]… [--no-cache]   build this project's image, or a profile's; prints the ref
+pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this project's image, or a profile's; prints the ref
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]…   a caller's image from its own context; one JSON line
 pinfold image rm NAME            retire a caller image name; one JSON line
 pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
@@ -145,7 +145,7 @@ pub fn attach(args: &[String]) -> io::Result<i32> {
     let runtime = runtime();
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
     let init = artifacts::init()?;
-    let status = runtime.exec(&name, &init, tty, Some(&cwd), &[], &argv)?;
+    let status = runtime.exec(&name, &init, tty, Some(&cwd), &argv)?;
     Ok(exit_code(status))
 }
 
@@ -315,7 +315,7 @@ fn exec(args: &[String]) -> io::Result<i32> {
     // for callers that drive pinfold through their own pty.
     let tty = tty || (io::stdin().is_terminal() && io::stdout().is_terminal());
     let init = artifacts::init()?;
-    let status = runtime.exec(&name, &init, tty, None, &[], &argv)?;
+    let status = runtime.exec(&name, &init, tty, None, &argv)?;
     Ok(exit_code(status))
 }
 

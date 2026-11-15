@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGE = ROOT / "profile" / "image"
-HARNESSES = ROOT / "crates" / "pinfold" / "harnesses.toml"
+HOST_HELPER = ROOT / "crates" / "pinfold" / "host-helper.toml"
 VMM = ROOT / "crates" / "pinfold" / "vmm.toml"
 KERNEL = ROOT / "guest-kernel" / "pins"
 # Containerfile pins that move together, by ADD destination. An npm package
@@ -380,7 +380,7 @@ def main():
         path: path.read_text()
         for path in [
             *recipes,
-            HARNESSES,
+            HOST_HELPER,
             VMM,
             KERNEL,
             ROOT / "rust-toolchain.toml",
@@ -409,9 +409,9 @@ def main():
         (name, path, [pins[path, dest] for dest in dests], cutoff)
         for name, (path, dests) in IMAGE_TOOLS.items()
     ]
-    for harness in tomllib.loads(texts[HARNESSES])["harness"]:
-        rows = [(asset["url"], asset["sha256"]) for asset in harness["asset"]]
-        tools.append((harness["name"], HARNESSES, rows, None))
+    for helper in tomllib.loads(texts[HOST_HELPER])["host_helper"]:
+        rows = [(asset["url"], asset["sha256"]) for asset in helper["asset"]]
+        tools.append((helper["name"], HOST_HELPER, rows, None))
 
     for name, path, rows, wait in tools:
         urls = [url for url, _ in rows]
@@ -431,7 +431,7 @@ def main():
         for (old_url, old_sha), (url, sha) in zip(rows, new_rows, strict=True):
             texts[path] = replace(texts[path], old_url, url)
             texts[path] = replace(texts[path], old_sha, sha)
-        if path == HARNESSES:
+        if path == HOST_HELPER:
             texts[path] = replace(
                 texts[path],
                 f'name = "{name}"\nversion = "{current}"',

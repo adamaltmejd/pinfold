@@ -161,7 +161,7 @@ impl Inject {
 
 /// The box's fixed placeholder for a login token; the proxy injects the
 /// real header, so the box never needs the value.
-const LOGIN_PLACEHOLDER: &str = "pinfold-placeholder";
+pub(crate) const LOGIN_PLACEHOLDER: &str = "pinfold-placeholder";
 
 /// A pi login route's provider `P`: pi's own provider id, its origin, the
 /// base path of its built-in URL in the pinned pi, and its credential.

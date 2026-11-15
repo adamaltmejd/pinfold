@@ -1,5 +1,5 @@
 # Firecracker and pinfold's guest kernel for Linux boxes, embedded at build
-# time. Assets are pinned as in harnesses.toml.
+# time. Assets are pinned as in host-helper.toml.
 #
 # `version` is Firecracker's, then the guest kernel's, so a change to either
 # installs into a new directory. It is the one source of Firecracker's

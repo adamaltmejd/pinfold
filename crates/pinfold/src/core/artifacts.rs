@@ -23,11 +23,11 @@ static CODEX_HELPER: LazyLock<Artifact> = LazyLock::new(|| {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct PinFile {
-        harness: [Artifact; 1],
+        host_helper: [Artifact; 1],
     }
-    let [helper] = toml::from_str::<PinFile>(include_str!("../../harnesses.toml"))
-        .expect("the embedded harnesses.toml parses")
-        .harness;
+    let [helper] = toml::from_str::<PinFile>(include_str!("../../host-helper.toml"))
+        .expect("the embedded host-helper.toml parses")
+        .host_helper;
     helper
 });
 
