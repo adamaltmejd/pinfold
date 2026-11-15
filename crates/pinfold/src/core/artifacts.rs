@@ -36,6 +36,11 @@ static VMM: LazyLock<Artifact> = LazyLock::new(|| {
     toml::from_str(include_str!("../../vmm.toml")).expect("the embedded vmm.toml parses")
 });
 
+#[cfg(target_os = "linux")]
+pub fn vmm_version() -> &'static str {
+    &VMM.version
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Builder {

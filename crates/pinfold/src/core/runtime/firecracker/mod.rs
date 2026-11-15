@@ -17,7 +17,6 @@ use nix::unistd::Pid;
 
 pub use vm::{Prepared, Vm, prepare};
 
-use crate::core::artifacts::VMM;
 use crate::core::disk::{Directory, Fill, Seeding};
 use crate::core::ownership;
 use crate::core::plan::Plan;
@@ -234,7 +233,7 @@ impl Runtime for Firecracker {
     }
 
     fn version(&self) -> io::Result<String> {
-        Ok(VMM.version.clone())
+        Ok(crate::core::artifacts::vmm_version().to_owned())
     }
 }
 

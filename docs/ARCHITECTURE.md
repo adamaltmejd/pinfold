@@ -138,8 +138,8 @@ sysctl rather than the failing call.
    again. Then create missing generated-mount parents, and only then attach
    generated configuration. Preparation never marks a disk clean. An ordinary
    directory population already created is retained; a symlink or non-directory
-   anywhere along the generated path fails startup. Before attaching generated configuration
-   below a writable disk, pinfold creates missing parent directories as the
+   anywhere along the generated path fails startup. Before attaching generated
+   configuration below a writable disk, pinfold creates missing parent directories as the
    box user, without following symlinks or changing existing ownership.
    On Apple this uses a transient networkless preparation box under the disk
    claim. Preparation ends before ordinary box work starts. The helper owns
@@ -647,15 +647,15 @@ network listener, no token: the socket identifies the box.
   box can use the credential but not read it, unless `to` echoes request
   headers back. Header names that frame the request (`Host`,
   `Content-Length`, hop-by-hop) are refused.
-- **Login routes:** a route whose value is `{ "login": HARNESS }` carries
+- **Login routes:** a route whose value is `{ "login": AGENT }` carries
   a login for that agent; pinfold owns the origin and named authentication
   channels. A spec has at most one login route per agent, or for Pi one per
   Pi provider; otherwise `spec`. An optional `to` replaces the agent's origin,
   checked like an injecting route's target. Routes generate native configuration
   for the whole box. Agent precedence remains in force: Claude's managed env
-  overrides user settings and inherited env; Codex's user config, supported project settings and
-  explicit options override its system layer (project-local `model_provider` is ignored); Pi's stored credentials override
-  extension placeholders. Configuration is convenience, not credential isolation.
+  overrides user settings and inherited env; Codex's user config, supported
+  project settings and explicit options override its system layer. Project-local
+  `model_provider` is ignored. Pi's stored credentials override extension placeholders. Configuration is convenience, not credential isolation.
 
   Every login route applies these rules. Validation precedes credential
   refresh, DNS resolution and an upstream connection:
