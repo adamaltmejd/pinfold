@@ -174,6 +174,17 @@ fn mark_retiring(record: &mut Record) -> io::Result<()> {
     publish(record)
 }
 
+/// Authorize orphan mutations while the caller holds this name's lock.
+#[cfg(target_os = "linux")]
+pub fn retire_orphan(name: &str, _lock: &Flock<File>) -> io::Result<Option<Record>> {
+    let Some(mut record) = record(name)? else {
+        return Ok(None);
+    };
+    crate::core::runtime::runtime().down(name)?;
+    mark_retiring(&mut record)?;
+    Ok(Some(record))
+}
+
 /// Remove an orphan's host files while the caller owns its name lock.
 pub fn remove_record(name: &str, generation: &str) -> io::Result<()> {
     if let Some(mut record) = record(name)?
