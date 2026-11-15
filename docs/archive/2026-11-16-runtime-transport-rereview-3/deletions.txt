@@ -1,0 +1,53 @@
+$ rg -n 'remove_dir_all|remove_file|unlinkat|remove_disk\(|vmm_file\(' crates/pinfold/src/core
+crates/pinfold/src/core/runs.rs:84:    crate::core::absent_ok(fs::remove_dir_all(dir(run_id)?))
+crates/pinfold/src/core/artifacts.rs:150:        fs::remove_file(snapshot)
+crates/pinfold/src/core/artifacts.rs:327:                fs::remove_file(&download)
+crates/pinfold/src/core/crossing.rs:577:        let _ = fs::remove_file(&path);
+crates/pinfold/src/core/crossing.rs:588:        let _ = fs::remove_file(&self.path);
+crates/pinfold/src/core/crossing.rs:645:                let _ = fs::remove_dir_all(entry.path());
+crates/pinfold/src/core/crossing.rs:696:                    let _ = fs::remove_file(path);
+crates/pinfold/src/core/crossing.rs:708:        let _ = fs::remove_dir_all(&self.dir);
+crates/pinfold/src/core/mod.rs:34:    let _ = fs::remove_file(&staging);
+crates/pinfold/src/core/mod.rs:47:        let _ = fs::remove_file(&staging);
+crates/pinfold/src/core/image.rs:142:            let _ = fs::remove_dir_all(&context);
+crates/pinfold/src/core/image/linux.rs:55:        crate::core::absent_ok(fs::remove_dir_all(cache))?;
+crates/pinfold/src/core/image/linux/catalog.rs:181:        let _ = fs::remove_file(path);
+crates/pinfold/src/core/image/linux/catalog.rs:264:        let _ = fs::remove_dir_all(staging);
+crates/pinfold/src/core/image/linux/catalog.rs:755:    crate::core::absent_ok(fs::remove_file(&staging))?;
+crates/pinfold/src/core/image/linux/catalog.rs:769:        let _ = fs::remove_file(staging);
+crates/pinfold/src/core/image/linux/catalog.rs:887:            fs::remove_dir_all(&verified.directory)?;
+crates/pinfold/src/core/image/linux/catalog.rs:912:        crate::core::absent_ok(fs::remove_file(&staging))?;
+crates/pinfold/src/core/image/linux/catalog.rs:932:            let _ = fs::remove_file(&staging);
+crates/pinfold/src/core/image/linux/catalog.rs:1068:        crate::core::absent_ok(fs::remove_dir_all(image_dir(&id)?))?;
+crates/pinfold/src/core/image/linux/catalog.rs:1160:        fs::remove_dir_all(entry.path())?;
+crates/pinfold/src/core/image/linux/job.rs:272:            crate::core::absent_ok(fs::remove_dir_all(&state))
+crates/pinfold/src/core/image/linux/job.rs:459:    fs::remove_dir_all(init_tree)?;
+crates/pinfold/src/core/image/linux/job.rs:464:        crate::core::absent_ok(fs::remove_file(&cache_disk))?;
+crates/pinfold/src/core/image/linux/job.rs:850:        crate::core::absent_ok(fs::remove_file(vsock.join(name)))?;
+crates/pinfold/src/core/image/linux/job.rs:1029:        fs::remove_file(&dirty)?;
+crates/pinfold/src/core/image/linux/job.rs:1044:                crate::core::absent_ok(fs::remove_file(cache_disk))?;
+crates/pinfold/src/core/image/linux/job.rs:1228:                fs::remove_dir_all(path)?;
+crates/pinfold/src/core/image/linux/job.rs:1256:        fs::remove_dir_all(entry.path())?;
+crates/pinfold/src/core/disk.rs:99:                .remove_disk(&disk.name)
+crates/pinfold/src/core/disk.rs:217:                runtime.remove_disk(&disk.name)?;
+crates/pinfold/src/core/disk.rs:372:    crate::core::absent_ok(fs::remove_file(marker(name, kind)?))
+crates/pinfold/src/core/disk.rs:515:        runtime.remove_disk(name)?;
+crates/pinfold/src/core/ownership.rs:199:        absent_ok(fs::remove_dir_all(&record.state_dir))?;
+crates/pinfold/src/core/ownership.rs:201:        absent_ok(fs::remove_file(path(&format!("box:{name}"), "owner")?))?;
+crates/pinfold/src/core/ownership.rs:256:        absent_ok(fs::remove_dir_all(state_dir))?;
+crates/pinfold/src/core/runtime/firecracker/mod.rs:262:            let _ = fs::remove_file(&path);
+crates/pinfold/src/core/runtime/firecracker/mod.rs:281:    fn remove_disk(&self, name: &str) -> io::Result<()> {
+crates/pinfold/src/core/runtime/firecracker/mod.rs:282:        crate::core::absent_ok(fs::remove_file(disk_path(name)?))
+crates/pinfold/src/core/runtime/firecracker/mod.rs:317:fn vmm_file(state_dir: &Path) -> PathBuf {
+crates/pinfold/src/core/runtime/firecracker/mod.rs:342:    fs::rename(&temporary, vmm_file(state_dir))?;
+crates/pinfold/src/core/runtime/firecracker/mod.rs:357:    let text = fs::read_to_string(vmm_file(state_dir)).map_err(unknown)?;
+crates/pinfold/src/core/runtime/firecracker/vm.rs:121:    let _ = fs::remove_dir_all(&tree);
+crates/pinfold/src/core/runtime/firecracker/vm.rs:131:    let _ = fs::remove_dir_all(&tree);
+crates/pinfold/src/core/runtime/firecracker/vm.rs:139:    let _ = fs::remove_file(disk);
+crates/pinfold/src/core/runtime/sockets.rs:514:    let result = syscall(unsafe { libc::unlinkat(parent.as_raw_fd(), leaf.as_ptr(), flags) });
+crates/pinfold/src/core/runtime/mod.rs:315:    fn remove_disk(&self, name: &str) -> io::Result<()>;
+crates/pinfold/src/core/runtime/apple.rs:556:    fn remove_disk(&self, name: &str) -> io::Result<()> {
+crates/pinfold/src/core/disk_export.rs:233:            && let Err(error) = fs::remove_dir_all(&self.path)
+crates/pinfold/src/core/clean.rs:195:        let _ = fs::remove_dir_all(dirs::box_state_dir(name)?);
+crates/pinfold/src/core/clean.rs:311:            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&path)?,
+crates/pinfold/src/core/clean.rs:312:            Ok(_) => fs::remove_file(&path)?,

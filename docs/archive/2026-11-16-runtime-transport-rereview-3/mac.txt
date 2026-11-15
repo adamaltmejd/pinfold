@@ -1,0 +1,9 @@
+real preparation failure: exit=1 event={'box': 'probe-retirement-44329-prepare', 'detail': 'prepare writable disks: pinfold init setup: Not a directory (os error 20)', 'event': 'failed'} stderr=b''
+failed helper left nonretiring claim/state and disk-in-use; no unsafe rollback
+$ $BIN ['box', 'down', 'probe-retirement-44329-prepare']; exit=0 stdout=b'' stderr-tail=b''
+$ $BIN ['box', 'exec', 'probe-retirement-44329-prepare', '--', 'printf', 'PREPARATION-CONTROL']; exit=0 stdout=b'PREPARATION-CONTROL' stderr-tail=b''
+$ $BIN ['box', 'down', 'probe-retirement-44329-prepare']; exit=0 stdout=b'' stderr-tail=b''
+$ $BIN ['disk', 'rm', 'probe-retirement-44329-prepare-data', '--json']; exit=0 stdout=b'{"disk":"probe-retirement-44329-prepare-data","event":"removed","existed":true}\n' stderr-tail=b''
+PASS Apple preparation failure preserved resources, targeted retirement and corrected same-name helper/exec/down succeeded
+$ $BIN ['box', 'down', 'probe-retirement-44329-prepare']; exit=0 stdout=b'' stderr-tail=b''
+$ $BIN ['disk', 'rm', 'probe-retirement-44329-prepare-data', '--json']; exit=0 stdout=b'{"disk":"probe-retirement-44329-prepare-data","event":"removed","existed":false}\n' stderr-tail=b''
