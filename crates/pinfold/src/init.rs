@@ -420,22 +420,22 @@ fn open_directory(path: &Path) -> io::Result<OwnedFd> {
 /// final inode. Project cwd never follows even an in-project symlink.
 fn open_project_directory(root: &Path, relative: &Path) -> io::Result<OwnedFd> {
     use nix::fcntl::OFlag;
+    #[cfg(target_os = "linux")]
+    let search = OFlag::O_PATH;
+    #[cfg(not(target_os = "linux"))]
+    let search = OFlag::O_SEARCH;
+    let flags = search | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
     let root = root
         .strip_prefix("/")
         .map_err(|_| io::Error::other("project root is not absolute"))?;
-    let mut directory = open_directory(Path::new("/"))?;
+    let mut directory = nix::fcntl::open(Path::new("/"), flags, nix::sys::stat::Mode::empty())?;
     for part in root.components().chain(relative.components()) {
         let Component::Normal(name) = part else {
             return Err(io::Error::other(
                 "project working directory is not plain and relative",
             ));
         };
-        directory = nix::fcntl::openat(
-            &directory,
-            name,
-            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-            nix::sys::stat::Mode::empty(),
-        )?;
+        directory = nix::fcntl::openat(&directory, name, flags, nix::sys::stat::Mode::empty())?;
     }
     Ok(directory)
 }

@@ -463,6 +463,8 @@ fn run_box(
             box_runtime.exec(&name, &init, &context, &argv)
         });
         let ended = tokio::select! {
+            // A completed command wins over a concurrent stop.
+            biased;
             status = exec => status
                 .map_err(|error| io::Error::other(format!("command exec failed: {error}")))
                 .and_then(|status| status)
