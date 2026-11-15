@@ -1,0 +1,26 @@
+$ RUSTC_WRAPPER= cargo build --locked
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.77s
+$ cargo fmt --check
+exit=0
+$ RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.72s
+$ labvm status
+{"status":"active"} (JSON excerpt)
+$ labvm exec -- bash -lc 'cd ~/pinfold-transport && RUSTC_WRAPPER= cargo build --locked --target x86_64-unknown-linux-musl'
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.19s
+exit=0
+$ labvm exec -- bash -lc 'cd ~/pinfold-transport && RUSTC_WRAPPER= cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings'
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.12s
+exit=0
+$ /tmp/pfrt-socket-capacity
+sockaddr_un.sun_path=104 bytes including terminator
+Darwin TIOCSETA/W/F=2152231956,2152231957,2152231958
+$ labvm exec -- bash -lc /tmp/pfrt-capacity
+sockaddr_un.sun_path=108 bytes including terminator
+$ df -g /System/Volumes/Data
+/dev/disk3s5       460  305        43    88% 2637737 456763880    1%   /System/Volumes/Data
+$ labvm exec -- bash -lc 'df -h /'
+/dev/sda1        32G  6.4G   24G  22% /
+Fixture disk cleanup: all matched Mac state roots returned cleanup-exit=0.
+failed-run disk cleanup exit 0 {"disk":"probe-transport-21788-data","event":"removed","existed":true}
+remaining named fixture boxes=[]

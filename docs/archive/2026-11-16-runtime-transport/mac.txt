@@ -1,0 +1,88 @@
+$ pfrt-mac-lifecycle2.log
+first={"box":"probe-transport-67167-live","egress_log":"$W/long-state-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/pinfold/runs/6177465501817de9f7112d5d64d28305e7eadd3eeb42bf7b2eedaada531ad642/egress.jsonl","event":"ready","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"6177465501817de9f7112d5d64d28305e7eadd3eeb42bf7b2eedaada531ad642","dev.pinfold.owner":"67168","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":67168,"run_id":"6177465501817de9f7112d5d64d28305e7eadd3eeb42bf7b2eedaada531ad642"}
+state-root-bytes=218; runtime=/private/tmp/pinfold-501/r-6177465501817de9f7112d5d64d28305; modes=0700/0600
+state-root-bytes=218; runtime=/private/tmp/pinfold-501/r-53e2588a7cb8eda6b33367cc261983d2; modes=0700/0600
+exit=0 stdout=b'environment-delivered\n' stderr=b''
+exit=0 stdout=b'{"box":"probe-transport-67167-disk","oom_kills":null,"memory":{"current":null,"peak":null,"limit":1073741824},"pids":{"current":null,"limit":null}}\n' stderr=b''
+exit=0 stdout=b'' stderr=b''
+owner exit=0 stdout=b'{"box":"probe-transport-67167-disk","event":"down","reason":"signal","run_id":"53e2588a7cb8eda6b33367cc261983d2eb1ae042e806de160fcb768169647dfb"}\n' stderr=b''; eof=False
+state-root-bytes=218; runtime=/private/tmp/pinfold-501/r-8ecdab204894dabc4e882a97cb2e37d7; modes=0700/0600
+exit=0 stdout=b'durable' stderr=b''
+owner SIGKILL exit=-9; host relay pipes closed before prune
+exit=1 stdout=b'' stderr=b'pinfold box: runtime-path: Not a directory (os error 20)\n'
+exit=1 stdout=b'{"box":"probe-transport-67167-disk","detail":"runtime-path: Not a directory (os error 20)","event":"refused","reason":"runtime-path"}\n' stderr=b''
+symlinked orphan runtime start refused runtime-path; target bytes and entries unchanged
+exit=1 stdout=b'{"box":"probe-transport-67167-disk","detail":"runtime-path: unsafe socket directory or generation marker","event":"refused","reason":"runtime-path"}\n' stderr=b''
+unsafe orphan directory refused runtime-path; binary left mode 0755 unchanged
+exit=0 stdout=b'{"created":"2026-11-15T20:23:25Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"6177465501817de9f7112d5d64d28305e7eadd3eeb42bf7b2eedaada531ad642","dev.pinfold.owner":"67168","dev.pinfold.profile":"default","dev.pinfold.project":""},"name":"probe-transport-67167-live","owner":67168,"owner_alive":true,"state":"running"}\n' stderr=b''
+exit=0 stdout=b'' stderr=b''
+exit=0 stdout=b'LIVE-SURVIVES' stderr=b''
+another live generation's runtime directory identity and exec survived prune
+state-root-bytes=218; runtime=/private/tmp/pinfold-501/r-30798216e429475dd9cae489276a23b7; modes=0700/0600
+exit=0 stdout=b'durable' stderr=b''
+exit=0 stdout=b'' stderr=b''
+owner exit=0 stdout=b'{"box":"probe-transport-67167-disk","event":"down","reason":"signal","run_id":"30798216e429475dd9cae489276a23b7e34b651a8efdd6836177ff83141ee8d5"}\n' stderr=b''; eof=False
+owner exit=0 stdout=b'{"box":"probe-transport-67167-live","event":"down","reason":"stdin-closed","run_id":"6177465501817de9f7112d5d64d28305e7eadd3eeb42bf7b2eedaada531ad642"}\n' stderr=b''; eof=True
+exit=125 stdout=b'' stderr=b'pinfold --: no-config: $W/probe-commands has no configuration; run `pinfold config edit`\n'
+exit=125 stdout=b'' stderr=b'pinfold --: expected a nonempty command after --\nusage: pinfold -- CMD [args\xe2\x80\xa6]\n'
+exit=125 stdout=b'' stderr=b'pinfold --: expected a nonempty command after --\nusage: pinfold -- CMD [args\xe2\x80\xa6]\n'
+exit=0 stdout=b'' stderr=b'pinfold config: $W/c/pinfold/projects/probe-commands-b533fe30ca26/pinfold.toml\n'
+exit=0 stdout=b'' stderr=b''
+exit=0 stdout=b'' stderr=b''
+exit=23 stdout=b'' stderr=b''
+exit=125 stdout=b'' stderr=b''
+exit=126 stdout=b'' stderr=b''
+exit=127 stdout=b'' stderr=b''
+exit=143 stdout=b'' stderr=b''
+exit=0 stdout=b'<>\n<a b>\n<$(touch /tmp/should-not-exist);*>\n<--help>\n<-->\n' stderr=b''
+binary I/O: all 1024 bytes equal; stderr separate
+exit=0 stdout=b'$W/probe-commands/nested\nsh\n' stderr=b''
+exit=0 stdout=b'$W/probe-commands/nested\n/bin/sh\n' stderr=b''
+exit=0 stdout=b'' stderr=b''
+exit=0 stdout=b'home-edited\nproject-edited\n' stderr=b''
+exit=125 stdout=b'' stderr=b'pinfold --: disk-in-use: disk "pi-probe-commands-b533fe30ca26-home" is attached by box "pi-probe-commands-b533fe30ca26-70078"\n'
+exit=0 stdout=b'SECOND\n' stderr=b''
+exit=0 stdout=b'' stderr=b'pinfold config: $W/c/pinfold/projects/probe-missing-9c527345718c/pinfold.toml\n'
+exit=125 stdout=b'' stderr=b'pinfold --: image-missing: image localhost/pinfold/image-probe-absent:latest is not present locally; build or pull it explicitly\n'
+exit=0 stdout=b'' stderr=b''
+exit=0 stdout=b'' stderr=b'pinfold config: $W/c/pinfold/projects/probe-protected-e4623caa723b/pinfold.toml\n'
+exit=125 stdout=b'' stderr=b'pinfold --: host-path-in-project: $W/probe-protected/inside\\nconfig: FORGED/pinfold/artifacts resolves inside $W/probe-protected\n'
+exit=0 stdout=b'' stderr=b''
+exit=125 stdout=b'' stderr=b'pinfold --: no-config: $W/probe-newline\\nconfig: FORGED has no configuration; run `pinfold config edit`\n'
+exit=0 stdout=b'' stderr=b'pinfold config: $W/c/pinfold/projects/probe-corrected-678fb74e7a29/pinfold.toml\n'
+exit=0 stdout=b'' stderr=b''
+exit=1 stdout=b'' stderr=b'pinfold config: host-path-in-project: $W/probe-folder/internal/pinfold/projects/probe-folder-e0e4366d5afc/pinfold.toml resolves inside $W/probe-folder\n'
+exit=0 stdout=b'' stderr=b'pinfold config: $W/c/pinfold/projects/probe-folder-e0e4366d5afc/pinfold.toml\n'
+exit=0 stdout=b'' stderr=b''
+exit=0 stdout=b'folder\nfolder-home\n' stderr=b''
+PASS common cases; work=$W
+PR1 driver exit=0; stderr=b''
+exit=0 stdout=b'{"disk":"probe-transport-67167-data","event":"removed","existed":true}\n' stderr=b''
+PR1 isolated disks removed exit=0 stdout=b'{"disk":"pi-probe-commands-b533fe30ca26-home","event":"removed","existed":true}\n{"disk":"pi-probe-commands-b533fe30ca26-project","event":"removed","existed":true}\n{"disk":"pi-probe-corrected-678fb74e7a29-home","event":"removed","existed":true}\n{"disk":"pi-probe-corrected-678fb74e7a29-project","event":"removed","existed":true}\n{"disk":"pi-probe-folder-e0e4366d5afc-home","event":"removed","existed":true}\n{"disk":"pi-probe-folder-e0e4366d5afc-project","event":"removed","existed":true}\n{"disk":"pi-probe-missing-9c527345718c-home","event":"removed","existed":true}\n{"disk":"pi-probe-missing-9c527345718c-project","event":"removed","existed":true}\n{"disk":"pi-probe-protected-e4623caa723b-home","event":"removed","existed":true}\n{"disk":"pi-probe-protected-e4623caa723b-project","event":"removed","existed":true}\n' stderr=b''
+PASS long-root lifecycle, private sockets and compatibility controls
+$ pfrt-mac-foreground.log
+exit=143 foreground-helper-settings-untouched=True; host-SIGTTOU=default; handed=True
+$ pfrt-mac-tty.log
+exit=143 termios-restored=True stty-sane=True zero-bytes=0 output=b"DRIVER_PID=66356\nCMD-READY\nDRIVER_STTY before=b'gfmt1:cflag=4b00:iflag=2b02:lflag=5cb:oflag=3:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600' after=b'gfmt1:cflag=4b00:iflag=2b02:lflag=200005cb:oflag=3:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600'\nDRIVER_RESULT=143,True,True\n"
+exit=125 stdout=b'' stderr=b'pinfold init exec: terminal size: Not a tty (os error 25)\n'
+exit=0 termios-restored=True stty-sane=True zero-bytes=0 output=b"DRIVER_PID=66600\nDRIVER_STTY before=b'gfmt1:cflag=4b00:iflag=2b02:lflag=5cb:oflag=3:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600' after=b'gfmt1:cflag=4b00:iflag=2b02:lflag=200005cb:oflag=3:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600'\nDRIVER_RESULT=0,True,True\n"
+exit=0 termios-restored=True stty-sane=True zero-bytes=0 output=b"DRIVER_PID=66614\n0 0\nDRIVER_STTY before=b'gfmt1:cflag=4b00:iflag=2b02:lflag=5cb:oflag=3:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600' after=b'gfmt1:cflag=4b00:iflag=2b02:lflag=200005cb:oflag=3:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600'\nDRIVER_RESULT=0,True,True\n"
+PASS terminal review cases
+$ pfrt-mac-terminal-remaining2.log
+exit=0 termios-restored=True stty-sane=False zero-bytes=0 output=b"DRIVER_PID=77404\nALREADY-RAWDRIVER_STTY before=b'gfmt1:cflag=4b00:iflag=2000:lflag=41:oflag=2:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600' after=b'gfmt1:cflag=4b00:iflag=2000:lflag=41:oflag=2:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600'\nDRIVER_RESULT=0,True,False\n"
+exit=125 termios-restored=True stty-sane=True zero-bytes=0 output=b"DRIVER_PID=77592\npinfold --: Operation not permitted (os error 1)\nDRIVER_STTY before=b'gfmt1:cflag=4b00:iflag=2b02:lflag=5cb:oflag=3:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600' after=b'gfmt1:cflag=4b00:iflag=2b02:lflag=5cb:oflag=3:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600'\nDRIVER_RESULT=125,True,True\n"
+exit=0 termios-restored=True stty-sane=True zero-bytes=0 output=b"DRIVER_PID=77743\nSETUP-CONTROLDRIVER_STTY before=b'gfmt1:cflag=4b00:iflag=2b02:lflag=5cb:oflag=3:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600' after=b'gfmt1:cflag=4b00:iflag=2b02:lflag=200005cb:oflag=3:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600'\nDRIVER_RESULT=0,True,True\n"
+PASS selected extra terminal cases; blocked-output=False
+exit=0 raw=b'\x1b[?25l\x1b[K\r\x1b[?25h36 120\r\r\n\x1b[?25l\x1b[?25hDRIVER_RESTORED=True ATTRS_EQUAL=True FLAGS=2,65538\r\n' output=b'36 120\n' termios-and-mutable-stdin-flags-restored=True
+exit=0 raw=b'\x1b[?25l\x1b[K\r\x1b[?25hxterm-256color truecolor\r\r\n36 120\r\r\n\x1b[?25l\x1b[?25hDRIVER_RESTORED=True ATTRS_EQUAL=True FLAGS=2,65538\r\n' output=b'xterm-256color truecolor\n36 120\n' termios-and-mutable-stdin-flags-restored=True
+host resize=(41, 133, 0, 0); SIGWINCH sent to PTY foreground group
+exit=0 raw=b'\x1b[?25l\x1b[K\r\x1b[?25hREADY\r\r\nRESIZED 41 133\r\r\n\x1b[?25l\x1b[?25hDRIVER_RESTORED=True ATTRS_EQUAL=True FLAGS=2,65538\r\n' output=b'READY\nRESIZED 41 133\n' termios-and-mutable-stdin-flags-restored=True
+PASS immediate dimensions, terminal identity, resize, termios and mutable-flag restoration
+$ pfrt-mac-redirected.log
+$ $BIN ['--', 'chmod', '111', 'execute']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['--', 'sh', '-c', 'pwd; echo ENTERED']; exit=0 stdout=b'$W/probe-rereview/execute\nENTERED\n' stderr=b''
+$ $BIN ['--', 'sh', '-c', 'chmod 755 execute; rm -rf execute; ln -s /home/pi execute']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['--', 'pwd']; exit=125 stdout=b'' stderr=b'pinfold init exec: working-directory: execute below $W/probe-rereview: Not a directory (os error 20)\n'
+$ $BIN ['--', 'sh', '-c', 'rm execute; mkdir execute']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['--', 'pwd']; exit=0 stdout=b'$W/probe-rereview/execute\n' stderr=b''
+PASS non-raw terminal preservation, execute-only cwd, symlink refusal and plain cwd
