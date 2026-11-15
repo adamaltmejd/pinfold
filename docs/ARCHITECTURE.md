@@ -669,9 +669,14 @@ generation-authorized directories without records under the same checks.
 Before publishing a Linux box claim, the owner durably records that no VMM has
 started. A VMM child waits on a pipe before entering its jail. The owner
 atomically replaces and syncs its identity before releasing that child;
-EOF exits without exec. Cleanup requires that known pre-start state or a
-complete identity proving the VMM ended. Unknown liveness preserves the
-generation's resources.
+EOF exits without exec. Retirement requires a known pre-start state, a
+complete identity proving the VMM ended, or successful owned reaping.
+Unknown liveness preserves the generation's resources.
+After confirmed runtime removal under the name lock, the full-generation
+owner record is atomically marked retiring and synced with its directory
+before any generation resources are deleted. Box and builder cleanup resume
+from that record even after the identity tree is gone. The owner record and
+its retirement evidence are unlinked last and the directory is synced.
 
 ## Egress proxy
 

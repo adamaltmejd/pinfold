@@ -111,6 +111,9 @@ pub fn try_project_lock(id: &str) -> io::Result<Option<Flock<File>>> {
 pub struct Record {
     pub name: String,
     pub generation: String,
+    /// Runtime removal was confirmed before any generation tree was deleted.
+    #[serde(default)]
+    pub retiring: bool,
     pub state_dir: PathBuf,
     /// The disks this generation attaches. They are released once the
     /// owner is dead and the runtime lists the box stopped or not at all,
@@ -158,15 +161,34 @@ pub fn socket(name: &str) -> io::Result<PathBuf> {
     path(&format!("box:{name}"), "sock")
 }
 
+fn publish(record: &Record) -> io::Result<()> {
+    crate::core::write_atomic(
+        &path(&format!("box:{}", record.name), "owner")?,
+        &serde_json::to_vec(record)?,
+    )?;
+    File::open(host_dir()?)?.sync_all()
+}
+
+fn mark_retiring(record: &mut Record) -> io::Result<()> {
+    record.retiring = true;
+    publish(record)
+}
+
 /// Remove an orphan's host files while the caller owns its name lock.
 pub fn remove_record(name: &str, generation: &str) -> io::Result<()> {
-    if let Some(record) = record(name)?
+    if let Some(mut record) = record(name)?
         && record.generation == generation
     {
+        if !record.retiring {
+            #[cfg(target_os = "linux")]
+            crate::core::runtime::runtime().down(name)?;
+        }
+        mark_retiring(&mut record)?;
         let cleanup = Sockets::remove(generation);
         absent_ok(fs::remove_dir_all(&record.state_dir))?;
         sockets::remove_socket(&socket(name)?)?;
         absent_ok(fs::remove_file(path(&format!("box:{name}"), "owner")?))?;
+        File::open(host_dir()?)?.sync_all()?;
         cleanup?;
     }
     Ok(())
@@ -226,6 +248,7 @@ impl Claim {
         self.record = Some(Record {
             name: self.name.clone(),
             generation: sha256_hex(random),
+            retiring: false,
             state_dir: state_dir.to_path_buf(),
             disks: Vec::new(),
             described: None,
@@ -260,10 +283,42 @@ impl Claim {
     }
 
     fn publish(&self) -> io::Result<()> {
-        crate::core::write_atomic(
-            &path(&format!("box:{}", self.name), "owner")?,
-            &serde_json::to_vec(self.record.as_ref().unwrap())?,
-        )
+        publish(self.record.as_ref().unwrap())
+    }
+
+    /// The caller has removed and reaped this claim's runtime and workers.
+    pub fn retire(&mut self) -> io::Result<()> {
+        let Some(held) = self.record.as_mut() else {
+            return Ok(());
+        };
+        let mut current = record(&self.name)?
+            .filter(|current| current.generation == held.generation)
+            .ok_or_else(|| io::Error::other("the retiring claim no longer matches"))?;
+        mark_retiring(&mut current)?;
+        held.retiring = true;
+        Ok(())
+    }
+
+    /// Builder recovery must authorize mutations before restoring old state.
+    #[cfg(target_os = "linux")]
+    pub fn retire_previous(&mut self) -> io::Result<()> {
+        let old = record(&self.name)?;
+        if self.record.as_ref().is_some_and(|held| {
+            old.as_ref()
+                .is_none_or(|old| old.generation != held.generation)
+        }) {
+            return Err(io::Error::other("the retiring claim no longer matches"));
+        }
+        if let Some(mut old) = old {
+            crate::core::runtime::runtime().down(&self.name)?;
+            mark_retiring(&mut old)?;
+            if let Some(held) = self.record.as_mut()
+                && held.generation == old.generation
+            {
+                held.retiring = true;
+            }
+        }
+        Ok(())
     }
 
     pub fn sockets(&self) -> &Sockets {
@@ -303,6 +358,9 @@ impl Claim {
 
     /// Acknowledge only completed teardown. Ownership stays held until Drop.
     pub async fn finish(&mut self, success: bool) -> io::Result<()> {
+        if success {
+            self.retire()?;
+        }
         let cleanup = match (success, self.record.as_ref()) {
             (true, Some(record)) => remove_record(&self.name, &record.generation),
             _ => Ok(()),
@@ -326,7 +384,6 @@ impl Drop for Claim {
             && let Some(record) = self.record.as_ref()
         {
             let _ = remove_record(&self.name, &record.generation);
-            let _ = fs::remove_dir_all(&record.state_dir);
         }
         if self.record.is_some() {
             let _ = socket(&self.name).and_then(|socket| sockets::remove_socket(&socket));

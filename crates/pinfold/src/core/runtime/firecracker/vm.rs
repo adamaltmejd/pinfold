@@ -338,6 +338,7 @@ impl Vm {
     /// the guest synced and unmounted them.
     pub async fn down(&mut self, _name: &str) -> io::Result<bool> {
         if !self.vmm.running() {
+            self.vmm.wait().await?;
             return Ok(false);
         }
         let sockets = self.sockets.clone();

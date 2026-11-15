@@ -224,6 +224,7 @@ async fn transaction(request: &BuildRequest<'_>) -> io::Result<Result<(), String
         _ = terminate.recv() => return Err(io::ErrorKind::Interrupted.into()),
     }
     .ok_or_else(|| io::Error::other("builder-in-use: another build owns the cache"))?;
+    claim.retire_previous()?;
     cleanup_abandoned_socket_dirs(&claim)?;
     let state = super::cache_dir()?.join("job");
     let restoring = {
@@ -263,18 +264,22 @@ async fn transaction(request: &BuildRequest<'_>) -> io::Result<Result<(), String
             },
         }
     };
-    // run_transaction never returns until a spawned VMM has been reaped and
-    // every host worker has stopped. Only then may the cache claim be released.
-    let writable = tokio::task::spawn_blocking(move || {
-        writable_snapshot(&state)?;
-        crate::core::absent_ok(fs::remove_dir_all(&state))
-    })
-    .await
-    .map_err(io::Error::other)
-    .and_then(|result| result);
-    let sockets = cleanup_generation_sockets(&claim);
-    let cleanup = claim.finish(writable.is_ok() && sockets.is_ok()).await;
-    if let Err(error) = writable.and(sockets).and(cleanup) {
+    // A wait error is not proof of death. Recheck identity before deleting state.
+    let cleanup = async {
+        claim.retire_previous()?;
+        let writable = tokio::task::spawn_blocking(move || {
+            writable_snapshot(&state)?;
+            crate::core::absent_ok(fs::remove_dir_all(&state))
+        })
+        .await
+        .map_err(io::Error::other)
+        .and_then(|result| result);
+        let sockets = cleanup_generation_sockets(&claim);
+        let cleanup = claim.finish(writable.is_ok() && sockets.is_ok()).await;
+        writable.and(sockets).and(cleanup)
+    }
+    .await;
+    if let Err(error) = cleanup {
         eprintln!("pinfold: build cleanup: {error}");
     }
     match result {

@@ -68,6 +68,9 @@ impl Runtime for Firecracker {
     // before removing the files it could still use.
     fn down(&self, name: &str) -> io::Result<()> {
         if let Some(record) = ownership::record(name)? {
+            if record.retiring {
+                return Ok(());
+            }
             match vmm_state(&record.state_dir)? {
                 VmmState::NotStarted | VmmState::Dead => {}
                 VmmState::Alive => {
@@ -131,6 +134,9 @@ impl Runtime for Firecracker {
     fn list(&self) -> io::Result<Vec<BoxInfo>> {
         let mut boxes = Vec::new();
         for record in ownership::records()? {
+            if record.retiring {
+                continue;
+            }
             let Some(described) = record.described else {
                 continue;
             };

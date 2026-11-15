@@ -386,7 +386,13 @@ impl Box {
                         let (removed, status) = child.abort(&plan.name).await;
                         (removed, Some(status))
                     }
-                    None => (Ok(false), None),
+                    None => {
+                        #[cfg(target_os = "linux")]
+                        let removed = runtime.down(&plan.name).map(|()| false);
+                        #[cfg(not(target_os = "linux"))]
+                        let removed = Ok(false);
+                        (removed, None)
+                    }
                 };
                 if let Ok(synced) = removed {
                     // Only a stop pinfold asked of a running box synced its
