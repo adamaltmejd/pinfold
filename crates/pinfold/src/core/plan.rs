@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::core::r#box::{Refusal, RefusalReason};
-use crate::core::{artifacts, login, network, proxy};
+use crate::core::{login, network, proxy};
 
 /// A parsed box spec.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -20,10 +20,6 @@ pub struct Plan {
     /// The profile to apply: its image when `image` is absent, its `home/`
     /// seeds and its `share/`.
     pub profile: Option<String>,
-    /// The pinned harnesses to install in the box, by their names in
-    /// `harnesses.toml`.
-    #[serde(default)]
-    pub harnesses: Vec<String>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
     #[serde(default)]
@@ -72,7 +68,7 @@ pub enum Route {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Login {
-    /// The harness the login belongs to; the spec must list it.
+    /// The agent the login belongs to.
     pub login: String,
     /// pi's provider, one of [`PI_PROVIDERS`]; only pi names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -179,10 +175,9 @@ pub struct PiProvider {
 }
 
 pub enum PiCredential {
-    /// The proxy sets `header` to `prefix` and `$VAR`. The box's `key`
-    /// holds `placeholder`.
+    /// The proxy sets `header` to `prefix` and `$VAR`; the extension uses
+    /// only `placeholder`.
     Key {
-        key: &'static str,
         placeholder: &'static str,
         header: &'static str,
         prefix: &'static str,
@@ -199,7 +194,6 @@ pub const PI_PROVIDERS: [PiProvider; 5] = [
         origin: "https://openrouter.ai",
         base_path: "/api/v1",
         credential: PiCredential::Key {
-            key: "OPENROUTER_API_KEY",
             placeholder: LOGIN_PLACEHOLDER,
             header: "Authorization",
             prefix: "Bearer ",
@@ -211,7 +205,6 @@ pub const PI_PROVIDERS: [PiProvider; 5] = [
         origin: "https://api.openai.com",
         base_path: "/v1",
         credential: PiCredential::Key {
-            key: "OPENAI_API_KEY",
             placeholder: LOGIN_PLACEHOLDER,
             header: "Authorization",
             prefix: "Bearer ",
@@ -223,7 +216,6 @@ pub const PI_PROVIDERS: [PiProvider; 5] = [
         origin: "https://api.anthropic.com",
         base_path: "",
         credential: PiCredential::Key {
-            key: "ANTHROPIC_API_KEY",
             placeholder: LOGIN_PLACEHOLDER,
             header: "x-api-key",
             prefix: "",
@@ -236,8 +228,7 @@ pub const PI_PROVIDERS: [PiProvider; 5] = [
         base_path: "",
         credential: PiCredential::Key {
             // pi sends a subscription's headers only for a key holding
-            // `sk-ant-oat`, read from this variable.
-            key: "ANTHROPIC_OAUTH_TOKEN",
+            // `sk-ant-oat` in its placeholder.
             placeholder: "sk-ant-oat-pinfold-placeholder",
             header: "Authorization",
             prefix: "Bearer ",
@@ -370,29 +361,6 @@ impl Login {
             )]),
         };
         inject.resolve()
-    }
-
-    /// The environment a login route adds to its harness's execs, beside the
-    /// harness defaults; the spec's own `env` still wins. `route` is the
-    /// route's name. codex adds none: its box gets [`login::codex_config`]. pi gets only its
-    /// key's placeholder, or none for `openai-codex`:
-    /// [`login::pi_extension`] points pi at the route.
-    pub fn env(&self, route: &str) -> Vec<(&'static str, String)> {
-        if self.is_codex() {
-            return Vec::new();
-        }
-        if self.is_pi() {
-            return match self.pi_provider().map(|provider| &provider.credential) {
-                Ok(PiCredential::Key {
-                    key, placeholder, ..
-                }) => vec![(*key, placeholder.to_string())],
-                _ => Vec::new(),
-            };
-        }
-        vec![
-            ("ANTHROPIC_BASE_URL", format!("http://{route}")),
-            ("CLAUDE_CODE_OAUTH_TOKEN", LOGIN_PLACEHOLDER.to_string()),
-        ]
     }
 }
 
@@ -553,21 +521,6 @@ impl Plan {
         if self.image.is_none() && self.profile.is_none() {
             return Err(invalid("a box spec needs an image or a profile"));
         }
-        let mut harnesses = BTreeSet::new();
-        for harness in &self.harnesses {
-            if artifacts::harness(harness).is_none() {
-                let names: Vec<&str> = artifacts::HARNESSES
-                    .iter()
-                    .map(|harness| harness.name.as_str())
-                    .collect();
-                return Err(invalid(format!(
-                    "harness {harness:?} is not supported; the harnesses are {names:?}"
-                )));
-            }
-            if !harnesses.insert(harness) {
-                return Err(invalid(format!("harness {harness:?} is listed twice")));
-            }
-        }
         if let Some(memory) = &self.memory
             && !memory_mib(memory).is_some_and(|mebibytes| mebibytes >= 256)
         {
@@ -698,15 +651,9 @@ impl Plan {
                         inject.resolve()?;
                     }
                     Route::Login(login) => {
-                        if !self.harnesses.contains(&login.login) {
-                            return Err(invalid(format!(
-                                "login route {name:?} names {:?}, but the spec's harnesses are {:?}",
-                                login.login, self.harnesses
-                            )));
-                        }
                         login.check(name)?;
                         // pi takes one login route per pi provider, the
-                        // other harnesses one each.
+                        // other agents one each.
                         if login.is_pi() {
                             let provider = login.pi_provider()?.pi;
                             if !pi_providers.insert(provider) {
@@ -776,6 +723,12 @@ impl Plan {
             .chain(self.disks.iter().map(|disk| disk.guest.as_path()))
             .chain(extra.iter().copied())
         {
+            if !guest.is_absolute() || !valid_mount_path(guest) {
+                return Err(invalid(format!(
+                    "guest path {:?} must be absolute and hold no comma or ASCII control character",
+                    guest
+                )));
+            }
             let normalized = guest_path(guest);
             // The guest kernel's filesystems carry the box's controls (the
             // userns sysctl, the work cgroup); a disk or mount there would

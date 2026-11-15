@@ -14,7 +14,7 @@ use tokio::net::UnixListener;
 use super::vsock::{self, put};
 use super::{Firecracker, jail};
 use crate::core::artifacts;
-use crate::core::disk::{self, Fill, Seeding};
+use crate::core::disk::{self, Directory, Fill, Seeding};
 use crate::core::image::{ImageService, linux};
 use crate::core::plan::Plan;
 use crate::core::runtime::output;
@@ -47,6 +47,7 @@ pub struct Prepared {
     mounts: Vec<(PathBuf, PathBuf)>,
     /// The image's `Env`, the defaults under the spec's.
     image_env: Vec<(OsString, OsString)>,
+    generated: Vec<PathBuf>,
 }
 
 /// Install the VMM, check that the image tag still names `image_id`, and
@@ -56,6 +57,7 @@ pub fn prepare(
     state_dir: &Path,
     image_id: &str,
     cancel: &AtomicBool,
+    generated: &[PathBuf],
 ) -> io::Result<Prepared> {
     let cancelled = || {
         if cancel.load(Ordering::Acquire) {
@@ -98,6 +100,7 @@ pub fn prepare(
         root_disk,
         init_disk,
         mounts,
+        generated: generated.to_vec(),
         image_env: image_env
             .into_iter()
             .map(|(key, value)| (key.into(), value.into()))
@@ -191,6 +194,7 @@ impl Vm {
         proxy_socket: Option<&Path>,
         fills: &[Fill],
         seeding: Option<&Seeding>,
+        directories: &[Directory],
     ) -> io::Result<Vm> {
         let state_dir = prepared.state_dir;
         let vsock_dir = Firecracker::vsock_dir(&state_dir)?;
@@ -204,15 +208,22 @@ impl Vm {
         // vda is the init disk, vdb the root disk, then the box's disks and
         // the mounts' images in this order.
         let mut drives: Vec<(PathBuf, bool)> = Vec::new();
-        let mut attachments: Vec<(&Path, bool, bool)> = Vec::new();
+        let mut attachments = Vec::new();
         for disk in &plan.disks {
             drives.push((super::disk_path(&disk.name)?, !disk.readonly));
             let fresh = !disk.readonly && disk::unfilled(&disk.name)?;
-            attachments.push((&disk.guest, !disk.readonly, fresh));
+            attachments.push((
+                crate::core::plan::guest_path(&disk.guest),
+                !disk.readonly,
+                fresh,
+                false,
+            ));
         }
         for (image, guest) in &prepared.mounts {
             drives.push((image.clone(), false));
-            attachments.push((guest, false, false));
+            let guest = crate::core::plan::guest_path(guest);
+            let deferred = prepared.generated.contains(&guest);
+            attachments.push((guest, false, false, deferred));
         }
         let device = |index: usize| format!("vd{}", char::from(b'a' + index as u8));
 
@@ -227,11 +238,12 @@ impl Vm {
         request.push(u8::from(proxy_socket.is_some()));
         put(&mut request, device(1).as_bytes());
         request.extend((attachments.len() as u32).to_be_bytes());
-        for (index, (guest, writable, fresh)) in attachments.iter().enumerate() {
+        for (index, (guest, writable, fresh, deferred)) in attachments.iter().enumerate() {
             put(&mut request, device(index + 2).as_bytes());
             put(&mut request, guest.as_os_str().as_bytes());
             request.push(u8::from(*writable));
             request.push(u8::from(*fresh));
+            request.push(u8::from(*deferred));
         }
         let filled = fills
             .iter()
@@ -242,6 +254,11 @@ impl Vm {
         for (guest, missing) in filled {
             put(&mut request, guest.as_os_str().as_bytes());
             request.push(u8::from(missing));
+        }
+        request.extend((directories.len() as u32).to_be_bytes());
+        for directory in directories {
+            put(&mut request, directory.disk.as_os_str().as_bytes());
+            put(&mut request, directory.relative.as_os_str().as_bytes());
         }
 
         let root = state_dir.join("jail");

@@ -92,7 +92,7 @@ pub fn box_state_dir(name: &str) -> io::Result<PathBuf> {
 
 /// The file an install writes into `dir`: one installed path per line,
 /// relative to `dir`. It is written at the install root, so a payload that
-/// is a subdirectory of `dir` (a harness) never mounts it.
+/// is a subdirectory of `dir` never includes it.
 const MANIFEST: &str = ".manifest";
 
 /// Create `dir` in one step: `fill` writes into a staging sibling, which is

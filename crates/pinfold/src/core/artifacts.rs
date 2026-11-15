@@ -1,6 +1,5 @@
-//! Pinned harnesses and VMM, and the init the CLI's own build provides.
+//! Pinned host helper and infrastructure, and this build's init.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -19,22 +18,21 @@ use crate::dirs;
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 const DOWNLOAD_LIMIT: u64 = 512 * 1024 * 1024;
 
-/// The pin file, parsed once. It is embedded, so a parse error is a bug in
-/// this build.
-pub static HARNESSES: LazyLock<Vec<Harness>> = LazyLock::new(|| {
+/// The host helper pin, embedded in this build.
+static CODEX_HELPER: LazyLock<Artifact> = LazyLock::new(|| {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct PinFile {
-        harness: Vec<Harness>,
+        harness: [Artifact; 1],
     }
-    toml::from_str::<PinFile>(include_str!("../../harnesses.toml"))
+    let [helper] = toml::from_str::<PinFile>(include_str!("../../harnesses.toml"))
         .expect("the embedded harnesses.toml parses")
-        .harness
+        .harness;
+    helper
 });
 
-/// Firecracker and the guest kernel for Linux boxes: `vmm.toml`, installed
-/// like a harness. A parse error is a bug in this build.
-pub static VMM: LazyLock<Harness> = LazyLock::new(|| {
+/// Firecracker and the guest kernel for Linux boxes.
+static VMM: LazyLock<Artifact> = LazyLock::new(|| {
     toml::from_str(include_str!("../../vmm.toml")).expect("the embedded vmm.toml parses")
 });
 
@@ -208,15 +206,12 @@ fn builder_file(
     Ok(())
 }
 
-/// One pinned harness, a row of `harnesses.toml`, or the VMM.
+/// One pinned host helper or infrastructure release.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Harness {
-    pub name: String,
-    pub version: String,
-    /// Env defaults in the box; the spec's own env wins.
-    #[serde(default)]
-    pub env: BTreeMap<String, String>,
+struct Artifact {
+    name: String,
+    version: String,
     asset: Vec<Asset>,
 }
 
@@ -244,30 +239,18 @@ enum Install {
     Executable,
 }
 
-pub fn harness(name: &str) -> Option<&'static Harness> {
-    HARNESSES.iter().find(|harness| harness.name == name)
+/// Install the host Codex helper and return its executable. It never enters a box.
+pub fn codex_helper(cancel: Option<&AtomicBool>) -> io::Result<PathBuf> {
+    Ok(CODEX_HELPER
+        .install_os_arch(HOST_OS_ARCH, cancel)?
+        .join("codex-app-server"))
 }
 
-/// Where the harness `name` is mounted in the box.
-pub fn guest(name: &str) -> PathBuf {
-    Path::new("/opt/pinfold").join(name)
-}
-
-impl Harness {
-    /// The host directory to mount at [`guest`] for a box on this host,
-    /// downloading and installing the assets if the cache lacks them.
-    pub fn install(&self, cancel: Option<&AtomicBool>) -> io::Result<PathBuf> {
-        Ok(self.install_os_arch(OS_ARCH, cancel)?.join(&self.name))
-    }
-
+impl Artifact {
     /// Download and install the assets for `os_arch` if the cache lacks
     /// them, and return their directory. A host helper's (`HOST_OS_ARCH`)
     /// never enters a box.
-    pub fn install_os_arch(
-        &self,
-        os_arch: &str,
-        cancel: Option<&AtomicBool>,
-    ) -> io::Result<PathBuf> {
+    fn install_os_arch(&self, os_arch: &str, cancel: Option<&AtomicBool>) -> io::Result<PathBuf> {
         let assets = self.assets(os_arch);
         let dir = self.dir(os_arch)?;
         dirs::install_dir(&dir, |staging| {
@@ -285,7 +268,7 @@ impl Harness {
             .collect()
     }
 
-    /// The cache directory of this harness for `os_arch`, installed or not.
+    /// The cache directory for `os_arch`, installed or not.
     fn dir(&self, os_arch: &str) -> io::Result<PathBuf> {
         Ok(dirs::artifacts_dir()?
             .join(&self.name)
@@ -375,7 +358,7 @@ const OS_ARCH: &str = if cfg!(target_arch = "aarch64") {
 
 /// The `os-arch` of a host helper on this host, as its rows name it. The
 /// macOS CLI is arm64 only; Linux arm64 is unsupported.
-pub const HOST_OS_ARCH: &str = if cfg!(target_os = "macos") {
+const HOST_OS_ARCH: &str = if cfg!(target_os = "macos") {
     "host-darwin-arm64"
 } else {
     "host-linux-x64"
@@ -409,8 +392,7 @@ pub fn init() -> io::Result<PathBuf> {
 pub struct Pin {
     pub name: &'static str,
     pub version: &'static str,
-    /// A harness's host directory mounted at `/opt/pinfold/<name>`; the
-    /// VMM's install directory.
+    /// The host helper executable or infrastructure install directory.
     pub path: PathBuf,
     /// Whether the cache holds this host's assets.
     pub cached: bool,
@@ -428,18 +410,20 @@ struct PinAsset {
     bytes: Option<u64>,
 }
 
-/// Every pinned harness, then on Linux x64 the VMM, and whether the cache holds
-/// each. Never downloads.
+/// The host helper and, on Linux x64, infrastructure cache state. Never downloads.
 pub fn pins() -> io::Result<Vec<Pin>> {
-    let pin = |harness: &'static Harness, path: fn(PathBuf, &str) -> PathBuf| {
-        let dir = harness.dir(OS_ARCH)?;
+    let pin = |artifact: &'static Artifact,
+               os_arch: &str,
+               path: fn(PathBuf) -> PathBuf|
+     -> io::Result<Pin> {
+        let dir = artifact.dir(os_arch)?;
         Ok(Pin {
-            name: &harness.name,
-            version: &harness.version,
-            path: path(dir.clone(), &harness.name),
+            name: &artifact.name,
+            version: &artifact.version,
+            path: path(dir.clone()),
             cached: dirs::installed(&dir)?,
-            assets: harness
-                .assets(OS_ARCH)
+            assets: artifact
+                .assets(os_arch)
                 .into_iter()
                 .map(|asset| PinAsset {
                     url: &asset.url,
@@ -450,12 +434,11 @@ pub fn pins() -> io::Result<Vec<Pin>> {
             recipe_sha256: None,
         })
     };
-    let mut pins = HARNESSES
-        .iter()
-        .map(|harness| pin(harness, |dir, name| dir.join(name)))
-        .collect::<io::Result<Vec<_>>>()?;
+    let mut pins = vec![pin(&CODEX_HELPER, HOST_OS_ARCH, |dir| {
+        dir.join("codex-app-server")
+    })?];
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        pins.push(pin(&VMM, |dir, _| dir)?);
+        pins.push(pin(&VMM, OS_ARCH, |dir| dir)?);
         let path = builder_dir()?.join("linux-x64");
         pins.push(Pin {
             name: "builder",
@@ -479,9 +462,8 @@ pub fn pins() -> io::Result<Vec<Pin>> {
     Ok(pins)
 }
 
-/// Every `<name>/<version>` in the cache that no harness or the VMM pins,
-/// names neither has included. The embedded init lives under `init/` and is never
-/// listed.
+/// Every unpinned `<name>/<version>` in the cache. The embedded init lives
+/// under `init/` and is never listed.
 pub fn unpinned_versions() -> io::Result<Vec<PathBuf>> {
     let mut unpinned = Vec::new();
     for name in dirs::entries(&dirs::artifacts_dir()?)? {
@@ -489,9 +471,9 @@ pub fn unpinned_versions() -> io::Result<Vec<PathBuf>> {
             continue;
         }
         for version in dirs::entries(&name.path())? {
-            let pinned = HARNESSES.iter().chain([&*VMM]).any(|harness| {
-                name.file_name() == harness.name.as_str()
-                    && version.file_name() == harness.version.as_str()
+            let pinned = [&*CODEX_HELPER, &*VMM].iter().any(|artifact| {
+                name.file_name() == artifact.name.as_str()
+                    && version.file_name() == artifact.version.as_str()
             });
             let builder = name.file_name() == "builder"
                 && version.file_name() == BUILDER.archive_sha256.as_str();

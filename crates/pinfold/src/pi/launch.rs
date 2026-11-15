@@ -9,18 +9,16 @@ use tokio::runtime::Builder;
 
 use crate::cli;
 use crate::config::Config;
-use crate::core::r#box::{self, Box, RefusalReason, Shutdown, Signals, UpError};
+use crate::core::r#box::{Box, RefusalReason, Shutdown, Signals, UpError};
 use crate::core::clean;
 use crate::core::crossing::CrossingError;
 use crate::core::image::{ImageInfo, service};
 use crate::core::plan::{Disk, Egress, Env, Plan};
 use crate::core::runs::{self, Terminal};
 use crate::core::runtime::runtime;
-use crate::core::{artifacts, crossing, disk, image, login, ownership, sha256_hex};
+use crate::core::{artifacts, crossing, disk, image, ownership, sha256_hex};
 use crate::pi::context::Context;
 use crate::pi::state::{self, canonical, project_id};
-
-const HARNESS: &str = "pi";
 
 /// Run a `pi`/`pinfold pi` invocation and return pi's exit code.
 pub fn run(args: &[String]) -> io::Result<i32> {
@@ -404,7 +402,6 @@ fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> Plan {
     };
     Plan {
         profile: Some(config.profile.name.clone()),
-        harnesses: vec![HARNESS.to_string()],
         disks: vec![
             empty_writable_disk(home, Path::new(state::HOME)),
             empty_writable_disk(project, root),
@@ -471,12 +468,7 @@ fn run_box(
     scratch_origin: Option<(&str, &Path)>,
 ) -> io::Result<i32> {
     let init = artifacts::init()?;
-    let extension = plan
-        .logins()
-        .any(|(_, login)| login.is_pi())
-        .then(|| ["-e".to_string(), login::PI_EXTENSION.to_string()]);
-    let argv: Vec<String> = std::iter::once(format!("{}/pi", artifacts::guest(HARNESS).display()))
-        .chain(extension.into_iter().flatten())
+    let argv: Vec<String> = std::iter::once("pi".to_string())
         .chain(args.iter().cloned())
         .collect();
     let (name, root, workdir) = (plan.name.clone(), root.to_path_buf(), cwd.to_path_buf());
@@ -512,9 +504,7 @@ fn run_box(
             if repository {
                 sync(&name, &init, &root);
             }
-            let env = r#box::harness_env(&name, HARNESS)?
-                .ok_or_else(|| io::Error::other(format!("box {name:?} has no harness {HARNESS:?}")))?;
-            box_runtime.exec(&name, &init, tty, Some(&workdir), &env, &argv)
+            box_runtime.exec(&name, &init, tty, Some(&workdir), &[], &argv)
         });
         let ended = tokio::select! {
             status = exec => status

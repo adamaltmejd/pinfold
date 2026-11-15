@@ -123,6 +123,10 @@ The token and refresh stay on the host across independent Pi homes.
 Login routes remove guest authentication headers and Connection-nominated
 fields before adding host authentication. Named credential query parameters
 are refused; malformed query escapes and Connection options are refused too.
+Login routes generate native configuration for the whole box. Claude and Codex
+use system configuration; Pi autoloads a read-only extension under its writable
+home. Agent configuration precedence still applies. Launch agents through PATH.
+
 Each login route grants every process in the box the host login's authority
 over every path at its origin. It does not inspect request bodies or prevent
 a reflecting upstream from returning credentials. See

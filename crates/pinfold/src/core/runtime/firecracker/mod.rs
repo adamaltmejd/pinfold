@@ -18,7 +18,7 @@ use nix::unistd::Pid;
 pub use vm::{Prepared, Vm, prepare};
 
 use crate::core::artifacts::VMM;
-use crate::core::disk::{Fill, Seeding};
+use crate::core::disk::{Directory, Fill, Seeding};
 use crate::core::ownership;
 use crate::core::plan::Plan;
 use crate::core::runtime::{BoxInfo, BoxStat, DiskInfo, MemoryStat, PidsStat, Runtime, output};
@@ -213,6 +213,8 @@ impl Runtime for Firecracker {
         _plan: &Plan,
         _init: &Path,
         _generation: &str,
+        _directories: &[Directory],
+        _fills: &[Fill],
     ) -> io::Result<()> {
         Ok(())
     }

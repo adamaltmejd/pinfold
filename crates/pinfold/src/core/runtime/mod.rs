@@ -13,14 +13,9 @@ use std::sync::atomic::AtomicBool;
 
 use serde::de::DeserializeOwned;
 
-use crate::core::disk::{Fill, Seeding};
+use crate::core::disk::{Directory, Fill, Seeding};
 use crate::core::plan::{Env, Plan};
 use crate::core::proxy::PROXY_URL;
-
-/// The names `guest_vars` always sets. A per-exec env is sent after the box's
-/// own, so a harness default under one of these names is dropped before it
-/// can replace the value.
-pub const ALWAYS_APPLIED: [&str; 3] = ["NODE_USE_ENV_PROXY", "HTTPS_PROXY", "http_proxy"];
 
 /// The box runtime for this OS: Apple `container` on macOS, Firecracker on
 /// Linux, the only targets pinfold builds for.
@@ -47,18 +42,20 @@ pub fn prepare(
     state_dir: &Path,
     image_id: &str,
     cancel: &AtomicBool,
+    generated: &[PathBuf],
 ) -> io::Result<Prepared> {
     #[cfg(target_os = "linux")]
-    return firecracker::prepare(plan, state_dir, image_id, cancel);
+    return firecracker::prepare(plan, state_dir, image_id, cancel, generated);
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (plan, state_dir, image_id, cancel);
+        let _ = (plan, state_dir, image_id, cancel, generated);
         Ok(Prepared)
     }
 }
 
-/// Start the box. On Linux the boot carries the new disks' `fills` and the
-/// profile's `seeding`; Apple applies them in [`Runtime::finish_start`].
+/// Start the box. Linux boot applies initial fills before generated mounts
+/// and seeds before ready. Apple populated disks under the claim and applies
+/// seeds in [`Runtime::finish_start`].
 pub fn start(
     prepared: Prepared,
     plan: &Plan,
@@ -66,15 +63,16 @@ pub fn start(
     proxy_socket: Option<&Path>,
     fills: &[Fill],
     seeding: Option<&Seeding>,
+    directories: &[Directory],
 ) -> io::Result<Child> {
     #[cfg(target_os = "linux")]
     {
         let _ = init;
-        firecracker::Vm::up(prepared, plan, proxy_socket, fills, seeding)
+        firecracker::Vm::up(prepared, plan, proxy_socket, fills, seeding, directories)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let (Prepared, _, _) = (prepared, fills, seeding);
+        let (Prepared, _, _, _) = (prepared, fills, seeding, directories);
         apple::up(plan, init, proxy_socket)
     }
 }
@@ -273,14 +271,16 @@ pub trait Runtime: Sync {
     /// Create an empty disk of `bytes`.
     fn create_disk(&self, name: &str, bytes: u64) -> io::Result<()>;
 
-    /// Give newly created disks to the box user before attachment. The
-    /// caller holds their locks and the box's name and owns rollback.
+    /// Give fresh roots to the box user and prepare directories on fresh
+    /// or reused disks. The caller holds the disk locks and owns rollback.
     fn own_disks(
         &self,
         names: &[&str],
         plan: &Plan,
         init: &Path,
         generation: &str,
+        directories: &[Directory],
+        fills: &[Fill],
     ) -> io::Result<()>;
 
     /// Remove a disk no box attaches.
@@ -311,7 +311,7 @@ fn guest_vars(plan: &Plan) -> Vec<(String, OsString)> {
             Some((name.clone(), value?))
         })
         .collect();
-    // Always applied (`ALWAYS_APPLIED`): Node's fetch reads the proxy
+    // Node's fetch reads the proxy
     // variables only with this set. These override any spec entries with the
     // same names.
     vars.push(("NODE_USE_ENV_PROXY".into(), "1".into()));

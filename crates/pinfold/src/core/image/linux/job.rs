@@ -901,7 +901,9 @@ async fn run_job(
                 put(&mut request, device); put(&mut request, path);
                 request.push(u8::from(writable));
                 request.push(0); // Builder attachments are never new managed disks.
+                request.push(0); // Builder mounts are not deferred.
             }
+            request.extend(0u32.to_be_bytes());
             request.extend(0u32.to_be_bytes());
             write_frame(&mut reader, BOOT, &request)?;
             let mut handoff = handoff;

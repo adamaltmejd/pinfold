@@ -39,7 +39,6 @@ IMAGE_TOOLS = {
 }
 WAIT = datetime.timedelta(days=7)
 VERSION = r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
-CLAUDE = "https://downloads.claude.ai/claude-code-releases/"
 
 
 def fetch(url, github=False):
@@ -132,7 +131,7 @@ def github(urls, cutoff):
     if ceiling <= current:
         return None
     releases = [latest]
-    # Harnesses take only the latest release; a waiting tool may take an older one.
+    # The host helper takes only the latest release. Waiting tools may take an older one.
     if cutoff is not None and not complete(latest):
         page = 1
         while True:
@@ -230,35 +229,9 @@ def npm(urls, cutoff):
     return current, target, rows
 
 
-def claude(urls, cutoff):
-    parts = [
-        re.fullmatch(rf"{re.escape(CLAUDE)}({VERSION})/([^/]+)/claude", url)
-        for url in urls
-    ]
-    if not all(parts) or len({part[1] for part in parts}) != 1:
-        raise ValueError(f"{urls[0]}: pins are not one claude release")
-    current = version(parts[0][1])
-    latest = fetch(CLAUDE + "latest").decode().strip()
-    target = version(latest)
-    if target is None:
-        raise ValueError(f"claude: latest version {latest!r} is not stable")
-    if target <= current:
-        return None
-    platforms = json.loads(fetch(f"{CLAUDE}{latest}/manifest.json"))["platforms"]
-    if not all(part[2] in platforms for part in parts):
-        return current, target, None
-    rows = []
-    for part in parts:
-        url = f"{CLAUDE}{latest}/{part[2]}/claude"
-        expected = bytes.fromhex(platforms[part[2]]["checksum"])
-        rows.append((url, verified(url, "sha256", expected)))
-    return current, target, rows
-
-
 SOURCES = [
     ("https://github.com/", github),
     ("https://registry.npmjs.org/", npm),
-    (CLAUDE, claude),
 ]
 
 
