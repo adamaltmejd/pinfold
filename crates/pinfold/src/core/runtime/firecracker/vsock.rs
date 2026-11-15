@@ -13,6 +13,8 @@ use std::time::Duration;
 use nix::libc;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 
+use crate::core::runtime::terminal::{Raw, window};
+
 use crate::init::firecracker::{
     CONTROL_PORT, ENV, ENV_SET, EXEC, EXEC_PORT, EXIT, FAILED, RESIZE, STAT, STDERR, STDIN,
     STDIN_END, STDOUT, UNMOUNT, read_frame, write_frame,
@@ -123,7 +125,16 @@ pub fn exec(
     let mut connection = connect(state_dir, EXEC_PORT)?;
     // A command runs as long as it runs.
     connection.set_read_timeout(None)?;
-    let (rows, cols) = if tty { window() } else { (0, 0) };
+    let mut metadata = crate::init::ExecMetadata {
+        agent: context.agent.map(str::to_string),
+        project_directory: context.project_directory()?,
+        ..Default::default()
+    };
+    if tty {
+        metadata.window = window()?;
+        metadata.term = std::env::var_os("TERM").map(|value| value.as_bytes().to_vec());
+        metadata.colorterm = std::env::var_os("COLORTERM").map(|value| value.as_bytes().to_vec());
+    }
     let mut payload = Vec::new();
     payload.extend((argv.len() as u32).to_be_bytes());
     for arg in argv {
@@ -136,23 +147,12 @@ pub fn exec(
             .map_or(&[][..], |dir| dir.as_os_str().as_bytes()),
     );
     payload.push(u8::from(tty));
-    payload.extend(rows.to_be_bytes());
-    payload.extend(cols.to_be_bytes());
-    for name in ["TERM", "COLORTERM"] {
-        let value = tty.then(|| std::env::var_os(name)).flatten();
-        payload.push(u8::from(value.is_some()));
-        if let Some(value) = value {
-            put(&mut payload, value.as_bytes());
-        }
-    }
-    payload.push(u8::from(context.agent.is_some()));
-    if let Some(agent) = context.agent {
-        put(&mut payload, agent.as_bytes());
-    }
+    put(&mut payload, metadata.encode().as_bytes());
+    // Terminal setup must finish before EXEC can start the command.
+    let raw = if tty { Raw::enter()? } else { None };
+    let winch = if tty { Some(Winch::install()?) } else { None };
     write_frame(&mut connection, EXEC, &payload)?;
 
-    let raw = if tty { Raw::enter() } else { None };
-    let winch = if tty { Some(Winch::install()?) } else { None };
     let (stop, stopping) = io::pipe()?;
     let input = {
         let connection = connection.try_clone()?;
@@ -236,11 +236,12 @@ fn forward_input(
         }
         if let Some(winch) = winch.filter(|_| ready[1]) {
             let _ = (&*winch).read(&mut [0; 64]);
-            let (rows, cols) = window();
-            let mut payload = rows.to_be_bytes().to_vec();
-            payload.extend(cols.to_be_bytes());
-            if write_frame(&mut connection, RESIZE, &payload).is_err() {
-                return;
+            if let Ok(Some((rows, cols))) = window() {
+                let mut payload = rows.to_be_bytes().to_vec();
+                payload.extend(cols.to_be_bytes());
+                if write_frame(&mut connection, RESIZE, &payload).is_err() {
+                    return;
+                }
             }
         }
         if open && *ready.last().unwrap() {
@@ -264,46 +265,6 @@ fn read_fd(fd: BorrowedFd, buffer: &mut [u8]) -> io::Result<usize> {
             Err(nix::errno::Errno::EINTR) => continue,
             result => return result.map_err(io::Error::from),
         }
-    }
-}
-
-/// The host terminal's rows and columns, 24x80 when stdout is none.
-fn window() -> (u16, u16) {
-    // SAFETY: TIOCGWINSZ fills a winsize on the stack.
-    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
-    let got = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut size) };
-    if got < 0 || size.ws_row == 0 {
-        return (24, 80);
-    }
-    (size.ws_row, size.ws_col)
-}
-
-/// The host terminal in raw mode, restored on drop.
-struct Raw(libc::termios);
-
-impl Raw {
-    /// None when stdin is no terminal: `--tty` from a caller's own pty.
-    fn enter() -> Option<Raw> {
-        // SAFETY: tcgetattr and tcsetattr on stdin with termios on the stack.
-        unsafe {
-            let mut saved: libc::termios = std::mem::zeroed();
-            if libc::tcgetattr(libc::STDIN_FILENO, &mut saved) < 0 {
-                return None;
-            }
-            let mut raw = saved;
-            libc::cfmakeraw(&mut raw);
-            if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) < 0 {
-                return None;
-            }
-            Some(Raw(saved))
-        }
-    }
-}
-
-impl Drop for Raw {
-    fn drop(&mut self) {
-        // SAFETY: restores the attributes `enter` read.
-        unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.0) };
     }
 }
 

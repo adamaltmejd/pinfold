@@ -102,7 +102,7 @@ In your working folder:
 One foreground command owns the box and tears it down when it ends.
 A simultaneous second launch refuses as `disk-in-use`. Arguments after
 `--` pass literally to the command, including `--help`. Command exit codes
-pass through; pinfold's project-command failures use 125. CMD owns stdout;
+pass through; project setup failure or external teardown before observed completion uses 125. CMD owns stdout;
 pinfold diagnostics use stderr.
 
 For reusable Codex subscription login, sign in with Codex on the host and

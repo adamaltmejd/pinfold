@@ -75,7 +75,7 @@ exec git merge -q --ff-only "$host"
 /// failure is reported and never stops the command.
 fn sync(name: &str, init: &Path, root: &Path) {
     let Some(guest) = root.to_str() else { return };
-    let failed = |detail: &str| eprintln!("pinfold: sync-failed: {}", detail.trim());
+    let failed = |detail: &str| eprintln!("pinfold: sync-failed: {}", terminal_text(detail.trim()));
     // `--short` would print `heads/<b>` when a tag shares the branch's name.
     let branch = git(root, &["symbolic-ref", "-q", "HEAD"])
         .and_then(|head| head.strip_prefix("refs/heads/").map(str::to_string))
@@ -443,7 +443,7 @@ fn run_box(
         let mut signals = Signals::with_hangup()?;
         let mut box_ = match Box::up(plan, &init, &mut signals).await {
             Ok(box_) => box_,
-            Err(UpError::Control) => return Ok(0),
+            Err(UpError::Control) => return Ok(125),
             Err(UpError::Signal) => {
                 return Ok(128 + signals.last().unwrap_or(nix::sys::signal::Signal::SIGTERM) as i32);
             }
@@ -458,6 +458,7 @@ fn run_box(
                 cwd: Some(&workdir),
                 tty,
                 agent: Some(&argv[0]),
+                project_root: Some(&root),
             };
             box_runtime.exec(&name, &init, &context, &argv)
         });
@@ -469,7 +470,7 @@ fn run_box(
             shutdown = box_.ended() => shutdown.map(|shutdown| {
                 let code = match shutdown {
                     Shutdown::BoxExited(_) | Shutdown::AuditLog => 125,
-                    Shutdown::StdinEof | Shutdown::Signal => 0,
+                    Shutdown::StdinEof | Shutdown::Signal => 125,
                 };
                 (shutdown.terminal(), code)
             }),

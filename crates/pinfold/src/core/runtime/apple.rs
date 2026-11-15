@@ -10,6 +10,7 @@ use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(not(target_os = "linux"))]
 use nix::libc;
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -381,6 +382,11 @@ impl Runtime for Apple {
         context: &ExecContext<'_>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
+        let _raw = if context.tty {
+            super::terminal::Raw::enter()?
+        } else {
+            None
+        };
         exec_command(name, init, context, argv)?
             .status()
             .map_err(|error| spawn_error("container", error))
@@ -553,18 +559,13 @@ fn exec_command(
     command.args(["exec", "-i"]);
     let mut metadata = crate::init::ExecMetadata {
         agent: context.agent.map(str::to_string),
+        project_directory: context.project_directory()?,
         ..Default::default()
     };
     if context.tty {
         command.arg("-t");
-        // The runtime's initial resize can arrive after a fast command starts.
-        // Trusted init sets the captured size before becoming the command.
-        let mut size: libc::winsize = unsafe { std::mem::zeroed() };
-        // SAFETY: TIOCGWINSZ fills the winsize on the stack.
-        if unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut size) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        metadata.window = Some((size.ws_row, size.ws_col));
+        // Init applies a known initial size before a fast command starts.
+        metadata.window = super::terminal::window()?;
         metadata.term = std::env::var_os("TERM").map(|value| value.as_bytes().to_vec());
         metadata.colorterm = std::env::var_os("COLORTERM").map(|value| value.as_bytes().to_vec());
     } else {
@@ -574,7 +575,9 @@ fn exec_command(
     }
     command.args(["--env", crate::init::EXEC_METADATA]);
     command.env(crate::init::EXEC_METADATA, metadata.encode());
-    if let Some(dir) = context.cwd {
+    if context.project_root.is_none()
+        && let Some(dir) = context.cwd
+    {
         command.arg("--workdir").arg(dir);
     }
     command

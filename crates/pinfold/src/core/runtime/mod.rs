@@ -3,6 +3,7 @@
 pub mod apple;
 #[cfg(target_os = "linux")]
 pub mod firecracker;
+pub(crate) mod terminal;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -208,8 +209,23 @@ pub struct DiskInfo {
 #[derive(Default)]
 pub struct ExecContext<'a> {
     pub cwd: Option<&'a Path>,
+    pub project_root: Option<&'a Path>,
     pub tty: bool,
     pub agent: Option<&'a str>,
+}
+
+impl ExecContext<'_> {
+    fn project_directory(&self) -> io::Result<Option<(PathBuf, PathBuf)>> {
+        self.project_root
+            .map(|root| {
+                let cwd = self.cwd.unwrap_or(root);
+                let relative = cwd
+                    .strip_prefix(root)
+                    .map_err(|_| io::Error::other("working directory is outside the project"))?;
+                Ok((root.to_path_buf(), relative.to_path_buf()))
+            })
+            .transpose()
+    }
 }
 
 /// One OS's box runtime. Command lines and VM configurations are built as

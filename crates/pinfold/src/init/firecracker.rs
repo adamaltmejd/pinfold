@@ -26,9 +26,8 @@
 //! - Exec (host dials guest [`EXEC_PORT`]): one request per connection.
 //!   ENV (count u32, name and value each) sets the box's environment once,
 //!   answered ENV_SET; an EXEC that arrives first waits for it. EXEC is
-//!   argv (count u32, strings), workdir (empty for `/`), tty u8, rows u16,
-//!   cols u16, then TERM and COLORTERM (present u8, string when present),
-//!   agent label (present u8, string when present), followed by STDIN,
+//!   argv (count u32, strings), workdir (empty for `/`), tty u8, then the
+//!   fixed execution metadata string, followed by STDIN,
 //!   STDIN_END and RESIZE (rows u16, cols u16) frames; the guest sends
 //!   STDOUT, STDERR and finally EXIT (i32). STAT is answered STAT with the
 //!   work cgroup's memory current and peak, pids current and max, and OOM
@@ -421,6 +420,8 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
                 Some("noinit_itable"),
             )?;
             if attachment.writable && attachment.fresh {
+                // A nonempty recovery directory is never removed.
+                let _ = fs::remove_dir(target.join("lost+found"));
                 nix::unistd::chown(
                     &target,
                     Some(Uid::from_raw(request.uid)),
@@ -937,24 +938,16 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
         .collect::<io::Result<_>>()?;
     let workdir = fields.os()?;
     let tty = fields.u8()? != 0;
-    let (rows, cols) = (fields.u16()?, fields.u16()?);
-    let mut metadata = super::ExecMetadata {
-        window: tty.then_some((rows, cols)),
-        ..Default::default()
-    };
-    for value in [&mut metadata.term, &mut metadata.colorterm] {
-        if fields.u8()? != 0 {
-            *value = Some(fields.os()?.as_bytes().to_vec());
-        }
-    }
-    if fields.u8()? != 0 {
-        metadata.agent = Some(
-            fields
-                .os()?
-                .into_string()
-                .map_err(|_| io::Error::other("non-UTF-8 agent label"))?,
-        );
-    }
+    let mut metadata = super::ExecMetadata::decode(
+        fields
+            .os()?
+            .to_str()
+            .ok_or_else(|| io::Error::other("non-UTF-8 execution metadata"))?,
+    )?;
+    // Linux applies a known size when creating the PTY; init exec must not
+    // apply it a second time after the command's terminal exists.
+    let window = metadata.window.take();
+    let project = metadata.project_directory.is_some();
     fields.end()?;
     let Some(program) = argv.first() else {
         return Err(io::Error::other("an exec without argv"));
@@ -981,14 +974,16 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
         .args(&argv)
         .env_clear()
         .envs(transport)
-        .env(super::EXEC_METADATA, metadata.encode())
-        .current_dir(if workdir.is_empty() {
+        .env(super::EXEC_METADATA, metadata.encode());
+    if !project {
+        command.current_dir(if workdir.is_empty() {
             OsStr::new("/")
         } else {
             &workdir
         });
+    }
     let pty = if tty {
-        let (master, slave) = open_pty(rows, cols)?;
+        let (master, slave) = open_pty(window)?;
         command
             .stdin(slave.try_clone()?)
             .stdout(slave.try_clone()?)
@@ -1018,10 +1013,13 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
             let mut output = output.lock().expect("output lock");
             let message = format!(
                 "pinfold init exec: {}: {error}\n",
-                Path::new(program).display()
+                super::formatting::terminal_text(&program.to_string_lossy())
             );
+            if project {
+                return write_frame(&mut *output, FAILED, message.as_bytes());
+            }
             write_frame(&mut *output, STDERR, message.as_bytes())?;
-            // The shell's convention for a command that could not be run.
+            // The public process interface keeps the shell's spawn codes.
             let code: i32 = if error.kind() == io::ErrorKind::NotFound {
                 127
             } else {
@@ -1049,7 +1047,9 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
         None => None,
     };
     let mut reader = connection.try_clone()?;
-    thread::Builder::new().spawn(move || relay_input(&mut reader, input, resize.as_ref()))?;
+    let input_output = Arc::clone(&output);
+    thread::Builder::new()
+        .spawn(move || relay_input(&mut reader, input, resize.as_ref(), &input_output))?;
 
     let status = child.wait()?;
     for pump in pumps {
@@ -1098,7 +1098,12 @@ fn pump(
     })
 }
 
-fn relay_input(connection: &mut UnixStream, input: Box<dyn Write + Send>, pty: Option<&File>) {
+fn relay_input(
+    connection: &mut UnixStream,
+    input: Box<dyn Write + Send>,
+    pty: Option<&File>,
+    output: &Mutex<UnixStream>,
+) {
     let mut input = Some(input);
     while let Ok((kind, payload)) = read_frame(connection) {
         match kind {
@@ -1112,12 +1117,21 @@ fn relay_input(connection: &mut UnixStream, input: Box<dyn Write + Send>, pty: O
             // A terminal has no end of input to pass on; a pipe closes.
             STDIN_END if pty.is_none() => input = None,
             RESIZE => {
-                if let (Some(master), &[r0, r1, c0, c1]) = (pty, payload.as_slice()) {
-                    let _ = set_window(
+                if let (Some(master), &[r0, r1, c0, c1]) = (pty, payload.as_slice())
+                    && let Err(error) = set_window(
                         master,
                         u16::from_be_bytes([r0, r1]),
                         u16::from_be_bytes([c0, c1]),
+                    )
+                {
+                    let detail = format!("terminal size: {error}");
+                    let _ = write_frame(
+                        &mut *output.lock().expect("output lock"),
+                        FAILED,
+                        detail.as_bytes(),
                     );
+                    let _ = connection.shutdown(std::net::Shutdown::Both);
+                    return;
                 }
             }
             _ => {}
@@ -1125,7 +1139,7 @@ fn relay_input(connection: &mut UnixStream, input: Box<dyn Write + Send>, pty: O
     }
 }
 
-fn open_pty(rows: u16, cols: u16) -> io::Result<(File, File)> {
+fn open_pty(window: Option<(u16, u16)>) -> io::Result<(File, File)> {
     // Safety: posix_openpt returns a new descriptor or -1; the slave path
     // comes from ptsname_r into a local buffer.
     unsafe {
@@ -1151,7 +1165,9 @@ fn open_pty(rows: u16, cols: u16) -> io::Result<(File, File)> {
             return Err(context(&format!("open {path}"), io::Error::last_os_error()));
         }
         let slave = File::from_raw_fd(slave);
-        set_window(&master, rows, cols).map_err(|error| context("set the window", error))?;
+        if let Some((rows, cols)) = window {
+            set_window(&master, rows, cols).map_err(|error| context("set the window", error))?;
+        }
         Ok((master, slave))
     }
 }
@@ -1284,10 +1300,6 @@ impl Fields<'_> {
 
     fn u8(&mut self) -> io::Result<u8> {
         Ok(self.take(1)?[0])
-    }
-
-    fn u16(&mut self) -> io::Result<u16> {
-        Ok(u16::from_be_bytes(self.take(2)?.try_into().unwrap()))
     }
 
     fn u32(&mut self) -> io::Result<u32> {

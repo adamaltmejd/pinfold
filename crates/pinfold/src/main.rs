@@ -2,7 +2,7 @@ mod cli;
 mod config;
 mod core;
 mod dirs;
-mod formatting;
+use crate::init::formatting;
 #[cfg(target_os = "linux")]
 mod image_limits;
 mod init;
@@ -92,12 +92,23 @@ fn main() -> ExitCode {
         } else {
             None
         };
+    let terminal =
+        if verb == "--" || (verb == "box" && args.first().is_some_and(|arg| arg == "exec")) {
+            match crate::core::runtime::terminal::Saved::save() {
+                Ok(saved) => saved,
+                Err(error) => return ExitCode::from(cli::report(verb, Err(error)) as u8),
+            }
+        } else {
+            None
+        };
     let result = run(args);
+    let restored = terminal.map(|saved| saved.restore()).transpose();
     #[cfg(not(target_os = "linux"))]
-    let result = match stdin_flags.map(|flags| flags.restore()).transpose() {
+    let restored = restored.and(stdin_flags.map(|flags| flags.restore()).transpose());
+    let result = match restored {
         Ok(_) => result,
         Err(error) => {
-            let error = io::Error::other(format!("restore terminal input flags: {error}"));
+            let error = io::Error::other(format!("restore terminal: {error}"));
             if matches!(result, Ok(0)) {
                 Err(error)
             } else {

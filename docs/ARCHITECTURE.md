@@ -133,7 +133,9 @@ sysctl rather than the failing call.
    before the claim.
 2. Claim the box's disks (Disks), creating any that are new. A new
    disk's `from` is size-checked here. Record writable disks unclean and their
-   attachments before any preparation write. A fresh disk is populated from
+   attachments before any preparation write. Remove only an empty
+   formatter-created `lost+found` on a fresh disk before population or guest
+   work; reused disks retain their contents. A fresh disk is populated from
    its initial source first, as the box user. Reused disks are never populated
    again. On Linux each fresh disk is populated immediately after its own
    mount, before deeper attachments. Then create missing generated-mount parents, and only then attach
@@ -575,28 +577,35 @@ process. Getting further needs a host kernel bug.
 
 ### Process supervision
 
-- Always `-i`. `-t` only when stdin and stdout are both terminals. Host
-  `TERM` and `COLORTERM`, when present, override box defaults for that
-  command. Initial terminal dimensions are captured before exec; trusted
-  init applies them before the command starts. Required terminal setup
-  failure fails execution.
+- Always `-i`. Project commands use a TTY when stdin and stdout are both
+  terminals; public `box exec --tty` can force one. Host `TERM` and
+  `COLORTERM`, when present, override box defaults for that command.
+  Host dimensions are sent only when stdout is a terminal and both values
+  are nonzero. Redirected stdout sends no size and is not a setup failure.
+  Raw mode on a real host terminal is established before dispatch and must
+  succeed. Initial guest dimensions are applied once before CMD; a required
+  guest terminal ioctl failure fails execution.
 - TTY: the exec client (Apple's runtime exec; on Linux, pinfold's own over
   vsock) stays in pinfold's foreground process group, handles raw mode and
   forwards window size. No TTY: its own process group.
-  On return, Apple interactive commands restore the caller's terminal
-  input file flags. A restoration failure fails an otherwise successful
-  command; an existing command failure is preserved. This does not cover
-  process-killing signals.
+  On return, both platforms restore the caller's saved termios from the
+  main command lifetime, including a handled signal that cancels exec.
+  Apple also restores terminal input file flags. A restoration failure
+  fails an otherwise successful command; an existing command failure is
+  preserved. This does not cover process-killing signals.
 - The box is the unit of lifetime; pinfold never signals a process in it
   from the host or through `exec`. At `down` on Linux, init kills the
   work cgroup so the disks can unmount; the box is ending anyway.
   Once the command runs on a TTY, Ctrl-C and Ctrl-\ reach it as bytes. A closed
   terminal, SIGTERM, SIGHUP or SIGINT removes the box.
-- Command exit codes pass through, including 125, 126 and 127; `128+n` for
-  a signal death. Project-command infrastructure failures use 125. Cleanup
-  failure after success returns 125; an observed nonzero command status
-  survives cleanup failure, which is reported on stderr. Process-interface
-  exit codes are unchanged.
+- Observed command exit codes pass through, including 125, 126 and 127;
+  `128+n` for a command's signal death. A project setup failure before CMD
+  starts, including cwd, terminal setup or executable lookup, uses 125.
+  External box teardown or an accepted shutdown during startup uses 125
+  when no command completion was observed. Host stop handling uses `128+n`
+  only for a signal received by the pinfold process. Cleanup failure after success
+  returns 125; an observed nonzero command status survives cleanup failure,
+  which is reported on stderr. Public process-interface exit codes are unchanged.
 - Every process started in a box through `exec` starts with `oom_score_adj`
   1000. On Linux, unprivileged work and its descendants may lower it to
   -999, but cannot obtain score-based OOM immunity through either
@@ -1347,8 +1356,12 @@ measurement does not authorize a later deletion.
   refused as `worktree`. Git metadata directories and operational discovery
   errors never become non-Git projects. Linux refuses non-Git projects.
 - **Arguments** pass through unchanged, including empty arguments and
-  `--help`. Commands start at the canonical invoking directory. Paths outside
-  the project fail. A non-UTF-8 path in a project box spec or configuration
+  `--help`. Commands start at the canonical invoking directory. Trusted init
+  opens the guest project root and walks the relative cwd by directory
+  descriptors without following any symlink component, then enters that
+  descriptor. An escape, missing directory or any symlink component,
+  including a symlink within the project, fails setup. A non-UTF-8 path in
+  a project box spec or configuration
   report is refused as `path-not-utf8`, naming its field.
 - **Environment:** the core's proxy variables, `PINFOLD_ALLOW` and
   `PINFOLD_ENV_*`. Cwd, terminal metadata and the optional Herdr label are
@@ -1440,7 +1453,8 @@ Protected paths are pinfold's configuration, state or cache root, the
 project's configuration directory, file or Containerfile, the selected
 profile's directory, its `pinfold.toml`, `Containerfile`, `home` or `share`,
 `artifacts/` and the lock directory. Resolution follows symlinked ancestors
-too: box content crosses into the project and must not reach them.
+too, including missing suffixes and a dangling profile share symlink:
+box content crosses into the project and must not reach them.
 `-- CMD`, `push`, `fetch`, `build` and `config edit` check it, and `doctor`
 reports it as a finding. Before the check, the daily maintenance pass
 (Maintenance) may already have run and written under the state root, and a
@@ -1564,7 +1578,7 @@ what the rewritten suite must show. Testing policy is in `AGENTS.md`.
 | 34 | Blocked route writes release the upstream | A small routed POST and response succeed. In concurrent connections, a guest stops reading a response and a host fixture stops reading an upload while sending a response. Both fixture connections close after the production write deadline while the guest holders remain alive. The upload producer's completion is timed independently to exclude an early failure followed by a read timeout. |
 | 36 | CONNECT tunnels share activity | Initially idle TLS tunnels start at staggered times and expire after the production idle interval. Real TLS tunnels carry upload-only and download-only traffic for longer than the production idle deadline. Neither closes while bytes flow; both then close after a full idle interval with `idle timeout` in the egress log while the guest holders remain alive. |
 | 38 | Each run's history is its own | Two `up`s of one name in sequence; the first makes an allowed and a refused request, and when `box down` returns, `inspect` already reports its terminal `signal`. The second's `ready.run_id` equals its `dev.pinfold.generation` label and differs from the first's, and its `ready.egress_log` is empty before its first request. Its 150 decisions, paged at the default limit while its box appends 50 more after the first page, return every line once, in order, across `next`; `events` for the first run still returns exactly its two decisions. Each `down` names its own run_id. A no-egress box SIGKILLed from the host (its init through Apple's runtime, its VMM on Linux) makes `up` exit 1 with `down` reason `exited`, and terminal `exited` whose detail names exit status 137. With no runtime on `PATH`, `inspect` and `events` answer for finished runs, and the no-egress run reports egress `not-applicable`. A malformed run id, `--limit 101` and another run's cursor exit 1; an unknown run id exits 3. |
-| 39 | The launch record is the applied policy | A project command starts with an explicit local image and a recipe-less profile, from its configuration file with an allow list, cpus, memory, a host-service route and an injecting route whose header comes from a host variable, plus `PINFOLD_ENV_SECRET`, under environment overrides of the allow list, cpus and memory. `config` reports the file's list, the built image and the home disk; the environment's `PINFOLD_ROUTES` replaces the file's routes; an invalid UTF-8 override fails without disclosing its bytes. The box attaches the reported home disk writable at `$HOME`; its kernel sees the environment's cpus and memory; SECRET arrives without entering host argv, and on Linux is in neither `/proc/cmdline`, the VM configuration, the init disk nor any disk image. Its seeds are readable and its share refuses guest writes without changing host bytes. While it runs, the file's image and allow list change: `config` reports the change, but `inspect` still reports the started allow list, route kinds and targets, cpus and memory, equal to what the test wrote, plus env names that include `SECRET`, no harness version field, and the started image reference and runtime-observed id; the started list decides, refusing the file's hosts as `not allowlisted`. No file under the state root holds the secret or the header value. When CMD exits, the terminal record is `sessions-ended`, without argv or output. On a second start, the guest-edited seed survives and current shared bytes appear. Literal argv retains empty arguments, spaces, shell metacharacters and `--help`; binary stdin/stdout and separate stderr pass through. Exits 0, 23, 125, 126 and 127 pass through, as do signal statuses `128+n`. Project-command infrastructure failures use 125; a nonzero observed command status survives cleanup failure, and cleanup failure after command success returns 125. Nested canonical cwd matches the invoking host folder. `HERDR_AGENT` is the exact first argv word, including an executable path, and wins over a conflicting forwarded value. Separate fast Apple TTY commands inspect host dimensions and TERM/COLORTERM at their first instruction, before any resize; interactive resize then follows the host. Non-TTY execution is the control. While the first command owns the box, a second launch refuses as `disk-in-use`; the first still executes and the same second command succeeds after teardown. No-config, missing-image and malformed-command refusals each have a corrected invocation that runs; discovery, configuration, protected paths and local image availability are validated before project state is recorded. |
+| 39 | The launch record is the applied policy | A project command starts with an explicit local image and a recipe-less profile, from its configuration file with an allow list, cpus, memory, a host-service route and an injecting route whose header comes from a host variable, plus `PINFOLD_ENV_SECRET`, under environment overrides of the allow list, cpus and memory. `config` reports the file's list, the built image and the home disk; the environment's `PINFOLD_ROUTES` replaces the file's routes; an invalid UTF-8 override fails without disclosing its bytes. The box attaches the reported home disk writable at `$HOME`; its kernel sees the environment's cpus and memory; SECRET arrives without entering host argv, and on Linux is in neither `/proc/cmdline`, the VM configuration, the init disk nor any disk image. Its seeds are readable and its share refuses guest writes without changing host bytes. While it runs, the file's image and allow list change: `config` reports the change, but `inspect` still reports the started allow list, route kinds and targets, cpus and memory, equal to what the test wrote, plus env names that include `SECRET`, no harness version field, and the started image reference and runtime-observed id; the started list decides, refusing the file's hosts as `not allowlisted`. No file under the state root holds the secret or the header value. When CMD exits, the terminal record is `sessions-ended`, without argv or output. On a second start, the guest-edited seed survives and current shared bytes appear. Literal argv retains empty arguments, spaces, shell metacharacters and `--help`; binary stdin/stdout and separate stderr pass through. Exits 0, 23, 125, 126 and 127 pass through, as do signal statuses `128+n`. Project setup failures, including cwd, terminal and executable lookup failures before CMD starts, use 125. External box down, cleanup or shutdown accepted during startup before an observed command completion uses 125; a signal received by pinfold itself uses 128+n. A nonzero observed command status survives cleanup failure, and cleanup failure after command success returns 125. Public box exec retains its codes. Nested canonical cwd matches the invoking host folder. A guest-planted symlink in that cwd refuses as setup failure, including a symlink within the project; a plain directory succeeds. A new untracked host subdirectory missing in the guest refuses as setup failure, with a tracked-directory control. Fresh project disks have no empty formatter lost+found or related Git warnings. `HERDR_AGENT` is the exact first argv word, including an executable path, and wins over a conflicting forwarded value. Separate fast Apple TTY commands inspect host dimensions and TERM/COLORTERM at their first instruction, before any resize; interactive resize then follows the host. Non-TTY execution is the control. Public forced-TTY exec with redirected stdout succeeds without a host size; zero dimensions are not sent. Host raw setup failure dispatches no command, and guest terminal setup failure is refused. Linux interrupted TTY execution restores the original termios. While the first command owns the box, a second launch refuses as `disk-in-use`; the first still executes and the same second command succeeds after teardown. No-config, missing-image and malformed-command refusals each have a corrected invocation that runs; discovery, configuration, protected paths and local image availability are validated before project state is recorded. |
 | 42 | Run records are retained within bounds | With inactive runs padded on the host past 128 MiB in valid decision lines, `clean` removes the oldest inactive run, keeps the newest, and leaves a live run's log unchanged. Once the newest is aged 15 days on the host, `clean` removes it (`inspect` exits 3), while a live run aged the same stays `available` and its log keeps appending. With that live log padded to 128 MiB minus one byte, the next real route request stops the owner with `audit-log`, exit 1, and leaves the log length unchanged. |
 | 43 | The VMM reaches only its own box | Linux only. With two boxes up, each VMM is a child of its `box up` and runs as the user with `CapBnd` 0 and `NoNewPrivs` 1; its user, mount, PID, network, IPC and UTS namespaces differ from `box up`'s; its root, read through `/proc/PID/root`, holds its own disk and not the other box's disk; none of its mount points is under the user's home; its fds 0–2 are `/dev/null` and none is under the home; SIGKILL of `box up` ends the VM. |
 
