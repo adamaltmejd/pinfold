@@ -1,0 +1,92 @@
+Baseline excerpts; complete fixed cases below
+phase=baseline work=$W
+$ '$BIN' -- sh -c 'echo CMD-STARTED'
+exit=127 stdout=b'' stderr=b'pinfold init exec: sh: No such file or directory (os error 2)\n'
+PASS review cases; fixtures=$W
+phase=baseline work=$W
+exit=0 stdout=b'/home/pi\n' stderr=b''
+exit=0 stdout=b'LOST-FOUND-PRESENT\n' stderr=b''
+external box down: project exit=0 stdout=b'' stderr=b''
+Fixed
+phase=fixed work=$W
+$ '$BIN' -- sh -c 'echo CMD-STARTED'
+exit=125 stdout=b'' stderr=b'pinfold init exec: working-directory: untracked-cwd below $W/probe-review: No such file or directory (os error 2)\n'
+$ '$BIN' -- true
+exit=0 stdout=b'' stderr=b''
+$ '$BIN' -- sh -c 'exit 125'
+exit=125 stdout=b'' stderr=b''
+$ '$BIN' -- sh -c 'exit 126'
+exit=126 stdout=b'' stderr=b''
+$ '$BIN' -- sh -c 'exit 127'
+exit=127 stdout=b'' stderr=b''
+$ '$BIN' -- sh -c 'rm -rf sub; ln -s /home/pi sub'
+exit=0 stdout=b'' stderr=b''
+$ '$BIN' -- pwd
+exit=125 stdout=b'' stderr=b'pinfold init exec: working-directory: sub below $W/probe-review: Not a directory (os error 20)\n'
+$ '$BIN' -- sh -c 'rm sub; mkdir sub'
+exit=0 stdout=b'' stderr=b''
+$ '$BIN' -- pwd
+exit=0 stdout=b'$W/probe-review/sub\n' stderr=b''
+$ '$BIN' -- sh -c 'rm -rf internal; ln -s plain internal'
+exit=0 stdout=b'' stderr=b''
+$ '$BIN' -- pwd
+exit=125 stdout=b'' stderr=b'pinfold init exec: working-directory: internal below $W/probe-review: Not a directory (os error 20)\n'
+$ '$BIN' -- sh -c 'if test -e lost+found; then echo LOST-FOUND-PRESENT; else echo LOST-FOUND-ABSENT; fi'
+exit=0 stdout=b'LOST-FOUND-ABSENT\n' stderr=b''
+$ '$BIN' -- true
+exit=125 stdout=b'' stderr=b'pinfold --: host-path-in-project: $W/c/pinfold/profiles/probe-review/share resolves inside $W/probe-share\n'
+protected-share refusal left project state absent
+$ '$BIN' -- true
+exit=0 stdout=b'' stderr=b''
+$ '$BIN' -- '/missing\npinfold: FORGED'
+exit=125 stdout=b'' stderr=b'pinfold init exec: /missing\\npinfold: FORGED: No such file or directory (os error 2)\n'
+$ '$BIN' -- printf 'STREAM\npinfold: direct-output\n'
+exit=0 stdout=b'STREAM\npinfold: direct-output\n' stderr=b''
+$ '$BIN' -- sh -c 'printf "%s" "$1" > .git/hooks/reference-transaction; chmod +x .git/hooks/reference-transaction' sh '#!/bin/sh\nprintf '"'"'SYNC-FIRST\npinfold: FORGED\033[31m\n'"'"' >&2\nexit 1\n'
+exit=0 stdout=b'' stderr=b''
+$ '$BIN' -- true
+exit=0 stdout=b'' stderr=b"pinfold: sync-failed: the box's git failed: SYNC-FIRST\\npinfold: FORGED\\u{1b}[31m\\nSYNC-FIRST\\npinfold: FORGED\\u{1b}[31m\\nfatal: ref updates aborted by hook\n"
+$ '$BIN' -- rm .git/hooks/reference-transaction
+exit=0 stdout=b'' stderr=b"pinfold: sync-failed: the box's git failed: SYNC-FIRST\\npinfold: FORGED\\u{1b}[31m\\nSYNC-FIRST\\npinfold: FORGED\\u{1b}[31m\\nfatal: ref updates aborted by hook\n"
+$ '$BIN' box list --label dev.pinfold.project=probe-review-3f1a89fe19d3
+exit=0 stdout=b'{"created":"2026-11-15T18:49:19Z","image":{"id":"sha256:389b00bf45d1fd15af1b8bae29dcdb9e230daad82bc468d9824977aeeee2e1ec","ref":"localhost/pinfold/image-probe-commands:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"","dev.pinfold.generation":"de280564ff96b0fbc99787d92c60d9228e1a95986e2dd318ea6ce081b4776222","dev.pinfold.owner":"23629","dev.pinfold.profile":"","dev.pinfold.project":"probe-review-3f1a89fe19d3"},"name":"pi-probe-review-3f1a89fe19d3-23629","owner":23629,"owner_alive":true,"state":"running"}\n' stderr=b''
+$ '$BIN' box exec pi-probe-review-3f1a89fe19d3-23629 -- sh -c 'exit 125'
+exit=125 stdout=b'' stderr=b''
+$ '$BIN' box exec pi-probe-review-3f1a89fe19d3-23629 -- sh -c 'exit 126'
+exit=126 stdout=b'' stderr=b''
+$ '$BIN' box exec pi-probe-review-3f1a89fe19d3-23629 -- sh -c 'exit 127'
+exit=127 stdout=b'' stderr=b''
+$ '$BIN' box exec pi-probe-review-3f1a89fe19d3-23629 -- '/missing\npinfold: FORGED'
+exit=127 stdout=b'' stderr=b'pinfold init exec: /missing\\npinfold: FORGED: No such file or directory (os error 2)\n'
+$ '$BIN' box fetch pi-probe-review-3f1a89fe19d3-23629 --repo $W/probe-review --into '$W/not-git\npinfold: FORGED'
+exit=1 stdout=b'{"box":"pi-probe-review-3f1a89fe19d3-23629","detail":"$W/not-git\\\\npinfold: FORGED is not a git repository: fatal: not a git repository (or any parent up to mount point /)\\\\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).","event":"refused","reason":"spec"}\n' stderr=b''
+$ '$BIN' box down pi-probe-review-3f1a89fe19d3-23629
+exit=0 stdout=b'' stderr=b''
+external box down: project exit=125 stdout=b'' stderr=b''
+$ '$BIN' -- sh -c 'echo CMD-READY; read line; echo CMD-FINISHED'
+exit=0 stdout=b'CMD-READY\nCMD-FINISHED\n' stderr=b''
+$ '$BIN' box list --label dev.pinfold.project=probe-review-3f1a89fe19d3
+exit=0 stdout=b'{"created":"2026-11-15T18:49:26Z","image":{"id":"sha256:389b00bf45d1fd15af1b8bae29dcdb9e230daad82bc468d9824977aeeee2e1ec","ref":"localhost/pinfold/image-probe-commands:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"","dev.pinfold.generation":"7b9ce9aac09a164350931cfa1a45f33411b2605dfc4d86ccd8511cf318d49d3e","dev.pinfold.owner":"23704","dev.pinfold.profile":"","dev.pinfold.project":"probe-review-3f1a89fe19d3"},"name":"pi-probe-review-3f1a89fe19d3-23704","owner":23704,"owner_alive":true,"state":"running"}\n' stderr=b''
+host SIGTERM: project exit=143 stdout=b'CMD-FINISHED\n' stderr=b''
+$ '$BIN' disk rm --all --json
+exit=0 stdout=b'{"disk":"pi-probe-review-3f1a89fe19d3-home","event":"removed","existed":true}\n{"disk":"pi-probe-review-3f1a89fe19d3-project","event":"removed","existed":true}\n{"disk":"pi-probe-share-86701cd98296-home","event":"removed","existed":true}\n{"disk":"pi-probe-share-86701cd98296-project","event":"removed","existed":true}\n{"disk":"pi-probe-sync-4413224f0b8e-home","event":"removed","existed":true}\n{"disk":"pi-probe-sync-4413224f0b8e-project","event":"removed","existed":true}\n' stderr=b''
+$ '$BIN' disk list --json
+exit=0 stdout=b'' stderr=b''
+PASS review cases; fixtures=$W
+Startup before/after
+$ $BIN -- printf CMD-MUST-NOT-START; wait for own owner record; assert launch absent; $BIN box down OWN-NAME
+phase=baseline owner-generation=08a365bffd3d14a69f28eb80b9359d4aaff5b541bfec7440b72713a4d08a08cf launch-before=false terminal-after=false down-exit=0 project-exit=0 stdout=b'' stderr=b''
+own isolated disks removed; image retained
+$ $BIN -- printf CMD-MUST-NOT-START; wait for own owner record; assert launch absent; $BIN box down OWN-NAME
+phase=fixed owner-generation=c833044a001b00cf51d06c4931d8ea3229e82812a60c3bb83d696b15c8d10bb4 launch-before=false terminal-after=false down-exit=0 project-exit=125 stdout=b'' stderr=b''
+own isolated disks removed; image retained
+Affected original acceptance
+PASS common cases; work=$W
+$ $BIN -- ['stty', 'size']; host=36x120 TERM=xterm-256color COLORTERM=truecolor
+exit=0 raw=b'36 120\r\nDRIVER_RESTORED=True ATTRS_EQUAL=True FLAGS=2,2\r\n' output=b'36 120\n' termios-and-mutable-stdin-flags-restored=True
+$ $BIN -- ['sh', '-c', 'printf "%s %s\\n" "$TERM" "$COLORTERM"; stty size']; host=36x120 TERM=xterm-256color COLORTERM=truecolor
+exit=0 raw=b'xterm-256color truecolor\r\n36 120\r\nDRIVER_RESTORED=True ATTRS_EQUAL=True FLAGS=2,2\r\n' output=b'xterm-256color truecolor\n36 120\n' termios-and-mutable-stdin-flags-restored=True
+host resize=(41, 133, 0, 0); SIGWINCH sent to PTY foreground group
+$ $BIN -- ['perl', '-MPOSIX', '-e', '$|=1; $SIG{WINCH}=sub{my $s=pack("S4",0,0,0,0); ioctl(STDIN,0x5413,$s) or die $!; my($r,$c)=unpack("S4",$s); print "RESIZED $r $c\\n"; exit}; print "READY\\n"; POSIX::pause();']; host=36x120 TERM=xterm-256color COLORTERM=truecolor
+exit=0 raw=b'READY\r\nRESIZED 41 133\r\nDRIVER_RESTORED=True ATTRS_EQUAL=True FLAGS=2,2\r\n' output=b'READY\nRESIZED 41 133\n' termios-and-mutable-stdin-flags-restored=True
+PASS immediate dimensions, terminal identity, resize, termios and mutable-flag restoration

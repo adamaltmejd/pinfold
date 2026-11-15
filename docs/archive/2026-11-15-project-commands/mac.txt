@@ -1,0 +1,126 @@
+$ $BIN; exit=0; help printed; config/state roots absent
+$ '$BIN' -- true
+exit=125 stdout=b'' stderr=b'pinfold --: no-config: $W/probe-commands has no configuration; run `pinfold config edit`\n'
+project state absent
+$ '$BIN' --
+exit=125 stdout=b'' stderr=b'pinfold --: expected a nonempty command after --\nusage: pinfold -- CMD [args\xe2\x80\xa6]\n'
+$ '$BIN' -- ''
+exit=125 stdout=b'' stderr=b'pinfold --: expected a nonempty command after --\nusage: pinfold -- CMD [args\xe2\x80\xa6]\n'
+project state absent
+$ '$BIN' config edit
+exit=0 stdout=b'' stderr=b'pinfold config: $W/c/pinfold/projects/probe-commands-4a2187069656/pinfold.toml\n'
+$ '$BIN' -- true
+exit=0 stdout=b'' stderr=b''
+$ '$BIN' -- sh -c 'exit 0'
+exit=0 stdout=b'' stderr=b''
+$ '$BIN' -- sh -c 'exit 23'
+exit=23 stdout=b'' stderr=b''
+$ '$BIN' -- sh -c 'exit 125'
+exit=125 stdout=b'' stderr=b''
+$ '$BIN' -- sh -c 'exit 126'
+exit=126 stdout=b'' stderr=b''
+$ '$BIN' -- sh -c 'exit 127'
+exit=127 stdout=b'' stderr=b''
+$ '$BIN' -- sh -c 'kill -TERM $$'
+exit=143 stdout=b'' stderr=b''
+$ '$BIN' -- printf '<%s>\n' '' 'a b' '$(touch /tmp/should-not-exist);*' --help --
+exit=0 stdout=b'<>\n<a b>\n<$(touch /tmp/should-not-exist);*>\n<--help>\n<-->\n' stderr=b''
+$ '$BIN' -- sh -c 'cat; printf separate-stderr >&2'
+exit=0 stdout=<1024 bytes sha256=785b0751fc2c53dc14a4ce3d800e69ef9ce1009eb327ccf458afe09c242c26c9> stderr=b'separate-stderr'
+binary I/O: all 1024 bytes equal; stderr separate
+$ '$BIN' -- sh -c 'pwd; printf "%s\n" "$HERDR_AGENT"'
+exit=0 stdout=b'$W/probe-commands/nested\nsh\n' stderr=b''
+$ '$BIN' -- /bin/sh -c 'pwd; printf "%s\n" "$HERDR_AGENT"'
+exit=0 stdout=b'$W/probe-commands/nested\n/bin/sh\n' stderr=b''
+$ '$BIN' -- sh -c 'printf home-edited > "$HOME/keep"; printf project-edited > keep'
+exit=0 stdout=b'' stderr=b''
+$ '$BIN' -- sh -c 'cat "$HOME/keep"; printf "\n"; cat keep; printf "\n"; test ! -t 0; test ! -t 1'
+exit=0 stdout=b'home-edited\nproject-edited\n' stderr=b''
+$ $BIN -- sh -c 'echo FIRST-READY; read line; printf "FIRST-%s\n" "$line"' (held after FIRST-READY)
+$ '$BIN' -- printf 'SECOND\n'
+exit=125 stdout=b'' stderr=b'pinfold --: disk-in-use: disk "pi-probe-commands-4a2187069656-home" is attached by box "pi-probe-commands-4a2187069656-7880"\n'
+first exit=0 stdout=FIRST-still-executes; stderr empty
+$ '$BIN' -- printf 'SECOND\n'
+exit=0 stdout=b'SECOND\n' stderr=b''
+$ '$BIN' config edit
+exit=0 stdout=b'' stderr=b'pinfold config: $W/c/pinfold/projects/probe-missing-40ed61de166c/pinfold.toml\n'
+$ '$BIN' -- true
+exit=125 stdout=b'' stderr=b'pinfold --: image-missing: image localhost/pinfold/image-probe-absent:latest is not present locally; build or pull it explicitly\n'
+project state absent
+$ '$BIN' -- true
+exit=0 stdout=b'' stderr=b''
+$ '$BIN' config edit
+exit=0 stdout=b'' stderr=b'pinfold config: $W/c/pinfold/projects/probe-protected-10663efcdce8/pinfold.toml\n'
+$ '$BIN' -- true
+exit=125 stdout=b'' stderr=b'pinfold --: host-path-in-project: $W/probe-protected/inside\\nconfig: FORGED/pinfold/artifacts resolves inside $W/probe-protected\n'
+project state absent
+$ '$BIN' doctor
+exit=0 stdout=b'pinfold doctor: $W/probe-protected\nconfig: host-path-in-project: $W/probe-protected/inside\\nconfig: FORGED/pinfold/artifacts resolves inside $W/probe-protected' [other doctor fields omitted] stderr=b''
+$ '$BIN' -- true
+exit=0 stdout=b'' stderr=b''
+$ '$BIN' doctor
+exit=0 stdout=b'pinfold doctor: $W/probe-newline\\nconfig: FORGED\nconfig: no-config: $W/probe-newline\\nconfig: FORGED has no configuration; run `pinfold config edit`' [other doctor fields omitted] stderr=b''
+$ '$BIN' -- true
+exit=125 stdout=b'' stderr=b'pinfold --: no-config: $W/probe-newline\\nconfig: FORGED has no configuration; run `pinfold config edit`\n'
+$ '$BIN' config edit
+exit=0 stdout=b'' stderr=b'pinfold config: $W/c/pinfold/projects/probe-corrected-128aa9dee4c4/pinfold.toml\n'
+$ '$BIN' -- true
+exit=0 stdout=b'' stderr=b''
+$ '$BIN' config edit
+exit=1 stdout=b'' stderr=b'pinfold config: host-path-in-project: $W/probe-folder/internal/pinfold/projects/probe-folder-79b40a6c9eda/pinfold.toml resolves inside $W/probe-folder\n'
+$ '$BIN' config edit
+exit=0 stdout=b'' stderr=b'pinfold config: $W/c/pinfold/projects/probe-folder-79b40a6c9eda/pinfold.toml\n'
+$ '$BIN' -- sh -c 'test ! -e host-only; test "$PWD" = "$1"; printf folder > keep; printf folder-home > "$HOME/keep"' sh $W/probe-folder
+exit=0 stdout=b'' stderr=b''
+$ '$BIN' -- sh -c 'test ! -e host-only; cat keep; printf "\n"; cat "$HOME/keep"; printf "\n"'
+exit=0 stdout=b'folder\nfolder-home\n' stderr=b''
+$ '$BIN' config
+exit=0 stdout=b'{"config":"$W/c/pinfold/projects/probe-folder-79b40a6c9eda/pinfold.toml","containerfile":null,"cpus":2.0,"egress":{"allo' [remaining output omitted] stderr=b''
+non-Git report names both persistent disks
+terminal record candidates=20
+PASS common cases; work=$W
+$ '$BIN' ''
+exit=1 stdout=b'' stderr=b"pinfold -- CMD [args\xe2\x80\xa6]           run a command in this project's box" [remaining usage omitted]
+$ '$BIN' pi
+exit=1 stdout=b'' stderr=b"pinfold -- CMD [args\xe2\x80\xa6]           run a command in this project's box" [remaining usage omitted]
+$ '$BIN' attach
+exit=1 stdout=b'' stderr=b"pinfold -- CMD [args\xe2\x80\xa6]           run a command in this project's box" [remaining usage omitted]
+$ '$BIN' -- printf '\xff'
+exit=125 stdout=b'' stderr=b'pinfold: argument "\\xFF" is not valid UTF-8\n'
+$ '$BIN' box '\xff'
+exit=1 stdout=b'' stderr=b'pinfold: argument "\\xFF" is not valid UTF-8\n'
+$ '$BIN' -- printf 'corrected\n'
+exit=0 stdout=b'corrected\n' stderr=b''
+$ '$BIN' -- probe-command-does-not-exist
+exit=127 stdout=b'' stderr=b'pinfold init exec: probe-command-does-not-exist: No such file or directory (os error 2)\n'
+$ '$BIN' -- /
+exit=126 stdout=b'' stderr=b'pinfold init exec: /: Permission denied (os error 13)\n'
+$ '$BIN' -- true
+exit=0 stdout=b'' stderr=b''
+$ '$BIN' -- /bin/sh -c 'pwd; printf "%s\n" "$HERDR_AGENT"'
+exit=0 stdout=b'$W/probe-commands/nested\n/bin/sh\n' stderr=b''
+$ $W/pi --version; exit=0 stdout=b'pinfold 0.5.5\n'; symlink uses ordinary CLI
+$ '$BIN' doctor
+exit=0 stdout=b'pinfold doctor: $W/probe-commands\nconfig: profile "probe-missing" has no directory $W/profile\\nconfig: FORGED/pinfold/profiles/probe-missing' [other doctor fields omitted] stderr=b''
+$ '$BIN' -- true
+exit=0 stdout=b'' stderr=b''
+$ '$BIN' -- bash -c 'exec 3<>/dev/tcp/127.0.0.1/3128; printf "GET http://probe.internal/check HTTP/1.1\r\nHost: probe.internal\r\nConnection: close\r\n\r\n" >&3; cat <&3'
+exit=0 stdout=b'HTTP/1.0 200 OK\r\nServer: BaseHTTP Python/3.15.2\r\nDate: Sun, 15 Nov 2026 16:50:49 GMT\r\nContent-Length: 8\r\n\r\nroute-ok' stderr=b''
+records: sessions-ended=45 signal=2; no argv, command output or fixture credential
+PASS CLI controls, canonical symlink cwd, escaping, synthetic route, records
+
+Diagnostic excerpts and cleanup
+$ $BIN doctor; cwd='$W/probe-newline\nconfig: FORGED'; overrides={}
+pinfold doctor: $W/probe-newline\nconfig: FORGED
+config: no-config: $W/probe-newline\nconfig: FORGED has no configuration; run `pinfold config edit`
+$ $BIN doctor; cwd=$W/probe-protected; overrides={'XDG_CACHE_HOME': '$W/probe-protected/inside\nconfig: FORGED'}
+pinfold doctor: $W/probe-protected
+config: host-path-in-project: $W/probe-protected/inside\nconfig: FORGED/pinfold/artifacts resolves inside $W/probe-protected
+$ $BIN config; cwd=$W/probe-folder
+project={"disks": {"home": "pi-probe-folder-79b40a6c9eda-home", "project": "pi-probe-folder-79b40a6c9eda-project"}, "home": "/home/pi", "id": "probe-folder-79b40a6c9eda"}
+$ XDG_CACHE_HOME=$W/probe-folder-guard/inside $BIN -- true; exit=125; stderr=b'pinfold --: host-path-in-project: $W/probe-folder-guard/inside/pinfold/artifacts resolves inside $W/probe-folder-guard\n'; project state absent
+$ $BIN -- true; same non-Git folder with external roots; exit=0
+retained JSON/JSONL files scanned=180; no fixture credential, argv field, or command-output marker
+$ $BIN box list --label dev.pinfold.project; own fixture boxes=0
+$ $BIN disk rm --all --json; exit=0; removed=12 (isolated state root)
+$ $BIN disk list --json; exit=0; stdout empty

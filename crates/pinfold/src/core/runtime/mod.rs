@@ -3,6 +3,7 @@
 pub mod apple;
 #[cfg(target_os = "linux")]
 pub mod firecracker;
+pub(crate) mod terminal;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -204,6 +205,29 @@ pub struct DiskInfo {
     pub allocated: u64,
 }
 
+/// Metadata for one command, independent of the box's environment.
+#[derive(Default)]
+pub struct ExecContext<'a> {
+    pub cwd: Option<&'a Path>,
+    pub project_root: Option<&'a Path>,
+    pub tty: bool,
+    pub agent: Option<&'a str>,
+}
+
+impl ExecContext<'_> {
+    fn project_directory(&self) -> io::Result<Option<(PathBuf, PathBuf)>> {
+        self.project_root
+            .map(|root| {
+                let cwd = self.cwd.unwrap_or(root);
+                let relative = cwd
+                    .strip_prefix(root)
+                    .map_err(|_| io::Error::other("working directory is outside the project"))?;
+                Ok((root.to_path_buf(), relative.to_path_buf()))
+            })
+            .transpose()
+    }
+}
+
 /// One OS's box runtime. Command lines and VM configurations are built as
 /// data.
 pub trait Runtime: Sync {
@@ -241,8 +265,7 @@ pub trait Runtime: Sync {
         &self,
         name: &str,
         init: &Path,
-        tty: bool,
-        workdir: Option<&Path>,
+        context: &ExecContext<'_>,
         argv: &[String],
     ) -> io::Result<ExitStatus>;
 
@@ -251,10 +274,9 @@ pub trait Runtime: Sync {
         &self,
         name: &str,
         init: &Path,
-        tty: bool,
-        workdir: Option<&Path>,
+        context: &ExecContext<'_>,
         argv: &[String],
-    ) -> std::process::Command;
+    ) -> io::Result<std::process::Command>;
 
     /// One box's OOM kills, memory and pids facts. `name` is the box
     /// `list` names. Fields the runtime cannot answer are `None`.

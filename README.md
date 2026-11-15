@@ -5,8 +5,8 @@ Firecracker on Linux. The box works on its own clone of the project's branches, 
 its only way out is its own allowlisting proxy. `pinfold fetch` brings its
 commits back as branches.
 
-- **Interactive:** `pi` on the host is a shim for `pinfold pi`.
-- **From another agent:** `pinfold pi -p` (see below).
+- **Interactive:** `pinfold -- pi`, `pinfold -- claude` or `pinfold -- bash`.
+- **From another agent:** `pinfold -- pi -p` (see below).
 - **Programmatic:** drive boxes through `pinfold box` (JSON on stdio, the
   [box spec](docs/ARCHITECTURE.md#process-interface)), and read project settings with `pinfold config`.
 - Spec: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
@@ -45,8 +45,8 @@ install -m 0755 pinfold-*-aarch64-apple-darwin ~/.local/bin/pinfold
 
 `pinfold update` installs the latest stable release, verified; `--check`
 only reports it. Close boxes and other pinfold commands first; the install
-directory must be writable. Interactive `pi` and `attach` show at most one
-update notice a day; `PINFOLD_NO_UPDATE_CHECK=1` turns it off.
+directory must be writable. Interactive `pinfold -- CMD` launches show at
+most one update notice a day; `PINFOLD_NO_UPDATE_CHECK=1` turns it off.
 
 The macOS binary is not notarized. Clear a browser download's quarantine
 with `xattr -d com.apple.quarantine pinfold-*`.
@@ -75,14 +75,6 @@ cargo build --release --target x86_64-unknown-linux-musl
 install -m 0755 target/x86_64-unknown-linux-musl/release/pinfold ~/.local/bin/pinfold
 ```
 
-Then make `pi` a symlink to the binary, in a directory on `PATH`:
-
-```sh
-ln -s pinfold ~/.local/bin/pi
-```
-
-Put the `pi` symlink before other `pi` executables on `PATH`.
-
 ## First run
 
 In your working folder:
@@ -96,19 +88,22 @@ In your working folder:
    An explicit `image` must already be present locally and needs no build.
    Building needs network. Rebuild when a run shows `image-outdated`;
    it keeps project settings, sessions and logins.
-3. Start pi: `pi`.
-4. In a Git repository, run `/login` once; the home disk retains it.
-   Scratch runs have a fresh home each time. After a clean exit, confirmed
-   empty work deletes both scratch disks, including guest logins and sessions.
-   Runs with work or failed inspection keep their disks. `pinfold disk list`
-   shows readable sizes and recorded originating folders; `disk rm --all`
-   removes unattached disks in the current state root.
-   An API key or a Claude or Codex
-   subscription can instead stay on the host behind
-   a pi login route in `routes` (ARCHITECTURE.md, Egress proxy); an API
-   key can also arrive through the environment.
-   Using a Claude subscription through pi is subject to Anthropic's terms:
-   pi presents the token as Claude Code and may bill it as extra usage.
+3. Run a command: `pinfold -- pi`, `pinfold -- claude` or `pinfold -- bash`.
+4. The project home and project disk persist between runs. A guest `/login`
+   stays in that project's home. `pinfold disk list` shows readable sizes and
+   recorded originating folders; `disk rm --all` removes unattached disks
+   in the current state root. An API key or a Claude or Codex subscription
+   can instead stay on the host behind a login route in `routes`
+   (ARCHITECTURE.md, Egress proxy); an API key can also arrive through the
+   environment. Using a Claude subscription through pi is subject to
+   Anthropic's terms: pi presents the token as Claude Code and may bill it
+   as extra usage.
+
+One foreground command owns the box and tears it down when it ends.
+A simultaneous second launch refuses as `disk-in-use`. Arguments after
+`--` pass literally to the command, including `--help`. Command exit codes
+pass through; project setup failure or external teardown before observed completion uses 125. CMD owns stdout;
+pinfold diagnostics use stderr.
 
 For reusable Codex subscription login, sign in with Codex on the host and
 put this in the selected profile's `pinfold.toml`:
@@ -161,17 +156,13 @@ Old Podman storage, derived roots and managed agent disks remain untouched.
 In Git, the box keeps its own repository. Only committed branches enter it;
 commit local work (a WIP commit is enough) to send it in.
 `pinfold fetch` brings guest commits back as `pinfold/*` branches to merge;
-`pinfold push` sends host branches in as `host/*`. Each `pi` start also pushes
-and fast-forwards the guest branch when clean and strictly behind.
+`pinfold push` sends host branches in as `host/*`. Each project-command
+start also pushes and fast-forwards the guest branch when clean and strictly behind.
 
-Outside Git on macOS, each invocation starts with fresh home and work disks
-and an empty `/work`; the invoking folder is not shared. On Linux a folder
-outside Git is refused as `not-git`. See
+Outside Git on macOS, runs reuse the folder's home and project disks.
+The project disk starts empty at the folder's canonical path; no host files
+are imported. On Linux a folder outside Git is refused as `not-git`. See
 [Configuration](docs/ARCHITECTURE.md#configuration) for precedence and recipes.
-
-On normal exit, Pi gives a bounded advisory summary of outstanding work,
-without file contents. Fetch commits to retain them; uncommitted and untracked
-files remain on the guest disk.
 
 To save a stopped disk into a new host directory, run
 `pinfold disk export NAME DEST [--image IMAGE]`. It uses the local default
@@ -192,7 +183,7 @@ Build and select one explicitly:
 
 ```sh
 pinfold build --profile documents
-PINFOLD_PROFILE=documents pi
+PINFOLD_PROFILE=documents pinfold -- pi
 ```
 
 Set `profile = "documents"` in the project's configuration
@@ -207,7 +198,7 @@ image = "localhost/pinfold/image-research-tools:latest"
 
 `image` can also be a profile default. A project `image` overrides it;
 there is no environment override. An explicit image cannot be combined with
-a project Containerfile. Pi never pulls or builds on launch. With an explicit
+a project Containerfile. Launch never pulls or builds. With an explicit
 image, `pinfold build` reports that there is no selected recipe to build.
 
 Custom profiles can omit `Containerfile` when an image or project recipe is
@@ -222,8 +213,8 @@ a runtime installed.
 A coding agent on the host can delegate to pi in a box:
 
 ```sh
-pinfold pi -p "TASK" </dev/null              # answer on stdout, pi's exit code
-pinfold pi -p --continue "FOLLOW-UP" </dev/null
+pinfold -- pi -p "TASK" </dev/null              # answer on stdout, pi's exit code
+pinfold -- pi -p --continue "FOLLOW-UP" </dev/null
 pinfold fetch                                 # box branches as pinfold/*
 ```
 
@@ -233,15 +224,15 @@ agent this; copy its directory into the agent's skills directory.
 
 ## Fresh state
 
-In a Git repository, `pinfold pi` and `pinfold pi -p` reuse the same home
-and project disks. To start fresh:
+All commands in a project reuse its home and project disks. To start fresh:
 
-1. Finish Pi after committing guest work you want to keep. Run `pinfold fetch`,
-   inspect the fetched commits, then merge or give them a host branch to retain them.
+1. Finish the command. In Git, commit guest work you want to keep, run
+   `pinfold fetch`, inspect the commits, then merge or give them a host
+   branch to retain them. Use `disk export` for other files.
 2. Run `pinfold config`. Read the exact names from `project.disks.home`
    and `project.disks.project`.
 3. Run `pinfold disk rm NAME` for each disk you want to clear.
-4. Launch `pinfold pi` or `pinfold pi -p "TASK"` again. No image rebuild
+4. Launch `pinfold -- pi` or `pinfold -- pi -p "TASK"` again. No image rebuild
    is needed.
 
 Remove both disks for a fresh home and project. Removing only the home
@@ -250,24 +241,24 @@ sessions, settings and other home files. Everything on a deleted disk is
 lost, including uncommitted work and home-only files. Fetch brings back commits,
 not uncommitted or home-only files. Later fetches can move `pinfold/*` refs.
 
-Outside Git, each invocation already has fresh disks. Save wanted files with
-`disk export`, then remove retained disks using their printed names.
+Outside Git on macOS, save wanted files with `disk export` before removing
+the persistent disks.
 
 Disk removal refuses attached disks. The two removals are separate operations;
 serialize access to the project. Use `disk rm`, never delete state or volume
 files directly. Profiles, project configuration and the selected image remain intact.
-A `sync-failed` warning means source synchronization failed even if Pi starts.
+A `sync-failed` warning means source synchronization failed even if the command starts.
 
 ## Configuration
 
 See [Configuration](docs/ARCHITECTURE.md#configuration) for layers, keys and defaults.
 
-For `pinfold pi`, forward host variables with `PINFOLD_ENV_<NAME>`.
+For `pinfold -- CMD`, forward host variables with `PINFOLD_ENV_<NAME>`.
 
 For disposable Rust build outputs in guest memory:
 
 ```sh
-PINFOLD_ENV_CARGO_TARGET_DIR=/tmp/pinfold-target pi
+PINFOLD_ENV_CARGO_TARGET_DIR=/tmp/pinfold-target pinfold -- pi
 ```
 
 `/tmp` is in guest memory and goes with the box; commit deliverables in

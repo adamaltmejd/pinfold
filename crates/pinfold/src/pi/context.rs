@@ -5,6 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::core::crossing;
+use crate::formatting::terminal_text;
 use crate::pi::state::canonical;
 
 pub struct Context {
@@ -14,7 +15,7 @@ pub struct Context {
 
 impl Context {
     /// Discover by host metadata so read-only reports do not require Git.
-    /// A repository marker never falls back to scratch, even if damaged.
+    /// A repository marker never falls back to a folder project, even if damaged.
     pub fn discover(cwd: &Path) -> io::Result<Self> {
         let cwd = canonical(cwd)?;
         for ancestor in cwd.ancestors() {
@@ -50,7 +51,7 @@ impl Context {
                 io::ErrorKind::InvalidInput,
                 format!(
                     "not-git: {} is not a git repository; a Linux project is a Git checkout",
-                    cwd.display()
+                    terminal_text(&cwd.to_string_lossy())
                 ),
             ));
         }

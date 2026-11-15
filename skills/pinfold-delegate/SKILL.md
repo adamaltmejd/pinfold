@@ -5,7 +5,7 @@ description: Hand a coding task to a pi agent sandboxed by pinfold, follow up on
 
 # Delegate to a pinfold box
 
-`pinfold pi` runs pi in a sandbox (a box) for the project in the current
+`pinfold -- pi` runs pi in a sandbox (a box) for the project in the current
 directory. The box has no host access beyond its own repository of the
 checkout's branches and the project's configured routes, and egress only through
 pinfold's allowlist. Work comes back
@@ -14,8 +14,8 @@ only as git branches you fetch and review.
 ## Before you start
 
 - Run from the project's main checkout. A git worktree is refused as
-  `worktree`, and a folder that is not a git repository as `not-git`
-  (it needs `git init` and a commit).
+  `worktree`. This workflow needs branches to fetch: initialize Git and
+  commit before delegating from a folder without a repository.
 - Only committed branches cross, always. Each start pushes the
   checkout's branches into the box as `host/<branch>` and checks out the
   current branch there on the first start. Untracked, ignored and
@@ -29,12 +29,12 @@ only as git branches you fetch and review.
 ## Run a task
 
 ```sh
-pinfold pi -p "TASK" </dev/null
+pinfold -- pi -p "TASK" </dev/null
 ```
 
 pi prints its answer on stdout and the command exits with pi's code. A
-pinfold refusal prints `pinfold pi: REASON: DETAIL` on stderr and exits 1.
-`pinfold pi: sync-failed: DETAIL` is not a refusal: pi ran, but without
+pinfold refusal prints `pinfold --: REASON: DETAIL` on stderr and exits 125.
+`pinfold: sync-failed: DETAIL` is not a refusal: pi ran, but without
 the host's latest branches.
 Tasks can take minutes: run the command in the background and wait for it
 to exit. Pass pi's own flags (`--provider`, `--model`) as usual.
@@ -47,7 +47,7 @@ onto `host/main` when it needs them.
 ## Follow up
 
 ```sh
-pinfold pi -p --continue "FOLLOW-UP" </dev/null
+pinfold -- pi -p --continue "FOLLOW-UP" </dev/null
 ```
 
 `--continue` resumes the box's latest pi session, so the delegate keeps

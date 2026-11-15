@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod core;
 mod dirs;
+use crate::init::formatting;
 #[cfg(target_os = "linux")]
 mod image_limits;
 mod init;
@@ -9,37 +10,28 @@ mod pi;
 mod update;
 
 use std::io;
-use std::path::Path;
 use std::process::ExitCode;
 
 use crate::pi::launch;
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os();
-    let program = args.next();
-    // A symlink named `pi` makes argv[0] the shim; every argument after it is
-    // pi's.
-    let shim = program
-        .as_deref()
-        .map(Path::new)
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
-        == Some("pi");
-    let rest: Vec<String> = match args.map(|arg| arg.into_string()).collect() {
+    args.next();
+    let args: Vec<_> = args.collect();
+    let project_command = args.first().is_some_and(|arg| arg == "--");
+    let rest: Vec<String> = match args.into_iter().map(|arg| arg.into_string()).collect() {
         Ok(rest) => rest,
         Err(arg) => {
             eprintln!("pinfold: argument {arg:?} is not valid UTF-8");
-            return ExitCode::from(1);
+            return ExitCode::from(if project_command { 125 } else { 1 });
         }
     };
-    let (verb, args) = if shim {
-        ("pi", &rest[..])
-    } else {
-        (
-            rest.first().map(String::as_str).unwrap_or_default(),
-            rest.get(1..).unwrap_or_default(),
-        )
-    };
+    if rest.is_empty() {
+        println!("{}", cli::USAGE);
+        return ExitCode::SUCCESS;
+    }
+    let verb = rest.first().map(String::as_str).unwrap_or_default();
+    let args = rest.get(1..).unwrap_or_default();
     let run: fn(&[String]) -> io::Result<i32> = match verb {
         "--version" | "-V" => {
             println!("pinfold {}", env!("CARGO_PKG_VERSION"));
@@ -52,7 +44,6 @@ fn main() -> ExitCode {
         // PID 1 never returns, so it never reaches `report`.
         "init" => |args| init::run(args),
         "box" => cli::run,
-        "attach" => cli::attach,
         "build" => cli::build,
         "image" => cli::image,
         "clean" => cli::clean,
@@ -62,7 +53,7 @@ fn main() -> ExitCode {
         "apparmor-profile" => cli::apparmor_profile,
         "config" => cli::config,
         "profile" => cli::profile,
-        "pi" => launch::run,
+        "--" => launch::run,
         "push" => |args| launch::crossing("push", args),
         "fetch" => |args| launch::crossing("fetch", args),
         "update" => update::run,
@@ -83,8 +74,8 @@ fn main() -> ExitCode {
             Err(error) => return ExitCode::from(cli::report(verb, Err(error)) as u8),
         }
     };
-    update::notice(verb, args);
-    // The daily pass runs before working commands, the `pi` shim included.
+    update::notice(verb);
+    // The daily pass runs before working commands, project commands included.
     // `box up` runs it itself, after installing its signal handlers.
     match (verb, args.first().map(String::as_str)) {
         ("init" | "update" | "doctor" | "config" | "artifacts" | "apparmor-profile", _)
@@ -92,22 +83,23 @@ fn main() -> ExitCode {
         _ => crate::core::clean::maintain(),
     }
     #[cfg(not(target_os = "linux"))]
-    let stdin_flags = if matches!(verb, "pi" | "attach")
-        || (verb == "box" && args.first().is_some_and(|arg| arg == "exec"))
-    {
-        match crate::core::runtime::apple::StdinFlags::save() {
-            Ok(flags) => flags,
-            Err(error) => return ExitCode::from(cli::report(verb, Err(error)) as u8),
-        }
-    } else {
-        None
-    };
+    let stdin_flags =
+        if verb == "--" || (verb == "box" && args.first().is_some_and(|arg| arg == "exec")) {
+            match crate::core::runtime::apple::StdinFlags::save() {
+                Ok(flags) => flags,
+                Err(error) => return ExitCode::from(cli::report(verb, Err(error)) as u8),
+            }
+        } else {
+            None
+        };
     let result = run(args);
+    let restored = crate::core::runtime::terminal::restore();
     #[cfg(not(target_os = "linux"))]
-    let result = match stdin_flags.map(|flags| flags.restore()).transpose() {
+    let restored = restored.and(stdin_flags.map(|flags| flags.restore()).transpose());
+    let result = match restored {
         Ok(_) => result,
         Err(error) => {
-            let error = io::Error::other(format!("restore terminal input flags: {error}"));
+            let error = io::Error::other(format!("restore terminal: {error}"));
             if matches!(result, Ok(0)) {
                 Err(error)
             } else {

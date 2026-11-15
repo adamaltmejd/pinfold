@@ -1,0 +1,25 @@
+=== Linux baseline ===
+phase=baseline expected=23 main-TID-stopped=true worker=18042 socket-read-to-futex=true exec-input-gone=true down-request-waiting=true
+$ $BIN -- sh -c 'echo CMD-READY; read gate; exit "$1"' sh 23; public box down pending before main resumes
+project-exit=23 stdout=b'' stderr=b''; down-exit=0 stdout=b'' stderr=b''
+phase=baseline expected=127 main-TID-stopped=true worker=18065 socket-read-to-futex=true exec-input-gone=true down-request-waiting=true
+$ $BIN -- sh -c 'echo CMD-READY; read gate; exit "$1"' sh 127; public box down pending before main resumes
+project-exit=127 stdout=b'' stderr=b''; down-exit=0 stdout=b'' stderr=b''
+isolated disks removed
+PASS completed-exec/down scheduling case
+
+=== Linux fixed ===
+phase=fixed expected=23 main-TID-stopped=true worker=18089 socket-read-to-futex=true exec-input-gone=true down-request-waiting=true
+$ $BIN -- sh -c 'echo CMD-READY; read gate; exit "$1"' sh 23; public box down pending before main resumes
+project-exit=23 stdout=b'' stderr=b''; down-exit=0 stdout=b'' stderr=b''
+phase=fixed expected=127 main-TID-stopped=true worker=18111 socket-read-to-futex=true exec-input-gone=true down-request-waiting=true
+$ $BIN -- sh -c 'echo CMD-READY; read gate; exit "$1"' sh 127; public box down pending before main resumes
+project-exit=127 stdout=b'' stderr=b''; down-exit=0 stdout=b'' stderr=b''
+isolated disks removed
+PASS completed-exec/down scheduling case
+
+=== Linux foreground handoff ===
+$ $BIN -- sh -c 'echo READY; read line; exec tail -f /dev/null'; hand foreground to helper; helper stty canonical -echo; SIGTERM pinfold
+expected=[0, 4, 191, 2611, 15, 15, [3, 28, 127, 21, 4, 0, 1, 0, 17, 19, 26, 0, 18, 15, 23, 22, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]] observed=[0, 4, 191, 2611, 15, 15, [3, 28, 127, 21, 4, 0, 1, 0, 17, 19, 26, 0, 18, 15, 23, 22, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]
+exit=143 foreground-helper-settings-untouched=True; host-SIGTTOU=default; handed=True
+cleanup-exit=0 fixture=/tmp/pffg.kl5b4bxw

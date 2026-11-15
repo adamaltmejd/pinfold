@@ -32,12 +32,118 @@ pub(crate) mod export;
 #[cfg(target_os = "linux")]
 #[path = "init/firecracker.rs"]
 pub(crate) mod firecracker;
-#[path = "init/summary.rs"]
-pub(crate) mod summary;
+#[path = "formatting.rs"]
+pub(crate) mod formatting;
 
 /// Guest values travel under names the host runtime does not interpret.
 /// Hex preserves arbitrary environment bytes through runtime JSON encoding.
 pub const BOX_ENV_PREFIX: &str = "PINFOLD_BOX_ENV_";
+
+/// Private exec metadata is removed before restoring caller-named variables.
+pub const EXEC_METADATA: &str = "PINFOLD_EXEC_METADATA";
+
+#[derive(Default)]
+pub struct ExecMetadata {
+    pub agent: Option<String>,
+    pub project_directory: Option<(PathBuf, PathBuf)>,
+    pub window: Option<(u16, u16)>,
+    pub term: Option<Vec<u8>>,
+    pub colorterm: Option<Vec<u8>>,
+}
+
+impl ExecMetadata {
+    // Shared with the host; the standalone Apple init only decodes.
+    #[allow(dead_code)]
+    pub fn encode(&self) -> String {
+        let optional = |value: Option<&[u8]>| {
+            value.map_or_else(
+                || "-".to_string(),
+                |value| value.iter().map(|byte| format!("{byte:02x}")).collect(),
+            )
+        };
+        let window = self
+            .window
+            .map_or_else(|| "-".to_string(), |(rows, cols)| format!("{rows},{cols}"));
+        format!(
+            "{window}:{}:{}:{}:{}:{}",
+            optional(self.agent.as_deref().map(str::as_bytes)),
+            optional(self.term.as_deref()),
+            optional(self.colorterm.as_deref()),
+            optional(
+                self.project_directory
+                    .as_ref()
+                    .map(|(root, _)| root.as_os_str().as_bytes())
+            ),
+            optional(
+                self.project_directory
+                    .as_ref()
+                    .map(|(_, relative)| relative.as_os_str().as_bytes())
+            )
+        )
+    }
+
+    fn decode(value: &str) -> io::Result<Self> {
+        let invalid = || io::Error::other("invalid execution metadata");
+        let fields: [&str; 6] = value
+            .split(':')
+            .collect::<Vec<_>>()
+            .try_into()
+            .map_err(|_| invalid())?;
+        let window = if fields[0] == "-" {
+            None
+        } else {
+            let (rows, cols) = fields[0].split_once(',').ok_or_else(invalid)?;
+            Some((
+                rows.parse().map_err(|_| invalid())?,
+                cols.parse().map_err(|_| invalid())?,
+            ))
+        };
+        let optional = |value: &str| {
+            if value == "-" {
+                Ok(None)
+            } else {
+                decode_hex(value.as_bytes()).map(Some)
+            }
+        };
+        let project_directory = match (optional(fields[4])?, optional(fields[5])?) {
+            (None, None) => None,
+            (Some(root), Some(relative)) => Some((
+                PathBuf::from(OsString::from_vec(root)),
+                PathBuf::from(OsString::from_vec(relative)),
+            )),
+            _ => return Err(invalid()),
+        };
+        if window.is_some_and(|(rows, cols)| rows == 0 || cols == 0) {
+            return Err(invalid());
+        }
+        Ok(Self {
+            project_directory,
+            agent: optional(fields[1])?
+                .map(String::from_utf8)
+                .transpose()
+                .map_err(|_| invalid())?,
+            window,
+            term: optional(fields[2])?,
+            colorterm: optional(fields[3])?,
+        })
+    }
+}
+
+fn decode_hex(value: &[u8]) -> io::Result<Vec<u8>> {
+    let decoded: Option<Vec<u8>> = value
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            std::str::from_utf8(pair)
+                .ok()
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+        })
+        .collect();
+    decoded
+        .filter(|_| value.len().is_multiple_of(2))
+        .ok_or_else(|| io::Error::other("invalid encoded environment"))
+}
 
 const RELAY_LISTEN: &str = "127.0.0.1:3128";
 
@@ -49,7 +155,6 @@ pub fn run(args: &[String]) -> ! {
         Some("setup") => exit_with("setup", setup(&args[1..])),
         Some("receive") => exit_with("receive", receive(&args[1..])),
         Some("send") => exit_with("send", export::run(&args[1..])),
-        Some("summary") => exit_with("summary", summary::run(&args[1..])),
         #[cfg(target_os = "linux")]
         Some("boot") => firecracker::boot(),
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -115,20 +220,66 @@ fn exec(args: &[String]) -> ! {
             process::exit(1);
         }
     };
+    let metadata = std::env::var(EXEC_METADATA)
+        .map_err(io::Error::other)
+        .and_then(|value| ExecMetadata::decode(&value));
+    let metadata = match metadata {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            eprintln!("pinfold init exec: execution metadata: {error}");
+            process::exit(125);
+        }
+    };
+    let project = metadata.project_directory.is_some();
+    let setup_code = if project { 125 } else { 1 };
     // Apple's runtime starts exec independently of PID 1.
     #[cfg(target_os = "linux")]
     if let Err(error) = nix::sys::prctl::set_no_new_privs() {
         eprintln!("pinfold init exec: no_new_privs: {error}");
-        process::exit(1);
+        process::exit(setup_code);
     }
     // Raising a process's own OOM score needs no privilege. Linux work can
     // lower it again only to the floor inherited from the exec service.
     if let Err(error) = fs::write("/proc/self/oom_score_adj", "1000") {
         eprintln!("pinfold init exec: oom_score_adj: {error}");
-        process::exit(1);
+        process::exit(setup_code);
+    }
+    let _directory = if let Some((root, relative)) = &metadata.project_directory {
+        match open_project_directory(root, relative).and_then(|directory| {
+            nix::unistd::fchdir(&directory)?;
+            Ok(directory)
+        }) {
+            Ok(directory) => Some(directory),
+            Err(error) => {
+                eprintln!(
+                    "pinfold init exec: working-directory: {} below {}: {error}",
+                    formatting::terminal_text(&relative.to_string_lossy()),
+                    formatting::terminal_text(&root.to_string_lossy())
+                );
+                process::exit(125);
+            }
+        }
+    } else {
+        None
+    };
+    if let Some((rows, cols)) = metadata.window {
+        let size = nix::libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: TIOCSWINSZ reads the supplied winsize for the inherited TTY.
+        if unsafe { nix::libc::ioctl(0, nix::libc::TIOCSWINSZ, &size) } < 0 {
+            eprintln!(
+                "pinfold init exec: terminal size: {}",
+                io::Error::last_os_error()
+            );
+            process::exit(125);
+        }
     }
     let mut command = process::Command::new(program);
-    command.args(args);
+    command.args(args).env_remove(EXEC_METADATA);
     let mut restored = Vec::new();
     for (key, value) in std::env::vars_os() {
         let Some(name) = key
@@ -139,29 +290,38 @@ fn exec(args: &[String]) -> ! {
         };
         command.env_remove(&key);
         let value = value.as_bytes();
-        let decoded: Option<Vec<u8>> = value
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|pair| {
-                std::str::from_utf8(pair)
-                    .ok()
-                    .and_then(|pair| u8::from_str_radix(pair, 16).ok())
-            })
-            .collect();
-        let Some(decoded) = decoded.filter(|_| value.len().is_multiple_of(2)) else {
-            eprintln!("pinfold init exec: invalid encoded box environment for {name}");
-            process::exit(1);
+        let decoded = match decode_hex(value) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                eprintln!(
+                    "pinfold init exec: encoded box environment for {}: {error}",
+                    formatting::terminal_text(name)
+                );
+                process::exit(setup_code);
+            }
         };
         restored.push((name.to_string(), OsString::from_vec(decoded)));
     }
     // Restore after removing every transport name: a guest variable may
     // itself start with the prefix and must survive that removal pass.
     command.envs(restored);
+    for (name, value) in [("TERM", metadata.term), ("COLORTERM", metadata.colorterm)] {
+        if let Some(value) = value {
+            command.env(name, OsString::from_vec(value));
+        }
+    }
+    if let Some(agent) = metadata.agent {
+        command.env("HERDR_AGENT", agent);
+    }
     let error = command.exec();
-    eprintln!("pinfold init exec: {program}: {error}");
-    // The shell's convention for a command that could not be run.
-    process::exit(if error.kind() == io::ErrorKind::NotFound {
+    eprintln!(
+        "pinfold init exec: {}: {error}",
+        formatting::terminal_text(program)
+    );
+    // Public exec keeps the shell's executable lookup codes.
+    process::exit(if project {
+        125
+    } else if error.kind() == io::ErrorKind::NotFound {
         127
     } else {
         126
@@ -224,8 +384,7 @@ fn setup(args: &[String]) -> io::Result<()> {
         return Err(io::Error::other(SETUP_USAGE));
     }
     for ((uid, gid), dir) in ownership {
-        // This helper owns only newly created volumes, before population.
-        // Nonempty recovery directories stay intact and block empty cleanup.
+        // Only fresh disk roots reach this ownership pass. Recovered data stays.
         let _ = fs::remove_dir(Path::new(dir).join("lost+found"));
         nix::unistd::chown(
             dir.as_str(),
@@ -255,6 +414,30 @@ fn open_directory(path: &Path) -> io::Result<OwnedFd> {
         OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
         nix::sys::stat::Mode::empty(),
     )?)
+}
+
+/// Hold every directory through a no-follow descriptor walk, then enter the
+/// final inode. Project cwd never follows even an in-project symlink.
+fn open_project_directory(root: &Path, relative: &Path) -> io::Result<OwnedFd> {
+    use nix::fcntl::OFlag;
+    #[cfg(target_os = "linux")]
+    let search = OFlag::O_PATH;
+    #[cfg(not(target_os = "linux"))]
+    let search = OFlag::O_SEARCH;
+    let flags = search | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let root = root
+        .strip_prefix("/")
+        .map_err(|_| io::Error::other("project root is not absolute"))?;
+    let mut directory = nix::fcntl::open(Path::new("/"), flags, nix::sys::stat::Mode::empty())?;
+    for part in root.components().chain(relative.components()) {
+        let Component::Normal(name) = part else {
+            return Err(io::Error::other(
+                "project working directory is not plain and relative",
+            ));
+        };
+        directory = nix::fcntl::openat(&directory, name, flags, nix::sys::stat::Mode::empty())?;
+    }
+    Ok(directory)
 }
 
 fn check_relative_directory(relative: &Path) -> io::Result<()> {

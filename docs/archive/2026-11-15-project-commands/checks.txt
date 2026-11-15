@@ -1,0 +1,39 @@
+Baseline: 2b7364a, only BRIEF.md and PLAN.md untracked before work.
+Mac initial: df -g /System/Volumes/Data -> Available 57 GiB
+Apple runtime: container 1.7.1, status running; existing profile-default image.
+$ RUSTC_WRAPPER= ZIG_GLOBAL_CACHE_DIR=/tmp/pinfold-step4a-zig ZIG_LOCAL_CACHE_DIR=/tmp/pinfold-step4a-zig-local cargo build --locked
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 20.83s
+$ cargo fmt --check
+[exit 0; no output]
+$ RUSTC_WRAPPER= ZIG_GLOBAL_CACHE_DIR=/tmp/pinfold-step4a-zig ZIG_LOCAL_CACHE_DIR=/tmp/pinfold-step4a-zig-local cargo clippy --all-targets --locked -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.21s
+[exit 0]
+$ git diff --check
+[exit 0; no output]
+$ cmp /tmp/pinfold-step4a-current.patch /tmp/pinfold-step4a-latest.patch
+[exit 0; final local source patch equals source transferred to Linux]
+Linux: labvm status -> idle; labvm acquire --ttl 3h -> active.
+Setup: sudo apt-get -o DPkg::Lock::Timeout=600 update
+sudo apt-get -o DPkg::Lock::Timeout=600 install -y build-essential musl-tools git rustup pkg-config python3
+sudo chmod a+rw /dev/kvm
+git clone https://github.com/adamaltmejd/pinfold.git ~/pinfold
+Inside ~/pinfold: rustup target add x86_64-unknown-linux-musl
+Transferred source patch with labvm exec -- bash -lc 'cat > ~/latest.patch'.
+Linux long jobs used setsid nohup, redirected logs/stdin, then log inspection.
+$ cargo build --locked --target x86_64-unknown-linux-musl
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.50s
+build-status=0
+$ file target/x86_64-unknown-linux-musl/debug/pinfold
+ELF 64-bit LSB pie executable, x86-64, static-pie linked
+$ cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 19.94s
+clippy-status=0
+$ bash ~/prepare-image.sh
+Filesystem /dev/sda1: 26G available before image build
+{"event":"built","id":"sha256:389b00bf45d1fd15af1b8bae29dcdb9e230daad82bc468d9824977aeeee2e1ec","latest":"localhost/pinfold/image-probe-commands:latest","ref":"localhost/pinfold/image-probe-commands:18e8455ef275bf2c-16422"}
+Mac final: df -g /System/Volumes/Data -> Available 56 GiB
+Linux final: df -h / -> Available 25G
+Own fixture boxes remaining: 0 on each platform. Disks remaining: 0 on each platform.
+No Mac image created. Linux probe-commands image and its build tag retained. Lease left active.
+Superseded driver: termios.error: (25, "Inappropriate ioctl for device")
+Superseded Bash observer: terminal deadline resized=True raw=b"36 120\r\nREADY\r\n"

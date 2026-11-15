@@ -21,7 +21,8 @@ use crate::core::image::service::inspect;
 use crate::core::image::{BuildRequest, ImageInfo, ImageService};
 use crate::core::plan::Plan;
 use crate::core::runtime::{
-    BoxInfo, BoxStat, DiskInfo, MemoryStat, PidsStat, Runtime, output, parse_json, spawn_error,
+    BoxInfo, BoxStat, DiskInfo, ExecContext, MemoryStat, PidsStat, Runtime, output, parse_json,
+    spawn_error,
 };
 use crate::core::{clean, ownership};
 use crate::dirs;
@@ -378,11 +379,15 @@ impl Runtime for Apple {
         &self,
         name: &str,
         init: &Path,
-        tty: bool,
-        workdir: Option<&Path>,
+        context: &ExecContext<'_>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        exec_command(name, init, tty, workdir, argv)
+        let _raw = if context.tty {
+            super::terminal::Raw::enter()?
+        } else {
+            None
+        };
+        exec_command(name, init, context, argv)?
             .status()
             .map_err(|error| spawn_error("container", error))
     }
@@ -391,11 +396,10 @@ impl Runtime for Apple {
         &self,
         name: &str,
         init: &Path,
-        tty: bool,
-        workdir: Option<&Path>,
+        context: &ExecContext<'_>,
         argv: &[String],
-    ) -> std::process::Command {
-        exec_command(name, init, tty, workdir, argv)
+    ) -> io::Result<std::process::Command> {
+        exec_command(name, init, context, argv)
     }
 
     /// A networkless helper owns fresh roots, then drops privileges to
@@ -548,27 +552,32 @@ impl Runtime for Apple {
 fn exec_command(
     name: &str,
     init: &Path,
-    tty: bool,
-    workdir: Option<&Path>,
+    context: &ExecContext<'_>,
     argv: &[String],
-) -> std::process::Command {
+) -> io::Result<std::process::Command> {
     let mut command = std::process::Command::new("container");
     command.args(["exec", "-i"]);
-    if tty {
-        // Keep the host's terminal identity: the runtime otherwise
-        // reports its own `TERM`.
+    let mut metadata = crate::init::ExecMetadata {
+        agent: context.agent.map(str::to_string),
+        project_directory: context.project_directory()?,
+        ..Default::default()
+    };
+    if context.tty {
         command.arg("-t");
-        for variable in ["TERM", "COLORTERM"] {
-            if let Some(value) = std::env::var_os(variable) {
-                guest_env(&mut command, variable, &value);
-            }
-        }
+        // Init applies a known initial size before a fast command starts.
+        metadata.window = super::terminal::window()?;
+        metadata.term = std::env::var_os("TERM").map(|value| value.as_bytes().to_vec());
+        metadata.colorterm = std::env::var_os("COLORTERM").map(|value| value.as_bytes().to_vec());
     } else {
         // Without a TTY the runtime's exec gets its own process group, so
         // a terminal signal reaches pinfold and not the exec.
         command.process_group(0);
     }
-    if let Some(dir) = workdir {
+    command.args(["--env", crate::init::EXEC_METADATA]);
+    command.env(crate::init::EXEC_METADATA, metadata.encode());
+    if context.project_root.is_none()
+        && let Some(dir) = context.cwd
+    {
         command.arg("--workdir").arg(dir);
     }
     command
@@ -576,7 +585,7 @@ fn exec_command(
         .arg(init)
         .args(["init", "exec", "--"])
         .args(argv);
-    command
+    Ok(command)
 }
 
 /// Wait, bounded, until `list` reports box `name` running. Apple records

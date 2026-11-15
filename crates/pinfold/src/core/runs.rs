@@ -98,7 +98,7 @@ pub fn write_launch(run_id: &str, mut record: serde_json::Value) -> io::Result<(
 }
 
 /// How a run ended: the `down` line's reason and detail, or pi's
-/// `harness-exited`.
+/// `sessions-ended`.
 pub struct Terminal {
     pub reason: &'static str,
     pub detail: Option<String>,

@@ -1,0 +1,32 @@
+=== macOS ===
+phase=fixed work=$W
+$ $BIN ['--', 'sh', '-c', 'echo CMD-READY; read line']; host-size=(36, 120); redirected=False; deny-TCSETS=False; blocked-output=False
+exit=143 termios-restored=True stty-sane=True zero-bytes=0 output=b"DRIVER_PID=55068\nCMD-READY\nDRIVER_STTY before=b'gfmt1:cflag=4b00:iflag=2b02:lflag=5cb:oflag=3:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600' after=b'gfmt1:cflag=4b00:iflag=2b02:lflag=200005cb:oflag=3:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600'\nDRIVER_RESULT=143,True,True\n"
+$ $BIN ['box', 'exec', 'probe-review-tty-55061', '--', '/proc/self/exe', 'init', 'exec', '--', 'printf', 'IOCTL-MUST-NOT-START']; restored metadata='36,120:-:-:-:-:-'
+exit=125 stdout=b'' stderr=b'pinfold init exec: terminal size: Not a tty (os error 25)\n'
+$ $BIN ['box', 'exec', 'probe-review-tty-55061', '--tty', '--', 'printf', 'REDIRECTED']; host-size=(36, 120); redirected=True; deny-TCSETS=False; blocked-output=False
+exit=0 termios-restored=True stty-sane=True zero-bytes=0 output=b"DRIVER_PID=55322\nDRIVER_STTY before=b'gfmt1:cflag=4b00:iflag=2b02:lflag=5cb:oflag=3:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600' after=b'gfmt1:cflag=4b00:iflag=2b02:lflag=200005cb:oflag=3:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600'\nDRIVER_RESULT=0,True,True\n"
+redirected bytes=b'REDIRECTED'
+$ $BIN ['box', 'exec', 'probe-review-tty-55061', '--tty', '--', 'stty', 'size']; host-size=(0, 0); redirected=False; deny-TCSETS=False; blocked-output=False
+exit=0 termios-restored=True stty-sane=True zero-bytes=0 output=b"DRIVER_PID=55339\n0 0\nDRIVER_STTY before=b'gfmt1:cflag=4b00:iflag=2b02:lflag=5cb:oflag=3:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600' after=b'gfmt1:cflag=4b00:iflag=2b02:lflag=200005cb:oflag=3:discard=f:dsusp=19:eof=4:eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600'\nDRIVER_RESULT=0,True,True\n"
+PASS terminal review cases
+
+=== Linux ===
+phase=fixed work=$W
+$ $BIN ['--', 'sh', '-c', 'echo CMD-READY; read line']; host-size=(36, 120); redirected=False; deny-TCSETS=False; blocked-output=False
+exit=143 termios-restored=True stty-sane=True zero-bytes=0 output=b"DRIVER_PID=18330\nCMD-READY\nDRIVER_STTY before=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0' after=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0'\nDRIVER_RESULT=143,True,True\n"
+blocked-output queued=4095; SIGTERM sent; pinfold exited before draining
+$ $BIN ['--', 'sh', '-c', 'echo CMD-READY; head -c 1048576 /dev/zero; read line']; host-size=(36, 120); redirected=False; deny-TCSETS=False; blocked-output=True
+exit=143 termios-restored=True stty-sane=True zero-bytes=14848 output=b"DRIVER_PID=18367\nCMD-READY\nDRIVER_STTY before=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0' after=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0'\nDRIVER_RESULT=143,True,True\n"
+$ $BIN ['box', 'exec', 'probe-review-tty-18322', '--', '/proc/self/exe', 'init', 'exec', '--', 'printf', 'IOCTL-MUST-NOT-START']; restored metadata='36,120:-:-:-:-:-'
+exit=125 stdout=b'' stderr=b'pinfold init exec: terminal size: Not a tty (os error 25)\n'
+$ $BIN ['box', 'exec', 'probe-review-tty-18322', '--tty', '--', 'printf', 'REDIRECTED']; host-size=(36, 120); redirected=True; deny-TCSETS=False; blocked-output=False
+exit=0 termios-restored=True stty-sane=True zero-bytes=0 output=b"DRIVER_PID=18413\nDRIVER_STTY before=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0' after=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0'\nDRIVER_RESULT=0,True,True\n"
+redirected bytes=b'REDIRECTED'
+$ $BIN ['box', 'exec', 'probe-review-tty-18322', '--tty', '--', 'stty', 'size']; host-size=(0, 0); redirected=False; deny-TCSETS=False; blocked-output=False
+exit=0 termios-restored=True stty-sane=True zero-bytes=0 output=b"DRIVER_PID=18418\n0 0\nDRIVER_STTY before=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0' after=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0'\nDRIVER_RESULT=0,True,True\n"
+$ $BIN ['--', 'sh', '-c', 'echo CMD-MUST-NOT-START']; host-size=(36, 120); redirected=False; deny-TCSETS=True; blocked-output=False
+exit=125 termios-restored=True stty-sane=True zero-bytes=0 output=b"DRIVER_PID=18423\npinfold --: Operation not permitted (os error 1)\nDRIVER_STTY before=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0' after=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0'\nDRIVER_RESULT=125,True,True\n"
+$ $BIN ['box', 'exec', 'probe-review-tty-18322', '--tty', '--', 'sh', '-c', 'echo CORE-MUST-NOT-START']; host-size=(36, 120); redirected=False; deny-TCSETS=True; blocked-output=False
+exit=1 termios-restored=True stty-sane=True zero-bytes=0 output=b"DRIVER_PID=18455\npinfold box: Operation not permitted (os error 1)\nDRIVER_STTY before=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0' after=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0'\nDRIVER_RESULT=1,True,True\n"
+PASS terminal review cases

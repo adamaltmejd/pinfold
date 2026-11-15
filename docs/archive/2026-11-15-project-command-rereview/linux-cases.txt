@@ -1,0 +1,24 @@
+=== linux before ===
+$ $BIN -- sh -c "mkfifo gate; echo CMD-READY; cat gate; rm gate"; stdin=PTY, stdout=pipe; ignore SIGTTIN; change host stty -echo after CMD-READY; release guest FIFO through public box exec
+phase=baseline output=b"DRIVER-CHANGE-STTY\r\nDRIVER-RESULT code=0 changed-setting-retained=False stty=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0' stdout=b'CMD-DONE\\n' stderr=b''\r\n"
+$ $BIN ['--', 'chmod', '111', 'execute']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['--', 'sh', '-c', 'pwd; echo ENTERED']; exit=125 stdout=b'' stderr=b'pinfold init exec: working-directory: execute below $W/probe-rereview: Permission denied (os error 13)\n'
+$ $BIN ['--', 'sh', '-c', 'chmod 755 execute; rm -rf execute; ln -s /home/pi execute']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['--', 'pwd']; exit=125 stdout=b'' stderr=b'pinfold init exec: working-directory: execute below $W/probe-rereview: Not a directory (os error 20)\n'
+$ $BIN ['--', 'sh', '-c', 'rm execute; mkdir execute']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['--', 'pwd']; exit=0 stdout=b'$W/probe-rereview/execute\n' stderr=b''
+PASS non-raw terminal preservation, execute-only cwd, symlink refusal and plain cwd
+isolated disk cleanup exit=0
+
+=== linux after ===
+$ $BIN -- sh -c "mkfifo gate; echo CMD-READY; cat gate; rm gate"; stdin=PTY, stdout=pipe; ignore SIGTTIN; change host stty -echo after CMD-READY; release guest FIFO through public box exec
+phase=fixed output=b"DRIVER-CHANGE-STTY\r\nDRIVER-RESULT code=0 changed-setting-retained=True stty=b'500:5:bf:8a33:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0' stdout=b'CMD-DONE\\n' stderr=b''\r\n"
+$ $BIN ['--', 'chmod', '111', 'execute']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['--', 'sh', '-c', 'pwd; echo ENTERED']; exit=0 stdout=b'$W/probe-rereview/execute\nENTERED\n' stderr=b''
+$ $BIN ['--', 'sh', '-c', 'chmod 755 execute; rm -rf execute; ln -s /home/pi execute']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['--', 'pwd']; exit=125 stdout=b'' stderr=b'pinfold init exec: working-directory: execute below $W/probe-rereview: Not a directory (os error 20)\n'
+$ $BIN ['--', 'sh', '-c', 'rm execute; mkdir execute']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['--', 'pwd']; exit=0 stdout=b'$W/probe-rereview/execute\n' stderr=b''
+PASS non-raw terminal preservation, execute-only cwd, symlink refusal and plain cwd
+isolated disk cleanup exit=0
+

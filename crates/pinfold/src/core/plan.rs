@@ -485,7 +485,7 @@ impl Plan {
     /// value unread so `box up` can watch the same stdin for EOF. Parsing to
     /// a value first keeps a readable `name` even when serde refuses, so a
     /// refusal names the box. A caller's labels may not use pinfold's
-    /// namespace; `pinfold pi`'s own plan carries `dev.pinfold.project`.
+    /// namespace; `pinfold -- CMD`'s own plan carries `dev.pinfold.project`.
     pub fn from_reader(reader: impl Read) -> Result<Plan, Refusal> {
         let refusal = |box_name, detail| Refusal {
             box_name,

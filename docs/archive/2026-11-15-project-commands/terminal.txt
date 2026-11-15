@@ -1,0 +1,19 @@
+Apple
+$ $BIN -- ['stty', 'size']; host=36x120 TERM=xterm-256color COLORTERM=truecolor
+exit=0 raw=b'\x1b[?25l\x1b[K\r\x1b[?25h36 120\r\r\n\x1b[?25l\x1b[?25h\x1b[?25l\x1b[?25hDRIVER_RESTORED=True ATTRS_EQUAL=True FLAGS=2,65538\r\n' output=b'36 120\n' termios-and-mutable-stdin-flags-restored=True
+$ $BIN -- ['sh', '-c', 'printf "%s %s\\n" "$TERM" "$COLORTERM"; stty size']; host=36x120 TERM=xterm-256color COLORTERM=truecolor
+exit=0 raw=b'\x1b[?25l\x1b[K\r\x1b[?25hxterm-256color truecolor\r\r\n36 120\r\r\n\x1b[?25l\x1b[?25h\x1b[?25l\x1b[?25hDRIVER_RESTORED=True ATTRS_EQUAL=True FLAGS=2,65538\r\n' output=b'xterm-256color truecolor\n36 120\n' termios-and-mutable-stdin-flags-restored=True
+host resize=(41, 133, 0, 0); SIGWINCH sent to PTY foreground group
+$ $BIN -- ['perl', '-MPOSIX', '-e', '$|=1; $SIG{WINCH}=sub{my $s=pack("S4",0,0,0,0); ioctl(STDIN,0x5413,$s) or die $!; my($r,$c)=unpack("S4",$s); print "RESIZED $r $c\\n"; exit}; print "READY\\n"; POSIX::pause();']; host=36x120 TERM=xterm-256color COLORTERM=truecolor
+exit=0 raw=b'\x1b[?25l\x1b[K\r\x1b[?25hREADY\r\r\nRESIZED 41 133\r\r\n\x1b[?25l\x1b[?25h\x1b[?25l\x1b[?25hDRIVER_RESTORED=True ATTRS_EQUAL=True FLAGS=2,65538\r\n' output=b'READY\nRESIZED 41 133\n' termios-and-mutable-stdin-flags-restored=True
+PASS immediate dimensions, terminal identity, resize, termios and mutable-flag restoration
+
+Linux
+$ $BIN -- ['stty', 'size']; host=36x120 TERM=xterm-256color COLORTERM=truecolor
+exit=0 raw=b'36 120\r\nDRIVER_RESTORED=True ATTRS_EQUAL=True FLAGS=2,2\r\n' output=b'36 120\n' termios-and-mutable-stdin-flags-restored=True
+$ $BIN -- ['sh', '-c', 'printf "%s %s\\n" "$TERM" "$COLORTERM"; stty size']; host=36x120 TERM=xterm-256color COLORTERM=truecolor
+exit=0 raw=b'xterm-256color truecolor\r\n36 120\r\nDRIVER_RESTORED=True ATTRS_EQUAL=True FLAGS=2,2\r\n' output=b'xterm-256color truecolor\n36 120\n' termios-and-mutable-stdin-flags-restored=True
+host resize=(41, 133, 0, 0); SIGWINCH sent to PTY foreground group
+$ $BIN -- ['perl', '-MPOSIX', '-e', '$|=1; $SIG{WINCH}=sub{my $s=pack("S4",0,0,0,0); ioctl(STDIN,0x5413,$s) or die $!; my($r,$c)=unpack("S4",$s); print "RESIZED $r $c\\n"; exit}; print "READY\\n"; POSIX::pause();']; host=36x120 TERM=xterm-256color COLORTERM=truecolor
+exit=0 raw=b'READY\r\nRESIZED 41 133\r\nDRIVER_RESTORED=True ATTRS_EQUAL=True FLAGS=2,2\r\n' output=b'READY\nRESIZED 41 133\n' termios-and-mutable-stdin-flags-restored=True
+PASS immediate dimensions, terminal identity, resize, termios and mutable-flag restoration

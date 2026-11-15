@@ -15,8 +15,9 @@ use std::process::{Child, Command, Output, Stdio};
 
 use crate::core::r#box::RefusalReason;
 use crate::core::plan::valid_name;
-use crate::core::runtime::Runtime;
+use crate::core::runtime::{ExecContext, Runtime};
 use crate::dirs;
+use crate::formatting::terminal_text;
 
 /// A fetched bundle larger than this is refused as `limit`.
 const LIMIT: u64 = 4 << 30;
@@ -95,7 +96,10 @@ pub fn push(
     )?)?
     .stdout;
     if branches.is_empty() {
-        return Err(spec(format!("{} has no branches", repo.display())));
+        return Err(spec(format!(
+            "{} has no branches",
+            terminal_text(&repo.to_string_lossy())
+        )));
     }
     let bundle = Bundle::new()?;
     let path = bundle.path.as_str();
@@ -119,10 +123,9 @@ pub fn push(
     let mut command = runtime.exec_command(
         name,
         init,
-        false,
-        None,
+        &ExecContext::default(),
         &script(PUSH_SCRIPT, [guest_repo, remote]),
-    );
+    )?;
     command
         .stdin(File::open(&bundle.path)?)
         .stdout(Stdio::null())
@@ -156,8 +159,12 @@ pub fn fetch(
         .stdout,
     )
     .into_owned();
-    let mut command =
-        runtime.exec_command(name, init, false, None, &script(FETCH_SCRIPT, [guest_repo]));
+    let mut command = runtime.exec_command(
+        name,
+        init,
+        &ExecContext::default(),
+        &script(FETCH_SCRIPT, [guest_repo]),
+    )?;
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -337,8 +344,8 @@ fn check_args(repo: &Path, guest_repo: &str, remote: &str) -> Result<(), Crossin
     if !found.status.success() {
         return Err(spec(format!(
             "{} is not a git repository: {}",
-            repo.display(),
-            String::from_utf8_lossy(&found.stderr).trim()
+            terminal_text(&repo.to_string_lossy()),
+            terminal_text(String::from_utf8_lossy(&found.stderr).trim())
         )));
     }
     Ok(())
@@ -381,12 +388,13 @@ fn box_status(code: Option<i32>, stderr: &str, guest_repo: &str) -> Result<(), C
     match code {
         Some(0) => Ok(()),
         Some(NOT_A_REPO) => Err(spec(format!(
-            "{guest_repo} is not a git repository in the box: {}",
-            stderr.trim()
+            "{} is not a git repository in the box: {}",
+            terminal_text(guest_repo),
+            terminal_text(stderr.trim())
         ))),
         _ => Err(CrossingError::Failed(format!(
             "the box's git failed: {}",
-            stderr.trim()
+            terminal_text(stderr.trim())
         ))),
     }
 }
@@ -542,7 +550,7 @@ fn succeeded(output: Output) -> Result<Output, CrossingError> {
 fn host_failed(output: &Output) -> CrossingError {
     CrossingError::Failed(format!(
         "git on the host failed: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
+        terminal_text(String::from_utf8_lossy(&output.stderr).trim())
     ))
 }
 
@@ -559,7 +567,12 @@ impl Bundle {
         let path = dir.join(format!("{}.bundle", std::process::id()));
         let path = path
             .to_str()
-            .ok_or_else(|| io::Error::other(format!("{} is not UTF-8", path.display())))?
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "{} is not UTF-8",
+                    terminal_text(&path.to_string_lossy())
+                ))
+            })?
             .to_string();
         let _ = fs::remove_file(&path);
         fs::OpenOptions::new()

@@ -10,6 +10,7 @@ use std::time::Duration;
 use nix::fcntl::{Flock, FlockArg};
 use serde::{Deserialize, Serialize};
 
+use crate::formatting::terminal_text;
 use crate::{cli, core, dirs};
 
 const REPOSITORY: &str = "https://api.github.com/repos/adamaltmejd/pinfold";
@@ -62,15 +63,12 @@ fn development(path: &Path) -> bool {
 }
 
 /// Checks are bounded, silent on failure, and confined to interactive launches.
-pub fn notice(verb: &str, args: &[String]) {
-    if !matches!(verb, "pi" | "attach")
+pub fn notice(verb: &str) {
+    if verb != "--"
         || std::env::var_os("PINFOLD_NO_UPDATE_CHECK").as_deref() == Some("1".as_ref())
         || !io::stdin().is_terminal()
         || !io::stdout().is_terminal()
         || !io::stderr().is_terminal()
-        || args
-            .iter()
-            .any(|arg| matches!(arg.as_str(), "--help" | "-h" | "--version" | "-V"))
     {
         return;
     }
@@ -202,7 +200,10 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     fs::create_dir(&staging).map_err(|error| {
         io::Error::new(
             error.kind(),
-            format!("cannot stage update beside {}: {error}", path.display()),
+            format!(
+                "cannot stage update beside {}: {error}",
+                terminal_text(&path.to_string_lossy())
+            ),
         )
     })?;
     let result = install(&release, &path, &staging);
@@ -210,7 +211,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     result?;
     println!(
         "Updated pinfold {VERSION} to {release} at {}.",
-        path.display()
+        terminal_text(&path.to_string_lossy())
     );
     Ok(0)
 }

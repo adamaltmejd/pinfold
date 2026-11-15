@@ -1,0 +1,23 @@
+macOS (RUSTC_WRAPPER empty; task-scoped Zig caches):
+$ cargo build --locked
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.36s
+$ cargo fmt --check
+exit=0
+$ cargo clippy --all-targets --locked -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.55s
+Linux:
+$ cargo build --locked --target x86_64-unknown-linux-musl
+$ cargo fmt --check
+$ cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.33s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.26s
+rereview-status=0
+$ prepare-image.sh (unchanged recipe from ../2026-11-15-project-commands/linux-image.sh)
+{"base":null,"event":"built","id":"sha256:711c2820edf570d93a3ad5003956b30ece377e0d88f49a91df9e9d4e55baa812","image":"probe-commands","labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"","dev.pinfold.profile":"","dev.pinfold.project":""},"latest":"localhost/pinfold/image-probe-commands:latest","ref":"localhost/pinfold/image-probe-commands:18e84f532a97d0b5-16365"}
+macOS explicit-root cleanup:
+isolated-root=pfrr.899zol0d removed=2 attached=0 disks-after=0
+isolated-root=pfrr.tvi65ftn removed=0 attached=0 disks-after=0
+isolated-root=pfrr.hl5b2r0t removed=0 attached=0 disks-after=0
+Final free space: macOS Data 53 GiB; Linux / 25 GiB.
+Linux final foreground-status=0; attached-disks=0.
+Apple container CLI version 1.7.1 (build: release, commit: unspeci).
