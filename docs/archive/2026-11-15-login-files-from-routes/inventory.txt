@@ -1,0 +1,5 @@
+$ container list --all; container --version; df -g /System/Volumes/Data
+ID  IMAGE  OS  ARCH  STATE  IP  CPUS  MEMORY  STARTED
+container CLI version 1.7.1 (build: release, commit: unspeci)
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  347        21    95% 2617469 222091840    1%   /System/Volumes/Data

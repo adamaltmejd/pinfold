@@ -1,0 +1,52 @@
+$ git rev-parse HEAD
+a99c3be8a93790d2d9d43ecd1e1dc1d7b52ea7dc
+exit=0
+$ rustc --version
+rustc 1.99.1 (58cf8f9c3 2026-10-13)
+exit=0
+binary-used-sha256=1dca5e830ad41142eec300cff8b5cadd2a33d3ffd475f07f81b0fa5fedc8838e
+draft-patch-sha256=dafa4021ed6aaa0306c587327663b2e6d40809c1c2122ae8649030b294b27b96
+$ cargo fmt --check
+exit=0
+$ git diff --check
+exit=0
+$ RUSTC_WRAPPER= ZIG_GLOBAL_CACHE_DIR=/tmp/pf3-zig-global ZIG_LOCAL_CACHE_DIR=/tmp/pf3-zig-local cargo clippy --all-targets --locked -- -D warnings
+   Compiling pinfold v0.5.5 (/home/user/pinfold/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.12s
+exit=0
+$ rg -n own_disks\(&names|mark\(&disk.name, UNCLEAN|claim.attach crates/pinfold/src/core/disk.rs
+100:                .and_then(|()| unmark(&disk.name, UNCLEAN))
+221:        runtime.own_disks(&names, plan, init, claim.generation(), directories)?;
+224:                mark(&disk.name, UNCLEAN)?;
+228:        claim.attach(
+251:        unmark(&disk.name, UNCLEAN)?;
+exit=0
+$ rg -n STREAM_DIR =>|present\(fs::DirBuilder crates/pinfold/src/init.rs
+365:            STREAM_DIR => {
+366:                if present(fs::DirBuilder::new().mode(0o755).create(&path))? {
+exit=0
+$ git diff --stat
+ crates/pinfold/harnesses.toml                      |  78 +-----
+ crates/pinfold/src/cli.rs                          |  34 +--
+ crates/pinfold/src/core/artifacts.rs               | 104 +++-----
+ crates/pinfold/src/core/box.rs                     | 295 +++++++++++----------
+ crates/pinfold/src/core/disk.rs                    |  10 +-
+ crates/pinfold/src/core/image/linux/job.rs         |   1 +
+ crates/pinfold/src/core/login.rs                   |  42 +--
+ crates/pinfold/src/core/plan.rs                    |  65 +----
+ crates/pinfold/src/core/runtime/apple.rs           |  46 +++-
+ crates/pinfold/src/core/runtime/firecracker/mod.rs |   3 +-
+ crates/pinfold/src/core/runtime/firecracker/vm.rs  |  18 +-
+ crates/pinfold/src/core/runtime/mod.rs             |  19 +-
+ crates/pinfold/src/dirs.rs                         |   2 +-
+ crates/pinfold/src/init.rs                         | 119 +++++++--
+ crates/pinfold/src/init/firecracker.rs             |  81 +++++-
+ crates/pinfold/src/pi/launch.rs                    |  18 +-
+ docs/ARCHITECTURE.md                               | 175 ++++++------
+ scripts/bump-pins.py                               |  29 +-
+ 18 files changed, 572 insertions(+), 567 deletions(-)
+exit=0
+$ df -g /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  346        21    95% 2617465 222283320    1%   /System/Volumes/Data
+exit=0
