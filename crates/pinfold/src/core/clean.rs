@@ -113,10 +113,24 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
         if !pinfold_box(&box_) {
             continue;
         }
-        let (owner, alive) = owner(&box_)?;
-        let state_dir = ownership::record(&box_.id)?
-            .map(|record| record.state_dir)
-            .unwrap_or(dirs::box_state_dir(&box_.id)?);
+        let observed = (|| {
+            let (owner, alive) = owner(&box_)?;
+            let state_dir = ownership::record(&box_.id)?
+                .map(|record| record.state_dir)
+                .unwrap_or(dirs::box_state_dir(&box_.id)?);
+            Ok::<_, io::Error>((owner, alive, state_dir))
+        })();
+        let (owner, alive, state_dir) = match observed {
+            Ok(observed) => observed,
+            Err(error) => {
+                eprintln!("pinfold: box inventory {:?}: {error}", box_.id);
+                // Unknown ownership must still protect this project's state.
+                if let Some(project) = box_.labels.get(PROJECT_LABEL) {
+                    live_projects.insert(project.clone());
+                }
+                continue;
+            }
+        };
         if alive {
             if let Some(project) = box_.labels.get(PROJECT_LABEL) {
                 live_projects.insert(project.clone());
@@ -230,12 +244,19 @@ pub fn prune_leftover_states(runtime: &dyn Runtime) -> io::Result<()> {
                 return Ok(());
             };
             #[cfg(target_os = "linux")]
-            runtime.down(&record.name)?;
-            #[cfg(not(target_os = "linux"))]
-            if runtime.list()?.iter().any(|box_| box_.id == record.name) {
-                return Ok(());
+            {
+                // Linux inventory depends on every record. Check this claim
+                // directly so an unrelated corrupt record cannot block it.
+                if ownership::record(&record.name)?
+                    .is_none_or(|current| current.generation != record.generation)
+                {
+                    return Ok(());
+                }
+                runtime.down(&record.name)?;
+                ownership::remove_record(&record.name, &record.generation)
             }
-            ownership::remove_record(&record.name, &record.generation)
+            #[cfg(not(target_os = "linux"))]
+            remove_orphan(runtime, &record.name, Some(&record.generation), &_lock).map(|_| ())
         })();
         if let Err(error) = result {
             eprintln!("pinfold: prune {:?}: {error}", record.name);
