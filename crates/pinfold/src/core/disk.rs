@@ -207,6 +207,8 @@ pub fn claim(
         claimed.created.push(disk.clone());
     }
     let mut created = Vec::new();
+    #[cfg(not(target_os = "linux"))]
+    let mut helper_attempted = false;
     let result = (|| {
         for disk in &claimed.created {
             // Marked first, so a crash anywhere in the fill leaves the mark.
@@ -243,6 +245,11 @@ pub fn claim(
             })
         });
         let names: Vec<&str> = created.iter().map(|disk| disk.name.as_str()).collect();
+        #[cfg(not(target_os = "linux"))]
+        {
+            helper_attempted = true;
+            claim.starting();
+        }
         runtime.own_disks(
             &names,
             plan,
@@ -251,11 +258,20 @@ pub fn claim(
             directories,
             &claimed.fills,
         )?;
+        #[cfg(not(target_os = "linux"))]
+        claim.preparation_done();
         Ok(())
     })();
     if let Err(error) = result {
         claimed.created = created;
-        claimed.undo_locked(runtime, name);
+        #[cfg(not(target_os = "linux"))]
+        if helper_attempted {
+            return Err(Err(error));
+        }
+        match claim.retire() {
+            Ok(()) => claimed.undo_locked(runtime, name),
+            Err(error) => eprintln!("pinfold: startup cleanup: retirement: {error}"),
+        }
         return Err(Err(error));
     }
     Ok(claimed)
@@ -273,30 +289,22 @@ pub fn detached(disks: &[Disk]) -> io::Result<()> {
 
 /// Each disk's attachments: box name and read-only flag, from every claim
 /// published in this state root whose owner holds its name or whose box
-/// the runtime has not stopped. A dead owner's box attaches nothing once
-/// the runtime lists it stopped or not at all, even before `prune` removes
-/// it. `except` is the caller's own box.
+/// the runtime has not stopped. An unretired claim retains its attachments
+/// even after death. `except` is the caller's own box.
 pub fn attachments(
     runtime: &dyn Runtime,
     except: Option<&str>,
 ) -> io::Result<BTreeMap<String, Vec<(String, bool)>>> {
     let mut attached: BTreeMap<String, Vec<(String, bool)>> = BTreeMap::new();
-    let boxes = match fs::canonicalize(dirs::boxes_dir()?) {
-        Ok(boxes) => boxes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(attached),
-        Err(error) => return Err(error),
-    };
+    let boxes = dirs::resolve_host_path(&dirs::boxes_dir()?)?;
     let mut records = Vec::new();
     for record in ownership::records()? {
         if record.disks.is_empty() || Some(record.name.as_str()) == except {
             continue;
         }
         // A claim's state dir goes only as its box is torn down.
-        match fs::canonicalize(&record.state_dir) {
-            Ok(dir) if dir.parent() == Some(boxes.as_path()) => records.push(record),
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
+        if dirs::resolve_host_path(&record.state_dir)?.parent() == Some(boxes.as_path()) {
+            records.push(record);
         }
     }
     if records.is_empty() {
@@ -309,7 +317,10 @@ pub fn attachments(
         .map(|b| b.id)
         .collect();
     for record in records {
-        if !unstopped.contains(&record.name) && !ownership::name_alive(&record.name)? {
+        if record.retiring
+            && !unstopped.contains(&record.name)
+            && !ownership::name_alive(&record.name)?
+        {
             continue;
         }
         for disk in record.disks {

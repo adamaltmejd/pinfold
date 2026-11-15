@@ -337,6 +337,10 @@ struct StderrDrain {
 impl StderrDrain {
     fn start(stderr: ChildStderr) -> io::Result<Self> {
         let stderr: OwnedFd = stderr.into_owned_fd()?;
+        Self::start_fd(stderr)
+    }
+
+    fn start_fd(stderr: OwnedFd) -> io::Result<Self> {
         crate::core::pipe::nonblocking(&stderr, "box diagnostics")?;
         let (stop, stopping) = io::pipe()?;
         let worker = std::thread::Builder::new()
@@ -687,22 +691,37 @@ impl Runtime for Apple {
                 .arg(image)
                 .args(setup)
                 .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
+                .stdout(Stdio::null())
                 .stderr(Stdio::piped())
                 .spawn()
                 .map_err(|error| spawn_error("container", error))?;
-            let sent = (|| {
-                let mut input = child.stdin.take().expect("setup stdin is piped");
-                for fill in fills {
-                    disk::send(fill, &mut input)?;
+            let result = (|| {
+                let drain = StderrDrain::start_fd(
+                    child.stderr.take().expect("setup stderr is piped").into(),
+                )?;
+                let sent = (|| {
+                    let mut input = child.stdin.take().expect("setup stdin is piped");
+                    for fill in fills {
+                        disk::send(fill, &mut input)?;
+                    }
+                    Ok::<_, io::Error>(())
+                })();
+                let status = child.wait()?;
+                let stderr = drain.close().into_iter().collect();
+                if status.success() {
+                    sent?;
                 }
-                Ok::<_, io::Error>(())
+                Ok(std::process::Output {
+                    status,
+                    stdout: Vec::new(),
+                    stderr,
+                })
             })();
-            let output = child.wait_with_output()?;
-            if output.status.success() {
-                sent?;
+            if result.is_err() {
+                let _ = child.kill();
+                let _ = child.wait();
             }
-            Ok(output)
+            result
         })();
         // The box reuses the helper's name, so the helper must be gone first.
         // Apple reports a container `running` for a moment after `run` returns,
@@ -723,7 +742,7 @@ impl Runtime for Apple {
             };
             return Err(io::Error::other(format!(
                 "prepare writable disks: {}{leftover}",
-                String::from_utf8_lossy(&result.stderr).trim()
+                terminal_text(String::from_utf8_lossy(&result.stderr).trim())
             )));
         }
         stopped?;

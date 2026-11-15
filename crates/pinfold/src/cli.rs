@@ -372,9 +372,9 @@ fn parse_fetch(args: &[String]) -> io::Result<(String, String, String)> {
 /// exit 3.
 fn present(runtime: &dyn Runtime, verb: &str, name: &str) -> io::Result<bool> {
     let found = runtime
-        .list()?
-        .iter()
-        .any(|box_| box_.id == name && clean::pinfold_box(box_));
+        .inspect(name)?
+        .as_ref()
+        .is_some_and(clean::pinfold_box);
     if !found {
         eprintln!("pinfold box {verb}: no box named {name:?}");
     }
@@ -383,7 +383,7 @@ fn present(runtime: &dyn Runtime, verb: &str, name: &str) -> io::Result<bool> {
 
 fn list(args: &[String]) -> io::Result<i32> {
     let filters = parse_labels(args)?;
-    for box_ in runtime().list()? {
+    for box_ in runtime().list_display()? {
         if !clean::pinfold_box(&box_) {
             continue;
         }

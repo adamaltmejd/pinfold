@@ -334,7 +334,7 @@ lists them all. A container without it is no box: `exec` and `stat` exit 3
 on it and `down` leaves it. Each line carries the box's labels and its
 image, then its `dev.pinfold.owner` pid (or null), whether its
 generation owns the lifetime lock, and the runtime's RFC
-3339 `created` time and `state` (`running` or `stopped`):
+3339 `created` time and `state` (`running`, `stopped` or `unknown`):
 
 ```json
 {"name":NAME,"labels":{…},"image":{"id":ID,"ref":REF},"owner":PID,"owner_alive":true,"created":RFC3339,"state":"running"}
@@ -680,6 +680,9 @@ its retirement evidence are unlinked last and the directory is synced.
 Readiness inspects only its own claim. Inventory reports per-box errors and
 rechecks retirement before treating a missing identity as unknown. Unknown
 liveness retains disk ownership and is reported as `unknown`.
+Partial inventory is for display only. Ownership and deletion decisions use
+complete inventory or a strict lookup of the target generation. Unreadable
+or unknown ownership never authorizes deletion.
 
 ## Egress proxy
 
@@ -1184,8 +1187,12 @@ gets its own.
 - **Attachment:** at `up`, after the claim. One box may attach a disk writable; while it does,
   another `up` naming that disk is refused as `disk-in-use`. Boxes may
   share a disk read-only while none attaches it writable. Attachments are
-  recorded under the box's claim and count while its owner lives or the
-  runtime lists its box in any state but stopped.
+  recorded under the box's claim and count until confirmed runtime removal
+  and published retirement, or removal of that claim. Unknown or unreadable
+  ownership refuses disk mutation.
+  Apple preparation errors preserve the claim and disks until checked
+  retirement. Preparation stderr retains only its latest 64 KiB in memory
+  and is escaped when reported.
 - **Clean:** a writable attachment records the disk unclean. A stop
   pinfold requests of a running box (step 8) syncs and unmounts every
   disk, and pinfold records each clean once the runtime confirms it. A

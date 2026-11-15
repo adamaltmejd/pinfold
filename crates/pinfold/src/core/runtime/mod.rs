@@ -281,8 +281,17 @@ pub trait Runtime: Sync {
     /// `list` names. Fields the runtime cannot answer are `None`.
     fn stat(&self, name: &str) -> io::Result<BoxStat>;
 
-    /// List every box, running or not.
+    /// Complete inventory for ownership decisions. Unreadable liveness is an error.
     fn list(&self) -> io::Result<Vec<BoxInfo>>;
+
+    /// Display may omit unreadable entries; never use it to authorize mutation.
+    fn list_display(&self) -> io::Result<Vec<BoxInfo>> {
+        self.list()
+    }
+
+    fn inspect(&self, name: &str) -> io::Result<Option<BoxInfo>> {
+        Ok(self.list()?.into_iter().find(|box_| box_.id == name))
+    }
 
     /// Every disk the runtime stores.
     fn list_disks(&self) -> io::Result<Vec<DiskInfo>>;

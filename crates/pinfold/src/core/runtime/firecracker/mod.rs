@@ -68,6 +68,15 @@ impl Firecracker {
             created: described.created,
         })
     }
+
+    fn known_info(record: ownership::Record) -> io::Result<Option<BoxInfo>> {
+        let running = match Self::state(&record)? {
+            Some(VmmState::Alive) => true,
+            Some(VmmState::Dead) => false,
+            Some(VmmState::NotStarted) | None => return Ok(None),
+        };
+        Ok(Self::info(record, Some(running)))
+    }
 }
 
 impl Runtime for Firecracker {
@@ -87,19 +96,11 @@ impl Runtime for Firecracker {
         _seeding: Option<&Seeding>,
     ) -> io::Result<BoxInfo> {
         // The owner holds this name. Other boxes cannot decide its readiness.
-        let record = Self::record(name)?;
-        let running = match Self::state(&record)? {
-            Some(VmmState::Alive) => Some(true),
-            Some(VmmState::Dead) => Some(false),
-            Some(VmmState::NotStarted) | None => None,
-        };
-        running
-            .and_then(|running| Self::info(record, Some(running)))
-            .ok_or_else(|| {
-                io::Error::other(format!(
-                    "the runtime does not list box {name:?} after ready"
-                ))
-            })
+        Self::known_info(Self::record(name)?)?.ok_or_else(|| {
+            io::Error::other(format!(
+                "the runtime does not list box {name:?} after ready"
+            ))
+        })
     }
 
     // An orphan is not our child to reap. Confirm its recorded VMM ended
@@ -167,6 +168,23 @@ impl Runtime for Firecracker {
     /// pinfold's own claims whose VMM started, running while it lives. No
     /// runtime is asked, so nothing can stall it.
     fn list(&self) -> io::Result<Vec<BoxInfo>> {
+        let mut boxes = Vec::new();
+        for record in ownership::records()? {
+            if let Some(box_) = Self::known_info(record)? {
+                boxes.push(box_);
+            }
+        }
+        Ok(boxes)
+    }
+
+    fn inspect(&self, name: &str) -> io::Result<Option<BoxInfo>> {
+        match ownership::record(name)? {
+            Some(record) => Self::known_info(record),
+            None => Ok(None),
+        }
+    }
+
+    fn list_display(&self) -> io::Result<Vec<BoxInfo>> {
         let mut boxes = Vec::new();
         for result in ownership::record_results()? {
             let record = match result {

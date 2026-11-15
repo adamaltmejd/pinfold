@@ -356,6 +356,11 @@ impl Claim {
         self.running = true;
     }
 
+    #[cfg(not(target_os = "linux"))]
+    pub fn preparation_done(&mut self) {
+        self.running = false;
+    }
+
     /// Acknowledge only completed teardown. Ownership stays held until Drop.
     pub async fn finish(&mut self, success: bool) -> io::Result<()> {
         if success {

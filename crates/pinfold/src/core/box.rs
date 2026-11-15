@@ -394,6 +394,7 @@ impl Box {
                         (removed, None)
                     }
                 };
+                let removed = removed.and_then(|synced| claim.retire().map(|()| synced));
                 if let Ok(synced) = removed {
                     // Only a stop pinfold asked of a running box synced its
                     // disks; a box that failed readiness ended, or may have,

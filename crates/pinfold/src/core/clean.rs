@@ -131,10 +131,12 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
                 continue;
             }
         };
+        if (alive || !box_.stopped)
+            && let Some(project) = box_.labels.get(PROJECT_LABEL)
+        {
+            live_projects.insert(project.clone());
+        }
         if alive {
-            if let Some(project) = box_.labels.get(PROJECT_LABEL) {
-                live_projects.insert(project.clone());
-            }
             continue;
         }
         dead.push(DeadBox {
@@ -172,7 +174,7 @@ pub fn remove_orphan(
     _lock: &Flock<File>,
 ) -> io::Result<bool> {
     let mut removed = false;
-    if let Some(current) = runtime.list()?.into_iter().find(|box_| box_.id == name) {
+    if let Some(current) = runtime.inspect(name)? {
         if !pinfold_box(&current)
             || current
                 .labels

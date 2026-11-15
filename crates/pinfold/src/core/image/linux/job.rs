@@ -1033,6 +1033,7 @@ async fn clean_cache(
         .await
         .and_then(|()| check_cancel(cancel));
     if let Err(error) = result {
+        claim.retire_previous()?;
         // The watcher joined the cleaner. Try restoring the marker or retiring
         // the cache. A removed marker already followed guest shutdown and host
         // sync, so two recovery errors cannot expose an active cache writer.
