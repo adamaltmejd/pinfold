@@ -1,103 +1,34 @@
-# Route-generated login files: PR 3, blocked during implementation
+# Login files from routes: PR 3
 
-2026-11-15. Starting source `a99c3be`. Branch `login-files-278`.
-The brief requires stopping when the plan cannot preserve the current contract.
-The draft is not ready to land. No push, PR, release, dependency or test was added.
-Evidence: [manual collectors and retained output](2026-11-15-login-files-from-routes/).
+2026-11-15. Implementation commits `c74710b` and `a151168`, from `a99c3be`. No push, PR, release, product dependency or suite test. [Collectors and retained output](2026-11-15-login-files-from-routes/). The 24-attachment acceptance case remains unresolved; this brief is not fully satisfied.
 
-## Blocking initialization conflict
+Routes generate Claude's managed settings, Codex's system provider and Pi's single autoload subdirectory. Renderers receive metadata and placeholders only. HOME, collisions and attachment counts validate before preparation. CLI/attach/Pi launch image executables through PATH. PINFOLD_ALLOW remains deliberate. Artifact reporting uses the host helper's architecture and executable. README/spec describe the contract; the installer-manifest comment was updated. Profile seeds stay unchanged.
 
-The draft follows the prescribed ordering: prepare generated parents under the
-disk claim, as the numeric box user, then start the ordinary box. This conflicts
-with the existing strict initial `disk.from` copy when that tree contains `.pi`.
+The approved correction is implemented exactly: mark disks unclean and record attachments before preparation writes; populate fresh disks once, as the numeric box user; then create missing generated parents; then attach generated configuration. Reused disks are neither repopulated nor chowned. Parent creation uses descriptor-relative no-follow traversal after privilege drop. Existing ordinary parents are tolerated; symlinks and non-directories fail. Apple uses the networkless transient helper under the disk claim. Ordinary guest capabilities are unchanged. The order is stated beside the lifecycle wording in ARCHITECTURE.md.
 
-Run from the checkout with its built binary:
+Deleted: harness declarations/validation/membership, credential-env metadata, HARNESS_ENV/harness_env/harnesses.json, downloads/mounts, per-exec defaults, forced Pi extension arguments, launch-record versions, guest pins and unused guest updater adapters. Infrastructure pinning, the verified installer, Install::Executable, needed npm adapters, harness-exited, crossing, scratch handling and operating-context instructions remain.
 
-```sh
-python3 docs/archive/2026-11-15-login-files-from-routes/parents.py
-```
+Caller changes: hard removal of `harnesses`, `--harness`, launch-record `harnesses`, guest artifact entries and mounted `/opt/pinfold/<agent>` executables. Artifacts reports host helper/infrastructure, with the helper executable path. Login routes alone create native files. Pi requires writable absolute HOME. Generated-path collisions and Linux attachment 25 refuse. There is no migration path.
 
-[parents.txt](2026-11-15-login-files-from-routes/parents.txt) retains all three cases:
+Reproduction: set P to the built binary and IMAGE to `localhost/pinfold/profile-default:latest`; run `validation.py "$P"`, `accept.py`, `gates.py "$P"`, `extra.py`, and on Linux `capacity.py`. Use the isolated paths/maintenance stamps in the collectors. Linux used a fresh three-hour Debian 13 lease, only `labvm exec -- bash -lc`, a source patch on the origin clone, musl-tools/rustup/build-essential and zstd for actual compressed fixture requests. Long jobs used setsid/nohup. Boxes used two CPUs and 1 GiB. The lease was not released.
 
-- `copy-control`: a fresh home copied from a host fixture containing
-  `.pi/agent/settings.json` becomes ready and reads the copied settings. The
-  directories belong to uid 501, the numeric box user.
-- `route-control`: a fresh empty home with a Pi login route becomes ready.
-  The generated parents belong to the same numeric user.
-- `route-copy`: the same copied tree plus the Pi route fails with
-  `copy into /home/user: pinfold init receive: File exists (os error 17)`.
+| Case | macOS | Linux |
+|---|---|---|
+| Fresh .pi/agent/settings source plus Pi route; reused content/mode/ownership | Passed | Passed |
+| Symlink/non-directory refusal; no target write; disk-unclean refusal; same-home correction | Passed | Passed |
+| Every Pi provider, Claude/Codex tool exchanges, child agent, synchronized Codex/Pi | Passed | Passed |
+| Read-only generated files, writable siblings, sibling extension, route rename/removal | Passed | Passed |
+| Explicit image without profile, no passwd entry, nonstandard HOME, readonly ancestor/writable child | Passed | Passed |
+| HOME/collision/legacy refusals and corrected controls; bare-box PINFOLD_ALLOW | Passed | Passed |
+| Stored/explicit keys, project overrides, helper architecture, TTY, Pi/attach, cancellation, marker scans | Passed | Passed |
+| Attachment 25 refusal / attachment 24 startup | Linux-only | 25 refused as spec; 24 failed |
 
-This is a regression from combining the two existing contracts, not an agent
-inference failure. The record stops here as BRIEF.md directs. No alternative
-copy semantics or lifecycle redesign was implemented.
+The gates passed with Pi 1.5.2, Claude 2.1.311 and Codex 0.169.0 on both hosts. Pi autoloads the named subdirectory. Stored keys win its placeholder; project extensions and explicit keys were exercised. Claude managed env wins user/project/explicit settings and inherited env. Codex user/explicit config overrides system config, but this release ignores project-local model_provider. The native diagnostic is retained. Gate HTTP 400 establishes selection only; accept.py separately requires successful tool results, guest files and HTTP 200 exchanges. A hostile project bypass fixture received no host authentication. No real login was read or used.
 
-Proposed plan correction: complete initial disk population as the box user
-before generated-parent creation and configuration attachment. Keep strict copy
-behavior and no-follow traversal. Specify how both runtimes perform this phase
-without ordinary box work starting. Do not silently skip existing copied files.
+[checks.txt](2026-11-15-login-files-from-routes/checks.txt) records build/fmt/Clippy, native helper architecture, static ELF and matching source content identity. Mac embedded the ARM musl init. One Linux default-profile build took 209 s; no Mac profile build was needed. The Linux-only version accessor compilation fix is a151168. Idle-runtime startup with a fresh home and all three generated mounts measured 2.267 s on Mac and 5.427 s on Linux. These are single observations.
 
-Source review also found that `disk::claim` calls `own_disks` before recording
-`UNCLEAN` and attachments. Reused-home preparation now writes there, so those
-records must precede it and failed-start cleanup must preserve the right recovery
-state. [checks.txt](2026-11-15-login-files-from-routes/checks.txt) retains the code
-ordering. A crash in this interval was not exercised.
+Required-case failure: the pinned Firecracker x86 MMIO allocator cannot attach 24 disks/mounts. An external trace captured “Could not attach device: MMIO transport error: Failed to allocate requested resource”. A real 14-attachment box execs successfully; 15 and 24 fail before BOOT. This matches the [pinned runtime's 17-device ceiling](https://raw.githubusercontent.com/firecracker-microvm/firecracker/v1.17.0/CHANGELOG.md), with init, root and vsock consuming three devices. This is not VM RAM/disk exhaustion. The case was not reduced or called passed.
 
-## Early agent gates
+Written follow-up: preserve the 24-attachment contract with a separately reviewed runtime transport design, or obtain an explicit spec decision. The current contract was not weakened. No PCI, kernel, pin or privilege change was improvised. The owner was asked while independent cases continued. All other requested cases ran and passed; live subscription/provider compatibility was excluded and remains unverified.
 
-```sh
-RUSTC_WRAPPER= ZIG_GLOBAL_CACHE_DIR=/tmp/pf3-zig-global ZIG_LOCAL_CACHE_DIR=/tmp/pf3-zig-local cargo build --locked
-python3 docs/archive/2026-11-15-login-files-from-routes/gates.py
-```
-
-The gates ran before implementation, against the existing default image. They
-used manual native-file mounts, plain host-fixture routes, isolated config/state,
-a fresh maintenance stamp and synthetic guest credentials. No real login was read.
-[gates.txt](2026-11-15-login-files-from-routes/gates.txt) retains the results:
-
-- Pi 1.5.2 autoloaded only `extensions/pinfold-login/index.ts` and selected its route.
-  A stored fixture API key replaced its placeholder without changing the route.
-- Claude 2.1.311 managed env overrode both user settings and inherited env.
-- Codex 0.169.0 used system config, then user config overrode it, then an explicit
-  provider option overrode the user selection.
-
-Every observed request reached the expected fixture host. HTTP 400 establishes
-configuration selection only. These were not successful inference/tool exchanges.
-Project/explicit precedence beyond these cases remains unverified. The first
-collector attempt had an env-command syntax error; the retained rerun corrected it
-after removing the first attempt's box and disk.
-
-## Draft changes and checks
-
-Uncommitted source/spec work removes harness declarations, validation, membership,
-per-exec env, downloads/mounts, launch-record versions, guest pins and their updater
-adapters. CLI/attach/Pi use PATH; PINFOLD_ALLOW remains deliberate. Native renderers
-use route metadata and placeholders. Generated destinations, HOME and attachment
-counts validate early. The host helper has an explicit accessor and host reporting.
-Generic disk-relative parent preparation crosses runtime/BOOT interfaces. Apple
-owns fresh roots, then drops privilege before descriptor-relative no-follow parent
-creation; Linux uses an unprivileged child. Reused ownership is preserved. The
-architecture draft records these contracts. The install-manifest comment was
-updated. Existing profile seeds and README were not changed before the stop.
-
-The macOS binary built, including its ARM musl init. Final `cargo fmt --check`,
-`cargo clippy --all-targets --locked -- -D warnings` and `git diff --check` passed;
-see checks.txt. The binary hash identifies the executable used by the collectors.
-The source draft subsequently received only import/argument-count lint cleanup
-and formatting. Its diff is retained locally at `/tmp/pf3-draft.patch`; its hash
-and changed-file summary are in checks.txt. The implementation is not committed.
-
-No profile image was rebuilt or created. Probe boxes and home disks were removed.
-Final runtime inventory was empty. Free space was 22 GiB at resumption and 21 GiB
-at the stop; every build stayed above 12 GiB. No snapshot was deleted.
-
-Not run after the blocker: Linux/VM work and musl Clippy, successful three-agent
-tool exchanges, child-agent inheritance, all Pi providers, interactive/attach/Pi
-entrypoints, symlink restart and correction, route rename/removal, full precedence,
-attachment 24/25, legacy refusals, helper cancellation/concurrency and boundary
-marker scans. Startup with all generated mounts was not measured. The 1.283 s
-route-control startup is one Pi mount only and is not that measurement.
-
-Draft caller changes, not landed: remove `harnesses`, `--harness`, launch-record
-`harnesses`, guest artifact entries and `/opt/pinfold/<agent>` executables; artifacts
-reports the host helper/infrastructure. Routes generate native files; Pi login
-requires writable absolute HOME; generated collisions/counts refuse early.
+All owned boxes/disks were removed. Linux had 22 GiB disk free and nearly all 2 GiB tmpfs free. Mac ended at 16 GiB free; every build started above 12 GiB. No snapshot was deleted. The Linux default image and its build cache remain; no Mac image was created. The verification directory consolidates the earlier gate/blocker evidence into current collectors and compact text output; historical details remain in commit 0f7be4f.

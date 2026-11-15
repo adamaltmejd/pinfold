@@ -1,52 +1,24 @@
-$ git rev-parse HEAD
-a99c3be8a93790d2d9d43ecd1e1dc1d7b52ea7dc
-exit=0
-$ rustc --version
-rustc 1.99.1 (58cf8f9c3 2026-10-13)
-exit=0
-binary-used-sha256=1dca5e830ad41142eec300cff8b5cadd2a33d3ffd475f07f81b0fa5fedc8838e
-draft-patch-sha256=dafa4021ed6aaa0306c587327663b2e6d40809c1c2122ae8649030b294b27b96
-$ cargo fmt --check
-exit=0
-$ git diff --check
-exit=0
-$ RUSTC_WRAPPER= ZIG_GLOBAL_CACHE_DIR=/tmp/pf3-zig-global ZIG_LOCAL_CACHE_DIR=/tmp/pf3-zig-local cargo clippy --all-targets --locked -- -D warnings
-   Compiling pinfold v0.5.5 (/home/user/pinfold/crates/pinfold)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.12s
-exit=0
-$ rg -n own_disks\(&names|mark\(&disk.name, UNCLEAN|claim.attach crates/pinfold/src/core/disk.rs
-100:                .and_then(|()| unmark(&disk.name, UNCLEAN))
-221:        runtime.own_disks(&names, plan, init, claim.generation(), directories)?;
-224:                mark(&disk.name, UNCLEAN)?;
-228:        claim.attach(
-251:        unmark(&disk.name, UNCLEAN)?;
-exit=0
-$ rg -n STREAM_DIR =>|present\(fs::DirBuilder crates/pinfold/src/init.rs
-365:            STREAM_DIR => {
-366:                if present(fs::DirBuilder::new().mode(0o755).create(&path))? {
-exit=0
-$ git diff --stat
- crates/pinfold/harnesses.toml                      |  78 +-----
- crates/pinfold/src/cli.rs                          |  34 +--
- crates/pinfold/src/core/artifacts.rs               | 104 +++-----
- crates/pinfold/src/core/box.rs                     | 295 +++++++++++----------
- crates/pinfold/src/core/disk.rs                    |  10 +-
- crates/pinfold/src/core/image/linux/job.rs         |   1 +
- crates/pinfold/src/core/login.rs                   |  42 +--
- crates/pinfold/src/core/plan.rs                    |  65 +----
- crates/pinfold/src/core/runtime/apple.rs           |  46 +++-
- crates/pinfold/src/core/runtime/firecracker/mod.rs |   3 +-
- crates/pinfold/src/core/runtime/firecracker/vm.rs  |  18 +-
- crates/pinfold/src/core/runtime/mod.rs             |  19 +-
- crates/pinfold/src/dirs.rs                         |   2 +-
- crates/pinfold/src/init.rs                         | 119 +++++++--
- crates/pinfold/src/init/firecracker.rs             |  81 +++++-
- crates/pinfold/src/pi/launch.rs                    |  18 +-
- docs/ARCHITECTURE.md                               | 175 ++++++------
- scripts/bump-pins.py                               |  29 +-
- 18 files changed, 572 insertions(+), 567 deletions(-)
-exit=0
-$ df -g /System/Volumes/Data
-Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
-/dev/disk3s5       460  346        21    95% 2617465 222283320    1%   /System/Volumes/Data
-exit=0
+$ RUSTC_WRAPPER= ZIG_GLOBAL_CACHE_DIR=/tmp/pf3-zig-global ZIG_LOCAL_CACHE_DIR=/tmp/pf3-zig-local cargo build --locked
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.11s
+$ cargo fmt --check; cargo clippy --all-targets --locked -- -D warnings; git diff --check
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.63s; fmt/diff exit=0
+$ labvm exec -- bash -lc '... cargo build --locked --target x86_64-unknown-linux-musl; cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings; cargo fmt --check'
+LINUX-CHECKS-PASSED; musl Clippy finished in 10.93s; fmt exit=0
+MAIN-ELF-INTERPRETER=none (readelf -l completed successfully)
+HOST-HELPER-MACHINE=Mach-O arm64; metadata host-darwin-arm64; executable=codex-app-server
+HOST-HELPER-MACHINE=ELF x86-64; metadata host-linux-x64; executable=codex-app-server
+SOURCE-CONTENT-ID=755308bcad8db1028819d0db39a681db510987b4949ccafe53d93b673a40d5a4 files=19 (same on both hosts)
+$ PINFOLD_NO_UPDATE_CHECK=1 XDG_CONFIG_HOME=/tmp/pf3.linux/c XDG_STATE_HOME=/tmp/pf3.linux/s pinfold build --profile default
+PROFILE-BUILD-SECONDS=209; PROFILE-READY; localhost/pinfold/profile-default:latest
+$ accept.up() with fresh home and three login kinds, idle runtime; then accept.down() and disk rm
+Mac: ready generated-mounts=3 startup-seconds=2.267; Linux: ready generated-mounts=3 startup-seconds=5.427
+MAC-OWNED-STATE-ROOTS=25 remaining-disks=0; container list --all: no containers
+LINUX-OWNED-STATE-ROOTS=11 remaining-disks=0; no pinfold/firecracker processes
+Mac df -g /System/Volumes/Data: Available 16 GiB; Linux df -h: / 22G available, /tmp 2.0G available
+Build-start df observations on Mac: 21 GiB (cargo build), 20 GiB (later build), 18 GiB (final Clippy); no build below 12 GiB.
+$ labvm acquire --ttl 3h; lease active, expires_at=2026-11-15T09:18:13Z; not released
+PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
+DEBIAN-SETUP-PACKAGES=build-essential,musl-tools,git,rustup,zstd installed
+$ file codex.path (Mac); readelf -h codex.path (Linux), from pinfold artifacts
+MAC-IDLE-IMAGE=cf81b3c683bc9d2ec4e9d62bca0e0036b040a0505d12ae67b7b9e46a1624524d
+LINUX-IDLE-IMAGE=sha256:c3fcc7196383513c54357c498ed5455059310b66aedf8cba9fa1b41c036bf9e2
