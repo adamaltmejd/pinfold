@@ -798,6 +798,9 @@ A project recipe typically `FROM`s the profile image.
   that image's identity for the project build.
   Profile and project publication are separate operations: a failed project
   build may leave a successfully rebuilt profile published, reported on stderr.
+- After each completed Apple build, pinfold attempts to return unused
+  builder blocks without pruning cached layers; failure only warns and
+  preserves the build result.
 - A build's identity is its unique tag, never an image label. Every
   build is tagged `<repo>:<build>` and moves the stable `<repo>:latest` to
   it. A caller build whose layers and labels are unchanged returns the

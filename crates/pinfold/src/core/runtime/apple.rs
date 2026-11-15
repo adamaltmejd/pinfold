@@ -876,7 +876,12 @@ impl ImageService for Apple {
         crate::core::image::check_build_allow(request.allow)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let cache_flags: &[&str] = if request.cache { &[] } else { &["--no-cache"] };
-        crate::core::image::service::build("container", cache_flags, request)
+        let result = crate::core::image::service::build("container", cache_flags, request)?;
+        // Return deleted temporary blocks without pruning cached layers.
+        if output(&["container", "clean", "buildkit"]).is_err() {
+            eprintln!("pinfold: could not reclaim unused builder blocks");
+        }
+        Ok(result)
     }
 
     fn program(&self) -> &'static str {
