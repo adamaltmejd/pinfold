@@ -22,7 +22,8 @@ pub(super) fn remaining(
     cancel: Option<&AtomicBool>,
     operation: &str,
 ) -> io::Result<Duration> {
-    if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+    if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) || super::process::is_cancelled()
+    {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
             format!("{operation} cancelled"),

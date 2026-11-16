@@ -249,6 +249,7 @@ pub trait Runtime: Sync {
         init: &Path,
         proxy_socket: Option<&Path>,
         seeding: Option<&Seeding>,
+        cancel: &AtomicBool,
     ) -> io::Result<BoxInfo>;
 
     /// Stop and remove the box of an owner that is gone.

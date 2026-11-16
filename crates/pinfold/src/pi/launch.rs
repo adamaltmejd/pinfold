@@ -173,16 +173,10 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
                 }
                 let image = resolve_image(&config, &id);
                 ensure_image(&config, &image)?;
-                let mut plan = Plan {
+                let plan = Plan {
                     disks: vec![empty_writable_disk(disk, &root)],
-                    ..box_plan(&config, &id, &image)
+                    ..box_plan(&config, &id, &image)?
                 };
-                let mut random = [0u8; 6];
-                use ring::rand::SecureRandom;
-                ring::rand::SystemRandom::new()
-                    .fill(&mut random)
-                    .map_err(|_| io::Error::other("crossing name generation failed"))?;
-                plan.name = format!("pi-{id}-{}", crate::core::hex(&random));
                 let name = plan.name.clone();
                 let unstarted = |error| Ok(cli::report_crossing(verb, &name, remote, Err(error)));
                 let box_ = match Box::up(&plan, &init, &mut signals).await {
@@ -386,14 +380,14 @@ fn containerfile_warning(image: &ImageInfo, bytes: &[u8], build: &str) -> Option
     })
 }
 
-pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> Plan {
+pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> io::Result<Plan> {
     let mut env = BTreeMap::from([("HOME".to_string(), Env::Exact(state::HOME.to_string()))]);
     env.extend(config.env.iter().map(|name| {
         let from = format!("PINFOLD_ENV_{name}");
         (name.clone(), Env::From { from })
     }));
     let [home, project] = state::disk_names(id);
-    Plan {
+    Ok(Plan {
         profile: Some(config.profile.name.clone()),
         disks: vec![
             empty_writable_disk(home, Path::new(state::HOME)),
@@ -404,21 +398,26 @@ pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) ->
             allow: config.allow.clone(),
             routes: config.routes.clone(),
         }),
-        ..box_plan(config, id, image)
-    }
+        ..box_plan(config, id, image)?
+    })
 }
 
 /// The plan both a project box and a transient crossing box start from: the
 /// image, the project label and resources, and nothing else.
-fn box_plan(config: &Config, id: &str, image: &str) -> Plan {
-    Plan {
-        name: format!("pi-{id}-{}", std::process::id()),
+fn box_plan(config: &Config, id: &str, image: &str) -> io::Result<Plan> {
+    let mut random = [0u8; 6];
+    use ring::rand::SecureRandom;
+    ring::rand::SystemRandom::new()
+        .fill(&mut random)
+        .map_err(|_| io::Error::other("owner name generation failed"))?;
+    Ok(Plan {
+        name: format!("pi-{id}-{}", crate::core::hex(&random)),
         image: Some(image.to_string()),
         labels: BTreeMap::from([(clean::PROJECT_LABEL.to_string(), id.to_string())]),
         cpus: Some(config.cpus),
         memory: Some(config.memory.clone()),
         ..Plan::default()
-    }
+    })
 }
 
 /// An empty writable disk; no host tree is copied into it.

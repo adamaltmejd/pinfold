@@ -271,15 +271,22 @@ impl Sockets {
         bind_at(&self.directory, OsStr::new("c.sock"))
     }
 
-    pub fn connect_control(&self) -> io::Result<std::os::unix::net::UnixStream> {
+    pub fn connect_control_until(
+        &self,
+        deadline: Instant,
+    ) -> io::Result<std::os::unix::net::UnixStream> {
+        if Instant::now() >= deadline {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
         self.validate()?;
         #[cfg(target_os = "linux")]
-        return connect_at(&self.directory, OsStr::new("c.sock"), true);
+        return connect_at(&self.directory, OsStr::new("c.sock"), Some(deadline));
         #[cfg(target_os = "macos")]
         {
             use std::os::fd::IntoRawFd;
             check_socket(&self.directory, OsStr::new("c.sock"), false, true)?;
-            let socket = socket_at(&self.directory, OsStr::new("c.sock"), true)?;
+            let socket =
+                socket_at_until(&self.directory, OsStr::new("c.sock"), true, Some(deadline))?;
             Ok(unsafe { std::os::unix::net::UnixStream::from_raw_fd(socket.into_raw_fd()) })
         }
     }
@@ -299,7 +306,13 @@ impl Sockets {
     #[cfg(target_os = "linux")]
     pub fn connect(&self) -> io::Result<std::os::unix::net::UnixStream> {
         self.validate()?;
-        connect_at(&self.vsock, OsStr::new("v.sock"), false)
+        connect_at(&self.vsock, OsStr::new("v.sock"), None)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn connect_until(&self, deadline: Instant) -> io::Result<std::os::unix::net::UnixStream> {
+        self.validate()?;
+        connect_at(&self.vsock, OsStr::new("v.sock"), Some(deadline))
     }
 
     pub fn remove(generation: &str) -> io::Result<()> {
@@ -615,7 +628,7 @@ pub(crate) fn connect_shutdown(
         .ok_or_else(|| failure("socket has no name"))?;
     check_socket(&directory, leaf, true, true)?;
     #[cfg(target_os = "linux")]
-    return connect_at(&directory, leaf, true);
+    return connect_at(&directory, leaf, Some(deadline));
     #[cfg(target_os = "macos")]
     {
         use std::os::fd::IntoRawFd;
@@ -628,10 +641,10 @@ pub(crate) fn connect_shutdown(
 fn connect_at(
     directory: &File,
     leaf: &OsStr,
-    nonblocking: bool,
+    deadline: Option<Instant>,
 ) -> io::Result<std::os::unix::net::UnixStream> {
     let socket = open_at(directory, leaf, libc::O_PATH, 0).map_err(|error| {
-        if nonblocking && error.kind() == io::ErrorKind::NotFound {
+        if deadline.is_some() && error.kind() == io::ErrorKind::NotFound {
             error
         } else {
             failure(error)
@@ -645,8 +658,11 @@ fn connect_at(
         return Err(failure("unsafe socket"));
     }
     let path = format!("/proc/self/fd/{}", socket.as_raw_fd());
-    if !nonblocking {
+    let Some(deadline) = deadline else {
         return std::os::unix::net::UnixStream::connect(path);
+    };
+    if Instant::now() >= deadline {
+        return Err(io::ErrorKind::TimedOut.into());
     }
     use nix::sys::socket::{
         AddressFamily, SockFlag, SockType, UnixAddr, connect, socket as create_socket,
@@ -657,7 +673,11 @@ fn connect_at(
         SockFlag::SOCK_CLOEXEC | SockFlag::SOCK_NONBLOCK,
         None,
     )?;
-    connect(connection.as_raw_fd(), &UnixAddr::new(path.as_str())?)?;
+    match connect(connection.as_raw_fd(), &UnixAddr::new(path.as_str())?) {
+        Ok(()) => {}
+        Err(nix::errno::Errno::EINPROGRESS) => wait_connected(connection.as_raw_fd(), deadline)?,
+        Err(error) => return Err(error.into()),
+    }
     syscall(unsafe { libc::fcntl(connection.as_raw_fd(), libc::F_SETFL, 0) })?;
     Ok(std::os::unix::net::UnixStream::from(connection))
 }
@@ -672,11 +692,8 @@ fn socket_at_until(
     connect: bool,
     deadline: Option<Instant>,
 ) -> io::Result<File> {
-    let connect_deadline = connect.then(|| {
-        deadline
-            .unwrap_or_else(|| Instant::now() + Duration::from_secs(1))
-            .min(Instant::now() + Duration::from_secs(1))
-    });
+    let connect_deadline =
+        connect.then(|| deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(10)));
     check(directory, true)?;
     if leaf.as_bytes().contains(&b'/') || leaf.as_bytes() == b"." || leaf.as_bytes() == b".." {
         return Err(failure("socket leaf is not a component"));
@@ -723,14 +740,7 @@ fn socket_at_until(
         }
         pipes
     };
-    #[cfg(target_os = "macos")]
-    let close_bound = {
-        let bound = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
-        if bound < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        i32::try_from(bound).map_err(io::Error::other)?
-    };
+    crate::core::process::prepare_fork()?;
     let pid = syscall(unsafe { libc::fork() })?;
     if pid == 0 {
         // Only async-signal-safe syscalls run between fork and _exit. The
@@ -753,12 +763,7 @@ fn socket_at_until(
             libc::close(0);
             libc::close(1);
             libc::close(2);
-            #[cfg(target_os = "macos")]
-            for descriptor in 6..close_bound {
-                libc::close(descriptor);
-            }
-            #[cfg(target_os = "linux")]
-            if libc::syscall(libc::SYS_close_range, 6u32, u32::MAX, 0u32) != 0 {
+            if !crate::core::process::close_fds_from(6) {
                 libc::_exit(1);
             }
             libc::umask(0o177);
@@ -866,45 +871,7 @@ fn socket_at_until(
     let stage = i32::from_ne_bytes(report[..4].try_into().unwrap());
     let error = i32::from_ne_bytes(report[4..].try_into().unwrap());
     if connect && error == libc::EINPROGRESS {
-        let mut readiness = libc::pollfd {
-            fd,
-            events: libc::POLLOUT,
-            revents: 0,
-        };
-        let deadline = connect_deadline.expect("connect deadline");
-        loop {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "connect socket timed out",
-                ));
-            }
-            let result =
-                unsafe { libc::poll(&mut readiness, 1, remaining.as_millis().max(1) as _) };
-            if result < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            syscall(result)?;
-            if result == 0 {
-                continue;
-            }
-            let mut error: libc::c_int = 0;
-            let mut length = std::mem::size_of_val(&error) as libc::socklen_t;
-            syscall(unsafe {
-                libc::getsockopt(
-                    fd,
-                    libc::SOL_SOCKET,
-                    libc::SO_ERROR,
-                    (&mut error as *mut libc::c_int).cast(),
-                    &mut length,
-                )
-            })?;
-            if error != 0 {
-                return Err(io::Error::from_raw_os_error(error));
-            }
-            break;
-        }
+        wait_connected(fd, connect_deadline.expect("connect deadline"))?;
     } else if error != 0 {
         let operation = if stage == 1 {
             "enter socket directory"
@@ -922,6 +889,47 @@ fn socket_at_until(
         syscall(unsafe { libc::fcntl(fd, libc::F_SETFL, 0) })?;
     }
     Ok(socket)
+}
+
+fn wait_connected(fd: libc::c_int, deadline: Instant) -> io::Result<()> {
+    let mut readiness = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "connect socket timed out",
+            ));
+        }
+        let result = unsafe { libc::poll(&mut readiness, 1, remaining.as_millis().max(1) as _) };
+        if result < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        syscall(result)?;
+        if result == 0 {
+            continue;
+        }
+        let mut error: libc::c_int = 0;
+        let mut length = std::mem::size_of_val(&error) as libc::socklen_t;
+        syscall(unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_ERROR,
+                (&mut error as *mut libc::c_int).cast(),
+                &mut length,
+            )
+        })?;
+        if error != 0 {
+            return Err(io::Error::from_raw_os_error(error));
+        }
+        break;
+    }
+    Ok(())
 }
 
 /// Remove an existing checked socket, never a link or another file type.

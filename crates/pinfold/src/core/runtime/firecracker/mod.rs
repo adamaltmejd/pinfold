@@ -94,6 +94,7 @@ impl Runtime for Firecracker {
         _init: &Path,
         _proxy_socket: Option<&Path>,
         _seeding: Option<&Seeding>,
+        _cancel: &std::sync::atomic::AtomicBool,
     ) -> io::Result<BoxInfo> {
         // The owner holds this name. Other boxes cannot decide its readiness.
         Self::known_info(Self::record(name)?)?.ok_or_else(|| {

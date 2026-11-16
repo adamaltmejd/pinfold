@@ -95,20 +95,8 @@ fn main() -> ExitCode {
         | ("box", Some("up" | "list" | "down" | "inspect" | "events")) => {}
         _ => crate::core::clean::maintain(),
     }
-    #[cfg(not(target_os = "linux"))]
-    let stdin_flags =
-        if verb == "--" || (verb == "box" && args.first().is_some_and(|arg| arg == "exec")) {
-            match crate::core::runtime::apple::StdinFlags::save() {
-                Ok(flags) => flags,
-                Err(error) => return ExitCode::from(cli::report(verb, Err(error)) as u8),
-            }
-        } else {
-            None
-        };
     let result = run(args);
     let restored = crate::core::runtime::terminal::restore();
-    #[cfg(not(target_os = "linux"))]
-    let restored = restored.and(stdin_flags.map(|flags| flags.restore()).transpose());
     let result = match restored {
         Ok(_) => result,
         Err(error) => {

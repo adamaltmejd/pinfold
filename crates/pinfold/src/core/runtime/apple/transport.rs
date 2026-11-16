@@ -1,6 +1,6 @@
 //! Native exec uses private endpoints; pinfold alone holds caller stdio.
 
-use crate::core::process::CommandGuard;
+use crate::core::process::{CommandGuard, StdioRelay};
 
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -29,7 +29,7 @@ pub(super) fn exec(
     let private = tty.then(|| private_pty(size)).transpose()?;
     let winch = tty.then(Winch::install).transpose()?;
     let _raw = if tty { Raw::enter()? } else { None };
-    let mut flags = Flags::nonblocking(&[0, 1, 2])?;
+    let mut caller = CallerStdio::new()?;
     let mut status = None;
     let result = (|| {
         let master = if let Some((master, slave)) = private {
@@ -105,25 +105,32 @@ pub(super) fn exec(
             if drain.is_some_and(|deadline| Instant::now() >= deadline) {
                 return Ok(status.expect("drain follows observed exit"));
             }
+            if !output_open && output.empty() {
+                caller.close(1);
+            }
+            if !stderr_open && errors.empty() {
+                caller.close(2);
+            }
             if let Some(status) = status
                 && !output_open
                 && !stderr_open
                 && output.empty()
                 && errors.empty()
+                && caller.outputs_finished()?
             {
                 return Ok(status);
             }
             let mut fds = [
                 pollfd(
-                    0,
+                    caller.fds[0],
                     stdin_open && input_fd >= 0 && (!tty || output_open) && input.empty(),
                     libc::POLLIN,
                 ),
                 pollfd(output_fd, output_open && output.empty(), libc::POLLIN),
                 pollfd(error_fd, stderr_open && errors.empty(), libc::POLLIN),
                 pollfd(input_fd, input_fd >= 0 && !input.empty(), libc::POLLOUT),
-                pollfd(1, !output.empty(), libc::POLLOUT),
-                pollfd(2, !errors.empty(), libc::POLLOUT),
+                pollfd(caller.fds[1], !output.empty(), libc::POLLOUT),
+                pollfd(caller.fds[2], !errors.empty(), libc::POLLOUT),
                 pollfd(
                     winch.as_ref().map_or(-1, |winch| winch.read.as_raw_fd()),
                     winch.is_some(),
@@ -159,7 +166,7 @@ pub(super) fn exec(
                 }
             }
             if fds[0].revents != 0 {
-                stdin_open = input.read(0)?;
+                stdin_open = input.read(caller.fds[0])?;
             }
             if fds[1].revents != 0 {
                 output_open = output.read(output_fd)?;
@@ -182,7 +189,7 @@ pub(super) fn exec(
                 }
             }
             if fds[4].revents != 0
-                && let Err(error) = output.write(1)
+                && let Err(error) = output.write(caller.fds[1])
             {
                 if !tty && error.raw_os_error() == Some(libc::EPIPE) {
                     output.discard();
@@ -193,7 +200,7 @@ pub(super) fn exec(
                 }
             }
             if fds[5].revents != 0
-                && let Err(error) = errors.write(2)
+                && let Err(error) = errors.write(caller.fds[2])
             {
                 if !tty && error.raw_os_error() == Some(libc::EPIPE) {
                     errors.discard();
@@ -213,9 +220,7 @@ pub(super) fn exec(
             }
         }
     })();
-    // The client is reaped before restoring shared caller file flags.
-    let restored = flags.restore();
-    let result = match (result, status) {
+    match (result, status) {
         (Err(error), Some(status)) => {
             if error.kind() != io::ErrorKind::Interrupted {
                 notice(format_args!("terminal transport: {error}"));
@@ -223,18 +228,6 @@ pub(super) fn exec(
             Ok(status)
         }
         (result, _) => result,
-    };
-    match restored {
-        Ok(()) => result,
-        Err(error) => {
-            let error = io::Error::other(format!("restore terminal file flags: {error}"));
-            if result.as_ref().is_ok_and(ExitStatus::success) {
-                Err(error)
-            } else {
-                notice(&error);
-                result
-            }
-        }
     }
 }
 
@@ -317,7 +310,7 @@ impl Client {
 }
 
 fn notice(message: impl std::fmt::Display) {
-    // Restoration can fail with stderr still nonblocking or already closed.
+    // The caller may have made stderr nonblocking or closed it.
     let _ = writeln!(io::stderr().lock(), "pinfold: {message}");
 }
 
@@ -330,49 +323,38 @@ impl Drop for Client {
     }
 }
 
-struct Flags(Vec<(RawFd, libc::c_int)>);
-
-impl Flags {
-    fn nonblocking(fds: &[RawFd]) -> io::Result<Self> {
-        let mut flags = Self(Vec::new());
-        // Capture all first: stdin/stdout/stderr may share an open description.
-        for &fd in fds {
-            let saved = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-            if saved < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            flags.0.push((fd, saved));
-        }
-        let configured = flags.0.iter().try_for_each(|&(fd, saved)| {
-            if unsafe { libc::fcntl(fd, libc::F_SETFL, saved | libc::O_NONBLOCK) } < 0 {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        });
-        if let Err(error) = configured {
-            if let Err(restore) = flags.restore() {
-                notice(format_args!("restore terminal file flags: {restore}"));
-            }
-            return Err(error);
-        }
-        Ok(flags)
-    }
-
-    fn restore(&mut self) -> io::Result<()> {
-        let mut failure = None;
-        for (fd, flags) in self.0.drain(..) {
-            if unsafe { libc::fcntl(fd, libc::F_SETFL, flags) } < 0 && failure.is_none() {
-                failure = Some(io::Error::last_os_error());
-            }
-        }
-        failure.map_or(Ok(()), Err)
-    }
+struct CallerStdio {
+    fds: [RawFd; 3],
+    relays: [Option<StdioRelay>; 3],
 }
 
-impl Drop for Flags {
-    fn drop(&mut self) {
-        let _ = self.restore();
+impl CallerStdio {
+    fn new() -> io::Result<Self> {
+        let mut caller = Self {
+            fds: [0, 1, 2],
+            relays: [None, None, None],
+        };
+        for index in 0..3 {
+            let relay = StdioRelay::new(index as RawFd, index == 0)?;
+            caller.fds[index] = relay.as_raw_fd();
+            caller.relays[index] = Some(relay);
+        }
+        Ok(caller)
+    }
+
+    fn close(&mut self, index: usize) {
+        if let Some(relay) = self.relays[index].as_mut() {
+            relay.close();
+            self.fds[index] = -1;
+        }
+    }
+
+    fn outputs_finished(&mut self) -> io::Result<bool> {
+        let mut finished = true;
+        for relay in self.relays[1..].iter_mut().flatten() {
+            finished &= relay.finished()?;
+        }
+        Ok(finished)
     }
 }
 

@@ -63,48 +63,6 @@ pub(crate) fn preparation_unremoved(error: &io::Error) -> bool {
 #[cfg(not(target_os = "linux"))]
 mod transport;
 
-/// `container exec -i` changes its inherited stdin's shared file flags.
-/// Save them in the command owner, which can outlive an interrupted exec.
-#[cfg(not(target_os = "linux"))]
-pub(crate) struct StdinFlags(Option<libc::c_int>);
-
-#[cfg(not(target_os = "linux"))]
-impl StdinFlags {
-    pub(crate) fn save() -> io::Result<Option<Self>> {
-        if !std::io::IsTerminal::is_terminal(&io::stdin()) {
-            return Ok(None);
-        }
-        // SAFETY: F_GETFL reads the flags of the inherited stdin descriptor.
-        let flags = unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_GETFL) };
-        if flags < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(Some(Self(Some(flags))))
-    }
-
-    pub(crate) fn restore(mut self) -> io::Result<()> {
-        self.restore_saved()
-    }
-
-    fn restore_saved(&mut self) -> io::Result<()> {
-        let Some(flags) = self.0.take() else {
-            return Ok(());
-        };
-        // SAFETY: restores exactly the flags read from this descriptor.
-        if unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_SETFL, flags) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-impl Drop for StdinFlags {
-    fn drop(&mut self) {
-        let _ = self.restore_saved();
-    }
-}
-
 /// The volume behind disk `name`. Apple's volumes are host-wide and a disk
 /// belongs to one state root, so the root's key prefixes the name.
 fn volume(name: &str) -> io::Result<String> {
@@ -184,7 +142,7 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
         .spawn_guarded()
         .map(|mut child| {
             let stderr = child.stderr.take();
-            Client(child, stderr, None, None)
+            Client(child, stderr, None, None, None)
         })
         .map_err(|error| spawn_error("container", error))
 }
@@ -222,9 +180,17 @@ pub struct Client(
     Option<ChildStderr>,
     Option<StderrDrain>,
     Option<tokio::task::JoinHandle<()>>,
+    Option<Removal>,
 );
 
 const STARTUP_DIAGNOSTICS: usize = 64 * 1024;
+const REMOVAL_TIMEOUT: Duration = Duration::from_secs(300);
+
+struct Removal {
+    worker: tokio::task::JoinHandle<io::Result<()>>,
+    cancel: std::sync::Arc<AtomicBool>,
+    deadline: tokio::time::Instant,
+}
 
 #[cfg_attr(target_os = "linux", expect(dead_code))]
 impl Client {
@@ -324,10 +290,40 @@ impl Client {
     }
 
     async fn close_stdout(&mut self) {
-        if let Some(worker) = self.3.take() {
+        if let Some(worker) = self.3.as_mut() {
             worker.abort();
             let _ = worker.await;
+            self.3.take();
         }
+    }
+
+    async fn remove(&mut self, name: &str) -> io::Result<()> {
+        if self.4.is_none() {
+            let name = name.to_string();
+            let cancel = std::sync::Arc::new(AtomicBool::new(false));
+            let worker_cancel = cancel.clone();
+            self.4 = Some(Removal {
+                worker: tokio::task::spawn_blocking(move || {
+                    crate::core::process::with_cancellation(worker_cancel, || Apple.down(&name))
+                }),
+                cancel,
+                deadline: tokio::time::Instant::now() + REMOVAL_TIMEOUT,
+            });
+        }
+        let removal = self.4.as_mut().expect("retained removal worker");
+        let result = match tokio::time::timeout_at(removal.deadline, &mut removal.worker).await {
+            Ok(result) => result.map_err(io::Error::other).and_then(|result| result),
+            Err(_) => {
+                removal.cancel.store(true, Ordering::Release);
+                let _ = (&mut removal.worker).await;
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "cleanup-timeout: native runtime removal",
+                ))
+            }
+        };
+        self.4.take();
+        result
     }
 
     /// Stop and remove a ready box. True when the stop was one pinfold
@@ -337,11 +333,8 @@ impl Client {
         let requested = matches!(self.0.try_wait(), Ok(None));
         // Runtime removal waits for attached output to close. Keep its
         // drain running on the owner while the runtime command blocks.
-        let name = name.to_string();
-        let removed = tokio::task::spawn_blocking(move || Apple.down(&name))
-            .await
-            .map_err(io::Error::other)
-            .and_then(|result| result);
+        let removed = self.remove(name).await;
+        let _ = self.0.start_kill();
         let _ = self.0.wait().await;
         self.close_stdout().await;
         removed.map(|()| requested)
@@ -358,7 +351,7 @@ impl Client {
         let _ = self.0.start_kill();
         let status = self.0.wait().await;
         self.close_stdout().await;
-        (Apple.down(name).map(|()| requested), status)
+        (self.remove(name).await.map(|()| requested), status)
     }
 }
 
@@ -543,17 +536,16 @@ impl Runtime for Apple {
         init: &Path,
         proxy_socket: Option<&Path>,
         seeding: Option<&Seeding>,
+        cancel: &AtomicBool,
     ) -> io::Result<BoxInfo> {
         // Init can report ready before Apple records the box running.
         // Wait even without egress, before the caller's first exec.
-        let actual = wait_until_running(name)?;
+        let actual = wait_until_running(name, cancel)?;
         if proxy_socket.is_some() {
             make_proxy_connectable(name)?;
         }
         if let Some(seeding) = seeding {
-            copy_in(name, init, &seeding.guest, true, |out| {
-                disk::send_seeds(&seeding.relative, &seeding.seeds, out)
-            })?;
+            copy_in(name, init, seeding, cancel)?;
         }
         Ok(actual)
     }
@@ -911,9 +903,12 @@ fn exec_command(
 /// Wait, bounded, until inspection reports box `name` running. Apple records
 /// `.running` only after the box's first process starts, so `ready` can
 /// arrive first; an exec is refused in that gap.
-fn wait_until_running(name: &str) -> io::Result<BoxInfo> {
+fn wait_until_running(name: &str, cancel: &AtomicBool) -> io::Result<BoxInfo> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
+        if cancel.load(Ordering::Acquire) {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
         let state = Apple.inspect(name)?;
         match state {
             Some(box_) if box_.running => return Ok(box_),
@@ -944,39 +939,128 @@ fn make_proxy_connectable(name: &str) -> io::Result<()> {
     .map(drop)
 }
 
-/// Run `init receive GUEST` in box `name` as the box user with `stream`
-/// written to its stdin: a new disk's `from` copy, or with `missing`, the
-/// profile's seeds, each written only when absent.
-fn copy_in(
-    name: &str,
-    init: &Path,
-    guest: &Path,
-    missing: bool,
-    stream: impl FnOnce(&mut dyn io::Write) -> io::Result<()>,
-) -> io::Result<()> {
-    let mut child = std::process::Command::new("container")
-        .args(["exec", "-i", name])
-        .arg(init)
-        .args(["init", "receive"])
-        .args(missing.then_some("--missing"))
-        .arg(guest)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn_guarded()
-        .map_err(|error| spawn_error("container", error))?;
-    let mut stdin = child.stdin.take().expect("piped stdin");
-    let sent = stream(&mut stdin);
-    drop(stdin);
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "copy into {}: {}",
-            guest.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
+/// Copy missing profile seeds without buffering another copy of their bytes.
+fn copy_in(name: &str, init: &Path, seeding: &Seeding, cancel: &AtomicBool) -> io::Result<()> {
+    let mut child = crate::core::process::GroupChild {
+        child: std::process::Command::new("container")
+            .args(["exec", "-i", name])
+            .arg(init)
+            .args(["init", "receive", "--missing"])
+            .arg(&seeding.guest)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .spawn_guarded()
+            .map_err(|error| spawn_error("container", error))?,
+        reaped: false,
+    };
+    let mut input = child.child.stdin.take().expect("piped seed input");
+    let mut stderr = child.child.stderr.take();
+    crate::core::pipe::nonblocking(&input, "seed copy")?;
+    if let Some(stderr) = stderr.as_ref() {
+        crate::core::pipe::nonblocking(stderr, "seed diagnostics")?;
     }
-    sent
+    let mut diagnostics = Vec::new();
+    let sent = disk::send_seeds(
+        &seeding.relative,
+        &seeding.seeds,
+        &mut SeedInput {
+            input: &mut input,
+            stderr: &mut stderr,
+            diagnostics: &mut diagnostics,
+            cancel,
+        },
+    );
+    drop(input);
+    if let Err(error) = sent {
+        return Err(io::Error::new(error.kind(), format!("seed copy: {error}")));
+    }
+    let mut exited = None;
+    let status = loop {
+        if cancel.load(Ordering::Acquire) {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        if exited.is_none()
+            && let Some(status) = child.child.try_wait()?
+        {
+            child.reaped = true;
+            exited = Some((status, Instant::now()));
+        }
+        crate::core::process::drain(&mut stderr, &mut diagnostics, Some(16 * 1024))?;
+        if let Some((status, began)) = exited
+            && (stderr.is_none() || began.elapsed() >= Duration::from_secs(1))
+        {
+            break status;
+        }
+        seed_poll(None, stderr.as_ref())?;
+    };
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "copy into {}: {}",
+            seeding.guest.display(),
+            String::from_utf8_lossy(&diagnostics).trim()
+        )))
+    }
+}
+
+struct SeedInput<'a> {
+    input: &'a mut std::process::ChildStdin,
+    stderr: &'a mut Option<std::process::ChildStderr>,
+    diagnostics: &'a mut Vec<u8>,
+    cancel: &'a AtomicBool,
+}
+
+impl Write for SeedInput<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        loop {
+            if self.cancel.load(Ordering::Acquire) {
+                // Buffered writers retry Interrupted rather than ending the copy.
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "startup cancelled",
+                ));
+            }
+            crate::core::process::drain(self.stderr, self.diagnostics, Some(16 * 1024))?;
+            match self.input.write(bytes) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    seed_poll(Some(self.input), self.stderr.as_ref())?
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                result => return result,
+            }
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn seed_poll(
+    input: Option<&std::process::ChildStdin>,
+    stderr: Option<&std::process::ChildStderr>,
+) -> io::Result<()> {
+    let mut fds = [
+        libc::pollfd {
+            fd: input.map_or(-1, AsRawFd::as_raw_fd),
+            events: libc::POLLOUT,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: stderr.map_or(-1, AsRawFd::as_raw_fd),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, 100) } < 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 /// One `container list --format json` entry, as much as pinfold needs.

@@ -73,7 +73,7 @@ impl Roots {
             config: Bytes::canonical(&dirs::config_dir()?)?,
             state: Bytes::canonical(&dirs::state_dir()?)?,
             cache: Bytes::canonical(&dirs::cache_dir()?)?,
-            home: Bytes::path(&home),
+            home: Bytes::canonical(&home)?,
             // The helper inherits this selection. No helper or auth file is opened.
             codex_home: Bytes::variable("CODEX_HOME"),
         })
@@ -205,6 +205,34 @@ pub(crate) struct Resolved {
 }
 
 impl Snapshot {
+    pub(crate) fn owner_environment(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+        let mut names = std::collections::BTreeSet::from_iter(
+            [
+                "PATH",
+                "HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_STATE_HOME",
+                "XDG_CACHE_HOME",
+                "CODEX_HOME",
+                "PINFOLD_PROFILE",
+                "PINFOLD_CPUS",
+                "PINFOLD_MEMORY",
+                "PINFOLD_ALLOW",
+                "PINFOLD_ROUTES",
+            ]
+            .map(String::from),
+        );
+        names.extend(self.route_values.keys().cloned());
+        for source in self.env_names.values() {
+            if let EnvSource::From { name } = source {
+                names.insert(name.clone());
+            }
+        }
+        names
+            .into_iter()
+            .filter_map(|name| std::env::var_os(&name).map(|value| (name.into(), value)))
+            .collect()
+    }
     pub(crate) fn resolve(root: &Path) -> io::Result<Resolved> {
         let roots = Roots::resolve()?;
         let context = Context::discover(root)?;
@@ -224,7 +252,7 @@ impl Snapshot {
         context.verify()?;
         let id = state::project_id(root);
         let image = launch::resolve_image(&config, &id);
-        let mut plan = launch::build_plan(&config, &id, root, &image);
+        let mut plan = launch::build_plan(&config, &id, root, &image)?;
         for mount in &mut plan.mounts {
             mount.host = dirs::resolve_host_path(&mount.host)?;
         }

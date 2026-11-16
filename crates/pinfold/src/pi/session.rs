@@ -22,7 +22,6 @@ use tokio::time::{Instant, timeout_at};
 
 use crate::cli;
 use crate::core::r#box::{Box, Shutdown, Signals};
-use crate::core::process::CommandGuard;
 use crate::core::runtime::{ExecContext, runtime, sockets};
 use crate::core::{artifacts, clean, ownership, runs};
 use crate::formatting::terminal_text;
@@ -272,7 +271,7 @@ fn discover(root: &Path) -> io::Result<Option<Locator>> {
 async fn connect(locator: &Locator) -> io::Result<UnixStream> {
     let generation = locator.generation.as_deref().ok_or_else(unavailable)?;
     let socket = sockets::Sockets::open(generation)?
-        .connect_control()
+        .connect_control_until((Instant::now() + CONTROL).into_std())
         .map_err(|_| unavailable())?;
     wire::peer(&socket)?;
     socket.set_nonblocking(true)?;
@@ -473,7 +472,7 @@ async fn admit(
             }
         }
         let resolved = resolve_spec(root, true, signals).await?;
-        let mut child = spawn_owner(root, &launch, executable, &_maintenance)?;
+        let mut child = spawn_owner(&resolved.snapshot, &launch, executable, &_maintenance)?;
         let mut stream = child.0;
         let sent = wire::write_request(
             &mut stream,
@@ -547,10 +546,13 @@ async fn resolve_spec(root: &Path, startup: bool, signals: &mut Signals) -> io::
     Ok(resolved)
 }
 
-type Diagnostics = tokio::task::JoinHandle<io::Result<Vec<u8>>>;
+struct Diagnostics {
+    stop: watch::Sender<bool>,
+    worker: tokio::task::JoinHandle<io::Result<Vec<u8>>>,
+}
 
 fn spawn_owner(
-    root: &Path,
+    snapshot: &Snapshot,
     launch: &File,
     executable: &File,
     maintenance: &File,
@@ -568,12 +570,15 @@ fn spawn_owner(
         executable.as_raw_fd(),
         maintenance.as_raw_fd(),
     ];
-    let descriptor_limit = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) }.max(1024) as i32;
+    let guard = crate::core::process::fork_guard();
+    let inherited = crate::core::process::open_descriptors(&guard)?;
     let mut command = Command::new(std::env::current_exe()?);
     command
         .arg("__project-owner")
         .args(descriptors.map(|fd| fd.to_string()))
-        .current_dir(root)
+        .env_clear()
+        .envs(snapshot.owner_environment())
+        .current_dir("/")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -582,10 +587,14 @@ fn spawn_owner(
             if libc::setsid() < 0 {
                 return Err(io::Error::last_os_error());
             }
-            for fd in 3..descriptor_limit {
+            for &fd in inherited.iter().filter(|fd| **fd >= 3) {
                 // Mark unrelated inherited descriptors close-on-exec; keep the
                 // stdlib spawn-error pipe alive until exec itself succeeds.
-                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+                if libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) < 0
+                    && io::Error::last_os_error().raw_os_error() != Some(libc::EBADF)
+                {
+                    return Err(io::Error::last_os_error());
+                }
             }
             for fd in descriptors {
                 if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
@@ -595,19 +604,37 @@ fn spawn_owner(
             Ok(())
         });
     }
-    let mut child = command.spawn_guarded()?;
+    let mut child = command.spawn()?;
+    drop(guard);
     drop((owner, command));
     let stderr = child.stderr.take().ok_or_else(unavailable)?;
     use std::os::fd::IntoRawFd;
     let stderr = unsafe { File::from_raw_fd(stderr.into_raw_fd()) };
     // ChildStderr is a pipe, not a UnixStream; AsyncFd reads the retained fd.
     crate::core::pipe::nonblocking(&stderr, "owner diagnostics")?;
-    let diagnostic = tokio::spawn(async move {
+    let (stop, mut stopping) = watch::channel(false);
+    let worker = tokio::spawn(async move {
         let mut kept = Vec::new();
         // SAFETY: the owned pipe keeps the registered descriptor stable.
         let reader = unsafe { tokio::io::unix::AsyncFd::register(stderr) }?;
         loop {
-            let mut ready = reader.readable().await?;
+            let mut ready = tokio::select! {
+                ready = reader.readable() => ready?,
+                _ = stopping.changed() => {
+                    use std::io::Read;
+                    let mut bytes = [0u8; 8192];
+                    for _ in 0..8 {
+                        match reader.get_ref().read(&mut bytes) {
+                            Ok(0) => break,
+                            Ok(n) => kept.extend_from_slice(&bytes[..n.min(65536usize.saturating_sub(kept.len()))]),
+                            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    break;
+                },
+            };
             let mut bytes = [0u8; 4096];
             let read = ready.try_io(|fd| {
                 use std::io::Read;
@@ -624,50 +651,18 @@ fn spawn_owner(
         }
         Ok(kept)
     });
-    Ok((client, child, diagnostic))
+    Ok((client, child, Diagnostics { stop, worker }))
 }
 
 async fn bootstrap_diagnostics(drain: &mut Diagnostics, signals: &mut Signals) -> io::Result<()> {
-    if signals.last().is_some() {
-        drain.abort();
-        let _ = drain.await;
-        return Err(io::ErrorKind::Interrupted.into());
-    }
-    let bytes = tokio::select! {
-        biased;
-        result = &mut *drain => result.map_err(|_| unavailable())??,
-        _ = signals.recv() => {
-            drain.abort();
-            let _ = drain.await;
-            return Err(io::ErrorKind::Interrupted.into());
-        }
-        _ = tokio::time::sleep(CONTROL) => {
-            drain.abort();
-            let _ = drain.await;
-            return Err(timed_out());
-        }
-    };
+    let _ = drain.stop.send(true);
+    let bytes = (&mut drain.worker)
+        .await
+        .map_err(|_| unavailable_at("diagnostics"))??;
     forward_diagnostics(bytes, signals).await
 }
 
-struct DiagnosticFlags(Option<libc::c_int>);
-impl DiagnosticFlags {
-    fn restore(&mut self) -> io::Result<()> {
-        if let Some(flags) = self.0.take()
-            && unsafe { libc::fcntl(2, libc::F_SETFL, flags) } < 0
-        {
-            return Err(output_failure());
-        }
-        Ok(())
-    }
-}
-impl Drop for DiagnosticFlags {
-    fn drop(&mut self) {
-        let _ = self.restore();
-    }
-}
-
-async fn forward_diagnostics(bytes: Vec<u8>, signals: &mut Signals) -> io::Result<()> {
+pub(crate) async fn forward_diagnostics(bytes: Vec<u8>, signals: &mut Signals) -> io::Result<()> {
     if bytes.is_empty() {
         return Ok(());
     }
@@ -676,23 +671,25 @@ async fn forward_diagnostics(bytes: Vec<u8>, signals: &mut Signals) -> io::Resul
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = cancel.clone();
     let mut worker = tokio::task::spawn_blocking(move || {
-        let saved = unsafe { libc::fcntl(2, libc::F_GETFL) };
-        if saved < 0 {
-            return Err(output_failure());
+        let mut stderr =
+            crate::core::process::StdioRelay::new(2, false).map_err(|_| output_failure())?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        crate::core::pipe::write_all(
+            &mut stderr,
+            &escaped,
+            deadline,
+            Some(&worker_cancel),
+            "owner diagnostics",
+        )
+        .map_err(|_| output_failure())?;
+        stderr.close();
+        while !stderr.finished().map_err(|_| output_failure())? {
+            if worker_cancel.load(Ordering::Acquire) || std::time::Instant::now() >= deadline {
+                return Err(output_failure());
+            }
+            nix::poll::poll(&mut [], 10u16).map_err(|_| output_failure())?;
         }
-        let mut flags = DiagnosticFlags(Some(saved));
-        let mut stderr = io::stderr();
-        let written = crate::core::pipe::nonblocking(&stderr, "owner diagnostics").and_then(|()| {
-            crate::core::pipe::write_all(
-                &mut stderr,
-                &escaped,
-                std::time::Instant::now() + Duration::from_secs(1),
-                Some(&worker_cancel),
-                "owner diagnostics",
-            )
-        });
-        let restored = flags.restore();
-        written.and(restored).map_err(|_| output_failure())
+        Ok(())
     });
     tokio::select! {
         biased;
@@ -882,11 +879,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
             wire::write_reply(&mut writer, Reply::Error { reason: "config-changed".into(), fields }).await?;
             return Ok(125);
         }
-        let mut plan = resolved.plan;
-        let mut random = [0u8; 6];
-        use ring::rand::SecureRandom;
-        ring::rand::SystemRandom::new().fill(&mut random).map_err(|_| io::Error::other("owner name generation failed"))?;
-        plan.name = format!("pi-{}-{}", state::project_id(&root), crate::core::hex(&random));
+        let plan = resolved.plan;
         let mut locator = Locator { version: 1, root: root.clone(), name: plan.name.clone(), generation: None };
         locator.publish()?;
         state::record_run(&root)?;

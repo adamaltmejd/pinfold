@@ -102,11 +102,13 @@ Execution backends own native disk creation and ownership mechanics. Common
 core owns disk claims, exclusivity, recovery and cleanup policy.
 Backends complete guest initialization through readiness. The common box
 owner holds the child, proxy and cancellation and decides cleanup.
-Cancellation reaps preparation helpers and joins proxy and diagnostic workers
-before completed teardown. Host name lookup has a ten-second deadline. A
-resolver worker holds only the host name and lookup parameters. Cancellation
+Cancellation reaps preparation helpers and joins startup, proxy and diagnostic
+workers before completed teardown. Host name lookup has a ten-second deadline.
+A resolver worker holds only the host name and lookup parameters. Cancellation
 discards its result without dialing. Teardown may finish without joining a
-lookup still in the system resolver; all other workers are joined.
+lookup still in the system resolver; all other workers are joined. Native
+runtime removal has a 300-second deadline; expiry cancels and reaps its helpers
+and reports `cleanup-timeout`. Linux unmount has a 30-second absolute deadline.
 
 Preflight refuses box startup on older, prerelease or unrecognized runtime
 versions. Inventory and cleanup remain available on older versions.
@@ -484,7 +486,10 @@ acknowledges `box down` and before `up` prints `down`:
 `reason` and `detail` are the `down` line's. A project owner records
 `sessions-ended` with null detail after its last unkept lease ends. Session
 argv, output and statuses are not retained. Owner death and orphan pruning
-create no terminal record.
+create no terminal record. A failed teardown attempt writes a separate
+`teardown.json` with run id, time and reason `teardown-failed`; it does not
+assert runtime removal or authorize disk recovery. `box inspect` includes
+this record under `teardown` only when present, with the same record states.
 
 An egress log append failure or cap exhaustion (Egress proxy) stops a
 running box. No other record write failure does. A launch record that cannot be
@@ -609,7 +614,11 @@ process. Getting further needs a host kernel bug.
   After ready, stderr drains continuously and retains its latest 64 KiB in
   memory, reported only on an unexpected native-client exit. Diagnostics
   are escaped with the shared helper when printed and never written to a
-  file. Cancellation and teardown close that pipe before reaping the client.
+  file. Cancellation and teardown close and join diagnostic drains before
+  reaping the client. Bootstrap diagnostics stop at admission without waiting
+  for EOF from descendants. The detached owner uses `/` as its working
+  directory and retains only configuration roots/selectors, referenced static
+  sources and PATH needed by runtime and Git helpers.
   Linux uses pinfold's vsock transport. Non-TTY execution preserves separate
   byte streams. Closing a non-TTY output consumer closes its native pipe so
   the native client observes SIGPIPE; pinfold retains the client's status.
@@ -620,7 +629,9 @@ process. Getting further needs a host kernel bug.
   checks that its process group owns the foreground terminal before writing.
   A non-raw execution leaves later terminal settings alone. Handled
   cancellation restores owned changes and prevents late raw setup. Apple
-  also restores terminal input file flags. A restoration failure
+  never changes caller file status flags. Private stdio copiers carry no owner
+  authority, exit on client death, and are killed and reaped on cancellation.
+  A restoration failure
   fails an otherwise successful command; an existing command failure is
   preserved. This does not cover process-killing signals.
 - The box is the unit of lifetime; pinfold never signals a process in it
@@ -1462,7 +1473,7 @@ project; executable replacement remains `update-busy`.
   complete route declarations and sources, static referenced values, and
   forwarded environment names and values. Absent and empty differ. Command
   metadata, refreshed Codex tokens, recipe freshness, and seed/shared-file
-  contents are excluded.
+  contents are excluded. HOME is canonicalized like the other host roots.
   A project admission frame is at most 16 MiB. Malformed, unsupported or
   oversized private messages fail as `session-protocol`; their contents are
   never reported. Unavailable ownership refuses as `owner-unavailable`;

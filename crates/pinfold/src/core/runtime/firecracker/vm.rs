@@ -7,6 +7,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::core::process::Listener as UnixListener;
@@ -180,6 +181,8 @@ pub struct Vm {
     sockets: Sockets,
     /// Until the guest dials it, then closed.
     boot: Option<(UnixListener, Boot)>,
+    handshake: Option<tokio::task::JoinHandle<io::Result<()>>>,
+    boot_cancel: Arc<AtomicBool>,
 }
 
 /// What the boot connection carries.
@@ -298,6 +301,8 @@ impl Vm {
                 },
             )),
             sockets,
+            handshake: None,
+            boot_cancel: Arc::default(),
         })
     }
 
@@ -316,16 +321,39 @@ impl Vm {
             .and_then(|stream| stream.set_nonblocking(false).map(|()| stream))
             .map_err(|error| format!("boot connection: {error}"))?;
         let sockets = self.sockets.clone();
-        let handshake = tokio::task::spawn_blocking(move || boot.run(stream, &sockets));
-        tokio::select! {
-            booted = handshake => booted.map_err(|error| error.to_string())?.map_err(|error| error.to_string()),
-            _ = self.vmm.wait() => Err("box exited before ready".to_string()),
-        }
+        let cancel = self.boot_cancel.clone();
+        self.handshake = Some(tokio::task::spawn_blocking(move || {
+            boot.run(stream, &sockets, &cancel)
+        }));
+        let result = tokio::select! {
+            booted = self.handshake.as_mut().expect("retained BOOT worker") => {
+                booted.map_err(|error| error.to_string()).and_then(|result| result.map_err(|error| error.to_string()))
+            },
+            _ = self.vmm.wait() => {
+                let _ = self.cancel_boot().await;
+                Err("box exited before ready".to_string())
+            },
+        };
+        self.handshake.take();
+        result
     }
 
     /// Wait until the VM ends on its own or is stopped.
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
-        self.vmm.wait().await.map(super::exit_status)
+        let status = self.vmm.wait().await.map(super::exit_status);
+        let worker = self.cancel_boot().await;
+        status.and_then(|status| worker.map(|()| status))
+    }
+
+    async fn cancel_boot(&mut self) -> io::Result<()> {
+        self.boot_cancel.store(true, Ordering::Release);
+        self.boot.take();
+        if let Some(worker) = self.handshake.as_mut() {
+            let joined = worker.await;
+            self.handshake.take();
+            let _ = joined.map_err(io::Error::other)?;
+        }
+        Ok(())
     }
 
     /// Stop a start that ended before ready, as [`Vm::down`].
@@ -337,9 +365,10 @@ impl Vm {
     /// Unmount the box's disks through PID 1, then end the VMM. True when
     /// the guest synced and unmounted them.
     pub async fn down(&mut self, _name: &str) -> io::Result<bool> {
+        let worker = self.cancel_boot().await;
         if !self.vmm.running() {
             self.vmm.wait().await?;
-            return Ok(false);
+            return worker.map(|()| false);
         }
         let sockets = self.sockets.clone();
         let clean = matches!(
@@ -348,24 +377,31 @@ impl Vm {
         );
         self.vmm.kill()?;
         self.vmm.wait().await?;
-        Ok(clean)
+        worker.map(|()| clean)
     }
 }
 
 impl Boot {
-    fn run(self, mut stream: std::os::unix::net::UnixStream, sockets: &Sockets) -> io::Result<()> {
+    fn run(
+        self,
+        stream: std::os::unix::net::UnixStream,
+        sockets: &Sockets,
+        cancel: &AtomicBool,
+    ) -> io::Result<()> {
+        stream.set_nonblocking(true)?;
+        let mut transport = vsock::Cancellable::startup(&stream, cancel);
         let sent = (|| {
-            write_frame(&mut stream, BOOT, &self.request)?;
+            write_frame(&mut transport, BOOT, &self.request)?;
             for fill in &self.fills {
-                disk::send(fill, &mut stream)?;
+                disk::send(fill, &mut transport)?;
             }
             if let Some(seeding) = &self.seeding {
-                disk::send_seeds(&seeding.relative, &seeding.seeds, &mut stream)?;
+                disk::send_seeds(&seeding.relative, &seeding.seeds, &mut transport)?;
             }
             Ok::<_, io::Error>(())
         })();
         // A guest that failed early has stopped reading; its FAILED says why.
-        let answer = read_frame(&mut stream);
+        let answer = read_frame(&mut transport);
         match answer {
             Ok((READY, _)) => sent?,
             Ok((FAILED, text)) => {
@@ -386,7 +422,7 @@ impl Boot {
             }
         }
         drop(stream);
-        vsock::set_env(sockets, &self.env)
+        vsock::set_env(sockets, &self.env, cancel)
     }
 }
 

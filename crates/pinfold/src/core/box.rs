@@ -423,6 +423,7 @@ impl Box {
             audit_done: None,
             cancel: std::sync::Arc::default(),
             preparing: None,
+            finishing: None,
         };
         let starting = async {
             if let Some(share) = profile.as_ref().and_then(|profile| profile.share.as_ref()) {
@@ -465,6 +466,9 @@ impl Box {
                     .store(true, std::sync::atomic::Ordering::Relaxed);
                 if let Some(preparing) = progress.preparing.take() {
                     let _ = preparing.await;
+                }
+                if let Some(finishing) = progress.finishing.take() {
+                    let _ = finishing.await;
                 }
                 let ran = progress.child.is_some();
                 let (removed, status) = match progress.child.take() {
@@ -586,6 +590,9 @@ impl Box {
         let cleanup = self.ownership.finish(result.is_ok()).await;
         let result = result.and(cleanup);
         self.down = result.is_ok();
+        if result.is_err() {
+            runs::write_teardown_failure(&self.run_id);
+        }
         result
     }
 }
@@ -681,6 +688,7 @@ struct Starting {
     audit_done: Option<bool>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     preparing: Option<tokio::task::JoinHandle<Result<(Plan, Prepared), Stop>>>,
+    finishing: Option<tokio::task::JoinHandle<io::Result<BoxInfo>>>,
     /// The disks claimed for the box, which a failed start releases.
     claimed: disk::Claimed,
     directories: Vec<disk::Directory>,
@@ -721,11 +729,10 @@ async fn start(
             )?;
             Ok((resolved, prepared))
         }));
-    let prepared = worker
-        .await
-        .map_err(|error| io::Error::other(format!("preparation worker failed: {error}")))?;
+    let prepared = worker.await;
     progress.preparing.take();
-    let (resolved, prepared) = prepared?;
+    let (resolved, prepared) = prepared
+        .map_err(|error| io::Error::other(format!("preparation worker failed: {error}")))??;
     *plan = resolved;
 
     // The proxy comes up before the box, so the socket is listening when
@@ -765,7 +772,19 @@ async fn start(
         _ = audit_failure(&mut progress.proxy, &mut progress.audit_done) => return Err(Stop::Failed(io::Error::other("audit-log: egress logging failed"))),
         ready = child.ready() => ready.map_err(Stop::NotReady)?,
     }
-    let actual = runtime.finish_start(&plan.name, init, socket.as_deref(), seeding)?;
+    let (name, init, seeding) = (plan.name.clone(), init.to_path_buf(), seeding.cloned());
+    let cancel = progress.cancel.clone();
+    let finishing = progress
+        .finishing
+        .insert(tokio::task::spawn_blocking(move || {
+            crate::core::process::with_cancellation(cancel.clone(), || {
+                runtime.finish_start(&name, &init, socket.as_deref(), seeding.as_ref(), &cancel)
+            })
+        }));
+    let actual = finishing.await;
+    progress.finishing.take();
+    let actual =
+        actual.map_err(|error| io::Error::other(format!("startup worker failed: {error}")))??;
     Ok((actual, egress_log))
 }
 

@@ -3,7 +3,7 @@
 use nix::poll::{PollFd, PollFlags, poll};
 use std::cell::RefCell;
 use std::io::{self, Read, Write};
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,8 +31,364 @@ pub(crate) fn with_cancellation<T>(cancel: Arc<AtomicBool>, work: impl FnOnce() 
     work()
 }
 
+pub(crate) fn is_cancelled() -> bool {
+    CANCELLATION.with(|active| {
+        active
+            .borrow()
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Acquire))
+    })
+}
+
 pub(crate) fn fork_guard() -> MutexGuard<'static, ()> {
     FORK.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+/// Snapshot inherited descriptors while fork is excluded. Keep the guard
+/// through spawn: later descriptors must already be atomically CLOEXEC.
+pub(crate) fn open_descriptors(_guard: &MutexGuard<'_, ()>) -> io::Result<Vec<RawFd>> {
+    #[cfg(target_os = "linux")]
+    let directory = "/proc/self/fd";
+    #[cfg(target_os = "macos")]
+    let directory = "/dev/fd";
+    std::fs::read_dir(directory)?
+        .map(|entry| {
+            entry?
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse().ok())
+                .ok_or_else(|| io::Error::other("invalid descriptor entry"))
+        })
+        .collect()
+}
+
+/// Resolve the pure descriptor-query syscall wrapper before forking.
+pub(crate) fn prepare_fork() -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    if unsafe {
+        nix::libc::proc_pidinfo(
+            nix::libc::getpid(),
+            nix::libc::PROC_PIDLISTFDS,
+            0,
+            std::ptr::null_mut(),
+            0,
+        )
+    } <= 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Close every inherited descriptor from `first` in a fork-only helper.
+/// The helper is single-threaded; this performs no userspace allocation.
+/// `first` is at most six, leaving room for fixed private helper endpoints.
+pub(crate) unsafe fn close_fds_from(first: RawFd) -> bool {
+    if !(0..=6).contains(&first) {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        unsafe { nix::libc::syscall(nix::libc::SYS_close_range, first as u32, u32::MAX, 0u32) == 0 }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut entries = [nix::libc::proc_fdinfo {
+            proc_fd: 0,
+            proc_fdtype: 0,
+        }; 256];
+        loop {
+            // proc_pidinfo is a thin __proc_info syscall wrapper. Query the
+            // child, not the parent: concurrent CLOEXEC opens also reach fork.
+            let bytes = unsafe {
+                nix::libc::proc_pidinfo(
+                    nix::libc::getpid(),
+                    nix::libc::PROC_PIDLISTFDS,
+                    0,
+                    entries.as_mut_ptr().cast(),
+                    std::mem::size_of_val(&entries) as _,
+                )
+            };
+            if bytes <= 0
+                || !(bytes as usize).is_multiple_of(std::mem::size_of::<nix::libc::proc_fdinfo>())
+            {
+                return false;
+            }
+            let count = bytes as usize / std::mem::size_of::<nix::libc::proc_fdinfo>();
+            if count > entries.len() {
+                return false;
+            }
+            for entry in &entries[..count] {
+                if entry.proc_fd >= first {
+                    unsafe { nix::libc::close(entry.proc_fd) };
+                }
+            }
+            // A full batch may have omitted descriptors. Closing its entries
+            // moves the remaining ones into the next query, including sparse fds.
+            if count < entries.len() {
+                return true;
+            }
+        }
+    }
+}
+
+/// A private pipe to a blocking stdio copier. Only this pipe's flags change;
+/// a shell may share the caller's open file description with other clients.
+pub(crate) struct StdioRelay {
+    endpoint: Option<OwnedFd>,
+    pid: Option<nix::libc::pid_t>,
+}
+
+impl StdioRelay {
+    pub(crate) fn new(caller: RawFd, input: bool) -> io::Result<Self> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        super::pipe::remaining(deadline, None, "stdio relay setup")?;
+        let _guard = fork_guard();
+        if unsafe { nix::libc::fcntl(caller, nix::libc::F_GETFL) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let (read, write) = io::pipe()?;
+        let (mut ready, report) = io::pipe()?;
+        let (parent, child) = if input {
+            (OwnedFd::from(read), OwnedFd::from(write))
+        } else {
+            (OwnedFd::from(write), OwnedFd::from(read))
+        };
+        let source = if input { caller } else { child.as_raw_fd() };
+        let target = if input { child.as_raw_fd() } else { caller };
+        prepare_fork()?;
+        let parent_pid = unsafe { nix::libc::getpid() };
+        let pid = unsafe { nix::libc::fork() };
+        if pid < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if pid == 0 {
+            // The fork-only copier carries neither a lease nor containment
+            // authority, and never calls an allocator or inherited lock.
+            unsafe {
+                let source = nix::libc::fcntl(source, nix::libc::F_DUPFD_CLOEXEC, 3);
+                let target = nix::libc::fcntl(target, nix::libc::F_DUPFD_CLOEXEC, 3);
+                let report = nix::libc::fcntl(report.as_raw_fd(), nix::libc::F_DUPFD_CLOEXEC, 3);
+                if source < 0
+                    || target < 0
+                    || report < 0
+                    || nix::libc::dup2(source, 0) < 0
+                    || nix::libc::dup2(target, 1) < 0
+                    || nix::libc::dup2(report, 2) < 0
+                    || !close_fds_from(3)
+                {
+                    nix::libc::_exit(1);
+                }
+                prepare_stdio();
+                loop {
+                    if nix::libc::write(2, b"R".as_ptr().cast(), 1) == 1 {
+                        break;
+                    }
+                    if *errno() != nix::libc::EINTR {
+                        nix::libc::_exit(1);
+                    }
+                }
+                nix::libc::close(2);
+                copy_stdio(parent_pid);
+            }
+        }
+        drop(_guard);
+        drop((child, report));
+        let relay = Self {
+            endpoint: Some(parent),
+            pid: Some(pid),
+        };
+        super::pipe::nonblocking(&relay, "stdio relay")?;
+        super::pipe::nonblocking(&ready, "stdio relay setup")?;
+        let mut answer = [0];
+        if super::pipe::read(&mut ready, &mut answer, deadline, None, "stdio relay setup")? != 1
+            || answer != *b"R"
+        {
+            return Err(io::Error::other("stdio relay setup failed"));
+        }
+        Ok(relay)
+    }
+
+    pub(crate) fn close(&mut self) {
+        self.endpoint.take();
+    }
+
+    pub(crate) fn finished(&mut self) -> io::Result<bool> {
+        let Some(pid) = self.pid else { return Ok(true) };
+        let mut status = 0;
+        let result = loop {
+            let result = unsafe { nix::libc::waitpid(pid, &mut status, nix::libc::WNOHANG) };
+            if result >= 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+                break result;
+            }
+        };
+        if result < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if result == 0 {
+            return Ok(false);
+        }
+        self.pid.take();
+        if nix::libc::WIFEXITED(status) && nix::libc::WEXITSTATUS(status) == 0 {
+            Ok(true)
+        } else {
+            Err(io::Error::other("stdio relay failed"))
+        }
+    }
+}
+
+impl AsRawFd for StdioRelay {
+    fn as_raw_fd(&self) -> RawFd {
+        self.endpoint.as_ref().map_or(-1, AsRawFd::as_raw_fd)
+    }
+}
+
+impl AsFd for StdioRelay {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.endpoint.as_ref().expect("open stdio relay").as_fd()
+    }
+}
+
+impl Write for StdioRelay {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let count =
+            unsafe { nix::libc::write(self.as_raw_fd(), bytes.as_ptr().cast(), bytes.len()) };
+        if count < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(count as usize)
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for StdioRelay {
+    fn drop(&mut self) {
+        self.close();
+        if let Some(pid) = self.pid.take() {
+            unsafe {
+                nix::libc::kill(pid, nix::libc::SIGKILL);
+                while nix::libc::waitpid(pid, std::ptr::null_mut(), 0) < 0 {
+                    if *errno() != nix::libc::EINTR {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+unsafe fn errno() -> *mut nix::libc::c_int {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        nix::libc::__error()
+    }
+    #[cfg(target_os = "linux")]
+    unsafe {
+        nix::libc::__errno_location()
+    }
+}
+
+extern "C" fn stdio_tick(_: nix::libc::c_int) {}
+
+unsafe fn prepare_stdio() {
+    unsafe {
+        let mut action: nix::libc::sigaction = std::mem::zeroed();
+        nix::libc::sigemptyset(&mut action.sa_mask);
+        action.sa_sigaction = nix::libc::SIG_DFL;
+        for signal in 1..32 {
+            nix::libc::sigaction(signal, &action, std::ptr::null_mut());
+        }
+        action.sa_sigaction = nix::libc::SIG_IGN;
+        for signal in [nix::libc::SIGPIPE, nix::libc::SIGTTIN, nix::libc::SIGTTOU] {
+            nix::libc::sigaction(signal, &action, std::ptr::null_mut());
+        }
+        action.sa_sigaction = stdio_tick as extern "C" fn(nix::libc::c_int) as usize;
+        if nix::libc::sigaction(nix::libc::SIGALRM, &action, std::ptr::null_mut()) < 0 {
+            nix::libc::_exit(1);
+        }
+        let mut mask = std::mem::zeroed();
+        nix::libc::sigemptyset(&mut mask);
+        nix::libc::sigprocmask(nix::libc::SIG_SETMASK, &mask, std::ptr::null_mut());
+        // Interrupt a blocked caller read/write after abrupt client death.
+        // Otherwise a copier could retain a shell endpoint indefinitely.
+        let interval = nix::libc::timeval {
+            tv_sec: 0,
+            tv_usec: 100_000,
+        };
+        let timer = nix::libc::itimerval {
+            it_interval: interval,
+            it_value: interval,
+        };
+        if nix::libc::setitimer(nix::libc::ITIMER_REAL, &timer, std::ptr::null_mut()) < 0 {
+            nix::libc::_exit(1);
+        }
+    }
+}
+
+unsafe fn copy_stdio(parent: nix::libc::pid_t) -> ! {
+    let mut bytes = [0u8; 16384];
+    loop {
+        if unsafe { nix::libc::getppid() } != parent {
+            unsafe { nix::libc::_exit(0) }
+        }
+        let read = unsafe { nix::libc::read(0, bytes.as_mut_ptr().cast(), bytes.len()) };
+        if read == 0 {
+            unsafe { nix::libc::_exit(0) }
+        }
+        if read < 0 {
+            let error = unsafe { *errno() };
+            if error == nix::libc::EINTR {
+                continue;
+            }
+            if error == nix::libc::EAGAIN {
+                let mut poll = nix::libc::pollfd {
+                    fd: 0,
+                    events: nix::libc::POLLIN,
+                    revents: 0,
+                };
+                unsafe { nix::libc::poll(&mut poll, 1, -1) };
+                continue;
+            }
+            unsafe { nix::libc::_exit(1) }
+        }
+        let mut written = 0;
+        while written < read as usize {
+            if unsafe { nix::libc::getppid() } != parent {
+                unsafe { nix::libc::_exit(0) }
+            }
+            let count = unsafe {
+                nix::libc::write(
+                    1,
+                    bytes[written..read as usize].as_ptr().cast(),
+                    read as usize - written,
+                )
+            };
+            if count > 0 {
+                written += count as usize;
+                continue;
+            }
+            let error = unsafe { *errno() };
+            if error == nix::libc::EINTR {
+                continue;
+            }
+            if error == nix::libc::EPIPE {
+                unsafe { nix::libc::_exit(0) }
+            }
+            if error == nix::libc::EAGAIN {
+                let mut poll = nix::libc::pollfd {
+                    fd: 1,
+                    events: nix::libc::POLLOUT,
+                    revents: 0,
+                };
+                unsafe { nix::libc::poll(&mut poll, 1, -1) };
+                continue;
+            }
+            unsafe { nix::libc::_exit(1) }
+        }
+    }
 }
 
 pub(crate) fn pipe() -> io::Result<(io::PipeReader, io::PipeWriter)> {

@@ -313,6 +313,9 @@ impl Artifact {
                     .arg(&download)
                     .arg("-C")
                     .arg(&unpacked)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
                     .status_guarded()?;
                 if !status.success() {
                     return Err(io::Error::other(format!("tar {url}: {status}")));
