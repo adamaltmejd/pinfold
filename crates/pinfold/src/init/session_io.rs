@@ -20,11 +20,13 @@ use super::session::Session;
 
 pub(super) fn relay(
     connection: UnixStream,
-    mut child: Child,
+    child: Child,
     pty: Option<File>,
     project: bool,
     departure: Option<(BorrowedFd<'_>, bool)>,
 ) -> io::Result<()> {
+    let mut session = Some(Session::new(child)?);
+    let child = session.as_mut().expect("supervised command").child_mut();
     let mut input = child.stdin.take().map(OwnedFd::from);
     let mut outputs = [
         child.stdout.take().map(OwnedFd::from),
@@ -39,7 +41,6 @@ pub(super) fn relay(
         nonblocking(fd)?;
     }
     connection.set_nonblocking(true)?;
-    let mut session = Some(Session::new(child)?);
     let mut reader = FrameReader::default();
     let mut writer = FrameWriter::default();
     let mut bytes = VecDeque::new();

@@ -654,7 +654,9 @@ process. Getting further needs a host kernel bug.
   A terminal departure first closes its PTY master, hanging up the guest terminal.
   Client signals, Leave after a signal, lease EOF and control connection loss
   are departures. The helper watches connection loss independently of command
-  I/O. The group comes from the helper's own child, never workload data.
+  I/O. Helper setup or relay failure also ends the command group and reaps its
+  leader.
+  The group comes from the helper's own child, never workload data.
   Other sessions, the helper and relay are untouched. Normal command completion
   leaves background children running, with output delivered for up to one second
   after the command exits. A process that leaves the command's process group,

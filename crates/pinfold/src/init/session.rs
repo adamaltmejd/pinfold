@@ -9,7 +9,7 @@ use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 
 pub(super) struct Session {
-    child: Child,
+    child: Option<Child>,
     process: OwnedFd,
     deadline: Option<Instant>,
 }
@@ -25,10 +25,14 @@ impl Session {
             }
         };
         Ok(Self {
-            child,
+            child: Some(child),
             process,
             deadline: None,
         })
+    }
+
+    pub(super) fn child_mut(&mut self) -> &mut Child {
+        self.child.as_mut().expect("unreaped command")
     }
 
     pub(super) fn fd(&self) -> i32 {
@@ -49,15 +53,24 @@ impl Session {
     }
 
     pub(super) fn status(&mut self) -> io::Result<Option<ExitStatus>> {
-        if let Some(deadline) = self.deadline {
+        let result = if let Some(deadline) = self.deadline {
             if Instant::now() < deadline {
                 return Ok(None);
             }
             // Keep the leader unreaped through escalation, pinning its group id.
             self.signal(Signal::SIGKILL)?;
-            return self.child.wait().map(Some);
+            self.child_mut().wait().map(Some)
+        } else {
+            self.child_mut().try_wait()
+        };
+        if matches!(result, Ok(Some(_)))
+            || result
+                .as_ref()
+                .is_err_and(|error| error.raw_os_error() == Some(nix::libc::ECHILD))
+        {
+            self.child.take();
         }
-        self.child.try_wait()
+        result
     }
 
     pub(super) fn timeout(&self) -> i32 {
@@ -70,9 +83,36 @@ impl Session {
     }
 
     fn signal(&self, signal: Signal) -> io::Result<()> {
-        match killpg(Pid::from_raw(self.child.id() as i32), signal) {
+        match killpg(
+            Pid::from_raw(self.child.as_ref().expect("unreaped command").id() as i32),
+            signal,
+        ) {
             Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
             Err(error) => Err(error.into()),
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if self.child.is_none() {
+            return;
+        }
+        // Relay-owned stdio, including the PTY master, drops before this guard.
+        let _ = self.depart();
+        while self
+            .deadline
+            .is_some_and(|deadline| Instant::now() < deadline)
+        {
+            // SAFETY: zero descriptors leaves the null poll pointer unused.
+            let result = unsafe { nix::libc::poll(std::ptr::null_mut(), 0, self.timeout().max(1)) };
+            if result < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+                break;
+            }
+        }
+        let _ = self.signal(Signal::SIGKILL);
+        if let Some(mut child) = self.child.take() {
+            let _ = child.wait();
         }
     }
 }
