@@ -7,10 +7,11 @@
 use std::ffi::{CStr, CString, c_char};
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
 
@@ -198,12 +199,39 @@ pub fn spawn(jail: &Jail, state_dir: &Path) -> io::Result<Vmm> {
 /// Preflight's `userns` check.
 pub fn probe() -> io::Result<()> {
     let plan = Plan::probe()?;
-    let (pid, _alive, _pidfd) = start(&plan, None)?;
-    match wait(pid)? {
-        0 => Ok(()),
-        code => Err(io::Error::other(format!(
-            "the user namespace probe exited {code}"
-        ))),
+    let (pid, _alive, pidfd) = start(&plan, None)?;
+    loop {
+        match crate::core::pipe::wait_ready(
+            Some(pidfd.as_fd()),
+            nix::poll::PollFlags::POLLIN,
+            Instant::now() + Duration::from_millis(100),
+            None,
+            "namespace probe",
+        ) {
+            Ok(()) => {
+                return match wait(pid)? {
+                    0 => Ok(()),
+                    code => Err(io::Error::other(format!(
+                        "the user namespace probe exited {code}"
+                    ))),
+                };
+            }
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
+            Err(error) => {
+                // The unreaped child and retained pidfd still identify this probe.
+                unsafe {
+                    libc::syscall(
+                        libc::SYS_pidfd_send_signal,
+                        pidfd.as_raw_fd(),
+                        libc::SIGKILL,
+                        std::ptr::null::<libc::siginfo_t>(),
+                        0u32,
+                    );
+                }
+                let _ = wait(pid);
+                return Err(error);
+            }
+        }
     }
 }
 
@@ -431,15 +459,13 @@ fn start(plan: &Plan, state_dir: Option<&Path>) -> io::Result<(Pid, OwnedFd, Own
     });
     let envp: [*const c_char; 1] = [std::ptr::null()];
     // The VMM's stdin, stdout and stderr.
-    let null = match plan.exec {
-        Some(_) => Some(open(
-            c"/dev/null",
-            OFlag::O_RDWR | OFlag::O_CLOEXEC,
-            Mode::empty(),
-        )?),
-        None => None,
-    };
-    let null = null.as_ref().map(|null| null.as_raw_fd());
+    let null_fd = open(
+        c"/dev/null",
+        OFlag::O_RDWR | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )?;
+    let null = null_fd.as_raw_fd();
+    let probe = plan.exec.is_none();
     let fds = (
         alive_read.as_raw_fd(),
         alive_write.as_raw_fd(),
@@ -448,12 +474,35 @@ fn start(plan: &Plan, state_dir: Option<&Path>) -> io::Result<(Pid, OwnedFd, Own
     );
     let mut stack = vec![0u8; 256 * 1024];
     let child = Box::new(|| {
-        let (alive_read, alive_write, report_read, report_write) = fds;
+        let (mut alive_read, alive_write, report_read, mut report_write) = fds;
         // SAFETY: the child's copies of the parent's ends.
         unsafe {
             libc::close(alive_write);
             libc::close(report_read);
             libc::umask(0o077);
+        }
+        if probe {
+            // A probe never execs, so CLOEXEC cannot remove inherited authority.
+            // Duplicate first: callers may have started with closed stdio.
+            unsafe {
+                let alive = libc::fcntl(alive_read, libc::F_DUPFD_CLOEXEC, 5);
+                let report = libc::fcntl(report_write, libc::F_DUPFD_CLOEXEC, 5);
+                let null = libc::fcntl(null, libc::F_DUPFD_CLOEXEC, 5);
+                if alive < 0
+                    || report < 0
+                    || null < 0
+                    || libc::dup2(alive, 3) < 0
+                    || libc::dup2(report, 4) < 0
+                    || libc::dup2(null, 0) < 0
+                    || libc::dup2(null, 1) < 0
+                    || libc::dup2(null, 2) < 0
+                    || !crate::core::process::close_fds_from(5)
+                {
+                    libc::_exit(127);
+                }
+            }
+            alive_read = 3;
+            report_write = 4;
         }
         let failure = match enter(plan, alive_read) {
             Err(failure) => failure,
@@ -461,7 +510,7 @@ fn start(plan: &Plan, state_dir: Option<&Path>) -> io::Result<(Pid, OwnedFd, Own
                 None => unsafe { libc::_exit(0) },
                 Some((exec, argv)) => match restrict(exec) {
                     Err(failure) => failure,
-                    Ok(()) => match exec_ready(null.expect("an exec plan opens /dev/null")) {
+                    Ok(()) => match exec_ready(null) {
                         Err(failure) => failure,
                         Ok(()) => {
                             // SAFETY: argv and envp are NUL-terminated arrays
@@ -503,6 +552,7 @@ fn start(plan: &Plan, state_dir: Option<&Path>) -> io::Result<(Pid, OwnedFd, Own
     .map_err(|error| io::Error::other(format!("VMM jail: clone: {error}")))?;
     drop(report_write);
     drop(alive_read);
+    let mut report_read = File::from(report_read);
     let result = (|| {
         let pidfd = pidfd_open(pid.as_raw())?;
         if let Some(state_dir) = state_dir {
@@ -516,16 +566,36 @@ fn start(plan: &Plan, state_dir: Option<&Path>) -> io::Result<(Pid, OwnedFd, Own
                 }
             }
         }
+        if probe {
+            crate::core::pipe::nonblocking(&report_read, "namespace probe")?;
+        }
         let mut report = [0u8; 12];
         let mut filled = 0;
         while filled < report.len() {
-            match nix::unistd::read(&report_read, &mut report[filled..]) {
+            let received = if probe {
+                match crate::core::pipe::read(
+                    &mut report_read,
+                    &mut report[filled..],
+                    Instant::now() + Duration::from_millis(100),
+                    None,
+                    "namespace probe",
+                ) {
+                    Err(error) if error.kind() == io::ErrorKind::TimedOut => continue,
+                    result => result,
+                }
+            } else {
+                match nix::unistd::read(&report_read, &mut report[filled..]) {
+                    Ok(read) => Ok(read),
+                    Err(Errno::EINTR) => continue,
+                    Err(error) => {
+                        return Err(io::Error::other(format!("VMM jail: read report: {error}")));
+                    }
+                }
+            };
+            match received {
                 Ok(0) => break,
                 Ok(n) => filled += n,
-                Err(Errno::EINTR) => {}
-                Err(error) => {
-                    return Err(io::Error::other(format!("VMM jail: read report: {error}")));
-                }
+                Err(error) => return Err(error),
             }
         }
         if filled == 0 {
