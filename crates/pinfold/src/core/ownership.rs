@@ -559,6 +559,10 @@ fn request_stop_inner(
                                     | io::ErrorKind::BrokenPipe
                             ) => {}
                     Err(error) => {
+                        // Removal evidence does not erase an acknowledged cleanup failure.
+                        if accepted() {
+                            return Err(error);
+                        }
                         if record(name)?
                             .is_none_or(|current| current.generation != observed.generation)
                         {
