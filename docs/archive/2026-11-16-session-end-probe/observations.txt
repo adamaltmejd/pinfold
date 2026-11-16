@@ -1,0 +1,113 @@
+[Mac normal box; sessions.py]
+6.18.15
+0::/
+0
+none /sys/fs/cgroup cgroup2 rw,nosuid,nodev,noexec,relatime 0 0
+PROCESS=1 | pinfold | PPid:	0 | Uid:	501	501	501	501 | Gid:	20	20	20	20 | CapInh:	0000000000000000 | CapPrm:	0000000000000000 | CapEff:	0000000000000000 | CapBnd:	0000000000000000 | CapAmb:	0000000000000000 | NoNewPrivs:	1
+PROCESS=22 | sh | PPid:	0 | Uid:	501	501	501	501 | Gid:	20	20	20	20 | CapInh:	0000000000000000 | CapPrm:	0000000000000000 | CapEff:	0000000000000000 | CapBnd:	0000000000000000 | CapAmb:	0000000000000000 | NoNewPrivs:	1
+drwxr-xr-x 2 root root 0 Nov 16 18:48 /sys/fs/cgroup
+cpuset cpu io memory hugetlb pids
+cgroup.kill=present
+-rw-r--r-- 1 root root 0 Nov 16 18:48 /sys/fs/cgroup/cgroup.procs
+
+pipeINT same_generation=True client=130 live='ignore:39:State:\tS (sleeping)\nsetsid:41:State:\tS (sleeping)\nchurn:46:State:\tS (sleeping)\nforker:45:State:\tS (sleeping)\ndouble:42:State:\tS (sleeping)\nleader:38:State:\tS (sleeping)' fixture_after=['ignore', 'double', 'setsid', 'forker'] control=0:OK
+pipeTERM same_generation=True client=143 live='ignore:416:State:\tS (sleeping)\nsetsid:418:State:\tS (sleeping)\nforker:420:State:\tS (sleeping)\ndouble:419:State:\tS (sleeping)\nleader:415:State:\tS (sleeping)\nchurn:423:State:\tS (sleeping)' fixture_after=['ignore', 'double', 'setsid', 'forker'] control=0:OK
+pipeKILL same_generation=True client=-9 live='ignore:814:State:\tS (sleeping)\ndouble:818:State:\tS (sleeping)\nsetsid:816:State:\tS (sleeping)\nforker:820:State:\tS (sleeping)\nleader:813:State:\tS (sleeping)\nchurn:822:State:\tS (sleeping)' fixture_after=['ignore', 'double', 'setsid', 'forker'] control=0:OK
+pipeclose same_generation=True client=129 live='ignore:1216:State:\tS (sleeping)\nsetsid:1218:State:\tS (sleeping)\ndouble:1219:State:\tS (sleeping)\nforker:1222:State:\tS (sleeping)\nleader:1215:State:\tS (sleeping)\nchurn:1224:State:\tS (sleeping)' fixture_after=['ignore', 'double', 'setsid', 'forker'] control=0:OK
+ttyINT same_generation=True client=130 live='ignore:1567:State:\tS (sleeping)\nsetsid:1569:State:\tS (sleeping)\ndouble:1570:State:\tS (sleeping)\nforker:1574:State:\tS (sleeping)\nleader:1566:State:\tS (sleeping)\nchurn:1575:State:\tR (running)' fixture_after=['ignore', 'double', 'setsid', 'forker'] control=0:OK
+ttyTERM same_generation=True client=143 live='ignore:1939:State:\tS (sleeping)\nsetsid:1941:State:\tS (sleeping)\ndouble:1942:State:\tS (sleeping)\nchurn:1947:State:\tS (sleeping)\nforker:1946:State:\tS (sleeping)\nleader:1938:State:\tS (sleeping)' fixture_after=['ignore', 'double', 'setsid', 'forker'] control=0:OK
+ttyKILL same_generation=True client=-9 live='ignore:2339:State:\tS (sleeping)\nsetsid:2341:State:\tS (sleeping)\ndouble:2342:State:\tS (sleeping)\nchurn:2347:State:\tS (sleeping)\nforker:2346:State:\tS (sleeping)\nleader:2338:State:\tS (sleeping)' fixture_after=['ignore', 'double', 'setsid', 'forker'] control=0:OK
+ttyclose same_generation=True client=129 live='ignore:2708:State:\tS (sleeping)\nsetsid:2710:State:\tR (running)\ndouble:2711:State:\tS (sleeping)\nchurn:2715:State:\tS (sleeping)\nforker:2714:State:\tS (sleeping)\nleader:2707:State:\tS (sleeping)' fixture_after=['ignore', 'double', 'setsid', 'forker'] control=0:OK
+disks Removed pi-p-db369289cb3f-home
+Removed pi-p-db369289cb3f-project
+[Linux normal box; sessions.py]
+6.18.57
+0::/work
+0
+cgroup2 /sys/fs/cgroup cgroup2 rw,nosuid,nodev,noexec,relatime 0 0
+PROCESS=1 | pinfold | PPid:	0 | Uid:	0	0	0	0 | Gid:	0	0	0	0 | CapInh:	0000000000000000 | CapPrm:	0000000000200000 | CapEff:	0000000000200000 | CapBnd:	0000000000200000 | CapAmb:	0000000000000000 | NoNewPrivs:	0
+PROCESS=588 | pinfold | PPid:	1 | Uid:	1000	1000	1000	1000 | Gid:	1000	1000	1000	1000 | CapInh:	0000000000000000 | CapPrm:	0000000000000000 | CapEff:	0000000000000000 | CapBnd:	0000000000000000 | CapAmb:	0000000000000000 | NoNewPrivs:	1
+PROCESS=622 | sh | PPid:	588 | Uid:	1000	1000	1000	1000 | Gid:	1000	1000	1000	1000 | CapInh:	0000000000000000 | CapPrm:	0000000000000000 | CapEff:	0000000000000000 | CapBnd:	0000000000000000 | CapAmb:	0000000000000000 | NoNewPrivs:	1
+dr-xr-xr-x 3 root root 0 Nov 16 18:47 /sys/fs/cgroup
+cpuset cpu io memory hugetlb pids
+-rw-r--r-- 1 root root 0 Nov 16 18:47 /sys/fs/cgroup/cgroup.procs
+2048
+
+pipeINT same_generation=True client=130 live='ignore:646:State:\tS (sleeping)\ndouble:649:State:\tS (sleeping)\nsetsid:648:State:\tS (sleeping)\nchurn:654:State:\tS (sleeping)\nforker:653:State:\tS (sleeping)\nleader:642:State:\tS (sleeping)' fixture_after=['ignore', 'double', 'setsid', 'forker'] control=0:OK
+pipeTERM same_generation=True client=143 live='ignore:754:State:\tS (sleeping)\nsetsid:756:State:\tS (sleeping)\ndouble:759:State:\tS (sleeping)\nforker:757:State:\tS (sleeping)\nchurn:762:State:\tS (sleeping)\nleader:750:State:\tS (sleeping)' fixture_after=['ignore', 'double', 'setsid', 'forker'] control=0:OK
+pipeKILL same_generation=True client=-9 live='ignore:856:State:\tS (sleeping)\nforker:859:State:\tS (sleeping)\ndouble:861:State:\tS (sleeping)\nchurn:862:State:\tS (sleeping)\nsetsid:858:State:\tS (sleeping)\nleader:852:State:\tS (sleeping)' fixture_after=['ignore', 'double', 'setsid', 'forker'] control=0:OK
+pipeclose same_generation=True client=129 live='ignore:958:State:\tS (sleeping)\nforker:961:State:\tS (sleeping)\nchurn:963:State:\tS (sleeping)\nsetsid:960:State:\tS (sleeping)\ndouble:964:State:\tS (sleeping)\nleader:954:State:\tS (sleeping)' fixture_after=['ignore', 'double', 'setsid', 'forker'] control=0:OK
+ttyINT same_generation=True client=130 live='ignore:1060:State:\tS (sleeping)\nforker:1063:State:\tS (sleeping)\nsetsid:1062:State:\tS (sleeping)\ndouble:1065:State:\tS (sleeping)\nchurn:1066:State:\tS (sleeping)\nleader:1057:State:\tS (sleeping)' fixture_after=['ignore', 'double', 'setsid', 'forker'] control=0:OK
+ttyTERM same_generation=True client=143 live='ignore:1161:State:\tS (sleeping)\nforker:1164:State:\tS (sleeping)\nsetsid:1163:State:\tS (sleeping)\nchurn:1166:State:\tR (running)\ndouble:1167:State:\tS (sleeping)\nleader:1158:State:\tS (sleeping)' fixture_after=['ignore', 'double', 'setsid', 'forker'] control=0:OK
+ttyKILL same_generation=True client=-9 live='ignore:1242:State:\tS (sleeping)\nforker:1245:State:\tS (sleeping)\nsetsid:1244:State:\tS (sleeping)\ndouble:1247:State:\tS (sleeping)\nchurn:1248:State:\tS (sleeping)\nleader:1239:State:\tS (sleeping)' fixture_after=['ignore', 'double', 'setsid', 'forker'] control=0:OK
+ttyclose same_generation=True client=129 live='ignore:1342:State:\tS (sleeping)\nforker:1345:State:\tS (sleeping)\nsetsid:1344:State:\tS (sleeping)\nchurn:1347:State:\tS (sleeping)\ndouble:1348:State:\tS (sleeping)\nleader:1339:State:\tS (sleeping)' fixture_after=['ignore', 'double', 'setsid', 'forker'] control=0:OK
+disks Removed pi-p-6336813add50-home
+Removed pi-p-6336813add50-project
+[Mac controller; KEEP_KILL + ALTERNATIVES]
+initial pid=1 Uid:	0	0	0	0;Gid:	0	0	0	0;CapInh:	0000000000000000;CapPrm:	00000000002001e0;CapEff:	00000000002001e0;CapBnd:	00000000002001e0;CapAmb:	0000000000000000;NoNewPrivs:	0;
+PIDNS init=3 ready=5 before=7 after=0
+TREE snapshot-count=1 first=12 post-snapshot-doublefork=14 alive=1 subreaper=11 observed-parent=11
+mkdir-before-drop=0 errno=13
+controller pid=1 Uid:	0	0	0	0;Gid:	0	0	0	0;CapInh:	0000000000000000;CapPrm:	00000000000000e0;CapEff:	00000000000000e0;CapBnd:	0000000000000000;CapAmb:	0000000000000000;NoNewPrivs:	1;
+controllers=cpuset cpu io memory hugetlb pids
+max.descendants=max
+mkdir-after-drop=0 errno=13
+workload pid=16 Uid:	501	501	501	501;Gid:	20	20	20	20;CapInh:	0000000000000000;CapPrm:	0000000000000000;CapEff:	0000000000000000;CapBnd:	0000000000000000;CapAmb:	0000000000000000;NoNewPrivs:	1;
+unprivileged-pidns=-1 errno=1
+escape-root=-1 errno=13
+write-own=-1 errno=13
+mkdir-workload=-1 errno=13
+after-exec pid=16 Uid:	501	501	501	501;Gid:	20	20	20	20;CapInh:	0000000000000000;CapPrm:	0000000000000000;CapEff:	0000000000000000;CapBnd:	0000000000000000;CapAmb:	0000000000000000;NoNewPrivs:	1;
+ready-count=5
+TERM members=5 denied-without-CAP_KILL=0
+cgroup.kill=0 errno=13 us=30
+cgroup.events populated 0 empty-us=89
+peer-exists=1
+empty-create-remove n=1000 mean-us=4
+concurrent-empty=256
+PROBE-DONE
+[Linux controller; KEEP_KILL + ALTERNATIVES]
+initial pid=1 Uid:	0	0	0	0;Gid:	0	0	0	0;CapInh:	0000000000000000;CapPrm:	000001ffffffffff;CapEff:	000001ffffffffff;CapBnd:	000001ffffffffff;CapAmb:	0000000000000000;NoNewPrivs:	0;
+PIDNS init=555 ready=5 before=6 after=0
+TREE snapshot-count=1 first=571 post-snapshot-doublefork=573 alive=1 subreaper=570 observed-parent=570
+mkdir-before-drop=0 errno=2
+controller pid=1 Uid:	0	0	0	0;Gid:	0	0	0	0;CapInh:	0000000000000000;CapPrm:	00000000000000e0;CapEff:	00000000000000e0;CapBnd:	0000000000000000;CapAmb:	0000000000000000;NoNewPrivs:	1;
+controllers=cpuset cpu io memory hugetlb pids
+max.descendants=max
+mkdir-after-drop=0 errno=2
+workload pid=575 Uid:	1000	1000	1000	1000;Gid:	1000	1000	1000	1000;CapInh:	0000000000000000;CapPrm:	0000000000000000;CapEff:	0000000000000000;CapBnd:	0000000000000000;CapAmb:	0000000000000000;NoNewPrivs:	1;
+unprivileged-pidns=-1 errno=1
+escape-root=-1 errno=13
+write-own=-1 errno=13
+mkdir-workload=-1 errno=13
+after-exec pid=575 Uid:	1000	1000	1000	1000;Gid:	1000	1000	1000	1000;CapInh:	0000000000000000;CapPrm:	0000000000000000;CapEff:	0000000000000000;CapBnd:	0000000000000000;CapAmb:	0000000000000000;NoNewPrivs:	1;
+ready-count=5
+TERM members=5 denied-without-CAP_KILL=0
+cgroup.kill=0 errno=0 us=152
+cgroup.events populated 0 empty-us=1647
+peer-exists=1
+empty-create-remove n=1000 mean-us=22
+concurrent-empty=256
+PROBE-DONE
+[least-privilege negative TERM control, Mac then Linux]
+controller pid=1 Uid:	0	0	0	0;Gid:	0	0	0	0;CapInh:	0000000000000000;CapPrm:	00000000000000c0;CapEff:	00000000000000c0;CapBnd:	0000000000000000;CapAmb:	0000000000000000;NoNewPrivs:	1;
+TERM members=6 denied-without-CAP_KILL=6
+controller pid=1 Uid:	0	0	0	0;Gid:	0	0	0	0;CapInh:	0000000000000000;CapPrm:	00000000000000c0;CapEff:	00000000000000c0;CapBnd:	0000000000000000;CapAmb:	0000000000000000;NoNewPrivs:	1;
+TERM members=6 denied-without-CAP_KILL=6
+[Apple custom VM init; vmexec.c, container exec /bin/true]
+VMEXEC_PROBE self Name:	vmexec; PPid:	1; Uid:	0	0	0	0; Gid:	0	0	0	0; NSpid:	114; CapInh:	0000000000000000; CapPrm:	000001ffffffffff; CapEff:	000001ffffffffff; CapBnd:	000001ffffffffff; CapAmb:	0000000000000000; NoNewPrivs:	0;
+VMEXEC_PROBE parent Name:	vminitd; PPid:	0; Uid:	0	0	0	0; Gid:	0	0	0	0; NSpid:	1; CapInh:	0000000000000000; CapPrm:	000001ffffffffff; CapEff:	000001ffffffffff; CapBnd:	000001ffffffffff; CapAmb:	0000000000000000; NoNewPrivs:	0;
+[checks and cleanup]
+cargo build --locked (RUSTC_WRAPPER=): Mac and Linux musl exit 0
+cargo fmt --check: exit 0
+cargo clippy --all-targets --locked -- -D warnings (RUSTC_WRAPPER=): exit 0
+probe VMM stopped; raw disk, session scratch and isolated worktree removed
+original clone HEAD=769923281dc823aa0e0313cbadb718e6217f9751 preserved
+Mac predecessor image inspect: Error: image not found: localhost/pinfold/image-probe-owner-rereview:latest
+[installed container CLI and selected run/exec help]
+container CLI version 1.7.1 (build: release, commit: unspeci)
+  --cap-add <cap>         Add a Linux capability (e.g. CAP_NET_RAW, or ALL)
+  --cap-drop <cap>        Drop a Linux capability (e.g. CAP_NET_RAW, or ALL)
+  --entrypoint <cmd>      Override the entrypoint of the image
+  --init-image <image>    Use a custom init image instead of the default
+  -u, --user <user>       Set the user for the process (format: name|uid[:gid])
