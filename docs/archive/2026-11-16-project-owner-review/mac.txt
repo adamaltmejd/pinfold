@@ -1,0 +1,32 @@
+Mac peers: full-generation owner SIGSTOP confirmedT; pause=0.019s; queued connector=SIGKILL before accept; resumed same-generation witness=PONG; valid join=0/ADMISSION-CONTROL; witness exit=0; accept errno=not observed
+crossing iterations=50 calls=100 failures=0 second-box=50-PONG same-generations=True retries=0
+HOME trailing-slash: exit=0 marker=HOME-CONTROL same-generation=True
+HOME symlink-equivalent: exit=0 marker=HOME-CONTROL same-generation=True
+HOME different-root: exit=125/config-changed roots.home marker=absent; restored exit=0 same-generation=True
+public box fetch: missing-repository exit=1/spec; corrected same-box exit=0/fetched independent-guest-HEAD=host-ref
+second-box command: completed=0 full-WITNESS-DONE kept-generation=unchanged
+control: one joined command=0 output=CONTROL
+parent pipe write-control: pristine=0x1 after-parent-write=0x10001
+shared-pipe: clients=2 exits=0,0 bytes=262144 A=131072 B=131072 before=65537 after=65537 nonblocking=False same-generation=True
+shared-file: clients=2 exits=0,0 bytes=262144 A=131072 B=131072 before=65537 after=65537 nonblocking=False same-generation=True
+many-fd start: passed=301 sparse=8192 exit=0 stdout=b'' unused-pipe EOF=True owner=kept; same generation for join
+many-fd --: passed=301 sparse=8192 exit=0 stdout=b'FD-CONTROL' unused-pipe EOF=True owner=kept; same generation for join
+control: post-descriptor same-generation command=0/AFTER-FDS; observed EOF only, not complete authority-leak stress
+finish-start: seed-copy native helper SIGSTOP confirmed; stop=0 starter=125 CMD=absent; helper exited; restart=STARTUP-CONTROL; seconds=6.89
+busy-launch: real HTTP-held initial-sync=12s second notice=1 no-early-CMD heartbeat-kept-starter=True both-clients=0 same-generation=True final-teardown=True
+apple-slow-last-leave observed=0 client=0 seconds=12.58 held-native=SIGSTOP-confirmed pending-after-12s=True Probe=Draining/0.000s terminal=sessions-ended/null
+apple-slow-last-leave observed=23 client=23 seconds=12.60 held-native=SIGSTOP-confirmed pending-after-12s=True Probe=Draining/0.001s terminal=sessions-ended/null
+external-stop: incomplete-client=125 reason=signal generation=present inspection-command=present
+cleanup-failure observed=0 client=125 stderr=teardown-failed run-record=teardown-failed foreign-bytes=unchanged
+cleanup-failure observed=23 client=23 stderr=teardown-failed run-record=teardown-failed foreign-bytes=unchanged
+stop-cleanup-failure: stop=125 stderr=teardown-failed run-record=visible-on-return/teardown-failed foreign-bytes=unchanged
+['--', 'sh', '-c', 'printf TEARDOWN-CONTROL'] exit=0 out=b'TEARDOWN-CONTROL' err=b''
+crossing interrupted: real prepared-ref hook HTTP receipt; stop=0 push=125 reason=signal full-generation=True inspect-command=True claimed-success=False
+crossing corrected control: fixture hook/abandoned transaction lock removed; restart marker=RESTART-CONTROL; public push=0/pushed; guest-ref=independent-host-HEAD
+PASS selected extra terminal cases; blocked-output=True
+PASS immediate dimensions, terminal identity, resize, termios and mutable-flag restoration
+exit=143 foreground-helper-settings-untouched=True; host-SIGTTOU=default; handed=True
+
+# Before 8ede33e: teardown.py stop_failure expected125 with the foreign entry present
+['start'] exit=0 out=b'' err=b''
+['stop'] exit=0 out=b'' err=b''

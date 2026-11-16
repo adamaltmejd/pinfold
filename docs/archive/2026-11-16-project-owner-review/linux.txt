@@ -1,0 +1,46 @@
+maintenance: exclusive lock held; signal after installed-handler barrier=143; stop=125/owner-timeout seconds=10.00; no locator created
+maintenance-control: released lock; stop=0; command=0/MAINTENANCE-CONTROL
+peers: owner held before accept; queued connector=SIGKILL; actual root uid0 peer=EOF/refused; existing command=WITNESS-PONG; valid joined command=0/ADMISSION-CONTROL; same generation
+crossing iterations=50 calls=100 failures=0 second-box=50-PONG same-generations=True retries=0
+HOME trailing-slash: exit=0 marker=HOME-CONTROL same-generation=True
+HOME symlink-equivalent: exit=0 marker=HOME-CONTROL same-generation=True
+HOME different-root: exit=125/config-changed roots.home marker=absent; restored exit=0 same-generation=True
+public box fetch: missing-repository exit=1/spec; corrected same-box exit=0/fetched independent-guest-HEAD=host-ref
+owner hygiene: cwd=/ unrelated-fixture-env=absent retained-names=CODEX_HOME,HOME,PATH,PINFOLD_CPUS,PINFOLD_ENV_REVIEW,PINFOLD_MEMORY,XDG_CACHE_HOME,XDG_CONFIG_HOME,XDG_STATE_HOME
+second-box command: completed=0 full-WITNESS-DONE kept-generation=unchanged
+control: one joined command=0 output=CONTROL
+parent pipe write-control: pristine=0x1 after-parent-write=0x1
+shared-pipe: clients=2 exits=0,0 bytes=262144 A=131072 B=131072 before=1 after=1 nonblocking=False same-generation=True
+shared-file: clients=2 exits=0,0 bytes=262144 A=131072 B=131072 before=32769 after=32769 nonblocking=False same-generation=True
+descriptor fixture: original-soft=1024 run-soft=9000 scope=driver-and-children-only
+many-fd start: passed=301 sparse=8192 exit=0 stdout=b'' unused-pipe EOF=True owner=kept; same generation for join
+many-fd --: passed=301 sparse=8192 exit=0 stdout=b'FD-CONTROL' unused-pipe EOF=True owner=kept; same generation for join
+control: post-descriptor same-generation command=0/AFTER-FDS; observed EOF only, not complete authority-leak stress
+boot-stop: required BOOT barrier hit; real VMM SIGSTOP then stop=0; CMD=absent; startup diagnostics=present; BOOT joined; restart=STARTUP-CONTROL; seconds=33.68
+boot-vmm-exit: required BOOT barrier hit; real VMM SIGKILL; CMD=absent; startup diagnostics=present; BOOT joined; restart=STARTUP-CONTROL; seconds=3.56
+busy-launch: real HTTP-held initial-sync=12s second notice=1 no-early-CMD heartbeat-kept-starter=True both-clients=0 same-generation=True final-teardown=True
+silent-first-reply: required before-heartbeat gate hit; client=125/owner-timeout seconds=9.94; gate released for checked cleanup
+silent cleanup/restart: marker=RESTART-CONTROL exit=0
+diagnostic-held-writer: independent /bin/sh FIFO fixture retained original fd2 pipe; starter=0 before writer EOF; same-owner command=HELD-WRITER-CONTROL
+held-writer cleanup/restart: marker=RESTART-CONTROL exit=0
+completed=0 in-flight-probe: reply=Draining same-generation=True seconds=0.000
+completed=0 in-flight-join: reply=Draining same-generation=True seconds=0.000
+completed=0 in-flight-keep: reply=Draining same-generation=True seconds=0.000
+completed=0 in-flight-borrow: reply=Draining same-generation=True seconds=0.000
+slow-last-leave observed=0 client=0 seconds=30.06 terminal=sessions-ended/null timeout-diagnostic=absent locator=absent
+slow-last-leave observed=23 client=23 seconds=30.08 terminal=sessions-ended/null timeout-diagnostic=absent locator=absent
+external-stop: incomplete-client=125 reason=signal generation=present inspection-command=present
+cleanup-failure observed=0 client=125 stderr=teardown-failed run-record=teardown-failed foreign-bytes=unchanged
+cleanup-failure observed=23 client=23 stderr=teardown-failed run-record=teardown-failed foreign-bytes=unchanged
+['--', 'sh', '-c', 'printf TEARDOWN-CONTROL'] exit=0 out=b'TEARDOWN-CONTROL' err=b''
+stop-cleanup-failure: stop=125 stderr=teardown-failed run-record=visible-on-return/teardown-failed foreign-bytes=unchanged
+crossing interrupted: real prepared-ref hook HTTP receipt; stop=0 push=125 reason=signal full-generation=True inspect-command=True claimed-success=False
+crossing corrected control: fixture hook/abandoned transaction lock removed; restart marker=RESTART-CONTROL; public push=0/pushed; guest-ref=independent-host-HEAD
+PASS selected extra terminal cases; blocked-output=True
+PASS immediate dimensions, terminal identity, resize, termios and mutable-flag restoration
+exit=143 foreground-helper-settings-untouched=True; host-SIGTTOU=default; handed=True
+sync-ended-error: real HTTP-held sync helper SIGSTOP; actual VMM wait4 return replaced by -ECHILD; helper cancelled/reaped and worker joined before Box.down; CMD=absent; checked restart=SYNC-ERROR-CONTROL
+DNS cancel: real-query=held-cancel.invalid stop=0 incomplete-client=125/signal teardown-seconds=0.11 late-HTTP-connections=0
+DNS deadline: real-query=api.github.com HTTP=502/resolve-failed seconds=10.03 allowed-fixture=200/DNS-CONTROL same-generation=True
+maintenance-entry: first stdout=CMD-CONTROL; locator=absent claim=absent name-flock=available terminal=sessions-ended/null; paused client held no lease/launch; second command=0/NEXT-CONTROL
+maintenance-control: first client resumed=0; fresh maintenance stamp preserved; no global cleanup/pruning exercised
