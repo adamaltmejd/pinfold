@@ -1,6 +1,7 @@
 //! Box runtimes: one per OS, behind a trait.
 
 pub mod apple;
+pub(crate) mod exec_transport;
 #[cfg(target_os = "linux")]
 pub mod firecracker;
 pub(crate) mod sockets;

@@ -16,7 +16,8 @@ use nix::libc;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use super::firecracker::{self, FAILED, READY, write_frame};
+use super::exec_wire::{FAILED, read_frame, write_frame};
+use super::firecracker::{self, READY};
 use crate::image_limits::{OCI_BYTES, ROOT_BYTES};
 
 const PATH: &str = "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -107,7 +108,7 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
             }
             fs::remove_file("/work/discovery.json")?;
             write_frame(host, b'L', &bytes)?;
-            let (kind, payload) = firecracker::read_frame(host)?;
+            let (kind, payload) = read_frame(host)?;
             if kind != b'G' || !payload.is_empty() {
                 return Err(io::Error::other("invalid builder handoff"));
             }
@@ -596,7 +597,7 @@ fn discover(job: &Job, host: &mut UnixStream, log: Arc<Mutex<Tail>>) -> io::Resu
                 return Err(io::Error::other("resource: discovery query"));
             }
             write_frame(host, b'Q', &query)?;
-            let (kind, bytes) = firecracker::read_frame(host)?;
+            let (kind, bytes) = read_frame(host)?;
             if kind != b'R' || bytes.len() as u64 > JSON_BYTES {
                 return Err(io::Error::other("invalid discovery reply"));
             }

@@ -1,0 +1,60 @@
+$ slow-before
+mode=baseline image=localhost/pinfold/image-probe-session-rereview:latest
+continuous reader control: status=23, bytes=1064960, peer_acks=0, consumer_hold=0.00s, pipe_size=4096, stdin_bytes=1048576, elapsed=1.19s
+slow peer-barrier reader: status=23, bytes=1064960, peer_acks=260, consumer_hold=3.10s, pipe_size=4096, stdin_bytes=1048576, elapsed=4.41s
+SLOW READER CASES COMPLETE
+cleanup: own kept box and two named disks removed
+
+$ slow
+mode=candidate image=localhost/pinfold/image-probe-session-rereview:latest
+continuous reader control: status=23, bytes=1064960, peer_acks=0, consumer_hold=0.00s, pipe_size=4096, stdin_bytes=1048576, elapsed=1.07s
+slow peer-barrier reader: status=23, bytes=1064960, peer_acks=260, consumer_hold=3.10s, pipe_size=4096, stdin_bytes=1048576, elapsed=4.50s
+SLOW READER CASES COMPLETE
+cleanup: own kept box and two named disks removed
+
+$ diagnostics-before
+real execution control: true status=0
+command stdout control: literal ESC bytes preserved
+cleanup: original transport restored; own box and named disks removed
+AssertionError: (1, b'pinfold box: fixture\x1b[31mBAD\x1b[0m\n\n')
+
+$ diagnostics
+real execution control: true status=0
+command stdout control: literal ESC bytes preserved
+public Linux box exec: FAILED diagnostic escaped; status=1; stderr=b'pinfold box: fixture\\u{1b}[31mBAD\\u{1b}[0m\\n\n'
+public Linux stat control: real guest reply accepted
+public Linux stat: FAILED diagnostic escaped; status=1; stderr=b'pinfold box: fixture\\u{1b}[31mBAD\\u{1b}[0m\\n\n'
+DIAGNOSTIC CASES PASSED
+cleanup: original transport restored; own box and named disks removed
+
+$ cleanup-before
+control: same-uid prlimit query succeeds; command remains alive without limit reduction
+cleanup: own box and two explicitly named disks removed
+AssertionError: ('unsupervised command survived', 680)
+
+$ cleanup (selected lines restored from earlier tool output after release)
+control: same-uid prlimit query succeeds; command remains alive without limit reduction
+fault diagnostic: b'POLL_FAULT_ARMED\npinfold: command: Invalid argument (os error 22)\n'
+fault: helper RLIMIT_NOFILE=1 forces poll EINVAL; client=125; command gone; events=8 rc=0 errno=29; elapsed=2.24s
+RELAY FAILURE CLEANUP AND CONTROL PASSED
+cleanup: own box and two explicitly named disks removed
+
+$ departures
+kept box started; image=localhost/pinfold/image-probe-session-rereview:latest
+nonTTY SIGINT: client=130, command gone, B=OK, elapsed=0.23s
+nonTTY SIGTERM: client=143, command gone, B=OK, elapsed=0.23s
+nonTTY SIGHUP: client=129, command gone, B=OK, elapsed=0.22s
+nonTTY SIGKILL: client=-9, command gone, B=OK, elapsed=0.11s
+ignore TERM: gone after 2.29s; B=OK
+terminal closure: client=129, command gone, B=OK
+TTY Ctrl-C: shell survived and ran CTRL-C-OK
+normal completion: background child survives and writes after client exit; B=OK
+plain stdin EOF: command still running; later departure ends it
+observed completion racing signal: status=0
+observed completion racing signal: status=23
+public box exec departure: guest command survives
+setsid: escaped child survives departure; B=OK
+owner teardown: incomplete client=125
+stop: box absent=True
+ALL CASES PASSED
+cleanup: own box stopped and two named fixture disks removed

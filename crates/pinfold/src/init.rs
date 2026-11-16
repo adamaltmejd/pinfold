@@ -10,7 +10,7 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -27,6 +27,9 @@ use nix::sys::signal::{SigHandler, SigSet, Signal};
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "init/builder.rs"]
 mod builder;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[path = "init/exec_wire.rs"]
+pub(crate) mod exec_wire;
 #[path = "init/export.rs"]
 pub(crate) mod export;
 #[cfg(target_os = "linux")]
@@ -34,6 +37,12 @@ pub(crate) mod export;
 pub(crate) mod firecracker;
 #[path = "formatting.rs"]
 pub(crate) mod formatting;
+#[cfg(target_os = "linux")]
+#[path = "init/session.rs"]
+mod session;
+#[cfg(target_os = "linux")]
+#[path = "init/session_io.rs"]
+mod session_io;
 
 /// Guest values travel under names the host runtime does not interpret.
 /// Hex preserves arbitrary environment bytes through runtime JSON encoding.
@@ -152,6 +161,8 @@ const RELAY_LISTEN: &str = "127.0.0.1:3128";
 pub fn run(args: &[String]) -> ! {
     match args.first().map(String::as_str) {
         Some("exec") => exec(&args[1..]),
+        #[cfg(target_os = "linux")]
+        Some("session-exec") => exit_with("session-exec", session_exec()),
         Some("setup") => exit_with("setup", setup(&args[1..])),
         Some("receive") => exit_with("receive", receive(&args[1..])),
         Some("send") => exit_with("send", export::run(&args[1..])),
@@ -326,6 +337,49 @@ fn exec(args: &[String]) -> ! {
     } else {
         126
     });
+}
+
+/// Apple's native pipes carry the same command frames as Linux's exec socket.
+#[cfg(target_os = "linux")]
+fn session_exec() -> io::Result<()> {
+    use std::fs::File;
+    nix::sys::prctl::set_no_new_privs()?;
+    let stdin = io::stdin().as_fd().try_clone_to_owned()?;
+    let stdout = io::stdout().as_fd().try_clone_to_owned()?;
+    let departure = stdin.try_clone()?;
+    let (mut connection, bridge) = UnixStream::pair()?;
+    let mut incoming = bridge.try_clone()?;
+    thread::Builder::new().spawn(move || {
+        let _ = exec_wire::copy_stream(&mut File::from(stdin), &mut incoming);
+        let _ = incoming.shutdown(Shutdown::Write);
+    })?;
+    let (drained, drain) = std::sync::mpsc::channel();
+    thread::Builder::new().spawn(move || {
+        let _ = exec_wire::copy_stream(&mut &bridge, &mut File::from(stdout));
+        let _ = drained.send(());
+    })?;
+    let mut vars: Vec<_> = std::env::vars_os()
+        .filter(|(key, _)| !key.as_bytes().starts_with(BOX_ENV_PREFIX.as_bytes()))
+        .collect();
+    for (key, value) in std::env::vars_os() {
+        if let Some(name) = key
+            .to_str()
+            .and_then(|key| key.strip_prefix(BOX_ENV_PREFIX))
+        {
+            vars.retain(|(key, _)| key != name);
+            vars.push((
+                OsString::from(name),
+                OsString::from_vec(decode_hex(value.as_bytes())?),
+            ));
+        }
+    }
+    let (kind, payload) = exec_wire::read_frame(&mut connection)?;
+    if kind != exec_wire::EXEC {
+        return Err(io::Error::other("expected command frame"));
+    }
+    let result = firecracker::exec(connection, &payload, vars, Some((departure.as_fd(), false)));
+    let _ = drain.recv_timeout(Duration::from_secs(1));
+    result
 }
 
 fn exit_with(verb: &str, result: io::Result<()>) -> ! {
@@ -523,7 +577,6 @@ fn receive(args: &[String]) -> io::Result<()> {
 /// [`STREAM_END`]. Directories and executables get 755, other files 644.
 /// With `missing`, an existing entry is skipped and keeps its mode.
 fn receive_into(root: &Path, mut input: &mut impl io::Read, missing: bool) -> io::Result<()> {
-    use std::io::Read;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
     fn read_bytes(input: &mut impl Read, length: usize) -> io::Result<Vec<u8>> {
         let mut bytes = vec![0; length];

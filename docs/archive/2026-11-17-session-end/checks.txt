@@ -1,0 +1,53 @@
+$ RUSTC_WRAPPER= cargo build --locked
+   Compiling pinfold v0.5.5 (/Users/user/code/.cache/pinfold-work/s322/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.39s
+
+$ cargo fmt --check
+exit 0
+$ RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings
+   Compiling pinfold v0.5.5 (/Users/user/code/.cache/pinfold-work/s322/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.53s
+
+$ cargo build --locked --target x86_64-unknown-linux-musl
+$ cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings
+   Compiling pinfold v0.5.5 (/tmp/pfs322/crates/pinfold)
+   Compiling pinfold-init v0.5.5 (/tmp/pfs322/crates/pinfold-init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.20s
+   Compiling pinfold v0.5.5 (/tmp/pfs322/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.59s
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sda1        32G  5.9G   25G  20% /
+
+Always applied: unchanged
+Mac initial free: 61 GiB; final df -g /System/Volumes/Data: 55 GiB available
+running native containers: buildkit
+native_client_SIGKILL_guest_stdin=EOF
+OPEN_PIPE_NO_OUTPUT
+CLOSED_PIPE: framed HI and exit status received
+SOCKET_NO_OUTPUT
+cleanup: three stranded fixture boxes explicitly removed; six named fixture disks removed; stop status 0 for each
+Control socket connect(/Users/user/.ssh/sockets/c0d4a201c478c94de16b2cc1bf7b8c7ff627fc4e): Operation not permitted
+ssh: Could not resolve hostname $DEV_VM: nodename nor servname provided, or not known
+crates/pinfold/src/init/session.rs:9:use nix::sys::signal::{Signal, killpg};
+crates/pinfold/src/init/session.rs:17:    let process = match super::firecracker::pidfd_open(child.id() as i32) {
+crates/pinfold/src/init/session.rs:53:            return child.wait();
+crates/pinfold/src/init/session.rs:68:    let deadline = Instant::now() + Duration::from_secs(2);
+crates/pinfold/src/init/session.rs:77:                return child.wait();
+crates/pinfold/src/init/session.rs:82:    let status = child.wait();
+crates/pinfold/src/init/session.rs:89:    match killpg(group, signal) {
+crates/pinfold/src/core/runtime/apple.rs:513:        return child.wait();
+crates/pinfold/src/core/runtime/apple.rs:521:            child.wait()?;
+crates/pinfold/src/core/runtime/apple.rs:655:        if context.project_root.is_some() {
+crates/pinfold/src/core/runtime/apple.rs:810:                    child.wait()
+crates/pinfold/src/core/runtime/apple.rs:827:                let _ = child.wait();
+crates/pinfold/src/core/runtime/apple.rs:981:    let deadline = Instant::now() + Duration::from_secs(5);
+crates/pinfold/src/init/firecracker.rs:129:    let service = pidfd_open(service.as_raw())
+crates/pinfold/src/init/firecracker.rs:722:pub(crate) fn pidfd_open(pid: i32) -> io::Result<OwnedFd> {
+crates/pinfold/src/init/firecracker.rs:723:    // Safety: pidfd_open returns a new descriptor or -1.
+crates/pinfold/src/init/firecracker.rs:724:    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_long, 0 as libc::c_long) };
+crates/pinfold/src/init/firecracker.rs:778:    let deadline = Instant::now() + Duration::from_secs(10);
+crates/pinfold/src/init/firecracker.rs:1001:            if libc::setsid() < 0 || (tty && libc::ioctl(0, libc::TIOCSCTTY, 0) < 0) {
+crates/pinfold/src/init/firecracker.rs:1066:        super::session::wait(&mut child, departure, socket)?
+crates/pinfold/src/init/firecracker.rs:1068:        child.wait()?
+crates/pinfold/src/init/firecracker.rs:1098:        let deadline = Instant::now() + Duration::from_secs(1);
+crates/pinfold/src/init.rs:162:        Some("session-exec") => exit_with("session-exec", session_exec()),

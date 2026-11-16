@@ -651,6 +651,10 @@ impl Runtime for Apple {
         context: &ExecContext<'_>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
+        #[cfg(not(target_os = "linux"))]
+        if context.project_root.is_some() {
+            return project_exec(name, init, context, argv);
+        }
         let size = if context.tty {
             super::terminal::window()?
         } else {
@@ -871,6 +875,195 @@ impl Runtime for Apple {
     }
 }
 
+/// The native client owns only private pipes, never caller terminal fds.
+#[cfg(not(target_os = "linux"))]
+fn project_exec(
+    name: &str,
+    init: &Path,
+    context: &ExecContext<'_>,
+    argv: &[String],
+) -> io::Result<ExitStatus> {
+    use std::os::unix::net::UnixStream;
+    use std::os::unix::process::ExitStatusExt;
+    let (connection, bridge) = UnixStream::pair()?;
+    let mut command = std::process::Command::new("container");
+    command
+        .args(["exec", "-i", name])
+        .arg(init)
+        .args(["init", "session-exec"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut client = crate::core::process::GroupChild::spawn(&mut command)?;
+    drop(command);
+    let diagnostics = StderrDrain::start_fd(client.take_stderr().expect("piped stderr").into())?;
+    let mut input = client.take_stdin();
+    let mut output = client.take_stdout();
+    crate::core::pipe::nonblocking(input.as_ref().expect("piped stdin"), "native exec")?;
+    crate::core::pipe::nonblocking(output.as_ref().expect("piped stdout"), "native exec")?;
+    bridge.set_nonblocking(true)?;
+    let stopped = AtomicBool::new(false);
+    let result = std::thread::scope(|scope| {
+        let worker_context = ExecContext {
+            cwd: context.cwd,
+            project_root: context.project_root,
+            tty: context.tty,
+            agent: context.agent,
+            cancel: Some(&stopped),
+        };
+        let worker =
+            scope.spawn(move || super::exec_transport::exec(connection, &worker_context, argv));
+        let mut pending_input = VecDeque::new();
+        let mut pending_output = VecDeque::new();
+        let mut exited = None;
+        let relayed = (|| -> io::Result<()> {
+            loop {
+                if worker.is_finished()
+                    || context
+                        .cancel
+                        .is_some_and(|cancel| cancel.load(Ordering::Acquire))
+                {
+                    return Ok(());
+                }
+                if exited.is_none() && client.exited()? {
+                    exited = Some(Instant::now() + Duration::from_secs(1));
+                    input.take();
+                    pending_input.clear();
+                }
+                if exited.is_some_and(|deadline| Instant::now() >= deadline) {
+                    return Ok(());
+                }
+                if output.is_none() && pending_output.is_empty() {
+                    let _ = bridge.shutdown(std::net::Shutdown::Write);
+                }
+                let mut fds = [
+                    libc::pollfd {
+                        fd: if input.is_some() && pending_input.is_empty() {
+                            bridge.as_raw_fd()
+                        } else {
+                            -1
+                        },
+                        events: libc::POLLIN,
+                        revents: 0,
+                    },
+                    libc::pollfd {
+                        fd: if pending_input.is_empty() {
+                            -1
+                        } else {
+                            input.as_ref().map_or(-1, AsRawFd::as_raw_fd)
+                        },
+                        events: libc::POLLOUT,
+                        revents: 0,
+                    },
+                    libc::pollfd {
+                        fd: if pending_output.is_empty() {
+                            output.as_ref().map_or(-1, AsRawFd::as_raw_fd)
+                        } else {
+                            -1
+                        },
+                        events: libc::POLLIN,
+                        revents: 0,
+                    },
+                    libc::pollfd {
+                        fd: if pending_output.is_empty() {
+                            -1
+                        } else {
+                            bridge.as_raw_fd()
+                        },
+                        events: libc::POLLOUT,
+                        revents: 0,
+                    },
+                ];
+                // The finite poll also observes native exit without trusting its pipes' EOF.
+                if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, 20) } < 0 {
+                    let error = io::Error::last_os_error();
+                    if error.kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return Err(error);
+                }
+                if fds[0].revents != 0 && !bridge_read(&mut &bridge, &mut pending_input)? {
+                    input.take();
+                }
+                if fds[1].revents != 0
+                    && let Some(writer) = input.as_mut()
+                    && !bridge_write(writer, &mut pending_input)?
+                {
+                    input.take();
+                    pending_input.clear();
+                }
+                if fds[2].revents != 0
+                    && let Some(reader) = output.as_mut()
+                    && !bridge_read(reader, &mut pending_output)?
+                {
+                    output.take();
+                }
+                if fds[3].revents != 0 && !bridge_write(&mut &bridge, &mut pending_output)? {
+                    return Ok(());
+                }
+            }
+        })();
+        stopped.store(true, Ordering::Release);
+        let _ = bridge.shutdown(std::net::Shutdown::Both);
+        drop((input, output));
+        let _ = client.finish();
+        let result = worker
+            .join()
+            .map_err(|_| io::Error::other("native exec worker failed"))?;
+        match result {
+            Ok(code) => Ok(code),
+            Err(error) => relayed.and(Err(error)),
+        }
+    });
+    let diagnostics: Vec<_> = diagnostics.close().into_iter().collect();
+    if result.is_err() && !diagnostics.is_empty() {
+        crate::core::process::diagnostic(terminal_text(&String::from_utf8_lossy(&diagnostics)));
+    }
+    result.map(|code| ExitStatus::from_raw(code << 8))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bridge_read(input: &mut impl io::Read, pending: &mut VecDeque<u8>) -> io::Result<bool> {
+    let mut bytes = [0; 32 * 1024];
+    match input.read(&mut bytes) {
+        Ok(0) => Ok(false),
+        Ok(read) => {
+            pending.extend(&bytes[..read]);
+            Ok(true)
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            ) =>
+        {
+            Ok(true)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bridge_write(output: &mut impl Write, pending: &mut VecDeque<u8>) -> io::Result<bool> {
+    match output.write(pending.as_slices().0) {
+        Ok(0) => Ok(false),
+        Ok(written) => {
+            pending.drain(..written);
+            Ok(true)
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            ) =>
+        {
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 /// `container exec` of `argv` through init, preserving terminal identity on a TTY.
 fn exec_command(
     name: &str,
@@ -883,7 +1076,6 @@ fn exec_command(
     command.args(["exec", "-i"]);
     let mut metadata = crate::init::ExecMetadata {
         agent: context.agent.map(str::to_string),
-        project_directory: context.project_directory()?,
         ..Default::default()
     };
     if context.tty {
@@ -899,9 +1091,7 @@ fn exec_command(
     }
     command.args(["--env", crate::init::EXEC_METADATA]);
     command.env(crate::init::EXEC_METADATA, metadata.encode());
-    if context.project_root.is_none()
-        && let Some(dir) = context.cwd
-    {
+    if let Some(dir) = context.cwd {
         command.arg("--workdir").arg(dir);
     }
     command

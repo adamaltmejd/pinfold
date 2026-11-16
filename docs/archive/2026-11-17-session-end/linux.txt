@@ -1,0 +1,18 @@
+kept box started; image=localhost/pinfold/image-probe-owner-rereview:latest
+nonTTY SIGINT: client=130, command gone, B=OK, elapsed=0.13s
+nonTTY SIGTERM: client=143, command gone, B=OK, elapsed=0.13s
+nonTTY SIGHUP: client=129, command gone, B=OK, elapsed=0.14s
+nonTTY SIGKILL: client=-9, command gone, B=OK, elapsed=0.02s
+ignore TERM: gone after 2.12s; B=OK
+terminal closure: client=129, command gone, B=OK
+TTY Ctrl-C: shell survived and ran CTRL-C-OK
+normal completion: background child survives and writes after client exit; B=OK
+plain stdin EOF: command still running; later departure ends it
+observed completion racing signal: status=0
+observed completion racing signal: status=23
+public box exec departure: guest command survives
+setsid: escaped child survives departure; B=OK
+owner teardown: incomplete client=125
+stop: box absent=True
+ALL CASES PASSED
+cleanup: own box stopped and two named fixture disks removed

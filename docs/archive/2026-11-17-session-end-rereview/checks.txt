@@ -1,0 +1,41 @@
+Before source: 2f28c5c; separate preserved binary on each host.
+Mac initial df -g /System/Volumes/Data: 49 GiB available.
+Mac final df -g /System/Volumes/Data: 37 GiB available.
+$ CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo build --locked
+   Compiling pinfold v0.5.5 (/Users/user/code/.cache/pinfold-work/s322/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.34s
+
+$ cargo fmt --check
+exit 0
+$ CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings
+   Compiling pinfold v0.5.5 (/Users/user/code/.cache/pinfold-work/s322/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.85s
+
+$ cargo build --locked --target x86_64-unknown-linux-musl
+$ cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings
+Selected lines transcribed from earlier tool responses after a redundant post-release export overwrote this temporary copy.
+   Compiling pinfold v0.5.5 (/tmp/pfrr2.candidate/crates/pinfold)
+    Checking pinfold-init v0.5.5 (/tmp/pfrr2.candidate/crates/pinfold-init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.56s
+Final Linux build gate: cargo build --locked --target x86_64-unknown-linux-musl && slow.py ...
+The final slow.py output was captured after that gate.
+{"base":null,"event":"built","id":"sha256:7d013b4ea2684660ff8daae22d8533a7694de1ce412eb2c022d3731e16681089","image":"probe-session-rereview","labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"","dev.pinfold.profile":"","dev.pinfold.project":""},"latest":"localhost/pinfold/image-probe-session-rereview:latest","ref":"localhost/pinfold/image-probe-session-rereview:18e8a1999958d996-16327"}
+IMAGE_EXIT=0
+1794862132
+1794862185
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sda1        32G  3.8G   27G  13% /
+
+$ cargo fmt --check (Linux)
+LINUX_FMT_EXIT=0
+
+Always applied unchanged (compared against 2f28c5c).
+Initial dev-VM SSH: Control socket connect: Operation not permitted; hostname resolution refused.
+Trial VM: fresh Debian 13, KVM usable, pinned Rust 1.99.1.
+Fixture Containerfile: FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends git curl perl bash ca-certificates && rm -rf /var/lib/apt/lists/*
+$ pinfold image build probe-session-rereview --containerfile $W/image/Containerfile --context $W/image --allow deb.debian.org --allow security.debian.org
+Image build elapsed: 53 seconds; exit 0.
+Intermediate Linux state-query control: pinfold box: Broken pipe (os error 32).
+running native containers: buildkit
+{"ok":true,"command":"release","status":"idle"}

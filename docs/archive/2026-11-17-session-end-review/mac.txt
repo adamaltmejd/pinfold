@@ -1,0 +1,65 @@
+$ pipes.py $MAIN $IMAGE baseline
+mode=main-baseline image=localhost/pinfold/profile-default:latest
+stdout finite producer: status=0 bytes=CONTROL
+stdout yes | head -n 1: status=141 elapsed=0.10s
+stderr finite producer: status=0 bytes=CONTROL
+stderr yes | head -n 1: status=141 elapsed=0.10s
+PIPE CASES PASSED
+cleanup: own box and two named disks removed
+
+$ pipes.py $BIN $IMAGE
+mode=candidate image=localhost/pinfold/profile-default:latest
+stdout finite producer: status=0 bytes=CONTROL
+stdout yes | head -n 1: status=141 elapsed=0.11s
+stderr finite producer: status=0 bytes=CONTROL
+stderr yes | head -n 1: status=141 elapsed=0.12s
+unread stdout at leader exit: status=23 elapsed=1.00s
+read output control: status=23 exact 1048576 bytes
+concurrent stdout/stderr: exact 1MiB stderr during continuous stdout; status=23
+continuous stdout: queued stdin reaches guest; status=23
+completed status during later signal: 0
+completed status during later signal: 23
+PIPE CASES PASSED
+cleanup: own box and two named disks removed
+
+$ native.py $BIN $IMAGE
+native stdout held by descendant: observed status=0, elapsed=1.72s
+native stdout held by descendant: observed status=23, elapsed=1.69s
+native SIGKILL with descendant holding stdout: client=125, elapsed=1.05s
+NATIVE EXIT CASES PASSED
+cleanup: own box and named disks removed
+
+$ window-fault.py $BIN $IMAGE
+control: project status=0; window ioctl EIO=False; exact caller termios restored=True
+fault: project status=125; window ioctl EIO=True; exact caller termios restored=True
+WINDOW QUERY FAULT AND CONTROL PASSED
+cleanup: own box stopped; two explicitly named fixture disks removed
+
+$ terminal.py $BIN $IMAGE
+fullscreen resize: 24x80 -> 31x101 -> 43x137 during blocked 384KiB paste; exact input; termios restored; B=OK
+Ctrl-\: foreground status 131; Ctrl-Z stopped job; fg resumed it; Ctrl-C status 130; Ctrl-D shell exit 0; termios restored; B=OK
+terminal hangup: bash/background/stopped job gone in 0.608s; history marker saved; B=OK
+client SIGTERM: 143; caller termios restored; B=OK
+pinfold stop from another host process: incomplete client 125; caller termios restored
+ALL TERMINAL CASES PASSED
+cleanup: own box stopped; two explicitly named fixture disks removed
+
+$ ../2026-11-17-session-end/cases.py $BIN $IMAGE
+kept box started; image=localhost/pinfold/profile-default:latest
+nonTTY SIGINT: client=130, command gone, B=OK, elapsed=0.23s
+nonTTY SIGTERM: client=143, command gone, B=OK, elapsed=0.24s
+nonTTY SIGHUP: client=129, command gone, B=OK, elapsed=0.23s
+nonTTY SIGKILL: client=-9, command gone, B=OK, elapsed=0.21s
+ignore TERM: gone after 2.16s; B=OK
+terminal closure: client=129, command gone, B=OK
+TTY Ctrl-C: shell survived and ran CTRL-C-OK
+normal completion: background child survives and writes after client exit; B=OK
+plain stdin EOF: command still running; later departure ends it
+observed completion racing signal: status=0
+observed completion racing signal: status=23
+public box exec departure: guest command survives
+setsid: escaped child survives departure; B=OK
+owner teardown: incomplete client=125
+stop: box absent=True
+ALL CASES PASSED
+cleanup: own box stopped and two named fixture disks removed

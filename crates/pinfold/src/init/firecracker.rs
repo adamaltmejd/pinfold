@@ -28,22 +28,26 @@
 //!   answered ENV_SET; an EXEC that arrives first waits for it. EXEC is
 //!   argv (count u32, strings), workdir (empty for `/`), tty u8, then the
 //!   fixed execution metadata string, followed by STDIN,
-//!   STDIN_END and RESIZE (rows u16, cols u16) frames; the guest sends
-//!   STDOUT, STDERR and finally EXIT (i32). STAT is answered STAT with the
+//!   STDIN_END, RESIZE (rows u16, cols u16) and OUTPUT_END (stream kind) frames.
+//!   CREDIT (stream kind, consumed u32) replenishes each 64 KiB stream window.
+//!   The guest sends STDOUT, STDERR and EXIT (i32); output may follow EXIT for
+//!   up to one second. STAT is answered STAT with the
 //!   work cgroup's memory current and peak, pids current and max, and OOM
 //!   kills, each a present u8 and a u64.
 //! - Control (host dials guest [`CONTROL_PORT`], PID 1): UNMOUNT kills the
 //!   work cgroup, syncs and unmounts every attachment, answered CLEAN or
 //!   FAILED (text).
 
+use super::exec_wire::{EXEC, FAILED, STDERR, read_frame, write_frame};
+
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{self, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
@@ -74,22 +78,11 @@ const WORK: &str = "/sys/fs/cgroup/work";
 
 pub const BOOT: u8 = b'B';
 pub const READY: u8 = b'R';
-pub const FAILED: u8 = b'F';
 pub const ENV: u8 = b'V';
 pub const ENV_SET: u8 = b'v';
-pub const EXEC: u8 = b'X';
 pub const STAT: u8 = b'S';
-pub const STDIN: u8 = b'i';
-pub const STDIN_END: u8 = b'e';
-pub const RESIZE: u8 = b'w';
-pub const STDOUT: u8 = b'o';
-pub const STDERR: u8 = b'r';
-pub const EXIT: u8 = b'x';
 pub const UNMOUNT: u8 = b'U';
 pub const CLEAN: u8 = b'C';
-
-/// A frame's payload limit: argv and env together stay far below it.
-const FRAME_MAX: usize = 64 << 20;
 
 /// Where PID 1 builds the box's tree before `pivot_root`. The init disk
 /// is the kernel's root and holds `/pinfold`, `/dev` and `/mnt`.
@@ -911,7 +904,7 @@ fn request(mut connection: UnixStream, env: &Env) -> io::Result<()> {
                 .expect("env lock")
                 .clone()
                 .unwrap_or_default();
-            exec(connection, &payload, vars)
+            exec(connection, &payload, vars, None)
         }
         _ => write_frame(
             &mut connection,
@@ -929,9 +922,13 @@ fn pairs(fields: &mut Fields) -> io::Result<Vec<(OsString, OsString)>> {
 
 /// Run one EXEC request in its own session through `init exec`, which sets
 /// `oom_score_adj` 1000, and relay its stdio until it exits and its output
-/// ends. A host that goes away only closes stdin: pinfold never signals box
-/// work through exec.
-fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>) -> io::Result<()> {
+/// ends. Project commands stop their process group when their client departs.
+pub(super) fn exec(
+    connection: UnixStream,
+    payload: &[u8],
+    vars: Vec<(OsString, OsString)>,
+    departure: Option<(BorrowedFd<'_>, bool)>,
+) -> io::Result<()> {
     let mut fields = Fields(payload);
     let argv: Vec<OsString> = (0..fields.u32()?)
         .map(|_| fields.os())
@@ -944,7 +941,7 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
             .to_str()
             .ok_or_else(|| io::Error::other("non-UTF-8 execution metadata"))?,
     )?;
-    // Linux applies a known size when creating the PTY; init exec must not
+    // Apply a known size when creating the PTY; init exec must not
     // apply it a second time after the command's terminal exists.
     let window = metadata.window.take();
     let project = metadata.project_directory.is_some();
@@ -1006,137 +1003,30 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
         });
     }
 
-    let output = Arc::new(Mutex::new(connection.try_clone()?));
-    let mut child = match command.spawn() {
+    let child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            let mut output = output.lock().expect("output lock");
+            let mut output = &connection;
             let message = format!(
                 "pinfold init exec: {}: {error}\n",
                 super::formatting::terminal_text(&program.to_string_lossy())
             );
             if project {
-                return write_frame(&mut *output, FAILED, message.as_bytes());
+                return write_frame(&mut output, FAILED, message.as_bytes());
             }
-            write_frame(&mut *output, STDERR, message.as_bytes())?;
+            write_frame(&mut output, STDERR, message.as_bytes())?;
             // The public process interface keeps the shell's spawn codes.
             let code: i32 = if error.kind() == io::ErrorKind::NotFound {
                 127
             } else {
                 126
             };
-            return write_frame(&mut *output, EXIT, &code.to_be_bytes());
+            return write_frame(&mut output, super::exec_wire::EXIT, &code.to_be_bytes());
         }
     };
     drop(command);
 
-    let mut pumps = Vec::new();
-    let input: Box<dyn Write + Send> = match &pty {
-        Some(master) => {
-            pumps.push(pump(master.try_clone()?, STDOUT, &output)?);
-            Box::new(master.try_clone()?)
-        }
-        None => {
-            pumps.push(pump(child.stdout.take().expect("piped"), STDOUT, &output)?);
-            pumps.push(pump(child.stderr.take().expect("piped"), STDERR, &output)?);
-            Box::new(child.stdin.take().expect("piped"))
-        }
-    };
-    let resize = match &pty {
-        Some(master) => Some(master.try_clone()?),
-        None => None,
-    };
-    let mut reader = connection.try_clone()?;
-    let input_output = Arc::clone(&output);
-    thread::Builder::new()
-        .spawn(move || relay_input(&mut reader, input, resize.as_ref(), &input_output))?;
-
-    let status = child.wait()?;
-    for pump in pumps {
-        let _ = pump.join();
-    }
-    let code = status
-        .code()
-        .or_else(|| status.signal().map(|signal| 128 + signal))
-        .unwrap_or(1);
-    write_frame(
-        &mut *output.lock().expect("output lock"),
-        EXIT,
-        &code.to_be_bytes(),
-    )?;
-    // Ends the input relay's read; the host has the exit code.
-    let _ = connection.shutdown(std::net::Shutdown::Both);
-    Ok(())
-}
-
-/// Copy `from` into STDOUT or STDERR frames until it ends. After the host
-/// goes away it keeps reading and discards, so box work never blocks on a
-/// full pipe.
-fn pump(
-    mut from: impl Read + Send + 'static,
-    kind: u8,
-    output: &Arc<Mutex<UnixStream>>,
-) -> io::Result<thread::JoinHandle<()>> {
-    let output = Arc::clone(output);
-    thread::Builder::new().spawn(move || {
-        let mut buffer = [0; 32 * 1024];
-        let mut open = true;
-        loop {
-            match from.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(read) => {
-                    if open {
-                        let mut output = output.lock().expect("output lock");
-                        open = write_frame(&mut *output, kind, &buffer[..read]).is_ok();
-                    }
-                }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                // A pty master reads EIO once every slave is closed.
-                Err(_) => break,
-            }
-        }
-    })
-}
-
-fn relay_input(
-    connection: &mut UnixStream,
-    input: Box<dyn Write + Send>,
-    pty: Option<&File>,
-    output: &Mutex<UnixStream>,
-) {
-    let mut input = Some(input);
-    while let Ok((kind, payload)) = read_frame(connection) {
-        match kind {
-            STDIN => {
-                if let Some(writer) = input.as_mut()
-                    && writer.write_all(&payload).is_err()
-                {
-                    input = None;
-                }
-            }
-            // A terminal has no end of input to pass on; a pipe closes.
-            STDIN_END if pty.is_none() => input = None,
-            RESIZE => {
-                if let (Some(master), &[r0, r1, c0, c1]) = (pty, payload.as_slice())
-                    && let Err(error) = set_window(
-                        master,
-                        u16::from_be_bytes([r0, r1]),
-                        u16::from_be_bytes([c0, c1]),
-                    )
-                {
-                    let detail = format!("terminal size: {error}");
-                    let _ = write_frame(
-                        &mut *output.lock().expect("output lock"),
-                        FAILED,
-                        detail.as_bytes(),
-                    );
-                    let _ = connection.shutdown(std::net::Shutdown::Both);
-                    return;
-                }
-            }
-            _ => {}
-        }
-    }
+    super::session_io::relay(connection, child, pty, project, departure)
 }
 
 fn open_pty(window: Option<(u16, u16)>) -> io::Result<(File, File)> {
@@ -1176,7 +1066,7 @@ fn context(what: &str, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("{what}: {error}"))
 }
 
-fn set_window(master: &File, rows: u16, cols: u16) -> io::Result<()> {
+pub(super) fn set_window(master: &impl AsRawFd, rows: u16, cols: u16) -> io::Result<()> {
     let size = libc::winsize {
         ws_row: rows,
         ws_col: cols,
@@ -1257,32 +1147,6 @@ fn accept_host(listener: &OwnedFd) -> Option<UnixStream> {
         Ok(peer) if peer.cid() == HOST_CID => Some(UnixStream::from(connection)),
         _ => None,
     }
-}
-
-pub(crate) fn write_frame(output: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
-    let length = u32::try_from(payload.len())
-        .ok()
-        .filter(|&length| length as usize <= FRAME_MAX)
-        .ok_or_else(|| io::Error::other("frame too large"))?;
-    let mut frame = Vec::with_capacity(5 + payload.len());
-    frame.push(kind);
-    frame.extend(length.to_be_bytes());
-    frame.extend(payload);
-    output.write_all(&frame)
-}
-
-/// Read one frame exactly, never past it: the boot connection's next bytes
-/// belong to the exec service.
-pub(crate) fn read_frame(input: &mut impl Read) -> io::Result<(u8, Vec<u8>)> {
-    let mut head = [0; 5];
-    input.read_exact(&mut head)?;
-    let length = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
-    if length > FRAME_MAX {
-        return Err(io::Error::other("frame too large"));
-    }
-    let mut payload = vec![0; length];
-    input.read_exact(&mut payload)?;
-    Ok((head[0], payload))
 }
 
 /// A frame payload's fields, read in order.
