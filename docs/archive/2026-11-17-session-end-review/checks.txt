@@ -1,0 +1,39 @@
+Main source: git archive 7045e85; built separately for each host.
+Mac before first build: df -g /System/Volumes/Data: 56 GiB available.
+Mac final: df -g /System/Volumes/Data: 50 GiB available.
+$ RUSTC_WRAPPER= cargo build --locked
+   Compiling pinfold v0.5.5 (/Users/user/code/.cache/pinfold-work/s322/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.30s
+
+$ cargo fmt --check
+exit 0
+$ RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings
+   Compiling pinfold v0.5.5 (/Users/user/code/.cache/pinfold-work/s322/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.73s
+
+$ cargo build --locked --target x86_64-unknown-linux-musl
+$ cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings
+   Compiling pinfold v0.5.5 (/tmp/pfr1.candidate/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.92s
+   Compiling pinfold v0.5.5 (/tmp/pfr1.candidate/crates/pinfold)
+    Checking pinfold-init v0.5.5 (/tmp/pfr1.candidate/crates/pinfold-init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.82s
+pinfold: building image probe-session-review
+pinfold: build run af56df30cec14d6152acce28f1985d6203f1fc248d9da872d54d9856181c3388; egress log /tmp/pfr1/s/pinfold/runs/af56df30cec14d6152acce28f1985d6203f1fc248d9da872d54d9856181c3388/egress.jsonl
+{"base":null,"event":"built","id":"sha256:57ad6183e7c18da1c3a0e06237ed40ad5ed2c3926c65d9cbc1da31ea88ffa135","image":"probe-session-review","labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"","dev.pinfold.profile":"","dev.pinfold.project":""},"latest":"localhost/pinfold/image-probe-session-review:latest","ref":"localhost/pinfold/image-probe-session-review:18e89f698ac7c898-16445"}
+IMAGE_EXIT=0
+1794859727
+1794859780
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sda1        32G  3.8G   27G  13% /
+
+Always applied unchanged (section compared against c303eff).
+Fixture Containerfile: FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends git curl perl bash ca-certificates && rm -rf /var/lib/apt/lists/*
+$ pinfold image build probe-session-review --containerfile $W/image/Containerfile --context $W/image --allow deb.debian.org --allow security.debian.org
+Image build elapsed: 53 seconds, exit 0.
+Initial caller termios observation: lflag 1483 -> 536872395 (Darwin PENDIN only).
+Read-readiness ioctl before comparison: exact original termios restored (no termios mutation by observer).
+Early window fault fixture: config edit exited -11; recursive dlsym lookup removed; final real ioctl control/fault passed.
+running native containers: buildkit
+{"ok":true,"command":"release","status":"idle"}
