@@ -104,9 +104,12 @@ Backends complete guest initialization through readiness. The common box
 owner holds the child, proxy and cancellation and decides cleanup.
 Cancellation reaps preparation helpers and joins startup, proxy and diagnostic
 workers before completed teardown. Host name lookup has a ten-second deadline.
-A resolver worker holds only the host name and lookup parameters. Cancellation
-discards its result without dialing. Teardown may finish without joining a
-lookup still in the system resolver; all other workers are joined. Native
+At most 64 resolver workers may be outstanding per process; a full resolver
+budget fails as a lookup timeout does. A slot remains held until its worker
+exits. Cancellation discards its result without dialing. An abandoned lookup
+holds nothing of pinfold's: no credential, socket, lock or policy reference.
+Teardown may finish without joining a lookup still in the system resolver;
+all other workers are joined. Native
 runtime removal has a 300-second deadline; expiry cancels and reaps its helpers
 and reports `cleanup-timeout`. Linux unmount has a 30-second absolute deadline.
 

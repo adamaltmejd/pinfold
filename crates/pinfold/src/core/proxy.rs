@@ -7,7 +7,7 @@ use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak, mpsc};
 
 use std::thread;
@@ -44,6 +44,16 @@ const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 const MAX_CONNECTIONS: usize = 64;
+
+static LOOKUPS: AtomicUsize = AtomicUsize::new(0);
+
+struct LookupSlot;
+
+impl Drop for LookupSlot {
+    fn drop(&mut self) {
+        LOOKUPS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 const MAX_LOG_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -980,11 +990,18 @@ fn lookup(
     if connection.cancelled() {
         return Err(network::ResolveError::Unresolved);
     }
+    LOOKUPS
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            (count < MAX_CONNECTIONS).then_some(count + 1)
+        })
+        .map_err(|_| network::ResolveError::Unresolved)?;
+    let slot = LookupSlot;
     let host = host.to_string();
     let (send, receive) = mpsc::sync_channel(1);
     let worker = thread::Builder::new()
         .name("proxy-lookup".into())
         .spawn(move || {
+            let _slot = slot;
             let resolved = if checked {
                 network::resolve(&host, port)
             } else {
