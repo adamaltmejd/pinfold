@@ -879,19 +879,26 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
                 cwd: Some(&cwd), project_root: Some(&root), tty, agent: Some(&argv[0]), cancel: Some(&worker_cancel),
             }, &argv)
         });
-        let (result, completed) = tokio::select! {
+        let (result, exec_finished, completed) = tokio::select! {
             biased;
-            result = &mut exec => (result.map_err(|_| io::Error::other("command execution worker failed")).and_then(|r| r).map(cli::exit_code), true),
-            _ = lease.ended() => (Ok(125), false),
-            signal = signals.recv() => (Ok(128 + signal as i32), false),
+            result = &mut exec => {
+                let result = result.map_err(|_| io::Error::other("command execution worker failed")).and_then(|r| r).map(cli::exit_code);
+                let completed = result.as_ref().ok().copied();
+                (result, true, completed)
+            },
+            _ = lease.ended() => (Ok(125), false, None),
+            signal = signals.recv() => (Ok(128 + signal as i32), false, None),
         };
         cancel.store(true, Ordering::SeqCst);
         crate::core::runtime::terminal::cancel();
-        if !completed {
+        if !exec_finished {
             // The transport itself can already have observed native completion.
-            if let Ok(Ok(status)) = exec.await { return finish_client(lease, Ok(cli::exit_code(status)), &mut signals).await; }
+            if let Ok(Ok(status)) = exec.await {
+                let code = cli::exit_code(status);
+                return finish_client(lease, Ok(code), Some(code), &mut signals).await;
+            }
         }
-        finish_client(lease, result, &mut signals).await
+        finish_client(lease, result, completed, &mut signals).await
         }.await;
         match result {
             Ok(code) => Ok(code),
@@ -906,6 +913,7 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
 async fn finish_client(
     lease: Lease,
     result: io::Result<i32>,
+    completed: Option<i32>,
     signals: &mut Signals,
 ) -> io::Result<i32> {
     let leave = lease.leave(signals).await;
@@ -917,17 +925,18 @@ async fn finish_client(
             125
         }
     };
-    if let Err(error) = leave {
-        if error.kind() == io::ErrorKind::Interrupted && signals.last().is_some() {
-            return Ok(code);
+    match leave {
+        Err(error) => {
+            if error.kind() != io::ErrorKind::Interrupted || signals.last().is_none() {
+                let _ =
+                    forward_diagnostics(format!("pinfold: leave: {error}").into_bytes(), signals)
+                        .await;
+            }
         }
-        let _ = forward_diagnostics(format!("pinfold: leave: {error}").into_bytes(), signals).await;
-        return Ok(code);
+        Ok(()) if signals.last().is_none() => clean::maintain(),
+        Ok(()) => {}
     }
-    if signals.last().is_none() {
-        clean::maintain();
-    }
-    Ok(code)
+    Ok(completed.unwrap_or_else(|| signals.last().map_or(code, |signal| 128 + signal as i32)))
 }
 
 pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
