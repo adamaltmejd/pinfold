@@ -1,0 +1,16 @@
+macOS arm64, Apple container:
+$ RUSTC_WRAPPER= cargo build --locked
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.35s
+$ RUSTC_WRAPPER= cargo fmt --check
+exit=0
+$ RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s
+exit=0
+Linux x64, retained trial VM, commands through serialized labvm exec:
+$ cargo build --locked --target x86_64-unknown-linux-musl
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.87s
+$ cargo fmt --check
+exit=0
+$ cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.51s
+exit=0

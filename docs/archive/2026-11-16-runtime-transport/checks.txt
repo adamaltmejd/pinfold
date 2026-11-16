@@ -1,0 +1,29 @@
+$ RUSTC_WRAPPER= cargo build --locked
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.88s
+$ cargo fmt --check
+exit=0
+$ RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.24s
+$ labvm status
+{"status":"active"} (JSON excerpt)
+$ labvm exec -- bash -lc 'cd ~/pinfold-transport && RUSTC_WRAPPER= cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings'
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.27s
+exit=0
+$ foreground-case.py; tty-review.py fixed; terminal-cases.py; rereview/cases.py fixed; lifecycle.py; native-startup.py
+full Apple rerun exit=0
+$ python3 native-startup.py "$BIN" "$IMAGE"
+native run startup failure: exit=1; native diagnostic surfaced; newline/ESC escaped; 96KiB input truncated at 64KiB; state contains no diagnostic
+non-TTY early stdin closure: 1MiB input, observed exit=23
+non-TTY independent input: guest closed stdout, read all 1MiB, separate stderr count=1048576, exit=0
+corrected native startup: ready; stdin EOF teardown exit=0
+$ /tmp/pfrt-socket-capacity (prior platform observer)
+sockaddr_un.sun_path=104 bytes including terminator
+Darwin TIOCSETA/W/F=2152231956,2152231957,2152231958
+$ labvm exec -- bash -lc /tmp/pfrt-capacity
+sockaddr_un.sun_path=108 bytes including terminator
+$ df -g /System/Volumes/Data
+/dev/disk3s5       460  306        40    89% 2640451 428252600    1%   /System/Volumes/Data
+$ labvm exec -- bash -lc 'df -h /'
+/dev/sda1        32G  6.4G   24G  22% /
+blocked.log fixture disk cleanup exit=0 removed=2
+All six final Apple harness state roots returned fixture disk cleanup exit=0.

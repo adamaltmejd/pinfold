@@ -1,6 +1,7 @@
 //! A finite build transaction. The VMM sees only its fixed role's disks.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
@@ -223,6 +224,7 @@ async fn transaction(request: &BuildRequest<'_>) -> io::Result<Result<(), String
         _ = terminate.recv() => return Err(io::ErrorKind::Interrupted.into()),
     }
     .ok_or_else(|| io::Error::other("builder-in-use: another build owns the cache"))?;
+    claim.retire_previous()?;
     cleanup_abandoned_socket_dirs(&claim)?;
     let state = super::cache_dir()?.join("job");
     let restoring = {
@@ -262,18 +264,22 @@ async fn transaction(request: &BuildRequest<'_>) -> io::Result<Result<(), String
             },
         }
     };
-    // run_transaction never returns until a spawned VMM has been reaped and
-    // every host worker has stopped. Only then may the cache claim be released.
-    let writable = tokio::task::spawn_blocking(move || {
-        writable_snapshot(&state)?;
-        crate::core::absent_ok(fs::remove_dir_all(&state))
-    })
-    .await
-    .map_err(io::Error::other)
-    .and_then(|result| result);
-    let sockets = cleanup_generation_sockets(&claim);
-    let cleanup = claim.finish(writable.is_ok() && sockets.is_ok()).await;
-    if let Err(error) = writable.and(sockets).and(cleanup) {
+    // A wait error is not proof of death. Recheck identity before deleting state.
+    let cleanup = async {
+        claim.retire_previous()?;
+        let writable = tokio::task::spawn_blocking(move || {
+            writable_snapshot(&state)?;
+            crate::core::absent_ok(fs::remove_dir_all(&state))
+        })
+        .await
+        .map_err(io::Error::other)
+        .and_then(|result| result);
+        let sockets = cleanup_generation_sockets(&claim);
+        let cleanup = claim.finish(writable.is_ok() && sockets.is_ok()).await;
+        writable.and(sockets).and(cleanup)
+    }
+    .await;
+    if let Err(error) = cleanup {
         eprintln!("pinfold: build cleanup: {error}");
     }
     match result {
@@ -331,7 +337,7 @@ async fn run_transaction(
     let proxy_socket = vsock.join("v.sock_3128");
     let egress_log = runs::egress_log(&generation)?;
     let mut audit = proxy::start(
-        &proxy_socket,
+        crate::core::runtime::sockets::bind(&proxy_socket)?,
         &Egress {
             allow: hosts,
             routes: BTreeMap::new(),
@@ -343,7 +349,6 @@ async fn run_transaction(
         "pinfold: build run {generation}; egress log {}",
         egress_log.display()
     );
-    fs::set_permissions(proxy_socket, fs::Permissions::from_mode(0o600))?;
     let built = run_job(
         &state.join("build"),
         &prepared,
@@ -844,7 +849,13 @@ async fn run_job(
     for name in ["v.sock".to_string(), format!("v.sock_{BOOT_PORT}")] {
         crate::core::absent_ok(fs::remove_file(vsock.join(name)))?;
     }
-    let listener = UnixListener::bind(vsock.join(format!("v.sock_{BOOT_PORT}")))?;
+    let vsock_directory = crate::core::runtime::sockets::checked_directory(&vsock)?;
+    let listener = crate::core::runtime::sockets::bind_at(
+        &vsock_directory,
+        OsStr::new(&format!("v.sock_{BOOT_PORT}")),
+    )?;
+    listener.set_nonblocking(true)?;
+    let listener = UnixListener::from_std(listener)?;
     let mut drives = vec![(work.to_path_buf(), true), (disk, false)];
     if handoff.is_some() {
         drives.push((selected_disk.clone(), false));
@@ -861,16 +872,21 @@ async fn run_job(
     fs::write(&config_path, config.to_string())?;
     let jail_root = state.join("jail");
     private_dir(&jail_root)?;
-    let mut child = jail::spawn(&jail::Jail {
-        root: &jail_root,
-        firecracker: &prepared.vmm.firecracker,
-        kernel: &prepared.vmm.kernel,
-        root_disk: &prepared.root,
-        init_disk: &prepared.init,
-        disks: &drives,
-        vsock: &vsock,
-        config: &config_path,
-    })?;
+    let mut child = jail::spawn(
+        &jail::Jail {
+            root: &jail_root,
+            firecracker: &prepared.vmm.firecracker,
+            kernel: &prepared.vmm.kernel,
+            root_disk: &prepared.root,
+            init_disk: &prepared.init,
+            disks: &drives,
+            vsock: &vsock_directory,
+            config: &config_path,
+        },
+        state
+            .parent()
+            .expect("builder phase directory has a parent"),
+    )?;
     let deadline = Instant::now() + JOB_TIME;
     // All fallible work after spawn is inside this future. Every result flows
     // through kill/wait below before the caller can release ownership.
@@ -1017,6 +1033,7 @@ async fn clean_cache(
         .await
         .and_then(|()| check_cancel(cancel));
     if let Err(error) = result {
+        claim.retire_previous()?;
         // The watcher joined the cleaner. Try restoring the marker or retiring
         // the cache. A removed marker already followed guest shutdown and host
         // sync, so two recovery errors cannot expose an active cache writer.

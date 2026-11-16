@@ -1,0 +1,6 @@
+PRESTART-STAGING {"generation": "ce3655e7a31b75baddbc0a1bb0e6e153868ea8d5161cc98b297f1b35d19d746c", "retiring": false, "private_stage_absent": true, "foreign_bytes_unchanged": true, "vmm": "not-started"}
+real publication refused runtime-path; private staging removed while claim was not retiring; foreign bytes preserved
+$ $BIN ['box', 'exec', 'probe-retirement-20800-staging', '--', 'printf', 'RETIREMENT-CONTROL']; exit=0 stdout=b'RETIREMENT-CONTROL' stderr-tail=b''
+$ $BIN ['box', 'down', 'probe-retirement-20800-staging']; exit=0 stdout=b'' stderr-tail=b''
+corrected owner exit=0 stdout=b'{"box":"probe-retirement-20800-staging","event":"down","reason":"signal","run_id":"91159974257c4e3d0099439d470d6d5d04a3375cb05e8c0d546e0a768eb48b9e"}\n' stderr=b''
+PASS pre-start private staging exception and corrected same-name exec/down control

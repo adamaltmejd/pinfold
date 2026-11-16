@@ -6,7 +6,7 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -45,23 +45,17 @@ const MAX_CONNECTIONS: usize = 64;
 
 const MAX_LOG_BYTES: u64 = 128 * 1024 * 1024;
 
-/// Bind the box's socket, create its log, and serve. `codex` is the token of
+/// Serve the bound box socket and create its log. `codex` is the token of
 /// the login routes on the host's Codex login, asked of the host helper at
 /// `up`. The accept thread is never stopped: each owner exits right after
 /// teardown, which deletes the socket.
 pub fn start(
-    socket: &Path,
+    listener: UnixListener,
     egress: &Egress,
     codex: Option<login::Token>,
     log: PathBuf,
 ) -> io::Result<oneshot::Receiver<()>> {
     let rules = Arc::new(Rules::new(egress, codex)?);
-    let listener = UnixListener::bind(socket).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("proxy socket {}: {error}", socket.display()),
-        )
-    })?;
     // The log exists before the first decision, so it is found from the
     // host even for a box that made no request.
     runs::open_log(&log)?;

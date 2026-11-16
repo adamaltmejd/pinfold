@@ -1,0 +1,18 @@
+$ macOS RUSTC_WRAPPER= cargo build --locked
+Finished dev profile in 1.76s; exit0
+$ macOS RUSTC_WRAPPER= cargo fmt --check
+exit0; no output
+$ macOS RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings
+Finished dev profile in 1.04s; exit0
+$ Linux cargo build --locked --target x86_64-unknown-linux-musl
+Finished dev profile in 5.70s; exit0
+$ Linux cargo fmt --check
+exit0; no output
+$ Linux cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings
+Final completed dev profile in 1.17s; exit0
+$ retained new image alias
+localhost/pinfold/image-probe-cache-purge-19473:latest
+$ final free disk
+Mac Data 33 GiB; Linux 25 GiB
+No Mac image created/removed; Linux trial lease retained; no push or PR.
+Final Linux owned box inventory was empty after all controls.

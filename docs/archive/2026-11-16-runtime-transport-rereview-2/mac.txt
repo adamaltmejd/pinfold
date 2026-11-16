@@ -1,0 +1,7 @@
+owned EOF with state deletion refused: exit=1 stdout=b'{"box":"probe-retirement-39354-apple","detail":"Permission denied (os error 13)","event":"failed"}\n' stderr=b''
+real Apple runtime absent; durable matching owner retiring=true survives failed state deletion
+$ $BIN ['box', 'down', 'probe-retirement-39354-apple']; exit=0 stdout=b'' stderr-tail=b''
+$ $BIN ['box', 'exec', 'probe-retirement-39354-apple', '--', 'printf', 'RETIREMENT-CONTROL']; exit=0 stdout=b'RETIREMENT-CONTROL' stderr-tail=b''
+$ $BIN ['box', 'down', 'probe-retirement-39354-apple']; exit=0 stdout=b'' stderr-tail=b''
+corrected owner exit=0 stdout=b'{"box":"probe-retirement-39354-apple","event":"down","reason":"signal","run_id":"db853a8fcee9c50c86278271e4aa306edbc60f78b6ad3b9ca13cafde2b73b5c6"}\n' stderr=b''
+PASS Apple owned retirement, failed-delete preservation, repaired down and fresh same-name exec

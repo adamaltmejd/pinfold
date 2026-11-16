@@ -58,7 +58,7 @@ pinfold box fetch BOX --repo GUEST_REPO --into REPO";
 
 pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
     result.unwrap_or_else(|error| {
-        eprintln!("pinfold {verb}: {error}");
+        let _ = writeln!(io::stderr(), "pinfold {verb}: {error}");
         if verb == "--" { 125 } else { 1 }
     })
 }
@@ -372,9 +372,9 @@ fn parse_fetch(args: &[String]) -> io::Result<(String, String, String)> {
 /// exit 3.
 fn present(runtime: &dyn Runtime, verb: &str, name: &str) -> io::Result<bool> {
     let found = runtime
-        .list()?
-        .iter()
-        .any(|box_| box_.id == name && clean::pinfold_box(box_));
+        .inspect(name)?
+        .as_ref()
+        .is_some_and(clean::pinfold_box);
     if !found {
         eprintln!("pinfold box {verb}: no box named {name:?}");
     }
@@ -404,7 +404,7 @@ fn list(args: &[String]) -> io::Result<i32> {
                 "owner": owner,
                 "owner_alive": owner_alive,
                 "created": box_.created,
-                "state": if box_.running { "running" } else { "stopped" },
+                "state": if box_.running { "running" } else if box_.stopped { "stopped" } else { "unknown" },
             })
         );
     }
@@ -416,8 +416,15 @@ fn prune(args: &[String]) -> io::Result<i32> {
         return Err(usage("box", "prune takes no arguments"));
     }
     let runtime = runtime();
-    let boxes = clean::boxes(runtime)?;
+    let boxes = match clean::boxes(runtime) {
+        Ok(boxes) => boxes,
+        Err(error) => {
+            clean::prune_leftover_states(runtime)?;
+            return Err(error);
+        }
+    };
     let removed = clean::prune_boxes(runtime, &boxes)?;
+    clean::prune_leftover_states(runtime)?;
     for dead in &removed {
         println!(
             "{}",
@@ -749,7 +756,20 @@ impl CleanPlan {
             .chain(clean::leftover_socket_dirs()?)
             .collect();
         let automatic = artifacts::unpinned_versions()?;
-        let runs = runs::retired()?;
+        let runs = match runs::retired() {
+            Ok(runs) => runs,
+            Err(error) => {
+                let _ = writeln!(
+                    io::stderr(),
+                    "pinfold: run retention: {error}; keeping run records"
+                );
+                Vec::new()
+            }
+        };
+        let run_bytes = dirs::entries(&dirs::runs_dir()?)?
+            .iter()
+            .map(|entry| clean::path_bytes(&entry.path()))
+            .sum();
 
         let disks = runtime.list_disks()?;
         let mut project_disks = BTreeMap::new();
@@ -779,7 +799,7 @@ impl CleanPlan {
                 .sum(),
             project_state,
             automatic,
-            run_bytes: runs.iter().map(|path| clean::path_bytes(path)).sum(),
+            run_bytes,
             runs,
             project_disks,
             disk_bytes: disks.iter().map(|disk| disk.allocated).sum(),
@@ -831,7 +851,9 @@ impl CleanPlan {
     fn remove(self, runtime: &dyn Runtime) -> io::Result<()> {
         clean::prune_boxes(runtime, &self.boxes)?;
         clean::prune_leftover_states(runtime)?;
-        image::service().purge_build_cache()?;
+        if let Err(error) = image::service().purge_build_cache() {
+            let _ = writeln!(io::stderr(), "pinfold clean: build cache: {error}; kept");
+        }
         clean::remove_paths(self.automatic)?;
         clean::remove_paths(self.runs)?;
         let mut locks = BTreeMap::new();
@@ -840,6 +862,7 @@ impl CleanPlan {
                 locks.insert(id.as_str(), lock);
             }
         }
+        let mut disk_failure = None;
         if !locks.is_empty() {
             // All candidates stay locked through this one fresh snapshot.
             let live = clean::boxes(runtime)?.live_projects;
@@ -851,13 +874,22 @@ impl CleanPlan {
                     clean::remove_paths(vec![project.dir.clone()])?;
                     // A disk a box attaches stays; `disk::remove` checks.
                     for name in self.project_disks.get(&project.id).into_iter().flatten() {
-                        disk::remove(runtime, name)?;
+                        if let Err(error) = disk::remove(runtime, name) {
+                            let _ = writeln!(
+                                io::stderr(),
+                                "pinfold clean: disk {name:?}: {error}; kept"
+                            );
+                            disk_failure.get_or_insert(error);
+                        }
                     }
                 }
             }
         }
         drop(locks);
-        clean::keep_two_images(image::service(), None)
+        if let Err(error) = clean::keep_two_images(image::service(), None) {
+            let _ = writeln!(io::stderr(), "pinfold clean: images: {error}; kept");
+        }
+        disk_failure.map_or(Ok(()), Err)
     }
 
     /// Whether `--unused` selects the project: not run for that long and no

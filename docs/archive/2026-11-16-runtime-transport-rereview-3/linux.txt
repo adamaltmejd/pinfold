@@ -1,0 +1,25 @@
+$ disk-inventory.py final Linux binary
+EXTERNAL-DISK-BARRIER {"barrier": "attachments after first claim snapshot, before runtime decision inventory", "source_line": 313, "frame": "pinfold::core::disk::attachments", "generation": "38b1f63e372278681116ff1e288a4c491eb86b995f85c0449d82397cd6db45e9", "owner_inode": 1639, "mode_before": "0o600", "mode_after": "0o0"}
+raced actual disk rm exit=1 stdout=b'' stderr=b'pinfold disk: ownership record Some("5cc2ee456716c40a043862eefa94b2d122c973ca718ee347fa8863bf407d2cd6.owner"): Permission denied (os error 13)\n'
+raced inventory refusal preserved full 1GiB backing bytes, device/inode and size: (33, 1636, 1073741824, 'd2b4fc42be249e516a9622a4f47bafd277b1f329239633e1349d64f74753f866'); owner record retained at mode000
+unreadable claim also failed closed for clean and prune; backing bytes and claim mode unchanged
+unknown identity also failed closed for clean and prune; backing bytes and claim unchanged
+$ $BIN ['box', 'exec', 'probe-disk-inventory-19895-healthy', '--', 'printf', 'TARGET-LOCAL-CONTROL']; exit=0 stdout=b'TARGET-LOCAL-CONTROL' stderr=b''
+display-only inventory reported unknown; unrelated targeted startup/exec/stat/down passed
+missing whole boxes/state tree refused disk removal; full backing bytes/inode unchanged
+repaired complete identity is displayed as stopped; unknown output contract control passed
+known dead but unretired claim still pins its disk until retirement is published
+PASS repaired identity permitted targeted retirement/down and the same real disk rm succeeded
+$ cache-purge.py real live-to-idle boundary
+external {"phase": "builder-live-after-spawn", "pid": 19479, "generation": "3b76c1308b9ef19c0318efbaa9e13c2e5f8afdd38937a28bdd3cf9f38bf035e5", "retiring": false, "state": "/home/user/.cache/pinfold/builder/1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd/job", "state_exists": true, "cache_exists": true, "identity_exists": true, "owner_exists": true}
+external {"phase": "before-cache-lock", "pid": 19501, "generation": "3b76c1308b9ef19c0318efbaa9e13c2e5f8afdd38937a28bdd3cf9f38bf035e5", "retiring": false, "state": "/home/user/.cache/pinfold/builder/1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd/job", "state_exists": true, "cache_exists": true, "identity_exists": true, "owner_exists": true}
+clean passed orphan phases while builder lock held; killed real builder and observed VMM 19491 death through pidfd
+external {"phase": "retired-before-cache-mutation", "pid": 19501, "generation": "3b76c1308b9ef19c0318efbaa9e13c2e5f8afdd38937a28bdd3cf9f38bf035e5", "retiring": true, "state": "/home/user/.cache/pinfold/builder/1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd/job", "state_exists": true, "cache_exists": true, "identity_exists": true, "owner_exists": true}
+external {"phase": "cache-gone-owner-retained", "pid": 19501, "generation": "3b76c1308b9ef19c0318efbaa9e13c2e5f8afdd38937a28bdd3cf9f38bf035e5", "retiring": true, "state": "/home/user/.cache/pinfold/builder/1e9a62f3eb034bf8582f4ff5d6e42310b56c5fbc1de201336342647228fe18cd/job", "state_exists": false, "cache_exists": false, "identity_exists": false, "owner_exists": true}
+debugger exit=0; SIGKILL lines=[b'Program terminated with signal SIGKILL, Killed.']
+$ $BIN ['box', 'down', 'builder-b560d6b8028cb21bda0643b27b6b22e8']; exit=0 stdout=b'' stderr-tail=b''
+$ $BIN ['image', 'build', 'probe-cache-purge-19473', '--containerfile', '$W/Containerfile', '--context', '$W/context']; exit=0 stdout=b'{"base":null,"event":"built","id":"sha256:3ca74eb37d7e00a45c1689d6527745b1840e773b5af2a012aa22e1e371e07873","image":"probe-cache-purge-19473","labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"","dev.pinfold.profile":"","dev.pinfold.project":""},"latest":"localhost/pinfold/image-probe-cache-purge-19473:latest","ref":"localhost/pinfold/image-probe-cache-purge-19473:18e85bcbc5920bcf-19505"}\n' stderr-tail=b'pinfold: building image probe-cache-purge-19473\npinfold: build run ba6b7614f11a7d10213e8efc123bbfbf9620083c01e63e75f206c9c0cc495f4d; egress log $W/s/pinfold/runs/ba6b7614f11a7d10213e8efc123bbfbf9620083c01e63e75f206c9c0cc495f4d/egress.jsonl\n'
+PASS live-to-idle purge race, retirement before mutation, crash after cache deletion, targeted down and next real build; retained image=probe-cache-purge-19473
+$ final strict Linux Clippy: exit0
+   Compiling pinfold v0.5.5 (/home/user/pinfold/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.67s

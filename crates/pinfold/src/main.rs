@@ -9,7 +9,7 @@ mod init;
 mod pi;
 mod update;
 
-use std::io;
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 use crate::pi::launch;
@@ -103,7 +103,7 @@ fn main() -> ExitCode {
             if matches!(result, Ok(0)) {
                 Err(error)
             } else {
-                eprintln!("pinfold {verb}: {error}");
+                let _ = writeln!(io::stderr(), "pinfold {verb}: {error}");
                 result
             }
         }

@@ -88,6 +88,7 @@ pub enum RefusalReason {
     Spec,
     Profile,
     Runtime,
+    RuntimePath,
     ImageMissing,
     NameInUse,
     Login,
@@ -275,7 +276,8 @@ impl Box {
             biased;
             _ = signals.recv() => return Err(UpError::Signal),
             claim = ownership::Claim::take(&plan.name) => claim,
-        }?
+        }
+        .map_err(|error| ownership_error(&plan, error))?
         .ok_or_else(|| {
             refused(
                 &plan,
@@ -291,7 +293,9 @@ impl Box {
                 format!("the runtime already has a box named {:?}", plan.name),
             ));
         }
-        claim.prepare(&state_dir)?;
+        claim
+            .prepare(&state_dir)
+            .map_err(|error| ownership_error(&plan, error))?;
         // Disk refusals come after the name claim; returning drops the
         // claim, which removes its record and state.
         let claimed = match disk::claim(
@@ -329,7 +333,11 @@ impl Box {
         let mut progress = Starting {
             claimed,
             directories,
-            ..Starting::default()
+            sockets: claim.sockets().clone(),
+            child: None,
+            audit: Audit::Off,
+            cancel: std::sync::Arc::default(),
+            preparing: None,
         };
         let starting = async {
             if let Some(share) = profile.as_ref().and_then(|profile| profile.share.as_ref()) {
@@ -378,8 +386,15 @@ impl Box {
                         let (removed, status) = child.abort(&plan.name).await;
                         (removed, Some(status))
                     }
-                    None => (Ok(false), None),
+                    None => {
+                        #[cfg(target_os = "linux")]
+                        let removed = runtime.down(&plan.name).map(|()| false);
+                        #[cfg(not(target_os = "linux"))]
+                        let removed = Ok(false);
+                        (removed, None)
+                    }
                 };
+                let removed = removed.and_then(|synced| claim.retire().map(|()| synced));
                 if let Ok(synced) = removed {
                     // Only a stop pinfold asked of a running box synced its
                     // disks; a box that failed readiness ended, or may have,
@@ -559,8 +574,8 @@ impl From<io::Error> for Stop {
 }
 
 /// Startup resources retained when its future is cancelled.
-#[derive(Default)]
 struct Starting {
+    sockets: runtime::sockets::Sockets,
     child: Option<Child>,
     audit: Audit,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -587,6 +602,7 @@ async fn start(
     // Render nonsecret route files only after the claim.
     let mut resolved = plan.clone();
     let preparation_dir = state_dir.to_path_buf();
+    let preparation_sockets = progress.sockets.clone();
     let cancel = progress.cancel.clone();
     let image_id = image_id.to_string();
     let worker = progress
@@ -594,8 +610,14 @@ async fn start(
         .insert(tokio::task::spawn_blocking(move || {
             let generated = login_destinations(&resolved).map_err(io::Error::other)?;
             prepare_logins(&mut resolved, &preparation_dir)?;
-            let prepared =
-                runtime::prepare(&resolved, &preparation_dir, &image_id, &cancel, &generated)?;
+            let prepared = runtime::prepare(
+                &resolved,
+                &preparation_dir,
+                &preparation_sockets,
+                &image_id,
+                &cancel,
+                &generated,
+            )?;
             Ok((resolved, prepared))
         }));
     let prepared = worker
@@ -611,9 +633,14 @@ async fn start(
     let runtime = runtime();
     let socket = match &plan.egress {
         Some(egress) => {
-            let socket = runtime.proxy_socket(state_dir)?;
+            let socket = progress.sockets.proxy()?;
             let log = runs::egress_log(&plan.labels[ownership::GENERATION_LABEL])?;
-            progress.audit = Audit::Waiting(proxy::start(&socket, egress, codex, log.clone())?);
+            progress.audit = Audit::Waiting(proxy::start(
+                progress.sockets.bind_proxy()?,
+                egress,
+                codex,
+                log.clone(),
+            )?);
             egress_log = Some(log);
             Some(socket)
         }
@@ -977,4 +1004,12 @@ async fn audit_failure(audit: &mut Audit) {
         return;
     }
     std::future::pending::<()>().await;
+}
+
+fn ownership_error(plan: &Plan, error: io::Error) -> UpError {
+    if runtime::sockets::is_path_error(&error) {
+        refused(plan, RefusalReason::RuntimePath, error.to_string())
+    } else {
+        UpError::Other(error)
+    }
 }

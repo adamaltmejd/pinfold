@@ -1,0 +1,17 @@
+$ macOS: RUSTC_WRAPPER= cargo fmt --check
+exit=0; no output
+$ macOS: RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings
+Finished dev profile in 1.69s; exit=0
+$ Linux: cargo build --locked --target x86_64-unknown-linux-musl
+Finished dev profile in 4.26s; exit=0
+$ Linux: cargo fmt --check
+exit=0; no output
+$ Linux: cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings
+Finished dev profile in 2.39s; exit=0
+$ installed Darwin SDK header search
+sys/socket.h SOCK_CLOEXEC: absent; unistd.h pipe2: absent
+$ final free disk
+Mac Data: 35 GiB; Linux: 24 GiB
+$ retained probe image
+localhost/pinfold/image-probe-rereview-boot-28423:latest
+No existing image removed/rebuilt; trial lease retained; no push or PR.

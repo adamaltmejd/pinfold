@@ -83,7 +83,7 @@ impl Claimed {
     /// on a disk another box attached since, so a disk no box mounted keeps
     /// its old state.
     fn undo_locked(&self, runtime: &dyn Runtime, name: &str) {
-        let attached = match attachments(runtime, Some(name)) {
+        let attached = match complete_attachments(Some(name)) {
             Ok(attached) => attached,
             Err(error) => {
                 eprintln!("pinfold: startup cleanup: disk attachments: {error}");
@@ -140,13 +140,22 @@ pub fn claim(
     }
     let names: BTreeSet<&str> = disks.iter().map(|disk| disk.name.as_str()).collect();
     let _locks = locks(&names).map_err(Err)?;
-    let attached = attachments(runtime, Some(name)).map_err(Err)?;
     let existing: BTreeSet<String> = runtime
         .list_disks()
         .map_err(Err)?
         .into_iter()
         .map(|disk| disk.name)
         .collect();
+    let attached = if disks.iter().any(|disk| existing.contains(&disk.name)) {
+        complete_attachments(Some(name)).map_err(|error| {
+            Ok((
+                RefusalReason::DiskInUse,
+                format!("cannot verify existing disk attachments: {error}"),
+            ))
+        })?
+    } else {
+        attachments(runtime, Some(name)).map_err(Err)?
+    };
     let mut claimed = Claimed::default();
     for disk in disks {
         let others = attached.get(&disk.name).map(Vec::as_slice).unwrap_or(&[]);
@@ -207,8 +216,18 @@ pub fn claim(
         claimed.created.push(disk.clone());
     }
     let mut created = Vec::new();
+    #[cfg(not(target_os = "linux"))]
+    let mut helper_attempted = false;
     let result = (|| {
         for disk in &claimed.created {
+            if existing.contains(&disk.name)
+                && complete_attachments(Some(name))?.contains_key(&disk.name)
+            {
+                return Err(io::Error::other(format!(
+                    "disk {:?} is still attached",
+                    disk.name
+                )));
+            }
             // Marked first, so a crash anywhere in the fill leaves the mark.
             mark(&disk.name, UNFILLED)?;
             if existing.contains(&disk.name) {
@@ -243,6 +262,11 @@ pub fn claim(
             })
         });
         let names: Vec<&str> = created.iter().map(|disk| disk.name.as_str()).collect();
+        #[cfg(not(target_os = "linux"))]
+        {
+            helper_attempted = true;
+            claim.starting();
+        }
         runtime.own_disks(
             &names,
             plan,
@@ -251,11 +275,23 @@ pub fn claim(
             directories,
             &claimed.fills,
         )?;
+        #[cfg(not(target_os = "linux"))]
+        claim.preparation_done();
         Ok(())
     })();
     if let Err(error) = result {
         claimed.created = created;
-        claimed.undo_locked(runtime, name);
+        #[cfg(not(target_os = "linux"))]
+        if helper_attempted {
+            if crate::core::runtime::apple::preparation_unremoved(&error) {
+                return Err(Err(error));
+            }
+            claim.preparation_done();
+        }
+        match claim.retire() {
+            Ok(()) => claimed.undo_locked(runtime, name),
+            Err(error) => eprintln!("pinfold: startup cleanup: retirement: {error}"),
+        }
         return Err(Err(error));
     }
     Ok(claimed)
@@ -271,45 +307,53 @@ pub fn detached(disks: &[Disk]) -> io::Result<()> {
     Ok(())
 }
 
-/// Each disk's attachments: box name and read-only flag, from every claim
-/// published in this state root whose owner holds its name or whose box
-/// the runtime has not stopped. A dead owner's box attaches nothing once
-/// the runtime lists it stopped or not at all, even before `prune` removes
-/// it. `except` is the caller's own box.
+/// Readable claims pin their named disks in this state root until retirement.
+/// Unreadable claims are reported. Existing attachment and deletion need all records.
+/// `except` is the caller's own box.
 pub fn attachments(
-    runtime: &dyn Runtime,
+    _runtime: &dyn Runtime,
+    except: Option<&str>,
+) -> io::Result<BTreeMap<String, Vec<(String, bool)>>> {
+    let mut records = Vec::new();
+    for result in ownership::record_results()? {
+        match result {
+            Ok(record) => records.push(record),
+            Err(error) => {
+                let _ = writeln!(io::stderr(), "pinfold: disk attachments: {error}");
+            }
+        }
+    }
+    record_attachments(records, except)
+}
+
+// A wholly unreadable claim may name any existing disk. New disks and
+// diagnostic inventory do not require knowing its attachments.
+fn complete_attachments(except: Option<&str>) -> io::Result<BTreeMap<String, Vec<(String, bool)>>> {
+    record_attachments(ownership::records()?, except)
+}
+
+fn record_attachments(
+    records: Vec<ownership::Record>,
     except: Option<&str>,
 ) -> io::Result<BTreeMap<String, Vec<(String, bool)>>> {
     let mut attached: BTreeMap<String, Vec<(String, bool)>> = BTreeMap::new();
-    let boxes = match fs::canonicalize(dirs::boxes_dir()?) {
-        Ok(boxes) => boxes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(attached),
-        Err(error) => return Err(error),
-    };
-    let mut records = Vec::new();
-    for record in ownership::records()? {
+    let boxes = dirs::resolve_host_path(&dirs::boxes_dir()?)?;
+    for record in records {
         if record.disks.is_empty() || Some(record.name.as_str()) == except {
             continue;
         }
-        // A claim's state dir goes only as its box is torn down.
-        match fs::canonicalize(&record.state_dir) {
-            Ok(dir) if dir.parent() == Some(boxes.as_path()) => records.push(record),
+        match dirs::resolve_host_path(&record.state_dir) {
+            Ok(state) if state.parent() != Some(boxes.as_path()) => continue,
             Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
+            Err(error) => {
+                let _ = writeln!(
+                    io::stderr(),
+                    "pinfold: disk attachments {:?}: {error}",
+                    record.name
+                );
+            }
         }
-    }
-    if records.is_empty() {
-        return Ok(attached);
-    }
-    let unstopped: BTreeSet<String> = runtime
-        .list()?
-        .into_iter()
-        .filter(|b| !b.stopped)
-        .map(|b| b.id)
-        .collect();
-    for record in records {
-        if !unstopped.contains(&record.name) && !ownership::name_alive(&record.name)? {
+        if record.retiring && !ownership::name_alive(&record.name).unwrap_or(true) {
             continue;
         }
         for disk in record.disks {
@@ -493,7 +537,7 @@ pub enum Removal {
 /// Remove a disk no box attaches.
 pub fn remove(runtime: &dyn Runtime, name: &str) -> io::Result<Removal> {
     let _lock = ownership::disk_lock(name)?;
-    if let Some((holder, _)) = attachments(runtime, None)?
+    if let Some((holder, _)) = complete_attachments(None)?
         .remove(name)
         .and_then(|boxes| boxes.into_iter().next())
     {

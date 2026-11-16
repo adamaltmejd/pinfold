@@ -1,0 +1,21 @@
+$ macOS RUSTC_WRAPPER= cargo build --locked
+Finished dev profile in 1.81s; exit0
+$ macOS RUSTC_WRAPPER= cargo fmt --check
+exit0; no output
+$ macOS RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings
+Finished dev profile in 1.07s; exit0
+$ Linux cargo build --locked --target x86_64-unknown-linux-musl
+Initial final build finished in 5.54s; final owned-wait guard rebuilt successfully; exit0
+$ Linux cargo fmt --check
+exit0; no output
+$ Linux cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings
+Final completed output: 1.06s in linux.txt; exit0
+$ final Linux owned runtime inventory
+0 bytes; no fixture boxes remain
+$ free disk
+Mac Data 34 GiB; Linux 26 GiB
+$ retained new-VM probe image aliases
+localhost/pinfold/image-probe-commands:latest
+localhost/pinfold/image-probe-retirement-16918-builder-before-delete:latest
+localhost/pinfold/image-probe-retirement-16918-builder-state-gone:latest
+No Mac image created/removed; lease retained; no push or PR.

@@ -11,14 +11,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::net::UnixListener;
 
+use super::jail;
 use super::vsock::{self, put};
-use super::{Firecracker, jail};
 use crate::core::artifacts;
 use crate::core::disk::{self, Directory, Fill, Seeding};
 use crate::core::image::{ImageService, linux};
 use crate::core::plan::Plan;
 use crate::core::runtime::output;
-use crate::init::firecracker::{BOOT, BOOT_PORT, FAILED, READY, read_frame, write_frame};
+use crate::core::runtime::sockets::Sockets;
+use crate::init::firecracker::{BOOT, FAILED, READY, read_frame, write_frame};
 
 /// Exactly these: no secret ever reaches a kernel command line.
 const BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=1 pci=off init=/pinfold -- init boot";
@@ -40,6 +41,7 @@ const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/s
 /// What [`prepare`] made for one start.
 pub struct Prepared {
     state_dir: PathBuf,
+    sockets: Sockets,
     vmm: artifacts::Vmm,
     root_disk: PathBuf,
     init_disk: PathBuf,
@@ -55,6 +57,7 @@ pub struct Prepared {
 pub fn prepare(
     plan: &Plan,
     state_dir: &Path,
+    sockets: &Sockets,
     image_id: &str,
     cancel: &AtomicBool,
     generated: &[PathBuf],
@@ -69,6 +72,7 @@ pub fn prepare(
             Ok(())
         }
     };
+    sockets.validate()?;
     let vmm = artifacts::vmm(Some(cancel))?;
     let reference = plan
         .image
@@ -96,6 +100,7 @@ pub fn prepare(
     }
     Ok(Prepared {
         state_dir: state_dir.to_path_buf(),
+        sockets: sockets.clone(),
         vmm,
         root_disk,
         init_disk,
@@ -172,7 +177,7 @@ fn tree_size(dir: &Path) -> io::Result<(u64, u64)> {
 /// A box's VM, owned by its `box up`.
 pub struct Vm {
     vmm: jail::Vmm,
-    state_dir: PathBuf,
+    sockets: Sockets,
     /// Until the guest dials it, then closed.
     boot: Option<(UnixListener, Boot)>,
 }
@@ -197,13 +202,11 @@ impl Vm {
         directories: &[Directory],
     ) -> io::Result<Vm> {
         let state_dir = prepared.state_dir;
-        let vsock_dir = Firecracker::vsock_dir(&state_dir)?;
-        if let Some(socket) = proxy_socket {
-            fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
-        }
-        let boot_socket = vsock_dir.join(format!("v.sock_{BOOT_PORT}"));
-        let _ = fs::remove_file(&boot_socket);
-        let listener = UnixListener::bind(&boot_socket)?;
+        let sockets = prepared.sockets;
+        let vsock_directory = sockets.vsock_directory()?;
+        let listener = sockets.bind_boot()?;
+        listener.set_nonblocking(true)?;
+        let listener = UnixListener::from_std(listener)?;
 
         // vda is the init disk, vdb the root disk, then the box's disks and
         // the mounts' images in this order.
@@ -270,17 +273,19 @@ impl Vm {
 
         let root = state_dir.join("jail");
         fs::create_dir_all(&root)?;
-        let vmm = jail::spawn(&jail::Jail {
-            root: &root,
-            firecracker: &prepared.vmm.firecracker,
-            kernel: &prepared.vmm.kernel,
-            root_disk: &prepared.root_disk,
-            init_disk: &prepared.init_disk,
-            disks: &drives,
-            vsock: &vsock_dir,
-            config: &config_path,
-        })?;
-        super::record_vmm(&state_dir, vmm.pid)?;
+        let vmm = jail::spawn(
+            &jail::Jail {
+                root: &root,
+                firecracker: &prepared.vmm.firecracker,
+                kernel: &prepared.vmm.kernel,
+                root_disk: &prepared.root_disk,
+                init_disk: &prepared.init_disk,
+                disks: &drives,
+                vsock: vsock_directory,
+                config: &config_path,
+            },
+            &state_dir,
+        )?;
         Ok(Vm {
             vmm,
             boot: Some((
@@ -292,7 +297,7 @@ impl Vm {
                     env: env(plan, prepared.image_env),
                 },
             )),
-            state_dir,
+            sockets,
         })
     }
 
@@ -310,8 +315,8 @@ impl Vm {
             .into_std()
             .and_then(|stream| stream.set_nonblocking(false).map(|()| stream))
             .map_err(|error| format!("boot connection: {error}"))?;
-        let state_dir = self.state_dir.clone();
-        let handshake = tokio::task::spawn_blocking(move || boot.run(stream, &state_dir));
+        let sockets = self.sockets.clone();
+        let handshake = tokio::task::spawn_blocking(move || boot.run(stream, &sockets));
         tokio::select! {
             booted = handshake => booted.map_err(|error| error.to_string())?.map_err(|error| error.to_string()),
             _ = self.vmm.wait() => Err("box exited before ready".to_string()),
@@ -333,11 +338,12 @@ impl Vm {
     /// the guest synced and unmounted them.
     pub async fn down(&mut self, _name: &str) -> io::Result<bool> {
         if !self.vmm.running() {
+            self.vmm.wait().await?;
             return Ok(false);
         }
-        let state_dir = self.state_dir.clone();
+        let sockets = self.sockets.clone();
         let clean = matches!(
-            tokio::task::spawn_blocking(move || vsock::unmount(&state_dir)).await,
+            tokio::task::spawn_blocking(move || vsock::unmount(&sockets)).await,
             Ok(Ok(()))
         );
         self.vmm.kill()?;
@@ -347,7 +353,7 @@ impl Vm {
 }
 
 impl Boot {
-    fn run(self, mut stream: std::os::unix::net::UnixStream, state_dir: &Path) -> io::Result<()> {
+    fn run(self, mut stream: std::os::unix::net::UnixStream, sockets: &Sockets) -> io::Result<()> {
         let sent = (|| {
             write_frame(&mut stream, BOOT, &self.request)?;
             for fill in &self.fills {
@@ -380,7 +386,7 @@ impl Boot {
             }
         }
         drop(stream);
-        vsock::set_env(state_dir, &self.env)
+        vsock::set_env(sockets, &self.env)
     }
 }
 

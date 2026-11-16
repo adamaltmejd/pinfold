@@ -45,11 +45,18 @@ impl ImageService for Linux {
         // Immutable output uses the catalog lock and image leases. A live
         // builder prevents only removal of its separate writable cache.
         catalog::collect_unreferenced()?;
-        let Some(_idle) = ownership::try_name_lock(&cache_name()?)? else {
+        let name = cache_name()?;
+        let Some(idle) = ownership::try_name_lock(&name)? else {
             return Ok(());
         };
-        job::writable_snapshot(&cache_dir()?.join("job"))?;
-        crate::core::absent_ok(fs::remove_dir_all(cache_dir()?))
+        let retired = ownership::retire_orphan(&name, &idle)?;
+        let cache = cache_dir()?;
+        job::writable_snapshot(&cache.join("job"))?;
+        crate::core::absent_ok(fs::remove_dir_all(cache))?;
+        if let Some(record) = retired {
+            ownership::remove_record(&name, &record.generation)?;
+        }
+        Ok(())
     }
     fn build_cache(&self) -> &'static str {
         "the idle isolated builder cache"

@@ -1,8 +1,9 @@
 //! The Apple `container` runtime adapter.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{OsStr, OsString};
-use std::io;
+use std::io::{self, Write};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
@@ -10,11 +11,10 @@ use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-#[cfg(not(target_os = "linux"))]
 use nix::libc;
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::process::{Child, ChildStderr, Command};
 
 use crate::core::disk::{self, Directory, Fill, Seeding};
 use crate::core::image::service::inspect;
@@ -26,6 +26,7 @@ use crate::core::runtime::{
 };
 use crate::core::{clean, ownership};
 use crate::dirs;
+use crate::formatting::terminal_text;
 use crate::init::BOX_ENV_PREFIX;
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
@@ -33,6 +34,31 @@ pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
 
 /// Apple `container`.
 pub struct Apple;
+
+#[derive(Debug)]
+struct PreparationUnremoved(io::Error);
+
+impl std::fmt::Display for PreparationUnremoved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for PreparationUnremoved {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn preparation_unremoved(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|error| error.is::<PreparationUnremoved>())
+}
+
+#[cfg(not(target_os = "linux"))]
+mod transport;
 
 /// `container exec -i` changes its inherited stdin's shared file flags.
 /// Save them in the command owner, which can outlive an interrupted exec.
@@ -106,7 +132,8 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
         .arg(format!("{uid}:{gid}"))
         .args(["--progress", "none"])
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped());
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(socket) = proxy_socket {
         // Off-label: the runtime treats the socket as an SSH agent and
         // forwards it to GUEST_PROXY_SOCKET.
@@ -152,7 +179,10 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
         .args(proxy_socket.map(|_| GUEST_PROXY_SOCKET));
     command
         .spawn()
-        .map(Client)
+        .map(|mut child| {
+            let stderr = child.stderr.take();
+            Client(child, stderr, None)
+        })
         .map_err(|error| spawn_error("container", error))
 }
 
@@ -184,7 +214,9 @@ fn init_mount(init: &Path) -> OsString {
 
 /// The attached `container run` process that owns a box.
 #[cfg_attr(target_os = "linux", expect(dead_code))]
-pub struct Client(Child);
+pub struct Client(Child, Option<ChildStderr>, Option<StderrDrain>);
+
+const STARTUP_DIAGNOSTICS: usize = 64 * 1024;
 
 #[cfg_attr(target_os = "linux", expect(dead_code))]
 impl Client {
@@ -196,27 +228,94 @@ impl Client {
             .take()
             .ok_or("the runtime did not pipe the box's stdout")?;
         let mut lines = BufReader::new(stdout).lines();
+        let mut diagnostics = Vec::with_capacity(STARTUP_DIAGNOSTICS);
+        let mut bytes = [0; 8192];
+        let mut ended = false;
+        let mut child_ended = false;
+        let mut deadline = None;
         loop {
-            match lines.next_line().await {
-                Ok(Some(line)) if line == "ready" => break,
-                Ok(Some(_)) => {}
-                Ok(None) => return Err("box exited before ready".to_string()),
-                Err(error) => return Err(format!("box output failed: {error}")),
+            if !child_ended
+                && self
+                    .0
+                    .try_wait()
+                    .map_err(|error| format!("box wait failed: {error}"))?
+                    .is_some()
+            {
+                child_ended = true;
+                deadline.get_or_insert(tokio::time::Instant::now() + Duration::from_secs(1));
+            }
+            if (ended && self.1.is_none())
+                || deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+            {
+                self.1.take();
+                return Err(startup_failure(&diagnostics));
+            }
+            tokio::select! {
+                _ = async { tokio::time::sleep_until(deadline.unwrap()).await }, if deadline.is_some() => {
+                    self.1.take();
+                    return Err(startup_failure(&diagnostics));
+                },
+                line = lines.next_line(), if !ended => match line {
+                    Ok(Some(line)) if line == "ready" => break,
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        ended = true;
+                        deadline.get_or_insert(tokio::time::Instant::now() + Duration::from_secs(1));
+                    }
+                    Err(error) => return Err(format!("box output failed: {error}")),
+                },
+                read = async { self.1.as_mut().unwrap().read(&mut bytes).await }, if self.1.is_some() => {
+                    match read {
+                        Ok(0) | Err(_) => { self.1.take(); }
+                        Ok(count) => {
+                            let keep = count.min(STARTUP_DIAGNOSTICS - diagnostics.len());
+                            diagnostics.extend_from_slice(&bytes[..keep]);
+                        }
+                    }
+                },
+                status = self.0.wait(), if !child_ended => {
+                    status.map_err(|error| format!("box wait failed: {error}"))?;
+                    child_ended = true;
+                    deadline.get_or_insert(tokio::time::Instant::now() + Duration::from_secs(1));
+                },
             }
         }
-        // Keep the pipe drained so a talkative box cannot block on it.
+        self.2 = self
+            .1
+            .take()
+            .map(StderrDrain::start)
+            .transpose()
+            .map_err(|error| format!("box diagnostics failed: {error}"))?;
+        // Keep stdout drained; stderr has its own thread during blocking finish_start.
         tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
         Ok(())
     }
 
     /// Wait until the box ends on its own or is stopped.
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
-        self.0.wait().await
+        let status = self.0.wait().await?;
+        let diagnostics = self.close_stderr();
+        if !diagnostics.is_empty() {
+            let bytes: Vec<_> = diagnostics.into_iter().collect();
+            let diagnostics = terminal_text(&String::from_utf8_lossy(&bytes));
+            // Exec may have made shared stderr nonblocking. A diagnostic must not panic.
+            let _ = writeln!(
+                io::stderr().lock(),
+                "pinfold: native box ended: {diagnostics}"
+            );
+        }
+        Ok(status)
+    }
+
+    fn close_stderr(&mut self) -> VecDeque<u8> {
+        self.1.take();
+        self.2.take().map_or_else(VecDeque::new, StderrDrain::close)
     }
 
     /// Stop and remove a ready box. True when the stop was one pinfold
     /// requested of a running box, which syncs its disks.
     pub async fn down(&mut self, name: &str) -> io::Result<bool> {
+        self.close_stderr();
         let requested = matches!(self.0.try_wait(), Ok(None));
         // Runtime removal waits for attached output to close. Keep its
         // drain running on the owner while the runtime command blocks.
@@ -232,6 +331,7 @@ impl Client {
     /// Stop a start that ended before ready and remove its box, returning
     /// whether the stop synced its disks and how the box ended.
     pub async fn abort(mut self, name: &str) -> (io::Result<bool>, io::Result<ExitStatus>) {
+        self.close_stderr();
         let requested = matches!(self.0.try_wait(), Ok(None));
         // The client goes first, so one still creating the box cannot
         // finish after the removal. The box exists by name even when
@@ -239,6 +339,116 @@ impl Client {
         let _ = self.0.start_kill();
         let status = self.0.wait().await;
         (Apple.down(name).map(|()| requested), status)
+    }
+}
+
+fn startup_failure(diagnostics: &[u8]) -> String {
+    let diagnostic = terminal_text(&String::from_utf8_lossy(diagnostics));
+    if diagnostic.is_empty() {
+        "box exited before ready".to_string()
+    } else {
+        format!("box exited before ready: {diagnostic}")
+    }
+}
+
+struct StderrDrain {
+    stop: Option<io::PipeWriter>,
+    worker: Option<std::thread::JoinHandle<VecDeque<u8>>>,
+}
+
+impl StderrDrain {
+    fn start(stderr: ChildStderr) -> io::Result<Self> {
+        let stderr: OwnedFd = stderr.into_owned_fd()?;
+        Self::start_fd(stderr)
+    }
+
+    fn start_fd(stderr: OwnedFd) -> io::Result<Self> {
+        crate::core::pipe::nonblocking(&stderr, "box diagnostics")?;
+        let (stop, stopping) = io::pipe()?;
+        let worker = std::thread::Builder::new()
+            .name("box-diagnostics".into())
+            .spawn(move || {
+                let mut tail = VecDeque::with_capacity(STARTUP_DIAGNOSTICS);
+                let mut bytes = [0; 8192];
+                let mut closing = false;
+                let mut final_bytes = STARTUP_DIAGNOSTICS;
+                loop {
+                    if !closing {
+                        let mut fds = [
+                            libc::pollfd {
+                                fd: stop.as_raw_fd(),
+                                events: libc::POLLIN,
+                                revents: 0,
+                            },
+                            libc::pollfd {
+                                fd: stderr.as_raw_fd(),
+                                events: libc::POLLIN,
+                                revents: 0,
+                            },
+                        ];
+                        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) };
+                        if ready < 0 {
+                            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                                continue;
+                            }
+                            break;
+                        }
+                        closing = fds[0].revents != 0;
+                    }
+                    let count = unsafe {
+                        libc::read(
+                            stderr.as_raw_fd(),
+                            bytes.as_mut_ptr().cast(),
+                            bytes.len().min(final_bytes),
+                        )
+                    };
+                    if count < 0 {
+                        let error = io::Error::last_os_error();
+                        if error.kind() == io::ErrorKind::Interrupted
+                            || (!closing && error.kind() == io::ErrorKind::WouldBlock)
+                        {
+                            continue;
+                        }
+                        break;
+                    }
+                    if count == 0 {
+                        break;
+                    }
+                    let count = count as usize;
+                    let remove = (tail.len() + count).saturating_sub(STARTUP_DIAGNOSTICS);
+                    tail.drain(..remove);
+                    tail.extend(&bytes[..count]);
+                    if closing {
+                        // Keep already-queued failure text without waiting on a descendant.
+                        final_bytes -= count;
+                        if final_bytes == 0 {
+                            break;
+                        }
+                    }
+                }
+                tail
+            })?;
+        Ok(Self {
+            stop: Some(stopping),
+            worker: Some(worker),
+        })
+    }
+
+    fn close(mut self) -> VecDeque<u8> {
+        self.stop.take();
+        self.worker
+            .take()
+            .and_then(|worker| worker.join().ok())
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for StderrDrain {
+    fn drop(&mut self) {
+        self.stop.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -382,12 +592,16 @@ impl Runtime for Apple {
         context: &ExecContext<'_>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        let _raw = if context.tty {
-            super::terminal::Raw::enter()?
+        let size = if context.tty {
+            super::terminal::window()?
         } else {
             None
         };
-        exec_command(name, init, context, argv)?
+        let command = exec_command(name, init, context, argv, size)?;
+        #[cfg(not(target_os = "linux"))]
+        return transport::exec(command, size, context.tty, context.cancel);
+        #[cfg(target_os = "linux")]
+        { command }
             .status()
             .map_err(|error| spawn_error("container", error))
     }
@@ -399,7 +613,12 @@ impl Runtime for Apple {
         context: &ExecContext<'_>,
         argv: &[String],
     ) -> io::Result<std::process::Command> {
-        exec_command(name, init, context, argv)
+        let size = if context.tty {
+            super::terminal::window()?
+        } else {
+            None
+        };
+        exec_command(name, init, context, argv, size)
     }
 
     /// A networkless helper owns fresh roots, then drops privileges to
@@ -487,6 +706,7 @@ impl Runtime for Apple {
                 directory.relative.clone().into_os_string(),
             ]);
         }
+        let mut spawned = false;
         let result = (|| -> io::Result<std::process::Output> {
             let mut child = command
                 .arg("--entrypoint")
@@ -494,47 +714,69 @@ impl Runtime for Apple {
                 .arg(image)
                 .args(setup)
                 .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
+                .stdout(Stdio::null())
                 .stderr(Stdio::piped())
                 .spawn()
                 .map_err(|error| spawn_error("container", error))?;
-            let sent = (|| {
-                let mut input = child.stdin.take().expect("setup stdin is piped");
-                for fill in fills {
-                    disk::send(fill, &mut input)?;
+            spawned = true;
+            let result = (|| {
+                let drain = StderrDrain::start_fd(
+                    child.stderr.take().expect("setup stderr is piped").into(),
+                )?;
+                let sent = (|| {
+                    let mut input = child.stdin.take().expect("setup stdin is piped");
+                    for fill in fills {
+                        disk::send(fill, &mut input)?;
+                    }
+                    Ok::<_, io::Error>(())
+                })();
+                let status = child.wait()?;
+                let stderr = drain.close().into_iter().collect();
+                if status.success() {
+                    sent?;
                 }
-                Ok::<_, io::Error>(())
+                Ok(std::process::Output {
+                    status,
+                    stdout: Vec::new(),
+                    stderr,
+                })
             })();
-            let output = child.wait_with_output()?;
-            if output.status.success() {
-                sent?;
+            if result.is_err() {
+                let _ = child.kill();
+                let _ = child.wait();
             }
-            Ok(output)
+            result
         })();
+        if !spawned {
+            return result.map(drop);
+        }
         // The box reuses the helper's name, so the helper must be gone first.
         // Apple reports a container `running` for a moment after `run` returns,
         // and `rm` refuses it then; `run --rm` removes it just as late. `stop`
         // returns once it has stopped, after which `rm` succeeds.
         let stopped = output(&["container", "stop", name]);
         let removed = output(&["container", "rm", name]);
-        let result = result?;
-        if !result.status.success() {
-            // Name a failed stop or removal too, so a leftover helper shows.
-            let leftover = match (&stopped, &removed) {
-                (Ok(_), Ok(_)) => String::new(),
-                _ => format!(
-                    "; removing helper {name}: {:?}, {:?}",
-                    stopped.err(),
-                    removed.err()
-                ),
-            };
-            return Err(io::Error::other(format!(
+        let unremoved = removed.is_err() && !matches!(container(name), Ok(None));
+        let leftover = match (&stopped, &removed) {
+            (Ok(_), Ok(_)) => String::new(),
+            _ => format!("; removing helper {name}: {stopped:?}, {removed:?}"),
+        };
+        let result = match result {
+            Err(error) if leftover.is_empty() => Err(error),
+            Err(error) => Err(io::Error::new(error.kind(), format!("{error}{leftover}"))),
+            Ok(result) if !result.status.success() => Err(io::Error::other(format!(
                 "prepare writable disks: {}{leftover}",
-                String::from_utf8_lossy(&result.stderr).trim()
-            )));
-        }
-        stopped?;
-        removed.map(drop)
+                terminal_text(String::from_utf8_lossy(&result.stderr).trim())
+            ))),
+            Ok(_) => stopped.and(removed).map(drop),
+        };
+        result.map_err(|error| {
+            if unremoved {
+                io::Error::other(PreparationUnremoved(error))
+            } else {
+                error
+            }
+        })
     }
 
     fn describe(&self) -> &'static str {
@@ -554,6 +796,7 @@ fn exec_command(
     init: &Path,
     context: &ExecContext<'_>,
     argv: &[String],
+    size: Option<(u16, u16)>,
 ) -> io::Result<std::process::Command> {
     let mut command = std::process::Command::new("container");
     command.args(["exec", "-i"]);
@@ -565,7 +808,7 @@ fn exec_command(
     if context.tty {
         command.arg("-t");
         // Init applies a known initial size before a fast command starts.
-        metadata.window = super::terminal::window()?;
+        metadata.window = size;
         metadata.term = std::env::var_os("TERM").map(|value| value.as_bytes().to_vec());
         metadata.colorterm = std::env::var_os("COLORTERM").map(|value| value.as_bytes().to_vec());
     } else {

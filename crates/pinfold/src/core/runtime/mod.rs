@@ -3,6 +3,7 @@
 pub mod apple;
 #[cfg(target_os = "linux")]
 pub mod firecracker;
+pub(crate) mod sockets;
 pub(crate) mod terminal;
 
 use std::collections::BTreeMap;
@@ -41,15 +42,16 @@ pub struct Prepared;
 pub fn prepare(
     plan: &Plan,
     state_dir: &Path,
+    sockets: &sockets::Sockets,
     image_id: &str,
     cancel: &AtomicBool,
     generated: &[PathBuf],
 ) -> io::Result<Prepared> {
     #[cfg(target_os = "linux")]
-    return firecracker::prepare(plan, state_dir, image_id, cancel, generated);
+    return firecracker::prepare(plan, state_dir, sockets, image_id, cancel, generated);
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (plan, state_dir, image_id, cancel, generated);
+        let _ = (plan, state_dir, sockets, image_id, cancel, generated);
         Ok(Prepared)
     }
 }
@@ -212,6 +214,8 @@ pub struct ExecContext<'a> {
     pub project_root: Option<&'a Path>,
     pub tty: bool,
     pub agent: Option<&'a str>,
+    #[cfg(not(target_os = "linux"))]
+    pub cancel: Option<&'a AtomicBool>,
 }
 
 impl ExecContext<'_> {
@@ -234,11 +238,6 @@ pub trait Runtime: Sync {
     /// Refuse a host the runtime cannot serve, before `up` creates any box
     /// state.
     fn preflight(&self) -> io::Result<()>;
-
-    /// Where the box's proxy listens, in its claimed `state_dir`.
-    fn proxy_socket(&self, state_dir: &Path) -> io::Result<PathBuf> {
-        Ok(state_dir.join("proxy.sock"))
-    }
 
     /// Complete backend initialization after init's ready protocol, then
     /// return the box as inventory observes it. The caller publishes ready
@@ -282,8 +281,12 @@ pub trait Runtime: Sync {
     /// `list` names. Fields the runtime cannot answer are `None`.
     fn stat(&self, name: &str) -> io::Result<BoxStat>;
 
-    /// List every box, running or not.
+    /// Advisory inventory. Mutation must recheck the relevant claims.
     fn list(&self) -> io::Result<Vec<BoxInfo>>;
+
+    fn inspect(&self, name: &str) -> io::Result<Option<BoxInfo>> {
+        Ok(self.list()?.into_iter().find(|box_| box_.id == name))
+    }
 
     /// Every disk the runtime stores.
     fn list_disks(&self) -> io::Result<Vec<DiskInfo>>;

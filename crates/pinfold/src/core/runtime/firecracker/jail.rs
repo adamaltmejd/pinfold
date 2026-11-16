@@ -5,6 +5,7 @@
 //! argument is built before it, and the child never allocates.
 
 use std::ffi::{CStr, CString, c_char};
+use std::fs::File;
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
@@ -55,7 +56,7 @@ pub struct Jail<'a> {
     /// the VM writes it: the box's disks, and its mounts' images.
     pub disks: &'a [(PathBuf, bool)],
     /// The directory that holds the vsock socket and its host listeners.
-    pub vsock: &'a Path,
+    pub vsock: &'a File,
     /// The VM configuration file, read with `--config-file`.
     pub config: &'a Path,
 }
@@ -63,7 +64,6 @@ pub struct Jail<'a> {
 /// A started VMM. Its owner is a dedicated thread that stays in `waitpid`
 /// for the VMM's lifetime.
 pub struct Vmm {
-    pub pid: Pid,
     /// Opened before the owner thread can reap the VMM, so a signal sent
     /// through it never reaches a reused pid.
     pidfd: OwnedFd,
@@ -132,30 +132,47 @@ impl Vmm {
 /// `PR_SET_PDEATHSIG` fires when the thread that created the child exits,
 /// not the process (#126). The child is created from a thread that lives
 /// exactly as long as the VMM, so the VM ends with its owner process.
-pub fn spawn(jail: &Jail) -> io::Result<Vmm> {
+pub fn spawn(jail: &Jail, state_dir: &Path) -> io::Result<Vmm> {
     let plan = Plan::jail(jail)?;
+    let state_dir = state_dir.to_path_buf();
     let (started_tx, started_rx) = mpsc::channel();
     let (status_tx, status_rx) = oneshot::channel();
     std::thread::Builder::new()
         .name("vmm".into())
         .spawn(move || {
-            let (pid, _alive) = match start(&plan) {
+            let started = (|| {
+                if let Some(vsock) = &plan.vsock {
+                    // Clone the mount namespace only after this thread has its
+                    // own cwd pinned to the retained directory. The kernel then
+                    // rebases that cwd onto the child's copy of the mount.
+                    nix::sched::unshare(CloneFlags::CLONE_FS).map_err(|error| {
+                        io::Error::other(format!("VMM jail: isolate cwd: {error}"))
+                    })?;
+                    nix::unistd::fchdir(vsock).map_err(|error| {
+                        io::Error::other(format!("VMM jail: enter socket directory: {error}"))
+                    })?;
+                }
+                start(&plan, Some(&state_dir))
+            })();
+            let (pid, _alive, pidfd) = match started {
                 Ok(started) => started,
                 Err(error) => {
                     let _ = started_tx.send(Err(error));
                     return;
                 }
             };
-            // Before `wait`: the unreaped VMM still holds its pid.
-            let _ = started_tx.send(pidfd_open(pid.as_raw()).map(|pidfd| (pid, pidfd)));
+            if started_tx.send(Ok(pidfd)).is_err() {
+                let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+                let _ = wait(pid);
+                return;
+            }
             // `_alive`'s write end stays open until the VMM has ended.
             let _ = status_tx.send(wait(pid));
         })?;
-    let (pid, pidfd) = started_rx
+    let pidfd = started_rx
         .recv()
         .map_err(|_| io::Error::other("the VMM's owner thread ended before it started"))??;
     Ok(Vmm {
-        pid,
         pidfd,
         status: status_rx,
         ended: None,
@@ -167,7 +184,7 @@ pub fn spawn(jail: &Jail) -> io::Result<Vmm> {
 /// Preflight's `userns` check.
 pub fn probe() -> io::Result<()> {
     let plan = Plan::probe()?;
-    let (pid, _alive) = start(&plan)?;
+    let (pid, _alive, _pidfd) = start(&plan, None)?;
     match wait(pid)? {
         0 => Ok(()),
         code => Err(io::Error::other(format!(
@@ -183,6 +200,8 @@ struct Plan {
     /// The tmpfs root, on the host's side of `pivot_root`.
     root: CString,
     binds: Vec<Bind>,
+    /// Retained through child mounting; absent for the namespace probe.
+    vsock: Option<File>,
     /// `None` for the probe, which exits after mounting its tmpfs.
     exec: Option<Exec>,
 }
@@ -212,6 +231,7 @@ impl Plan {
             // In the probe's own mount namespace, over the host's root.
             root: c"/".to_owned(),
             binds: Vec::new(),
+            vsock: None,
             exec: None,
         })
     }
@@ -245,7 +265,7 @@ impl Plan {
             read_only(jail.init_disk, INIT_DISK)?,
             read_only(jail.config, CONFIG)?,
             writable(Path::new(KVM), KVM, false)?,
-            writable(jail.vsock, VSOCK, true)?,
+            writable(Path::new("."), VSOCK, true)?,
         ];
         let mut rules = vec![
             (
@@ -287,6 +307,7 @@ impl Plan {
             gid_map,
             root: cstring(jail.root)?,
             binds,
+            vsock: Some(jail.vsock.try_clone()?),
             exec: Some(Exec {
                 dev: target("/dev")?,
                 rules,
@@ -382,7 +403,7 @@ fn fail(name: &'static str, index: usize) -> impl Fn(Errno) -> Failure {
 /// `clone` the child with the jail's namespaces and return once it has
 /// exec'd (or, for the probe, before it exits). The returned pipe end keeps
 /// the child's parent-alive check passing; drop it only after `wait`.
-fn start(plan: &Plan) -> io::Result<(Pid, OwnedFd)> {
+fn start(plan: &Plan, state_dir: Option<&Path>) -> io::Result<(Pid, OwnedFd, OwnedFd)> {
     let (alive_read, alive_write) = nix::unistd::pipe2(OFlag::O_CLOEXEC)?;
     let (report_read, report_write) = nix::unistd::pipe2(OFlag::O_CLOEXEC)?;
     let exec = plan.exec.as_ref().map(|exec| {
@@ -418,6 +439,7 @@ fn start(plan: &Plan) -> io::Result<(Pid, OwnedFd)> {
         unsafe {
             libc::close(alive_write);
             libc::close(report_read);
+            libc::umask(0o077);
         }
         let failure = match enter(plan, alive_read) {
             Err(failure) => failure,
@@ -430,7 +452,11 @@ fn start(plan: &Plan) -> io::Result<(Pid, OwnedFd)> {
                         Ok(()) => {
                             // SAFETY: argv and envp are NUL-terminated arrays
                             // of C strings that outlive the call.
-                            unsafe { libc::execve(argv[0], argv.as_ptr(), envp.as_ptr()) };
+                            unsafe {
+                                // Unix bind starts from 0777; the VMM's sockets are 0600.
+                                libc::umask(0o177);
+                                libc::execve(argv[0], argv.as_ptr(), envp.as_ptr())
+                            };
                             (step("exec Firecracker"), 0, Errno::last())
                         }
                     },
@@ -460,50 +486,75 @@ fn start(plan: &Plan) -> io::Result<(Pid, OwnedFd)> {
         .map_err(|error| io::Error::other(format!("VMM jail: clone: {error}")))?;
     drop(report_write);
     drop(alive_read);
-    let mut report = [0u8; 12];
-    let mut filled = 0;
-    while filled < report.len() {
-        match nix::unistd::read(&report_read, &mut report[filled..]) {
-            Ok(0) => break,
-            Ok(n) => filled += n,
-            Err(Errno::EINTR) => {}
-            Err(error) => return Err(io::Error::other(format!("VMM jail: read report: {error}"))),
+    let result = (|| {
+        let pidfd = pidfd_open(pid.as_raw())?;
+        if let Some(state_dir) = state_dir {
+            super::record_vmm(state_dir, pid)?;
+            loop {
+                match nix::unistd::write(&alive_write, &[1]) {
+                    Ok(1) => break,
+                    Err(Errno::EINTR) => {}
+                    Ok(_) => return Err(io::Error::other("VMM jail: startup gate closed")),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        let mut report = [0u8; 12];
+        let mut filled = 0;
+        while filled < report.len() {
+            match nix::unistd::read(&report_read, &mut report[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(Errno::EINTR) => {}
+                Err(error) => {
+                    return Err(io::Error::other(format!("VMM jail: read report: {error}")));
+                }
+            }
+        }
+        if filled == 0 {
+            return Ok(pidfd);
+        }
+        if filled < report.len() {
+            return Err(io::Error::other(format!(
+                "VMM jail: the child's failure report was cut short at {filled} bytes"
+            )));
+        }
+        let field =
+            |range: std::ops::Range<usize>| u32::from_ne_bytes(report[range].try_into().unwrap());
+        let (step, index) = (field(0..4) as usize, field(4..8) as usize);
+        let errno = Errno::from_raw(field(8..12) as i32);
+        let what = STEPS.get(step).copied().unwrap_or("an unknown step");
+        let path = match what {
+            "make a jail directory" => plan.exec.as_ref().map(|exec| &exec.dev),
+            "make a bind target" | "bind" | "remount read-only" => {
+                plan.binds.get(index).map(|bind| &bind.target)
+            }
+            "open a Landlock path" | "add a Landlock rule" => plan
+                .exec
+                .as_ref()
+                .and_then(|exec| exec.rules.get(index))
+                .map(|(path, _)| path),
+            _ => None,
+        };
+        let detail = path
+            .map(|path| format!(" {}", path.to_string_lossy()))
+            .unwrap_or_default();
+        let error = io::Error::from(errno);
+        Err(io::Error::new(
+            error.kind(),
+            format!("VMM jail: {what}{detail}: {error}"),
+        ))
+    })();
+    match result {
+        Ok(pidfd) => Ok((pid, alive_write, pidfd)),
+        Err(error) => {
+            drop(alive_write);
+            // The child is still unreaped, so this PID cannot have been reused.
+            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+            let _ = wait(pid);
+            Err(error)
         }
     }
-    if filled == 0 {
-        return Ok((pid, alive_write));
-    }
-    let _ = wait(pid);
-    if filled < report.len() {
-        return Err(io::Error::other(format!(
-            "VMM jail: the child's failure report was cut short at {filled} bytes"
-        )));
-    }
-    let field =
-        |range: std::ops::Range<usize>| u32::from_ne_bytes(report[range].try_into().unwrap());
-    let (step, index) = (field(0..4) as usize, field(4..8) as usize);
-    let errno = Errno::from_raw(field(8..12) as i32);
-    let what = STEPS.get(step).copied().unwrap_or("an unknown step");
-    let path = match what {
-        "make a jail directory" => plan.exec.as_ref().map(|exec| &exec.dev),
-        "make a bind target" | "bind" | "remount read-only" => {
-            plan.binds.get(index).map(|bind| &bind.target)
-        }
-        "open a Landlock path" | "add a Landlock rule" => plan
-            .exec
-            .as_ref()
-            .and_then(|exec| exec.rules.get(index))
-            .map(|(path, _)| path),
-        _ => None,
-    };
-    let detail = path
-        .map(|path| format!(" {}", path.to_string_lossy()))
-        .unwrap_or_default();
-    let error = io::Error::from(errno);
-    Err(io::Error::new(
-        error.kind(),
-        format!("VMM jail: {what}{detail}: {error}"),
-    ))
 }
 
 /// Reap the child: its exit code, or `128+n` for signal `n`.
@@ -523,6 +574,21 @@ fn wait(pid: Pid) -> io::Result<i32> {
 fn enter(plan: &Plan, alive: RawFd) -> Result<(), Failure> {
     nix::sys::prctl::set_pdeathsig(nix::sys::signal::Signal::SIGKILL)
         .map_err(fail("set the parent-death signal", 0))?;
+    if plan.exec.is_some() {
+        // The only token is written after the parent durably records identity.
+        // EOF means the owner died before releasing this child.
+        let mut token = 0u8;
+        loop {
+            let received = unsafe { libc::read(alive, (&mut token as *mut u8).cast(), 1) };
+            if received == 1 && token == 1 {
+                break;
+            }
+            if received < 0 && Errno::last() == Errno::EINTR {
+                continue;
+            }
+            unsafe { libc::_exit(127) };
+        }
+    }
     // The owner may have died before the signal was set: then the pipe's
     // only write end is gone.
     let mut poll = libc::pollfd {

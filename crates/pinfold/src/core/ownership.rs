@@ -2,7 +2,7 @@
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::net::UnixStream as BlockingStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -13,6 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::core::pipe::remaining;
+use crate::core::runtime::sockets::{self, Sockets};
 use crate::core::{absent_ok, sha256_hex};
 
 pub const GENERATION_LABEL: &str = "dev.pinfold.generation";
@@ -25,15 +26,7 @@ pub fn host_dir() -> io::Result<PathBuf> {
 }
 
 fn root() -> io::Result<PathBuf> {
-    let path = host_dir()?;
-    match fs::DirBuilder::new().mode(0o700).create(&path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error),
-    }
-    let metadata = fs::symlink_metadata(&path)?;
-    check_private(&metadata, metadata.is_dir(), "directory")?;
-    Ok(path)
+    sockets::host().map(|(path, _)| path)
 }
 
 /// Refuse a host ownership `what` of the wrong kind, another user's, or
@@ -118,6 +111,9 @@ pub fn try_project_lock(id: &str) -> io::Result<Option<Flock<File>>> {
 pub struct Record {
     pub name: String,
     pub generation: String,
+    /// Runtime removal was confirmed before any generation tree was deleted.
+    #[serde(default)]
+    pub retiring: bool,
     pub state_dir: PathBuf,
     /// The disks this generation attaches. They are released once the
     /// owner is dead and the runtime lists the box stopped or not at all,
@@ -165,14 +161,46 @@ pub fn socket(name: &str) -> io::Result<PathBuf> {
     path(&format!("box:{name}"), "sock")
 }
 
+fn publish(record: &Record) -> io::Result<()> {
+    crate::core::write_atomic(
+        &path(&format!("box:{}", record.name), "owner")?,
+        &serde_json::to_vec(record)?,
+    )?;
+    File::open(host_dir()?)?.sync_all()
+}
+
+fn mark_retiring(record: &mut Record) -> io::Result<()> {
+    record.retiring = true;
+    publish(record)
+}
+
+/// Authorize orphan mutations while the caller holds this name's lock.
+#[cfg(target_os = "linux")]
+pub fn retire_orphan(name: &str, _lock: &Flock<File>) -> io::Result<Option<Record>> {
+    let Some(mut record) = record(name)? else {
+        return Ok(None);
+    };
+    crate::core::runtime::runtime().down(name)?;
+    mark_retiring(&mut record)?;
+    Ok(Some(record))
+}
+
 /// Remove an orphan's host files while the caller owns its name lock.
 pub fn remove_record(name: &str, generation: &str) -> io::Result<()> {
-    if let Some(record) = record(name)?
+    if let Some(mut record) = record(name)?
         && record.generation == generation
     {
+        if !record.retiring {
+            #[cfg(target_os = "linux")]
+            crate::core::runtime::runtime().down(name)?;
+        }
+        mark_retiring(&mut record)?;
+        let cleanup = Sockets::remove(generation);
         absent_ok(fs::remove_dir_all(&record.state_dir))?;
-        absent_ok(fs::remove_file(socket(name)?))?;
+        sockets::remove_socket(&socket(name)?)?;
         absent_ok(fs::remove_file(path(&format!("box:{name}"), "owner")?))?;
+        File::open(host_dir()?)?.sync_all()?;
+        cleanup?;
     }
     Ok(())
 }
@@ -184,6 +212,7 @@ pub struct Claim {
     _lock: Flock<File>,
     record: Option<Record>,
     listener: Option<UnixListener>,
+    sockets: Option<Sockets>,
     request: Option<UnixStream>,
     running: bool,
 }
@@ -207,6 +236,7 @@ impl Claim {
             _lock: lock,
             record: None,
             listener: None,
+            sockets: None,
             request: None,
             running: false,
         }))
@@ -214,7 +244,14 @@ impl Claim {
 
     pub fn prepare(&mut self, state_dir: &Path) -> io::Result<()> {
         if let Some(old) = record(&self.name)? {
-            remove_record(&self.name, &old.generation)?;
+            #[cfg(target_os = "linux")]
+            crate::core::runtime::runtime().down(&self.name)?;
+            if let Err(error) = remove_record(&self.name, &old.generation) {
+                if record(&self.name)?.is_some() {
+                    return Err(error);
+                }
+                eprintln!("pinfold: socket cleanup: {error}");
+            }
         }
         absent_ok(fs::remove_dir_all(state_dir))?;
         let mut random = [0; 16];
@@ -222,15 +259,25 @@ impl Claim {
         self.record = Some(Record {
             name: self.name.clone(),
             generation: sha256_hex(random),
+            retiring: false,
             state_dir: state_dir.to_path_buf(),
             disks: Vec::new(),
             described: None,
         });
         fs::create_dir_all(state_dir)?;
         let endpoint = socket(&self.name)?;
-        absent_ok(fs::remove_file(&endpoint))?;
-        self.listener = Some(UnixListener::bind(endpoint)?);
-        self.publish()
+        sockets::remove_socket(&endpoint)?;
+        let (_, host) = sockets::host()?;
+        sockets::check_length(&endpoint)?;
+        let listener =
+            sockets::bind_at(&host, endpoint.file_name().expect("shutdown socket name"))?;
+        listener.set_nonblocking(true)?;
+        self.listener = Some(UnixListener::from_std(listener)?);
+        #[cfg(target_os = "linux")]
+        crate::core::runtime::firecracker::prepare_vmm(state_dir)?;
+        self.publish()?;
+        self.sockets = Some(Sockets::create(self.generation())?);
+        Ok(())
     }
 
     /// Record the disks this generation attaches. The caller holds each
@@ -247,10 +294,46 @@ impl Claim {
     }
 
     fn publish(&self) -> io::Result<()> {
-        crate::core::write_atomic(
-            &path(&format!("box:{}", self.name), "owner")?,
-            &serde_json::to_vec(self.record.as_ref().unwrap())?,
-        )
+        publish(self.record.as_ref().unwrap())
+    }
+
+    /// The caller has removed and reaped this claim's runtime and workers.
+    pub fn retire(&mut self) -> io::Result<()> {
+        let Some(held) = self.record.as_mut() else {
+            return Ok(());
+        };
+        let mut current = record(&self.name)?
+            .filter(|current| current.generation == held.generation)
+            .ok_or_else(|| io::Error::other("the retiring claim no longer matches"))?;
+        mark_retiring(&mut current)?;
+        held.retiring = true;
+        Ok(())
+    }
+
+    /// Builder recovery must authorize mutations before restoring old state.
+    #[cfg(target_os = "linux")]
+    pub fn retire_previous(&mut self) -> io::Result<()> {
+        let old = record(&self.name)?;
+        if self.record.as_ref().is_some_and(|held| {
+            old.as_ref()
+                .is_none_or(|old| old.generation != held.generation)
+        }) {
+            return Err(io::Error::other("the retiring claim no longer matches"));
+        }
+        if let Some(mut old) = old {
+            crate::core::runtime::runtime().down(&self.name)?;
+            mark_retiring(&mut old)?;
+            if let Some(held) = self.record.as_mut()
+                && held.generation == old.generation
+            {
+                held.retiring = true;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn sockets(&self) -> &Sockets {
+        self.sockets.as_ref().expect("prepared sockets")
     }
 
     pub fn generation(&self) -> &str {
@@ -284,8 +367,16 @@ impl Claim {
         self.running = true;
     }
 
+    #[cfg(not(target_os = "linux"))]
+    pub fn preparation_done(&mut self) {
+        self.running = false;
+    }
+
     /// Acknowledge only completed teardown. Ownership stays held until Drop.
     pub async fn finish(&mut self, success: bool) -> io::Result<()> {
+        if success {
+            self.retire()?;
+        }
         let cleanup = match (success, self.record.as_ref()) {
             (true, Some(record)) => remove_record(&self.name, &record.generation),
             _ => Ok(()),
@@ -309,10 +400,9 @@ impl Drop for Claim {
             && let Some(record) = self.record.as_ref()
         {
             let _ = remove_record(&self.name, &record.generation);
-            let _ = fs::remove_dir_all(&record.state_dir);
         }
         if self.record.is_some() {
-            let _ = socket(&self.name).and_then(|socket| absent_ok(fs::remove_file(socket)));
+            let _ = socket(&self.name).and_then(|socket| sockets::remove_socket(&socket));
         }
     }
 }
@@ -395,8 +485,14 @@ pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<bool> {
     ))
 }
 
-/// Published generations across every Pinfold state root.
+/// Published generations across every Pinfold state root. Consumers that
+/// decide ownership fail closed when any record cannot be read.
 pub fn records() -> io::Result<Vec<Record>> {
+    record_results()?.into_iter().collect()
+}
+
+/// Maintenance can report a bad record and still examine independent claims.
+pub fn record_results() -> io::Result<Vec<io::Result<Record>>> {
     let mut records = Vec::new();
     for entry in crate::dirs::entries(&host_dir()?)? {
         let path = entry.path();
@@ -406,12 +502,18 @@ pub fn records() -> io::Result<Vec<Record>> {
         {
             continue;
         }
-        // A record removed since the listing belongs to a box that ended.
-        match fs::read(&path) {
-            Ok(bytes) => records.push(serde_json::from_slice(&bytes).map_err(io::Error::other)?),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
+        let decoded = match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other),
+            // A record removed since the listing belongs to a box that ended.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => Err(error),
+        };
+        records.push(decoded.map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("ownership record {:?}: {error}", path.file_name()),
+            )
+        }));
     }
     Ok(records)
 }

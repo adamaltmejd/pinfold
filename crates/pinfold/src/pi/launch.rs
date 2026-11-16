@@ -450,34 +450,60 @@ fn run_box(
             Err(error) => return Err(error.into()),
         };
         // Signals and the box monitor cover startup synchronization too.
-        let exec = tokio::task::spawn_blocking(move || {
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(not(target_os = "linux"))]
+        let exec_cancel = cancel.clone();
+        #[cfg(not(target_os = "linux"))]
+        let exec_started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(not(target_os = "linux"))]
+        let worker_started = exec_started.clone();
+        let mut exec = tokio::task::spawn_blocking(move || {
             if repository {
                 sync(&name, &init, &root);
             }
+            #[cfg(not(target_os = "linux"))]
+            worker_started.store(true, std::sync::atomic::Ordering::SeqCst);
             let context = ExecContext {
                 cwd: Some(&workdir),
                 tty,
                 agent: Some(&argv[0]),
                 project_root: Some(&root),
+                #[cfg(not(target_os = "linux"))]
+                cancel: Some(&exec_cancel),
             };
             box_runtime.exec(&name, &init, &context, &argv)
         });
-        let ended = tokio::select! {
+        #[allow(unused_mut)]
+        let (mut ended, mut completed) = tokio::select! {
             // A completed command wins over a concurrent stop.
             biased;
-            status = exec => status
+            status = &mut exec => (status
                 .map_err(|error| io::Error::other(format!("command exec failed: {error}")))
                 .and_then(|status| status)
-                .map(|status| (Terminal { reason: "sessions-ended", detail: Some(status.to_string()) }, cli::exit_code(status))),
-            shutdown = box_.ended() => shutdown.map(|shutdown| {
+                .map(|status| (Terminal { reason: "sessions-ended", detail: Some(status.to_string()) }, cli::exit_code(status))), true),
+            shutdown = box_.ended() => (shutdown.map(|shutdown| {
                 let code = match shutdown {
                     Shutdown::BoxExited(_) | Shutdown::AuditLog => 125,
                     Shutdown::StdinEof | Shutdown::Signal => 125,
                 };
                 (shutdown.terminal(), code)
-            }),
-            signal = signals.recv() => Ok((Shutdown::Signal.terminal(), 128 + signal as i32)),
+            }), false),
+            signal = signals.recv() => (Ok((Shutdown::Signal.terminal(), 128 + signal as i32)), false),
         };
+        cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        crate::core::runtime::terminal::cancel();
+        #[cfg(not(target_os = "linux"))]
+        if !completed && exec_started.load(std::sync::atomic::Ordering::SeqCst) {
+            // A sync still in progress needs teardown first. A started exec is
+            // cancellable and restores shared flags before teardown diagnostics.
+            if let Ok(Ok(status)) = (&mut exec).await {
+                ended = Ok((
+                    Terminal { reason: "sessions-ended", detail: Some(status.to_string()) },
+                    cli::exit_code(status),
+                ));
+            }
+            completed = true;
+        }
         // A failed teardown must preserve an observed command failure.
         let (terminal, code) = match ended {
             Ok((terminal, code)) => (Some(terminal), Ok(code)),
@@ -485,6 +511,13 @@ fn run_box(
         };
         let reason = terminal.as_ref().map(|terminal| terminal.reason);
         let down = box_.down(terminal).await;
+        // Apple must reap its native client before main restores shared flags.
+        #[cfg(not(target_os = "linux"))]
+        if !completed {
+            let _ = exec.await;
+        }
+        #[cfg(target_os = "linux")]
+        let _ = completed;
         if let Some(reason) = reason.filter(|reason| !matches!(*reason, "sessions-ended" | "signal")) {
             eprintln!(
                 "pinfold: the box ended with {reason}; see `pinfold box inspect {}`",

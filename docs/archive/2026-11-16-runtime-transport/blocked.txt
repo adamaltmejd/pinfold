@@ -1,0 +1,23 @@
+$ git archive 809fc36 Cargo.toml Cargo.lock rust-toolchain.toml crates profile | tar -x -C /tmp/pfrt-main/src
+$ RUSTC_WRAPPER= cargo build --locked --manifest-path /tmp/pfrt-main/src/Cargo.toml
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.06s
+$ python3 terminal-cases.py /tmp/pfrt-main/src/target/debug/pinfold $IMAGE diagnose
+extra-terminal platform=darwin
+BLOCKED_CLIENT=83757 queued=0
+AssertionError
+baseline: kqueue NOTE_EXIT did not arrive by the 60-second harness deadline
+$ samples from the first transport implementation, before the approved extension
+$ sample <remaining native child> 1 10 -file native.sample
++                       86 mach_msg_overwrite  (in libsystem_kernel.dylib) + 480  [0x1852aca28]
++                   86 closure #2 in static ProgressBar.restoreCursorAtExit()  (in container) + 340  [0x103f0d434]
++                                   86 NSFileHandle.write<A>(contentsOf:)  (in Foundation) + 296  [0x185c8fbb4]
++                                     86 specialized NSFileHandle.write<A>(contentsOf:)  (in Foundation) + 300  [0x185c8ec38]
++                                       86 specialized writeSingleRegion #1 <A><A1>(_:) in NSFileHandle.write<A>(contentsOf:)  (in Foundation) + 368  [0x185c90f64]
++                                         86 closure #1 in writeSingleRegion #1 <A><A1>(_:) in NSFileHandle.write<A>(contentsOf:)  (in Foundation) + 60  [0x185c90fe0]
++                                           86 write  (in libsystem_kernel.dylib) + 8  [0x1852a7838]
+write  (in libsystem_kernel.dylib)        86
+$ sample <project client before master-close correction> 1 10 -file client.sample
++                                                                     85 _RNvXNtNtNtNtCsjLUCb4uwWv2_7pinfold4core7runtime5apple3ttyNtB2_6ClientNtNtNtCs3bJEMBXHbwl_4core3ops4drop4Drop4drop  (in pinfold) + 60  [0x102605c30]  tty.rs:214
++                                                                       85 _RNvMsT_NtCsdnanKjkF2cC_3std7processNtB5_5Child4wait  (in pinfold) + 60  [0x102aaf0f8]
++                                                                           85 __wait4  (in libsystem_kernel.dylib) + 8  [0x1852ab4d0]
+__wait4  (in libsystem_kernel.dylib)        85
