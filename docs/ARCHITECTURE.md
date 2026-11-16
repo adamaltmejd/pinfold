@@ -688,7 +688,7 @@ liveness retains disk ownership and is reported as `unknown`.
 Inventory and measurement report bad records and continue. A resource decision
 consults only claims that can reference that resource. Unknown VMM liveness
 pins that claim's generation state and named disks. A wholly unreadable claim
-prevents deletion or attachment of any existing disk because its attachments
+prevents deletion or attachment of any existing managed disk because its attachments
 are unknown. The attachment refusal names the bad record. Starts using only
 new disks, reporting and recovery of other verified-dead claims continue.
 
@@ -1198,7 +1198,7 @@ gets its own.
   recorded under the box's claim and count until confirmed runtime removal
   and published retirement, or removal of that claim. A readable claim pins
   only its named disks, regardless of VMM liveness. A wholly unreadable claim
-  refuses deletion or attachment of any existing disk. Attachment refuses as
+  refuses deletion or attachment of any existing managed disk. Attachment refuses as
   `disk-in-use`, naming the bad record. Starts using only new disks and
   measurement continue.
   An Apple preparation error removes new disks and claimed state when no helper
