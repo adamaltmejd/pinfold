@@ -11,9 +11,8 @@ use std::time::{Duration, Instant};
 
 use crate::core::runtime::sockets::Sockets;
 
-use crate::init::firecracker::{
-    CONTROL_PORT, ENV, ENV_SET, EXEC_PORT, FAILED, STAT, UNMOUNT, read_frame, write_frame,
-};
+use crate::init::exec_wire::{FAILED, read_frame, write_frame};
+use crate::init::firecracker::{CONTROL_PORT, ENV, ENV_SET, EXEC_PORT, STAT, UNMOUNT};
 
 /// A host-initiated connection to the guest's `port`.
 pub fn connect(sockets: &Sockets, port: u32) -> io::Result<UnixStream> {
@@ -54,9 +53,7 @@ fn answer(stream: &mut impl Read, kind: u8) -> io::Result<Vec<u8>> {
     }
 }
 
-pub(super) use super::super::exec_transport::Cancellable;
-use super::super::exec_transport::cancelled;
-pub(super) use super::super::exec_transport::put;
+use super::super::exec_transport::{Cancellable, cancelled, put};
 
 fn put_pairs(payload: &mut Vec<u8>, pairs: &[(OsString, OsString)]) {
     payload.extend((pairs.len() as u32).to_be_bytes());

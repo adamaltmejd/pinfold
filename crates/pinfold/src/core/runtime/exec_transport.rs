@@ -3,12 +3,11 @@
 use crate::core::process::StdioRelay;
 use crate::core::runtime::terminal::{Raw, Winch, window};
 use crate::init::exec_wire::{
-    EXEC, EXIT, FAILED, RESIZE, STDERR, STDIN, STDIN_END, STDOUT, read_frame, write_frame,
+    EXEC, EXIT, FAILED, RESIZE, STDERR, STDIN, STDIN_END, STDOUT, write_frame,
 };
 use nix::libc;
-use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use std::io::{self, Read, Write};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,7 +22,7 @@ pub(crate) fn put(payload: &mut Vec<u8>, bytes: &[u8]) {
 /// its exit code, or `128+n` for signal `n`. The client stays in pinfold's
 /// process.
 pub fn exec(
-    mut connection: UnixStream,
+    connection: UnixStream,
     context: &crate::core::runtime::ExecContext<'_>,
     argv: &[String],
 ) -> io::Result<i32> {
@@ -58,8 +57,8 @@ pub fn exec(
     let raw = if tty { Raw::enter()? } else { None };
     let winch = if tty { Some(Winch::install()?) } else { None };
     let stdin = StdioRelay::new(0, true)?;
-    let mut stdout = StdioRelay::new(1, false)?;
-    let mut stderr = StdioRelay::new(2, false)?;
+    let stdout = StdioRelay::new(1, false)?;
+    let stderr = StdioRelay::new(2, false)?;
     write_frame(
         &mut Cancellable {
             connection: &connection,
@@ -72,195 +71,258 @@ pub fn exec(
         &payload,
     )?;
 
-    let (stop, stopping) = crate::core::process::pipe()?;
-    let result = std::thread::scope(|scope| {
-        let input_connection = connection.try_clone()?;
-        let winch = match &winch {
-            Some(winch) => Some(winch.read.try_clone()?),
-            None => None,
-        };
-        let input = std::thread::Builder::new()
-            .name("exec-input".into())
-            .spawn_scoped(scope, move || {
-                forward_input(
-                    input_connection,
-                    &stop,
-                    winch.as_ref(),
-                    stdin.as_fd(),
-                    cancel,
-                )
-            })?;
-        let result = relay_output(
-            &mut connection,
-            stdout.as_raw_fd(),
-            stderr.as_raw_fd(),
-            cancel,
-        );
-        drop(stopping);
-        let joined = input.join();
-        if joined.is_err() {
-            crate::core::process::diagnostic("exec input worker failed");
-        }
-        result
-    });
-    let drained = (|| -> io::Result<()> {
-        if result.is_ok() {
-            stdout.close();
-            stderr.close();
-            let deadline = Instant::now() + Duration::from_secs(1);
-            while !stdout.finished()? || !stderr.finished()? {
-                if Instant::now() >= deadline || cancelled(cancel).is_err() {
+    let result = relay(connection, context, stdin, stdout, stderr, winch.as_ref());
+    drop((winch, raw));
+    result
+}
+
+fn relay(
+    mut connection: UnixStream,
+    context: &crate::core::runtime::ExecContext<'_>,
+    mut stdin: StdioRelay,
+    mut stdout: StdioRelay,
+    mut stderr: StdioRelay,
+    winch: Option<&Winch>,
+) -> io::Result<i32> {
+    use crate::init::exec_wire::{CHUNK, CREDIT, FrameReader, FrameWriter, OUTPUT_END, WINDOW};
+    use std::collections::VecDeque;
+    let mut reader = FrameReader::default();
+    let mut writer = FrameWriter::default();
+    let mut output: [VecDeque<u8>; 2] = std::array::from_fn(|_| VecDeque::new());
+    let mut closed = [false; 2];
+    let mut close_pending = [false; 2];
+    let mut credit_pending = [0u32; 2];
+    let mut next_credit = 0usize;
+    let mut credit_turn = true;
+    let mut input_credit = WINDOW;
+    let mut input = Vec::new();
+    let mut input_open = true;
+    let mut input_end = false;
+    let mut resize: Option<(u16, u16)> = None;
+    let mut completed = None;
+    let mut deadline: Option<Instant> = None;
+    let mut connected = true;
+    let result = (|| -> io::Result<i32> {
+        loop {
+            // Read control and status even while the caller's output is full.
+            for _ in 0..16 {
+                if !connected {
                     break;
                 }
-                match nix::poll::poll(&mut [], 10u16) {
-                    Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+                let frame = match reader.read(&mut connection) {
+                    Ok(Some(frame)) => frame,
+                    Ok(None) => break,
+                    Err(_) if completed.is_some() => {
+                        connected = false;
+                        break;
+                    }
+                    Err(error) => {
+                        return Err(io::Error::other(format!(
+                            "the box ended the exec before it exited: {error}"
+                        )));
+                    }
+                };
+                let (kind, payload) = frame;
+                match kind {
+                    STDOUT | STDERR => {
+                        let index = usize::from(kind == STDERR);
+                        if !closed[index] {
+                            if payload.len() > WINDOW - output[index].len() {
+                                return Err(io::Error::other("output exceeds credit"));
+                            }
+                            output[index].extend(payload);
+                        }
+                    }
+                    CREDIT if payload.len() == 5 && payload[0] == STDIN => {
+                        let count = u32::from_be_bytes(payload[1..].try_into().unwrap()) as usize;
+                        if count > WINDOW - input_credit {
+                            return Err(io::Error::other("invalid input credit"));
+                        }
+                        input_credit += count;
+                    }
+                    EXIT if payload.len() == 4 => {
+                        if completed.is_some() {
+                            return Err(io::Error::other("duplicate exit"));
+                        }
+                        completed = Some(i32::from_be_bytes(payload.try_into().unwrap()));
+                        deadline = Some(Instant::now() + Duration::from_secs(1));
+                        input_open = false;
+                        input.clear();
+                        stdin.close();
+                    }
+                    FAILED => {
+                        return Err(io::Error::other(
+                            String::from_utf8_lossy(&payload).into_owned(),
+                        ));
+                    }
+                    _ => return Err(io::Error::other(format!("the box sent frame {kind}"))),
+                }
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Ok(completed.expect("exit deadline"));
+            }
+            if cancelled(context.cancel).is_err() {
+                return completed
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::Interrupted, "exec cancelled"));
+            }
+            let relays = [&mut stdout, &mut stderr];
+            for (index, relay) in relays.into_iter().enumerate() {
+                if closed[index] {
+                    continue;
+                }
+                let (bytes, _) = output[index].as_slices();
+                if !bytes.is_empty() {
+                    let count = unsafe {
+                        libc::write(relay.as_raw_fd(), bytes.as_ptr().cast(), bytes.len())
+                    };
+                    if count > 0 {
+                        output[index].drain(..count as usize);
+                        credit_pending[index] += count as u32;
+                    } else if count < 0 {
+                        let error = io::Error::last_os_error();
+                        match error.kind() {
+                            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted => {}
+                            io::ErrorKind::BrokenPipe if !context.tty => {
+                                relay.close();
+                                closed[index] = true;
+                                close_pending[index] = true;
+                                output[index].clear();
+                                credit_pending[index] = 0;
+                            }
+                            _ => return Err(error),
+                        }
+                    }
+                }
+            }
+            if let Some(code) = completed
+                && !connected
+                && output.iter().all(VecDeque::is_empty)
+            {
+                stdout.close();
+                stderr.close();
+                if stdout.finished()? && stderr.finished()? {
+                    return Ok(code);
+                }
+            }
+            let credit_index = [next_credit, 1 - next_credit]
+                .into_iter()
+                .find(|&index| credit_pending[index] != 0);
+            if connected && !writer.pending() {
+                if let Some(index) = close_pending.iter().position(|pending| *pending) {
+                    writer.start(OUTPUT_END, &[if index == 0 { STDOUT } else { STDERR }])?;
+                    close_pending[index] = false;
+                } else if let Some((rows, cols)) = resize.take() {
+                    let mut bytes = rows.to_be_bytes().to_vec();
+                    bytes.extend(cols.to_be_bytes());
+                    writer.start(RESIZE, &bytes)?;
+                } else if input_end && input.is_empty() {
+                    writer.start(STDIN_END, &[])?;
+                    input_end = false;
+                } else if let Some(index) = credit_index
+                    && (credit_turn || input.is_empty())
+                {
+                    let mut bytes = vec![if index == 0 { STDOUT } else { STDERR }];
+                    bytes.extend(credit_pending[index].to_be_bytes());
+                    writer.start(CREDIT, &bytes)?;
+                    credit_pending[index] = 0;
+                    next_credit = 1 - index;
+                    credit_turn = false;
+                } else if !input.is_empty() {
+                    writer.start(STDIN, &input)?;
+                    input.clear();
+                    credit_turn = true;
+                }
+            }
+            if connected
+                && writer.pending()
+                && let Err(error) = writer.flush(&mut connection)
+            {
+                if completed.is_some() {
+                    connected = false;
+                } else {
+                    return Err(error);
+                }
+            }
+            let mut fds = [
+                libc::pollfd {
+                    fd: if connected {
+                        connection.as_raw_fd()
+                    } else {
+                        -1
+                    },
+                    events: libc::POLLIN | if writer.pending() { libc::POLLOUT } else { 0 },
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: if input_open && input.is_empty() && input_credit != 0 {
+                        stdin.as_raw_fd()
+                    } else {
+                        -1
+                    },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: if !closed[0] && !output[0].is_empty() {
+                        stdout.as_raw_fd()
+                    } else {
+                        -1
+                    },
+                    events: libc::POLLOUT,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: if !closed[1] && !output[1].is_empty() {
+                        stderr.as_raw_fd()
+                    } else {
+                        -1
+                    },
+                    events: libc::POLLOUT,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: winch.map_or(-1, |winch| winch.read.as_raw_fd()),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let timeout = deadline.map_or(100, |end| {
+                end.saturating_duration_since(Instant::now())
+                    .as_millis()
+                    .min(100) as i32
+            });
+            let polled = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
+            if polled < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            if fds[4].revents != 0 {
+                let _ = (&winch.expect("watched window").read).read(&mut [0; 64]);
+                resize = window()?;
+            }
+            if fds[1].revents != 0 {
+                let mut bytes = [0; CHUNK];
+                match nix::unistd::read(stdin.as_fd(), &mut bytes[..CHUNK.min(input_credit)]) {
+                    Ok(0) => {
+                        input_open = false;
+                        input_end = true;
+                        stdin.close();
+                    }
+                    Ok(count) => {
+                        input.extend(&bytes[..count]);
+                        input_credit -= count;
+                    }
+                    Err(nix::errno::Errno::EAGAIN | nix::errno::Errno::EINTR) => {}
                     Err(error) => return Err(error.into()),
                 }
             }
         }
-        Ok(())
     })();
-    drop((winch, raw));
-    if let Err(error) = drained {
-        crate::core::process::diagnostic(format_args!("stdio relay: {error}"));
-    }
-    result
-}
-
-/// Copy the guest's output to pinfold's own until EXIT.
-fn relay_output(
-    connection: &mut UnixStream,
-    stdout: libc::c_int,
-    stderr: libc::c_int,
-    cancel: Option<&AtomicBool>,
-) -> io::Result<i32> {
-    let mut connection = Cancellable {
-        connection,
-        stop: None,
-        cancel,
-        completed_first: true,
-        deadline: None,
-    };
-    let mut completed = None;
-    loop {
-        let (kind, payload) = match read_frame(&mut connection) {
-            Ok(frame) => frame,
-            Err(_) if completed.is_some() => return Ok(completed.expect("observed exit")),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
-            Err(error) => {
-                return Err(io::Error::other(format!(
-                    "the box ended the exec before it exited: {error}"
-                )));
-            }
-        };
-        let forwarded = match kind {
-            STDOUT => output(stdout, &payload, cancel, connection.deadline),
-            STDERR => output(stderr, &payload, cancel, connection.deadline),
-            EXIT => {
-                let code: [u8; 4] = payload
-                    .try_into()
-                    .map_err(|_| io::Error::other("the box's EXIT has the wrong length"))?;
-                completed = Some(i32::from_be_bytes(code));
-                connection.deadline = Some(Instant::now() + Duration::from_secs(1));
-                Ok(())
-            }
-            FAILED => Err(io::Error::other(
-                String::from_utf8_lossy(&payload).into_owned(),
-            )),
-            _ => Err(io::Error::other(format!("the box sent frame {kind}"))),
-        };
-        if let Err(error) = forwarded.and_then(|()| cancelled(cancel)) {
-            return completed.ok_or(error);
-        }
-    }
-}
-
-/// Forward stdin as STDIN frames and its end as STDIN_END, and each window
-/// change as RESIZE, until `stop` reads end of file.
-fn forward_input(
-    connection: UnixStream,
-    stop: &io::PipeReader,
-    winch: Option<&io::PipeReader>,
-    stdin: BorrowedFd<'_>,
-    cancel: Option<&AtomicBool>,
-) {
-    let mut open = true;
-    let mut buffer = vec![0u8; 64 * 1024];
-    loop {
-        if cancelled(cancel).is_err() {
-            return;
-        }
-        let mut fds = vec![PollFd::new(stop.as_fd(), PollFlags::POLLIN)];
-        if let Some(winch) = winch {
-            fds.push(PollFd::new(winch.as_fd(), PollFlags::POLLIN));
-        }
-        if open {
-            fds.push(PollFd::new(stdin, PollFlags::POLLIN));
-        }
-        match poll(&mut fds, PollTimeout::from(100u16)) {
-            Ok(_) => {}
-            Err(nix::errno::Errno::EINTR) => continue,
-            Err(_) => return,
-        }
-        let ready: Vec<bool> = fds
-            .iter()
-            .map(|fd| fd.revents().is_some_and(|events| !events.is_empty()))
-            .collect();
-        if ready[0] {
-            return;
-        }
-        if let Some(winch) = winch.filter(|_| ready[1]) {
-            let _ = (&*winch).read(&mut [0; 64]);
-            if let Ok(Some((rows, cols))) = window() {
-                let mut payload = rows.to_be_bytes().to_vec();
-                payload.extend(cols.to_be_bytes());
-                if write_frame(
-                    &mut Cancellable {
-                        connection: &connection,
-                        stop: Some(stop),
-                        cancel,
-                        completed_first: true,
-                        deadline: None,
-                    },
-                    RESIZE,
-                    &payload,
-                )
-                .is_err()
-                {
-                    return;
-                }
-            }
-        }
-        if open && *ready.last().unwrap() {
-            let mut writer = Cancellable {
-                connection: &connection,
-                stop: Some(stop),
-                cancel,
-                completed_first: true,
-                deadline: None,
-            };
-            let sent = match read_fd(stdin, &mut buffer) {
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
-                Ok(0) | Err(_) => {
-                    open = false;
-                    write_frame(&mut writer, STDIN_END, &[])
-                }
-                Ok(size) => write_frame(&mut writer, STDIN, &buffer[..size]),
-            };
-            if sent.is_err() {
-                return;
-            }
-        }
-    }
-}
-
-fn read_fd(fd: BorrowedFd, buffer: &mut [u8]) -> io::Result<usize> {
-    loop {
-        match nix::unistd::read(fd, buffer) {
-            Err(nix::errno::Errno::EINTR) => continue,
-            result => return result.map_err(io::Error::from),
-        }
-    }
+    // Once EXIT was observed, later drain or terminal-query errors cannot replace it.
+    result.or_else(|error| completed.ok_or(error))
 }
 
 pub(super) fn cancelled(cancel: Option<&AtomicBool>) -> io::Result<()> {
@@ -423,35 +485,4 @@ impl Write for Cancellable<'_> {
         }
         Ok(())
     }
-}
-
-fn output(
-    fd: libc::c_int,
-    mut bytes: &[u8],
-    cancel: Option<&AtomicBool>,
-    deadline: Option<Instant>,
-) -> io::Result<()> {
-    while !bytes.is_empty() {
-        cancelled(cancel)?;
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            return Err(io::ErrorKind::TimedOut.into());
-        }
-        // SAFETY: write reads from the live byte slice and does not retain it.
-        let written = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
-        if written > 0 {
-            bytes = &bytes[written as usize..];
-            continue;
-        }
-        if written == 0 {
-            return Ok(());
-        }
-        let error = io::Error::last_os_error();
-        match error.kind() {
-            io::ErrorKind::Interrupted => {}
-            io::ErrorKind::WouldBlock => wait(fd, libc::POLLOUT, None, cancel, deadline)?,
-            // A closed host stream must not discard the eventual command status.
-            _ => return Ok(()),
-        }
-    }
-    Ok(())
 }

@@ -28,17 +28,17 @@
 //!   answered ENV_SET; an EXEC that arrives first waits for it. EXEC is
 //!   argv (count u32, strings), workdir (empty for `/`), tty u8, then the
 //!   fixed execution metadata string, followed by STDIN,
-//!   STDIN_END and RESIZE (rows u16, cols u16) frames; the guest sends
-//!   STDOUT, STDERR and finally EXIT (i32). STAT is answered STAT with the
+//!   STDIN_END, RESIZE (rows u16, cols u16) and OUTPUT_END (stream kind) frames.
+//!   CREDIT (stream kind, consumed u32) replenishes each 64 KiB stream window.
+//!   The guest sends STDOUT, STDERR and EXIT (i32); output may follow EXIT for
+//!   up to one second. STAT is answered STAT with the
 //!   work cgroup's memory current and peak, pids current and max, and OOM
 //!   kills, each a present u8 and a u64.
 //! - Control (host dials guest [`CONTROL_PORT`], PID 1): UNMOUNT kills the
 //!   work cgroup, syncs and unmounts every attachment, answered CLEAN or
 //!   FAILED (text).
 
-pub(crate) use super::exec_wire::{
-    EXEC, EXIT, FAILED, RESIZE, STDERR, STDIN, STDIN_END, STDOUT, read_frame, write_frame,
-};
+use super::exec_wire::{EXEC, FAILED, STDERR, read_frame, write_frame};
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
@@ -47,10 +47,9 @@ use std::net::TcpListener;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{self, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -930,7 +929,6 @@ pub(super) fn exec(
     vars: Vec<(OsString, OsString)>,
     departure: Option<(BorrowedFd<'_>, bool)>,
 ) -> io::Result<()> {
-    let linger = departure.is_some();
     let mut fields = Fields(payload);
     let argv: Vec<OsString> = (0..fields.u32()?)
         .map(|_| fields.os())
@@ -1005,263 +1003,30 @@ pub(super) fn exec(
         });
     }
 
-    let output = Arc::new(Mutex::new(connection.try_clone()?));
-    let mut child = match command.spawn() {
+    let child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            let mut output = output.lock().expect("output lock");
+            let mut output = &connection;
             let message = format!(
                 "pinfold init exec: {}: {error}\n",
                 super::formatting::terminal_text(&program.to_string_lossy())
             );
             if project {
-                return write_frame(&mut *output, FAILED, message.as_bytes());
+                return write_frame(&mut output, FAILED, message.as_bytes());
             }
-            write_frame(&mut *output, STDERR, message.as_bytes())?;
+            write_frame(&mut output, STDERR, message.as_bytes())?;
             // The public process interface keeps the shell's spawn codes.
             let code: i32 = if error.kind() == io::ErrorKind::NotFound {
                 127
             } else {
                 126
             };
-            return write_frame(&mut *output, EXIT, &code.to_be_bytes());
+            return write_frame(&mut output, super::exec_wire::EXIT, &code.to_be_bytes());
         }
     };
     drop(command);
 
-    let stop = project.then(|| Arc::new(AtomicBool::new(false)));
-    let mut pumps = Vec::new();
-    let input: Box<dyn Write + Send> = match &pty {
-        Some(master) => {
-            pumps.push(pump(master.try_clone()?, STDOUT, &output, stop.clone())?);
-            Box::new(master.try_clone()?)
-        }
-        None => {
-            pumps.push(pump(
-                child.stdout.take().expect("piped"),
-                STDOUT,
-                &output,
-                stop.clone(),
-            )?);
-            pumps.push(pump(
-                child.stderr.take().expect("piped"),
-                STDERR,
-                &output,
-                stop.clone(),
-            )?);
-            Box::new(child.stdin.take().expect("piped"))
-        }
-    };
-    let resize = match &pty {
-        Some(master) => Some(master.try_clone()?),
-        None => None,
-    };
-    let mut reader = connection.try_clone()?;
-    let input_output = Arc::clone(&output);
-    thread::Builder::new()
-        .spawn(move || relay_input(&mut reader, input, resize.as_ref(), &input_output))?;
-
-    let status = if project {
-        let (departure, socket) = departure.unwrap_or((connection.as_fd(), true));
-        super::session::wait(&mut child, departure, socket)?
-    } else {
-        child.wait()?
-    };
-    if !project {
-        for pump in pumps.drain(..) {
-            let _ = pump.join();
-        }
-    }
-    let code = status
-        .code()
-        .or_else(|| status.signal().map(|signal| 128 + signal))
-        .unwrap_or(1);
-    let result = if project {
-        let output = output.lock().expect("output lock");
-        write_frame(
-            &mut ExecOutput {
-                stream: &output,
-                stop: None,
-                deadline: Some(Instant::now() + Duration::from_secs(1)),
-            },
-            EXIT,
-            &code.to_be_bytes(),
-        )
-    } else {
-        write_frame(
-            &mut *output.lock().expect("output lock"),
-            EXIT,
-            &code.to_be_bytes(),
-        )
-    };
-    if let Some(stop) = &stop {
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while pumps.iter().any(|pump| !pump.is_finished()) && Instant::now() < deadline {
-            match nix::poll::poll(&mut [], 10u16) {
-                Ok(_) | Err(nix::errno::Errno::EINTR) => {}
-                Err(_) => break,
-            }
-        }
-        stop.store(true, Ordering::Release);
-        // Remaining background writers keep their pipes. Detached pumps drain
-        // and discard after command completion instead of giving them SIGPIPE.
-    }
-    // Ends the input relay's read; the host has the exit code.
-    let _ = connection.shutdown(std::net::Shutdown::Both);
-    if linger {
-        // Apple's per-exec helper must keep background writers' readers alive.
-        // Its native transport has already received EXIT and EOF.
-        for pump in pumps {
-            let _ = pump.join();
-        }
-    }
-    result
-}
-
-/// Copy `from` into STDOUT or STDERR frames until it ends. After the host
-/// goes away it keeps reading and discards, so box work never blocks on a
-/// full pipe.
-fn pump(
-    mut from: impl Read + AsFd + Send + 'static,
-    kind: u8,
-    output: &Arc<Mutex<UnixStream>>,
-    stop: Option<Arc<AtomicBool>>,
-) -> io::Result<thread::JoinHandle<()>> {
-    let output = Arc::clone(output);
-    thread::Builder::new().spawn(move || {
-        let mut buffer = [0; 32 * 1024];
-        let mut open = true;
-        loop {
-            if let Some(stop) = &stop {
-                if stop.load(Ordering::Acquire) {
-                    open = false;
-                }
-                if open {
-                    let mut fds = [PollFd::new(from.as_fd(), PollFlags::POLLIN)];
-                    match nix::poll::poll(&mut fds, 100u16) {
-                        Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
-                        Ok(_) => {}
-                        Err(_) => break,
-                    }
-                }
-            }
-            match from.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(read) => {
-                    if open {
-                        let mut output = output.lock().expect("output lock");
-                        open = if let Some(stop) = &stop {
-                            write_frame(
-                                &mut ExecOutput {
-                                    stream: &output,
-                                    stop: Some(stop),
-                                    deadline: None,
-                                },
-                                kind,
-                                &buffer[..read],
-                            )
-                            .is_ok()
-                        } else {
-                            write_frame(&mut *output, kind, &buffer[..read]).is_ok()
-                        };
-                    }
-                }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                // A pty master reads EIO once every slave is closed.
-                Err(_) => break,
-            }
-        }
-    })
-}
-
-/// Project output must not hold cleanup behind an unread client socket.
-struct ExecOutput<'a> {
-    stream: &'a UnixStream,
-    stop: Option<&'a AtomicBool>,
-    deadline: Option<Instant>,
-}
-
-impl Write for ExecOutput<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        loop {
-            if self.stop.is_some_and(|stop| stop.load(Ordering::Acquire))
-                || self
-                    .deadline
-                    .is_some_and(|deadline| Instant::now() >= deadline)
-            {
-                return Err(io::ErrorKind::ConnectionAborted.into());
-            }
-            // MSG_DONTWAIT leaves the input relay's descriptor mode unchanged.
-            let sent = unsafe {
-                libc::send(
-                    self.stream.as_raw_fd(),
-                    bytes.as_ptr().cast(),
-                    bytes.len(),
-                    libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
-                )
-            };
-            if sent >= 0 {
-                return Ok(sent as usize);
-            }
-            let error = io::Error::last_os_error();
-            match error.kind() {
-                io::ErrorKind::Interrupted => continue,
-                io::ErrorKind::WouldBlock => {
-                    let mut fds = [PollFd::new(self.stream.as_fd(), PollFlags::POLLOUT)];
-                    match nix::poll::poll(&mut fds, 100u16) {
-                        Ok(_) | Err(nix::errno::Errno::EINTR) => {}
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-                _ => return Err(error),
-            }
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-fn relay_input(
-    connection: &mut UnixStream,
-    input: Box<dyn Write + Send>,
-    pty: Option<&File>,
-    output: &Mutex<UnixStream>,
-) {
-    let mut input = Some(input);
-    while let Ok((kind, payload)) = read_frame(connection) {
-        match kind {
-            STDIN => {
-                if let Some(writer) = input.as_mut()
-                    && writer.write_all(&payload).is_err()
-                {
-                    input = None;
-                }
-            }
-            // A terminal has no end of input to pass on; a pipe closes.
-            STDIN_END if pty.is_none() => input = None,
-            RESIZE => {
-                if let (Some(master), &[r0, r1, c0, c1]) = (pty, payload.as_slice())
-                    && let Err(error) = set_window(
-                        master,
-                        u16::from_be_bytes([r0, r1]),
-                        u16::from_be_bytes([c0, c1]),
-                    )
-                {
-                    let detail = format!("terminal size: {error}");
-                    let _ = write_frame(
-                        &mut *output.lock().expect("output lock"),
-                        FAILED,
-                        detail.as_bytes(),
-                    );
-                    let _ = connection.shutdown(std::net::Shutdown::Both);
-                    return;
-                }
-            }
-            _ => {}
-        }
-    }
+    super::session_io::relay(connection, child, pty, project, departure)
 }
 
 fn open_pty(window: Option<(u16, u16)>) -> io::Result<(File, File)> {
@@ -1301,7 +1066,7 @@ fn context(what: &str, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("{what}: {error}"))
 }
 
-fn set_window(master: &File, rows: u16, cols: u16) -> io::Result<()> {
+pub(super) fn set_window(master: &impl AsRawFd, rows: u16, cols: u16) -> io::Result<()> {
     let size = libc::winsize {
         ws_row: rows,
         ws_col: cols,

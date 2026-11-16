@@ -40,6 +40,9 @@ pub(crate) mod formatting;
 #[cfg(target_os = "linux")]
 #[path = "init/session.rs"]
 mod session;
+#[cfg(target_os = "linux")]
+#[path = "init/session_io.rs"]
+mod session_io;
 
 /// Guest values travel under names the host runtime does not interpret.
 /// Hex preserves arbitrary environment bytes through runtime JSON encoding.
@@ -336,18 +339,6 @@ fn exec(args: &[String]) -> ! {
     });
 }
 
-#[cfg(target_os = "linux")]
-fn copy_stream(input: &mut impl Read, output: &mut impl Write) -> io::Result<()> {
-    let mut bytes = [0; 32 * 1024];
-    loop {
-        let read = input.read(&mut bytes)?;
-        if read == 0 {
-            return Ok(());
-        }
-        output.write_all(&bytes[..read])?;
-    }
-}
-
 /// Apple's native pipes carry the same command frames as Linux's exec socket.
 #[cfg(target_os = "linux")]
 fn session_exec() -> io::Result<()> {
@@ -359,12 +350,12 @@ fn session_exec() -> io::Result<()> {
     let (mut connection, bridge) = UnixStream::pair()?;
     let mut incoming = bridge.try_clone()?;
     thread::Builder::new().spawn(move || {
-        let _ = copy_stream(&mut File::from(stdin), &mut incoming);
+        let _ = exec_wire::copy_stream(&mut File::from(stdin), &mut incoming);
         let _ = incoming.shutdown(Shutdown::Write);
     })?;
     let (drained, drain) = std::sync::mpsc::channel();
     thread::Builder::new().spawn(move || {
-        let _ = copy_stream(&mut &bridge, &mut File::from(stdout));
+        let _ = exec_wire::copy_stream(&mut &bridge, &mut File::from(stdout));
         let _ = drained.send(());
     })?;
     let mut vars: Vec<_> = std::env::vars_os()

@@ -12,15 +12,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::core::process::Listener as UnixListener;
 
+use super::super::exec_transport::put;
 use super::jail;
-use super::vsock::{self, put};
+use super::vsock;
 use crate::core::artifacts;
 use crate::core::disk::{self, Directory, Fill, Seeding};
 use crate::core::image::{ImageService, linux};
 use crate::core::plan::Plan;
 use crate::core::runtime::output;
 use crate::core::runtime::sockets::Sockets;
-use crate::init::firecracker::{BOOT, FAILED, READY, read_frame, write_frame};
+use crate::init::exec_wire::{FAILED, read_frame, write_frame};
+use crate::init::firecracker::{BOOT, READY};
 
 /// Exactly these: no secret ever reaches a kernel command line.
 const BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=1 pci=off init=/pinfold -- init boot";
@@ -393,7 +395,7 @@ impl Boot {
         cancel: &AtomicBool,
     ) -> io::Result<()> {
         stream.set_nonblocking(true)?;
-        let mut transport = vsock::Cancellable::startup(&stream, cancel);
+        let mut transport = super::super::exec_transport::Cancellable::startup(&stream, cancel);
         let sent = (|| {
             write_frame(&mut transport, BOOT, &self.request)?;
             for fill in &self.fills {

@@ -29,7 +29,8 @@ use crate::core::ownership::{self, Claim};
 use crate::core::plan::{Egress, Plan};
 use crate::core::runtime::firecracker::{jail, vm};
 use crate::core::{artifacts, clean, pipe, proxy, runs, sha256_hex};
-use crate::init::firecracker::{BOOT, BOOT_PORT, FAILED, READY, write_frame};
+use crate::init::exec_wire::{FAILED, write_frame};
+use crate::init::firecracker::{BOOT, BOOT_PORT, READY};
 
 const CACHE_BYTES: u64 = 8 << 30;
 const WORK_BYTES: u64 = 7 << 30;

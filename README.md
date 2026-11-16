@@ -106,9 +106,12 @@ session, crossing lease or keep remains. When a client departs, its guest helper
 sends TERM to that command's process group, then KILL after two seconds if needed.
 This includes client signals, terminal closure, SIGKILL and control connection
 loss. `pinfold start` keeps the box, not a departed session's command group.
-Normal command completion preserves background children. Processes that leave
-the group, including with `setsid`, may survive departure. `pinfold stop` ends
-everything in the box.
+A terminal departure first hangs up its guest terminal. Normal command
+completion preserves background children. Output from background children is
+delivered for up to one second after the command exits. A process that leaves
+the command's process group, or for a terminal session ignores hangup after
+leaving it, may keep running. `pinfold stop` ends everything. Public `box exec`
+sends no signal on departure.
 
 `pinfold start` keeps the box without clients. Matching repeated starts
 succeed. `pinfold stop` stops its observed generation, without loading current
@@ -131,9 +134,9 @@ Arguments after `--` pass literally to the command, including `--help`. Command 
 pass through; project setup failure or external teardown before observed completion uses 125. CMD owns stdout;
 pinfold diagnostics use stderr.
 
-Apple project TTY execution uses a guest PTY. Public Apple TTY exec uses a
-private host PTY. Pinfold owns the caller's terminal settings and forwards input and window changes. Native Apple clients
-hold no caller-terminal descriptors; non-TTY streams use separate pipes.
+Pinfold owns the caller's terminal settings and forwards input and window
+changes. Native Apple clients hold no caller-terminal descriptors. Without a
+TTY, stdout and stderr stay separate.
 The box-owning client's startup diagnostics stay in memory, bounded to 64 KiB,
 and are escaped when printed. After ready, its latest 64 KiB of stderr stays
 in memory and is printed, escaped, only if the box ends unexpectedly.

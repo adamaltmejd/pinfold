@@ -617,7 +617,8 @@ process. Getting further needs a host kernel bug.
   private pipes and creates its PTY in the guest. Public Apple TTY exec
   gives the native client a private host PTY, opened close-on-exec with its
   slave raw before spawn. Only pinfold changes the caller's terminal. No native
-  Apple client holds a caller-terminal descriptor. Non-TTY Apple execution uses separate pipes.
+  Apple client holds a caller-terminal descriptor. Public non-TTY Apple exec
+  uses separate pipes. Framed execution keeps separate stdout and stderr channels.
   The box-owning native client's stderr is piped. Startup diagnostics retain
   at most 64 KiB in memory. Before ready, stdout EOF or native-client exit
   starts a one-second failure deadline even if a descendant holds stderr.
@@ -629,9 +630,12 @@ process. Getting further needs a host kernel bug.
   for EOF from descendants. The detached owner uses `/` as its working
   directory and retains only configuration roots/selectors, referenced static
   sources and PATH needed by runtime and Git helpers.
-  Linux uses pinfold's vsock transport. Non-TTY execution preserves separate
-  byte streams. Closing a non-TTY output consumer closes its native pipe so
-  the native client observes SIGPIPE; pinfold retains the client's status.
+  Linux uses pinfold's vsock transport. Framed streams bound queued data with
+  consumption credits. Command input cannot block window changes or status.
+  Non-TTY execution preserves separate
+  byte streams. Closing a non-TTY output consumer closes that guest stream's
+  pipe reader so its writer observes SIGPIPE. Public Apple exec closes the native
+  pipe so the native client observes SIGPIPE. An observed command status is kept.
   An observed native exec status survives later relay failure or cancellation.
   After native exec exits, remaining output drains to EOF or a one-second
   deadline; a descendant holding an endpoint cannot retain the client.
@@ -646,14 +650,16 @@ process. Getting further needs a host kernel bug.
   preserved. This does not cover process-killing signals.
 - When a project client departs, its unprivileged guest helper sends TERM
   to that command's process group, then KILL two seconds later if it remains.
+  A terminal departure first closes its PTY master, hanging up the guest terminal.
   Client signals, Leave after a signal, lease EOF and control connection loss
   are departures. The helper watches connection loss independently of command
   I/O. The group comes from the helper's own child, never workload data.
   Other sessions, the helper and relay are untouched. Normal command completion
-  leaves background children running. Processes that leave the group, including
-  with `setsid`, can survive departure. `pinfold stop` ends everything in the box.
-  TTY Ctrl-C and Ctrl-\ remain terminal input. Plain stdin EOF is not departure.
-  Public `box exec` keeps its existing lifetime.
+  leaves background children running, with output delivered for up to one second
+  after the command exits. A process that leaves the command's process group,
+  or for a terminal session ignores hangup after leaving it, may keep running.
+  `pinfold stop` ends everything. TTY Ctrl-C and Ctrl-\ remain terminal input.
+  Plain stdin EOF is not departure. Public `box exec` sends no signal on departure.
 - Observed command exit codes pass through, including 125, 126 and 127;
   `128+n` for a command's signal death. A project setup failure before CMD
   starts, including cwd, terminal setup or executable lookup, uses 125.
@@ -1474,8 +1480,9 @@ project; executable replacement remains `update-busy`.
   independently of HOME and XDG roots. A session ends when its command returns
   or its client disconnects. A departed session's command group is asked to
   stop, even while a keep request or crossing lease retains the box. Processes
-  that leave that group may survive until `pinfold stop`. Normal completion
-  preserves background children. Ending one session does not end another.
+  that leave the command's process group, or for a terminal session ignore
+  hangup after leaving it, may keep running. `pinfold stop` ends everything.
+  Normal completion preserves background children. Ending one session does not end another.
   With no session, crossing lease or keep request, the owner closes admission
   and tears down the box.
 - **Startup:** after bootstrap validation, claim a fresh box name and publish
@@ -1759,7 +1766,7 @@ what the rewritten suite must show. Testing policy is in `AGENTS.md`.
 
 | 45 | Disk export writes only the requested new destination | While its box runs, export of its disk refuses as disk-in-use. After teardown, the same disk exports nested file bytes, executable mode and a symlink as a link without touching its target. Existing destinations refuse unchanged; a missing disk refuses as disk-missing and creates no disk. A special file refuses and leaves no destination; removing it makes the same disk export successfully. |
 
-| 47 | A project's sessions share one box | Simultaneous first launches use one owner and generation. Independent clients run in distinct invoking directories. Killing or disconnecting a client sends TERM to its command group, then KILL after two seconds if needed, while the second session keeps working. Keep and crossing leases retain the box but not a departed command group. Processes that leave the group may survive until stop; normal completion preserves background children. Plain stdin EOF does not cancel a command. The final unkept departure ends the box. Bootstrap death and final departure racing join, keep and stop never admit two writable generations. Start retains a box without clients; repeated start and stop succeed. Different effective configuration or host roots refuse as config-changed without executing CMD; restoring each changed input joins the same generation. The original proxy policy still decides. A stale stop cannot end a replacement. |
+| 47 | A project's sessions share one box | Simultaneous first launches use one owner and generation. Independent clients run in distinct invoking directories. Killing or disconnecting a client sends TERM to its command group, then KILL after two seconds if needed, while the second session keeps working. Keep and crossing leases retain the box but not a departed command group. A terminal departure hangs up its guest terminal first. A process that leaves the command group, or for a terminal session ignores hangup after leaving it, may keep running; stop ends everything. Normal completion preserves background children, with output delivered for up to one second. Plain stdin EOF does not cancel a command. The final unkept departure ends the box. Bootstrap death and final departure racing join, keep and stop never admit two writable generations. Start retains a box without clients; repeated start and stop succeed. Different effective configuration or host roots refuse as config-changed without executing CMD; restoring each changed input joins the same generation. The original proxy policy still decides. A stale stop cannot end a replacement. |
 
 ## Code
 
