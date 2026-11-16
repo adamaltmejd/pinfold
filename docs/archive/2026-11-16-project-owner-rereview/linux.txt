@@ -1,0 +1,19 @@
+startup-stop: real HTTP-held sync; client=125/stopped full-generation=True inspect=True owner-timeout=False CMD=absent teardown-seconds=30.15 terminal=signal
+startup-stop control: checked restart=0/STARTUP-CONTROL fixture hook removed normal teardown=True
+startup-exited: real HTTP-held sync; client=125/exited full-generation=True inspect=True owner-timeout=False CMD=absent teardown-seconds=0.13 terminal=exited
+startup-exited control: checked restart=0/STARTUP-CONTROL fixture hook removed normal teardown=True
+startup-audit-log: real HTTP-held sync; client=125/audit-log full-generation=True inspect=True owner-timeout=False CMD=absent teardown-seconds=0.18 terminal=audit-log
+startup-audit-log control: checked restart=0/STARTUP-CONTROL fixture hook removed normal teardown=True
+resolver-cap: timed-out batches=48+16 workers-held=64 additional=16/502/resolve-failed seconds=0.21 workers-after=64 additional-DNS=0
+resolver-cap control: real DNS replies released all64 workers; same-owner allowed DNS/HTTP=200/DNS-CONTROL
+cleanup-failure observed=0 client=0 stderr=teardown-failed run-record=teardown-failed foreign-bytes=unchanged
+cleanup-failure observed=23 client=23 stderr=teardown-failed run-record=teardown-failed foreign-bytes=unchanged
+failed-output observed=0 client=0 diagnostic=present target=/dev/full
+failed-output observed=23 client=23 diagnostic=present target=/dev/full
+writable-output control=0/WRITABLE-CONTROL
+full-stderr relay failure: completed=0 client=0 seconds=1.02 caller-flags=unchanged; parent never drained stderr
+blocked-crossing-output: guest ref independently committed; SIGTERM=143 seconds=0.11 caller-flags=unchanged owner=same-generation; parent did not drain stdout
+crossing-output control: JSON=pushed independent-ref=host-HEAD same-owner CMD=0/CROSSING-CONTROL
+cleanup own boxes/disks=True
+full-stderr discovery warning: malformed own fixture claim; joined CMD=0/DISCOVERY-CONTROL seconds=1.02 caller-flags=unchanged
+discovery control: own malformed claim removed; same-owner CMD=0/DISCOVERY-RESTORED

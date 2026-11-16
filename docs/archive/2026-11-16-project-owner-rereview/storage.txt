@@ -1,0 +1,14 @@
+Mac measurements: allocated KiB from du -sk, baseline before round-2 builds/cases; task target directory only. Shared runtime directories were read, never pruned.
+Category: baseline -> final KiB
+target: 1616380 -> 1573096; delta=-43284
+image content: 3123728 -> 3123728; delta=0
+image snapshots: 12206724 -> 12206724; delta=0
+builder: 483720 -> 483720; delta=0
+buildkit container: 2876940 -> 2876940; delta=0
+native volumes: 0 -> 0; delta=0
+pinfold cache: 551280 -> 551280; delta=0
+Image references: 23 -> 23. Native volumes: zero -> zero after explicit owned cleanup. Temporary volume allocation was observed at 13464 KiB for two owned project disks; twelve named disks were also attached by the public control. The maximum concurrent allocated volume bytes were not sampled.
+Task target measured peak=1705452 KiB, +89072 KiB from baseline; final net=-43284 KiB. Three incremental-cache directories rebuilt this round measured 412348 KiB before removal; hard links mean that is not a claim of equal filesystem space reclaimed. Final checks used CARGO_INCREMENTAL=0.
+Eight explicitly enumerated fixture payloads measured 536870912 allocated bytes (512 MiB), then were removed. No shared image, volume, builder cache or other checkout target was removed.
+Data free space: baseline 15 GiB; observed low 11 GiB; final 30 GiB. Shared APFS availability changed independently of these category measurements; the full free-space change is not attributed to this task.
+Gate error: one chained build ran after df reported 11 GiB and completed before attempted targeted termination. The final fmt/strict-clippy/build run enforced >=12 GiB with statvfs and began at 30 GiB; it passed.
