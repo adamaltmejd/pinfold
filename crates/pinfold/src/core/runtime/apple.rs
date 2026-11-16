@@ -267,6 +267,10 @@ impl Client {
         Ok(())
     }
 
+    pub fn exited(&mut self) -> io::Result<bool> {
+        self.0.try_wait().map(|status| status.is_some())
+    }
+
     /// Wait until the box ends on its own or is stopped.
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
         let status = self.0.wait().await?;

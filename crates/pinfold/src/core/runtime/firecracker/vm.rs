@@ -338,6 +338,10 @@ impl Vm {
         result
     }
 
+    pub fn exited(&mut self) -> io::Result<bool> {
+        self.vmm.exited()
+    }
+
     /// Wait until the VM ends on its own or is stopped.
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
         let status = self.vmm.wait().await.map(super::exit_status);

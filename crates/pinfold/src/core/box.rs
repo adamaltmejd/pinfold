@@ -566,6 +566,29 @@ impl Box {
         }
     }
 
+    /// Check shutdown once before admission, including a runtime exit whose
+    /// status is not yet published by its waiter.
+    pub async fn ended_if_ready(&mut self) -> io::Result<Option<Shutdown>> {
+        use std::future::Future;
+        let observed = {
+            let mut ended = std::pin::pin!(self.ended());
+            std::future::poll_fn(|context| {
+                std::task::Poll::Ready(match ended.as_mut().poll(context) {
+                    std::task::Poll::Ready(reason) => Some(reason),
+                    std::task::Poll::Pending => None,
+                })
+            })
+            .await
+        };
+        if let Some(reason) = observed {
+            return reason.map(Some);
+        }
+        if self.child.exited()? {
+            return self.ended().await.map(Some);
+        }
+        Ok(None)
+    }
+
     /// Stop and remove the box, write `terminal` as the run's terminal
     /// record, then delete its state directory and acknowledge `box down`.
     /// `None` writes no terminal record.

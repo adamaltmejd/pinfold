@@ -71,10 +71,13 @@ fn reply_error(reply: Reply) -> io::Error {
             io::Error::other("stopped during startup")
         }
         Reply::Ended {
-            generation, reason, ..
+            generation,
+            reason,
+            teardown_ok,
         } => io::Error::other(format!(
-            "{} ({generation}); pinfold box inspect {generation}",
-            terminal_text(&reason)
+            "{} ({generation}); pinfold box inspect {generation}{}",
+            terminal_text(&reason),
+            if teardown_ok { "" } else { "; teardown-failed" }
         )),
         _ => unavailable(),
     }
@@ -582,16 +585,39 @@ async fn admit(
             bootstrap_diagnostics(&mut child.2, signals).await?;
             return Err(error);
         }
+        let mut draining = None;
         let reply = loop {
             let reply = tokio::select! {
                 biased;
-                reply = timeout_at(Instant::now() + CONTROL, wire::read_reply(&mut stream, true)) => reply.map_err(|_| timed_out()).and_then(|r| r),
+                reply = async {
+                    if draining.is_some() {
+                        wire::read_reply(&mut stream, true).await
+                    } else {
+                        timeout_at(Instant::now() + CONTROL, wire::read_reply(&mut stream, true))
+                            .await.map_err(|_| timed_out()).and_then(|reply| reply)
+                    }
+                } => reply,
                 _ = signals.recv() => break Err(io::ErrorKind::Interrupted.into()),
             };
-            if matches!(reply, Ok(Reply::Starting {})) {
-                continue;
+            match reply {
+                Ok(Reply::Starting {}) => continue,
+                Ok(Reply::Draining { generation })
+                    if valid_generation(&generation)
+                        && draining
+                            .as_ref()
+                            .is_none_or(|observed| observed == &generation) =>
+                {
+                    draining = Some(generation);
+                }
+                Ok(Reply::Ended { ref generation, .. })
+                    if draining
+                        .as_ref()
+                        .is_some_and(|observed| observed != generation) =>
+                {
+                    break Err(protocol());
+                }
+                reply => break reply,
             }
-            break reply;
         };
         // EOF cancels uncommitted bootstrap; wait for diagnostic drain without
         // keeping launch open after the child has completed failed cleanup.
@@ -896,7 +922,7 @@ async fn finish_client(
             return Ok(code);
         }
         let _ = forward_diagnostics(format!("pinfold: leave: {error}").into_bytes(), signals).await;
-        return Ok(if code == 0 { 125 } else { code });
+        return Ok(code);
     }
     if signals.last().is_none() {
         clean::maintain();
@@ -1000,9 +1026,10 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let started = {
         let startup = Box::up_project(&plan, resolved.config.profile, &image_id, &init, &mut signals, cancelled);
         tokio::pin!(startup);
+        let mut disconnected = false;
         loop { tokio::select! {
             biased;
-            _ = received.recv() => { let _ = cancel.send(true); break startup.await },
+            _ = received.recv(), if !disconnected => { let _ = cancel.send(true); disconnected = true; },
             _ = heartbeat.tick() => { let _ = wire::write_reply(&mut writer, Reply::Starting {}).await; },
             result = &mut startup => break result,
         }}
@@ -1035,20 +1062,36 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
             _ = heartbeat.tick() => { let _ = wire::write_reply(&mut writer, Reply::Starting {}).await; },
             result = &mut syncing => { result.map_err(|_| io::Error::other("project synchronization worker failed"))?; break None },
         }};
+        let sync_pending = stopped.is_some();
+        let stopped = match stopped {
+            Some(reason) => Some(reason),
+            None => {
+                let checking = timeout_at(Instant::now() + CONTROL, box_.ended_if_ready());
+                tokio::pin!(checking);
+                loop { tokio::select! {
+                    biased;
+                    _ = received.recv() => break Some(Ok(Shutdown::Signal)),
+                    _ = signals.recv() => break Some(Ok(Shutdown::Signal)),
+                    _ = heartbeat.tick() => { let _ = wire::write_reply(&mut writer, Reply::Starting {}).await; },
+                    result = &mut checking => break result.map_err(|_| timed_out()).and_then(|result| result).transpose(),
+                }}
+            }
+        };
         if let Some(reason) = stopped {
+            let _ = wire::write_reply(&mut writer, Reply::Draining { generation: box_.run_id.clone() }).await;
             sync_cancel.store(true, Ordering::SeqCst);
-            let _ = syncing.await;
-            let reason = reason?;
-            let down = box_.down(Some(reason.terminal())).await;
-            if down.is_ok() { locator.remove()?; }
+            if sync_pending { let _ = syncing.await; }
+            let reason_name = reason.as_ref().map_or("owner-unavailable", |reason| {
+                if *reason == Shutdown::Signal { "stopped" } else { reason.as_str() }
+            });
+            let down = box_.down(reason.as_ref().ok().map(Shutdown::terminal)).await
+                .and_then(|()| locator.remove());
+            if down.is_err() { runs::write_teardown_failure(&box_.run_id); }
+            let _ = wire::write_reply(&mut writer, Reply::Ended {
+                generation: box_.run_id.clone(), reason: reason_name.into(), teardown_ok: down.is_ok(),
+            }).await;
+            reason?;
             down?;
-            let _ = wire::write_reply(&mut writer, Reply::Ended { generation: box_.run_id.clone(), reason: "stopped".into(), teardown_ok: true }).await;
-            return Ok(125);
-        }
-        if received.try_recv().is_ok() {
-            box_.down(Some(Shutdown::Signal.terminal())).await?;
-            locator.remove()?;
-            let _ = wire::write_reply(&mut writer, Reply::Ended { generation: box_.run_id.clone(), reason: "stopped".into(), teardown_ok: true }).await;
             return Ok(125);
         }
         let listener = crate::core::process::Listener::from_std(sockets::Sockets::open(&box_.run_id)?.bind_control()?)?;

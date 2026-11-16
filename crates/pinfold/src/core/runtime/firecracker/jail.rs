@@ -89,6 +89,20 @@ impl Vmm {
         }
     }
 
+    /// The pidfd becomes readable at exit, before the wait thread publishes status.
+    pub fn exited(&self) -> io::Result<bool> {
+        let mut descriptor = libc::pollfd {
+            fd: self.pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
+        if result < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(result != 0)
+    }
+
     /// Whether the VMM still runs.
     pub fn running(&mut self) -> bool {
         if self.ended.is_some() {

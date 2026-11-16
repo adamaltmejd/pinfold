@@ -163,7 +163,10 @@ pub(crate) struct StdioRelay {
 
 impl StdioRelay {
     pub(crate) fn new(caller: RawFd, input: bool) -> io::Result<Self> {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        Self::until(caller, input, Instant::now() + Duration::from_secs(5))
+    }
+
+    fn until(caller: RawFd, input: bool, deadline: Instant) -> io::Result<Self> {
         super::pipe::remaining(deadline, None, "stdio relay setup")?;
         let _guard = fork_guard();
         if unsafe { nix::libc::fcntl(caller, nix::libc::F_GETFL) } < 0 {
@@ -257,6 +260,26 @@ impl StdioRelay {
             Err(io::Error::other("stdio relay failed"))
         }
     }
+}
+
+/// A full caller stderr must not retain an already completed command.
+pub(crate) fn diagnostic(message: impl std::fmt::Display) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let _ = (|| -> io::Result<()> {
+        let mut relay = StdioRelay::until(2, false, deadline)?;
+        super::pipe::write_all(
+            &mut relay,
+            format!("pinfold: {message}\n").as_bytes(),
+            deadline,
+            None,
+            "diagnostic",
+        )?;
+        relay.close();
+        while !relay.finished()? {
+            super::pipe::wait_ready(None, PollFlags::empty(), deadline, None, "diagnostic")?;
+        }
+        Ok(())
+    })();
 }
 
 impl AsRawFd for StdioRelay {

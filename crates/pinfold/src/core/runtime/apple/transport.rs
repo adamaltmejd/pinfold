@@ -2,7 +2,7 @@
 
 use crate::core::process::{CommandGuard, StdioRelay};
 
-use std::io::{self, Write};
+use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -310,8 +310,7 @@ impl Client {
 }
 
 fn notice(message: impl std::fmt::Display) {
-    // The caller may have made stderr nonblocking or closed it.
-    let _ = writeln!(io::stderr().lock(), "pinfold: {message}");
+    crate::core::process::diagnostic(message);
 }
 
 impl Drop for Client {

@@ -235,8 +235,8 @@ pub fn exec(
         );
         drop(stopping);
         let joined = input.join();
-        if joined.is_err() && matches!(result, Ok(0)) {
-            return Err(io::Error::other("exec input worker failed"));
+        if joined.is_err() {
+            crate::core::process::diagnostic("exec input worker failed");
         }
         result
     });
@@ -259,10 +259,7 @@ pub fn exec(
     })();
     drop((winch, raw));
     if let Err(error) = drained {
-        if matches!(result, Ok(0)) {
-            return Err(error);
-        }
-        let _ = writeln!(io::stderr(), "pinfold: stdio relay: {error}");
+        crate::core::process::diagnostic(format_args!("stdio relay: {error}"));
     }
     result
 }

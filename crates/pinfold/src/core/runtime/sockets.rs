@@ -692,8 +692,7 @@ fn socket_at_until(
     connect: bool,
     deadline: Option<Instant>,
 ) -> io::Result<File> {
-    let connect_deadline =
-        connect.then(|| deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(10)));
+    let helper_deadline = deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(10));
     check(directory, true)?;
     if leaf.as_bytes().contains(&b'/') || leaf.as_bytes() == b"." || leaf.as_bytes() == b".." {
         return Err(failure("socket leaf is not a component"));
@@ -797,27 +796,24 @@ fn socket_at_until(
     drop(write);
     let mut report = [0u8; 8];
     let mut reader = File::from(read);
-    let received = match connect_deadline {
-        Some(deadline) => (|| {
-            crate::core::pipe::nonblocking(&reader, "socket helper")?;
-            let mut filled = 0;
-            while filled < report.len() {
-                let count = crate::core::pipe::read(
-                    &mut reader,
-                    &mut report[filled..],
-                    deadline,
-                    None,
-                    "socket helper",
-                )?;
-                if count == 0 {
-                    return Err(io::ErrorKind::UnexpectedEof.into());
-                }
-                filled += count;
+    let received: io::Result<()> = (|| {
+        crate::core::pipe::nonblocking(&reader, "socket helper")?;
+        let mut filled = 0;
+        while filled < report.len() {
+            let count = crate::core::pipe::read(
+                &mut reader,
+                &mut report[filled..],
+                helper_deadline,
+                None,
+                "socket helper",
+            )?;
+            if count == 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
             }
-            Ok(())
-        })(),
-        None => reader.read_exact(&mut report),
-    };
+            filled += count;
+        }
+        Ok(())
+    })();
     if received.is_err() {
         // This direct child is still unreaped, so its pid remains ours.
         unsafe {
@@ -825,7 +821,7 @@ fn socket_at_until(
         }
     }
     let mut status = 0;
-    let mut wait_deadline = connect_deadline;
+    let mut wait_deadline = Some(helper_deadline);
     let mut wait_error = None;
     loop {
         let waited = unsafe {
@@ -871,7 +867,7 @@ fn socket_at_until(
     let stage = i32::from_ne_bytes(report[..4].try_into().unwrap());
     let error = i32::from_ne_bytes(report[4..].try_into().unwrap());
     if connect && error == libc::EINPROGRESS {
-        wait_connected(fd, connect_deadline.expect("connect deadline"))?;
+        wait_connected(fd, helper_deadline)?;
     } else if error != 0 {
         let operation = if stage == 1 {
             "enter socket directory"
