@@ -103,7 +103,10 @@ core owns disk claims, exclusivity, recovery and cleanup policy.
 Backends complete guest initialization through readiness. The common box
 owner holds the child, proxy and cancellation and decides cleanup.
 Cancellation reaps preparation helpers and joins proxy and diagnostic workers
-before completed teardown.
+before completed teardown. Host name lookup has a ten-second deadline. A
+resolver worker holds only the host name and lookup parameters. Cancellation
+discards its result without dialing. Teardown may finish without joining a
+lookup still in the system resolver; all other workers are joined.
 
 Preflight refuses box startup on older, prerelease or unrecognized runtime
 versions. Inventory and cleanup remain available on older versions.

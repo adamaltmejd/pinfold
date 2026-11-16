@@ -17,7 +17,7 @@ use std::os::fd::AsFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -98,13 +98,13 @@ pub(crate) fn push_cancellable(
     remote: &str,
     cancel: &AtomicBool,
 ) -> Result<Refs, CrossingError> {
-    check_args_inner(repo, guest_repo, remote, Some(cancel))?;
-    let branches = succeeded(git_input_inner(
+    check_args(repo, guest_repo, remote, cancel)?;
+    let branches = succeeded(git_input(
         repo,
         &["for-each-ref", "--format=%(refname)", "refs/heads/"],
         b"",
         &[],
-        Some(cancel),
+        cancel,
     )?)?
     .stdout;
     if branches.is_empty() {
@@ -117,7 +117,7 @@ pub(crate) fn push_cancellable(
     let path = bundle.path.as_str();
     // Full names, unchecked for ambiguity: `bundle create` drops a name a
     // tag also matches.
-    succeeded(git_input_inner(
+    succeeded(git_input(
         repo,
         &[
             "-c",
@@ -130,9 +130,9 @@ pub(crate) fn push_cancellable(
         ],
         &branches,
         &[],
-        Some(cancel),
+        cancel,
     )?)?;
-    let heads = bundle_heads_inner(repo, path, Some(cancel))?;
+    let heads = bundle_heads(repo, path, cancel)?;
     let mut command = runtime.exec_command(
         name,
         init,
@@ -164,7 +164,15 @@ pub fn fetch(
     repo: &Path,
     remote: &str,
 ) -> Result<Refs, CrossingError> {
-    fetch_inner(runtime, init, name, guest_repo, repo, remote, None)
+    fetch_cancellable(
+        runtime,
+        init,
+        name,
+        guest_repo,
+        repo,
+        remote,
+        &AtomicBool::new(false),
+    )
 }
 
 pub(crate) fn fetch_cancellable(
@@ -176,19 +184,7 @@ pub(crate) fn fetch_cancellable(
     remote: &str,
     cancel: &AtomicBool,
 ) -> Result<Refs, CrossingError> {
-    fetch_inner(runtime, init, name, guest_repo, repo, remote, Some(cancel))
-}
-
-fn fetch_inner(
-    runtime: &dyn Runtime,
-    init: &Path,
-    name: &str,
-    guest_repo: &str,
-    repo: &Path,
-    remote: &str,
-    cancel: Option<&AtomicBool>,
-) -> Result<Refs, CrossingError> {
-    check_args_inner(repo, guest_repo, remote, cancel)?;
+    check_args(repo, guest_repo, remote, cancel)?;
     let namespace = format!("refs/remotes/{remote}/");
     let held = String::from_utf8_lossy(
         &succeeded(git(
@@ -210,31 +206,13 @@ fn fetch_inner(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let bundle = Bundle::new()?;
-    let listed = if let Some(cancel) = cancel {
-        receive_cancellable(
-            &mut command,
-            held.as_bytes(),
-            &bundle.path,
-            guest_repo,
-            cancel,
-        )?
-    } else {
-        let mut child = command.spawn_guarded()?;
-        let stderr = kept_stderr(&mut child);
-        let mut stdin = child.stdin.take().expect("stdin is piped");
-        // A box that stops reading only fails its own fetch.
-        std::thread::spawn(move || stdin.write_all(held.as_bytes()));
-        // `receive` drops the pipe on return. A box past the limit is killed.
-        let received = receive(&mut child, &bundle.path);
-        if let Err(limit @ CrossingError::Refused(RefusalReason::Limit, _)) = received {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(limit);
-        }
-        let status = child.wait()?;
-        box_status(status.code(), &stderr(), guest_repo)?;
-        received?
-    };
+    let listed = receive(
+        &mut command,
+        held.as_bytes(),
+        &bundle.path,
+        guest_repo,
+        cancel,
+    )?;
     for (branch, _) in &listed {
         check_branch(repo, &namespace, branch, cancel)?;
     }
@@ -259,7 +237,7 @@ fn fetch_inner(
             ));
         }
         succeeded(git(repo, &["bundle", "verify", "-q", path], cancel)?)?;
-        let heads = bundle_heads_inner(repo, path, cancel)?;
+        let heads = bundle_heads(repo, path, cancel)?;
         if heads.len() > BRANCHES {
             return Err(too_many());
         }
@@ -282,14 +260,11 @@ fn fetch_inner(
             .args(["index-pack", "--stdin", "--fix-thin", "--fsck-objects"])
             .envs(quarantine.env())
             .stdin(pack);
-        succeeded(match cancel {
-            Some(cancel) => output_cancellable(&mut index, None, cancel)?,
-            None => index.output_guarded()?,
-        })?;
+        succeeded(output_cancellable(&mut index, None, cancel)?)?;
         // A fetch that finds a head missing unbundles the pack again before
         // its connectivity check fails, so it runs quarantined too. Its auto
         // maintenance would see only the quarantine.
-        succeeded(git_input_inner(
+        succeeded(git_input(
             repo,
             &[
                 "fetch",
@@ -350,45 +325,6 @@ fn fetch_inner(
 /// refuses, such as `x` beside `x/y`, fails it before any pack moves into
 /// REPO; then migrate and commit. Closing stdin before `commit` aborts it.
 fn update_refs(
-    repo: &Path,
-    quarantine: &Quarantine,
-    updates: &str,
-    cancel: Option<&AtomicBool>,
-) -> Result<(), CrossingError> {
-    if let Some(cancel) = cancel {
-        return update_refs_cancellable(repo, quarantine, updates, cancel);
-    }
-    let mut child = git_command(repo)
-        .args(["update-ref", "-z", "--stdin"])
-        .envs(quarantine.env())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn_guarded()?;
-    let mut stdin = child.stdin.take().expect("stdin is piped");
-    let mut stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
-    // A git that exits early is read as not prepared, with its stderr.
-    let _ = stdin.write_all(format!("start\0{updates}prepare\0").as_bytes());
-    let mut replies = String::new();
-    for _ in 0..2 {
-        stdout.read_line(&mut replies)?;
-    }
-    if replies != "start: ok\nprepare: ok\n" {
-        drop(stdin);
-        return Err(host_failed(&child.wait_with_output()?));
-    }
-    let migrated = quarantine.migrate();
-    if migrated.is_ok() {
-        let _ = stdin.write_all(b"commit\0");
-    }
-    drop(stdin);
-    let output = child.wait_with_output()?;
-    migrated?;
-    succeeded(output)?;
-    Ok(())
-}
-
-fn update_refs_cancellable(
     repo: &Path,
     quarantine: &Quarantine,
     updates: &str,
@@ -508,11 +444,11 @@ fn update_refs_cancellable(
     }
 }
 
-fn check_args_inner(
+fn check_args(
     repo: &Path,
     guest_repo: &str,
     remote: &str,
-    cancel: Option<&AtomicBool>,
+    cancel: &AtomicBool,
 ) -> Result<(), CrossingError> {
     if !valid_name(remote) {
         return Err(spec(format!(
@@ -524,7 +460,7 @@ fn check_args_inner(
             "guest repository {guest_repo:?} is not absolute"
         )));
     }
-    let found = git_input_inner(repo, &["rev-parse", "--git-dir"], b"", &[], cancel)?;
+    let found = git_input(repo, &["rev-parse", "--git-dir"], b"", &[], cancel)?;
     if !found.status.success() {
         return Err(spec(format!(
             "{} is not a git repository: {}",
@@ -541,7 +477,7 @@ fn check_branch(
     repo: &Path,
     namespace: &str,
     branch: &str,
-    cancel: Option<&AtomicBool>,
+    cancel: &AtomicBool,
 ) -> Result<(), CrossingError> {
     let name = format!("{namespace}{branch}");
     if git(repo, &["check-ref-format", &name], cancel)?
@@ -588,21 +524,6 @@ fn box_status(code: Option<i32>, stderr: &str, guest_repo: &str) -> Result<(), C
             "the box's git failed: {}",
             terminal_text(stderr.trim())
         ))),
-    }
-}
-
-/// Read the fetch script's branch listing, then copy the bundle after it to
-/// `bundle`, refusing one past [`LIMIT`].
-fn receive(child: &mut Child, bundle: &str) -> Result<Vec<(String, String)>, CrossingError> {
-    let mut stdout = child.stdout.take().expect("stdout is piped");
-    let mut receiver = Receiver::new(bundle)?;
-    let mut bytes = [0; 8192];
-    loop {
-        let read = stdout.read(&mut bytes)?;
-        if read == 0 {
-            return receiver.finish();
-        }
-        receiver.feed(&bytes[..read])?;
     }
 }
 
@@ -687,7 +608,8 @@ impl Receiver {
     }
 }
 
-fn receive_cancellable(
+/// Read the branch listing and bounded bundle, reaping the helper on cancellation.
+fn receive(
     command: &mut Command,
     mut input: &[u8],
     bundle: &str,
@@ -830,12 +752,8 @@ fn header(bundle: &str) -> Result<(bool, u64), CrossingError> {
 
 /// A bundle's branches, as git on the host reads them. Their names are
 /// the bundle's bytes, unchecked.
-fn bundle_heads_inner(
-    repo: &Path,
-    path: &str,
-    cancel: Option<&AtomicBool>,
-) -> Result<Refs, CrossingError> {
-    let listed = succeeded(git_input_inner(
+fn bundle_heads(repo: &Path, path: &str, cancel: &AtomicBool) -> Result<Refs, CrossingError> {
+    let listed = succeeded(git_input(
         repo,
         &["bundle", "list-heads", path],
         b"",
@@ -865,29 +783,16 @@ fn object_id(oid: &str) -> bool {
     matches!(oid.len(), 40 | 64) && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// The first [`STDERR_KEPT`] bytes of a child's piped stderr, read on a
-/// thread that drains the rest so the child never blocks on it.
-pub(crate) fn kept_stderr(child: &mut Child) -> impl FnOnce() -> String + use<> {
-    let mut stderr = child.stderr.take().expect("stderr is piped");
-    let thread = std::thread::spawn(move || {
-        let mut kept = Vec::new();
-        let _ = (&mut stderr).take(STDERR_KEPT).read_to_end(&mut kept);
-        let _ = io::copy(&mut stderr, &mut io::sink());
-        String::from_utf8_lossy(&kept).into_owned()
-    });
-    move || thread.join().unwrap_or_default()
+fn git(repo: &Path, args: &[&str], cancel: &AtomicBool) -> io::Result<Output> {
+    git_input(repo, args, b"", &[], cancel)
 }
 
-fn git(repo: &Path, args: &[&str], cancel: Option<&AtomicBool>) -> io::Result<Output> {
-    git_input_inner(repo, args, b"", &[], cancel)
-}
-
-fn git_input_inner(
+fn git_input(
     repo: &Path,
     args: &[&str],
     input: &[u8],
     env: &[(&str, &OsStr)],
-    cancel: Option<&AtomicBool>,
+    cancel: &AtomicBool,
 ) -> io::Result<Output> {
     let mut command = git_command(repo);
     command
@@ -896,18 +801,7 @@ fn git_input_inner(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(cancel) = cancel {
-        return output_cancellable(&mut command, Some(input), cancel);
-    }
-    let mut child = command
-        .spawn_guarded()
-        .map_err(|error| io::Error::new(error.kind(), format!("git: {error}")))?;
-    let mut stdin = child.stdin.take().expect("stdin is piped");
-    let written = stdin.write_all(input);
-    drop(stdin);
-    let output = child.wait_with_output()?;
-    written?;
-    Ok(output)
+    output_cancellable(&mut command, Some(input), cancel)
 }
 
 pub(crate) fn git_command(repo: &Path) -> Command {
@@ -977,7 +871,7 @@ struct Quarantine {
 }
 
 impl Quarantine {
-    fn new(repo: &Path, cancel: Option<&AtomicBool>) -> Result<Quarantine, CrossingError> {
+    fn new(repo: &Path, cancel: &AtomicBool) -> Result<Quarantine, CrossingError> {
         let mut objects = succeeded(git(
             repo,
             &[

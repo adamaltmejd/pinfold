@@ -8,7 +8,7 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak, mpsc};
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -36,6 +36,8 @@ const MAX_HEADERS: usize = 64;
 /// How long the proxy waits for the next bytes of a request head or
 /// ClientHello.
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long a forwarded body may go without data, or a tunnel with no
 /// bytes in either direction, before the proxy closes it.
@@ -517,7 +519,10 @@ fn route(
         },
     };
     if !target.https {
-        let server = dial((target.host.as_str(), target.port), connection).map(DeadlineStream::new);
+        let server = lookup(&target.host, target.port, false, connection)
+            .ok()
+            .and_then(|address| dial(address, connection))
+            .map(DeadlineStream::new);
         let _ = forward(
             client,
             server,
@@ -564,7 +569,7 @@ fn resolve_checked(
     if connection.cancelled() {
         return None;
     }
-    let resolved = network::resolve(host, port);
+    let resolved = lookup(host, port, true, connection);
     if connection.cancelled() {
         return None;
     }
@@ -964,14 +969,60 @@ fn head_well_formed(head: &[u8]) -> bool {
     })
 }
 
-/// Connect to the first address and time its reads out after
-/// `IDLE_TIMEOUT`. Only a route's host service is given a name, resolved
-/// here unchecked; every other caller passes the address it checked.
-fn dial(address: impl ToSocketAddrs, connection: &Connection) -> Option<TcpStream> {
+/// A system resolver may not return. Its worker holds only the name and
+/// lookup parameters; cancellation discards its result without dialing.
+fn lookup(
+    host: &str,
+    port: u16,
+    checked: bool,
+    connection: &Connection,
+) -> Result<SocketAddr, network::ResolveError> {
     if connection.cancelled() {
-        return None;
+        return Err(network::ResolveError::Unresolved);
     }
-    let address = address.to_socket_addrs().ok()?.next()?;
+    let host = host.to_string();
+    let (send, receive) = mpsc::sync_channel(1);
+    let worker = thread::Builder::new()
+        .name("proxy-lookup".into())
+        .spawn(move || {
+            let resolved = if checked {
+                network::resolve(&host, port)
+            } else {
+                (host.as_str(), port)
+                    .to_socket_addrs()
+                    .ok()
+                    .and_then(|mut addresses| addresses.next())
+                    .ok_or(network::ResolveError::Unresolved)
+            };
+            let _ = send.send(resolved);
+        })
+        .map_err(|_| network::ResolveError::Unresolved)?;
+    let deadline = Instant::now() + LOOKUP_TIMEOUT;
+    loop {
+        if connection.cancelled() || Instant::now() >= deadline {
+            return Err(network::ResolveError::Unresolved);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match receive.recv_timeout(remaining.min(Duration::from_millis(50))) {
+            Ok(result) => {
+                let _ = worker.join();
+                return if connection.cancelled() || Instant::now() >= deadline {
+                    Err(network::ResolveError::Unresolved)
+                } else {
+                    result
+                };
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = worker.join();
+                return Err(network::ResolveError::Unresolved);
+            }
+        }
+    }
+}
+
+/// Connect to an already resolved address and bound idle reads/writes.
+fn dial(address: SocketAddr, connection: &Connection) -> Option<TcpStream> {
     if connection.cancelled() {
         return None;
     }
