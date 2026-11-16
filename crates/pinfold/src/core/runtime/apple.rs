@@ -953,22 +953,19 @@ fn make_proxy_connectable(name: &str) -> io::Result<()> {
 
 /// Copy missing profile seeds without buffering another copy of their bytes.
 fn copy_in(name: &str, init: &Path, seeding: &Seeding, cancel: &AtomicBool) -> io::Result<()> {
-    let mut child = crate::core::process::GroupChild {
-        child: std::process::Command::new("container")
+    let mut child = crate::core::process::GroupChild::spawn(
+        std::process::Command::new("container")
             .args(["exec", "-i", name])
             .arg(init)
             .args(["init", "receive", "--missing"])
             .arg(&seeding.guest)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .process_group(0)
-            .spawn_guarded()
-            .map_err(|error| spawn_error("container", error))?,
-        reaped: false,
-    };
-    let mut input = child.child.stdin.take().expect("piped seed input");
-    let mut stderr = child.child.stderr.take();
+            .stderr(Stdio::piped()),
+    )
+    .map_err(|error| spawn_error("container", error))?;
+    let mut input = child.take_stdin().expect("piped seed input");
+    let mut stderr = child.take_stderr();
     crate::core::pipe::nonblocking(&input, "seed copy")?;
     if let Some(stderr) = stderr.as_ref() {
         crate::core::pipe::nonblocking(stderr, "seed diagnostics")?;
@@ -993,17 +990,14 @@ fn copy_in(name: &str, init: &Path, seeding: &Seeding, cancel: &AtomicBool) -> i
         if cancel.load(Ordering::Acquire) {
             return Err(io::ErrorKind::Interrupted.into());
         }
-        if exited.is_none()
-            && let Some(status) = child.child.try_wait()?
-        {
-            child.reaped = true;
-            exited = Some((status, Instant::now()));
+        if exited.is_none() && child.exited()? {
+            exited = Some(Instant::now());
         }
         crate::core::process::drain(&mut stderr, &mut diagnostics, Some(16 * 1024))?;
-        if let Some((status, began)) = exited
+        if let Some(began) = exited
             && (stderr.is_none() || began.elapsed() >= Duration::from_secs(1))
         {
-            break status;
+            break child.finish()?;
         }
         seed_poll(None, stderr.as_ref())?;
     };

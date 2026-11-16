@@ -1,11 +1,12 @@
 //! Pinned host helper and infrastructure, and this build's init.
 
-use crate::core::process::{CommandGuard, GroupChild};
+#[cfg(target_os = "linux")]
+use crate::core::process::CommandGuard;
+use crate::core::process::GroupChild;
 
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
@@ -311,24 +312,20 @@ impl Artifact {
                 fs::create_dir(&unpacked)?;
                 let deadline = Instant::now() + DOWNLOAD_TIMEOUT;
                 super::pipe::remaining(deadline, cancel, "artifact extraction")?;
-                let mut child = GroupChild {
-                    child: Command::new("tar")
+                let mut child = GroupChild::spawn(
+                    Command::new("tar")
                         .arg("-xzf")
                         .arg(&download)
                         .arg("-C")
                         .arg(&unpacked)
                         .stdin(std::process::Stdio::null())
                         .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .process_group(0)
-                        .spawn_guarded()?,
-                    reaped: false,
-                };
+                        .stderr(std::process::Stdio::null()),
+                )?;
                 let status = loop {
                     super::pipe::remaining(deadline, cancel, "artifact extraction")?;
-                    if let Some(status) = child.child.try_wait()? {
-                        child.reaped = true;
-                        break status;
+                    if child.exited()? {
+                        break child.finish()?;
                     }
                     super::pipe::wait_ready(
                         None,

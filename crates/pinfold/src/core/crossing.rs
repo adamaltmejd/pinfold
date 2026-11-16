@@ -5,7 +5,7 @@
 //! a bundle, fetches its objects with fsck, and writes refs under one
 //! remote namespace.
 
-use crate::core::process::{CommandGuard, GroupChild, drain};
+use crate::core::process::{GroupChild, drain};
 pub(crate) use crate::core::process::{output_cancellable, output_discard_cancellable};
 
 use nix::poll::{PollFd, PollFlags, poll};
@@ -15,7 +15,6 @@ use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -333,20 +332,17 @@ fn update_refs(
     if cancel.load(Ordering::Acquire) {
         return Err(io::Error::from(io::ErrorKind::Interrupted).into());
     }
-    let mut child = GroupChild {
-        child: git_command(repo)
+    let mut child = GroupChild::spawn(
+        git_command(repo)
             .args(["update-ref", "-z", "--stdin"])
             .envs(quarantine.env())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0)
-            .spawn_guarded()?,
-        reaped: false,
-    };
-    let mut stdin = child.child.stdin.take();
-    let mut stdout = child.child.stdout.take();
-    let mut stderr = child.child.stderr.take();
+            .stderr(Stdio::piped()),
+    )?;
+    let mut stdin = child.take_stdin();
+    let mut stdout = child.take_stdout();
+    let mut stderr = child.take_stderr();
     if let Some(pipe) = &stdin {
         super::pipe::nonblocking(pipe, "crossing")?;
     }
@@ -362,11 +358,8 @@ fn update_refs(
     let (mut prepared, mut failed) = (false, false);
     let mut exited = None;
     loop {
-        if exited.is_none()
-            && let Some(status) = child.child.try_wait()?
-        {
-            child.reaped = true;
-            exited = Some((status, Instant::now()));
+        if exited.is_none() && child.exited()? {
+            exited = Some(Instant::now());
             stdin.take();
         }
         if cancel.load(Ordering::Acquire) && exited.is_none() {
@@ -411,11 +404,11 @@ fn update_refs(
                 stdin.take();
             }
         }
-        if let Some((status, time)) = exited
+        if let Some(time) = exited
             && ((stdout.is_none() && stderr.is_none()) || time.elapsed() >= Duration::from_secs(1))
         {
             let output = Output {
-                status,
+                status: child.finish()?,
                 stdout: replies,
                 stderr: errors,
             };
@@ -619,14 +612,10 @@ fn receive(
     if cancel.load(Ordering::Acquire) {
         return Err(io::Error::from(io::ErrorKind::Interrupted).into());
     }
-    command.process_group(0);
-    let mut child = GroupChild {
-        child: command.spawn_guarded()?,
-        reaped: false,
-    };
-    let mut stdin = child.child.stdin.take();
-    let mut stdout = child.child.stdout.take();
-    let mut stderr = child.child.stderr.take();
+    let mut child = GroupChild::spawn(command)?;
+    let mut stdin = child.take_stdin();
+    let mut stdout = child.take_stdout();
+    let mut stderr = child.take_stderr();
     if let Some(pipe) = &stdin {
         super::pipe::nonblocking(pipe, "crossing")?;
     }
@@ -641,11 +630,8 @@ fn receive(
     let mut errors = Vec::new();
     let mut exited = None;
     loop {
-        if exited.is_none()
-            && let Some(status) = child.child.try_wait()?
-        {
-            child.reaped = true;
-            exited = Some((status, Instant::now()));
+        if exited.is_none() && child.exited()? {
+            exited = Some(Instant::now());
             stdin.take();
         }
         if cancel.load(Ordering::Acquire) && exited.is_none() {
@@ -693,9 +679,10 @@ fn receive(
             }
         }
         drain(&mut stderr, &mut errors, Some(STDERR_KEPT as usize))?;
-        if let Some((status, time)) = exited
+        if let Some(time) = exited
             && ((stdout.is_none() && stderr.is_none()) || time.elapsed() >= Duration::from_secs(1))
         {
+            let status = child.finish()?;
             box_status(status.code(), &String::from_utf8_lossy(&errors), guest_repo)?;
             return match failed {
                 Some(error) => Err(error),

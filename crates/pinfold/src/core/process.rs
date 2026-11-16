@@ -5,7 +5,9 @@ use std::cell::RefCell;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
-use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::process::{
+    Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -542,17 +544,11 @@ fn output_with_limit(
     if input.is_some() {
         command.stdin(Stdio::piped());
     }
-    command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
-    let mut child = GroupChild {
-        child: command.spawn_guarded()?,
-        reaped: false,
-    };
-    let mut stdin = child.child.stdin.take();
-    let mut stdout = child.child.stdout.take();
-    let mut stderr = child.child.stderr.take();
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = GroupChild::spawn(command)?;
+    let mut stdin = child.take_stdin();
+    let mut stdout = child.take_stdout();
+    let mut stderr = child.take_stderr();
     if let Some(pipe) = stdin.as_ref() {
         super::pipe::nonblocking(pipe, "crossing")?;
     }
@@ -567,11 +563,8 @@ fn output_with_limit(
     let mut exited = None;
     let mut input_failed = false;
     loop {
-        if exited.is_none()
-            && let Some(status) = child.child.try_wait()?
-        {
-            child.reaped = true;
-            exited = Some((status, Instant::now()));
+        if exited.is_none() && child.exited()? {
+            exited = Some(Instant::now());
             input_failed |= !input.is_empty();
             stdin.take();
         }
@@ -598,14 +591,14 @@ fn output_with_limit(
         }
         drain(&mut stdout, &mut out, stdout_limit)?;
         drain(&mut stderr, &mut err, Some(16 * 1024))?;
-        if let Some((status, time)) = exited
+        if let Some(time) = exited
             && ((stdout.is_none() && stderr.is_none()) || time.elapsed() >= Duration::from_secs(1))
         {
             if input_failed {
                 return Err(io::ErrorKind::BrokenPipe.into());
             }
             return Ok(Output {
-                status,
+                status: child.finish()?,
                 stdout: out,
                 stderr: err,
             });
@@ -654,21 +647,78 @@ pub(crate) fn drain<R: Read>(
     Ok(())
 }
 
-/// The process-group id is used only while the direct child is unreaped.
+/// Retain the leader until group cleanup, so its process-group id stays pinned.
 pub(crate) struct GroupChild {
-    pub(crate) child: Child,
-    pub(crate) reaped: bool,
+    child: Option<Child>,
+}
+
+impl GroupChild {
+    pub(crate) fn spawn(command: &mut Command) -> io::Result<Self> {
+        Ok(Self {
+            child: Some(command.process_group(0).spawn_guarded()?),
+        })
+    }
+
+    pub(crate) fn take_stdin(&mut self) -> Option<ChildStdin> {
+        self.child.as_mut()?.stdin.take()
+    }
+
+    pub(crate) fn take_stdout(&mut self) -> Option<ChildStdout> {
+        self.child.as_mut()?.stdout.take()
+    }
+
+    pub(crate) fn take_stderr(&mut self) -> Option<ChildStderr> {
+        self.child.as_mut()?.stderr.take()
+    }
+
+    /// Observe exit without reaping; descendants may still hold captured pipes.
+    pub(crate) fn exited(&mut self) -> io::Result<bool> {
+        let child = self
+            .child
+            .as_ref()
+            .ok_or_else(|| io::Error::other("helper already reaped"))?;
+        let mut info: nix::libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            nix::libc::waitid(
+                nix::libc::P_PID,
+                child.id() as nix::libc::id_t,
+                &mut info,
+                nix::libc::WEXITED | nix::libc::WNOHANG | nix::libc::WNOWAIT,
+            )
+        };
+        if result < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                return Ok(false);
+            }
+            if error.raw_os_error() == Some(nix::libc::ECHILD) {
+                // Another reaper invalidated the group identity. Never signal it.
+                self.child.take();
+            }
+            return Err(error);
+        }
+        Ok(unsafe { info.si_pid() } != 0)
+    }
+
+    /// Signal the group while the leader is still ours, then reap it once.
+    pub(crate) fn finish(&mut self) -> io::Result<ExitStatus> {
+        let mut child = self
+            .child
+            .take()
+            .ok_or_else(|| io::Error::other("helper already reaped"))?;
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(child.id() as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        let _ = child.kill();
+        child.wait()
+    }
 }
 
 impl Drop for GroupChild {
     fn drop(&mut self) {
-        if !self.reaped {
-            let _ = nix::sys::signal::killpg(
-                nix::unistd::Pid::from_raw(self.child.id() as i32),
-                nix::sys::signal::Signal::SIGKILL,
-            );
-            let _ = self.child.kill();
-            let _ = self.child.wait();
+        if self.child.is_some() {
+            let _ = self.finish();
         }
     }
 }
