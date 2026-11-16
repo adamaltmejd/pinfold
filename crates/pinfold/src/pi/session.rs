@@ -229,7 +229,7 @@ fn matching_claims(root: &Path) -> io::Result<Vec<ownership::Record>> {
                 claims.push(record)
             }
             Ok(_) => {}
-            Err(error) => eprintln!("pinfold: {}", terminal_text(&error.to_string())),
+            Err(error) => crate::core::process::diagnostic(terminal_text(&error.to_string())),
         }
     }
     Ok(claims)

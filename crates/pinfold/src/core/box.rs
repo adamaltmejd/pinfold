@@ -502,10 +502,10 @@ impl Box {
                 }
                 let removed = removed.map(drop);
                 if let Err(error) = runs::remove(&run_id) {
-                    eprintln!("pinfold: startup cleanup: {error}");
+                    crate::core::process::diagnostic(format_args!("startup cleanup: {error}"));
                 }
                 if let Err(error) = claim.finish(removed.is_ok()).await {
-                    eprintln!("pinfold: startup cleanup: {error}");
+                    crate::core::process::diagnostic(format_args!("startup cleanup: {error}"));
                 }
                 removed?;
                 return Err(match stop {

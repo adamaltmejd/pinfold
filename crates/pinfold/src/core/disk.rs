@@ -77,7 +77,9 @@ impl Claimed {
         crate::core::process::with_deadline(std::time::Duration::from_secs(300), |cancel| {
             match startup_locks(&names, Some(cancel)) {
                 Ok(_locks) => self.undo_locked(runtime, name),
-                Err(error) => eprintln!("pinfold: startup cleanup: disk locks: {error}"),
+                Err(error) => crate::core::process::diagnostic(format_args!(
+                    "startup cleanup: disk locks: {error}"
+                )),
             }
         });
     }
@@ -89,7 +91,9 @@ impl Claimed {
         let attached = match complete_attachments(Some(name)) {
             Ok(attached) => attached,
             Err(error) => {
-                eprintln!("pinfold: startup cleanup: disk attachments: {error}");
+                crate::core::process::diagnostic(format_args!(
+                    "startup cleanup: disk attachments: {error}"
+                ));
                 return;
             }
         };
@@ -103,7 +107,10 @@ impl Claimed {
                 .and_then(|()| unmark(&disk.name, UNCLEAN))
                 .and_then(|()| unmark(&disk.name, UNFILLED));
             if let Err(error) = result {
-                eprintln!("pinfold: startup cleanup: disk {:?}: {error}", disk.name);
+                crate::core::process::diagnostic(format_args!(
+                    "startup cleanup: disk {:?}: {error}",
+                    disk.name
+                ));
             }
         }
         for disk in self
@@ -112,7 +119,9 @@ impl Claimed {
             .filter(|disk| !attached.contains_key(*disk))
         {
             if let Err(error) = unmark(disk, UNCLEAN) {
-                eprintln!("pinfold: startup cleanup: disk {disk:?}: {error}");
+                crate::core::process::diagnostic(format_args!(
+                    "startup cleanup: disk {disk:?}: {error}"
+                ));
             }
         }
     }
@@ -333,7 +342,9 @@ pub fn claim(
         }
         match claim.retire() {
             Ok(()) => claimed.undo(runtime, name),
-            Err(error) => eprintln!("pinfold: startup cleanup: retirement: {error}"),
+            Err(error) => crate::core::process::diagnostic(format_args!(
+                "startup cleanup: retirement: {error}"
+            )),
         }
         return Err(Err(error));
     }
@@ -362,7 +373,7 @@ pub fn attachments(
         match result {
             Ok(record) => records.push(record),
             Err(error) => {
-                let _ = writeln!(io::stderr(), "pinfold: disk attachments: {error}");
+                crate::core::process::diagnostic(format_args!("disk attachments: {error}"));
             }
         }
     }
@@ -389,11 +400,10 @@ fn record_attachments(
             Ok(state) if state.parent() != Some(boxes.as_path()) => continue,
             Ok(_) => {}
             Err(error) => {
-                let _ = writeln!(
-                    io::stderr(),
-                    "pinfold: disk attachments {:?}: {error}",
+                crate::core::process::diagnostic(format_args!(
+                    "disk attachments {:?}: {error}",
                     record.name
-                );
+                ));
             }
         }
         if record.retiring && !ownership::name_alive(&record.name).unwrap_or(true) {
