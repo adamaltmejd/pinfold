@@ -12,13 +12,15 @@ mod update;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-use crate::pi::launch;
+use crate::pi::{launch, session};
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os();
     args.next();
     let args: Vec<_> = args.collect();
-    let project_command = args.first().is_some_and(|arg| arg == "--");
+    let project_command = args
+        .first()
+        .is_some_and(|arg| arg == "--" || arg == "start" || arg == "stop");
     let rest: Vec<String> = match args.into_iter().map(|arg| arg.into_string()).collect() {
         Ok(rest) => rest,
         Err(arg) => {
@@ -53,7 +55,10 @@ fn main() -> ExitCode {
         "apparmor-profile" => cli::apparmor_profile,
         "config" => cli::config,
         "profile" => cli::profile,
-        "--" => launch::run,
+        "--" => session::run,
+        "start" => session::start,
+        "stop" => session::stop,
+        "__project-owner" => session::owner,
         "push" => |args| launch::crossing("push", args),
         "fetch" => |args| launch::crossing("fetch", args),
         "update" => update::run,
@@ -66,7 +71,10 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     // `update` takes the executable lock itself, exclusively.
-    let _executable = if matches!(verb, "init" | "update") {
+    let _executable = if matches!(
+        verb,
+        "init" | "update" | "__project-owner" | "--" | "start" | "stop"
+    ) {
         None
     } else {
         match update::working() {
@@ -74,11 +82,16 @@ fn main() -> ExitCode {
             Err(error) => return ExitCode::from(cli::report(verb, Err(error)) as u8),
         }
     };
-    update::notice(verb);
-    // The daily pass runs before working commands, project commands included.
-    // `box up` runs it itself, after installing its signal handlers.
+    if !matches!(verb, "--" | "start" | "stop" | "__project-owner") {
+        update::notice(verb);
+    }
+    // Project admission and box up install their signal handlers first.
     match (verb, args.first().map(String::as_str)) {
-        ("init" | "update" | "doctor" | "config" | "artifacts" | "apparmor-profile", _)
+        (
+            "init" | "update" | "doctor" | "config" | "artifacts" | "apparmor-profile" | "--"
+            | "start" | "stop" | "__project-owner",
+            _,
+        )
         | ("box", Some("up" | "list" | "down" | "inspect" | "events")) => {}
         _ => crate::core::clean::maintain(),
     }

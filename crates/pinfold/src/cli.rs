@@ -1,5 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet};
 use crate::core::process::CommandGuard;
+use std::collections::{BTreeMap, BTreeSet};
 
 use std::fs;
 use std::io::{self, IsTerminal, Write};
@@ -25,7 +25,9 @@ use crate::pi::launch::utf8;
 /// spaces, the description. Printed on stdout by `--help`, on stderr for a
 /// malformed invocation, and one line at a time by [`syntax`].
 pub const USAGE: &str = "\
-pinfold -- CMD [args…]           run a command in this project's box
+pinfold -- CMD [args…]           start or join a project session
+pinfold start                   keep this project's box
+pinfold stop                    stop its observed box
 pinfold push                     this checkout's branches into its box as refs/remotes/host/*
 pinfold fetch                    its box's branches into refs/remotes/pinfold/*
 pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this project's image, or a profile's; prints the ref
@@ -61,7 +63,11 @@ pinfold box fetch BOX --repo GUEST_REPO --into REPO";
 pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
     result.unwrap_or_else(|error| {
         let _ = writeln!(io::stderr(), "pinfold {verb}: {error}");
-        if verb == "--" { 125 } else { 1 }
+        if matches!(verb, "--" | "start" | "stop" | "__project-owner") {
+            125
+        } else {
+            1
+        }
     })
 }
 

@@ -216,7 +216,6 @@ pub struct ExecContext<'a> {
     pub project_root: Option<&'a Path>,
     pub tty: bool,
     pub agent: Option<&'a str>,
-    #[cfg(not(target_os = "linux"))]
     pub cancel: Option<&'a AtomicBool>,
 }
 

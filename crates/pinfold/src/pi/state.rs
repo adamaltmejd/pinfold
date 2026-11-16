@@ -77,7 +77,7 @@ pub fn project_id(root: &Path) -> String {
             )
         })
         .unwrap_or_else(|| "root".to_string());
-    // Leave room for pi-, the path hash and the pid in Apple's 63-byte ID.
+    // Leave room for pi-, the path hash and a fresh suffix in Apple's 63-byte ID.
     name.truncate(32);
     let hash = sha256_hex(root.as_os_str().as_encoded_bytes());
     format!("{name}-{}", &hash[..12])

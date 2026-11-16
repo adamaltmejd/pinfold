@@ -66,7 +66,7 @@ pub(super) fn read(
 }
 
 /// Write all of `bytes` to a nonblocking `sink`, waiting for room.
-pub(super) fn write_all(
+pub(crate) fn write_all(
     sink: &mut (impl Write + AsFd),
     mut bytes: &[u8],
     deadline: Instant,

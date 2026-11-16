@@ -3,12 +3,14 @@
 
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
-use std::os::fd::{AsFd, BorrowedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
+use nix::libc;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 
 use crate::core::runtime::sockets::Sockets;
@@ -114,10 +116,13 @@ pub fn exec(
     context: &crate::core::runtime::ExecContext<'_>,
     argv: &[String],
 ) -> io::Result<i32> {
+    let cancel = context.cancel;
+    cancelled(cancel)?;
     let tty = context.tty;
-    let mut connection = connect(sockets, EXEC_PORT)?;
+    let mut connection = exec_connection(sockets, cancel)?;
     // A command runs as long as it runs.
     connection.set_read_timeout(None)?;
+    connection.set_nonblocking(true)?;
     let mut metadata = crate::init::ExecMetadata {
         agent: context.agent.map(str::to_string),
         project_directory: context.project_directory()?,
@@ -144,42 +149,74 @@ pub fn exec(
     // Terminal setup must finish before EXEC can start the command.
     let raw = if tty { Raw::enter()? } else { None };
     let winch = if tty { Some(Winch::install()?) } else { None };
-    write_frame(&mut connection, EXEC, &payload)?;
+    let mut flags = Flags::nonblocking()?;
+    write_frame(
+        &mut Cancellable {
+            connection: &connection,
+            stop: None,
+            cancel,
+        },
+        EXEC,
+        &payload,
+    )?;
 
-    let (stop, stopping) = io::pipe()?;
-    let input = {
-        let connection = connection.try_clone()?;
+    let (stop, stopping) = crate::core::process::pipe()?;
+    let result = std::thread::scope(|scope| {
+        let input_connection = connection.try_clone()?;
         let winch = match &winch {
             Some(winch) => Some(winch.read.try_clone()?),
             None => None,
         };
-        std::thread::Builder::new()
+        let input = std::thread::Builder::new()
             .name("exec-input".into())
-            .spawn(move || forward_input(connection, &stop, winch.as_ref()))?
-    };
-    let result = relay_output(&mut connection);
-    // Ends the input thread's poll; it never blocks in a read.
-    drop(stopping);
-    let _ = input.join();
+            .spawn_scoped(scope, move || {
+                forward_input(input_connection, &stop, winch.as_ref(), cancel)
+            })?;
+        let result = relay_output(&mut connection, cancel);
+        drop(stopping);
+        let joined = input.join();
+        if joined.is_err() && matches!(result, Ok(0)) {
+            return Err(io::Error::other("exec input worker failed"));
+        }
+        result
+    });
+    let restored = flags.restore();
     drop((winch, raw));
-    result
+    match restored {
+        Ok(()) => result,
+        Err(error) if matches!(result, Ok(0)) => Err(error),
+        Err(error) => {
+            let _ = writeln!(
+                io::stderr(),
+                "pinfold: restore terminal file flags: {error}"
+            );
+            result
+        }
+    }
 }
 
 /// Copy the guest's output to pinfold's own until EXIT.
-fn relay_output(connection: &mut UnixStream) -> io::Result<i32> {
-    let (mut stdout, mut stderr) = (io::stdout(), io::stderr());
+fn relay_output(connection: &mut UnixStream, cancel: Option<&AtomicBool>) -> io::Result<i32> {
+    let mut connection = Cancellable {
+        connection,
+        stop: None,
+        cancel,
+    };
     loop {
-        let (kind, payload) = read_frame(connection).map_err(|error| {
+        let (kind, payload) = read_frame(&mut connection).map_err(|error| {
+            if error.kind() == io::ErrorKind::Interrupted {
+                return error;
+            }
             io::Error::other(format!("the box ended the exec before it exited: {error}"))
         })?;
         // A closed host output never stops the relay: the exit code still
         // has to arrive.
         match kind {
             STDOUT => {
-                let _ = stdout.write_all(&payload).and_then(|()| stdout.flush());
+                output(libc::STDOUT_FILENO, &payload, cancel)?;
             }
             STDERR => {
-                let _ = stderr.write_all(&payload).and_then(|()| stderr.flush());
+                output(libc::STDERR_FILENO, &payload, cancel)?;
             }
             EXIT => {
                 let code: [u8; 4] = payload
@@ -194,20 +231,25 @@ fn relay_output(connection: &mut UnixStream) -> io::Result<i32> {
             }
             _ => return Err(io::Error::other(format!("the box sent frame {kind}"))),
         }
+        cancelled(cancel)?;
     }
 }
 
 /// Forward stdin as STDIN frames and its end as STDIN_END, and each window
 /// change as RESIZE, until `stop` reads end of file.
 fn forward_input(
-    mut connection: UnixStream,
+    connection: UnixStream,
     stop: &io::PipeReader,
     winch: Option<&io::PipeReader>,
+    cancel: Option<&AtomicBool>,
 ) {
     let stdin = io::stdin();
     let mut open = true;
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
+        if cancelled(cancel).is_err() {
+            return;
+        }
         let mut fds = vec![PollFd::new(stop.as_fd(), PollFlags::POLLIN)];
         if let Some(winch) = winch {
             fds.push(PollFd::new(winch.as_fd(), PollFlags::POLLIN));
@@ -215,7 +257,7 @@ fn forward_input(
         if open {
             fds.push(PollFd::new(stdin.as_fd(), PollFlags::POLLIN));
         }
-        match poll(&mut fds, PollTimeout::NONE) {
+        match poll(&mut fds, PollTimeout::from(100u16)) {
             Ok(_) => {}
             Err(nix::errno::Errno::EINTR) => continue,
             Err(_) => return,
@@ -232,18 +274,34 @@ fn forward_input(
             if let Ok(Some((rows, cols))) = window() {
                 let mut payload = rows.to_be_bytes().to_vec();
                 payload.extend(cols.to_be_bytes());
-                if write_frame(&mut connection, RESIZE, &payload).is_err() {
+                if write_frame(
+                    &mut Cancellable {
+                        connection: &connection,
+                        stop: Some(stop),
+                        cancel,
+                    },
+                    RESIZE,
+                    &payload,
+                )
+                .is_err()
+                {
                     return;
                 }
             }
         }
         if open && *ready.last().unwrap() {
+            let mut writer = Cancellable {
+                connection: &connection,
+                stop: Some(stop),
+                cancel,
+            };
             let sent = match read_fd(stdin.as_fd(), &mut buffer) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
                 Ok(0) | Err(_) => {
                     open = false;
-                    write_frame(&mut connection, STDIN_END, &[])
+                    write_frame(&mut writer, STDIN_END, &[])
                 }
-                Ok(size) => write_frame(&mut connection, STDIN, &buffer[..size]),
+                Ok(size) => write_frame(&mut writer, STDIN, &buffer[..size]),
             };
             if sent.is_err() {
                 return;
@@ -258,5 +316,226 @@ fn read_fd(fd: BorrowedFd, buffer: &mut [u8]) -> io::Result<usize> {
             Err(nix::errno::Errno::EINTR) => continue,
             result => return result.map_err(io::Error::from),
         }
+    }
+}
+
+fn cancelled(cancel: Option<&AtomicBool>) -> io::Result<()> {
+    if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+        Err(io::Error::new(io::ErrorKind::Interrupted, "exec cancelled"))
+    } else {
+        Ok(())
+    }
+}
+
+fn exec_connection(sockets: &Sockets, cancel: Option<&AtomicBool>) -> io::Result<UnixStream> {
+    if cancel.is_none() {
+        return connect(sockets, EXEC_PORT);
+    }
+    let mut connection = sockets.connect()?;
+    connection.set_nonblocking(true)?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    crate::core::pipe::write_all(
+        &mut connection,
+        format!("CONNECT {EXEC_PORT}\n").as_bytes(),
+        deadline,
+        cancel,
+        "exec handshake",
+    )?;
+    let mut line = Vec::new();
+    let mut byte = [0];
+    while line.len() < 64 {
+        match crate::core::pipe::read(
+            &mut connection,
+            &mut byte,
+            deadline,
+            cancel,
+            "exec handshake",
+        )? {
+            0 => break,
+            _ if byte[0] == b'\n' => break,
+            _ => line.push(byte[0]),
+        }
+    }
+    if !line.starts_with(b"OK ") {
+        return Err(io::Error::other("the box does not answer on exec vsock"));
+    }
+    Ok(connection)
+}
+
+fn wait(
+    fd: libc::c_int,
+    events: libc::c_short,
+    stop: Option<&io::PipeReader>,
+    cancel: Option<&AtomicBool>,
+) -> io::Result<()> {
+    loop {
+        cancelled(cancel)?;
+        let mut fds = [
+            libc::pollfd {
+                fd,
+                events,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: stop.map_or(-1, AsRawFd::as_raw_fd),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        // SAFETY: poll reads and updates the two live pollfd values.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, 100) };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if fds[1].revents != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "exec input ended",
+            ));
+        }
+        if fds[0].revents != 0 {
+            return Ok(());
+        }
+    }
+}
+
+struct Cancellable<'a> {
+    connection: &'a UnixStream,
+    stop: Option<&'a io::PipeReader>,
+    cancel: Option<&'a AtomicBool>,
+}
+
+impl Read for Cancellable<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        loop {
+            // A frame already readable, including EXIT, precedes cancellation.
+            match self.connection.read(buffer) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    wait(
+                        self.connection.as_raw_fd(),
+                        libc::POLLIN,
+                        self.stop,
+                        self.cancel,
+                    )?;
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                result => return result,
+            }
+        }
+    }
+
+    fn read_exact(&mut self, mut buffer: &mut [u8]) -> io::Result<()> {
+        // The default retries Interrupted, which is this relay's cancellation.
+        while !buffer.is_empty() {
+            match self.read(buffer)? {
+                0 => return Err(io::ErrorKind::UnexpectedEof.into()),
+                read => buffer = &mut buffer[read..],
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Write for Cancellable<'_> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        loop {
+            cancelled(self.cancel)?;
+            match self.connection.write(buffer) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    wait(
+                        self.connection.as_raw_fd(),
+                        libc::POLLOUT,
+                        self.stop,
+                        self.cancel,
+                    )?;
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                result => return result,
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn write_all(&mut self, mut buffer: &[u8]) -> io::Result<()> {
+        // Cancellation must end the frame rather than restart its write.
+        while !buffer.is_empty() {
+            match self.write(buffer)? {
+                0 => return Err(io::ErrorKind::WriteZero.into()),
+                written => buffer = &buffer[written..],
+            }
+        }
+        Ok(())
+    }
+}
+
+fn output(fd: libc::c_int, mut bytes: &[u8], cancel: Option<&AtomicBool>) -> io::Result<()> {
+    while !bytes.is_empty() {
+        cancelled(cancel)?;
+        // SAFETY: write reads from the live byte slice and does not retain it.
+        let written = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+        if written > 0 {
+            bytes = &bytes[written as usize..];
+            continue;
+        }
+        if written == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        match error.kind() {
+            io::ErrorKind::Interrupted => {}
+            io::ErrorKind::WouldBlock => wait(fd, libc::POLLOUT, None, cancel)?,
+            // A closed host stream must not discard the eventual command status.
+            _ => return Ok(()),
+        }
+    }
+    Ok(())
+}
+
+struct Flags(Vec<(libc::c_int, libc::c_int)>);
+
+impl Flags {
+    fn nonblocking() -> io::Result<Self> {
+        let mut flags = Self(Vec::new());
+        // Capture all first: the three descriptors may share an open description.
+        for fd in [0, 1, 2] {
+            let saved = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if saved < 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::EBADF) {
+                    continue;
+                }
+                return Err(error);
+            }
+            flags.0.push((fd, saved));
+        }
+        for &(fd, saved) in &flags.0 {
+            if unsafe { libc::fcntl(fd, libc::F_SETFL, saved | libc::O_NONBLOCK) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(flags)
+    }
+
+    fn restore(&mut self) -> io::Result<()> {
+        let mut failure = None;
+        for (fd, flags) in self.0.drain(..) {
+            if unsafe { libc::fcntl(fd, libc::F_SETFL, flags) } < 0 && failure.is_none() {
+                failure = Some(io::Error::last_os_error());
+            }
+        }
+        failure.map_or(Ok(()), Err)
+    }
+}
+
+impl Drop for Flags {
+    fn drop(&mut self) {
+        let _ = self.restore();
     }
 }

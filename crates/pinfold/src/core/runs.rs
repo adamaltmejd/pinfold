@@ -34,11 +34,6 @@ fn dir(run_id: &str) -> io::Result<PathBuf> {
     Ok(dirs::runs_dir()?.join(run_id))
 }
 
-/// Whether the run reached ready: every ready run has a launch record.
-pub fn launched(run_id: &str) -> io::Result<bool> {
-    fs::exists(dir(run_id)?.join(LAUNCH))
-}
-
 /// The run's egress log path.
 pub fn egress_log(run_id: &str) -> io::Result<PathBuf> {
     Ok(dir(run_id)?.join(EGRESS_LOG))

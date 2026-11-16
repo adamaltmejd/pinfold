@@ -843,20 +843,20 @@ fn socket_at_until(
             }
             return Err(io::Error::last_os_error());
         }
-        if let Some(deadline) = wait_deadline {
-            if let Err(error) = crate::core::pipe::wait_ready(
+        if let Some(deadline) = wait_deadline
+            && let Err(error) = crate::core::pipe::wait_ready(
                 None,
                 nix::poll::PollFlags::empty(),
                 deadline,
                 None,
                 "socket helper",
-            ) {
-                unsafe {
-                    libc::kill(pid, libc::SIGKILL);
-                }
-                wait_error = Some(error);
-                wait_deadline = None;
+            )
+        {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
             }
+            wait_error = Some(error);
+            wait_deadline = None;
         }
     }
     received?;

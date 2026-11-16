@@ -2,50 +2,23 @@
 
 use std::collections::BTreeMap;
 use std::env;
-use std::io::{self, IsTerminal};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use tokio::runtime::Builder;
 
 use crate::cli;
 use crate::config::Config;
-use crate::core::r#box::{Box, RefusalReason, Shutdown, Signals, UpError};
+use crate::core::r#box::{Box, Shutdown, Signals, UpError};
 use crate::core::clean;
 use crate::core::crossing::CrossingError;
 use crate::core::image::{ImageInfo, service};
 use crate::core::plan::{Disk, Egress, Env, Plan};
-use crate::core::runs::{self, Terminal};
 use crate::core::runtime::{ExecContext, runtime};
-use crate::core::{artifacts, crossing, disk, image, ownership, sha256_hex};
+use crate::core::{artifacts, crossing, disk, image, sha256_hex};
 use crate::formatting::terminal_text;
 use crate::pi::context::Context;
-use crate::pi::state::{self, canonical, project_id};
-
-/// Run a project command and return its exit code.
-pub fn run(args: &[String]) -> io::Result<i32> {
-    if args.first().is_none_or(String::is_empty) {
-        return Err(cli::usage("--", "expected a nonempty command after --"));
-    }
-    let cwd = canonical(&env::current_dir()?)?;
-    let context = Context::discover(&cwd)?;
-    let root = context.root.clone();
-    utf8(&root, "project root")?;
-    let config = Config::load(&root)?;
-    if config.repository != context.repository {
-        return Err(io::Error::other(
-            "git-discovery: repository changed during configuration",
-        ));
-    }
-    config.check_host_paths(&root)?;
-    context.verify()?;
-    let id = project_id(&root);
-    let image = resolve_image(&config, &id);
-    ensure_image(&config, &image)?;
-    let _project = ownership::project_lock(&id)?;
-    state::record_run(&root)?;
-    let plan = build_plan(&config, &id, &root, &image);
-    run_box(&plan, &root, &cwd, args, config.repository)
-}
+use crate::pi::state::{self, project_id};
 
 /// `$1` is the project's guest path, `$2` the host's branch or empty.
 /// Creates the box's repository there unless `.git` exists.
@@ -73,34 +46,41 @@ exec git merge -q --ff-only "$host"
 /// Create the box's repository if the project disk has none, push the
 /// checkout's branches into it, then fast-forward its checkout (Git). A
 /// failure is reported and never stops the command.
-fn sync(name: &str, init: &Path, root: &Path) {
+pub(crate) fn sync(name: &str, init: &Path, root: &Path, cancel: &std::sync::atomic::AtomicBool) {
     let Some(guest) = root.to_str() else { return };
     let failed = |detail: &str| eprintln!("pinfold: sync-failed: {}", terminal_text(detail.trim()));
     // `--short` would print `heads/<b>` when a tag shares the branch's name.
-    let branch = git(root, &["symbolic-ref", "-q", "HEAD"])
+    let branch = git(root, &["symbolic-ref", "-q", "HEAD"], cancel)
         .and_then(|head| head.strip_prefix("refs/heads/").map(str::to_string))
         .unwrap_or_default();
-    if let Err(detail) = in_box(name, init, INIT_SCRIPT, &[guest, &branch]) {
+    if let Err(detail) = in_box(name, init, INIT_SCRIPT, &[guest, &branch], cancel) {
         return failed(&detail);
     }
     // No branch: nothing to push.
-    if !git(root, &["for-each-ref", "--count=1", "refs/heads/"]).is_some_and(|out| !out.is_empty())
+    if !git(root, &["for-each-ref", "--count=1", "refs/heads/"], cancel)
+        .is_some_and(|out| !out.is_empty())
     {
         return;
     }
     if let Err(CrossingError::Refused(_, detail) | CrossingError::Failed(detail)) =
-        crossing::push(runtime(), init, name, root, guest, "host")
+        crossing::push_cancellable(runtime(), init, name, root, guest, "host", cancel)
     {
         return failed(&detail);
     }
-    if let Err(detail) = in_box(name, init, FAST_FORWARD_SCRIPT, &[guest, "host"]) {
+    if let Err(detail) = in_box(name, init, FAST_FORWARD_SCRIPT, &[guest, "host"], cancel) {
         failed(&detail);
     }
 }
 
 /// Run `script` with `args` in the box as the box user; a failure's detail
 /// is its stderr.
-fn in_box(name: &str, init: &Path, script: &str, args: &[&str]) -> Result<(), String> {
+fn in_box(
+    name: &str,
+    init: &Path,
+    script: &str,
+    args: &[&str],
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<(), String> {
     let argv: Vec<String> = ["sh", "-c", script, "sh"]
         .iter()
         .chain(args)
@@ -113,12 +93,12 @@ fn in_box(name: &str, init: &Path, script: &str, args: &[&str]) -> Result<(), St
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
-    let mut child = command.spawn().map_err(|error| error.to_string())?;
-    let stderr = crossing::kept_stderr(&mut child);
-    match child.wait() {
-        Ok(status) if status.success() => Ok(()),
-        Ok(_) => Err(stderr()),
-        Err(error) => Err(error.to_string()),
+    let output = crossing::output_discard_cancellable(&mut command, None, cancel)
+        .map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).into_owned())
     }
 }
 
@@ -148,128 +128,158 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
         return Err(cli::usage(verb, &format!("{verb} takes no arguments")));
     }
-    let root = project_root(&env::current_dir()?)?;
-    require_repo(&root)?;
-    let config = Config::load(&root)?;
-    config.check_host_paths(&root)?;
-    let id = project_id(&root);
-    let [_, disk] = state::disk_names(&id);
-    let guest = utf8(&root, "project root")?.to_string();
-    let (verb, remote) = if verb == "push" {
-        ("push", "host")
-    } else {
-        ("fetch", "pinfold")
-    };
-    let box_runtime = runtime();
-    let init = artifacts::init()?;
-    let (repo, guest_repo, box_init) = (root.clone(), guest.clone(), init.clone());
-    let cross = move |name: &str| {
-        if verb == "push" {
-            crossing::push(box_runtime, &box_init, name, &repo, &guest_repo, remote)
-        } else {
-            crossing::fetch(box_runtime, &box_init, name, &guest_repo, &repo, remote)
-        }
-    };
-    match project_box(&disk)? {
-        Holder::Ready(name) => {
-            let result = cross(&name);
-            return Ok(cli::report_crossing(verb, &name, remote, result));
-        }
-        Holder::Starting(name) => {
-            let refusal = CrossingError::Refused(RefusalReason::DiskInUse, starting(&name, &disk));
-            return Ok(cli::report_crossing(verb, &name, remote, Err(refusal)));
-        }
-        Holder::None => {}
-    }
-    if !box_runtime
-        .list_disks()?
-        .iter()
-        .any(|listed| listed.name == disk)
-        // A disk whose first box never came ready is empty.
-        || disk::unfilled(&disk)?
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "this project has no project disk yet; start it with `pinfold -- CMD`",
-        ));
-    }
-    let image = resolve_image(&config, &id);
-    ensure_image(&config, &image)?;
-    let plan = Plan {
-        disks: vec![empty_writable_disk(disk, &root)],
-        ..box_plan(&config, &id, &image)
-    };
     let runtime = Builder::new_current_thread().enable_all().build()?;
-    let result = runtime.block_on(async {
+    runtime.block_on(async {
         let mut signals = Signals::new()?;
-        let name = plan.name.clone();
-        // Every start that ends without ready still prints one line.
-        let unstarted = |error| Ok(cli::report_crossing(verb, &name, remote, Err(error)));
-        let mut box_ = match Box::up(&plan, &init, &mut signals).await {
-            Ok(box_) => box_,
-            Err(UpError::Control) => {
-                return unstarted(CrossingError::Failed(
-                    "the transient box was stopped before ready".to_string(),
-                ));
-            }
-            Err(UpError::Signal) => {
-                return Ok(128 + signals.last().unwrap_or(nix::sys::signal::Signal::SIGTERM) as i32);
-            }
-            Err(UpError::Refused(refusal)) => {
-                return unstarted(CrossingError::Refused(refusal.reason, refusal.detail));
-            }
+        let root = project_root(&env::current_dir()?)?;
+        require_repo(&root)?;
+        let mut lease = match crate::pi::session::borrow(&root, &mut signals).await {
+            Ok(lease) => lease,
             Err(error) => {
-                return unstarted(CrossingError::Failed(io::Error::from(error).to_string()));
+                return match signals.last() {
+                    Some(signal) => Ok(128 + signal as i32),
+                    None => Err(error),
+                };
             }
         };
-        let crossed = tokio::task::spawn_blocking(move || {
-            let result = cross(&name);
-            cli::report_crossing(verb, &name, remote, result)
-        });
-        let code = tokio::select! {
-            code = crossed => code.map_err(|error| io::Error::other(format!("{verb} failed: {error}"))),
-            signal = signals.recv() => Ok(128 + signal as i32),
-        };
-        let down = box_.down(Some(Shutdown::Signal.terminal())).await;
-        let code = code?;
-        down?;
-        Ok(code)
-    });
-    runtime.shutdown_background();
-    result
-}
-
-/// What holds a project disk.
-pub(crate) enum Holder {
-    None,
-    Ready(String),
-    /// Claimed but not ready: its repository may not exist yet.
-    Starting(String),
-}
-
-/// The box that attaches the project disk `disk`, and whether it is ready.
-pub(crate) fn project_box(disk: &str) -> io::Result<Holder> {
-    let Some((name, _)) = disk::attachments(runtime(), None)?
-        .remove(disk)
-        .and_then(|boxes| boxes.into_iter().next())
-    else {
-        return Ok(Holder::None);
-    };
-    let ready = match ownership::record(&name)? {
-        Some(record) => runs::launched(&record.generation)?,
-        // Listed by the runtime with no claim: a dead owner's box.
-        None => false,
-    };
-    Ok(if ready {
-        Holder::Ready(name)
-    } else {
-        Holder::Starting(name)
+        let result = async {
+            // The owner's root probe precedes reading a different configuration root.
+            let config = Config::load(&root)?;
+            config.check_host_paths(&root)?;
+            let id = project_id(&root);
+            let [_, disk] = state::disk_names(&id);
+            let guest = utf8(&root, "project root")?.to_string();
+            let (verb, remote) = if verb == "push" {
+                ("push", "host")
+            } else {
+                ("fetch", "pinfold")
+            };
+            let box_runtime = crate::core::runtime::runtime();
+            let init = artifacts::init()?;
+            let (name, mut box_) = if let Some(name) = lease.name().map(str::to_string) {
+                lease.release_launch();
+                (name, None)
+            } else {
+                if !box_runtime
+                    .list_disks()?
+                    .iter()
+                    .any(|listed| listed.name == disk)
+                    || disk::unfilled(&disk)?
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "this project has no project disk yet; start it with `pinfold -- CMD`",
+                    ));
+                }
+                let image = resolve_image(&config, &id);
+                ensure_image(&config, &image)?;
+                let mut plan = Plan {
+                    disks: vec![empty_writable_disk(disk, &root)],
+                    ..box_plan(&config, &id, &image)
+                };
+                let mut random = [0u8; 6];
+                use ring::rand::SecureRandom;
+                ring::rand::SystemRandom::new()
+                    .fill(&mut random)
+                    .map_err(|_| io::Error::other("crossing name generation failed"))?;
+                plan.name = format!("pi-{id}-{}", crate::core::hex(&random));
+                let name = plan.name.clone();
+                let unstarted = |error| Ok(cli::report_crossing(verb, &name, remote, Err(error)));
+                let box_ = match Box::up(&plan, &init, &mut signals).await {
+                    Ok(box_) => box_,
+                    Err(UpError::Control) => {
+                        return unstarted(CrossingError::Failed(
+                            "the transient box was stopped before ready".to_string(),
+                        ));
+                    }
+                    Err(UpError::Signal) => {
+                        return Ok(128
+                            + signals.last().unwrap_or(nix::sys::signal::Signal::SIGTERM) as i32);
+                    }
+                    Err(UpError::Refused(refusal)) => {
+                        return unstarted(CrossingError::Refused(refusal.reason, refusal.detail));
+                    }
+                    Err(error) => {
+                        return unstarted(CrossingError::Failed(
+                            io::Error::from(error).to_string(),
+                        ));
+                    }
+                };
+                (name, Some(box_))
+            };
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let worker_cancel = cancel.clone();
+            let target = name.clone();
+            let mut worker = tokio::task::spawn_blocking(move || {
+                if verb == "push" {
+                    crossing::push_cancellable(
+                        box_runtime,
+                        &init,
+                        &target,
+                        &root,
+                        &guest,
+                        remote,
+                        &worker_cancel,
+                    )
+                } else {
+                    crossing::fetch_cancellable(
+                        box_runtime,
+                        &init,
+                        &target,
+                        &guest,
+                        &root,
+                        remote,
+                        &worker_cancel,
+                    )
+                }
+            });
+            let (code, terminal) = tokio::select! {
+                biased;
+                crossed = &mut worker => (crossed
+                    .map_err(|error| io::Error::other(format!("{verb} failed: {error}")))
+                    .map(|crossed| cli::report_crossing(verb, &name, remote, crossed)),
+                    Some(Shutdown::Signal.terminal())),
+                ended = async {
+                    match box_.as_mut() {
+                        Some(box_) => box_.ended().await,
+                        None => {
+                            let _ = lease.ended().await;
+                            Ok(Shutdown::Signal)
+                        },
+                    }
+                } => {
+                    cancel.store(true, std::sync::atomic::Ordering::Release);
+                    let _ = worker.await;
+                    match ended {
+                        Ok(ended) => (Ok(1), Some(ended.terminal())),
+                        Err(error) => (Err(error), None),
+                    }
+                },
+                signal = signals.recv() => {
+                    cancel.store(true, std::sync::atomic::Ordering::Release);
+                    let _ = worker.await;
+                    (Ok(128 + signal as i32), Some(Shutdown::Signal.terminal()))
+                },
+            };
+            let down = match box_.as_mut() {
+                Some(box_) => box_.down(terminal).await,
+                None => Ok(()),
+            };
+            let code = code?;
+            down?;
+            Ok(code)
+        }
+        .await;
+        let left = lease.leave().await;
+        match left {
+            Ok(()) => result,
+            Err(error) if matches!(result, Ok(0)) => Err(error),
+            Err(error) => {
+                eprintln!("pinfold {verb}: {}", terminal_text(&error.to_string()));
+                result
+            }
+        }
     })
-}
-
-/// The `disk-in-use` detail for a box that is not ready.
-pub(crate) fn starting(name: &str, disk: &str) -> String {
-    format!("box {name:?} attaches disk {disk:?} and is not ready")
 }
 
 /// The canonical project root for `cwd`: the git top level, else `cwd`.
@@ -293,9 +303,16 @@ pub(crate) fn resolve_image(config: &Config, project: &str) -> String {
 /// Warn when its Containerfile or its profile base changed. `doctor`
 /// reports the same warnings.
 pub(crate) fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
+    for warning in image_warnings(config, image)? {
+        eprintln!("{warning}");
+    }
+    Ok(())
+}
+
+pub(crate) fn image_warnings(config: &Config, image: &str) -> io::Result<Vec<String>> {
     if config.image.is_some() {
         return match service().resolve_image(image)? {
-            Ok(_) => Ok(()),
+            Ok(_) => Ok(Vec::new()),
             Err(_) => Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
@@ -331,7 +348,10 @@ pub(crate) fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
             format!("image {image} is missing; run `{build}`"),
         ));
     };
-    warn_containerfile(&built, containerfile, build);
+    let mut warnings = Vec::new();
+    if let Some(warning) = containerfile_warning(&built, containerfile, build) {
+        warnings.push(warning);
+    }
     if let Some(base) = base {
         let recorded = built
             .labels
@@ -340,32 +360,33 @@ pub(crate) fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
         let current = service().resolve_image(&base)?.ok();
         if let Some(profile) = &current
             && let Some(bytes) = &config.profile.containerfile
+            && let Some(warning) = containerfile_warning(profile, bytes, &profile_build)
         {
-            warn_containerfile(profile, bytes, &profile_build);
+            warnings.push(warning);
         }
         let current = current.as_ref().map(|image| image.id.as_str());
         if recorded.map(String::as_str) != current {
-            eprintln!(
+            warnings.push(format!(
                 "pinfold: image-outdated: project image {image} was built from profile image {}; the current profile image is {}; run `pinfold build`",
                 recorded.map_or("(none)", String::as_str),
                 current.unwrap_or("(none)")
-            );
+            ));
         }
     }
-    Ok(())
+    Ok(warnings)
 }
 
-fn warn_containerfile(image: &ImageInfo, bytes: &[u8], build: &str) {
+fn containerfile_warning(image: &ImageInfo, bytes: &[u8], build: &str) -> Option<String> {
     let expected = sha256_hex(bytes);
-    if image.labels.get(image::CONTAINERFILE_LABEL) != Some(&expected) {
-        eprintln!(
+    (image.labels.get(image::CONTAINERFILE_LABEL) != Some(&expected)).then(|| {
+        format!(
             "pinfold: image-outdated: image {} has changed or unrecorded Containerfile inputs; run `{build}`",
             image.reference
-        );
-    }
+        )
+    })
 }
 
-fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> Plan {
+pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> Plan {
     let mut env = BTreeMap::from([("HOME".to_string(), Env::Exact(state::HOME.to_string()))]);
     env.extend(config.env.iter().map(|name| {
         let from = format!("PINFOLD_ENV_{name}");
@@ -425,123 +446,12 @@ pub(crate) fn utf8<'a>(path: &'a Path, what: &str) -> io::Result<&'a str> {
     })
 }
 
-fn run_box(
-    plan: &Plan,
-    root: &Path,
-    cwd: &Path,
-    args: &[String],
-    repository: bool,
-) -> io::Result<i32> {
-    let init = artifacts::init()?;
-    let argv = args.to_vec();
-    let (name, root, workdir) = (plan.name.clone(), root.to_path_buf(), cwd.to_path_buf());
-    let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-    let box_runtime = runtime();
-    let runtime = Builder::new_current_thread().enable_all().build()?;
-    let result = runtime.block_on(async {
-        // Register before startup so a closed terminal also ends a starting box.
-        let mut signals = Signals::with_hangup()?;
-        let mut box_ = match Box::up(plan, &init, &mut signals).await {
-            Ok(box_) => box_,
-            Err(UpError::Control) => return Ok(125),
-            Err(UpError::Signal) => {
-                return Ok(128 + signals.last().unwrap_or(nix::sys::signal::Signal::SIGTERM) as i32);
-            }
-            Err(error) => return Err(error.into()),
-        };
-        // Signals and the box monitor cover startup synchronization too.
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        #[cfg(not(target_os = "linux"))]
-        let exec_cancel = cancel.clone();
-        #[cfg(not(target_os = "linux"))]
-        let exec_started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        #[cfg(not(target_os = "linux"))]
-        let worker_started = exec_started.clone();
-        let mut exec = tokio::task::spawn_blocking(move || {
-            if repository {
-                sync(&name, &init, &root);
-            }
-            #[cfg(not(target_os = "linux"))]
-            worker_started.store(true, std::sync::atomic::Ordering::SeqCst);
-            let context = ExecContext {
-                cwd: Some(&workdir),
-                tty,
-                agent: Some(&argv[0]),
-                project_root: Some(&root),
-                #[cfg(not(target_os = "linux"))]
-                cancel: Some(&exec_cancel),
-            };
-            box_runtime.exec(&name, &init, &context, &argv)
-        });
-        #[allow(unused_mut)]
-        let (mut ended, mut completed) = tokio::select! {
-            // A completed command wins over a concurrent stop.
-            biased;
-            status = &mut exec => (status
-                .map_err(|error| io::Error::other(format!("command exec failed: {error}")))
-                .and_then(|status| status)
-                .map(|status| (Terminal { reason: "sessions-ended", detail: Some(status.to_string()) }, cli::exit_code(status))), true),
-            shutdown = box_.ended() => (shutdown.map(|shutdown| {
-                let code = match shutdown {
-                    Shutdown::BoxExited(_) | Shutdown::AuditLog => 125,
-                    Shutdown::StdinEof | Shutdown::Signal => 125,
-                };
-                (shutdown.terminal(), code)
-            }), false),
-            signal = signals.recv() => (Ok((Shutdown::Signal.terminal(), 128 + signal as i32)), false),
-        };
-        cancel.store(true, std::sync::atomic::Ordering::SeqCst);
-        crate::core::runtime::terminal::cancel();
-        #[cfg(not(target_os = "linux"))]
-        if !completed && exec_started.load(std::sync::atomic::Ordering::SeqCst) {
-            // A sync still in progress needs teardown first. A started exec is
-            // cancellable and restores shared flags before teardown diagnostics.
-            if let Ok(Ok(status)) = (&mut exec).await {
-                ended = Ok((
-                    Terminal { reason: "sessions-ended", detail: Some(status.to_string()) },
-                    cli::exit_code(status),
-                ));
-            }
-            completed = true;
-        }
-        // A failed teardown must preserve an observed command failure.
-        let (terminal, code) = match ended {
-            Ok((terminal, code)) => (Some(terminal), Ok(code)),
-            Err(error) => (None, Err(error)),
-        };
-        let reason = terminal.as_ref().map(|terminal| terminal.reason);
-        let down = box_.down(terminal).await;
-        // Apple must reap its native client before main restores shared flags.
-        #[cfg(not(target_os = "linux"))]
-        if !completed {
-            let _ = exec.await;
-        }
-        #[cfg(target_os = "linux")]
-        let _ = completed;
-        if let Some(reason) = reason.filter(|reason| !matches!(*reason, "sessions-ended" | "signal")) {
-            eprintln!(
-                "pinfold: the box ended with {reason}; see `pinfold box inspect {}`",
-                box_.run_id
-            );
-        }
-        match (code, down) {
-            (Ok(0), Err(error)) => Err(error),
-            (code, Err(error)) => {
-                eprintln!("pinfold: teardown failed: {error}");
-                code
-            }
-            (code, Ok(())) => code,
-        }
-    });
-    // A hung exec must not hold the process after teardown.
-    runtime.shutdown_background();
-    result
-}
-
 /// Run git in `dir`: its UTF-8 stdout less one trailing newline, or `None`
 /// when it fails.
-fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let output = crossing::git_command(dir).args(args).output().ok()?;
+fn git(dir: &Path, args: &[&str], cancel: &std::sync::atomic::AtomicBool) -> Option<String> {
+    let mut command = crossing::git_command(dir);
+    command.args(args).stdin(std::process::Stdio::null());
+    let output = crossing::output_cancellable(&mut command, None, cancel).ok()?;
     let stdout = String::from_utf8(output.stdout).ok()?;
     let stdout = stdout.strip_suffix('\n').unwrap_or(&stdout);
     output.status.success().then(|| stdout.to_string())

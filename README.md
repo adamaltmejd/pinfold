@@ -99,9 +99,27 @@ In your working folder:
    Anthropic's terms: pi presents the token as Claude Code and may bill it
    as extra usage.
 
-One foreground command owns the box and tears it down when it ends.
-A simultaneous second launch refuses as `disk-in-use`. Arguments after
-`--` pass literally to the command, including `--help`. Command exit codes
+One detached owner serves each canonical project host-wide, independently of
+HOME and XDG roots. Each `pinfold -- CMD` starts or joins a session. Ending or
+disconnecting one client leaves other sessions running. The box ends when no
+session, crossing lease or keep remains. A client signal ends only its session
+and sends no signal to its guest command.
+
+`pinfold start` keeps the box without clients. Matching repeated starts
+succeed. `pinfold stop` stops its observed generation, without loading current
+configuration, and cannot stop a replacement. Both take no arguments and
+print nothing to stdout on success; infrastructure failures return 125.
+Control waits are bounded to ten seconds; timeout leaves ownership intact.
+A kept owner protects its project from cleanup and executable replacement;
+stop it before cleanup or an update.
+
+Joining or keeping preserves the running policy and credentials. Changed
+host roots or effective configuration refuse as `config-changed`, naming
+only differing fields. Stop the owner before applying those changes. Command
+metadata, recipe freshness and seed/shared-file contents do not affect
+comparison. Joining does not reseed, synchronize Git or refresh login.
+
+Arguments after `--` pass literally to the command, including `--help`. Command exit codes
 pass through; project setup failure or external teardown before observed completion uses 125. CMD owns stdout;
 pinfold diagnostics use stderr.
 
@@ -168,8 +186,10 @@ Old Podman storage, derived roots and managed agent disks remain untouched.
 In Git, the box keeps its own repository. Only committed branches enter it;
 commit local work (a WIP commit is enough) to send it in.
 `pinfold fetch` brings guest commits back as `pinfold/*` branches to merge;
-`pinfold push` sends host branches in as `host/*`. Each project-command
-start also pushes and fast-forwards the guest branch when clean and strictly behind.
+`pinfold push` sends host branches in as `host/*`. A new owner pushes and
+fast-forwards the guest branch when clean and strictly behind, before admitting
+sessions or project crossing. Joining runs no synchronization. Explicit
+crossing retains the project box during transfer.
 
 Outside Git on macOS, runs reuse the folder's home and project disks.
 The project disk starts empty at the folder's canonical path; no host files
@@ -238,9 +258,10 @@ agent this; copy its directory into the agent's skills directory.
 
 All commands in a project reuse its home and project disks. To start fresh:
 
-1. Finish the command. In Git, commit guest work you want to keep, run
+1. Finish every command. In Git, commit guest work you want to keep, run
    `pinfold fetch`, inspect the commits, then merge or give them a host
-   branch to retain them. Use `disk export` for other files.
+   branch to retain them. Stop a kept box with `pinfold stop`.
+   Use `disk export` for other files.
 2. Run `pinfold config`. Read the exact names from `project.disks.home`
    and `project.disks.project`.
 3. Run `pinfold disk rm NAME` for each disk you want to clear.
