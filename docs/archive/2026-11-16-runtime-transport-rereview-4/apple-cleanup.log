@@ -1,0 +1,11 @@
+real preparation failure: exit=1 event={'box': 'probe-retirement-49437-prepare', 'detail': 'prepare writable disks: pinfold init setup: Not a directory (os error 20)', 'event': 'failed'} stderr=b''
+$ $BIN ['disk', 'list', '--json']; exit=0 stdout=b'' stderr-tail=b''
+removed failing preparation helper left no claim, state or new disk pinned
+$ $BIN ['disk', 'list', '--json']; exit=0 stdout=b'' stderr-tail=b''
+native run refused before container creation; new claim and disk cleaned
+$ $BIN ['box', 'exec', 'probe-retirement-49437-prepare', '--', 'printf', 'PREPARATION-CONTROL']; exit=0 stdout=b'PREPARATION-CONTROL' stderr-tail=b''
+$ $BIN ['box', 'down', 'probe-retirement-49437-prepare']; exit=0 stdout=b'' stderr-tail=b''
+$ $BIN ['disk', 'rm', 'probe-retirement-49437-prepare-data', '--json']; exit=0 stdout=b'{"disk":"probe-retirement-49437-prepare-data","event":"removed","existed":true}\n' stderr-tail=b''
+PASS Apple failed preparation and no-container startup cleanup, corrected same-name helper/exec/down
+$ $BIN ['box', 'down', 'probe-retirement-49437-prepare']; exit=0 stdout=b'' stderr-tail=b''
+$ $BIN ['disk', 'rm', 'probe-retirement-49437-prepare-data', '--json']; exit=0 stdout=b'{"disk":"probe-retirement-49437-prepare-data","event":"removed","existed":false}\n' stderr-tail=b''

@@ -675,11 +675,13 @@ atomically replaces and syncs its identity before releasing that child;
 EOF exits without exec. Retirement requires a known pre-start state, a
 complete identity proving the VMM ended, or successful owned reaping.
 Unknown liveness preserves the generation's resources.
-After confirmed runtime removal under the name lock, the full-generation
-owner record is atomically marked retiring and synced with its directory
-before any generation resources are deleted. Box and builder cleanup resume
-from that record even after the identity tree is gone. The owner record and
-its retirement evidence are unlinked last and the directory is synced.
+Private socket staging may be removed after a pre-start publication failure
+without retiring the claim. Before deleting other generation resources,
+confirmed runtime removal under the name lock is recorded by atomically
+marking the full-generation owner record retiring and syncing its directory.
+Box and builder cleanup resume from that record even after the identity tree
+is gone. The owner record and its retirement evidence are unlinked last and
+the directory is synced.
 Readiness inspects only its own claim. Inventory reports per-box errors and
 rechecks retirement before treating a missing identity as unknown. Unknown
 liveness retains disk ownership and is reported as `unknown`.
