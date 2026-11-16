@@ -1,0 +1,26 @@
+Store snapshot: read-only container inventories; sizes bytes unless KiB named.
+Command: container image list --format json; container volume list --format json; container list --all --format json; container system df --format json.
+Measurement: stat.st_blocks*512 for each image OCI content closure and its unpacked snapshot(s); aliases grouped. Content and APFS clones share storage; rows are attributable allocations, not exclusive/reclaimable totals.
+docker.io/library/debian:trixie-slim | OCI=60073148 content_alloc=60104704 snapshot_alloc=266584064 reference=none
+ghcr.io/apple/container-builder-shim/builder:0.13.2 | OCI=105559863 content_alloc=105590784 snapshot_alloc=282836992 reference=none
+ghcr.io/apple/containerization/vminit:0.53.0 | OCI=69425414 content_alloc=69439488 snapshot_alloc=174768128 reference=none
+localhost/pinfold/image-probe-owner-68590:latest,localhost/pinfold/image-probe-owner-81875-3rnc4tf5:latest,localhost/pinfold/profile-default:18e8295bd1ace390-49209,localhost/pinfold/profile-default:latest | OCI=470400115 content_alloc=470421504 snapshot_alloc=1191821312 reference=none
+localhost/pinfold/profile-default:18e829411a2ce2e8-47929 | OCI=470399781 content_alloc=470421504 snapshot_alloc=1191821312 reference=none
+localhost/pinfold/profile-documents:18e80296a2943310-50377 | OCI=492180095 content_alloc=492204032 snapshot_alloc=1212235776 reference=none
+localhost/pinfold/profile-documents:18e803be5d9a1800-60165,localhost/pinfold/profile-documents:latest | OCI=541090658 content_alloc=541110272 snapshot_alloc=1344028672 reference=none
+localhost/pinfold/profile-full:18e829ab3648b258-51507,localhost/pinfold/profile-full:18e829acc830f0f8-51598,localhost/pinfold/profile-full:latest | OCI=557763881 content_alloc=557793280 snapshot_alloc=1389903872 reference=none
+localhost/pinfold/profile-probe-cache-missing:18e829ae721598e8-51697,localhost/pinfold/profile-probe-cache-missing:18e829b06758a038-51856,localhost/pinfold/profile-probe-cache-missing:latest | OCI=470399840 content_alloc=470421504 snapshot_alloc=1191821312 reference=none
+localhost/pinfold/profile-probe-cache-version:18e82951ef5e2d18-48911 | OCI=470399793 content_alloc=470421504 snapshot_alloc=1191821312 reference=none
+localhost/pinfold/profile-probe-cache-version:18e82956c657ed00-49018,localhost/pinfold/profile-probe-cache-version:latest | OCI=470398651 content_alloc=470421504 snapshot_alloc=1191821312 reference=none
+localhost/pinfold/project-project-9455564c6ceb:18e829a9c7f2da00-51105,localhost/pinfold/project-project-9455564c6ceb:18e829ad8084bf18-51598,localhost/pinfold/project-project-9455564c6ceb:latest | OCI=557764509 content_alloc=557797376 snapshot_alloc=1389920256 reference=none
+du -sk /Users/user/Library/Application Support/com.apple.container/builder: 483720 KiB
+du -sk /Users/user/Library/Application Support/com.apple.container/containers/buildkit: 2949632 KiB
+du -sk /Users/user/Library/Application Support/com.apple.container/content: 3123728 KiB
+du -sk /Users/user/Library/Application Support/com.apple.container/snapshots: 12206724 KiB
+container system df current: {"containers":{"active":1,"reclaimable":0,"sizeInBytes":3020423168,"total":1},"images":{"active":1,"reclaimable":15278960640,"sizeInBytes":15698374656,"total":25},"volumes":{"active":0,"reclaimable":0,"sizeInBytes":0,"total":0}}
+Unused means no active/stopped container image-digest reference in this snapshot; pinfold project/profile configuration and aliases may retain them. No deletion assessment or removal was performed.
+Builder exports directory is not the whole BuildKit cache: BuildKit data also lives in its rootfs.ext4. Whole buildkit container allocation is reported separately.
+Guest builder cache (du -sk): 2310992	/var/lib/buildkit; 483772	/var/lib/container-builder-shim
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  255        60    81% 2521809 631230560    0%   /System/Volumes/Data
+Final verification df -g /System/Volumes/Data: 56 GiB available; only buildkit running; no volumes or probe images.
