@@ -1,5 +1,7 @@
 //! Pinned host helper and infrastructure, and this build's init.
 
+use crate::core::process::CommandGuard;
+
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -121,7 +123,7 @@ pub fn builder(cancel: Option<&AtomicBool>) -> io::Result<PathBuf> {
             .stdin(std::process::Stdio::null())
             .stdout(output)
             .stderr(std::process::Stdio::null())
-            .spawn()?;
+            .spawn_guarded()?;
         let unpacked = (|| {
             loop {
                 super::pipe::remaining(deadline, cancel, "builder install")?;
@@ -311,7 +313,7 @@ impl Artifact {
                     .arg(&download)
                     .arg("-C")
                     .arg(&unpacked)
-                    .status()?;
+                    .status_guarded()?;
                 if !status.success() {
                     return Err(io::Error::other(format!("tar {url}: {status}")));
                 }

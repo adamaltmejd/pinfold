@@ -1,5 +1,7 @@
 //! Host release checks and replacement of the installed executable.
 
+use crate::core::process::CommandGuard;
+
 use std::fs::{self, File};
 use std::io::{self, IsTerminal, Read, Seek, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -142,7 +144,8 @@ fn loaded_version(path: &Path) -> io::Result<()> {
         let output = Command::new(path)
             .arg0("pinfold")
             .arg("--version")
-            .output()?;
+            .stdin(std::process::Stdio::null())
+            .output_guarded()?;
         if !output.status.success() || output.stdout != format!("pinfold {VERSION}\n").as_bytes() {
             return Err(io::Error::other("executable-replaced: rerun the command"));
         }

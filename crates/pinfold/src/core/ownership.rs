@@ -2,15 +2,17 @@
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
+use std::os::fd::AsFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::os::unix::net::UnixStream as BlockingStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use nix::fcntl::{Flock, FlockArg};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::UnixStream;
+
+use crate::core::process::Listener as UnixListener;
 
 use crate::core::pipe::remaining;
 use crate::core::runtime::sockets::{self, Sockets};
@@ -145,6 +147,11 @@ pub struct Attachment {
 pub fn disk_lock(name: &str) -> io::Result<Flock<File>> {
     let key = format!("disk:{}:{name}", crate::dirs::state_root_key()?);
     Flock::lock(open_lock(&key)?, FlockArg::LockExclusive).map_err(|(_, error)| error.into())
+}
+
+pub(crate) fn try_disk_lock(name: &str) -> io::Result<Option<Flock<File>>> {
+    let key = format!("disk:{}:{name}", crate::dirs::state_root_key()?);
+    try_lock(&key, FlockArg::LockExclusiveNonblock)
 }
 
 pub fn record(name: &str) -> io::Result<Option<Record>> {
@@ -340,27 +347,27 @@ impl Claim {
         &self.record.as_ref().expect("prepared ownership").generation
     }
 
-    pub async fn stop_requested(&mut self) -> io::Result<()> {
-        loop {
-            let (mut stream, _) = self
-                .listener
-                .as_ref()
-                .expect("prepared ownership")
-                .accept()
-                .await?;
-            let mut generation = [0; 64];
-            if !matches!(
-                tokio::time::timeout(REQUEST_TIMEOUT, stream.read_exact(&mut generation)).await,
-                Ok(Ok(_))
-            ) {
-                continue;
-            }
-            if generation == self.generation().as_bytes() {
-                self.request = Some(stream);
-                return Ok(());
-            }
-            let _ = tokio::time::timeout(REQUEST_TIMEOUT, stream.write_all(b"gone\n")).await;
+    pub(crate) fn take_startup_control(&mut self) -> StartupControl {
+        StartupControl {
+            listener: self.listener.take().expect("prepared ownership"),
+            request: self.request.take(),
+            generation: self.generation().to_string(),
         }
+    }
+
+    pub(crate) fn restore_startup_control(&mut self, control: StartupControl) {
+        self.listener = Some(control.listener);
+        self.request = control.request;
+    }
+
+    pub async fn stop_requested(&mut self) -> io::Result<()> {
+        let request = receive_stop(
+            self.listener.as_ref().expect("prepared ownership"),
+            self.generation(),
+        )
+        .await?;
+        self.request = Some(request);
+        Ok(())
     }
 
     pub fn starting(&mut self) {
@@ -394,6 +401,37 @@ impl Claim {
     }
 }
 
+/// Shutdown stays responsive while disk preparation owns the claim on a worker.
+pub(crate) struct StartupControl {
+    listener: UnixListener,
+    request: Option<UnixStream>,
+    generation: String,
+}
+
+impl StartupControl {
+    pub(crate) async fn stop_requested(&mut self) -> io::Result<()> {
+        self.request = Some(receive_stop(&self.listener, &self.generation).await?);
+        Ok(())
+    }
+}
+
+async fn receive_stop(listener: &UnixListener, generation: &str) -> io::Result<UnixStream> {
+    loop {
+        let (mut stream, _) = listener.accept().await?;
+        let mut requested = [0; 64];
+        if !matches!(
+            tokio::time::timeout(REQUEST_TIMEOUT, stream.read_exact(&mut requested)).await,
+            Ok(Ok(_))
+        ) {
+            continue;
+        }
+        if requested == generation.as_bytes() {
+            return Ok(stream);
+        }
+        let _ = tokio::time::timeout(REQUEST_TIMEOUT, stream.write_all(b"gone\n")).await;
+    }
+}
+
 impl Drop for Claim {
     fn drop(&mut self) {
         if !self.running
@@ -411,12 +449,19 @@ impl Drop for Claim {
 /// listener refuses the old token instead of stopping its own box.
 /// Return true only when the owner acknowledges completed teardown.
 pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<bool> {
+    request_stop_until(name, observed, Instant::now() + STOP_TIMEOUT)
+}
+
+pub(crate) fn request_stop_until(
+    name: &str,
+    observed: Option<&Record>,
+    deadline: Instant,
+) -> io::Result<bool> {
     // An unpublished claim is absent to this request. Adopting a record
     // later could target a replacement after an old owner removed its record.
     let Some(observed) = observed else {
         return Ok(false);
     };
-    let deadline = Instant::now() + STOP_TIMEOUT;
     loop {
         if let Some(lock) = try_name_lock(name)? {
             drop(lock);
@@ -425,15 +470,52 @@ pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<bool> {
         if record(name)?.is_none_or(|current| current.generation != observed.generation) {
             return Ok(false);
         }
-        match BlockingStream::connect(socket(name)?) {
+        let connected = sockets::connect_shutdown(&socket(name)?, deadline);
+        match connected {
             Ok(mut stream) => {
                 let exchange: io::Result<Vec<u8>> = (|| {
-                    stream.set_write_timeout(Some(remaining(deadline, None, "box teardown")?))?;
-                    stream.write_all(observed.generation.as_bytes())?;
-                    // The owner closes after one reply line, at most "failed\n".
-                    stream.set_read_timeout(Some(remaining(deadline, None, "box teardown")?))?;
+                    stream.set_nonblocking(true)?;
+                    let mut generation = observed.generation.as_bytes();
+                    while !generation.is_empty() {
+                        remaining(deadline, None, "box teardown")?;
+                        match stream.write(generation) {
+                            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                            Ok(written) => generation = &generation[written..],
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                                crate::core::pipe::wait_ready(
+                                    Some(stream.as_fd()),
+                                    nix::poll::PollFlags::POLLOUT,
+                                    deadline,
+                                    None,
+                                    "box teardown",
+                                )?;
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    // At most "failed\n"; each read shares the control deadline.
                     let mut answer = Vec::new();
-                    (&mut stream).take(7).read_to_end(&mut answer)?;
+                    let mut bytes = [0; 7];
+                    while answer.len() < bytes.len() {
+                        remaining(deadline, None, "box teardown")?;
+                        let available = bytes.len() - answer.len();
+                        match stream.read(&mut bytes[..available]) {
+                            Ok(0) => break,
+                            Ok(read) => answer.extend_from_slice(&bytes[..read]),
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                                crate::core::pipe::wait_ready(
+                                    Some(stream.as_fd()),
+                                    nix::poll::PollFlags::POLLIN,
+                                    deadline,
+                                    None,
+                                    "box teardown",
+                                )?;
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
                     if !answer.ends_with(b"\n") {
                         return Err(io::ErrorKind::UnexpectedEof.into());
                     }
@@ -470,8 +552,12 @@ pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<bool> {
             Err(error)
                 if matches!(
                     error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-                ) => {}
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::ConnectionRefused
+                        | io::ErrorKind::WouldBlock
+                        | io::ErrorKind::Interrupted
+                        | io::ErrorKind::TimedOut
+                ) || error.raw_os_error() == Some(nix::libc::EINPROGRESS) => {}
             Err(error) => return Err(error),
         }
         if Instant::now() >= deadline {

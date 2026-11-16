@@ -6,6 +6,8 @@ pub mod firecracker;
 pub(crate) mod sockets;
 pub(crate) mod terminal;
 
+use crate::core::process::CommandGuard;
+
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
@@ -127,7 +129,7 @@ pub(crate) fn captured(argv: &[&str]) -> io::Result<Result<Vec<u8>, String>> {
     let output = std::process::Command::new(program)
         .args(arguments)
         .stdin(Stdio::null())
-        .output()
+        .output_guarded()
         .map_err(|error| spawn_error(program, error))?;
     if !output.status.success() {
         return Ok(Err(String::from_utf8_lossy(&output.stderr)

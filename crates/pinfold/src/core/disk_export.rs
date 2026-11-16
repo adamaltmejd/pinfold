@@ -65,7 +65,11 @@ pub fn run(name: &str, destination: &Path, image: Option<&str>) -> io::Result<i3
         let mut command = runtime::runtime().exec_command(&plan.name, &init, &runtime::ExecContext::default(), &args)?;
         command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
         let mut active_file = None;
-        let copied = match tokio::process::Command::from(command).kill_on_drop(true).spawn() {
+        let spawned = {
+            let _guard = crate::core::process::fork_guard();
+            tokio::process::Command::from(command).kill_on_drop(true).spawn()
+        };
+        let copied = match spawned {
             Err(error) => Err(error),
             Ok(mut child) => {
                 let mut output = child.stdout.take().expect("piped export stdout");

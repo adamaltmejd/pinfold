@@ -2,6 +2,8 @@
 //! and held in the proxy's memory only. Also the files a login route's
 //! agents read in the box. Renderers never receive resolved credentials.
 
+use crate::core::process::CommandGuard;
+
 use std::fs::{File, TryLockError};
 use std::io::{self, Write};
 use std::process::{Command, Stdio};
@@ -144,7 +146,7 @@ fn ask(
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .spawn()
+            .spawn_guarded()
             .map_err(|_| io::Error::other("helper launch failed"))?,
     );
     let mut stdin = child.0.stdin.take().expect("piped stdin");

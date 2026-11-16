@@ -660,6 +660,9 @@ is root-owned and either sticky or not writable by other users. Unsafe paths
 refuse as `runtime-path`. Socket paths must fit the platform address structure,
 including suffixes and terminator.
 
+Socket binding and non-atomic close-on-exec setup exclude concurrent
+process creation.
+
 Cleanup is authorized by the complete generation in a matching marker or in
 the directory name. Published directories are renamed without replacement to
 a full-generation retiring name before unlinking. Full-generation staging and

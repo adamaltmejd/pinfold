@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::net::UnixListener;
+use crate::core::process::Listener as UnixListener;
 
 use super::jail;
 use super::vsock::{self, put};

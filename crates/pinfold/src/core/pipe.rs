@@ -10,7 +10,7 @@ use nix::poll::{PollFd, PollFlags, poll};
 
 const CANCEL_INTERVAL: Duration = Duration::from_millis(100);
 
-pub(super) fn nonblocking(pipe: &impl AsFd, operation: &str) -> io::Result<()> {
+pub(crate) fn nonblocking(pipe: &impl AsFd, operation: &str) -> io::Result<()> {
     let failed = |_| io::Error::other(format!("{operation} pipe configuration failed"));
     let flags = OFlag::from_bits_truncate(fcntl(pipe, FcntlArg::F_GETFL).map_err(failed)?);
     fcntl(pipe, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).map_err(failed)?;

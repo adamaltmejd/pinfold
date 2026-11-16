@@ -1,5 +1,7 @@
 //! Native exec uses private endpoints; pinfold alone holds caller stdio.
 
+use crate::core::process::CommandGuard;
+
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
@@ -57,7 +59,7 @@ pub(super) fn exec(
         }
         let mut client = Client(
             command
-                .spawn()
+                .spawn_guarded()
                 .map_err(|error| super::spawn_error("container", error))?,
             Vec::new(),
         );

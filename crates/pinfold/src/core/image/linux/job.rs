@@ -1,5 +1,7 @@
 //! A finite build transaction. The VMM sees only its fixed role's disks.
 
+use crate::core::process::CommandGuard;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -1377,7 +1379,7 @@ fn run_process(mut command: Command, cancel: &AtomicBool) -> io::Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()?;
+        .spawn_guarded()?;
     let deadline = Instant::now() + JOB_TIME;
     let result = (|| loop {
         if let Some(status) = child.try_wait()? {

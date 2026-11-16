@@ -1,5 +1,7 @@
 //! Bounded host downloads for pinned artifacts and verified updates.
 
+use crate::core::process::CommandGuard;
+
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -58,7 +60,7 @@ fn transfer(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()?;
+        .spawn_guarded()?;
     let result = (|| {
         let mut source = child.stdout.take().expect("curl stdout is piped");
         nonblocking(&source, "download")?;

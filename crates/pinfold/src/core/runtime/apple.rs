@@ -1,5 +1,7 @@
 //! The Apple `container` runtime adapter.
 
+use crate::core::process::{AsyncCommandGuard, CommandGuard};
+
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
@@ -178,7 +180,7 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
         .arg("init")
         .args(proxy_socket.map(|_| GUEST_PROXY_SOCKET));
     command
-        .spawn()
+        .spawn_guarded()
         .map(|mut child| {
             let stderr = child.stderr.take();
             Client(child, stderr, None)
@@ -364,7 +366,7 @@ impl StderrDrain {
 
     fn start_fd(stderr: OwnedFd) -> io::Result<Self> {
         crate::core::pipe::nonblocking(&stderr, "box diagnostics")?;
-        let (stop, stopping) = io::pipe()?;
+        let (stop, stopping) = crate::core::process::pipe()?;
         let worker = std::thread::Builder::new()
             .name("box-diagnostics".into())
             .spawn(move || {
@@ -602,7 +604,7 @@ impl Runtime for Apple {
         return transport::exec(command, size, context.tty, context.cancel);
         #[cfg(target_os = "linux")]
         { command }
-            .status()
+            .status_guarded()
             .map_err(|error| spawn_error("container", error))
     }
 
@@ -716,7 +718,7 @@ impl Runtime for Apple {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
-                .spawn()
+                .spawn_guarded()
                 .map_err(|error| spawn_error("container", error))?;
             spawned = true;
             let result = (|| {
@@ -886,7 +888,7 @@ fn copy_in(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
-        .spawn()
+        .spawn_guarded()
         .map_err(|error| spawn_error("container", error))?;
     let mut stdin = child.stdin.take().expect("piped stdin");
     let sent = stream(&mut stdin);

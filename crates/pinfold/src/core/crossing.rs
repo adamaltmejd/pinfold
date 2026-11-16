@@ -5,6 +5,8 @@
 //! a bundle, fetches its objects with fsck, and writes refs under one
 //! remote namespace.
 
+use crate::core::process::CommandGuard;
+
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
@@ -130,7 +132,7 @@ pub fn push(
         .stdin(File::open(&bundle.path)?)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    let mut child = command.spawn()?;
+    let mut child = command.spawn_guarded()?;
     let stderr = kept_stderr(&mut child);
     let status = child.wait()?;
     box_status(status.code(), &stderr(), guest_repo)?;
@@ -169,7 +171,7 @@ pub fn fetch(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.spawn()?;
+    let mut child = command.spawn_guarded()?;
     let stderr = kept_stderr(&mut child);
     let mut stdin = child.stdin.take().expect("stdin is piped");
     // A box that stops reading only fails its own fetch.
@@ -235,7 +237,7 @@ pub fn fetch(
                 .args(["index-pack", "--stdin", "--fix-thin", "--fsck-objects"])
                 .envs(quarantine.env())
                 .stdin(pack)
-                .output()?,
+                .output_guarded()?,
         )?;
         // A fetch that finds a head missing unbundles the pack again before
         // its connectivity check fails, so it runs quarantined too. Its auto
@@ -305,7 +307,7 @@ fn update_refs(repo: &Path, quarantine: &Quarantine, updates: &str) -> Result<()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()?;
+        .spawn_guarded()?;
     let mut stdin = child.stdin.take().expect("stdin is piped");
     let mut stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
     // A git that exits early is read as not prepared, with its stderr.
@@ -523,7 +525,7 @@ fn git_input(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_guarded()
         .map_err(|error| io::Error::new(error.kind(), format!("git: {error}")))?;
     let mut stdin = child.stdin.take().expect("stdin is piped");
     let written = stdin.write_all(input);

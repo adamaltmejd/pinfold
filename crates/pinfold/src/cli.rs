@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
+use crate::core::process::CommandGuard;
+
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -1129,7 +1131,7 @@ fn config_edit() -> io::Result<i32> {
         .arg(script)
         .arg("sh")
         .arg(&path)
-        .status()?;
+        .status_guarded()?;
     Ok(exit_code(status))
 }
 

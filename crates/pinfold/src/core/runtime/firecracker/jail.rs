@@ -482,8 +482,11 @@ fn start(plan: &Plan, state_dir: Option<&Path>) -> io::Result<(Pid, OwnedFd, Own
         | CloneFlags::CLONE_NEWUTS;
     // SAFETY: the child runs `child` on `stack` and makes only system calls
     // on memory built above, then execs or exits.
-    let pid = unsafe { nix::sched::clone(child, &mut stack, flags, Some(libc::SIGCHLD)) }
-        .map_err(|error| io::Error::other(format!("VMM jail: clone: {error}")))?;
+    let pid = {
+        let _guard = crate::core::process::fork_guard();
+        unsafe { nix::sched::clone(child, &mut stack, flags, Some(libc::SIGCHLD)) }
+    }
+    .map_err(|error| io::Error::other(format!("VMM jail: clone: {error}")))?;
     drop(report_write);
     drop(alive_read);
     let result = (|| {
