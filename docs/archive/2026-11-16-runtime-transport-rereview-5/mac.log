@@ -1,0 +1,27 @@
+up probe-rereview5-52060-a: {'box': 'probe-rereview5-52060-a', 'egress_log': None, 'event': 'ready', 'image': {'id': 'b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27', 'ref': 'localhost/pinfold/profile-default:latest'}, 'labels': {'dev.pinfold.base': '', 'dev.pinfold.containerfile-sha256': 'ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f', 'dev.pinfold.generation': '8abd7ef81c066d7b03ee5402107e1b84afd0012cc7784abbd925eb4f5870e0d5', 'dev.pinfold.owner': '52061', 'dev.pinfold.profile': 'default', 'dev.pinfold.project': ''}, 'owner': 52061, 'run_id': '8abd7ef81c066d7b03ee5402107e1b84afd0012cc7784abbd925eb4f5870e0d5'}
+up probe-rereview5-52060-b: {'box': 'probe-rereview5-52060-b', 'detail': 'cannot verify existing disk attachments: ownership record Some("267b627b0cee37c726a3300697d11fdb23dd838013555f703c24aeddf79cba97.owner"): Permission denied (os error 13)', 'event': 'refused', 'reason': 'disk-in-use'}
+refused/failed owner exit=1 stderr=b''
+A pre-existing guest command continued while owner record unreadable: exit=0 DISK-CONTROL/STILL-ACTIVE
+up probe-rereview5-52060-new: {'box': 'probe-rereview5-52060-new', 'egress_log': None, 'event': 'ready', 'image': {'id': 'b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27', 'ref': 'localhost/pinfold/profile-default:latest'}, 'labels': {'dev.pinfold.base': '', 'dev.pinfold.containerfile-sha256': 'ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f', 'dev.pinfold.generation': '8b7760f2cbd565cd7cbab1c237430972f094944b54ffcec6a69eda9e396217fa', 'dev.pinfold.owner': '52182', 'dev.pinfold.profile': 'default', 'dev.pinfold.project': ''}, 'owner': 52182, 'run_id': '8b7760f2cbd565cd7cbab1c237430972f094944b54ffcec6a69eda9e396217fa'}
+$ $BIN ['box', 'exec', 'probe-rereview5-52060-new', '--', 'printf', 'NEW-ONLY-CONTROL']; exit=0 stdout=b'NEW-ONLY-CONTROL' stderr=b''
+$ $BIN ['box', 'down', 'probe-rereview5-52060-new']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['disk', 'list', '--json']; exit=0 stdout=b'{"allocated":2326528,"attached":[],"clean":true,"name":"probe-rereview5-52060-fresh","size":1073741824}\n{"allocated":2342912,"attached":[],"clean":false,"name":"probe-rereview5-52060-filled","size":1073741824}\n' stderr=b'pinfold: disk attachments: ownership record Some("267b627b0cee37c726a3300697d11fdb23dd838013555f703c24aeddf79cba97.owner"): Permission denied (os error 13)\n'
+up probe-rereview5-52060-b: {'box': 'probe-rereview5-52060-b', 'detail': 'disk "probe-rereview5-52060-filled" is attached by box "probe-rereview5-52060-a"', 'event': 'refused', 'reason': 'disk-in-use'}
+refused/failed owner exit=1 stderr=b''
+record repair cleared the unreadable-record refusal; live A still owns its named writable disk
+$ $BIN ['box', 'down', 'probe-rereview5-52060-a']; exit=0 stdout=b'' stderr=b''
+up probe-rereview5-52060-b: {'box': 'probe-rereview5-52060-b', 'egress_log': None, 'event': 'ready', 'image': {'id': 'b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27', 'ref': 'localhost/pinfold/profile-default:latest'}, 'labels': {'dev.pinfold.base': '', 'dev.pinfold.containerfile-sha256': 'ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f', 'dev.pinfold.generation': 'df652f5945f67f676f703f2d0071e2f61dd47bb5c8590e4f26e75ad8c8bd463a', 'dev.pinfold.owner': '52354', 'dev.pinfold.profile': 'default', 'dev.pinfold.project': ''}, 'owner': 52354, 'run_id': 'df652f5945f67f676f703f2d0071e2f61dd47bb5c8590e4f26e75ad8c8bd463a'}
+$ $BIN ['box', 'exec', 'probe-rereview5-52060-b', '--', 'cat', '/d0/marker']; exit=0 stdout=b'DISK-CONTROL\n' stderr=b''
+$ $BIN ['box', 'down', 'probe-rereview5-52060-b']; exit=0 stdout=b'' stderr=b''
+same B request succeeds after normal A down, preserving the seeded bytes
+$ $BIN ['disk', 'rm', 'probe-rereview5-52060-filled', '--json']; exit=0 stdout=b'{"disk":"probe-rereview5-52060-filled","event":"removed","existed":true}\n' stderr=b''
+$ $BIN ['disk', 'rm', 'probe-rereview5-52060-fresh', '--json']; exit=0 stdout=b'{"disk":"probe-rereview5-52060-fresh","event":"removed","existed":true}\n' stderr=b''
+PASS existing disk admission and controls on Apple
+$ $BIN ['box', 'down', 'probe-rereview5-52060-a']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['box', 'down', 'probe-rereview5-52060-b']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['box', 'down', 'probe-rereview5-52060-new']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['box', 'down', 'probe-rereview5-52060-unsafe']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['box', 'down', 'probe-rereview5-52060-dead']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['box', 'down', 'probe-rereview5-52060-corrupt']; exit=0 stdout=b'' stderr=b''
+$ $BIN ['disk', 'rm', 'probe-rereview5-52060-filled', '--json']; exit=0 stdout=b'{"disk":"probe-rereview5-52060-filled","event":"removed","existed":false}\n' stderr=b''
+$ $BIN ['disk', 'rm', 'probe-rereview5-52060-fresh', '--json']; exit=0 stdout=b'{"disk":"probe-rereview5-52060-fresh","event":"removed","existed":false}\n' stderr=b''
