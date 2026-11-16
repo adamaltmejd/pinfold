@@ -184,7 +184,7 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
         .spawn_guarded()
         .map(|mut child| {
             let stderr = child.stderr.take();
-            Client(child, stderr, None)
+            Client(child, stderr, None, None)
         })
         .map_err(|error| spawn_error("container", error))
 }
@@ -217,7 +217,12 @@ fn init_mount(init: &Path) -> OsString {
 
 /// The attached `container run` process that owns a box.
 #[cfg_attr(target_os = "linux", expect(dead_code))]
-pub struct Client(Child, Option<ChildStderr>, Option<StderrDrain>);
+pub struct Client(
+    Child,
+    Option<ChildStderr>,
+    Option<StderrDrain>,
+    Option<tokio::task::JoinHandle<()>>,
+);
 
 const STARTUP_DIAGNOSTICS: usize = 64 * 1024;
 
@@ -290,13 +295,16 @@ impl Client {
             .transpose()
             .map_err(|error| format!("box diagnostics failed: {error}"))?;
         // Keep stdout drained; stderr has its own thread during blocking finish_start.
-        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+        self.3 = Some(tokio::spawn(async move {
+            while let Ok(Some(_)) = lines.next_line().await {}
+        }));
         Ok(())
     }
 
     /// Wait until the box ends on its own or is stopped.
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
         let status = self.0.wait().await?;
+        self.close_stdout().await;
         let diagnostics = self.close_stderr();
         if !diagnostics.is_empty() {
             let bytes: Vec<_> = diagnostics.into_iter().collect();
@@ -315,6 +323,13 @@ impl Client {
         self.2.take().map_or_else(VecDeque::new, StderrDrain::close)
     }
 
+    async fn close_stdout(&mut self) {
+        if let Some(worker) = self.3.take() {
+            worker.abort();
+            let _ = worker.await;
+        }
+    }
+
     /// Stop and remove a ready box. True when the stop was one pinfold
     /// requested of a running box, which syncs its disks.
     pub async fn down(&mut self, name: &str) -> io::Result<bool> {
@@ -328,6 +343,7 @@ impl Client {
             .map_err(io::Error::other)
             .and_then(|result| result);
         let _ = self.0.wait().await;
+        self.close_stdout().await;
         removed.map(|()| requested)
     }
 
@@ -341,6 +357,7 @@ impl Client {
         // readiness failed.
         let _ = self.0.start_kill();
         let status = self.0.wait().await;
+        self.close_stdout().await;
         (Apple.down(name).map(|()| requested), status)
     }
 }
