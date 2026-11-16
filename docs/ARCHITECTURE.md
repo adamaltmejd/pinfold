@@ -1467,6 +1467,11 @@ project; executable replacement remains `update-busy`.
   or its client disconnects. Ending one session does not end another. With no
   session, crossing lease or keep request, the owner closes admission and
   tears down the box.
+- **Startup:** after bootstrap validation, claim a fresh box name and publish
+  control before runtime checks and image leasing. Existing name records,
+  state or shutdown endpoints refuse. These checks run as retained cancellable
+  work; catalog and image-lease locks wait nonblocking with cancellation.
+  Public box-up checks and orphan recovery keep their existing order.
 - **Keep/stop:** `pinfold start` keeps the project box past its last session.
   Repeated matching starts succeed. `pinfold stop` targets the observed
   generation, works without current configuration, and succeeds only after

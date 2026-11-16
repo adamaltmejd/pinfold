@@ -248,9 +248,37 @@ impl Box {
         .map_err(|error| refused(&plan, RefusalReason::Login, error))?;
 
         let runtime = runtime();
-        runtime
-            .preflight()
-            .map_err(|error| refused(&plan, RefusalReason::Runtime, error.to_string()))?;
+        let state_dir = dirs::box_state_dir(&plan.name)?;
+        // Project inputs were checked before bootstrap. Publish control before
+        // helpers can wait, but never replace an existing name's evidence.
+        let mut early_claim = if expected_image.is_some() {
+            let mut claim = take_claim(&plan, signals, &mut cancel_start).await?;
+            if ownership::record(&plan.name)?.is_some() {
+                return Err(refused(
+                    &plan,
+                    RefusalReason::NameInUse,
+                    "the project box name already has an ownership record".to_string(),
+                ));
+            }
+            claim
+                .prepare_fresh(&state_dir)
+                .map_err(|error| ownership_error(&plan, error))?;
+            Some(claim)
+        } else {
+            None
+        };
+        let preflight_plan = plan.clone();
+        startup_work(
+            signals,
+            &mut cancel_start,
+            early_claim.as_mut(),
+            move || {
+                runtime.preflight().map_err(|error| {
+                    refused(&preflight_plan, RefusalReason::Runtime, error.to_string())
+                })
+            },
+        )
+        .await?;
 
         // `validate` refused a spec with neither an image nor a profile, and
         // `resolve_profile` fills the image from the profile.
@@ -260,22 +288,34 @@ impl Box {
             .expect("a validated spec has an image after profile resolution");
         // The runtime resolves the reference, so every spelling it resolves
         // locally is accepted. It is still given `image`, not the id.
+        let image_plan = plan.clone();
+        let selected = image.clone();
         #[cfg(not(target_os = "linux"))]
-        let identity = crate::core::image::service()
-            .resolve_image(&image)?
-            .map_err(|message| {
-                refused(
-                    &plan,
-                    RefusalReason::ImageMissing,
-                    format!(
-                        "image {image:?} is not present locally; build or pull it first: {message}"
-                    ),
-                )
-            })?;
+        let identity = startup_work(signals, &mut cancel_start, early_claim.as_mut(), move || {
+            crate::core::image::service()
+                .resolve_image(&selected)?
+                .map_err(|message| {
+                    refused(
+                        &image_plan,
+                        RefusalReason::ImageMissing,
+                        format!(
+                            "image {selected:?} is not present locally; build or pull it first: {message}"
+                        ),
+                    )
+                })
+        })
+        .await?;
         #[cfg(target_os = "linux")]
-        let (identity, image_lease) =
-            crate::core::image::linux::catalog::resolve_leased(&image)?
-                .map_err(|detail| refused(&plan, RefusalReason::ImageMissing, detail))?;
+        let (identity, image_lease) = startup_work(
+            signals,
+            &mut cancel_start,
+            early_claim.as_mut(),
+            move || {
+                crate::core::image::linux::catalog::resolve_leased(&selected)?
+                    .map_err(|detail| refused(&image_plan, RefusalReason::ImageMissing, detail))
+            },
+        )
+        .await?;
         if expected_image.is_some_and(|expected| expected != identity.id) {
             return Err(
                 io::Error::other("image-changed: selected image changed before startup").into(),
@@ -306,32 +346,37 @@ impl Box {
             .filter(|id| !id.is_empty())
             .map(|id| ownership::project_lock(id))
             .transpose()?;
-        let state_dir = dirs::box_state_dir(&plan.name)?;
-        let mut claim = tokio::select! {
-            biased;
-            _ = signals.recv() => return Err(UpError::Signal),
-            _ = cancelled(&mut cancel_start) => return Err(UpError::Control),
-            claim = ownership::Claim::take(&plan.name) => claim,
-        }
-        .map_err(|error| ownership_error(&plan, error))?
-        .ok_or_else(|| {
-            refused(
-                &plan,
-                RefusalReason::NameInUse,
-                "name remained busy through the claim deadline".to_string(),
-            )
-        })?;
+        let prepared_early = early_claim.is_some();
+        let mut claim = match early_claim {
+            Some(claim) => claim,
+            None => take_claim(&plan, signals, &mut cancel_start).await?,
+        };
         // Linux inventory is pinfold's own claims, which this one now holds.
-        if cfg!(target_os = "macos") && runtime.list()?.iter().any(|box_| box_.id == plan.name) {
+        #[cfg(target_os = "macos")]
+        let occupied = {
+            let inventory_name = plan.name.clone();
+            startup_work(
+                signals,
+                &mut cancel_start,
+                prepared_early.then_some(&mut claim),
+                move || Ok(runtime.list()?.iter().any(|box_| box_.id == inventory_name)),
+            )
+            .await?
+        };
+        #[cfg(not(target_os = "macos"))]
+        let occupied = false;
+        if occupied {
             return Err(refused(
                 &plan,
                 RefusalReason::NameInUse,
                 format!("the runtime already has a box named {:?}", plan.name),
             ));
         }
-        claim
-            .prepare(&state_dir)
-            .map_err(|error| ownership_error(&plan, error))?;
+        if !prepared_early {
+            claim
+                .prepare(&state_dir)
+                .map_err(|error| ownership_error(&plan, error))?;
+        }
         // Disk refusals come after the name claim; returning drops the
         // claim, which removes its record and state.
         let mut control = claim.take_startup_control();
@@ -1149,6 +1194,70 @@ fn home_disk(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
         relative: relative.to_path_buf(),
         seeds,
     })
+}
+
+async fn take_claim(
+    plan: &Plan,
+    signals: &mut Signals,
+    cancel_start: &mut Option<tokio::sync::watch::Receiver<bool>>,
+) -> Result<ownership::Claim, UpError> {
+    tokio::select! {
+        biased;
+        _ = signals.recv() => return Err(UpError::Signal),
+        _ = cancelled(cancel_start) => return Err(UpError::Control),
+        claim = ownership::Claim::take(&plan.name) => claim,
+    }
+    .map_err(|error| ownership_error(plan, error))?
+    .ok_or_else(|| {
+        refused(
+            plan,
+            RefusalReason::NameInUse,
+            "name remained busy through the claim deadline".to_string(),
+        )
+    })
+}
+
+async fn startup_work<T: Send + 'static>(
+    signals: &mut Signals,
+    cancel_start: &mut Option<tokio::sync::watch::Receiver<bool>>,
+    mut claim: Option<&mut ownership::Claim>,
+    work: impl FnOnce() -> Result<T, UpError> + Send + 'static,
+) -> Result<T, UpError> {
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_cancel = cancel.clone();
+    let mut control = claim
+        .as_deref_mut()
+        .map(ownership::Claim::take_startup_control);
+    let mut worker = tokio::task::spawn_blocking(move || {
+        crate::core::process::with_cancellation(worker_cancel, work)
+    });
+    let (result, stopped) = tokio::select! {
+        biased;
+        _ = signals.recv() => (Err(UpError::Signal), true),
+        _ = cancelled(cancel_start) => (Err(UpError::Control), true),
+        stopped = async {
+            match control.as_mut() {
+                Some(control) => control.stop_requested().await,
+                None => std::future::pending().await,
+            }
+        } => (Err(stopped.map_or_else(UpError::Other, |()| UpError::Control)), true),
+        result = &mut worker => (
+            result.map_err(|_| io::Error::other("startup worker failed")).map_err(UpError::Other).and_then(|result| result),
+            false,
+        ),
+    };
+    if stopped {
+        cancel.store(true, std::sync::atomic::Ordering::Release);
+        let _ = worker.await;
+    }
+    if let Some(control) = control {
+        let claim = claim.expect("startup control belongs to the prepared claim");
+        claim.restore_startup_control(control);
+        if result.is_err() {
+            claim.finish(true).await?;
+        }
+    }
+    result
 }
 
 async fn cancelled(cancel: &mut Option<tokio::sync::watch::Receiver<bool>>) {

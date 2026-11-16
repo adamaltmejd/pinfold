@@ -670,12 +670,31 @@ pub fn resolve(reference: &str) -> io::Result<Result<ImageInfo, String>> {
     })
 }
 
+fn startup_lock(key: &str, operation: FlockArg) -> io::Result<Flock<File>> {
+    let mut file = ownership::open_lock(key)?;
+    loop {
+        if crate::core::process::is_cancelled() {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        match Flock::lock(file, operation) {
+            Ok(lock) => return Ok(lock),
+            Err((held, nix::errno::Errno::EWOULDBLOCK)) => file = held,
+            Err((_, error)) => return Err(error.into()),
+        }
+        match nix::poll::poll(&mut [], 20u16) {
+            Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 /// Resolve and protect the same generation before starting a box.
 pub fn resolve_leased(reference: &str) -> io::Result<Result<(ImageInfo, Flock<File>), String>> {
-    let _lock = catalog_lock()?;
+    let _lock = startup_lock(&key("catalog")?, FlockArg::LockExclusiveNonblock)?;
     Ok(match resolve(reference)? {
         Ok(image) => {
-            let lease = shared_lease(&image.id)?;
+            digest_hex(&image.id)?;
+            let lease = startup_lock(&key(&image.id)?, FlockArg::LockSharedNonblock)?;
             Ok((image, lease))
         }
         Err(reason) => Err(reason),

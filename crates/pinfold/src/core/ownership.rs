@@ -213,8 +213,8 @@ pub fn remove_record(name: &str, generation: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Name ownership precedes state creation. Publication follows the runtime
-/// name check, so a refused claim preserves an orphan's record.
+/// Name ownership precedes state creation. Public startup checks the runtime
+/// name before publication; fresh project startup refuses prior state.
 pub struct Claim {
     name: String,
     _lock: Flock<File>,
@@ -251,7 +251,30 @@ impl Claim {
     }
 
     pub fn prepare(&mut self, state_dir: &Path) -> io::Result<()> {
-        if let Some(old) = record(&self.name)? {
+        self.prepare_inner(state_dir, false)
+    }
+
+    /// A random project name never authorizes replacing prior evidence.
+    pub(crate) fn prepare_fresh(&mut self, state_dir: &Path) -> io::Result<()> {
+        self.prepare_inner(state_dir, true)
+    }
+
+    fn prepare_inner(&mut self, state_dir: &Path, fresh: bool) -> io::Result<()> {
+        let endpoint = socket(&self.name)?;
+        if fresh {
+            if record(&self.name)?.is_some() {
+                return Err(io::Error::other(
+                    "fresh project name has an ownership record",
+                ));
+            }
+            for path in [state_dir, endpoint.as_path()] {
+                match fs::symlink_metadata(path) {
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                    Ok(_) => return Err(io::Error::other("fresh project name has existing state")),
+                }
+            }
+        } else if let Some(old) = record(&self.name)? {
             #[cfg(target_os = "linux")]
             crate::core::runtime::runtime().down(&self.name)?;
             if let Err(error) = remove_record(&self.name, &old.generation) {
@@ -261,7 +284,9 @@ impl Claim {
                 eprintln!("pinfold: socket cleanup: {error}");
             }
         }
-        absent_ok(fs::remove_dir_all(state_dir))?;
+        if !fresh {
+            absent_ok(fs::remove_dir_all(state_dir))?;
+        }
         let mut random = [0; 16];
         File::open("/dev/urandom")?.read_exact(&mut random)?;
         self.record = Some(Record {
@@ -272,9 +297,15 @@ impl Claim {
             disks: Vec::new(),
             described: None,
         });
-        fs::create_dir_all(state_dir)?;
-        let endpoint = socket(&self.name)?;
-        sockets::remove_socket(&endpoint)?;
+        if fresh {
+            if let Some(parent) = state_dir.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::create_dir(state_dir)?;
+        } else {
+            fs::create_dir_all(state_dir)?;
+            sockets::remove_socket(&endpoint)?;
+        }
         let (_, host) = sockets::host()?;
         sockets::check_length(&endpoint)?;
         let listener =
