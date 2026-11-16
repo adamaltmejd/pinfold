@@ -56,6 +56,13 @@ pub(super) fn relay(
 
     loop {
         observe(&mut session, &mut status, &mut exit, &mut drain)?;
+        flush_control(
+            &connection,
+            &mut connected,
+            &mut writer,
+            &mut exit,
+            &mut consumed,
+        )?;
         if status.is_some() && drain.is_some_and(|deadline| Instant::now() >= deadline) && connected
         {
             disconnect(&connection, &mut connected, &mut writer);
@@ -66,20 +73,6 @@ pub(super) fn relay(
             && outputs.iter().all(Option::is_none)
         {
             return Ok(());
-        }
-        if connected && !writer.pending() {
-            if let Some(code) = exit.take() {
-                writer.start(EXIT, &code.to_be_bytes())?;
-            } else if consumed != 0 {
-                let mut payload = [0; 5];
-                payload[0] = STDIN;
-                payload[1..].copy_from_slice(&(consumed as u32).to_be_bytes());
-                consumed = 0;
-                writer.start(CREDIT, &payload)?;
-            }
-        }
-        if connected && writer.pending() && writer.flush(&mut &connection).is_err() {
-            disconnect(&connection, &mut connected, &mut writer);
         }
         if !connected {
             bytes.clear();
@@ -273,6 +266,14 @@ pub(super) fn relay(
                 }
             }
         }
+        // Completion or input consumption can queue control after poll too.
+        flush_control(
+            &connection,
+            &mut connected,
+            &mut writer,
+            &mut exit,
+            &mut consumed,
+        )?;
         let first_output = next_output;
         for offset in 0..2 {
             let index = (first_output + offset) % 2;
@@ -322,6 +323,40 @@ pub(super) fn relay(
             }
         }
     }
+}
+
+// Finish an older frame and release queued control before another wait or data read.
+fn flush_control(
+    mut connection: &UnixStream,
+    connected: &mut bool,
+    writer: &mut FrameWriter,
+    exit: &mut Option<i32>,
+    consumed: &mut usize,
+) -> io::Result<()> {
+    while *connected {
+        if writer.pending() {
+            match writer.flush(&mut connection) {
+                Ok(false) => break,
+                Ok(true) => {}
+                Err(_) => {
+                    disconnect(connection, connected, writer);
+                    break;
+                }
+            }
+        }
+        if let Some(code) = exit.take() {
+            writer.start(EXIT, &code.to_be_bytes())?;
+        } else if *consumed != 0 {
+            let mut payload = [0; 5];
+            payload[0] = STDIN;
+            payload[1..].copy_from_slice(&(*consumed as u32).to_be_bytes());
+            writer.start(CREDIT, &payload)?;
+            *consumed = 0;
+        } else {
+            break;
+        }
+    }
+    Ok(())
 }
 
 fn observe(

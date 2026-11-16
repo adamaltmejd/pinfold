@@ -102,6 +102,8 @@ fn relay(
     let mut completed = None;
     let mut deadline: Option<Instant> = None;
     let mut connected = true;
+    let mut writable = true;
+    let mut send_failure = None;
     let result = (|| -> io::Result<i32> {
         loop {
             // Read control and status even while the caller's output is full.
@@ -117,9 +119,11 @@ fn relay(
                         break;
                     }
                     Err(error) => {
-                        return Err(io::Error::other(format!(
-                            "the box ended the exec before it exited: {error}"
-                        )));
+                        return Err(send_failure.take().unwrap_or_else(|| {
+                            io::Error::other(format!(
+                                "the box ended the exec before it exited: {error}"
+                            ))
+                        }));
                     }
                 };
                 let (kind, payload) = frame;
@@ -159,7 +163,7 @@ fn relay(
                 }
             }
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                return Ok(completed.expect("exit deadline"));
+                return completed.ok_or_else(|| send_failure.take().expect("failure deadline"));
             }
             if cancelled(context.cancel).is_err() {
                 return completed
@@ -207,7 +211,7 @@ fn relay(
             let credit_index = [next_credit, 1 - next_credit]
                 .into_iter()
                 .find(|&index| credit_pending[index] != 0);
-            if connected && !writer.pending() {
+            if connected && writable && !writer.pending() {
                 if let Some(index) = close_pending.iter().position(|pending| *pending) {
                     writer.start(OUTPUT_END, &[if index == 0 { STDOUT } else { STDERR }])?;
                     close_pending[index] = false;
@@ -234,14 +238,18 @@ fn relay(
                 }
             }
             if connected
+                && writable
                 && writer.pending()
                 && let Err(error) = writer.flush(&mut connection)
             {
-                if completed.is_some() {
-                    connected = false;
-                } else {
-                    return Err(error);
-                }
+                // A guest can close input after sending EXIT, before it reaches us.
+                writable = false;
+                input_open = false;
+                input.clear();
+                stdin.close();
+                writer = FrameWriter::default();
+                send_failure = Some(error);
+                deadline.get_or_insert_with(|| Instant::now() + Duration::from_secs(1));
             }
             let mut fds = [
                 libc::pollfd {
@@ -250,7 +258,12 @@ fn relay(
                     } else {
                         -1
                     },
-                    events: libc::POLLIN | if writer.pending() { libc::POLLOUT } else { 0 },
+                    events: libc::POLLIN
+                        | if writable && writer.pending() {
+                            libc::POLLOUT
+                        } else {
+                            0
+                        },
                     revents: 0,
                 },
                 libc::pollfd {
