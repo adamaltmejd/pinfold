@@ -39,8 +39,10 @@ pub struct Box {
     /// The spec's disks, recorded clean once `down` removes the box.
     disks: Vec<Disk>,
     _project: Option<nix::fcntl::Flock<std::fs::File>>,
-    audit: Audit,
     child: Child,
+    proxy: Option<proxy::Server>,
+    audit_done: Option<bool>,
+    down: bool,
 }
 
 /// What stopped the box.
@@ -150,7 +152,7 @@ impl Box {
     /// before ready they remove what the start made and `up` returns
     /// [`UpError::Signal`]; after ready [`Box::hold`] watches them.
     pub async fn up(plan: &Plan, init: &Path, signals: &mut Signals) -> Result<Box, UpError> {
-        Self::up_disks(plan, init, signals, false).await
+        Self::up_disks(plan, init, signals, false, None, None, None).await
     }
 
     /// Export must never create a missing disk or inspect one another box holds.
@@ -159,7 +161,27 @@ impl Box {
         init: &Path,
         signals: &mut Signals,
     ) -> Result<Box, UpError> {
-        Self::up_disks(plan, init, signals, true).await
+        Self::up_disks(plan, init, signals, true, None, None, None).await
+    }
+
+    pub(crate) async fn up_project(
+        plan: &Plan,
+        profile: Profile,
+        image_id: &str,
+        init: &Path,
+        signals: &mut Signals,
+        cancel: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<Box, UpError> {
+        Self::up_disks(
+            plan,
+            init,
+            signals,
+            false,
+            Some(profile),
+            Some(image_id),
+            Some(cancel),
+        )
+        .await
     }
 
     async fn up_disks(
@@ -167,6 +189,9 @@ impl Box {
         init: &Path,
         signals: &mut Signals,
         existing_only: bool,
+        profile: Option<Profile>,
+        expected_image: Option<&str>,
+        mut cancel_start: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<Box, UpError> {
         // The spec rules are the first refusal, before anything is created
         // or resolved.
@@ -183,7 +208,7 @@ impl Box {
         // the runtime sees the resolved plan. Resolving writes nothing; the
         // seeds wait until the name is claimed.
         let mut plan = plan.clone();
-        let mut profile = resolve_profile(&mut plan)
+        let mut profile = resolve_profile(&mut plan, profile)
             .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
         let seeds = profile.as_mut().and_then(|profile| {
             (!profile.home.is_empty()).then(|| std::mem::take(&mut profile.home))
@@ -207,6 +232,11 @@ impl Box {
             tokio::task::spawn_blocking(move || login_plan.resolve_login(Some(&worker_cancel)));
         let codex = tokio::select! {
             biased;
+            _ = cancelled(&mut cancel_start) => {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                let _ = resolving.await;
+                return Err(UpError::Control);
+            }
             _ = signals.recv() => {
                 cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                 let _ = resolving.await;
@@ -246,6 +276,11 @@ impl Box {
         let (identity, image_lease) =
             crate::core::image::linux::catalog::resolve_leased(&image)?
                 .map_err(|detail| refused(&plan, RefusalReason::ImageMissing, detail))?;
+        if expected_image.is_some_and(|expected| expected != identity.id) {
+            return Err(
+                io::Error::other("image-changed: selected image changed before startup").into(),
+            );
+        }
         let seeding = seeds
             .map(|seeds| home_disk(&plan, seeds))
             .transpose()
@@ -275,6 +310,7 @@ impl Box {
         let mut claim = tokio::select! {
             biased;
             _ = signals.recv() => return Err(UpError::Signal),
+            _ = cancelled(&mut cancel_start) => return Err(UpError::Control),
             claim = ownership::Claim::take(&plan.name) => claim,
         }
         .map_err(|error| ownership_error(&plan, error))?
@@ -298,14 +334,62 @@ impl Box {
             .map_err(|error| ownership_error(&plan, error))?;
         // Disk refusals come after the name claim; returning drops the
         // claim, which removes its record and state.
-        let claimed = match disk::claim(
-            runtime,
-            &mut claim,
-            &plan,
-            init,
-            existing_only,
-            &directories,
-        ) {
+        let mut control = claim.take_startup_control();
+        let disk_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cancel = disk_cancel.clone();
+        let (disk_plan, disk_init, disk_directories) =
+            (plan.clone(), init.to_path_buf(), directories.clone());
+        let mut preparing_disks = tokio::task::spawn_blocking(move || {
+            let result = disk::claim(
+                runtime,
+                &mut claim,
+                &disk_plan,
+                &disk_init,
+                existing_only,
+                &disk_directories,
+                Some(&worker_cancel),
+            );
+            (claim, result)
+        });
+        let (prepared_disks, stopped) = tokio::select! {
+            biased;
+            _ = signals.recv() => {
+                disk_cancel.store(true, std::sync::atomic::Ordering::Release);
+                (preparing_disks.await, Some(UpError::Signal))
+            },
+            _ = cancelled(&mut cancel_start) => {
+                disk_cancel.store(true, std::sync::atomic::Ordering::Release);
+                (preparing_disks.await, Some(UpError::Control))
+            },
+            stop = control.stop_requested() => {
+                disk_cancel.store(true, std::sync::atomic::Ordering::Release);
+                let error = match stop { Ok(()) => UpError::Control, Err(error) => UpError::Other(error) };
+                (preparing_disks.await, Some(error))
+            },
+            result = &mut preparing_disks => (result, None),
+        };
+        let (mut claim, claimed) =
+            prepared_disks.map_err(|_| io::Error::other("disk preparation worker failed"))?;
+        claim.restore_startup_control(control);
+        if let Some(stopped) = stopped {
+            #[cfg(not(target_os = "linux"))]
+            if let Err(Err(error)) = &claimed
+                && runtime::apple::preparation_unremoved(error)
+            {
+                let _ = claim.finish(false).await;
+                return Err(match claimed {
+                    Err(Err(error)) => error.into(),
+                    _ => unreachable!(),
+                });
+            }
+            if let Ok(claimed) = &claimed {
+                claim.retire()?;
+                claimed.undo(runtime, &plan.name);
+            }
+            claim.finish(true).await?;
+            return Err(stopped);
+        }
+        let claimed = match claimed {
             Ok(claimed) => claimed,
             Err(Ok((reason, detail))) => return Err(refused(&plan, reason, detail)),
             Err(Err(error)) => return Err(error.into()),
@@ -335,7 +419,8 @@ impl Box {
             directories,
             sockets: claim.sockets().clone(),
             child: None,
-            audit: Audit::Off,
+            proxy: None,
+            audit_done: None,
             cancel: std::sync::Arc::default(),
             preparing: None,
         };
@@ -368,6 +453,7 @@ impl Box {
         let started = tokio::select! {
             biased;
             _ = signals.recv() => Err(Stop::Signal),
+            _ = cancelled(&mut cancel_start) => Err(Stop::Control),
             stop = claim.stop_requested() => match stop { Ok(()) => Err(Stop::Control), Err(error) => Err(Stop::Failed(error)) },
             started = starting => started,
         };
@@ -394,7 +480,10 @@ impl Box {
                         (removed, None)
                     }
                 };
-                let removed = removed.and_then(|synced| claim.retire().map(|()| synced));
+                let workers = stop_proxy(&mut progress.proxy);
+                let removed = removed
+                    .and_then(|synced| workers.map(|()| synced))
+                    .and_then(|synced| claim.retire().map(|()| synced));
                 if let Ok(synced) = removed {
                     // Only a stop pinfold asked of a running box synced its
                     // disks; a box that failed readiness ended, or may have,
@@ -438,7 +527,9 @@ impl Box {
             _image_lease: image_lease,
             disks: plan.disks.clone(),
             _project: project,
-            audit: progress.audit,
+            proxy: progress.proxy,
+            audit_done: progress.audit_done,
+            down: false,
             child: progress.child.expect("a started box has a runtime child"),
         })
     }
@@ -464,7 +555,7 @@ impl Box {
     pub async fn ended(&mut self) -> io::Result<Shutdown> {
         tokio::select! {
             stop = self.ownership.stop_requested() => stop.map(|()| Shutdown::Signal),
-            _ = audit_failure(&mut self.audit) => Ok(Shutdown::AuditLog),
+            _ = audit_failure(&mut self.proxy, &mut self.audit_done) => Ok(Shutdown::AuditLog),
             status = self.child.wait() => status.map(Shutdown::BoxExited),
         }
     }
@@ -473,20 +564,29 @@ impl Box {
     /// record, then delete its state directory and acknowledge `box down`.
     /// `None` writes no terminal record.
     pub async fn down(&mut self, terminal: Option<Terminal>) -> io::Result<()> {
+        if self.down {
+            return Ok(());
+        }
         // Before the acknowledgement, so `inspect` after `box down` returns
         // already sees the end. A box that may still run gets none.
-        let result = self.child.down(&self.name).await.and_then(|synced| {
-            if synced {
-                disk::detached(&self.disks)
-            } else {
-                Ok(())
-            }
-        });
+        let removed = self.child.down(&self.name).await;
+        let workers = stop_proxy(&mut self.proxy);
+        let result = removed
+            .and_then(|synced| workers.map(|()| synced))
+            .and_then(|synced| {
+                if synced {
+                    disk::detached(&self.disks)
+                } else {
+                    Ok(())
+                }
+            });
         if let Some(terminal) = terminal.filter(|_| result.is_ok()) {
             runs::write_terminal(&self.run_id, &terminal);
         }
         let cleanup = self.ownership.finish(result.is_ok()).await;
-        result.and(cleanup)
+        let result = result.and(cleanup);
+        self.down = result.is_ok();
+        result
     }
 }
 
@@ -577,7 +677,8 @@ impl From<io::Error> for Stop {
 struct Starting {
     sockets: runtime::sockets::Sockets,
     child: Option<Child>,
-    audit: Audit,
+    proxy: Option<proxy::Server>,
+    audit_done: Option<bool>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     preparing: Option<tokio::task::JoinHandle<Result<(Plan, Prepared), Stop>>>,
     /// The disks claimed for the box, which a failed start releases.
@@ -635,7 +736,7 @@ async fn start(
         Some(egress) => {
             let socket = progress.sockets.proxy()?;
             let log = runs::egress_log(&plan.labels[ownership::GENERATION_LABEL])?;
-            progress.audit = Audit::Waiting(proxy::start(
+            progress.proxy = Some(proxy::start(
                 progress.sockets.bind_proxy()?,
                 egress,
                 codex,
@@ -661,7 +762,7 @@ async fn start(
     )?);
     tokio::select! {
         biased;
-        _ = audit_failure(&mut progress.audit) => return Err(Stop::Failed(io::Error::other("audit-log: egress logging failed"))),
+        _ = audit_failure(&mut progress.proxy, &mut progress.audit_done) => return Err(Stop::Failed(io::Error::other("audit-log: egress logging failed"))),
         ready = child.ready() => ready.map_err(Stop::NotReady)?,
     }
     let actual = runtime.finish_start(&plan.name, init, socket.as_deref(), seeding)?;
@@ -741,6 +842,26 @@ async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
             },
         }
     }
+}
+
+/// Check project structure without resolving credentials or materializing shares.
+pub(crate) fn validate_project(plan: &Plan, profile: &Profile) -> Result<(), String> {
+    plan.validate_structure()?;
+    let destinations = login_destinations(plan)?;
+    let extra: Vec<&Path> = destinations.iter().map(PathBuf::as_path).collect();
+    validate_generated(plan, &extra)?;
+    let mut resolved = plan.clone();
+    if let Some(share) = &profile.share {
+        resolved.mounts.push(Mount {
+            host: share.path().map_err(|error| error.to_string())?,
+            guest: PathBuf::from("/opt/pinfold/profile"),
+        });
+    }
+    validate_generated(&resolved, &extra)?;
+    if !profile.home.is_empty() {
+        home_disk(&resolved, Vec::new()).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 /// Destinations and HOME are checked before any preparation or credential lookup.
@@ -888,11 +1009,14 @@ fn prepare_logins(plan: &mut Plan, state_dir: &Path) -> io::Result<()> {
 /// Load the spec's profile and fold its image and `share/` mount into the
 /// plan without extracting files. Shared files and `$HOME` seeds wait until
 /// the name is claimed.
-fn resolve_profile(plan: &mut Plan) -> io::Result<Option<Profile>> {
+fn resolve_profile(plan: &mut Plan, supplied: Option<Profile>) -> io::Result<Option<Profile>> {
     let Some(name) = plan.profile.clone() else {
         return Ok(None);
     };
-    let profile = Profile::load(&name)?;
+    let profile = match supplied {
+        Some(profile) => profile,
+        None => Profile::load(&name)?,
+    };
     if plan.image.is_none() {
         if profile.containerfile.is_none() {
             return Err(io::Error::new(
@@ -983,24 +1107,34 @@ fn home_disk(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
     })
 }
 
-#[derive(Default)]
-enum Audit {
-    #[default]
-    Off,
-    Waiting(tokio::sync::oneshot::Receiver<()>),
-    Failed,
+async fn cancelled(cancel: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    if let Some(cancel) = cancel {
+        loop {
+            if *cancel.borrow_and_update() {
+                return;
+            }
+            if cancel.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+    std::future::pending::<()>().await;
 }
 
-async fn audit_failure(audit: &mut Audit) {
-    if let Audit::Waiting(receiver) = audit {
-        // A consumed notification stays failed for every subsequent wait.
-        *audit = if receiver.await.is_ok() {
-            Audit::Failed
-        } else {
-            Audit::Off
-        };
+fn stop_proxy(proxy: &mut Option<proxy::Server>) -> io::Result<()> {
+    match proxy.as_mut() {
+        Some(server) => server.stop(),
+        None => Ok(()),
     }
-    if matches!(audit, Audit::Failed) {
+}
+
+async fn audit_failure(proxy: &mut Option<proxy::Server>, observed: &mut Option<bool>) {
+    if observed.is_none()
+        && let Some(server) = proxy
+    {
+        *observed = Some((&mut server.failure).await.is_ok());
+    }
+    if *observed == Some(true) {
         return;
     }
     std::future::pending::<()>().await;

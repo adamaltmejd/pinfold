@@ -5,12 +5,13 @@ use crate::core::process::{AsyncCommandGuard, CommandGuard};
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use nix::libc;
@@ -454,6 +455,61 @@ impl Drop for StderrDrain {
     }
 }
 
+struct PreparationInput<'a> {
+    input: std::process::ChildStdin,
+    cancel: &'a AtomicBool,
+}
+
+impl Write for PreparationInput<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        loop {
+            if self.cancel.load(Ordering::Acquire) {
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            match self.input.write(bytes) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    let mut ready = [nix::poll::PollFd::new(
+                        self.input.as_fd(),
+                        nix::poll::PollFlags::POLLOUT,
+                    )];
+                    match nix::poll::poll(&mut ready, 20u16) {
+                        Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                result => return result,
+            }
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.input.flush()
+    }
+}
+
+fn wait_preparation(
+    child: &mut std::process::Child,
+    cancel: Option<&AtomicBool>,
+) -> io::Result<ExitStatus> {
+    let Some(cancel) = cancel else {
+        return child.wait();
+    };
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if cancel.load(Ordering::Acquire) {
+            let _ = child.kill();
+            child.wait()?;
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        match nix::poll::poll(&mut [], 20u16) {
+            Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 impl Runtime for Apple {
     fn preflight(&self) -> io::Result<()> {
         let reported = self.version()?;
@@ -501,9 +557,8 @@ impl Runtime for Apple {
         let Err(error) = output(&["container", "rm", name]) else {
             return Ok(());
         };
-        // Another process may have removed the box between the list and this
-        // call; a box the runtime no longer lists counts as removed.
-        if self.list()?.iter().all(|box_| box_.id != name) {
+        // A targeted native absence is removal evidence; display omission is not.
+        if container(name)?.is_none() {
             return Ok(());
         }
         Err(error)
@@ -530,26 +585,11 @@ impl Runtime for Apple {
     }
 
     fn list(&self) -> io::Result<Vec<BoxInfo>> {
-        Ok(containers()?
-            .into_iter()
-            .map(|container| {
-                let configuration = container.configuration;
-                let digest = configuration.image.descriptor.digest;
-                BoxInfo {
-                    id: container.id,
-                    labels: configuration.labels,
-                    image_id: digest
-                        .strip_prefix("sha256:")
-                        .unwrap_or(&digest)
-                        .to_string(),
-                    image_ref: configuration.image.reference,
-                    created: configuration.created,
-                    running: container.status.state == "running",
-                    stopped: container.status.state == "stopped"
-                        && container.status.started_date.is_some(),
-                }
-            })
-            .collect())
+        Ok(containers()?.into_iter().map(box_info).collect())
+    }
+
+    fn inspect(&self, name: &str) -> io::Result<Option<BoxInfo>> {
+        Ok(container(name)?.map(box_info))
     }
 
     fn list_disks(&self) -> io::Result<Vec<DiskInfo>> {
@@ -633,7 +673,11 @@ impl Runtime for Apple {
         generation: &str,
         directories: &[Directory],
         fills: &[Fill],
+        cancel: Option<&AtomicBool>,
     ) -> io::Result<()> {
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
         if names.is_empty() && directories.is_empty() {
             return Ok(());
         }
@@ -727,13 +771,27 @@ impl Runtime for Apple {
                 )?;
                 let sent = (|| {
                     let mut input = child.stdin.take().expect("setup stdin is piped");
-                    for fill in fills {
-                        disk::send(fill, &mut input)?;
+                    if let Some(cancel) = cancel {
+                        crate::core::pipe::nonblocking(&input, "disk preparation")?;
+                        let mut input = PreparationInput { input, cancel };
+                        for fill in fills {
+                            disk::send(fill, &mut input)?;
+                        }
+                    } else {
+                        for fill in fills {
+                            disk::send(fill, &mut input)?;
+                        }
                     }
                     Ok::<_, io::Error>(())
                 })();
-                let status = child.wait()?;
+                let status = if sent.is_err() {
+                    let _ = child.kill();
+                    child.wait()
+                } else {
+                    wait_preparation(&mut child, cancel)
+                };
                 let stderr = drain.close().into_iter().collect();
+                let status = status?;
                 if status.success() {
                     sent?;
                 }
@@ -833,19 +891,19 @@ fn exec_command(
     Ok(command)
 }
 
-/// Wait, bounded, until `list` reports box `name` running. Apple records
+/// Wait, bounded, until inspection reports box `name` running. Apple records
 /// `.running` only after the box's first process starts, so `ready` can
 /// arrive first; an exec is refused in that gap.
 fn wait_until_running(name: &str) -> io::Result<BoxInfo> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let state = Apple.list()?.into_iter().find(|box_| box_.id == name);
+        let state = Apple.inspect(name)?;
         match state {
             Some(box_) if box_.running => return Ok(box_),
             _ if Instant::now() >= deadline => {
                 return Err(io::Error::other(match state {
                     Some(_) => format!("box {name:?} is not running after ready"),
-                    _ => format!("the runtime does not list box {name:?} after ready"),
+                    _ => format!("the runtime does not report box {name:?} after ready"),
                 }));
             }
             _ => std::thread::sleep(Duration::from_millis(100)),
@@ -981,9 +1039,50 @@ fn containers() -> io::Result<Vec<ListedContainer>> {
     parse_json("container list", &json)
 }
 
-/// The listed container with this id, if the runtime has one.
+fn box_info(container: ListedContainer) -> BoxInfo {
+    let configuration = container.configuration;
+    let digest = configuration.image.descriptor.digest;
+    BoxInfo {
+        id: container.id,
+        labels: configuration.labels,
+        image_id: digest
+            .strip_prefix("sha256:")
+            .unwrap_or(&digest)
+            .to_string(),
+        image_ref: configuration.image.reference,
+        created: configuration.created,
+        running: container.status.state == "running",
+        stopped: container.status.state == "stopped" && container.status.started_date.is_some(),
+    }
+}
+
+/// Inspect one native target; only its explicit not-found response proves absence.
 fn container(name: &str) -> io::Result<Option<ListedContainer>> {
-    Ok(containers()?.into_iter().find(|entry| entry.id == name))
+    let output = std::process::Command::new("container")
+        .args(["inspect", "--", name])
+        .stdin(Stdio::null())
+        .output_guarded()
+        .map_err(|error| spawn_error("container", error))?;
+    if !output.status.success() {
+        let absent = format!("Error: container not found: {name}");
+        if output.status.code() == Some(1)
+            && output.stdout.is_empty()
+            && output.stderr.trim_ascii() == absent.as_bytes()
+        {
+            return Ok(None);
+        }
+        return Err(io::Error::other(format!(
+            "container inspect: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let mut containers: Vec<ListedContainer> = parse_json("container inspect", &output.stdout)?;
+    if containers.len() != 1 || containers[0].id != name {
+        return Err(io::Error::other(
+            "container inspect returned an unmatched target",
+        ));
+    }
+    Ok(containers.pop())
 }
 
 /// One `container volume list --format json` entry, as much as pinfold needs.

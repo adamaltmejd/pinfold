@@ -298,6 +298,7 @@ pub trait Runtime: Sync {
 
     /// Give fresh roots to the box user and prepare directories on fresh
     /// or reused disks. The caller holds the disk locks and owns rollback.
+    #[allow(clippy::too_many_arguments)]
     fn own_disks(
         &self,
         names: &[&str],
@@ -306,6 +307,7 @@ pub trait Runtime: Sync {
         generation: &str,
         directories: &[Directory],
         fills: &[Fill],
+        cancel: Option<&AtomicBool>,
     ) -> io::Result<()>;
 
     /// Remove a disk no box attaches.

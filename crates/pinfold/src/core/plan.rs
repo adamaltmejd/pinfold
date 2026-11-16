@@ -509,6 +509,14 @@ impl Plan {
 
     /// Check a parsed spec.
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_inputs(true)
+    }
+
+    pub(crate) fn validate_structure(&self) -> Result<(), String> {
+        self.validate_inputs(false)
+    }
+
+    fn validate_inputs(&self, values: bool) -> Result<(), String> {
         if !valid_name(&self.name) {
             return Err(invalid(format!(
                 "name {:?} must start alphanumeric and hold only [A-Za-z0-9._-]",
@@ -610,6 +618,7 @@ impl Plan {
                 )));
             }
             if let Env::From { from } = value
+                && values
                 && std::env::var_os(from).is_none()
             {
                 return Err(format!("environment variable {from} is not set"));
@@ -648,7 +657,23 @@ impl Plan {
                         }
                     }
                     Route::Inject(inject) => {
-                        inject.resolve()?;
+                        if values {
+                            inject.resolve()?;
+                        } else {
+                            if parse_target(&inject.to).is_none() {
+                                return Err(invalid(
+                                    "route target must be an http:// or https:// origin",
+                                ));
+                            }
+                            for (name, header) in &inject.headers {
+                                if !valid_header_name(name)
+                                    || header.from.is_empty()
+                                    || header.prefix.contains(['\r', '\n', '\0'])
+                                {
+                                    return Err(invalid("invalid injecting header declaration"));
+                                }
+                            }
+                        }
                     }
                     Route::Login(login) => {
                         login.check(name)?;

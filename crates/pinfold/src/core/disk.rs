@@ -9,6 +9,7 @@ use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use nix::fcntl::Flock;
 
@@ -124,6 +125,38 @@ fn locks(names: &BTreeSet<&str>) -> io::Result<Vec<Flock<File>>> {
         .collect()
 }
 
+fn check_cancel(cancel: Option<&AtomicBool>) -> io::Result<()> {
+    if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+        Err(io::ErrorKind::Interrupted.into())
+    } else {
+        Ok(())
+    }
+}
+
+fn startup_locks(
+    names: &BTreeSet<&str>,
+    cancel: Option<&AtomicBool>,
+) -> io::Result<Vec<Flock<File>>> {
+    let Some(cancel) = cancel else {
+        return locks(names);
+    };
+    let mut held = Vec::new();
+    for name in names {
+        loop {
+            check_cancel(Some(cancel))?;
+            if let Some(lock) = ownership::try_disk_lock(name)? {
+                held.push(lock);
+                break;
+            }
+            match nix::poll::poll(&mut [], 20u16) {
+                Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(held)
+}
+
 /// Lifecycle step 2: claim `disks` for the box `claim` holds, creating any
 /// that are new. Every refusal comes before anything is created.
 pub fn claim(
@@ -133,13 +166,15 @@ pub fn claim(
     init: &Path,
     existing_only: bool,
     directories: &[Directory],
+    cancel: Option<&AtomicBool>,
 ) -> Result<Claimed, Result<(RefusalReason, String), io::Error>> {
     let (name, disks) = (plan.name.as_str(), plan.disks.as_slice());
     if disks.is_empty() {
         return Ok(Claimed::default());
     }
     let names: BTreeSet<&str> = disks.iter().map(|disk| disk.name.as_str()).collect();
-    let _locks = locks(&names).map_err(Err)?;
+    let locks = startup_locks(&names, cancel).map_err(Err)?;
+    check_cancel(cancel).map_err(Err)?;
     let existing: BTreeSet<String> = runtime
         .list_disks()
         .map_err(Err)?
@@ -158,6 +193,7 @@ pub fn claim(
     };
     let mut claimed = Claimed::default();
     for disk in disks {
+        check_cancel(cancel).map_err(Err)?;
         let others = attached.get(&disk.name).map(Vec::as_slice).unwrap_or(&[]);
         if existing_only {
             if !disk.readonly || !others.is_empty() {
@@ -195,7 +231,7 @@ pub fn claim(
             continue;
         }
         if let Some(from) = &disk.from {
-            let (entries, bytes) = walk(from).map_err(Err)?;
+            let (entries, bytes) = walk(from, cancel).map_err(Err)?;
             if bytes > disk.bytes() {
                 return Err(Ok((
                     RefusalReason::Limit,
@@ -220,6 +256,7 @@ pub fn claim(
     let mut helper_attempted = false;
     let result = (|| {
         for disk in &claimed.created {
+            check_cancel(cancel)?;
             if existing.contains(&disk.name)
                 && complete_attachments(Some(name))?.contains_key(&disk.name)
             {
@@ -236,6 +273,7 @@ pub fn claim(
             runtime.create_disk(&disk.name, disk.bytes())?;
             created.push(disk.clone());
         }
+        check_cancel(cancel)?;
         for disk in disks.iter().filter(|disk| !disk.readonly) {
             if !unclean(&disk.name)? {
                 mark(&disk.name, UNCLEAN)?;
@@ -267,6 +305,8 @@ pub fn claim(
             helper_attempted = true;
             claim.starting();
         }
+        // Published attachments retain exclusivity while preparation uses IPC.
+        drop(locks);
         runtime.own_disks(
             &names,
             plan,
@@ -274,6 +314,7 @@ pub fn claim(
             claim.generation(),
             directories,
             &claimed.fills,
+            cancel,
         )?;
         #[cfg(not(target_os = "linux"))]
         claim.preparation_done();
@@ -289,7 +330,7 @@ pub fn claim(
             claim.preparation_done();
         }
         match claim.retire() {
-            Ok(()) => claimed.undo_locked(runtime, name),
+            Ok(()) => claimed.undo(runtime, name),
             Err(error) => eprintln!("pinfold: startup cleanup: retirement: {error}"),
         }
         return Err(Err(error));
@@ -422,14 +463,16 @@ pub fn filled(runtime: &dyn Runtime, created: &[Disk]) -> io::Result<()> {
 
 /// `from`'s tree without following symlinks, parents first, and the sum of
 /// its regular files' sizes. Other file types are skipped.
-fn walk(from: &Path) -> io::Result<(Vec<Entry>, u64)> {
+fn walk(from: &Path, cancel: Option<&AtomicBool>) -> io::Result<(Vec<Entry>, u64)> {
     let mut entries = Vec::new();
     let mut bytes = 0u64;
     let mut pending = vec![PathBuf::new()];
     while let Some(dir) = pending.pop() {
+        check_cancel(cancel)?;
         let mut children: Vec<_> = fs::read_dir(from.join(&dir))?.collect::<Result<_, _>>()?;
         children.sort_by_key(|entry| entry.file_name());
         for child in children {
+            check_cancel(cancel)?;
             let path = dir.join(child.file_name());
             let metadata = fs::symlink_metadata(child.path())?;
             let kind = metadata.file_type();

@@ -99,6 +99,8 @@ Execution backends own native disk creation and ownership mechanics. Common
 core owns disk claims, exclusivity, recovery and cleanup policy.
 Backends complete guest initialization through readiness. The common box
 owner holds the child, proxy and cancellation and decides cleanup.
+Cancellation reaps preparation helpers and joins proxy and diagnostic workers
+before completed teardown.
 
 Preflight refuses box startup on older, prerelease or unrecognized runtime
 versions. Inventory and cleanup remain available on older versions.

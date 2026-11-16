@@ -59,16 +59,22 @@ impl Codex {
     /// or `None` when the token has lapsed. Within [`REFRESH_WINDOW`] of
     /// `exp` the helper is asked again, at most once per [`ASK_INTERVAL`];
     /// a failed ask keeps the old token until it lapses.
-    pub fn headers(&self) -> Option<Vec<(String, String)>> {
+    pub fn headers(&self, cancel: &AtomicBool) -> Option<Vec<(String, String)>> {
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
         let (token, asked) = &mut *state;
         if token.exp <= now() + REFRESH_WINDOW && asked.elapsed() >= ASK_INTERVAL {
             *asked = Instant::now();
-            if let Ok(fresh) = token_from_helper(None) {
+            if let Ok(fresh) = token_from_helper(Some(cancel)) {
                 *token = fresh;
             }
         }
-        (token.exp > now()).then(|| {
+        (token.exp > now() && !cancel.load(std::sync::atomic::Ordering::Acquire)).then(|| {
             vec![
                 (
                     "Authorization".to_string(),
