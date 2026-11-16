@@ -113,6 +113,7 @@ pub struct Seed {
 /// One profile, as much of it as pinfold uses.
 pub struct Profile {
     pub name: String,
+    pub(crate) built_in: bool,
     pub containerfile: Option<Vec<u8>>,
     /// The profile's `pinfold.toml`. Core never reads it; `profile new`
     /// copies it.
@@ -166,6 +167,7 @@ impl Profile {
         };
         Ok(Profile {
             name: name.to_string(),
+            built_in: true,
             containerfile: Some(fragments.concat()),
             config: config.to_vec(),
             home: HOME
@@ -242,6 +244,7 @@ fn load_dir(name: &str, root: &Path) -> io::Result<Profile> {
     let share = root.join("share");
     Ok(Profile {
         name: name.to_string(),
+        built_in: false,
         containerfile,
         config,
         home,

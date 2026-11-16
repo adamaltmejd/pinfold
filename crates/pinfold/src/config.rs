@@ -93,6 +93,7 @@ pub struct Config {
     pub containerfile: Option<(PathBuf, Vec<u8>)>,
     pub allow: Vec<String>,
     pub routes: BTreeMap<String, Route>,
+    pub(crate) route_declarations: BTreeMap<String, toml::Value>,
     pub cpus: f64,
     pub memory: String,
     /// The `<NAME>`s of the host's `PINFOLD_ENV_<NAME>` variables. Their
@@ -182,6 +183,7 @@ impl Config {
                 .allow
                 .unwrap_or_else(|| DEFAULT_ALLOW.iter().map(|host| host.to_string()).collect()),
             routes: merged.routes.unwrap_or_default(),
+            route_declarations: merged.route_declarations.unwrap_or_default(),
             cpus: merged.cpus.unwrap_or(DEFAULT_CPUS),
             memory: merged.memory.unwrap_or_else(|| DEFAULT_MEMORY.to_string()),
             env: env::vars_os()
@@ -279,6 +281,8 @@ struct Layer {
     mounts: Option<toml::Value>,
     allow: Option<Vec<String>>,
     routes: Option<BTreeMap<String, Route>>,
+    #[serde(skip)]
+    route_declarations: Option<BTreeMap<String, toml::Value>>,
     cpus: Option<f64>,
     memory: Option<String>,
 }
@@ -286,21 +290,48 @@ struct Layer {
 impl Layer {
     /// Parse one layer. `source` names the file in errors.
     fn parse(bytes: &[u8], source: &str) -> io::Result<Layer> {
-        toml::from_slice(bytes).map_err(|error| invalid(source, &error.to_string()))
+        let mut layer: Layer =
+            toml::from_slice(bytes).map_err(|error| invalid(source, &error.to_string()))?;
+        let input: toml::Table =
+            toml::from_slice(bytes).map_err(|error| invalid(source, &error.to_string()))?;
+        layer.route_declarations =
+            input
+                .get("routes")
+                .and_then(toml::Value::as_table)
+                .map(|routes| {
+                    routes
+                        .iter()
+                        .map(|(name, value)| (name.clone(), value.clone()))
+                        .collect()
+                });
+        Ok(layer)
     }
 
     /// The environment layer. An absent variable is not a layer; a present
     /// variable, even empty, sets its key.
     fn from_env() -> io::Result<Layer> {
+        let routes = override_value("PINFOLD_ROUTES")?
+            .as_deref()
+            .map(parse_routes)
+            .transpose()?;
+        let route_declarations = routes.as_ref().map(|routes| {
+            routes
+                .iter()
+                .map(|(name, route)| {
+                    let Route::Address(address) = route else {
+                        unreachable!("environment routes are addresses")
+                    };
+                    (name.clone(), toml::Value::String(address.clone()))
+                })
+                .collect()
+        });
         Ok(Layer {
             profile: None,
             image: None,
             mounts: None,
             allow: override_value("PINFOLD_ALLOW")?.as_deref().map(split_list),
-            routes: override_value("PINFOLD_ROUTES")?
-                .as_deref()
-                .map(parse_routes)
-                .transpose()?,
+            routes,
+            route_declarations,
             cpus: override_value("PINFOLD_CPUS")?
                 .map(|value| {
                     value
@@ -319,6 +350,7 @@ impl Layer {
         self.memory = higher.memory.or(self.memory);
         self.allow = higher.allow.or(self.allow);
         self.routes = higher.routes.or(self.routes);
+        self.route_declarations = higher.route_declarations.or(self.route_declarations);
         self
     }
 }
