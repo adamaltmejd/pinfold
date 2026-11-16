@@ -169,23 +169,6 @@ impl Runtime for Firecracker {
     /// runtime is asked, so nothing can stall it.
     fn list(&self) -> io::Result<Vec<BoxInfo>> {
         let mut boxes = Vec::new();
-        for record in ownership::records()? {
-            if let Some(box_) = Self::known_info(record)? {
-                boxes.push(box_);
-            }
-        }
-        Ok(boxes)
-    }
-
-    fn inspect(&self, name: &str) -> io::Result<Option<BoxInfo>> {
-        match ownership::record(name)? {
-            Some(record) => Self::known_info(record),
-            None => Ok(None),
-        }
-    }
-
-    fn list_display(&self) -> io::Result<Vec<BoxInfo>> {
-        let mut boxes = Vec::new();
         for result in ownership::record_results()? {
             let record = match result {
                 Ok(record) => record,
@@ -212,6 +195,13 @@ impl Runtime for Firecracker {
             }
         }
         Ok(boxes)
+    }
+
+    fn inspect(&self, name: &str) -> io::Result<Option<BoxInfo>> {
+        match ownership::record(name)? {
+            Some(record) => Self::known_info(record),
+            None => Ok(None),
+        }
     }
 
     fn list_disks(&self) -> io::Result<Vec<DiskInfo>> {

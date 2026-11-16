@@ -219,7 +219,14 @@ pub fn prune_boxes(runtime: &dyn Runtime, boxes: &Boxes) -> io::Result<Vec<DeadB
 /// Measured leftovers; removal must reacquire ownership and recheck.
 pub fn leftover_socket_dirs() -> io::Result<Vec<PathBuf>> {
     let mut protected = BTreeSet::new();
-    for record in ownership::records()? {
+    for result in ownership::record_results()? {
+        let record = match result {
+            Ok(record) => record,
+            Err(error) => {
+                eprintln!("pinfold: socket measurement: {error}");
+                continue;
+            }
+        };
         if ownership::name_alive(&record.name)? {
             protected.insert(record.generation);
         }
@@ -376,11 +383,17 @@ pub fn keep_two_images(
 /// [`keep_two_images`] and [`remove_images`] share. Dead or alive, every
 /// listed box counts.
 fn in_use_images(runtime: &dyn Runtime) -> io::Result<BTreeSet<String>> {
-    let ids: BTreeSet<String> = runtime
+    let records = ownership::records()?;
+    let mut ids: BTreeSet<String> = runtime
         .list()?
         .into_iter()
         .map(|box_| box_.image_id)
         .collect();
+    for record in records.into_iter().filter(|record| !record.retiring) {
+        if let Some(described) = record.described {
+            ids.insert(described.image_id);
+        }
+    }
     #[cfg(target_os = "linux")]
     {
         let mut ids = ids;

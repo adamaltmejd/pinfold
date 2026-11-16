@@ -680,9 +680,11 @@ its retirement evidence are unlinked last and the directory is synced.
 Readiness inspects only its own claim. Inventory reports per-box errors and
 rechecks retirement before treating a missing identity as unknown. Unknown
 liveness retains disk ownership and is reported as `unknown`.
-Partial inventory is for display only. Ownership and deletion decisions use
-complete inventory or a strict lookup of the target generation. Unreadable
-or unknown ownership never authorizes deletion.
+Inventory and measurement report bad records and continue. A resource decision
+consults only claims that can reference that resource. Unknown VMM liveness
+pins that claim's generation state and named disks. A wholly unreadable claim
+prevents disk deletion because its attachments are unknown; it does not block
+other names' startup, reporting or recovery of verified-dead claims.
 
 ## Egress proxy
 
@@ -1188,8 +1190,9 @@ gets its own.
   another `up` naming that disk is refused as `disk-in-use`. Boxes may
   share a disk read-only while none attaches it writable. Attachments are
   recorded under the box's claim and count until confirmed runtime removal
-  and published retirement, or removal of that claim. Unknown or unreadable
-  ownership refuses disk mutation.
+  and published retirement, or removal of that claim. A readable claim pins
+  only its named disks, regardless of VMM liveness. A wholly unreadable claim
+  refuses disk deletion, not admission or measurement.
   Apple preparation errors preserve the claim and disks until checked
   retirement. Preparation stderr retains only its latest 64 KiB in memory
   and is escaped when reported.
