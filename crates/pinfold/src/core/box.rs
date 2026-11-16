@@ -42,6 +42,7 @@ pub struct Box {
     child: Child,
     proxy: Option<proxy::Server>,
     audit_done: Option<bool>,
+    terminal_attempted: bool,
     down: bool,
 }
 
@@ -580,6 +581,7 @@ impl Box {
             _project: project,
             proxy: progress.proxy,
             audit_done: progress.audit_done,
+            terminal_attempted: false,
             down: false,
             child: progress.child.expect("a started box has a runtime child"),
         })
@@ -677,7 +679,10 @@ impl Box {
                     Ok(())
                 }
             });
-        if let Some(terminal) = terminal.filter(|_| result.is_ok()) {
+        if !self.terminal_attempted
+            && let Some(terminal) = terminal.filter(|_| result.is_ok())
+        {
+            self.terminal_attempted = true;
             runs::write_terminal(&self.run_id, &terminal);
         }
         let cleanup = self.ownership.finish(result.is_ok()).await;
