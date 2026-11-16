@@ -27,7 +27,7 @@ def measure_store():
   n=subprocess.check_output(['du','-sk',str(base/sub)],text=True).split()[0];lines.append(f"du -sk /Users/user/Library/Application Support/com.apple.container/{sub}: {n} KiB")
  lines.append('container system df current: '+json.dumps(json.load(open('/tmp/pfp-store-df-now.json')),separators=(',',':')))
  lines.append('Unused means no active/stopped container image-digest reference in this snapshot; pinfold project/profile configuration and aliases may retain them. No deletion assessment or removal was performed.')
- lines.append('Builder exports directory is not the whole BuildKit cache: BuildKit data also lives in its rootfs.ext4. Its sparse logical rootfs is 550829555712 bytes; whole buildkit container allocation is reported separately.')
+ lines.append('Builder exports directory is not the whole BuildKit cache: BuildKit data also lives in its rootfs.ext4. Whole buildkit container allocation is reported separately.')
  lines.append('Guest builder cache (du -sk): '+subprocess.check_output(['container','exec','buildkit','du','-sk','/var/lib/buildkit','/var/lib/container-builder-shim'],text=True).strip().replace('\n','; '))
  lines.append(subprocess.check_output(['df','-g','/System/Volumes/Data'],text=True).strip())
  pathlib.Path('/tmp/pfp-store-findings.txt').write_text('\n'.join(lines)+'\n')

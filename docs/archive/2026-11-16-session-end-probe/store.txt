@@ -19,7 +19,7 @@ du -sk /Users/user/Library/Application Support/com.apple.container/content: 3123
 du -sk /Users/user/Library/Application Support/com.apple.container/snapshots: 12206724 KiB
 container system df current: {"containers":{"active":1,"reclaimable":0,"sizeInBytes":3020423168,"total":1},"images":{"active":1,"reclaimable":15278960640,"sizeInBytes":15698374656,"total":25},"volumes":{"active":0,"reclaimable":0,"sizeInBytes":0,"total":0}}
 Unused means no active/stopped container image-digest reference in this snapshot; pinfold project/profile configuration and aliases may retain them. No deletion assessment or removal was performed.
-Builder exports directory is not the whole BuildKit cache: BuildKit data also lives in its rootfs.ext4. Its sparse logical rootfs is 550829555712 bytes; whole buildkit container allocation is reported separately.
+Builder exports directory is not the whole BuildKit cache: BuildKit data also lives in its rootfs.ext4. Whole buildkit container allocation is reported separately.
 Guest builder cache (du -sk): 2310992	/var/lib/buildkit; 483772	/var/lib/container-builder-shim
 Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
 /dev/disk3s5       460  255        60    81% 2521809 631230560    0%   /System/Volumes/Data

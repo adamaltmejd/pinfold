@@ -111,3 +111,49 @@ container CLI version 1.7.1 (build: release, commit: unspeci)
   --entrypoint <cmd>      Override the entrypoint of the image
   --init-image <image>    Use a custom init image instead of the default
   -u, --user <user>       Set the user for the process (format: name|uid[:gid])
+[retained prior build output, from image build JSON log]
+#6 ERROR: failed to verify layer sha256:609bfc0b6e66ff462364107c46830a918b975cf85080c6001c19291aa35efa25: expected diffID sha256:609bfc0b6e66ff462364107c46830a918b975cf85080c6001c19291aa35efa25, got sha256:a300e839bf74a91f5c911d5e48291811bc1f6d557830f1ade5c5bdba44493697
+[follow-up preconditions; disk read before compilation]
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  255        60    81% 2521708 639961160    0%   /System/Volumes/Data
+Linux preflight df -BG /: /dev/sda1 32G total, 6G used, 25G available.
+[follow-up Apple independent exec; PID 1 then exact exec shell /proc/PID/status]
+PROCESS=1
+Name:	probe
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+CapPrm:	00000000000000e0
+CapEff:	00000000000000e0
+CapBnd:	0000000000000000
+NoNewPrivs:	1
+PROCESS=175649
+Name:	sh
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+CapPrm:	00000000000001e0
+CapEff:	00000000000001e0
+CapBnd:	00000000000001e0
+NoNewPrivs:	0
+[same Apple run settings; independent exec --user 501:20 shell /proc/PID/status]
+PROCESS=175654
+Name:	sh
+Uid:	501	501	501	501
+Gid:	20	20	20	20
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000000001e0
+NoNewPrivs:	0
+[follow-up populated containment cost; Mac]
+COST sample=1 ready=5 populated-before=1 create-us=557 TERM-ok=6 EPERM=0 ESRCH=0 other=0 populated-after=0 rmdir=0 destroy-total-us=2000167 kill-to-removed-us=124
+COST sample=2 ready=5 populated-before=1 create-us=13407 TERM-ok=5 EPERM=0 ESRCH=0 other=0 populated-after=0 rmdir=0 destroy-total-us=2000446 kill-to-removed-us=105
+COST sample=3 ready=5 populated-before=1 create-us=15543 TERM-ok=6 EPERM=0 ESRCH=0 other=0 populated-after=0 rmdir=0 destroy-total-us=2000184 kill-to-removed-us=131
+COST-DONE
+Mac cost resources: {'cpuOverhead': 1, 'cpus': 4, 'memoryInBytes': 1073741824}
+[follow-up populated containment cost; Linux]
+COST sample=1 ready=5 populated-before=1 create-us=1637 TERM-ok=5 EPERM=0 ESRCH=0 other=0 populated-after=0 rmdir=0 destroy-total-us=2000290 kill-to-removed-us=235
+COST sample=2 ready=5 populated-before=1 create-us=8489 TERM-ok=6 EPERM=0 ESRCH=0 other=0 populated-after=0 rmdir=0 destroy-total-us=2000315 kill-to-removed-us=231
+COST sample=3 ready=5 populated-before=1 create-us=8149 TERM-ok=5 EPERM=0 ESRCH=0 other=0 populated-after=0 rmdir=0 destroy-total-us=2000376 kill-to-removed-us=282
+COST-DONE
+[follow-up cleanup]
+follow-up Mac probe boxes remaining: []
+follow-up timing VMM/raw disk/source scratch removed; no worktree created

@@ -40,7 +40,28 @@ static void alternatives(void){
  if(init>0){char b[8],p[80];int n=0;while(n<5){int k=read(f[0],b,5-n);if(k<=0)break;n+=k;}snprintf(p,sizeof p,"/proc/%d/ns/pid",init);struct stat st;stat(p,&st);int before=ns_count(st.st_ino);kill(init,SIGKILL);waitpid(helper,0,0);printf("PIDNS init=%d ready=%d before=%d after=%d\n",init,n,before,ns_count(st.st_ino));}else{waitpid(helper,0,0);printf("PIDNS unshare errno=%d\n",-init);}close(f[0]);
  pid_t supervisor=fork();if(!supervisor){prctl(PR_SET_CHILD_SUBREAPER,1,0,0,0);int gate[2],report[2];pipe(gate);pipe(report);pid_t a=fork();if(!a){close(gate[1]);close(report[0]);char c;read(gate[0],&c,1);pid_t b=fork();if(!b){if(fork())_exit(0);setsid();pid_t me=getpid();write(report[1],&me,sizeof me);for(;;)pause();}for(;;)pause();}close(gate[0]);close(report[1]);pid_t list[256];int count=0;tree(getpid(),list,&count);printf("TREE snapshot-count=%d first=%d ",count,count?list[0]:-1);write(gate[1],"g",1);close(gate[1]);pid_t escaped;read(report[0],&escaped,sizeof escaped);close(report[0]);for(int i=0;i<count;i++)kill(list[i],SIGKILL);waitpid(a,0,0);char p[80],line[256];int parent=0;for(int i=0;i<10000&&parent!=getpid();i++){snprintf(p,sizeof p,"/proc/%d/status",escaped);FILE*f=fopen(p,"r");while(fgets(line,sizeof line,f))sscanf(line,"PPid: %d",&parent);fclose(f);sched_yield();}printf("post-snapshot-doublefork=%d alive=%d subreaper=%d observed-parent=%d\n",escaped,kill(escaped,0)==0,getpid(),parent);kill(escaped,SIGKILL);while(waitpid(-1,0,0)>0){} _exit(0);}waitpid(supervisor,0,0);
 }
+#ifdef POPULATED_COST
+static int populated_cost(int argc,char **argv){
+ if(argc==3&&!strcmp(argv[1],"--cost-work")){work(atoi(argv[2]));return 0;}
+ setbuf(stdout,0);if(getpid()==1){mount("proc","/proc","proc",0,0);mount("sysfs","/sys","sysfs",0,0);mount("cgroup2",cg,"cgroup2",0,0);put("/proc/sys/user/max_user_namespaces","0");}
+ if(mkdir("/sys/fs/cgroup/probe-review",0755)){perror("cost-parent");return 2;}
+ for(int c=0;c<=40;c++)prctl(PR_CAPBSET_DROP,c,0,0,0);caps((1U<<CAP_SETUID)|(1U<<CAP_SETGID)|(1U<<CAP_KILL));prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0);
+ for(int sample=1;sample<=3;sample++){
+  char path[128],file[160],buf[256];snprintf(path,sizeof path,"/sys/fs/cgroup/probe-review/scope-%d",sample);long long start=ns();if(mkdir(path,0755)){perror("cost-mkdir");return 3;}int ready[2];if(pipe(ready))return 4;pid_t child=fork();if(child<0)return 5;
+  if(!child){close(ready[0]);snprintf(file,sizeof file,"%s/cgroup.procs",path);if(put(file,"0")||setgroups(0,0)||setgid(WORK_GID)||setuid(WORK_UID))_exit(6);caps(0);char fd[24];snprintf(fd,sizeof fd,"%d",ready[1]);execl("/proc/self/exe","controller","--cost-work",fd,(char*)0);_exit(7);}
+  close(ready[1]);int n=0;while(n<5){int v=read(ready[0],buf,5-n);if(v<=0)break;n+=v;}close(ready[0]);long long created=ns();if(n!=5)return 8;
+  snprintf(file,sizeof file,"%s/cgroup.events",path);FILE*f=fopen(file,"r");int populated=0;while(fgets(buf,sizeof buf,f))sscanf(buf,"populated %d",&populated);fclose(f);if(populated!=1)return 9;
+  long long ending=ns();snprintf(file,sizeof file,"%s/cgroup.procs",path);f=fopen(file,"r");int p,ok=0,denied=0,gone=0,other=0;while(fscanf(f,"%d",&p)==1){if(!kill(p,SIGTERM))ok++;else if(errno==EPERM)denied++;else if(errno==ESRCH)gone++;else other++;}fclose(f);delay(2000);
+  long long killing=ns();snprintf(file,sizeof file,"%s/cgroup.kill",path);if(put(file,"1"))return 10;
+  while(populated){while(waitpid(-1,0,WNOHANG)>0){}snprintf(file,sizeof file,"%s/cgroup.events",path);f=fopen(file,"r");while(fgets(buf,sizeof buf,f))sscanf(buf,"populated %d",&populated);fclose(f);if(ns()-killing>2000000000LL)return 11;sched_yield();}while(waitpid(-1,0,WNOHANG)>0){}if(rmdir(path))return 12;long long done=ns();
+  printf("COST sample=%d ready=%d populated-before=1 create-us=%lld TERM-ok=%d EPERM=%d ESRCH=%d other=%d populated-after=0 rmdir=0 destroy-total-us=%lld kill-to-removed-us=%lld\n",sample,n,(created-start)/1000,ok,denied,gone,other,(done-ending)/1000,(done-killing)/1000);
+ }rmdir("/sys/fs/cgroup/probe-review");puts("COST-DONE");return 0;
+}
+#endif
 int main(int argc,char **argv){
+#ifdef POPULATED_COST
+ int result=populated_cost(argc,argv);if(getpid()==1)for(;;)pause();return result;
+#endif
  if(argc>1){status("after-exec");work(atoi(argv[1]));return 0;}
  setbuf(stdout,0);if(getpid()==1){mkdir("/proc",0755);mount("proc","/proc","proc",0,0);mkdir("/sys",0755);mount("sysfs","/sys","sysfs",0,0);mkdir("/sys/fs/cgroup",0755);mount("cgroup2",cg,"cgroup2",0,0);mkdir("/tmp",01777);mount("tmpfs","/tmp","tmpfs",0,0);put("/proc/sys/user/max_user_namespaces","0");}
  status("initial");
