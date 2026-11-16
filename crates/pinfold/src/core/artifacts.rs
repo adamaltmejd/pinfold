@@ -1,5 +1,9 @@
 //! Pinned host helper and infrastructure, and this build's init.
 
+#[cfg(target_os = "linux")]
+use crate::core::process::CommandGuard;
+use crate::core::process::GroupChild;
+
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -121,7 +125,7 @@ pub fn builder(cancel: Option<&AtomicBool>) -> io::Result<PathBuf> {
             .stdin(std::process::Stdio::null())
             .stdout(output)
             .stderr(std::process::Stdio::null())
-            .spawn()?;
+            .spawn_guarded()?;
         let unpacked = (|| {
             loop {
                 super::pipe::remaining(deadline, cancel, "builder install")?;
@@ -306,12 +310,31 @@ impl Artifact {
             Install::TarGz => {
                 let unpacked = staging.join(".unpack");
                 fs::create_dir(&unpacked)?;
-                let status = Command::new("tar")
-                    .arg("-xzf")
-                    .arg(&download)
-                    .arg("-C")
-                    .arg(&unpacked)
-                    .status()?;
+                let deadline = Instant::now() + DOWNLOAD_TIMEOUT;
+                super::pipe::remaining(deadline, cancel, "artifact extraction")?;
+                let mut child = GroupChild::spawn(
+                    Command::new("tar")
+                        .arg("-xzf")
+                        .arg(&download)
+                        .arg("-C")
+                        .arg(&unpacked)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null()),
+                )?;
+                let status = loop {
+                    super::pipe::remaining(deadline, cancel, "artifact extraction")?;
+                    if child.exited()? {
+                        break child.finish()?;
+                    }
+                    super::pipe::wait_ready(
+                        None,
+                        nix::poll::PollFlags::empty(),
+                        deadline,
+                        cancel,
+                        "artifact extraction",
+                    )?;
+                };
                 if !status.success() {
                     return Err(io::Error::other(format!("tar {url}: {status}")));
                 }

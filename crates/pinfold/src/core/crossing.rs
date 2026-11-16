@@ -5,13 +5,20 @@
 //! a bundle, fetches its objects with fsck, and writes refs under one
 //! remote namespace.
 
+use crate::core::process::{GroupChild, drain};
+pub(crate) use crate::core::process::{output_cancellable, output_discard_cancellable};
+
+use nix::poll::{PollFd, PollFlags, poll};
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::os::fd::AsFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::core::r#box::RefusalReason;
 use crate::core::plan::valid_name;
@@ -79,20 +86,24 @@ impl From<io::Error> for CrossingError {
 /// The refs a crossing set on the receiving side, by full name.
 pub type Refs = BTreeMap<String, String>;
 
-/// Send REPO's branches into the box's GUEST_REPO as
-/// `refs/remotes/REMOTE/*`.
-pub fn push(
+/// Send REPO's branches into the box as `refs/remotes/REMOTE/*`.
+/// Cancellation reaps each host helper before return.
+pub(crate) fn push_cancellable(
     runtime: &dyn Runtime,
     init: &Path,
     name: &str,
     repo: &Path,
     guest_repo: &str,
     remote: &str,
+    cancel: &AtomicBool,
 ) -> Result<Refs, CrossingError> {
-    check_args(repo, guest_repo, remote)?;
-    let branches = succeeded(git(
+    check_args(repo, guest_repo, remote, cancel)?;
+    let branches = succeeded(git_input(
         repo,
         &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+        b"",
+        &[],
+        cancel,
     )?)?
     .stdout;
     if branches.is_empty() {
@@ -118,8 +129,9 @@ pub fn push(
         ],
         &branches,
         &[],
+        cancel,
     )?)?;
-    let heads = bundle_heads(repo, path)?;
+    let heads = bundle_heads(repo, path, cancel)?;
     let mut command = runtime.exec_command(
         name,
         init,
@@ -130,10 +142,12 @@ pub fn push(
         .stdin(File::open(&bundle.path)?)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    let mut child = command.spawn()?;
-    let stderr = kept_stderr(&mut child);
-    let status = child.wait()?;
-    box_status(status.code(), &stderr(), guest_repo)?;
+    let output = output_discard_cancellable(&mut command, None, cancel)?;
+    box_status(
+        output.status.code(),
+        &String::from_utf8_lossy(&output.stderr),
+        guest_repo,
+    )?;
     Ok(heads
         .into_iter()
         .map(|(branch, oid)| (format!("refs/remotes/{remote}/{branch}"), oid))
@@ -149,12 +163,33 @@ pub fn fetch(
     repo: &Path,
     remote: &str,
 ) -> Result<Refs, CrossingError> {
-    check_args(repo, guest_repo, remote)?;
+    fetch_cancellable(
+        runtime,
+        init,
+        name,
+        guest_repo,
+        repo,
+        remote,
+        &AtomicBool::new(false),
+    )
+}
+
+pub(crate) fn fetch_cancellable(
+    runtime: &dyn Runtime,
+    init: &Path,
+    name: &str,
+    guest_repo: &str,
+    repo: &Path,
+    remote: &str,
+    cancel: &AtomicBool,
+) -> Result<Refs, CrossingError> {
+    check_args(repo, guest_repo, remote, cancel)?;
     let namespace = format!("refs/remotes/{remote}/");
     let held = String::from_utf8_lossy(
         &succeeded(git(
             repo,
             &["for-each-ref", "--format=%(objectname)", &namespace],
+            cancel,
         )?)?
         .stdout,
     )
@@ -169,27 +204,16 @@ pub fn fetch(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.spawn()?;
-    let stderr = kept_stderr(&mut child);
-    let mut stdin = child.stdin.take().expect("stdin is piped");
-    // A box that stops reading only fails its own fetch.
-    std::thread::spawn(move || stdin.write_all(held.as_bytes()));
     let bundle = Bundle::new()?;
-    // `receive` drops the pipe when it returns, so a box still writing
-    // ends on its own. A box past the limit is killed outright.
-    let received = receive(&mut child, &bundle.path);
-    if let Err(limit @ CrossingError::Refused(RefusalReason::Limit, _)) = received {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(limit);
-    }
-    let status = child.wait()?;
-    // The exit code says why a box command failed, even when it left its
-    // listing short.
-    box_status(status.code(), &stderr(), guest_repo)?;
-    let listed = received?;
+    let listed = receive(
+        &mut command,
+        held.as_bytes(),
+        &bundle.path,
+        guest_repo,
+        cancel,
+    )?;
     for (branch, _) in &listed {
-        check_branch(repo, &namespace, branch)?;
+        check_branch(repo, &namespace, branch, cancel)?;
     }
 
     // The box's listing and bundle are untrusted. Every branch name passes
@@ -201,7 +225,7 @@ pub fn fetch(
     // only at a commit this remote's refs already reach. Every object the
     // box sends lands in a quarantine first, so a rejected bundle leaves
     // none of its bytes in REPO.
-    let quarantine = Quarantine::new(repo)?;
+    let quarantine = Quarantine::new(repo, cancel)?;
     let mut refs = BTreeMap::new();
     let path = bundle.path.as_str();
     if fs::metadata(path)?.len() > 0 {
@@ -211,13 +235,13 @@ pub fn fetch(
                 "the box sent a filtered bundle".into(),
             ));
         }
-        succeeded(git(repo, &["bundle", "verify", "-q", path])?)?;
-        let heads = bundle_heads(repo, path)?;
+        succeeded(git(repo, &["bundle", "verify", "-q", path], cancel)?)?;
+        let heads = bundle_heads(repo, path, cancel)?;
         if heads.len() > BRANCHES {
             return Err(too_many());
         }
         for branch in heads.keys() {
-            check_branch(repo, &namespace, branch)?;
+            check_branch(repo, &namespace, branch, cancel)?;
         }
         let wanted: String = heads
             .keys()
@@ -230,13 +254,12 @@ pub fn fetch(
         // fscks a bundle fetch.
         let mut pack = File::open(path)?;
         pack.seek(SeekFrom::Start(pack_start))?;
-        succeeded(
-            git_command(repo)
-                .args(["index-pack", "--stdin", "--fix-thin", "--fsck-objects"])
-                .envs(quarantine.env())
-                .stdin(pack)
-                .output()?,
-        )?;
+        let mut index = git_command(repo);
+        index
+            .args(["index-pack", "--stdin", "--fix-thin", "--fsck-objects"])
+            .envs(quarantine.env())
+            .stdin(pack);
+        succeeded(output_cancellable(&mut index, None, cancel)?)?;
         // A fetch that finds a head missing unbundles the pack again before
         // its connectivity check fails, so it runs quarantined too. Its auto
         // maintenance would see only the quarantine.
@@ -254,6 +277,7 @@ pub fn fetch(
             ],
             wanted.as_bytes(),
             &quarantine.env(),
+            cancel,
         )?)?;
         refs.extend(heads);
     }
@@ -270,6 +294,7 @@ pub fn fetch(
                 "--not",
                 &format!("--glob={namespace}*"),
             ],
+            cancel,
         )?;
         if !reached.status.success() || !reached.stdout.is_empty() {
             return Err(CrossingError::Failed(format!(
@@ -290,7 +315,7 @@ pub fn fetch(
         .map(|(name, oid)| format!("update {name}\0{oid}\0\0"))
         .collect();
     if !refs.is_empty() {
-        update_refs(repo, &quarantine, &updates)?;
+        update_refs(repo, &quarantine, &updates, cancel)?;
     }
     Ok(refs)
 }
@@ -298,38 +323,126 @@ pub fn fetch(
 /// Prepare the ref transaction against the quarantine, so a ref git
 /// refuses, such as `x` beside `x/y`, fails it before any pack moves into
 /// REPO; then migrate and commit. Closing stdin before `commit` aborts it.
-fn update_refs(repo: &Path, quarantine: &Quarantine, updates: &str) -> Result<(), CrossingError> {
-    let mut child = git_command(repo)
-        .args(["update-ref", "-z", "--stdin"])
-        .envs(quarantine.env())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let mut stdin = child.stdin.take().expect("stdin is piped");
-    let mut stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
-    // A git that exits early is read as not prepared, with its stderr.
-    let _ = stdin.write_all(format!("start\0{updates}prepare\0").as_bytes());
-    let mut replies = String::new();
-    for _ in 0..2 {
-        stdout.read_line(&mut replies)?;
+fn update_refs(
+    repo: &Path,
+    quarantine: &Quarantine,
+    updates: &str,
+    cancel: &AtomicBool,
+) -> Result<(), CrossingError> {
+    if cancel.load(Ordering::Acquire) {
+        return Err(io::Error::from(io::ErrorKind::Interrupted).into());
     }
-    if replies != "start: ok\nprepare: ok\n" {
-        drop(stdin);
-        return Err(host_failed(&child.wait_with_output()?));
+    let mut child = GroupChild::spawn(
+        git_command(repo)
+            .args(["update-ref", "-z", "--stdin"])
+            .envs(quarantine.env())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )?;
+    let mut stdin = child.take_stdin();
+    let mut stdout = child.take_stdout();
+    let mut stderr = child.take_stderr();
+    if let Some(pipe) = &stdin {
+        super::pipe::nonblocking(pipe, "crossing")?;
     }
-    let migrated = quarantine.migrate();
-    if migrated.is_ok() {
-        let _ = stdin.write_all(b"commit\0");
+    if let Some(pipe) = &stdout {
+        super::pipe::nonblocking(pipe, "crossing")?;
     }
-    drop(stdin);
-    let output = child.wait_with_output()?;
-    migrated?;
-    succeeded(output)?;
-    Ok(())
+    if let Some(pipe) = &stderr {
+        super::pipe::nonblocking(pipe, "crossing")?;
+    }
+    let mut input = format!("start\0{updates}prepare\0").into_bytes();
+    let mut sent = 0;
+    let (mut replies, mut errors) = (Vec::new(), Vec::new());
+    let (mut prepared, mut failed) = (false, false);
+    let mut exited = None;
+    loop {
+        if exited.is_none() && child.exited()? {
+            exited = Some(Instant::now());
+            stdin.take();
+        }
+        if cancel.load(Ordering::Acquire) && exited.is_none() {
+            return Err(io::Error::from(io::ErrorKind::Interrupted).into());
+        }
+        if let Some(pipe) = stdin.as_mut()
+            && sent < input.len()
+        {
+            match pipe.write(&input[sent..]) {
+                Ok(written) => sent += written,
+                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
+                    stdin.take();
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        if prepared && sent == input.len() {
+            stdin.take();
+        }
+        drain(&mut stdout, &mut replies, Some(4096))?;
+        drain(&mut stderr, &mut errors, Some(STDERR_KEPT as usize))?;
+        if !prepared
+            && !failed
+            && exited.is_none()
+            && replies.iter().filter(|&&byte| byte == b'\n').count() >= 2
+        {
+            if replies == b"start: ok\nprepare: ok\n" {
+                quarantine.migrate()?;
+                if cancel.load(Ordering::Acquire) {
+                    return Err(io::Error::from(io::ErrorKind::Interrupted).into());
+                }
+                prepared = true;
+                input = b"commit\0".to_vec();
+                sent = 0;
+            } else {
+                failed = true;
+                stdin.take();
+            }
+        }
+        if let Some(time) = exited
+            && ((stdout.is_none() && stderr.is_none()) || time.elapsed() >= Duration::from_secs(1))
+        {
+            let output = Output {
+                status: child.finish()?,
+                stdout: replies,
+                stderr: errors,
+            };
+            if !prepared || failed {
+                return Err(host_failed(&output));
+            }
+            succeeded(output)?;
+            return Ok(());
+        }
+        let mut fds = Vec::new();
+        if let Some(pipe) = &stdin
+            && sent < input.len()
+        {
+            fds.push(PollFd::new(pipe.as_fd(), PollFlags::POLLOUT));
+        }
+        if let Some(pipe) = &stdout {
+            fds.push(PollFd::new(pipe.as_fd(), PollFlags::POLLIN));
+        }
+        if let Some(pipe) = &stderr {
+            fds.push(PollFd::new(pipe.as_fd(), PollFlags::POLLIN));
+        }
+        match poll(&mut fds, 100u16) {
+            Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+            Err(error) => return Err(io::Error::from(error).into()),
+        }
+    }
 }
 
-fn check_args(repo: &Path, guest_repo: &str, remote: &str) -> Result<(), CrossingError> {
+fn check_args(
+    repo: &Path,
+    guest_repo: &str,
+    remote: &str,
+    cancel: &AtomicBool,
+) -> Result<(), CrossingError> {
     if !valid_name(remote) {
         return Err(spec(format!(
             "remote name {remote:?} must start alphanumeric and hold only [A-Za-z0-9._-]"
@@ -340,7 +453,7 @@ fn check_args(repo: &Path, guest_repo: &str, remote: &str) -> Result<(), Crossin
             "guest repository {guest_repo:?} is not absolute"
         )));
     }
-    let found = git(repo, &["rev-parse", "--git-dir"])?;
+    let found = git_input(repo, &["rev-parse", "--git-dir"], b"", &[], cancel)?;
     if !found.status.success() {
         return Err(spec(format!(
             "{} is not a git repository: {}",
@@ -353,9 +466,17 @@ fn check_args(repo: &Path, guest_repo: &str, remote: &str) -> Result<(), Crossin
 
 /// Fail unless `NAMESPACE + branch` is a well-formed ref name: no `:`,
 /// space, `..`, `@{` or other text git would read as more than one name.
-fn check_branch(repo: &Path, namespace: &str, branch: &str) -> Result<(), CrossingError> {
+fn check_branch(
+    repo: &Path,
+    namespace: &str,
+    branch: &str,
+    cancel: &AtomicBool,
+) -> Result<(), CrossingError> {
     let name = format!("{namespace}{branch}");
-    if git(repo, &["check-ref-format", &name])?.status.success() {
+    if git(repo, &["check-ref-format", &name], cancel)?
+        .status
+        .success()
+    {
         Ok(())
     } else {
         Err(CrossingError::Failed(format!(
@@ -399,41 +520,190 @@ fn box_status(code: Option<i32>, stderr: &str, guest_repo: &str) -> Result<(), C
     }
 }
 
-/// Read the fetch script's branch listing, then copy the bundle after it to
-/// `bundle`, refusing one past [`LIMIT`].
-fn receive(child: &mut Child, bundle: &str) -> Result<Vec<(String, String)>, CrossingError> {
-    let mut stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
-    let mut listed = Vec::new();
+struct Receiver {
+    file: File,
+    listed: Vec<(String, String)>,
+    line: Vec<u8>,
+    listing: bool,
+    copied: u64,
+}
+
+fn malformed_listing() -> CrossingError {
+    CrossingError::Failed("the box's branch listing is malformed".into())
+}
+
+impl Receiver {
+    fn new(bundle: &str) -> io::Result<Self> {
+        Ok(Self {
+            file: File::create(bundle)?,
+            listed: Vec::new(),
+            line: Vec::new(),
+            listing: true,
+            copied: 0,
+        })
+    }
+
+    fn feed(&mut self, mut bytes: &[u8]) -> Result<(), CrossingError> {
+        while self.listing && !bytes.is_empty() {
+            let take = bytes
+                .iter()
+                .position(|&byte| byte == b'\n')
+                .map_or(bytes.len(), |index| index + 1);
+            if self.line.len() + take > 4096 {
+                return Err(malformed_listing());
+            }
+            self.line.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
+            if !self.line.ends_with(b"\n") {
+                if self.line.len() == 4096 {
+                    return Err(malformed_listing());
+                }
+                continue;
+            }
+            let line = &self.line[..self.line.len() - 1];
+            if line.is_empty() {
+                self.listing = false;
+            } else {
+                if self.listed.len() == BRANCHES {
+                    return Err(too_many());
+                }
+                let line = std::str::from_utf8(line).map_err(|_| malformed_listing())?;
+                let (oid, name) = line.split_once(' ').ok_or_else(malformed_listing)?;
+                let branch = name
+                    .strip_prefix("refs/heads/")
+                    .ok_or_else(malformed_listing)?;
+                if !object_id(oid) {
+                    return Err(malformed_listing());
+                }
+                self.listed.push((branch.to_owned(), oid.to_owned()));
+            }
+            self.line.clear();
+        }
+        if !self.listing {
+            self.copied += bytes.len() as u64;
+            if self.copied > LIMIT {
+                return Err(CrossingError::Refused(
+                    RefusalReason::Limit,
+                    format!("the bundle is past {LIMIT} bytes"),
+                ));
+            }
+            self.file.write_all(bytes)?;
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<Vec<(String, String)>, CrossingError> {
+        if self.listing {
+            return Err(malformed_listing());
+        }
+        self.file.flush()?;
+        Ok(self.listed)
+    }
+}
+
+/// Read the branch listing and bounded bundle, reaping the helper on cancellation.
+fn receive(
+    command: &mut Command,
+    mut input: &[u8],
+    bundle: &str,
+    guest_repo: &str,
+    cancel: &AtomicBool,
+) -> Result<Vec<(String, String)>, CrossingError> {
+    if cancel.load(Ordering::Acquire) {
+        return Err(io::Error::from(io::ErrorKind::Interrupted).into());
+    }
+    let mut child = GroupChild::spawn(command)?;
+    let mut stdin = child.take_stdin();
+    let mut stdout = child.take_stdout();
+    let mut stderr = child.take_stderr();
+    if let Some(pipe) = &stdin {
+        super::pipe::nonblocking(pipe, "crossing")?;
+    }
+    if let Some(pipe) = &stdout {
+        super::pipe::nonblocking(pipe, "crossing")?;
+    }
+    if let Some(pipe) = &stderr {
+        super::pipe::nonblocking(pipe, "crossing")?;
+    }
+    let mut receiver = Receiver::new(bundle)?;
+    let mut failed = None;
+    let mut errors = Vec::new();
+    let mut exited = None;
     loop {
-        let mut line = Vec::new();
-        // A ref name is far below 4096 bytes; a longer line is not a listing.
-        (&mut stdout).take(4096).read_until(b'\n', &mut line)?;
-        let malformed = || CrossingError::Failed("the box's branch listing is malformed".into());
-        let line = line.strip_suffix(b"\n").ok_or_else(malformed)?;
-        if line.is_empty() {
-            break;
+        if exited.is_none() && child.exited()? {
+            exited = Some(Instant::now());
+            stdin.take();
         }
-        if listed.len() == BRANCHES {
-            return Err(too_many());
+        if cancel.load(Ordering::Acquire) && exited.is_none() {
+            return Err(io::Error::from(io::ErrorKind::Interrupted).into());
         }
-        let line = std::str::from_utf8(line).map_err(|_| malformed())?;
-        let (oid, name) = line.split_once(' ').ok_or_else(malformed)?;
-        let branch = name.strip_prefix("refs/heads/").ok_or_else(malformed)?;
-        if !object_id(oid) {
-            return Err(malformed());
+        if input.is_empty() {
+            stdin.take();
         }
-        listed.push((branch.to_owned(), oid.to_owned()));
+        if let Some(pipe) = stdin.as_mut() {
+            match pipe.write(input) {
+                Ok(written) => input = &input[written..],
+                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
+                    stdin.take();
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        if let Some(pipe) = stdout.as_mut() {
+            let mut bytes = [0; 8192];
+            for _ in 0..8 {
+                match pipe.read(&mut bytes) {
+                    Ok(0) => {
+                        stdout.take();
+                        break;
+                    }
+                    Ok(read) => {
+                        if let Err(error) = receiver.feed(&bytes[..read]) {
+                            if matches!(error, CrossingError::Refused(RefusalReason::Limit, _)) {
+                                return Err(error);
+                            }
+                            failed = Some(error);
+                            stdout.take();
+                            break;
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        drain(&mut stderr, &mut errors, Some(STDERR_KEPT as usize))?;
+        if let Some(time) = exited
+            && ((stdout.is_none() && stderr.is_none()) || time.elapsed() >= Duration::from_secs(1))
+        {
+            let status = child.finish()?;
+            box_status(status.code(), &String::from_utf8_lossy(&errors), guest_repo)?;
+            return match failed {
+                Some(error) => Err(error),
+                None => receiver.finish(),
+            };
+        }
+        let mut fds = Vec::new();
+        if let Some(pipe) = &stdin {
+            fds.push(PollFd::new(pipe.as_fd(), PollFlags::POLLOUT));
+        }
+        if let Some(pipe) = &stdout {
+            fds.push(PollFd::new(pipe.as_fd(), PollFlags::POLLIN));
+        }
+        if let Some(pipe) = &stderr {
+            fds.push(PollFd::new(pipe.as_fd(), PollFlags::POLLIN));
+        }
+        match poll(&mut fds, 100u16) {
+            Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+            Err(error) => return Err(io::Error::from(error).into()),
+        }
     }
-    let mut file = File::create(bundle)?;
-    let copied = io::copy(&mut (&mut stdout).take(LIMIT + 1), &mut file)?;
-    if copied > LIMIT {
-        return Err(CrossingError::Refused(
-            RefusalReason::Limit,
-            format!("the bundle is past {LIMIT} bytes"),
-        ));
-    }
-    file.flush()?;
-    Ok(listed)
 }
 
 /// Whether a bundle's header names a filter, and the header's length,
@@ -469,8 +739,14 @@ fn header(bundle: &str) -> Result<(bool, u64), CrossingError> {
 
 /// A bundle's branches, as git on the host reads them. Their names are
 /// the bundle's bytes, unchecked.
-fn bundle_heads(repo: &Path, path: &str) -> Result<Refs, CrossingError> {
-    let listed = succeeded(git(repo, &["bundle", "list-heads", path])?)?;
+fn bundle_heads(repo: &Path, path: &str, cancel: &AtomicBool) -> Result<Refs, CrossingError> {
+    let listed = succeeded(git_input(
+        repo,
+        &["bundle", "list-heads", path],
+        b"",
+        &[],
+        cancel,
+    )?)?;
     let mut heads = Refs::new();
     for line in String::from_utf8_lossy(&listed.stdout).lines() {
         let Some((oid, name)) = line.split_once(' ') else {
@@ -494,21 +770,8 @@ fn object_id(oid: &str) -> bool {
     matches!(oid.len(), 40 | 64) && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// The first [`STDERR_KEPT`] bytes of a child's piped stderr, read on a
-/// thread that drains the rest so the child never blocks on it.
-pub(crate) fn kept_stderr(child: &mut Child) -> impl FnOnce() -> String + use<> {
-    let mut stderr = child.stderr.take().expect("stderr is piped");
-    let thread = std::thread::spawn(move || {
-        let mut kept = Vec::new();
-        let _ = (&mut stderr).take(STDERR_KEPT).read_to_end(&mut kept);
-        let _ = io::copy(&mut stderr, &mut io::sink());
-        String::from_utf8_lossy(&kept).into_owned()
-    });
-    move || thread.join().unwrap_or_default()
-}
-
-fn git(repo: &Path, args: &[&str]) -> io::Result<Output> {
-    git_input(repo, args, b"", &[])
+fn git(repo: &Path, args: &[&str], cancel: &AtomicBool) -> io::Result<Output> {
+    git_input(repo, args, b"", &[], cancel)
 }
 
 fn git_input(
@@ -516,21 +779,16 @@ fn git_input(
     args: &[&str],
     input: &[u8],
     env: &[(&str, &OsStr)],
+    cancel: &AtomicBool,
 ) -> io::Result<Output> {
-    let mut child = git_command(repo)
+    let mut command = git_command(repo);
+    command
         .args(args)
         .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| io::Error::new(error.kind(), format!("git: {error}")))?;
-    let mut stdin = child.stdin.take().expect("stdin is piped");
-    let written = stdin.write_all(input);
-    drop(stdin);
-    let output = child.wait_with_output()?;
-    written?;
-    Ok(output)
+        .stderr(Stdio::piped());
+    output_cancellable(&mut command, Some(input), cancel)
 }
 
 pub(crate) fn git_command(repo: &Path) -> Command {
@@ -600,7 +858,7 @@ struct Quarantine {
 }
 
 impl Quarantine {
-    fn new(repo: &Path) -> Result<Quarantine, CrossingError> {
+    fn new(repo: &Path, cancel: &AtomicBool) -> Result<Quarantine, CrossingError> {
         let mut objects = succeeded(git(
             repo,
             &[
@@ -609,6 +867,7 @@ impl Quarantine {
                 "--git-path",
                 "objects",
             ],
+            cancel,
         )?)?
         .stdout;
         if objects.last() == Some(&b'\n') {

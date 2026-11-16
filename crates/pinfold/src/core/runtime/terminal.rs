@@ -142,7 +142,7 @@ pub(super) struct Winch {
 
 impl Winch {
     pub(super) fn install() -> io::Result<Winch> {
-        let (read, write) = io::pipe()?;
+        let (read, write) = crate::core::process::pipe()?;
         let write = OwnedFd::from(write);
         crate::core::pipe::nonblocking(&write, "window-size")?;
         WINCH.store(write.as_raw_fd(), Ordering::Relaxed);

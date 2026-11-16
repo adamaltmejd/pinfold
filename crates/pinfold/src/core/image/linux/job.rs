@@ -1,5 +1,7 @@
 //! A finite build transaction. The VMM sees only its fixed role's disks.
 
+use crate::core::process::CommandGuard;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -13,11 +15,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::core::process::Listener as UnixListener;
 use nix::fcntl::{Flock, OFlag};
 use nix::poll::PollFlags;
 use nix::sys::stat::Mode;
 use serde::{Deserialize, Serialize};
-use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 
 use super::catalog::{self, Publication, Verified};
@@ -249,8 +251,15 @@ async fn transaction(request: &BuildRequest<'_>) -> io::Result<Result<(), String
         tags: request.tags.to_vec(),
         allow: request.allow.to_vec(),
     };
+    let mut proxy = None;
     let result = {
-        let work = run_transaction(request, state.clone(), cancel.clone(), &mut claim);
+        let work = run_transaction(
+            request,
+            state.clone(),
+            cancel.clone(),
+            &mut claim,
+            &mut proxy,
+        );
         tokio::pin!(work);
         tokio::select! {
             result = &mut work => result,
@@ -264,8 +273,11 @@ async fn transaction(request: &BuildRequest<'_>) -> io::Result<Result<(), String
             },
         }
     };
+    // Proxy workers end before retirement can authorize resource deletion.
+    let stopped_proxy = proxy.as_mut().map_or(Ok(()), proxy::Server::stop);
     // A wait error is not proof of death. Recheck identity before deleting state.
     let cleanup = async {
+        stopped_proxy?;
         claim.retire_previous()?;
         let writable = tokio::task::spawn_blocking(move || {
             writable_snapshot(&state)?;
@@ -300,6 +312,7 @@ async fn run_transaction(
     state: PathBuf,
     cancel: Arc<AtomicBool>,
     claim: &mut Claim,
+    proxy: &mut Option<proxy::Server>,
 ) -> io::Result<Publication> {
     let preparing = {
         let state = state.clone();
@@ -336,7 +349,7 @@ async fn run_transaction(
     )?;
     let proxy_socket = vsock.join("v.sock_3128");
     let egress_log = runs::egress_log(&generation)?;
-    let mut audit = proxy::start(
+    *proxy = Some(proxy::start(
         crate::core::runtime::sockets::bind(&proxy_socket)?,
         &Egress {
             allow: hosts,
@@ -344,7 +357,8 @@ async fn run_transaction(
         },
         None,
         egress_log.clone(),
-    )?;
+    )?);
+    let audit = proxy.as_mut().expect("started builder proxy");
     eprintln!(
         "pinfold: build run {generation}; egress log {}",
         egress_log.display()
@@ -359,7 +373,7 @@ async fn run_transaction(
         &state.join("oci"),
         &cancel,
         claim,
-        &mut audit,
+        audit,
     )
     .await?;
     let mut verified = match built {
@@ -397,7 +411,7 @@ async fn run_transaction(
             Ok::<_, io::Error>((verified, cached))
         })
     };
-    let conversion = watch_worker(converting, &cancel, claim, Some(&mut audit)).await?;
+    let conversion = watch_worker(converting, &cancel, claim, Some(&mut audit.failure)).await?;
     let (verified, cached) = conversion;
     let converted = if let Some(cached) = cached {
         cached
@@ -413,7 +427,7 @@ async fn run_transaction(
             &root_file,
             &cancel,
             claim,
-            &mut audit,
+            audit,
         )
         .await?
         {
@@ -436,7 +450,7 @@ async fn run_transaction(
             &worker_cancel,
         )
     });
-    watch_publication(publishing, &cancel, claim, &mut audit).await
+    watch_publication(publishing, &cancel, claim, &mut audit.failure).await
 }
 
 fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<Prepared> {
@@ -816,7 +830,7 @@ async fn run_job(
     output_path: &Path,
     cancel: &Arc<AtomicBool>,
     claim: &mut Claim,
-    audit: &mut tokio::sync::oneshot::Receiver<()>,
+    audit: &mut proxy::Server,
 ) -> io::Result<Received> {
     check_cancel(cancel)?;
     private_dir(state)?;
@@ -843,7 +857,7 @@ async fn run_job(
             }
         })
     };
-    let handoff = watch_worker(formatting, cancel, claim, Some(&mut *audit)).await?;
+    let handoff = watch_worker(formatting, cancel, claim, Some(&mut audit.failure)).await?;
     check_cancel(cancel)?;
     // These endpoints belong only to the current claimed finite job.
     for name in ["v.sock".to_string(), format!("v.sock_{BOOT_PORT}")] {
@@ -897,7 +911,7 @@ async fn run_job(
             _ = child.wait() => Err(io::Error::other("builder exited before handshake")),
             _ = cancelled(cancel) => Err(io::ErrorKind::Interrupted.into()),
             _ = claim.stop_requested() => { cancel.store(true, Ordering::Release); Err(io::ErrorKind::Interrupted.into()) },
-            _ = &mut *audit => { cancel.store(true, Ordering::Release); Err(io::Error::other("audit-log: builder audit failed")) },
+            _ = &mut audit.failure => { cancel.store(true, Ordering::Release); Err(io::Error::other("audit-log: builder audit failed")) },
         }?;
         drop(listener);
         let stream = accepted.into_std()?;
@@ -989,7 +1003,7 @@ async fn run_job(
                 cancel.store(true, Ordering::Release); let _ = reader.await;
                 Err(io::ErrorKind::Interrupted.into())
             },
-            _ = &mut *audit => {
+            _ = &mut audit.failure => {
                 cancel.store(true, Ordering::Release); let _ = reader.await;
                 Err(io::Error::other("audit-log: builder audit failed"))
             },
@@ -1017,7 +1031,7 @@ async fn clean_cache(
     prepared: &Prepared,
     cancel: &Arc<AtomicBool>,
     claim: &mut Claim,
-    audit: &mut tokio::sync::oneshot::Receiver<()>,
+    audit: &mut proxy::Server,
 ) -> io::Result<()> {
     let cache_disk = prepared.cache_disk.clone();
     let dirty = prepared.dirty.clone();
@@ -1029,10 +1043,11 @@ async fn clean_cache(
         fs::remove_file(&dirty)?;
         File::open(dirty.parent().expect("cache marker has a parent"))?.sync_all()
     });
-    let result = watch_worker(cleaning, cancel, claim, Some(audit))
+    let result = watch_worker(cleaning, cancel, claim, Some(&mut audit.failure))
         .await
         .and_then(|()| check_cancel(cancel));
     if let Err(error) = result {
+        audit.stop()?;
         claim.retire_previous()?;
         // The watcher joined the cleaner. Try restoring the marker or retiring
         // the cache. A removed marker already followed guest shutdown and host
@@ -1377,7 +1392,7 @@ fn run_process(mut command: Command, cancel: &AtomicBool) -> io::Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()?;
+        .spawn_guarded()?;
     let deadline = Instant::now() + JOB_TIME;
     let result = (|| loop {
         if let Some(status) = child.try_wait()? {

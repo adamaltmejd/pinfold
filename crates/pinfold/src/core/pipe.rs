@@ -10,7 +10,7 @@ use nix::poll::{PollFd, PollFlags, poll};
 
 const CANCEL_INTERVAL: Duration = Duration::from_millis(100);
 
-pub(super) fn nonblocking(pipe: &impl AsFd, operation: &str) -> io::Result<()> {
+pub(crate) fn nonblocking(pipe: &impl AsFd, operation: &str) -> io::Result<()> {
     let failed = |_| io::Error::other(format!("{operation} pipe configuration failed"));
     let flags = OFlag::from_bits_truncate(fcntl(pipe, FcntlArg::F_GETFL).map_err(failed)?);
     fcntl(pipe, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).map_err(failed)?;
@@ -22,7 +22,8 @@ pub(super) fn remaining(
     cancel: Option<&AtomicBool>,
     operation: &str,
 ) -> io::Result<Duration> {
-    if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+    if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) || super::process::is_cancelled()
+    {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
             format!("{operation} cancelled"),
@@ -66,7 +67,7 @@ pub(super) fn read(
 }
 
 /// Write all of `bytes` to a nonblocking `sink`, waiting for room.
-pub(super) fn write_all(
+pub(crate) fn write_all(
     sink: &mut (impl Write + AsFd),
     mut bytes: &[u8],
     deadline: Instant,

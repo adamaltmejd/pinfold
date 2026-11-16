@@ -1,0 +1,26 @@
+macOS: df -g /System/Volumes/Data before build: 15 GiB available
+CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo fmt --check
+exit=0 (no output)
+CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.82s
+CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo build --locked
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.57s
+
+Linux: CARGO_INCREMENTAL=0 RUSTC_WRAPPER=; cargo fmt --check; cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings; cargo build --locked --target x86_64-unknown-linux-musl
+   Compiling pinfold v0.5.5 (/home/user/pinfold/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.06s
+   Compiling pinfold v0.5.5 (/home/user/pinfold/crates/pinfold)
+   Compiling pinfold-init v0.5.5 (/home/user/pinfold/crates/pinfold-init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.26s
+ROUND4-CHECKS-PASS
+
+Six changed Rust source files: SHA-256 identical on the two hosts=True
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sda1        32G  5.9G   25G  20% /
+
+macOS final disk:
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  268        22    93% 2509703 240981080    1%   /System/Volumes/Data
+
+Final labvm status: active; expires_at=2026-11-16T19:50:52Z; lease not released
+Final cargo fmt --check and git diff --check: exit=0

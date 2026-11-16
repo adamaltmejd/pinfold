@@ -1,16 +1,19 @@
 //! Host-only locks and generation-targeted box shutdown.
 
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
+use std::os::fd::AsFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::os::unix::net::UnixStream as BlockingStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use nix::fcntl::{Flock, FlockArg};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::UnixStream;
+
+use crate::core::process::Listener as UnixListener;
 
 use crate::core::pipe::remaining;
 use crate::core::runtime::sockets::{self, Sockets};
@@ -147,6 +150,11 @@ pub fn disk_lock(name: &str) -> io::Result<Flock<File>> {
     Flock::lock(open_lock(&key)?, FlockArg::LockExclusive).map_err(|(_, error)| error.into())
 }
 
+pub(crate) fn try_disk_lock(name: &str) -> io::Result<Option<Flock<File>>> {
+    let key = format!("disk:{}:{name}", crate::dirs::state_root_key()?);
+    try_lock(&key, FlockArg::LockExclusiveNonblock)
+}
+
 pub fn record(name: &str) -> io::Result<Option<Record>> {
     match fs::read(path(&format!("box:{name}"), "owner")?) {
         Ok(bytes) => serde_json::from_slice(&bytes)
@@ -205,8 +213,8 @@ pub fn remove_record(name: &str, generation: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Name ownership precedes state creation. Publication follows the runtime
-/// name check, so a refused claim preserves an orphan's record.
+/// Name ownership precedes state creation. Public startup checks the runtime
+/// name before publication; fresh project startup refuses prior state.
 pub struct Claim {
     name: String,
     _lock: Flock<File>,
@@ -243,7 +251,30 @@ impl Claim {
     }
 
     pub fn prepare(&mut self, state_dir: &Path) -> io::Result<()> {
-        if let Some(old) = record(&self.name)? {
+        self.prepare_inner(state_dir, false)
+    }
+
+    /// A random project name never authorizes replacing prior evidence.
+    pub(crate) fn prepare_fresh(&mut self, state_dir: &Path) -> io::Result<()> {
+        self.prepare_inner(state_dir, true)
+    }
+
+    fn prepare_inner(&mut self, state_dir: &Path, fresh: bool) -> io::Result<()> {
+        let endpoint = socket(&self.name)?;
+        if fresh {
+            if record(&self.name)?.is_some() {
+                return Err(io::Error::other(
+                    "fresh project name has an ownership record",
+                ));
+            }
+            for path in [state_dir, endpoint.as_path()] {
+                match fs::symlink_metadata(path) {
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                    Ok(_) => return Err(io::Error::other("fresh project name has existing state")),
+                }
+            }
+        } else if let Some(old) = record(&self.name)? {
             #[cfg(target_os = "linux")]
             crate::core::runtime::runtime().down(&self.name)?;
             if let Err(error) = remove_record(&self.name, &old.generation) {
@@ -253,7 +284,9 @@ impl Claim {
                 eprintln!("pinfold: socket cleanup: {error}");
             }
         }
-        absent_ok(fs::remove_dir_all(state_dir))?;
+        if !fresh {
+            absent_ok(fs::remove_dir_all(state_dir))?;
+        }
         let mut random = [0; 16];
         File::open("/dev/urandom")?.read_exact(&mut random)?;
         self.record = Some(Record {
@@ -264,9 +297,15 @@ impl Claim {
             disks: Vec::new(),
             described: None,
         });
-        fs::create_dir_all(state_dir)?;
-        let endpoint = socket(&self.name)?;
-        sockets::remove_socket(&endpoint)?;
+        if fresh {
+            if let Some(parent) = state_dir.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::create_dir(state_dir)?;
+        } else {
+            fs::create_dir_all(state_dir)?;
+            sockets::remove_socket(&endpoint)?;
+        }
         let (_, host) = sockets::host()?;
         sockets::check_length(&endpoint)?;
         let listener =
@@ -340,27 +379,27 @@ impl Claim {
         &self.record.as_ref().expect("prepared ownership").generation
     }
 
-    pub async fn stop_requested(&mut self) -> io::Result<()> {
-        loop {
-            let (mut stream, _) = self
-                .listener
-                .as_ref()
-                .expect("prepared ownership")
-                .accept()
-                .await?;
-            let mut generation = [0; 64];
-            if !matches!(
-                tokio::time::timeout(REQUEST_TIMEOUT, stream.read_exact(&mut generation)).await,
-                Ok(Ok(_))
-            ) {
-                continue;
-            }
-            if generation == self.generation().as_bytes() {
-                self.request = Some(stream);
-                return Ok(());
-            }
-            let _ = tokio::time::timeout(REQUEST_TIMEOUT, stream.write_all(b"gone\n")).await;
+    pub(crate) fn take_startup_control(&mut self) -> StartupControl {
+        StartupControl {
+            listener: self.listener.take().expect("prepared ownership"),
+            request: self.request.take(),
+            generation: self.generation().to_string(),
         }
+    }
+
+    pub(crate) fn restore_startup_control(&mut self, control: StartupControl) {
+        self.listener = Some(control.listener);
+        self.request = control.request;
+    }
+
+    pub async fn stop_requested(&mut self) -> io::Result<()> {
+        let request = receive_stop(
+            self.listener.as_ref().expect("prepared ownership"),
+            self.generation(),
+        )
+        .await?;
+        self.request = Some(request);
+        Ok(())
     }
 
     pub fn starting(&mut self) {
@@ -386,11 +425,59 @@ impl Claim {
             self.record = None;
         }
         self.listener.take();
+        if !completed && let Some(record) = self.record.as_ref() {
+            crate::core::runs::write_teardown_failure(&record.generation);
+        }
         if let Some(mut request) = self.request.take() {
             let answer: &[u8] = if completed { b"done\n" } else { b"failed\n" };
             let _ = tokio::time::timeout(REQUEST_TIMEOUT, request.write_all(answer)).await;
         }
         cleanup
+    }
+}
+
+/// Shutdown stays responsive while disk preparation owns the claim on a worker.
+pub(crate) struct StartupControl {
+    listener: UnixListener,
+    request: Option<UnixStream>,
+    generation: String,
+}
+
+impl StartupControl {
+    pub(crate) async fn stop_requested(&mut self) -> io::Result<()> {
+        self.request = Some(receive_stop(&self.listener, &self.generation).await?);
+        Ok(())
+    }
+}
+
+async fn receive_stop(listener: &UnixListener, generation: &str) -> io::Result<UnixStream> {
+    loop {
+        let (mut stream, _) = listener.accept().await?;
+        let mut requested = [0; 64];
+        let project = match tokio::time::timeout(REQUEST_TIMEOUT, async {
+            stream.read_exact(&mut requested).await?;
+            // The private project prefix asks for acceptance before the final
+            // reply. Public box down keeps its existing 64-byte request.
+            let project = requested[0] == b'P';
+            if project {
+                requested.copy_within(1.., 0);
+                stream.read_exact(&mut requested[63..]).await?;
+            }
+            Ok::<_, io::Error>(project)
+        })
+        .await
+        {
+            Ok(Ok(project)) => project,
+            _ => continue,
+        };
+        if requested == generation.as_bytes() {
+            if project {
+                let _ =
+                    tokio::time::timeout(REQUEST_TIMEOUT, stream.write_all(b"stopping\n")).await;
+            }
+            return Ok(stream);
+        }
+        let _ = tokio::time::timeout(REQUEST_TIMEOUT, stream.write_all(b"gone\n")).await;
     }
 }
 
@@ -411,13 +498,44 @@ impl Drop for Claim {
 /// listener refuses the old token instead of stopping its own box.
 /// Return true only when the owner acknowledges completed teardown.
 pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<bool> {
+    request_stop_until(name, observed, Instant::now() + STOP_TIMEOUT)
+}
+
+pub(crate) fn request_stop_until(
+    name: &str,
+    observed: Option<&Record>,
+    deadline: Instant,
+) -> io::Result<bool> {
+    request_stop_inner(name, observed, deadline, None)
+}
+
+pub(crate) fn request_stop_project(
+    name: &str,
+    observed: &Record,
+    deadline: Instant,
+    cancel: &AtomicBool,
+    accepted: &AtomicBool,
+) -> io::Result<bool> {
+    request_stop_inner(name, Some(observed), deadline, Some((cancel, accepted)))
+}
+
+fn request_stop_inner(
+    name: &str,
+    observed: Option<&Record>,
+    deadline: Instant,
+    project: Option<(&AtomicBool, &AtomicBool)>,
+) -> io::Result<bool> {
     // An unpublished claim is absent to this request. Adopting a record
     // later could target a replacement after an old owner removed its record.
     let Some(observed) = observed else {
         return Ok(false);
     };
-    let deadline = Instant::now() + STOP_TIMEOUT;
+    let cancel = project.map(|(cancel, _)| cancel);
+    let accepted = || project.is_some_and(|(_, accepted)| accepted.load(Ordering::Acquire));
     loop {
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
         if let Some(lock) = try_name_lock(name)? {
             drop(lock);
             return Ok(false);
@@ -425,39 +543,57 @@ pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<bool> {
         if record(name)?.is_none_or(|current| current.generation != observed.generation) {
             return Ok(false);
         }
-        match BlockingStream::connect(socket(name)?) {
+        let connected = sockets::connect_shutdown(&socket(name)?, deadline);
+        match connected {
             Ok(mut stream) => {
-                let exchange: io::Result<Vec<u8>> = (|| {
-                    stream.set_write_timeout(Some(remaining(deadline, None, "box teardown")?))?;
-                    stream.write_all(observed.generation.as_bytes())?;
-                    // The owner closes after one reply line, at most "failed\n".
-                    stream.set_read_timeout(Some(remaining(deadline, None, "box teardown")?))?;
-                    let mut answer = Vec::new();
-                    (&mut stream).take(7).read_to_end(&mut answer)?;
-                    if !answer.ends_with(b"\n") {
-                        return Err(io::ErrorKind::UnexpectedEof.into());
+                let exchange: io::Result<bool> = (|| {
+                    stream.set_nonblocking(true)?;
+                    let mut request = Vec::with_capacity(65);
+                    if project.is_some() {
+                        request.push(b'P');
                     }
-                    Ok(answer)
+                    request.extend(observed.generation.as_bytes());
+                    crate::core::pipe::write_all(
+                        &mut stream,
+                        &request,
+                        deadline,
+                        cancel,
+                        "box teardown",
+                    )?;
+                    loop {
+                        let answer = stop_reply(&mut stream, deadline, cancel, accepted())?;
+                        match answer.as_slice() {
+                            b"stopping\n" if project.is_some() && !accepted() => {
+                                project
+                                    .expect("project stop")
+                                    .1
+                                    .store(true, Ordering::Release);
+                            }
+                            b"done\n" => return Ok(true),
+                            b"gone\n" => return Ok(false),
+                            b"failed\n" => return Err(io::Error::other("box teardown failed")),
+                            _ => return Err(io::Error::other("invalid box teardown reply")),
+                        }
+                    }
                 })();
                 match exchange {
-                    Ok(answer) => {
-                        return match &answer[..] {
-                            b"done\n" => Ok(true),
-                            b"gone\n" => Ok(false),
-                            b"failed\n" => Err(io::Error::other("box teardown failed")),
-                            _ => Err(io::Error::other("invalid box teardown reply")),
-                        };
-                    }
+                    Ok(answer) => return Ok(answer),
                     // Startup can finish while its select is reading this
-                    // request. Reconnect only to the observed generation.
+                    // request. Reconnect only before acceptance, and only to
+                    // the generation already observed.
                     Err(error)
-                        if matches!(
-                            error.kind(),
-                            io::ErrorKind::UnexpectedEof
-                                | io::ErrorKind::ConnectionReset
-                                | io::ErrorKind::BrokenPipe
-                        ) => {}
+                        if !accepted()
+                            && matches!(
+                                error.kind(),
+                                io::ErrorKind::UnexpectedEof
+                                    | io::ErrorKind::ConnectionReset
+                                    | io::ErrorKind::BrokenPipe
+                            ) => {}
                     Err(error) => {
+                        // Removal evidence does not erase an acknowledged cleanup failure.
+                        if accepted() {
+                            return Err(error);
+                        }
                         if record(name)?
                             .is_none_or(|current| current.generation != observed.generation)
                         {
@@ -470,19 +606,64 @@ pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<bool> {
             Err(error)
                 if matches!(
                     error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-                ) => {}
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::ConnectionRefused
+                        | io::ErrorKind::WouldBlock
+                        | io::ErrorKind::Interrupted
+                        | io::ErrorKind::TimedOut
+                ) || error.raw_os_error() == Some(nix::libc::EINPROGRESS) => {}
             Err(error) => return Err(error),
         }
-        if Instant::now() >= deadline {
-            break;
-        }
+        remaining(deadline, cancel, "box teardown")?;
         std::thread::sleep(Duration::from_millis(10));
     }
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        "box owner did not complete teardown",
-    ))
+}
+
+fn stop_reply(
+    stream: &mut std::os::unix::net::UnixStream,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+    accepted: bool,
+) -> io::Result<Vec<u8>> {
+    let mut answer = Vec::with_capacity(9);
+    let mut byte = [0];
+    while answer.len() < 9 {
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        if !accepted {
+            remaining(deadline, cancel, "box teardown")?;
+        }
+        match stream.read(&mut byte) {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(_) => {
+                answer.push(byte[0]);
+                if byte[0] == b'\n' {
+                    return Ok(answer);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                let until = if accepted {
+                    Instant::now() + Duration::from_millis(100)
+                } else {
+                    deadline
+                };
+                match crate::core::pipe::wait_ready(
+                    Some(stream.as_fd()),
+                    nix::poll::PollFlags::POLLIN,
+                    until,
+                    cancel,
+                    "box teardown",
+                ) {
+                    Err(error) if accepted && error.kind() == io::ErrorKind::TimedOut => {}
+                    result => result?,
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::other("invalid box teardown reply"))
 }
 
 /// Published generations across every Pinfold state root. Consumers that

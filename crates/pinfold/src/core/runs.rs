@@ -15,6 +15,7 @@ use crate::dirs;
 pub const EGRESS_LOG: &str = "egress.jsonl";
 const LAUNCH: &str = "launch.json";
 const TERMINAL: &str = "terminal.json";
+const TEARDOWN: &str = "teardown.json";
 /// The bound on a record, an events line and an events page.
 const LIMIT_BYTES: usize = 64 << 10;
 pub const MAX_EVENTS: usize = 100;
@@ -32,11 +33,6 @@ pub fn valid_id(id: &str) -> bool {
 fn dir(run_id: &str) -> io::Result<PathBuf> {
     debug_assert!(valid_id(run_id));
     Ok(dirs::runs_dir()?.join(run_id))
-}
-
-/// Whether the run reached ready: every ready run has a launch record.
-pub fn launched(run_id: &str) -> io::Result<bool> {
-    fs::exists(dir(run_id)?.join(LAUNCH))
 }
 
 /// The run's egress log path.
@@ -118,6 +114,21 @@ pub fn write_terminal(run_id: &str, terminal: &Terminal) {
     }
 }
 
+/// Record an unsuccessful cleanup attempt, without claiming the box ended.
+pub fn write_teardown_failure(run_id: &str) {
+    if !dir(run_id)
+        .ok()
+        .and_then(|dir| fs::symlink_metadata(dir.join(LAUNCH)).ok())
+        .is_some_and(|metadata| metadata.is_file())
+    {
+        return;
+    }
+    let record = serde_json::json!({ "run_id": run_id, "time": rfc3339(now() as i64), "reason": "teardown-failed" });
+    if let Err(error) = write(run_id, TEARDOWN, &record) {
+        eprintln!("pinfold: teardown record: {error}");
+    }
+}
+
 /// A record's state and its value: `available` with the object, or
 /// `unavailable` for a file that is unreadable, malformed, or over the bound.
 /// `None` when the file is absent.
@@ -189,8 +200,9 @@ pub fn inspect(run_id: &str) -> io::Result<Option<serde_json::Value>> {
         return Ok(None);
     };
     let terminal = read_record(&records.dir, TERMINAL);
+    let teardown = read_record(&records.dir, TEARDOWN);
     let log = records.log().ok().flatten();
-    if records.launch.is_none() && terminal.is_none() && log.is_none() {
+    if records.launch.is_none() && terminal.is_none() && log.is_none() && teardown.is_none() {
         return Ok(None);
     }
     let state = |record: Option<(&str, serde_json::Value)>, absent: &str| match record {
@@ -209,12 +221,16 @@ pub fn inspect(run_id: &str) -> io::Result<Option<serde_json::Value>> {
             _ => serde_json::json!({ "state": "unavailable", "path": null, "bytes": null }),
         }
     };
-    Ok(Some(serde_json::json!({
+    let mut result = serde_json::json!({
         "run_id": run_id,
         "launch": state(records.launch, "unavailable"),
         "terminal": state(terminal, "not-observed"),
         "egress_log": egress_log,
-    })))
+    });
+    if teardown.is_some() {
+        result["teardown"] = state(teardown, "not-observed");
+    }
+    Ok(Some(result))
 }
 
 /// An `events` position: a byte offset in one run's log. The run's prefix

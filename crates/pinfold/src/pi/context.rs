@@ -1,5 +1,7 @@
 //! The project: its root folder, and whether Git crosses it.
 
+use crate::core::process::CommandGuard;
+
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -68,7 +70,8 @@ impl Context {
         }
         let output = crossing::git_command(&self.root)
             .args(["rev-parse", "--show-toplevel"])
-            .output()?;
+            .stdin(std::process::Stdio::null())
+            .output_guarded()?;
         if output.status.success()
             && let Ok(top) = std::str::from_utf8(&output.stdout)
         {

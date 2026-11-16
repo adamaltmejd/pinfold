@@ -1,0 +1,103 @@
+PINFOLD_CPUS exit=125 category=resources marker=absent restore=same-generation
+PINFOLD_MEMORY exit=125 category=resources marker=absent restore=same-generation
+allow-order exit=125 category=allow marker=absent restore=same-generation
+profile-name exit=125 category=profile marker=absent restore=same-generation
+profile-user-to-builtin exit=125 category=profile marker=absent restore=pending
+profile-user-to-builtin restore=same-generation
+image-reference exit=125 category=image.ref marker=absent restore=same-generation
+image-source exit=125 category=image.source marker=absent restore=same-generation
+NOT-RUN image.id: requires distinct prepared IMAGE2
+route-name exit=125 category=routes.declarations marker=absent restore=same-generation
+route-kind exit=125 category=routes.declarations marker=absent restore=same-generation
+route-provider exit=125 category=routes.declarations marker=absent restore=same-generation
+route-target exit=125 category=routes.declarations marker=absent restore=same-generation
+route-optional-target exit=125 category=routes.declarations marker=absent restore=same-generation
+route-header exit=125 category=routes.declarations marker=absent restore=same-generation
+route-prefix exit=125 category=routes.declarations marker=absent restore=same-generation
+route-optional-prefix exit=125 category=routes.declarations marker=absent restore=same-generation
+route-source exit=125 category=routes.declarations marker=absent restore=same-generation
+route-value-changed exit=125 category=routes.values marker=absent restore=same-generation
+route-value-empty exit=125 category=routes.values marker=absent restore=same-generation
+route-value-absent exit=125 category=routes.values marker=absent restore=same-generation
+forwarded-bytes exit=125 category=env.values marker=absent restore=same-generation
+forwarded-empty exit=125 category=env.values marker=absent restore=same-generation
+forwarded-absent exit=125 category=env.names marker=absent restore=same-generation
+forwarded-added exit=125 category=env.names marker=absent restore=same-generation
+roots-config exit=125 category=roots.config marker=absent restore=same-generation
+roots-state exit=125 category=roots.state marker=absent restore=same-generation
+roots-cache exit=125 category=roots.cache marker=absent restore=same-generation
+roots-home exit=125 category=roots.home marker=absent restore=same-generation
+roots-codex_home exit=125 category=roots.codex_home marker=absent restore=same-generation
+original-policy deny=403/not-allowlisted allowed-fixture=receipt static-credentials=checked
+exclusions argv/cwd/TERM recipe/seed/share join=same-generation no-Git-sync missing-seed=not-reseeded
+metadata-scan raw/hex-credentials=absent snapshot/fingerprint-keys=absent files=9 limit=16MiB-per-file opaque-disks=not-scanned
+simultaneous-first one-generation=8e38024386dda05e866aa7f4fe12fff5ff84f5a87ee2e7fe9bf21362d532ec45 clients=2
+surviving client fixture request=RECEIPT after peer SIGKILL
+first-client-kill survivor completed; last-departure retired
+final-departure-join: [('leave', b''), ('join', 0, b'RACE-MARKER\n', b'')]
+final-departure-keep: [('leave', b''), ('keep', 0, b'', b'')]
+final-departure-stop: [('leave', b''), ('stop', 0, b'', b'')]
+kept-without-clients and signal-departure passed
+linux expected=0 decoded-EXIT=0 debugger-held-client=True stop=0 client=0
+linux expected=23 decoded-EXIT=23 debugger-held-client=True stop=0 client=23
+linux expected=125 decoded-EXIT=125 debugger-held-client=True stop=0 client=125
+linux expected=126 decoded-EXIT=126 debugger-held-client=True stop=0 client=126
+linux expected=127 decoded-EXIT=127 debugger-held-client=True stop=0 client=127
+linux stale-stop: observed generation held across teardown/replacement; old stop=0 replacement marker=STILL-ALIVE fresh stop=0
+['--', 'sh', '-c', 'cat; printf "ERR\\000" >&2'] exit=0 out=b'A\x00B' err=b'ERR\x00'
+literal argv/help, guest symlink/missing cwd refusals, execute-only cwd and exact Herdr first-word label passed in same generation
+malformed/unknown/version/oversize/truncated/stalled/wrong-generation frames refused without keep/policy change
+stop-terminal={'detail': None, 'reason': 'signal', 'run_id': '1cbec4bfe0e4ec2b8b3fbe50cabfff6b6709dd1a04f826d1922572a31cf7817a', 'time': '2026-11-16T14:06:31Z'}
+kept no-client: state bytes preserved by dry-run; scoped disk removal refused; exclusive executable lock denied
+join left checkout unchanged; explicit Borrow push/fetch and stopped-project transient push/fetch passed
+stdin EOF retained a running lease until FIFO release
+last-client SIGKILL completed teardown and sessions-ended/null; witness socket unchanged
+active owner SIGKILL: incomplete client=125; witness usable; no inferred terminal; checked restart=ACTIVE-RECOVERED
+kept owner crash: no terminal fabricated; read-only dirty refusal followed by RW recovery and read-only control
+actual cleanup failure: observed=0 result=125; foreign bytes preserved; targeted recovery and restart passed
+actual cleanup failure: observed=23 result=23; foreign bytes preserved; targeted recovery and restart passed
+exclusive executable lock available after both kept owners stopped
+PASS long-state bytes=220; lifecycle, dirty-disk recovery, crossing and cleanup-status cases
+unreadable claim: backing inode/size/full SHA256 unchanged across refusal
+unreadable claim: pre-existing guest marker/control continued, exit=0
+unreadable claim: new-only admission and disk reporting continued with record warning
+readability repair retained live named-disk protection; identical B request worked after normal A down
+readable unknown liveness: named disk pinned; unrelated existing/new admission, reporting and verified-dead targeted recovery succeeded
+identity readability repair permitted checked orphan retirement and writable recovery with original marker
+PASS scoped claim protection and positive controls; no global clean/prune/image removal
+independent-pty-1: {"code": 0, "observed": "DRIVER_PID=21230\nFIRST=xterm-256color:truecolor:/usr/bin/perl:22 71\nTTY_READY\nRESIZE=41 101\nDRIVER_STTY before=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0' after=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0'\nDRIVER_RESULT=0,True,True\n", "restored": true, "sane": true}
+independent-pty-2: {"code": 0, "observed": "DRIVER_PID=21231\nFIRST=vt100:24bit:perl:33 92\nTTY_READY\nRESIZE=51 121\nDRIVER_STTY before=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0' after=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0'\nDRIVER_RESULT=0,True,True\n", "restored": true, "sane": true}
+PASS simultaneous first dimensions, TERM/COLORTERM, exact HERDR_AGENT, independent resize and full terminal restoration; same kept generation
+exit=143 termios-restored=True stty-sane=True zero-bytes=4095 output=b"DRIVER_PID=20349\nCMD-READY\nDRIVER_STTY before=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0' after=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0'\nDRIVER_RESULT=143,True,True\n"
+exit=0 termios-restored=True stty-sane=False zero-bytes=0 output=b"DRIVER_PID=20391\nALREADY-RAWDRIVER_STTY before=b'0:4:bf:a00:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0' after=b'0:4:bf:a00:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0'\nDRIVER_RESULT=0,True,False\n"
+exit=125 termios-restored=True stty-sane=True zero-bytes=0 output=b"DRIVER_PID=20431\npinfold: command: Operation not permitted (os error 1)\nDRIVER_STTY before=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0' after=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0'\nDRIVER_RESULT=125,True,True\n"
+PASS selected extra terminal cases; blocked-output=True
+PASS immediate dimensions, terminal identity, resize, termios and mutable-flag restoration
+exit=125 stdout=b'' stderr=b'pinfold init exec: terminal size: Not a tty (os error 25)\n'
+redirected bytes=b'REDIRECTED'
+exit=0 termios-restored=True stty-sane=True zero-bytes=0 output=b"DRIVER_PID=20730\n0 0\nDRIVER_STTY before=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0' after=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0'\nDRIVER_RESULT=0,True,True\n"
+exit=125 termios-restored=True stty-sane=True zero-bytes=0 output=b"DRIVER_PID=20735\npinfold: command: Operation not permitted (os error 1)\nDRIVER_STTY before=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0' after=b'500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0'\nDRIVER_RESULT=125,True,True\n"
+PASS terminal review cases
+exit=143 foreground-helper-settings-untouched=True; host-SIGTTOU=default; handed=True
+Linux attachment 15 refused; 14 ran/exec/stat; public stdin EOF down; raw exec created no project lease
+protected dangling-ancestor path and worktree refusals left target absent; Git/external-root control succeeded; platform plain-folder contract passed
+before-locator: barrier hit; claim=False retiring=None children=0 terminal-preserved=True checked-restart=True
+after-locator: barrier hit; claim=False retiring=None children=0 terminal-preserved=True checked-restart=True
+after-claim: barrier hit; claim=True retiring=False children=0 terminal-preserved=True checked-restart=True
+identity-before-write: barrier hit; claim=True retiring=False children=1 terminal-preserved=True checked-restart=True
+identity-before-sync: barrier hit; claim=True retiring=False children=1 terminal-preserved=True checked-restart=True
+identity-synced: barrier hit; claim=True retiring=False children=1 terminal-preserved=True checked-restart=True
+gate-released: barrier hit; claim=True retiring=False children=1 terminal-preserved=True checked-restart=True
+before-retirement: barrier hit; claim=True retiring=False children=0 terminal-preserved=True checked-restart=True
+after-retirement: barrier hit; claim=True retiring=True children=0 terminal-preserved=True checked-restart=True
+after-identity-delete: barrier hit; claim=True retiring=True children=0 terminal-preserved=True checked-restart=True
+starter-death: barrier hit; claim=True retiring=False children=0 terminal-preserved=True checked-restart=True inherited-lock=True contender=True
+preclaim-stop: gate=after-locator/before-claim stop=125/owner-timeout seconds=10.00 locator=unchanged launch=held
+preclaim-control: required gate hit; repeated start=0 marker=STARTUP-CONTROL same-owner=True stop=0
+lost-keep-ack: required gate hit; repeated start=0 marker=STARTUP-CONTROL same-owner=True stop=0 starter=SIGKILL inherited-launch=held lost-keep-ack=survived
+sync-stop: real post-merge curl held by HTTP receipt; stop=0 starter=125 CMD=absent restart=SYNC-CONTROL allowed-route=SYNC-RELEASED
+PASS preclaim timeout, committed-Keep acknowledgement loss, and real initial-sync stop barriers
+refusal reason=disk-in-use detail=cannot verify existing disk attachments: ownership record Some("414c2983611c30a7ab55a758f69f68a83e300cbfaf5ac90a085ef48eae4b95a9.owner"): Permission denied (os error 13)
+['disk', 'rm', '--all'] exit=0 out=b'Removed pi-p-bd9e5a030c79-home\nRemoved pi-p-bd9e5a030c79-project\n' err=b''
+client exit=1 out=b'' err=b''
+{"base":null,"event":"built","id":"sha256:fa91fcdfa0c63606362e849eb43a6468adb7068325b6a9a93c367000d02231b9","image":"probe-owner-check","labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"","dev.pinfold.profile":"","dev.pinfold.project":""},"latest":"localhost/pinfold/image-probe-owner-check:latest","ref":"localhost/pinfold/image-probe-owner-check:18e88a8e397c929b-13486"}

@@ -1,0 +1,19 @@
+helper-drain: stand-in leader exited0; child held stdout/stderr in leader group; normal one-second drain expired; descendant kernel exit before return check; seconds=1.66; client=0; CMD=DRAIN-CONTROL/0
+helper-drain control: real Git delegated; next start=0/REAL-GIT-CONTROL
+helper-stop: stand-in leader exited0; child held stdout/stderr in leader group; GDB proved leader zombie after exit observation; descendant kernel exit before return check; seconds=1.32; client=125; CMD=absent
+helper-stop control: real Git delegated; next start=0/REAL-GIT-CONTROL
+helper-signal: stand-in leader exited0; child held stdout/stderr in leader group; GDB proved leader zombie after exit observation; descendant kernel exit before return check; seconds=1.32; client=143; CMD=absent
+helper-signal control: real Git delegated; next start=0/REAL-GIT-CONTROL
+cleanup exact own helper descendants/boxes/disks=True
+ROUND4-HELPERS-PASS
+probe descriptor listing: {"0": "/dev/null", "1": "/dev/null", "2": "/dev/null", "3": "pipe:[57693]", "4": "pipe:[57694]"}; no lock/lease/proxy/control descriptors
+probe cancellation: actual namespace child SIGSTOP; stop=0 launcher=125/stopped CMD=absent; child/owner kernel exit; seconds=0.07; next start=0/PROBE-CONTROL
+cleanup exact own boxes/disks=True; debugger privileged, binary ordinary uid
+terminal-control: real pending route audit failure; ordinary audit departure; write calls=1 owner-retry=False; timestamp/content/inode=unchanged; client=0 audit-log=reported; locator=absent
+terminal-control restart=0/TERMINAL-CONTROL
+terminal-retry: real pending route audit failure; own record path became directory for first finish, then restored before owner retry; write calls=1 owner-retry=True; timestamp/content/inode=unchanged; client=0 audit-log=reported; locator=absent
+terminal-retry restart=0/TERMINAL-CONTROL
+cleanup exact own boxes/disks/record fixtures=True
+transfer controls: project push=0/pushed fetch=0/fetched; public box fetch=0/fetched; guest HEAD=independent host remote ref; generation unchanged
+cleanup exact own boxes/disks=True
+ROUND4-CASES-PASS

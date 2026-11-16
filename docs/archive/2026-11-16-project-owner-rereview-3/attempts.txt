@@ -1,0 +1,8 @@
+Initial strict-check failures: unused CommandGuard/CommandExt imports on macOS; missing Linux-only CommandGuard import in artifacts.rs. Imports corrected before final checks.
+Linux compiler excerpt:
+    help: trait `CommandGuard` which provides `spawn_guarded` is implemented but not in scope; perhaps you want to import it
+
+Initial Linux helper-signal debugger attempts (not acceptance passes):
+    received signal SIGPIPE, Broken pipe.
+    Python Exception <class 'ChildProcessError'>: [Errno 10] No child processes
+Debugger now passes SIGPIPE and starts the detached starter waitpid thread immediately after detachment. Final run asserts the actual collected status 143.

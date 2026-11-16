@@ -1,0 +1,8 @@
+Mac final: df -g /System/Volumes/Data => 30 GiB; statvfs available >=12 GiB enforced before checks.
+Mac: CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo fmt --check => 0
+Mac: CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings => Finished dev profile in 2.65s; exit 0
+Mac: CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo build --locked => Finished dev profile in 4.04s; exit 0
+Linux fresh VM: cargo fmt --check; RUSTC_WRAPPER= cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings; RUSTC_WRAPPER= cargo build --locked --target x86_64-unknown-linux-musl => FINAL-CHECKS:0
+Linux fresh fixture image and output controls => FRESH-CONTROLS-PASS
+Scope: git diff --name-only ea56b49..HEAD => source and ARCHITECTURE only; prior records, README, dependencies and excluded paths unchanged.
+Linux final diagnostic changes: fmt/strict musl Clippy/build => FINAL-DIAGNOSTIC-CHECKS:0; malformed-claim/full-stderr control => 0/DISCOVERY-CONTROL, 1.02s.

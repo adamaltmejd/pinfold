@@ -2,6 +2,8 @@
 //! and held in the proxy's memory only. Also the files a login route's
 //! agents read in the box. Renderers never receive resolved credentials.
 
+use crate::core::process::CommandGuard;
+
 use std::fs::{File, TryLockError};
 use std::io::{self, Write};
 use std::process::{Command, Stdio};
@@ -57,16 +59,22 @@ impl Codex {
     /// or `None` when the token has lapsed. Within [`REFRESH_WINDOW`] of
     /// `exp` the helper is asked again, at most once per [`ASK_INTERVAL`];
     /// a failed ask keeps the old token until it lapses.
-    pub fn headers(&self) -> Option<Vec<(String, String)>> {
+    pub fn headers(&self, cancel: &AtomicBool) -> Option<Vec<(String, String)>> {
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
         let (token, asked) = &mut *state;
         if token.exp <= now() + REFRESH_WINDOW && asked.elapsed() >= ASK_INTERVAL {
             *asked = Instant::now();
-            if let Ok(fresh) = token_from_helper(None) {
+            if let Ok(fresh) = token_from_helper(Some(cancel)) {
                 *token = fresh;
             }
         }
-        (token.exp > now()).then(|| {
+        (token.exp > now() && !cancel.load(std::sync::atomic::Ordering::Acquire)).then(|| {
             vec![
                 (
                     "Authorization".to_string(),
@@ -144,7 +152,7 @@ fn ask(
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .spawn()
+            .spawn_guarded()
             .map_err(|_| io::Error::other("helper launch failed"))?,
     );
     let mut stdin = child.0.stdin.take().expect("piped stdin");

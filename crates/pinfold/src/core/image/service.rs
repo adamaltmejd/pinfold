@@ -1,5 +1,7 @@
 //! Image operations, selected independently of box execution.
 
+use crate::core::process::CommandGuard;
+
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Read};
 use std::path::Path;
@@ -121,7 +123,7 @@ pub(crate) fn build(
     cache_flags: &[&str],
     request: &BuildRequest,
 ) -> io::Result<Result<(), String>> {
-    let (reader, writer) = io::pipe()?;
+    let (reader, writer) = crate::core::process::pipe()?;
     let mut command = std::process::Command::new(program);
     if cfg!(target_os = "macos") {
         // Apple includes color settings in the shared builder's identity
@@ -148,7 +150,7 @@ pub(crate) fn build(
         .stdin(Stdio::null())
         .stdout(writer.try_clone()?)
         .stderr(writer);
-    let child = command.spawn();
+    let child = command.spawn_guarded();
     // The command holds the pipe's write ends, and the read below ends only
     // once every write end is closed.
     drop(command);

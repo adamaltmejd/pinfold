@@ -4,11 +4,11 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak, mpsc};
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -37,35 +37,131 @@ const MAX_HEADERS: usize = 64;
 /// ClientHello.
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// How long a forwarded body may go without data, or a tunnel with no
 /// bytes in either direction, before the proxy closes it.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 const MAX_CONNECTIONS: usize = 64;
 
+static LOOKUPS: AtomicUsize = AtomicUsize::new(0);
+
+struct LookupSlot;
+
+impl Drop for LookupSlot {
+    fn drop(&mut self) {
+        LOOKUPS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 const MAX_LOG_BYTES: u64 = 128 * 1024 * 1024;
 
-/// Serve the bound box socket and create its log. `codex` is the token of
-/// the login routes on the host's Codex login, asked of the host helper at
-/// `up`. The accept thread is never stopped: each owner exits right after
-/// teardown, which deletes the socket.
+/// A proxy's listener, request workers and in-memory credentials.
+pub struct Server {
+    pub failure: oneshot::Receiver<()>,
+    control: Arc<Control>,
+    worker: Option<thread::JoinHandle<io::Result<()>>>,
+}
+
+impl Server {
+    /// Stop admission and interrupt every registered stream before joining.
+    pub fn stop(&mut self) -> io::Result<()> {
+        self.control.stop();
+        self.worker.take().map_or(Ok(()), |worker| {
+            worker
+                .join()
+                .map_err(|_| io::Error::other("proxy worker panicked"))?
+        })
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
+#[derive(Default)]
+struct Control {
+    cancelled: AtomicBool,
+    connections: Mutex<Vec<Weak<Connection>>>,
+}
+
+impl Control {
+    fn stop(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        for connection in self
+            .connections
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter_map(Weak::upgrade)
+        {
+            connection.stop();
+        }
+    }
+}
+
+struct Connection {
+    control: Arc<Control>,
+    client: UnixStream,
+    servers: Mutex<Vec<TcpStream>>,
+}
+
+impl Connection {
+    fn cancelled(&self) -> bool {
+        self.control.cancelled.load(Ordering::Acquire)
+    }
+
+    fn stop(&self) {
+        let _ = self.client.shutdown(Shutdown::Both);
+        for server in self
+            .servers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+        {
+            let _ = server.shutdown(Shutdown::Both);
+        }
+    }
+
+    fn server(&self, server: &TcpStream) -> io::Result<()> {
+        let mut servers = self.servers.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.cancelled() {
+            let _ = server.shutdown(Shutdown::Both);
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        servers.push(server.try_clone()?);
+        Ok(())
+    }
+}
+
+/// Serve the bound box socket and create its log. All request workers,
+/// including a synchronous token refresh, are joined by `Server::stop`.
 pub fn start(
     listener: UnixListener,
     egress: &Egress,
     codex: Option<login::Token>,
     log: PathBuf,
-) -> io::Result<oneshot::Receiver<()>> {
+) -> io::Result<Server> {
     let rules = Arc::new(Rules::new(egress, codex)?);
-    // The log exists before the first decision, so it is found from the
-    // host even for a box that made no request.
     runs::open_log(&log)?;
+    listener.set_nonblocking(true)?;
     let (failure, failed) = oneshot::channel();
     let log = Arc::new(AuditLog {
         path: log,
         failure: Mutex::new(Some(failure)),
     });
-    thread::spawn(move || serve(listener, rules, log));
-    Ok(failed)
+    let control = Arc::new(Control::default());
+    let worker_control = control.clone();
+    let worker =
+        thread::Builder::new().spawn(move || serve(listener, rules, log, worker_control))?;
+    Ok(Server {
+        failure: failed,
+        control,
+        worker: Some(worker),
+    })
 }
 
 struct Rules {
@@ -176,38 +272,90 @@ fn tls_config() -> Arc<ClientConfig> {
     Arc::clone(config)
 }
 
-fn serve(listener: UnixListener, rules: Arc<Rules>, log: Arc<AuditLog>) {
-    let active = Arc::new(AtomicUsize::new(0));
-    for client in listener.incoming() {
-        let Ok(mut client) = client else {
-            continue;
-        };
-        if log.failed() {
-            return;
+fn serve(
+    listener: UnixListener,
+    rules: Arc<Rules>,
+    log: Arc<AuditLog>,
+    control: Arc<Control>,
+) -> io::Result<()> {
+    let mut workers: Vec<thread::JoinHandle<()>> = Vec::new();
+    let accepted = (|| {
+        while !control.cancelled.load(Ordering::Acquire) && !log.failed() {
+            let mut index = 0;
+            while index < workers.len() {
+                if workers[index].is_finished() {
+                    workers
+                        .swap_remove(index)
+                        .join()
+                        .map_err(|_| io::Error::other("proxy request worker panicked"))?;
+                } else {
+                    index += 1;
+                }
+            }
+            let mut ready = [PollFd::new(listener.as_fd(), PollFlags::POLLIN)];
+            match poll(&mut ready, 100u16) {
+                Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
+                Err(error) => return Err(error.into()),
+                Ok(_) => {}
+            }
+            let accepted = {
+                let _guard = crate::core::process::fork_guard();
+                listener.accept()
+            };
+            let (mut client, _) = match accepted {
+                Ok(client) => client,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+                Err(error) => return Err(error),
+            };
+            // Darwin may inherit the listener's nonblocking flag.
+            client.set_nonblocking(false)?;
+            if client.set_write_timeout(Some(IDLE_TIMEOUT)).is_err() {
+                continue;
+            }
+            let connection = Arc::new(Connection {
+                control: control.clone(),
+                client: client.try_clone()?,
+                servers: Mutex::new(Vec::new()),
+            });
+            {
+                let mut connections = control
+                    .connections
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                connections.retain(|connection| connection.strong_count() > 0);
+                connections.push(Arc::downgrade(&connection));
+                if connection.cancelled() {
+                    connection.stop();
+                }
+            }
+            if workers.len() >= MAX_CONNECTIONS {
+                refuse(&mut client, &log, "", 503, "connection cap");
+                continue;
+            }
+            let rules = Arc::clone(&rules);
+            let log = log.clone();
+            workers.push(
+                thread::Builder::new().spawn(move || handle(client, &rules, &log, &connection))?,
+            );
         }
-        // Darwin ignores MSG_DONTWAIT on a blocking socket, so on macOS a
-        // `Deadline` send can block past its poll. This bounds each such
-        // send; Linux never reaches it.
-        if client.set_write_timeout(Some(IDLE_TIMEOUT)).is_err() {
-            continue;
+        Ok(())
+    })();
+    drop(listener);
+    control.stop();
+    let mut joined = Ok(());
+    for worker in workers {
+        if worker.join().is_err() {
+            joined = Err(io::Error::other("proxy request worker panicked"));
         }
-        if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
-            active.fetch_sub(1, Ordering::SeqCst);
-            refuse(&mut client, &log, "", 503, "connection cap");
-            continue;
-        }
-        let rules = Arc::clone(&rules);
-        let log = log.clone();
-        let active = Arc::clone(&active);
-        thread::spawn(move || {
-            handle(client, &rules, &log);
-            active.fetch_sub(1, Ordering::SeqCst);
-        });
     }
+    accepted.and(joined)
 }
 
-fn handle(mut client: UnixStream, rules: &Rules, log: &AuditLog) {
-    if log.failed() || client.set_read_timeout(Some(HEADER_TIMEOUT)).is_err() {
+fn handle(mut client: UnixStream, rules: &Rules, log: &AuditLog, connection: &Connection) {
+    if connection.cancelled()
+        || log.failed()
+        || client.set_read_timeout(Some(HEADER_TIMEOUT)).is_err()
+    {
         return;
     }
     let head = match read_head(&mut client) {
@@ -234,17 +382,23 @@ fn handle(mut client: UnixStream, rules: &Rules, log: &AuditLog) {
         return refuse(&mut client, log, "", 400, "malformed request");
     };
     if method == "CONNECT" {
-        return connect(&mut client, rules, log, target);
+        return connect(&mut client, rules, log, target, connection);
     }
     match parse_plain(method, version, target, request.headers) {
-        Ok(request) => plain(&mut client, rules, log, &request),
+        Ok(request) => plain(&mut client, rules, log, &request, connection),
         Err(reason) => refuse(&mut client, log, "", 400, reason),
     }
 }
 
 /// Handle one CONNECT: an allowlisted host on port 443 only, with the
 /// ClientHello's SNI checked before the server is dialed.
-fn connect(client: &mut UnixStream, rules: &Rules, log: &AuditLog, target: &str) {
+fn connect(
+    client: &mut UnixStream,
+    rules: &Rules,
+    log: &AuditLog,
+    target: &str,
+    connection: &Connection,
+) {
     let Some((host, port)) = target.rsplit_once(':').filter(|(host, _)| !host.is_empty()) else {
         return refuse(client, log, "", 400, "malformed request");
     };
@@ -260,7 +414,7 @@ fn connect(client: &mut UnixStream, rules: &Rules, log: &AuditLog, target: &str)
     if port.parse::<u16>() != Ok(443) {
         return refuse(client, log, host, 403, "port not allowed");
     }
-    let Some(address) = resolve_checked(client, log, host, host, 443) else {
+    let Some(address) = resolve_checked(client, log, host, host, 443, connection) else {
         return;
     };
     if respond(client, 200).is_err() {
@@ -278,7 +432,7 @@ fn connect(client: &mut UnixStream, rules: &Rules, log: &AuditLog, target: &str)
     if record(log, host, "allowed", "allowlisted", None).is_err() {
         return;
     }
-    if let Some(server) = dial(address) {
+    if let Some(server) = dial(address, connection) {
         if Deadline(server.as_fd(), IDLE_TIMEOUT)
             .write_all(&hello)
             .is_err()
@@ -291,7 +445,13 @@ fn connect(client: &mut UnixStream, rules: &Rules, log: &AuditLog, target: &str)
 
 /// Handle one plain HTTP request: an allowlisted host or a route, port 80
 /// only, framed by Content-Length, one request per connection.
-fn plain(client: &mut UnixStream, rules: &Rules, log: &AuditLog, request: &Plain) {
+fn plain(
+    client: &mut UnixStream,
+    rules: &Rules,
+    log: &AuditLog,
+    request: &Plain,
+    connection: &Connection,
+) {
     if request.port != 80 {
         return refuse(client, log, &request.host, 403, "port not allowed");
     }
@@ -300,13 +460,13 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &AuditLog, request: &Plain
     }
     let host = request.host.to_ascii_lowercase();
     if let Some(upstream) = rules.routes.get(&host) {
-        route(client, log, request, upstream);
+        route(client, log, request, upstream, connection);
         return;
     }
     if !rules.allows(&host) {
         return refuse(client, log, &request.host, 403, "not allowlisted");
     }
-    let Some(address) = resolve_checked(client, log, &request.host, &host, 80) else {
+    let Some(address) = resolve_checked(client, log, &request.host, &host, 80, connection) else {
         return;
     };
     if record(log, &request.host, "allowed", "allowlisted", None).is_err() {
@@ -314,7 +474,7 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &AuditLog, request: &Plain
     }
     let _ = forward(
         client,
-        dial(address).map(DeadlineStream::new),
+        dial(address, connection).map(DeadlineStream::new),
         request,
         &request.authority,
         &[],
@@ -327,7 +487,13 @@ fn plain(client: &mut UnixStream, rules: &Rules, log: &AuditLog, request: &Plain
 /// `https` target is resolved and checked like an allowlisted host, then
 /// dialed over TLS. A codex login whose token has lapsed is refused before
 /// anything is dialed.
-fn route(client: &mut UnixStream, log: &AuditLog, request: &Plain, upstream: &Upstream) {
+fn route(
+    client: &mut UnixStream,
+    log: &AuditLog,
+    request: &Plain,
+    upstream: &Upstream,
+    connection: &Connection,
+) {
     let mut report = |status: Option<u16>| {
         let path = request
             .target
@@ -357,13 +523,16 @@ fn route(client: &mut UnixStream, log: &AuditLog, request: &Plain, upstream: &Up
         Upstream::Inject {
             target, headers, ..
         } => (target, &target.authority, Cow::Borrowed(headers.as_slice())),
-        Upstream::Codex { target, login } => match login.headers() {
+        Upstream::Codex { target, login } => match login.headers(&connection.control.cancelled) {
             Some(headers) => (target, &target.authority, Cow::Owned(headers)),
             None => return refuse(client, log, &request.host, 403, "login lapsed"),
         },
     };
     if !target.https {
-        let server = dial((target.host.as_str(), target.port)).map(DeadlineStream::new);
+        let server = lookup(&target.host, target.port, false, connection)
+            .ok()
+            .and_then(|address| dial(address, connection))
+            .map(DeadlineStream::new);
         let _ = forward(
             client,
             server,
@@ -375,11 +544,17 @@ fn route(client: &mut UnixStream, log: &AuditLog, request: &Plain, upstream: &Up
         );
         return;
     }
-    let Some(address) = resolve_checked(client, log, &request.host, &target.host, target.port)
-    else {
+    let Some(address) = resolve_checked(
+        client,
+        log,
+        &request.host,
+        &target.host,
+        target.port,
+        connection,
+    ) else {
         return;
     };
-    let server = dial_tls(address, &target.host);
+    let server = dial_tls(address, &target.host, connection);
     let _ = forward(
         client,
         server,
@@ -399,8 +574,16 @@ fn resolve_checked(
     log_host: &str,
     host: &str,
     port: u16,
+    connection: &Connection,
 ) -> Option<SocketAddr> {
-    match network::resolve(host, port) {
+    if connection.cancelled() {
+        return None;
+    }
+    let resolved = lookup(host, port, true, connection);
+    if connection.cancelled() {
+        return None;
+    }
+    match resolved {
         Ok(address) => Some(address),
         Err(network::ResolveError::Forbidden(reason)) => {
             refuse(client, log, log_host, 403, reason);
@@ -463,10 +646,11 @@ impl Write for DeadlineStream {
 fn dial_tls(
     address: SocketAddr,
     host: &str,
+    request: &Connection,
 ) -> Option<StreamOwned<ClientConnection, DeadlineStream>> {
     let name = ServerName::try_from(host.to_string()).ok()?;
     let mut connection = ClientConnection::new(tls_config(), name).ok()?;
-    let mut server = DeadlineStream::new(dial(address)?);
+    let mut server = DeadlineStream::new(dial(address, request)?);
     while connection.is_handshaking() {
         connection.complete_io(&mut server).ok()?;
     }
@@ -795,15 +979,174 @@ fn head_well_formed(head: &[u8]) -> bool {
     })
 }
 
-/// Connect to the first address and time its reads out after
-/// `IDLE_TIMEOUT`. Only a route's host service is given a name, resolved
-/// here unchecked; every other caller passes the address it checked.
-fn dial(address: impl ToSocketAddrs) -> Option<TcpStream> {
-    let address = address.to_socket_addrs().ok()?.next()?;
-    let server = TcpStream::connect(address).ok()?;
+/// A system resolver may not return. Its worker holds only the name and
+/// lookup parameters; cancellation discards its result without dialing.
+fn lookup(
+    host: &str,
+    port: u16,
+    checked: bool,
+    connection: &Connection,
+) -> Result<SocketAddr, network::ResolveError> {
+    if connection.cancelled() {
+        return Err(network::ResolveError::Unresolved);
+    }
+    LOOKUPS
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            (count < MAX_CONNECTIONS).then_some(count + 1)
+        })
+        .map_err(|_| network::ResolveError::Unresolved)?;
+    let slot = LookupSlot;
+    let host = host.to_string();
+    let (send, receive) = mpsc::sync_channel(1);
+    let worker = thread::Builder::new()
+        .name("proxy-lookup".into())
+        .spawn(move || {
+            let _slot = slot;
+            let resolved = if checked {
+                network::resolve(&host, port)
+            } else {
+                (host.as_str(), port)
+                    .to_socket_addrs()
+                    .ok()
+                    .and_then(|mut addresses| addresses.next())
+                    .ok_or(network::ResolveError::Unresolved)
+            };
+            let _ = send.send(resolved);
+        })
+        .map_err(|_| network::ResolveError::Unresolved)?;
+    let deadline = Instant::now() + LOOKUP_TIMEOUT;
+    loop {
+        if connection.cancelled() || Instant::now() >= deadline {
+            return Err(network::ResolveError::Unresolved);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match receive.recv_timeout(remaining.min(Duration::from_millis(50))) {
+            Ok(result) => {
+                let _ = worker.join();
+                return if connection.cancelled() || Instant::now() >= deadline {
+                    Err(network::ResolveError::Unresolved)
+                } else {
+                    result
+                };
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = worker.join();
+                return Err(network::ResolveError::Unresolved);
+            }
+        }
+    }
+}
+
+/// Connect to an already resolved address and bound idle reads/writes.
+fn dial(address: SocketAddr, connection: &Connection) -> Option<TcpStream> {
+    if connection.cancelled() {
+        return None;
+    }
+    let server = connect_upstream(address, connection)?;
     server.set_read_timeout(Some(IDLE_TIMEOUT)).ok()?;
     // Deadline still needs this fallback on Darwin's blocking sockets.
     server.set_write_timeout(Some(IDLE_TIMEOUT)).ok()?;
+    Some(server)
+}
+
+/// Register the socket before connect so teardown can interrupt a pending dial.
+fn connect_upstream(address: SocketAddr, connection: &Connection) -> Option<TcpStream> {
+    use nix::libc;
+    let domain = if address.is_ipv4() {
+        libc::AF_INET
+    } else {
+        libc::AF_INET6
+    };
+    #[cfg(target_os = "macos")]
+    let creation = crate::core::process::fork_guard();
+    #[cfg(target_os = "linux")]
+    let kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
+    #[cfg(target_os = "macos")]
+    let kind = libc::SOCK_STREAM;
+    // SAFETY: socket has no pointer arguments and returns a new descriptor.
+    let fd = unsafe { libc::socket(domain, kind, 0) };
+    if fd < 0 {
+        return None;
+    }
+    // SAFETY: this descriptor belongs exclusively to this stream.
+    let server = unsafe { TcpStream::from_raw_fd(fd) };
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: fd is live; process creation is excluded until CLOEXEC is set.
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+            return None;
+        }
+        drop(creation);
+        server.set_nonblocking(true).ok()?;
+    }
+    connection.server(&server).ok()?;
+    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let length = match address {
+        SocketAddr::V4(address) => {
+            let mut raw: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+            raw.sin_family = libc::AF_INET as _;
+            raw.sin_port = address.port().to_be();
+            raw.sin_addr.s_addr = u32::from_ne_bytes(address.ip().octets());
+            #[cfg(target_os = "macos")]
+            {
+                raw.sin_len = std::mem::size_of_val(&raw) as _;
+            }
+            // SAFETY: storage is aligned for and larger than sockaddr_in.
+            unsafe {
+                std::ptr::write((&mut storage as *mut libc::sockaddr_storage).cast(), raw);
+            }
+            std::mem::size_of::<libc::sockaddr_in>()
+        }
+        SocketAddr::V6(address) => {
+            let mut raw: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
+            raw.sin6_family = libc::AF_INET6 as _;
+            raw.sin6_port = address.port().to_be();
+            raw.sin6_addr.s6_addr = address.ip().octets();
+            raw.sin6_flowinfo = address.flowinfo().to_be();
+            raw.sin6_scope_id = address.scope_id();
+            #[cfg(target_os = "macos")]
+            {
+                raw.sin6_len = std::mem::size_of_val(&raw) as _;
+            }
+            // SAFETY: storage is aligned for and larger than sockaddr_in6.
+            unsafe {
+                std::ptr::write((&mut storage as *mut libc::sockaddr_storage).cast(), raw);
+            }
+            std::mem::size_of::<libc::sockaddr_in6>()
+        }
+    };
+    // SAFETY: storage contains the matching address structure and length.
+    let connected = unsafe {
+        libc::connect(
+            fd,
+            (&storage as *const libc::sockaddr_storage).cast(),
+            length as _,
+        )
+    };
+    if connected < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EINPROGRESS) {
+        return None;
+    }
+    if connected < 0 {
+        loop {
+            if connection.cancelled() {
+                return None;
+            }
+            let mut ready = [PollFd::new(server.as_fd(), PollFlags::POLLOUT)];
+            match poll(&mut ready, 100u16) {
+                Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
+                Err(_) => return None,
+                Ok(_) => break,
+            }
+        }
+        if server.take_error().ok()?.is_some() {
+            return None;
+        }
+    }
+    if connection.cancelled() {
+        return None;
+    }
+    server.set_nonblocking(false).ok()?;
     Some(server)
 }
 

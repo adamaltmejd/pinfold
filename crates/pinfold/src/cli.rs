@@ -1,4 +1,6 @@
+use crate::core::process::CommandGuard;
 use std::collections::{BTreeMap, BTreeSet};
+
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -23,7 +25,9 @@ use crate::pi::launch::utf8;
 /// spaces, the description. Printed on stdout by `--help`, on stderr for a
 /// malformed invocation, and one line at a time by [`syntax`].
 pub const USAGE: &str = "\
-pinfold -- CMD [args…]           run a command in this project's box
+pinfold -- CMD [args…]           start or join a project session
+pinfold start                   keep this project's box
+pinfold stop                    stop its observed box
 pinfold push                     this checkout's branches into its box as refs/remotes/host/*
 pinfold fetch                    its box's branches into refs/remotes/pinfold/*
 pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this project's image, or a profile's; prints the ref
@@ -59,7 +63,11 @@ pinfold box fetch BOX --repo GUEST_REPO --into REPO";
 pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
     result.unwrap_or_else(|error| {
         let _ = writeln!(io::stderr(), "pinfold {verb}: {error}");
-        if verb == "--" { 125 } else { 1 }
+        if matches!(verb, "--" | "start" | "stop" | "__project-owner") {
+            125
+        } else {
+            1
+        }
     })
 }
 
@@ -314,27 +322,35 @@ pub(crate) fn report_crossing(
     remote: &str,
     result: Result<crossing::Refs, CrossingError>,
 ) -> i32 {
+    let (report, code) = crossing_report(verb, name, remote, result);
+    println!("{report}");
+    code
+}
+
+pub(crate) fn crossing_report(
+    verb: &str,
+    name: &str,
+    remote: &str,
+    result: Result<crossing::Refs, CrossingError>,
+) -> (serde_json::Value, i32) {
     match result {
-        Ok(refs) => {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "event": if verb == "push" { "pushed" } else { "fetched" },
-                    "box": name,
-                    "remote": remote,
-                    "refs": refs,
-                })
-            );
-            0
-        }
-        Err(CrossingError::Refused(reason, detail)) => refused("box", Some(name), reason, &detail),
-        Err(CrossingError::Failed(detail)) => {
-            println!(
-                "{}",
-                serde_json::json!({ "event": "failed", "box": name, "detail": detail })
-            );
-            1
-        }
+        Ok(refs) => (
+            serde_json::json!({
+                "event": if verb == "push" { "pushed" } else { "fetched" },
+                "box": name,
+                "remote": remote,
+                "refs": refs,
+            }),
+            0,
+        ),
+        Err(CrossingError::Refused(reason, detail)) => (
+            serde_json::json!({ "event": "refused", "box": name, "reason": reason, "detail": detail }),
+            1,
+        ),
+        Err(CrossingError::Failed(detail)) => (
+            serde_json::json!({ "event": "failed", "box": name, "detail": detail }),
+            1,
+        ),
     }
 }
 
@@ -1129,7 +1145,7 @@ fn config_edit() -> io::Result<i32> {
         .arg(script)
         .arg("sh")
         .arg(&path)
-        .status()?;
+        .status_guarded()?;
     Ok(exit_code(status))
 }
 

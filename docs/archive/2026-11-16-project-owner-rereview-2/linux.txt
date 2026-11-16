@@ -1,0 +1,26 @@
+catalog-stop: required lock-contention barrier; heartbeat-kept-starter=12s CMD=absent; launcher=125 stop=0/stopped; owner exited with competitor held; seconds=0.06; claim/locator=absent launch=available; restart=0/LOCK-CONTROL
+catalog-signal: required lock-contention barrier; heartbeat-kept-starter=12s CMD=absent; launcher=143 SIGTERM; owner exited with competitor held; seconds=0.06; claim/locator=absent launch=available; restart=0/LOCK-CONTROL
+lease-stop: required lock-contention barrier; heartbeat-kept-starter=12s CMD=absent; launcher=125 stop=0/stopped; owner exited with competitor held; seconds=0.05; claim/locator=absent launch=available; restart=0/LOCK-CONTROL
+lease-signal: required lock-contention barrier; heartbeat-kept-starter=12s CMD=absent; launcher=143 SIGTERM; owner exited with competitor held; seconds=0.06; claim/locator=absent launch=available; restart=0/LOCK-CONTROL
+cleanup exact own boxes/disks=True
+audit-clean: pending real route; observed=0 client=0 reason=sessions-ended terminal=sessions-ended/null generation=clean seconds=0.11; same-box allowed HTTP=AUDIT-CONTROL; locator=absent
+audit-clean control: repaired own log; next start=0/AUDIT-RESTART; normal departure
+audit-clean: pending real route; observed=23 client=23 reason=sessions-ended terminal=sessions-ended/null generation=clean seconds=0.11; same-box allowed HTTP=AUDIT-CONTROL; locator=absent
+audit-clean control: repaired own log; next start=0/AUDIT-RESTART; normal departure
+audit-leave: pending real route; observed=0 client=0 reason=audit-log terminal=audit-log/null generation=notified seconds=0.12; same-box allowed HTTP=AUDIT-CONTROL; locator=absent
+audit-leave control: repaired own log; next start=0/AUDIT-RESTART; normal departure
+audit-leave: pending real route; observed=23 client=23 reason=audit-log terminal=audit-log/null generation=notified seconds=0.12; same-box allowed HTTP=AUDIT-CONTROL; locator=absent
+audit-leave control: repaired own log; next start=0/AUDIT-RESTART; normal departure
+audit-removal: pending real route; observed=0 client=0 reason=audit-log terminal=audit-log/null generation=notified seconds=30.16; same-box allowed HTTP=AUDIT-CONTROL; locator=absent
+audit-removal control: repaired own log; next start=0/AUDIT-RESTART; normal departure
+audit-removal: pending real route; observed=23 client=23 reason=audit-log terminal=audit-log/null generation=notified seconds=30.16; same-box allowed HTTP=AUDIT-CONTROL; locator=absent
+audit-removal control: repaired own log; next start=0/AUDIT-RESTART; normal departure
+cleanup own boxes/disks=True
+leave-signal Linux: actual VMM held before EXEC; transport timeout=10.00s -> Err; CMD=absent; Draining before SIGTERM; client=143; signal-to-return=0.03s; restart=0/LEAVE-CONTROL
+leave-signal Linux: observed=0; Draining before SIGTERM; client=0; signal-to-return=0.02s; restart=0/LEAVE-CONTROL
+leave-signal Linux: observed=23; Draining before SIGTERM; client=23; signal-to-return=0.02s; restart=0/LEAVE-CONTROL
+cleanup own boxes/disks=True
+fresh-record: required prepare_fresh barrier; launcher=125/owner-unavailable CMD=absent; seeded bytes/inodes preserved; exact seed removed; checked restart=0/FRESH-CONTROL
+fresh-state: required prepare_fresh barrier; launcher=125/owner-unavailable CMD=absent; seeded bytes/inodes preserved; exact seed removed; checked restart=0/FRESH-CONTROL
+fresh-socket: required prepare_fresh barrier; launcher=125/owner-unavailable CMD=absent; seeded bytes/inodes preserved; original socket still answered PONG; exact seed removed; checked restart=0/FRESH-CONTROL
+cleanup exact own fixtures/boxes/disks=True

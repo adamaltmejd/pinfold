@@ -1,14 +1,17 @@
 //! The Apple `container` runtime adapter.
 
+use crate::core::process::{AsyncCommandGuard, CommandGuard};
+
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use nix::libc;
@@ -59,48 +62,6 @@ pub(crate) fn preparation_unremoved(error: &io::Error) -> bool {
 
 #[cfg(not(target_os = "linux"))]
 mod transport;
-
-/// `container exec -i` changes its inherited stdin's shared file flags.
-/// Save them in the command owner, which can outlive an interrupted exec.
-#[cfg(not(target_os = "linux"))]
-pub(crate) struct StdinFlags(Option<libc::c_int>);
-
-#[cfg(not(target_os = "linux"))]
-impl StdinFlags {
-    pub(crate) fn save() -> io::Result<Option<Self>> {
-        if !std::io::IsTerminal::is_terminal(&io::stdin()) {
-            return Ok(None);
-        }
-        // SAFETY: F_GETFL reads the flags of the inherited stdin descriptor.
-        let flags = unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_GETFL) };
-        if flags < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(Some(Self(Some(flags))))
-    }
-
-    pub(crate) fn restore(mut self) -> io::Result<()> {
-        self.restore_saved()
-    }
-
-    fn restore_saved(&mut self) -> io::Result<()> {
-        let Some(flags) = self.0.take() else {
-            return Ok(());
-        };
-        // SAFETY: restores exactly the flags read from this descriptor.
-        if unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_SETFL, flags) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-impl Drop for StdinFlags {
-    fn drop(&mut self) {
-        let _ = self.restore_saved();
-    }
-}
 
 /// The volume behind disk `name`. Apple's volumes are host-wide and a disk
 /// belongs to one state root, so the root's key prefixes the name.
@@ -178,10 +139,10 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
         .arg("init")
         .args(proxy_socket.map(|_| GUEST_PROXY_SOCKET));
     command
-        .spawn()
+        .spawn_guarded()
         .map(|mut child| {
             let stderr = child.stderr.take();
-            Client(child, stderr, None)
+            Client(child, stderr, None, None, None)
         })
         .map_err(|error| spawn_error("container", error))
 }
@@ -214,9 +175,22 @@ fn init_mount(init: &Path) -> OsString {
 
 /// The attached `container run` process that owns a box.
 #[cfg_attr(target_os = "linux", expect(dead_code))]
-pub struct Client(Child, Option<ChildStderr>, Option<StderrDrain>);
+pub struct Client(
+    Child,
+    Option<ChildStderr>,
+    Option<StderrDrain>,
+    Option<tokio::task::JoinHandle<()>>,
+    Option<Removal>,
+);
 
 const STARTUP_DIAGNOSTICS: usize = 64 * 1024;
+const REMOVAL_TIMEOUT: Duration = Duration::from_secs(300);
+
+struct Removal {
+    worker: tokio::task::JoinHandle<io::Result<()>>,
+    cancel: std::sync::Arc<AtomicBool>,
+    deadline: tokio::time::Instant,
+}
 
 #[cfg_attr(target_os = "linux", expect(dead_code))]
 impl Client {
@@ -287,13 +261,20 @@ impl Client {
             .transpose()
             .map_err(|error| format!("box diagnostics failed: {error}"))?;
         // Keep stdout drained; stderr has its own thread during blocking finish_start.
-        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+        self.3 = Some(tokio::spawn(async move {
+            while let Ok(Some(_)) = lines.next_line().await {}
+        }));
         Ok(())
+    }
+
+    pub fn exited(&mut self) -> io::Result<bool> {
+        self.0.try_wait().map(|status| status.is_some())
     }
 
     /// Wait until the box ends on its own or is stopped.
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
         let status = self.0.wait().await?;
+        self.close_stdout().await;
         let diagnostics = self.close_stderr();
         if !diagnostics.is_empty() {
             let bytes: Vec<_> = diagnostics.into_iter().collect();
@@ -312,6 +293,43 @@ impl Client {
         self.2.take().map_or_else(VecDeque::new, StderrDrain::close)
     }
 
+    async fn close_stdout(&mut self) {
+        if let Some(worker) = self.3.as_mut() {
+            worker.abort();
+            let _ = worker.await;
+            self.3.take();
+        }
+    }
+
+    async fn remove(&mut self, name: &str) -> io::Result<()> {
+        if self.4.is_none() {
+            let name = name.to_string();
+            let cancel = std::sync::Arc::new(AtomicBool::new(false));
+            let worker_cancel = cancel.clone();
+            self.4 = Some(Removal {
+                worker: tokio::task::spawn_blocking(move || {
+                    crate::core::process::with_cancellation(worker_cancel, || Apple.down(&name))
+                }),
+                cancel,
+                deadline: tokio::time::Instant::now() + REMOVAL_TIMEOUT,
+            });
+        }
+        let removal = self.4.as_mut().expect("retained removal worker");
+        let result = match tokio::time::timeout_at(removal.deadline, &mut removal.worker).await {
+            Ok(result) => result.map_err(io::Error::other).and_then(|result| result),
+            Err(_) => {
+                removal.cancel.store(true, Ordering::Release);
+                let _ = (&mut removal.worker).await;
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "cleanup-timeout: native runtime removal",
+                ))
+            }
+        };
+        self.4.take();
+        result
+    }
+
     /// Stop and remove a ready box. True when the stop was one pinfold
     /// requested of a running box, which syncs its disks.
     pub async fn down(&mut self, name: &str) -> io::Result<bool> {
@@ -319,12 +337,10 @@ impl Client {
         let requested = matches!(self.0.try_wait(), Ok(None));
         // Runtime removal waits for attached output to close. Keep its
         // drain running on the owner while the runtime command blocks.
-        let name = name.to_string();
-        let removed = tokio::task::spawn_blocking(move || Apple.down(&name))
-            .await
-            .map_err(io::Error::other)
-            .and_then(|result| result);
+        let removed = self.remove(name).await;
+        let _ = self.0.start_kill();
         let _ = self.0.wait().await;
+        self.close_stdout().await;
         removed.map(|()| requested)
     }
 
@@ -338,7 +354,8 @@ impl Client {
         // readiness failed.
         let _ = self.0.start_kill();
         let status = self.0.wait().await;
-        (Apple.down(name).map(|()| requested), status)
+        self.close_stdout().await;
+        (self.remove(name).await.map(|()| requested), status)
     }
 }
 
@@ -364,7 +381,7 @@ impl StderrDrain {
 
     fn start_fd(stderr: OwnedFd) -> io::Result<Self> {
         crate::core::pipe::nonblocking(&stderr, "box diagnostics")?;
-        let (stop, stopping) = io::pipe()?;
+        let (stop, stopping) = crate::core::process::pipe()?;
         let worker = std::thread::Builder::new()
             .name("box-diagnostics".into())
             .spawn(move || {
@@ -452,6 +469,65 @@ impl Drop for StderrDrain {
     }
 }
 
+struct PreparationInput<'a> {
+    input: std::process::ChildStdin,
+    cancel: &'a AtomicBool,
+}
+
+impl Write for PreparationInput<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        loop {
+            if self.cancel.load(Ordering::Acquire) {
+                // Buffered writers retry Interrupted rather than ending the fill.
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "disk preparation cancelled",
+                ));
+            }
+            match self.input.write(bytes) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    let mut ready = [nix::poll::PollFd::new(
+                        self.input.as_fd(),
+                        nix::poll::PollFlags::POLLOUT,
+                    )];
+                    match nix::poll::poll(&mut ready, 20u16) {
+                        Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                result => return result,
+            }
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.input.flush()
+    }
+}
+
+fn wait_preparation(
+    child: &mut std::process::Child,
+    cancel: Option<&AtomicBool>,
+) -> io::Result<ExitStatus> {
+    let Some(cancel) = cancel else {
+        return child.wait();
+    };
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if cancel.load(Ordering::Acquire) {
+            let _ = child.kill();
+            child.wait()?;
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        match nix::poll::poll(&mut [], 20u16) {
+            Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 impl Runtime for Apple {
     fn preflight(&self) -> io::Result<()> {
         let reported = self.version()?;
@@ -468,17 +544,16 @@ impl Runtime for Apple {
         init: &Path,
         proxy_socket: Option<&Path>,
         seeding: Option<&Seeding>,
+        cancel: &AtomicBool,
     ) -> io::Result<BoxInfo> {
         // Init can report ready before Apple records the box running.
         // Wait even without egress, before the caller's first exec.
-        let actual = wait_until_running(name)?;
+        let actual = wait_until_running(name, cancel)?;
         if proxy_socket.is_some() {
             make_proxy_connectable(name)?;
         }
         if let Some(seeding) = seeding {
-            copy_in(name, init, &seeding.guest, true, |out| {
-                disk::send_seeds(&seeding.relative, &seeding.seeds, out)
-            })?;
+            copy_in(name, init, seeding, cancel)?;
         }
         Ok(actual)
     }
@@ -499,9 +574,8 @@ impl Runtime for Apple {
         let Err(error) = output(&["container", "rm", name]) else {
             return Ok(());
         };
-        // Another process may have removed the box between the list and this
-        // call; a box the runtime no longer lists counts as removed.
-        if self.list()?.iter().all(|box_| box_.id != name) {
+        // A targeted native absence is removal evidence; display omission is not.
+        if container(name)?.is_none() {
             return Ok(());
         }
         Err(error)
@@ -528,26 +602,11 @@ impl Runtime for Apple {
     }
 
     fn list(&self) -> io::Result<Vec<BoxInfo>> {
-        Ok(containers()?
-            .into_iter()
-            .map(|container| {
-                let configuration = container.configuration;
-                let digest = configuration.image.descriptor.digest;
-                BoxInfo {
-                    id: container.id,
-                    labels: configuration.labels,
-                    image_id: digest
-                        .strip_prefix("sha256:")
-                        .unwrap_or(&digest)
-                        .to_string(),
-                    image_ref: configuration.image.reference,
-                    created: configuration.created,
-                    running: container.status.state == "running",
-                    stopped: container.status.state == "stopped"
-                        && container.status.started_date.is_some(),
-                }
-            })
-            .collect())
+        Ok(containers()?.into_iter().map(box_info).collect())
+    }
+
+    fn inspect(&self, name: &str) -> io::Result<Option<BoxInfo>> {
+        Ok(container(name)?.map(box_info))
     }
 
     fn list_disks(&self) -> io::Result<Vec<DiskInfo>> {
@@ -602,7 +661,7 @@ impl Runtime for Apple {
         return transport::exec(command, size, context.tty, context.cancel);
         #[cfg(target_os = "linux")]
         { command }
-            .status()
+            .status_guarded()
             .map_err(|error| spawn_error("container", error))
     }
 
@@ -631,7 +690,11 @@ impl Runtime for Apple {
         generation: &str,
         directories: &[Directory],
         fills: &[Fill],
+        cancel: Option<&AtomicBool>,
     ) -> io::Result<()> {
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
         if names.is_empty() && directories.is_empty() {
             return Ok(());
         }
@@ -716,7 +779,7 @@ impl Runtime for Apple {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
-                .spawn()
+                .spawn_guarded()
                 .map_err(|error| spawn_error("container", error))?;
             spawned = true;
             let result = (|| {
@@ -725,13 +788,27 @@ impl Runtime for Apple {
                 )?;
                 let sent = (|| {
                     let mut input = child.stdin.take().expect("setup stdin is piped");
-                    for fill in fills {
-                        disk::send(fill, &mut input)?;
+                    if let Some(cancel) = cancel {
+                        crate::core::pipe::nonblocking(&input, "disk preparation")?;
+                        let mut input = PreparationInput { input, cancel };
+                        for fill in fills {
+                            disk::send(fill, &mut input)?;
+                        }
+                    } else {
+                        for fill in fills {
+                            disk::send(fill, &mut input)?;
+                        }
                     }
                     Ok::<_, io::Error>(())
                 })();
-                let status = child.wait()?;
+                let status = if sent.is_err() {
+                    let _ = child.kill();
+                    child.wait()
+                } else {
+                    wait_preparation(&mut child, cancel)
+                };
                 let stderr = drain.close().into_iter().collect();
+                let status = status?;
                 if status.success() {
                     sent?;
                 }
@@ -754,9 +831,13 @@ impl Runtime for Apple {
         // Apple reports a container `running` for a moment after `run` returns,
         // and `rm` refuses it then; `run --rm` removes it just as late. `stop`
         // returns once it has stopped, after which `rm` succeeds.
-        let stopped = output(&["container", "stop", name]);
-        let removed = output(&["container", "rm", name]);
-        let unremoved = removed.is_err() && !matches!(container(name), Ok(None));
+        let (stopped, removed, unremoved) =
+            crate::core::process::with_deadline(REMOVAL_TIMEOUT, |_| {
+                let stopped = output(&["container", "stop", name]);
+                let removed = output(&["container", "rm", name]);
+                let unremoved = removed.is_err() && !matches!(container(name), Ok(None));
+                (stopped, removed, unremoved)
+            });
         let leftover = match (&stopped, &removed) {
             (Ok(_), Ok(_)) => String::new(),
             _ => format!("; removing helper {name}: {stopped:?}, {removed:?}"),
@@ -831,19 +912,22 @@ fn exec_command(
     Ok(command)
 }
 
-/// Wait, bounded, until `list` reports box `name` running. Apple records
+/// Wait, bounded, until inspection reports box `name` running. Apple records
 /// `.running` only after the box's first process starts, so `ready` can
 /// arrive first; an exec is refused in that gap.
-fn wait_until_running(name: &str) -> io::Result<BoxInfo> {
+fn wait_until_running(name: &str, cancel: &AtomicBool) -> io::Result<BoxInfo> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let state = Apple.list()?.into_iter().find(|box_| box_.id == name);
+        if cancel.load(Ordering::Acquire) {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        let state = Apple.inspect(name)?;
         match state {
             Some(box_) if box_.running => return Ok(box_),
             _ if Instant::now() >= deadline => {
                 return Err(io::Error::other(match state {
                     Some(_) => format!("box {name:?} is not running after ready"),
-                    _ => format!("the runtime does not list box {name:?} after ready"),
+                    _ => format!("the runtime does not report box {name:?} after ready"),
                 }));
             }
             _ => std::thread::sleep(Duration::from_millis(100)),
@@ -867,39 +951,122 @@ fn make_proxy_connectable(name: &str) -> io::Result<()> {
     .map(drop)
 }
 
-/// Run `init receive GUEST` in box `name` as the box user with `stream`
-/// written to its stdin: a new disk's `from` copy, or with `missing`, the
-/// profile's seeds, each written only when absent.
-fn copy_in(
-    name: &str,
-    init: &Path,
-    guest: &Path,
-    missing: bool,
-    stream: impl FnOnce(&mut dyn io::Write) -> io::Result<()>,
-) -> io::Result<()> {
-    let mut child = std::process::Command::new("container")
-        .args(["exec", "-i", name])
-        .arg(init)
-        .args(["init", "receive"])
-        .args(missing.then_some("--missing"))
-        .arg(guest)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|error| spawn_error("container", error))?;
-    let mut stdin = child.stdin.take().expect("piped stdin");
-    let sent = stream(&mut stdin);
-    drop(stdin);
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "copy into {}: {}",
-            guest.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
+/// Copy missing profile seeds without buffering another copy of their bytes.
+fn copy_in(name: &str, init: &Path, seeding: &Seeding, cancel: &AtomicBool) -> io::Result<()> {
+    let mut child = crate::core::process::GroupChild::spawn(
+        std::process::Command::new("container")
+            .args(["exec", "-i", name])
+            .arg(init)
+            .args(["init", "receive", "--missing"])
+            .arg(&seeding.guest)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped()),
+    )
+    .map_err(|error| spawn_error("container", error))?;
+    let mut input = child.take_stdin().expect("piped seed input");
+    let mut stderr = child.take_stderr();
+    crate::core::pipe::nonblocking(&input, "seed copy")?;
+    if let Some(stderr) = stderr.as_ref() {
+        crate::core::pipe::nonblocking(stderr, "seed diagnostics")?;
     }
-    sent
+    let mut diagnostics = Vec::new();
+    let sent = disk::send_seeds(
+        &seeding.relative,
+        &seeding.seeds,
+        &mut SeedInput {
+            input: &mut input,
+            stderr: &mut stderr,
+            diagnostics: &mut diagnostics,
+            cancel,
+        },
+    );
+    drop(input);
+    if let Err(error) = sent {
+        return Err(io::Error::new(error.kind(), format!("seed copy: {error}")));
+    }
+    let mut exited = None;
+    let status = loop {
+        if cancel.load(Ordering::Acquire) {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        if exited.is_none() && child.exited()? {
+            exited = Some(Instant::now());
+        }
+        crate::core::process::drain(&mut stderr, &mut diagnostics, Some(16 * 1024))?;
+        if let Some(began) = exited
+            && (stderr.is_none() || began.elapsed() >= Duration::from_secs(1))
+        {
+            break child.finish()?;
+        }
+        seed_poll(None, stderr.as_ref())?;
+    };
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "copy into {}: {}",
+            seeding.guest.display(),
+            String::from_utf8_lossy(&diagnostics).trim()
+        )))
+    }
+}
+
+struct SeedInput<'a> {
+    input: &'a mut std::process::ChildStdin,
+    stderr: &'a mut Option<std::process::ChildStderr>,
+    diagnostics: &'a mut Vec<u8>,
+    cancel: &'a AtomicBool,
+}
+
+impl Write for SeedInput<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        loop {
+            if self.cancel.load(Ordering::Acquire) {
+                // Buffered writers retry Interrupted rather than ending the copy.
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "startup cancelled",
+                ));
+            }
+            crate::core::process::drain(self.stderr, self.diagnostics, Some(16 * 1024))?;
+            match self.input.write(bytes) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    seed_poll(Some(self.input), self.stderr.as_ref())?
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                result => return result,
+            }
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn seed_poll(
+    input: Option<&std::process::ChildStdin>,
+    stderr: Option<&std::process::ChildStderr>,
+) -> io::Result<()> {
+    let mut fds = [
+        libc::pollfd {
+            fd: input.map_or(-1, AsRawFd::as_raw_fd),
+            events: libc::POLLOUT,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: stderr.map_or(-1, AsRawFd::as_raw_fd),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, 100) } < 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 /// One `container list --format json` entry, as much as pinfold needs.
@@ -979,9 +1146,50 @@ fn containers() -> io::Result<Vec<ListedContainer>> {
     parse_json("container list", &json)
 }
 
-/// The listed container with this id, if the runtime has one.
+fn box_info(container: ListedContainer) -> BoxInfo {
+    let configuration = container.configuration;
+    let digest = configuration.image.descriptor.digest;
+    BoxInfo {
+        id: container.id,
+        labels: configuration.labels,
+        image_id: digest
+            .strip_prefix("sha256:")
+            .unwrap_or(&digest)
+            .to_string(),
+        image_ref: configuration.image.reference,
+        created: configuration.created,
+        running: container.status.state == "running",
+        stopped: container.status.state == "stopped" && container.status.started_date.is_some(),
+    }
+}
+
+/// Inspect one native target; only its explicit not-found response proves absence.
 fn container(name: &str) -> io::Result<Option<ListedContainer>> {
-    Ok(containers()?.into_iter().find(|entry| entry.id == name))
+    let output = std::process::Command::new("container")
+        .args(["inspect", "--", name])
+        .stdin(Stdio::null())
+        .output_guarded()
+        .map_err(|error| spawn_error("container", error))?;
+    if !output.status.success() {
+        let absent = format!("Error: container not found: {name}");
+        if output.status.code() == Some(1)
+            && output.stdout.is_empty()
+            && output.stderr.trim_ascii() == absent.as_bytes()
+        {
+            return Ok(None);
+        }
+        return Err(io::Error::other(format!(
+            "container inspect: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let mut containers: Vec<ListedContainer> = parse_json("container inspect", &output.stdout)?;
+    if containers.len() != 1 || containers[0].id != name {
+        return Err(io::Error::other(
+            "container inspect returned an unmatched target",
+        ));
+    }
+    Ok(containers.pop())
 }
 
 /// One `container volume list --format json` entry, as much as pinfold needs.

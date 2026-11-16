@@ -1,0 +1,9 @@
+helper-drain: stand-in leader exited0; child held stdout/stderr in leader group; normal one-second drain expired; descendant kernel exit before return check; seconds=3.31; client=0; CMD=DRAIN-CONTROL/0
+helper-drain control: real Git delegated; next start=0/REAL-GIT-CONTROL
+helper-stop: stand-in leader exited0; child held stdout/stderr in leader group; private stderr capacity=65536; write=131073 completed; leader still zombie; descendant kernel exit before return check; seconds=1.57; client=125; CMD=absent
+helper-stop control: real Git delegated; next start=0/REAL-GIT-CONTROL
+helper-signal: stand-in leader exited0; child held stdout/stderr in leader group; private stderr capacity=65536; write=131073 completed; leader still zombie; descendant kernel exit before return check; seconds=1.45; client=143; CMD=absent
+helper-signal control: real Git delegated; next start=0/REAL-GIT-CONTROL
+cleanup exact own helper descendants/boxes/disks=True
+transfer controls: project push=0/pushed fetch=0/fetched; public box fetch=0/fetched; guest HEAD=independent host remote ref; generation unchanged
+cleanup exact own boxes/disks=True

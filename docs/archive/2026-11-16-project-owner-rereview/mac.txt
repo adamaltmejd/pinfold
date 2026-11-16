@@ -1,0 +1,27 @@
+fill-stop: boundary=public-box-up; actual native helper SIGSTOP confirmed; owner-client=0 down/signal ready=absent; owner/helper kernel NOTE_EXIT; claim=absent; seconds=0.61; same-name restart=0/DISK-CONTROL; full64MiB fill=correct
+fill-stop: own boxes/disks removed; fixture=$W/fill-stop
+fill-signal: boundary=public-box-up; actual native helper SIGSTOP confirmed; owner-client=0 down/signal ready=absent; owner/helper kernel NOTE_EXIT; claim=absent; seconds=0.53; same-name restart=0/DISK-CONTROL; full64MiB fill=correct
+fill-signal: own boxes/disks removed; fixture=$W/fill-signal
+volume-stop: boundary=public-box-up; actual native helper SIGSTOP confirmed; owner-client=0 down/signal ready=absent; owner/helper kernel NOTE_EXIT; claim=absent; seconds=0.22; same-name restart=0/DISK-CONTROL; attached-own-disks=12
+volume-stop: own boxes/disks removed; fixture=$W/volume-stop
+volume-signal: boundary=public-box-up; actual native helper SIGSTOP confirmed; owner-client=0 down/signal ready=absent; owner/helper kernel NOTE_EXIT; claim=absent; seconds=0.11; same-name restart=0/DISK-CONTROL; attached-own-disks=12
+volume-signal: own boxes/disks removed; fixture=$W/volume-signal
+Preparation cleanup: helper removal and disk undo each bounded at 300 seconds; no image or shared resource removed
+startup-stop: real HTTP-held sync; client=125/stopped full-generation=True inspect=True owner-timeout=False CMD=absent teardown-seconds=12.75 terminal=signal
+startup-stop control: checked restart=0/STARTUP-CONTROL fixture hook removed normal teardown=True
+startup-exited: real HTTP-held sync; client=125/exited full-generation=True inspect=True owner-timeout=False CMD=absent teardown-seconds=0.64 terminal=exited
+startup-exited control: checked restart=0/STARTUP-CONTROL fixture hook removed normal teardown=True
+startup-audit-log: real HTTP-held sync; client=125/audit-log full-generation=True inspect=True owner-timeout=False CMD=absent teardown-seconds=0.68 terminal=audit-log
+startup-audit-log control: checked restart=0/STARTUP-CONTROL fixture hook removed normal teardown=True
+cleanup-failure observed=0 client=0 stderr=teardown-failed run-record=teardown-failed foreign-bytes=unchanged
+cleanup-failure observed=23 client=23 stderr=teardown-failed run-record=teardown-failed foreign-bytes=unchanged
+failed-output observed=0 client=0 diagnostic=present target=/dev/null
+failed-output observed=23 client=23 diagnostic=present target=/dev/null
+writable-output control=0/WRITABLE-CONTROL
+full-stderr relay failure: completed=0 client=0 seconds=1.77 caller-flags=unchanged; parent never drained stderr
+blocked-crossing-output: guest ref independently committed; SIGTERM=143 seconds=0.00 caller-flags=unchanged owner=same-generation; parent did not drain stdout
+crossing-output control: JSON=pushed independent-ref=host-HEAD same-owner CMD=0/CROSSING-CONTROL
+cleanup own boxes/disks=True
+project-volume-stop: actual native volume command SIGSTOP confirmed; stop=0; launcher=125; CMD=absent; owner/helper kernel NOTE_EXIT; claim/locator=absent launch=available; seconds=0.24; same-fixture restart=0/PROJECT-VOLUME-CONTROL
+project-volume allocation sample: owned entries=2 KiB=13464
+project-volume-signal: actual native volume command SIGSTOP confirmed; stop=not invoked; launcher=143; CMD=absent; owner/helper kernel NOTE_EXIT; claim/locator=absent launch=available; seconds=0.12; same-fixture restart=0/PROJECT-VOLUME-CONTROL
