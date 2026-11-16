@@ -102,8 +102,13 @@ In your working folder:
 One detached owner serves each canonical project host-wide, independently of
 HOME and XDG roots. Each `pinfold -- CMD` starts or joins a session. Ending or
 disconnecting one client leaves other sessions running. The box ends when no
-session, crossing lease or keep remains. A client signal ends only its session
-and sends no signal to its guest command.
+session, crossing lease or keep remains. When a client departs, its guest helper
+sends TERM to that command's process group, then KILL after two seconds if needed.
+This includes client signals, terminal closure, SIGKILL and control connection
+loss. `pinfold start` keeps the box, not a departed session's command group.
+Normal command completion preserves background children. Processes that leave
+the group, including with `setsid`, may survive departure. `pinfold stop` ends
+everything in the box.
 
 `pinfold start` keeps the box without clients. Matching repeated starts
 succeed. `pinfold stop` stops its observed generation, without loading current
@@ -126,8 +131,8 @@ Arguments after `--` pass literally to the command, including `--help`. Command 
 pass through; project setup failure or external teardown before observed completion uses 125. CMD owns stdout;
 pinfold diagnostics use stderr.
 
-Apple TTY execution uses a private host PTY; pinfold owns the caller's
-terminal settings and forwards input and window changes. Native Apple clients
+Apple project TTY execution uses a guest PTY. Public Apple TTY exec uses a
+private host PTY. Pinfold owns the caller's terminal settings and forwards input and window changes. Native Apple clients
 hold no caller-terminal descriptors; non-TTY streams use separate pipes.
 The box-owning client's startup diagnostics stay in memory, bounded to 64 KiB,
 and are escaped when printed. After ready, its latest 64 KiB of stderr stays

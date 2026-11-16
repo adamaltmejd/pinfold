@@ -36,16 +36,21 @@
 //!   work cgroup, syncs and unmounts every attachment, answered CLEAN or
 //!   FAILED (text).
 
+pub(crate) use super::exec_wire::{
+    EXEC, EXIT, FAILED, RESIZE, STDERR, STDIN, STDIN_END, STDOUT, read_frame, write_frame,
+};
+
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{self, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -74,22 +79,11 @@ const WORK: &str = "/sys/fs/cgroup/work";
 
 pub const BOOT: u8 = b'B';
 pub const READY: u8 = b'R';
-pub const FAILED: u8 = b'F';
 pub const ENV: u8 = b'V';
 pub const ENV_SET: u8 = b'v';
-pub const EXEC: u8 = b'X';
 pub const STAT: u8 = b'S';
-pub const STDIN: u8 = b'i';
-pub const STDIN_END: u8 = b'e';
-pub const RESIZE: u8 = b'w';
-pub const STDOUT: u8 = b'o';
-pub const STDERR: u8 = b'r';
-pub const EXIT: u8 = b'x';
 pub const UNMOUNT: u8 = b'U';
 pub const CLEAN: u8 = b'C';
-
-/// A frame's payload limit: argv and env together stay far below it.
-const FRAME_MAX: usize = 64 << 20;
 
 /// Where PID 1 builds the box's tree before `pivot_root`. The init disk
 /// is the kernel's root and holds `/pinfold`, `/dev` and `/mnt`.
@@ -911,7 +905,7 @@ fn request(mut connection: UnixStream, env: &Env) -> io::Result<()> {
                 .expect("env lock")
                 .clone()
                 .unwrap_or_default();
-            exec(connection, &payload, vars)
+            exec(connection, &payload, vars, None)
         }
         _ => write_frame(
             &mut connection,
@@ -929,9 +923,14 @@ fn pairs(fields: &mut Fields) -> io::Result<Vec<(OsString, OsString)>> {
 
 /// Run one EXEC request in its own session through `init exec`, which sets
 /// `oom_score_adj` 1000, and relay its stdio until it exits and its output
-/// ends. A host that goes away only closes stdin: pinfold never signals box
-/// work through exec.
-fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>) -> io::Result<()> {
+/// ends. Project commands stop their process group when their client departs.
+pub(super) fn exec(
+    connection: UnixStream,
+    payload: &[u8],
+    vars: Vec<(OsString, OsString)>,
+    departure: Option<(BorrowedFd<'_>, bool)>,
+) -> io::Result<()> {
+    let linger = departure.is_some();
     let mut fields = Fields(payload);
     let argv: Vec<OsString> = (0..fields.u32()?)
         .map(|_| fields.os())
@@ -944,7 +943,7 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
             .to_str()
             .ok_or_else(|| io::Error::other("non-UTF-8 execution metadata"))?,
     )?;
-    // Linux applies a known size when creating the PTY; init exec must not
+    // Apply a known size when creating the PTY; init exec must not
     // apply it a second time after the command's terminal exists.
     let window = metadata.window.take();
     let project = metadata.project_directory.is_some();
@@ -1030,15 +1029,26 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
     };
     drop(command);
 
+    let stop = project.then(|| Arc::new(AtomicBool::new(false)));
     let mut pumps = Vec::new();
     let input: Box<dyn Write + Send> = match &pty {
         Some(master) => {
-            pumps.push(pump(master.try_clone()?, STDOUT, &output)?);
+            pumps.push(pump(master.try_clone()?, STDOUT, &output, stop.clone())?);
             Box::new(master.try_clone()?)
         }
         None => {
-            pumps.push(pump(child.stdout.take().expect("piped"), STDOUT, &output)?);
-            pumps.push(pump(child.stderr.take().expect("piped"), STDERR, &output)?);
+            pumps.push(pump(
+                child.stdout.take().expect("piped"),
+                STDOUT,
+                &output,
+                stop.clone(),
+            )?);
+            pumps.push(pump(
+                child.stderr.take().expect("piped"),
+                STDERR,
+                &output,
+                stop.clone(),
+            )?);
             Box::new(child.stdin.take().expect("piped"))
         }
     };
@@ -1051,43 +1061,109 @@ fn exec(connection: UnixStream, payload: &[u8], vars: Vec<(OsString, OsString)>)
     thread::Builder::new()
         .spawn(move || relay_input(&mut reader, input, resize.as_ref(), &input_output))?;
 
-    let status = child.wait()?;
-    for pump in pumps {
-        let _ = pump.join();
+    let status = if project {
+        let (departure, socket) = departure.unwrap_or((connection.as_fd(), true));
+        super::session::wait(&mut child, departure, socket)?
+    } else {
+        child.wait()?
+    };
+    if !project {
+        for pump in pumps.drain(..) {
+            let _ = pump.join();
+        }
     }
     let code = status
         .code()
         .or_else(|| status.signal().map(|signal| 128 + signal))
         .unwrap_or(1);
-    write_frame(
-        &mut *output.lock().expect("output lock"),
-        EXIT,
-        &code.to_be_bytes(),
-    )?;
+    let result = if project {
+        let output = output.lock().expect("output lock");
+        write_frame(
+            &mut ExecOutput {
+                stream: &output,
+                stop: None,
+                deadline: Some(Instant::now() + Duration::from_secs(1)),
+            },
+            EXIT,
+            &code.to_be_bytes(),
+        )
+    } else {
+        write_frame(
+            &mut *output.lock().expect("output lock"),
+            EXIT,
+            &code.to_be_bytes(),
+        )
+    };
+    if let Some(stop) = &stop {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while pumps.iter().any(|pump| !pump.is_finished()) && Instant::now() < deadline {
+            match nix::poll::poll(&mut [], 10u16) {
+                Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+                Err(_) => break,
+            }
+        }
+        stop.store(true, Ordering::Release);
+        // Remaining background writers keep their pipes. Detached pumps drain
+        // and discard after command completion instead of giving them SIGPIPE.
+    }
     // Ends the input relay's read; the host has the exit code.
     let _ = connection.shutdown(std::net::Shutdown::Both);
-    Ok(())
+    if linger {
+        // Apple's per-exec helper must keep background writers' readers alive.
+        // Its native transport has already received EXIT and EOF.
+        for pump in pumps {
+            let _ = pump.join();
+        }
+    }
+    result
 }
 
 /// Copy `from` into STDOUT or STDERR frames until it ends. After the host
 /// goes away it keeps reading and discards, so box work never blocks on a
 /// full pipe.
 fn pump(
-    mut from: impl Read + Send + 'static,
+    mut from: impl Read + AsFd + Send + 'static,
     kind: u8,
     output: &Arc<Mutex<UnixStream>>,
+    stop: Option<Arc<AtomicBool>>,
 ) -> io::Result<thread::JoinHandle<()>> {
     let output = Arc::clone(output);
     thread::Builder::new().spawn(move || {
         let mut buffer = [0; 32 * 1024];
         let mut open = true;
         loop {
+            if let Some(stop) = &stop {
+                if stop.load(Ordering::Acquire) {
+                    open = false;
+                }
+                if open {
+                    let mut fds = [PollFd::new(from.as_fd(), PollFlags::POLLIN)];
+                    match nix::poll::poll(&mut fds, 100u16) {
+                        Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
+                        Ok(_) => {}
+                        Err(_) => break,
+                    }
+                }
+            }
             match from.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(read) => {
                     if open {
                         let mut output = output.lock().expect("output lock");
-                        open = write_frame(&mut *output, kind, &buffer[..read]).is_ok();
+                        open = if let Some(stop) = &stop {
+                            write_frame(
+                                &mut ExecOutput {
+                                    stream: &output,
+                                    stop: Some(stop),
+                                    deadline: None,
+                                },
+                                kind,
+                                &buffer[..read],
+                            )
+                            .is_ok()
+                        } else {
+                            write_frame(&mut *output, kind, &buffer[..read]).is_ok()
+                        };
                     }
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
@@ -1096,6 +1172,55 @@ fn pump(
             }
         }
     })
+}
+
+/// Project output must not hold cleanup behind an unread client socket.
+struct ExecOutput<'a> {
+    stream: &'a UnixStream,
+    stop: Option<&'a AtomicBool>,
+    deadline: Option<Instant>,
+}
+
+impl Write for ExecOutput<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        loop {
+            if self.stop.is_some_and(|stop| stop.load(Ordering::Acquire))
+                || self
+                    .deadline
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                return Err(io::ErrorKind::ConnectionAborted.into());
+            }
+            // MSG_DONTWAIT leaves the input relay's descriptor mode unchanged.
+            let sent = unsafe {
+                libc::send(
+                    self.stream.as_raw_fd(),
+                    bytes.as_ptr().cast(),
+                    bytes.len(),
+                    libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+                )
+            };
+            if sent >= 0 {
+                return Ok(sent as usize);
+            }
+            let error = io::Error::last_os_error();
+            match error.kind() {
+                io::ErrorKind::Interrupted => continue,
+                io::ErrorKind::WouldBlock => {
+                    let mut fds = [PollFd::new(self.stream.as_fd(), PollFlags::POLLOUT)];
+                    match nix::poll::poll(&mut fds, 100u16) {
+                        Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                _ => return Err(error),
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn relay_input(
@@ -1257,32 +1382,6 @@ fn accept_host(listener: &OwnedFd) -> Option<UnixStream> {
         Ok(peer) if peer.cid() == HOST_CID => Some(UnixStream::from(connection)),
         _ => None,
     }
-}
-
-pub(crate) fn write_frame(output: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
-    let length = u32::try_from(payload.len())
-        .ok()
-        .filter(|&length| length as usize <= FRAME_MAX)
-        .ok_or_else(|| io::Error::other("frame too large"))?;
-    let mut frame = Vec::with_capacity(5 + payload.len());
-    frame.push(kind);
-    frame.extend(length.to_be_bytes());
-    frame.extend(payload);
-    output.write_all(&frame)
-}
-
-/// Read one frame exactly, never past it: the boot connection's next bytes
-/// belong to the exec service.
-pub(crate) fn read_frame(input: &mut impl Read) -> io::Result<(u8, Vec<u8>)> {
-    let mut head = [0; 5];
-    input.read_exact(&mut head)?;
-    let length = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
-    if length > FRAME_MAX {
-        return Err(io::Error::other("frame too large"));
-    }
-    let mut payload = vec![0; length];
-    input.read_exact(&mut payload)?;
-    Ok((head[0], payload))
 }
 
 /// A frame payload's fields, read in order.

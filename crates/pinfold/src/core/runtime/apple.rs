@@ -651,6 +651,10 @@ impl Runtime for Apple {
         context: &ExecContext<'_>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
+        #[cfg(not(target_os = "linux"))]
+        if context.project_root.is_some() {
+            return project_exec(name, init, context, argv);
+        }
         let size = if context.tty {
             super::terminal::window()?
         } else {
@@ -869,6 +873,64 @@ impl Runtime for Apple {
         let stdout = output(&["container", "--version"])?;
         Ok(String::from_utf8_lossy(&stdout).trim().to_string())
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn copy_stream(input: &mut impl io::Read, output: &mut impl Write) -> io::Result<()> {
+    let mut bytes = [0; 32 * 1024];
+    loop {
+        let read = input.read(&mut bytes)?;
+        if read == 0 {
+            return Ok(());
+        }
+        output.write_all(&bytes[..read])?;
+    }
+}
+
+/// The native client owns only private pipes, never caller terminal fds.
+#[cfg(not(target_os = "linux"))]
+fn project_exec(
+    name: &str,
+    init: &Path,
+    context: &ExecContext<'_>,
+    argv: &[String],
+) -> io::Result<ExitStatus> {
+    use std::os::unix::net::UnixStream;
+    use std::os::unix::process::ExitStatusExt;
+    let (connection, bridge) = UnixStream::pair()?;
+    let mut command = std::process::Command::new("container");
+    command
+        .args(["exec", "-i", name])
+        .arg(init)
+        .args(["init", "session-exec"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut client = crate::core::process::GroupChild::spawn(&mut command)?;
+    drop(command);
+    let diagnostics = StderrDrain::start_fd(client.take_stderr().expect("piped stderr").into())?;
+    let mut input = client.take_stdin().expect("piped stdin");
+    let mut output = client.take_stdout().expect("piped stdout");
+    let mut incoming = bridge.try_clone()?;
+    let result = std::thread::scope(|scope| {
+        let input = scope.spawn(move || {
+            let _ = copy_stream(&mut incoming, &mut input);
+        });
+        let output = scope.spawn(move || {
+            let _ = copy_stream(&mut output, &mut &bridge);
+            let _ = bridge.shutdown(std::net::Shutdown::Write);
+        });
+        let result = super::exec_transport::exec(connection, context, argv);
+        let _ = client.finish();
+        let _ = input.join();
+        let _ = output.join();
+        result
+    });
+    let diagnostics: Vec<_> = diagnostics.close().into_iter().collect();
+    if result.is_err() && !diagnostics.is_empty() {
+        crate::core::process::diagnostic(terminal_text(&String::from_utf8_lossy(&diagnostics)));
+    }
+    result.map(|code| ExitStatus::from_raw(code << 8))
 }
 
 /// `container exec` of `argv` through init, preserving terminal identity on a TTY.
