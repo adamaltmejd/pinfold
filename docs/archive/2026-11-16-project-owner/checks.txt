@@ -1,0 +1,9 @@
+macOS: cargo fmt --check => exit 0
+macOS: RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings => exit 0
+macOS: RUSTC_WRAPPER= cargo build --locked => exit 0
+Linux: cargo fmt --check => exit 0
+Linux: RUSTC_WRAPPER= cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings => exit 0
+Linux: RUSTC_WRAPPER= cargo build --locked --target x86_64-unknown-linux-musl => exit 0
+macOS df -g /System/Volumes/Data: /dev/disk3s5 460 289 36 89%
+Linux df -h /: /dev/sda1 32G 5.7G 25G 19%
+macOS close-cost.c: open_max=1048576 million-close-loop=0.110 seconds
