@@ -83,7 +83,7 @@ impl Claimed {
     /// on a disk another box attached since, so a disk no box mounted keeps
     /// its old state.
     fn undo_locked(&self, runtime: &dyn Runtime, name: &str) {
-        let attached = match deletion_attachments(Some(name)) {
+        let attached = match complete_attachments(Some(name)) {
             Ok(attached) => attached,
             Err(error) => {
                 eprintln!("pinfold: startup cleanup: disk attachments: {error}");
@@ -140,13 +140,22 @@ pub fn claim(
     }
     let names: BTreeSet<&str> = disks.iter().map(|disk| disk.name.as_str()).collect();
     let _locks = locks(&names).map_err(Err)?;
-    let attached = attachments(runtime, Some(name)).map_err(Err)?;
     let existing: BTreeSet<String> = runtime
         .list_disks()
         .map_err(Err)?
         .into_iter()
         .map(|disk| disk.name)
         .collect();
+    let attached = if disks.iter().any(|disk| existing.contains(&disk.name)) {
+        complete_attachments(Some(name)).map_err(|error| {
+            Ok((
+                RefusalReason::DiskInUse,
+                format!("cannot verify existing disk attachments: {error}"),
+            ))
+        })?
+    } else {
+        attachments(runtime, Some(name)).map_err(Err)?
+    };
     let mut claimed = Claimed::default();
     for disk in disks {
         let others = attached.get(&disk.name).map(Vec::as_slice).unwrap_or(&[]);
@@ -212,7 +221,7 @@ pub fn claim(
     let result = (|| {
         for disk in &claimed.created {
             if existing.contains(&disk.name)
-                && deletion_attachments(Some(name))?.contains_key(&disk.name)
+                && complete_attachments(Some(name))?.contains_key(&disk.name)
             {
                 return Err(io::Error::other(format!(
                     "disk {:?} is still attached",
@@ -299,7 +308,7 @@ pub fn detached(disks: &[Disk]) -> io::Result<()> {
 }
 
 /// Readable claims pin their named disks in this state root until retirement.
-/// An unreadable claim is reported; only disk deletion requires all records.
+/// Unreadable claims are reported. Existing attachment and deletion need all records.
 /// `except` is the caller's own box.
 pub fn attachments(
     _runtime: &dyn Runtime,
@@ -317,9 +326,9 @@ pub fn attachments(
     record_attachments(records, except)
 }
 
-// A wholly unreadable claim may name any disk. Refuse deletion without
-// blocking a healthy box's admission or diagnostic inventory.
-fn deletion_attachments(except: Option<&str>) -> io::Result<BTreeMap<String, Vec<(String, bool)>>> {
+// A wholly unreadable claim may name any existing disk. New disks and
+// diagnostic inventory do not require knowing its attachments.
+fn complete_attachments(except: Option<&str>) -> io::Result<BTreeMap<String, Vec<(String, bool)>>> {
     record_attachments(ownership::records()?, except)
 }
 
@@ -528,7 +537,7 @@ pub enum Removal {
 /// Remove a disk no box attaches.
 pub fn remove(runtime: &dyn Runtime, name: &str) -> io::Result<Removal> {
     let _lock = ownership::disk_lock(name)?;
-    if let Some((holder, _)) = deletion_attachments(None)?
+    if let Some((holder, _)) = complete_attachments(None)?
         .remove(name)
         .and_then(|boxes| boxes.into_iter().next())
     {
