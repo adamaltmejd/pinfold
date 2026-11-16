@@ -625,7 +625,8 @@ process. Getting further needs a host kernel bug.
   After ready, stderr drains continuously and retains its latest 64 KiB in
   memory, reported only on an unexpected native-client exit. Diagnostics
   are escaped with the shared helper when printed and never written to a
-  file. Cancellation and teardown close and join diagnostic drains before
+  file. Guest failure replies are escaped before becoming host diagnostics.
+  Cancellation and teardown close and join diagnostic drains before
   reaping the client. Bootstrap diagnostics stop at admission without waiting
   for EOF from descendants. The detached owner uses `/` as its working
   directory and retains only configuration roots/selectors, referenced static

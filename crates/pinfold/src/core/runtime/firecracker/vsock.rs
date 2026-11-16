@@ -10,6 +10,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use crate::core::runtime::sockets::Sockets;
+use crate::formatting::terminal_text;
 
 use crate::init::exec_wire::{FAILED, read_frame, write_frame};
 use crate::init::firecracker::{CONTROL_PORT, ENV, ENV_SET, EXEC_PORT, STAT, UNMOUNT};
@@ -46,9 +47,9 @@ fn answer(stream: &mut impl Read, kind: u8) -> io::Result<Vec<u8>> {
     let (got, payload) = read_frame(stream)?;
     match got {
         _ if got == kind => Ok(payload),
-        FAILED => Err(io::Error::other(
-            String::from_utf8_lossy(&payload).into_owned(),
-        )),
+        FAILED => Err(io::Error::other(terminal_text(&String::from_utf8_lossy(
+            &payload,
+        )))),
         _ => Err(io::Error::other(format!("the box answered frame {got}"))),
     }
 }

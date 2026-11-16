@@ -29,6 +29,7 @@ use crate::core::ownership::{self, Claim};
 use crate::core::plan::{Egress, Plan};
 use crate::core::runtime::firecracker::{jail, vm};
 use crate::core::{artifacts, clean, pipe, proxy, runs, sha256_hex};
+use crate::formatting::terminal_text;
 use crate::init::exec_wire::{FAILED, write_frame};
 use crate::init::firecracker::{BOOT, BOOT_PORT, READY};
 
@@ -979,6 +980,7 @@ async fn run_job(
                 FAILED => {
                     let detail = String::from_utf8(payload)
                         .map_err(|_| io::Error::other("image-output: invalid failure diagnostic"))?;
+                    let detail = terminal_text(&detail);
                     // A bare F still reports its bounded diagnostic, but proves
                     // nothing about the writable cache's shutdown.
                     catalog::receive_failure_end(&mut reader)

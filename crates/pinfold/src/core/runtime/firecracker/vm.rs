@@ -21,6 +21,7 @@ use crate::core::image::{ImageService, linux};
 use crate::core::plan::Plan;
 use crate::core::runtime::output;
 use crate::core::runtime::sockets::Sockets;
+use crate::formatting::terminal_text;
 use crate::init::exec_wire::{FAILED, read_frame, write_frame};
 use crate::init::firecracker::{BOOT, READY};
 
@@ -411,9 +412,9 @@ impl Boot {
         match answer {
             Ok((READY, _)) => sent?,
             Ok((FAILED, text)) => {
-                return Err(io::Error::other(
-                    String::from_utf8_lossy(&text).into_owned(),
-                ));
+                return Err(io::Error::other(terminal_text(&String::from_utf8_lossy(
+                    &text,
+                ))));
             }
             Ok((kind, _)) => {
                 return Err(io::Error::other(format!(

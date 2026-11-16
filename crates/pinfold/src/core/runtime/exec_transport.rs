@@ -2,6 +2,7 @@
 
 use crate::core::process::StdioRelay;
 use crate::core::runtime::terminal::{Raw, Winch, window};
+use crate::formatting::terminal_text;
 use crate::init::exec_wire::{
     EXEC, EXIT, FAILED, RESIZE, STDERR, STDIN, STDIN_END, STDOUT, write_frame,
 };
@@ -155,9 +156,9 @@ fn relay(
                         stdin.close();
                     }
                     FAILED => {
-                        return Err(io::Error::other(
-                            String::from_utf8_lossy(&payload).into_owned(),
-                        ));
+                        return Err(io::Error::other(terminal_text(&String::from_utf8_lossy(
+                            &payload,
+                        ))));
                     }
                     _ => return Err(io::Error::other(format!("the box sent frame {kind}"))),
                 }
