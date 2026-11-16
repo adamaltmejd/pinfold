@@ -74,10 +74,12 @@ impl Claimed {
             .map(|disk| disk.name.as_str())
             .chain(self.marked.iter().map(String::as_str))
             .collect();
-        match locks(&names) {
-            Ok(_locks) => self.undo_locked(runtime, name),
-            Err(error) => eprintln!("pinfold: startup cleanup: disk locks: {error}"),
-        }
+        crate::core::process::with_deadline(std::time::Duration::from_secs(300), |cancel| {
+            match startup_locks(&names, Some(cancel)) {
+                Ok(_locks) => self.undo_locked(runtime, name),
+                Err(error) => eprintln!("pinfold: startup cleanup: disk locks: {error}"),
+            }
+        });
     }
 
     /// Remove the disks the claim created and the marks it added, except

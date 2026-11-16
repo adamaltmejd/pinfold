@@ -109,8 +109,8 @@ budget fails as a lookup timeout does. A slot remains held until its worker
 exits. Cancellation discards its result without dialing. An abandoned lookup
 holds nothing of pinfold's: no credential, socket, lock or policy reference.
 Teardown may finish without joining a lookup still in the system resolver;
-all other workers are joined. Native
-runtime removal has a 300-second deadline; expiry cancels and reaps its helpers
+all other workers are joined. Disk preparation helper removal and disk undo
+each have a 300-second deadline. Native runtime removal has a 300-second deadline; expiry cancels and reaps its helpers
 and reports `cleanup-timeout`. Linux unmount has a 30-second absolute deadline.
 
 Preflight refuses box startup on older, prerelease or unrecognized runtime

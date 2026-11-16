@@ -340,15 +340,17 @@ impl Box {
         let (disk_plan, disk_init, disk_directories) =
             (plan.clone(), init.to_path_buf(), directories.clone());
         let mut preparing_disks = tokio::task::spawn_blocking(move || {
-            let result = disk::claim(
-                runtime,
-                &mut claim,
-                &disk_plan,
-                &disk_init,
-                existing_only,
-                &disk_directories,
-                Some(&worker_cancel),
-            );
+            let result = crate::core::process::with_cancellation(worker_cancel.clone(), || {
+                disk::claim(
+                    runtime,
+                    &mut claim,
+                    &disk_plan,
+                    &disk_init,
+                    existing_only,
+                    &disk_directories,
+                    Some(&worker_cancel),
+                )
+            });
             (claim, result)
         });
         let (prepared_disks, stopped) = tokio::select! {

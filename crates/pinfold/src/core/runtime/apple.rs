@@ -474,7 +474,11 @@ impl Write for PreparationInput<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         loop {
             if self.cancel.load(Ordering::Acquire) {
-                return Err(io::ErrorKind::Interrupted.into());
+                // Buffered writers retry Interrupted rather than ending the fill.
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "disk preparation cancelled",
+                ));
             }
             match self.input.write(bytes) {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -823,9 +827,13 @@ impl Runtime for Apple {
         // Apple reports a container `running` for a moment after `run` returns,
         // and `rm` refuses it then; `run --rm` removes it just as late. `stop`
         // returns once it has stopped, after which `rm` succeeds.
-        let stopped = output(&["container", "stop", name]);
-        let removed = output(&["container", "rm", name]);
-        let unremoved = removed.is_err() && !matches!(container(name), Ok(None));
+        let (stopped, removed, unremoved) =
+            crate::core::process::with_deadline(REMOVAL_TIMEOUT, |_| {
+                let stopped = output(&["container", "stop", name]);
+                let removed = output(&["container", "rm", name]);
+                let unremoved = removed.is_err() && !matches!(container(name), Ok(None));
+                (stopped, removed, unremoved)
+            });
         let leftover = match (&stopped, &removed) {
             (Ok(_), Ok(_)) => String::new(),
             _ => format!("; removing helper {name}: {stopped:?}, {removed:?}"),

@@ -31,6 +31,28 @@ pub(crate) fn with_cancellation<T>(cancel: Arc<AtomicBool>, work: impl FnOnce() 
     work()
 }
 
+/// Cleanup gets a fresh cancellation context even when its caller is cancelled.
+pub(crate) fn with_deadline<T>(timeout: Duration, work: impl FnOnce(&AtomicBool) -> T) -> T {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (finished, waiting) = std::sync::mpsc::channel::<()>();
+    std::thread::scope(|scope| {
+        let worker_cancel = &cancel;
+        scope.spawn(move || {
+            if matches!(
+                waiting.recv_timeout(timeout),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) {
+                worker_cancel.store(true, Ordering::Release);
+            }
+        });
+        // Drop before the scope joins, including while unwinding.
+        let finished = finished;
+        let result = with_cancellation(cancel.clone(), || work(&cancel));
+        drop(finished);
+        result
+    })
+}
+
 pub(crate) fn is_cancelled() -> bool {
     CANCELLATION.with(|active| {
         active
