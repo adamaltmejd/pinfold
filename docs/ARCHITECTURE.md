@@ -296,9 +296,12 @@ When `up` refuses, it prints one JSON line instead of `ready` and exits 1:
 a string `name`, else null.
 Early refusals create no box, box state, disk, seeds or extracted profile
 resources. `disk-in-use`, `disk-unclean` and `limit` are decided after
-the claim; they release it and leave no state. Failed-start cleanup removes claimed
-state and any disk this `up` created. Fetched
-artifacts and ordinary home seeds may already exist and are not rolled back.
+the claim; they release it and leave no state. Failed-start cleanup removes
+claimed state and any disk this `up` created when no runtime was created or
+its removal is confirmed, subject to the disk deletion checks below. If stop
+or removal cannot confirm an existing runtime is gone, the claim, state and
+disks remain for checked recovery. Fetched artifacts and ordinary home seeds
+may already exist and are not rolled back.
 Stable coordination lock files may remain. `up` asks the runtime to resolve `image`, so any reference the
 runtime resolves locally is accepted; `image-missing` means the runtime could
 not.
@@ -1193,9 +1196,11 @@ gets its own.
   and published retirement, or removal of that claim. A readable claim pins
   only its named disks, regardless of VMM liveness. A wholly unreadable claim
   refuses disk deletion, not admission or measurement.
-  Apple preparation errors preserve the claim and disks until checked
-  retirement. Preparation stderr retains only its latest 64 KiB in memory
-  and is escaped when reported.
+  An Apple preparation error removes new disks and claimed state when no helper
+  container was created or its removal is confirmed. If stop/removal cannot
+  confirm an existing helper is gone, the claim and disks remain for recovery.
+  Preparation stderr retains only its latest 64 KiB in memory and
+  is escaped when reported.
 - **Clean:** a writable attachment records the disk unclean. A stop
   pinfold requests of a running box (step 8) syncs and unmounts every
   disk, and pinfold records each clean once the runtime confirms it. A

@@ -35,6 +35,28 @@ pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
 /// Apple `container`.
 pub struct Apple;
 
+#[derive(Debug)]
+struct PreparationUnremoved(io::Error);
+
+impl std::fmt::Display for PreparationUnremoved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for PreparationUnremoved {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn preparation_unremoved(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|error| error.is::<PreparationUnremoved>())
+}
+
 #[cfg(not(target_os = "linux"))]
 mod transport;
 
@@ -684,6 +706,7 @@ impl Runtime for Apple {
                 directory.relative.clone().into_os_string(),
             ]);
         }
+        let mut spawned = false;
         let result = (|| -> io::Result<std::process::Output> {
             let mut child = command
                 .arg("--entrypoint")
@@ -695,6 +718,7 @@ impl Runtime for Apple {
                 .stderr(Stdio::piped())
                 .spawn()
                 .map_err(|error| spawn_error("container", error))?;
+            spawned = true;
             let result = (|| {
                 let drain = StderrDrain::start_fd(
                     child.stderr.take().expect("setup stderr is piped").into(),
@@ -723,30 +747,36 @@ impl Runtime for Apple {
             }
             result
         })();
+        if !spawned {
+            return result.map(drop);
+        }
         // The box reuses the helper's name, so the helper must be gone first.
         // Apple reports a container `running` for a moment after `run` returns,
         // and `rm` refuses it then; `run --rm` removes it just as late. `stop`
         // returns once it has stopped, after which `rm` succeeds.
         let stopped = output(&["container", "stop", name]);
         let removed = output(&["container", "rm", name]);
-        let result = result?;
-        if !result.status.success() {
-            // Name a failed stop or removal too, so a leftover helper shows.
-            let leftover = match (&stopped, &removed) {
-                (Ok(_), Ok(_)) => String::new(),
-                _ => format!(
-                    "; removing helper {name}: {:?}, {:?}",
-                    stopped.err(),
-                    removed.err()
-                ),
-            };
-            return Err(io::Error::other(format!(
+        let unremoved = removed.is_err() && !matches!(container(name), Ok(None));
+        let leftover = match (&stopped, &removed) {
+            (Ok(_), Ok(_)) => String::new(),
+            _ => format!("; removing helper {name}: {stopped:?}, {removed:?}"),
+        };
+        let result = match result {
+            Err(error) if leftover.is_empty() => Err(error),
+            Err(error) => Err(io::Error::new(error.kind(), format!("{error}{leftover}"))),
+            Ok(result) if !result.status.success() => Err(io::Error::other(format!(
                 "prepare writable disks: {}{leftover}",
                 terminal_text(String::from_utf8_lossy(&result.stderr).trim())
-            )));
-        }
-        stopped?;
-        removed.map(drop)
+            ))),
+            Ok(_) => stopped.and(removed).map(drop),
+        };
+        result.map_err(|error| {
+            if unremoved {
+                io::Error::other(PreparationUnremoved(error))
+            } else {
+                error
+            }
+        })
     }
 
     fn describe(&self) -> &'static str {

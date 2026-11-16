@@ -274,7 +274,10 @@ pub fn claim(
         claimed.created = created;
         #[cfg(not(target_os = "linux"))]
         if helper_attempted {
-            return Err(Err(error));
+            if crate::core::runtime::apple::preparation_unremoved(&error) {
+                return Err(Err(error));
+            }
+            claim.preparation_done();
         }
         match claim.retire() {
             Ok(()) => claimed.undo_locked(runtime, name),
