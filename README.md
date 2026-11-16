@@ -109,7 +109,10 @@ and sends no signal to its guest command.
 succeed. `pinfold stop` stops its observed generation, without loading current
 configuration, and cannot stop a replacement. Both take no arguments and
 print nothing to stdout on success; infrastructure failures return 125.
-Control waits are bounded to ten seconds; timeout leaves ownership intact.
+Admission and silent-owner control waits have a ten-second deadline; timeout
+leaves ownership intact. Waiting for a busy launcher has no startup deadline
+and remains signal-cancellable. The last client and stop wait for acknowledged
+teardown to finish, beyond the control deadline, and remain signal-cancellable.
 A kept owner protects its project from cleanup and executable replacement;
 stop it before cleanup or an update.
 
