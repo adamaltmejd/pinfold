@@ -596,7 +596,11 @@ impl Box {
         let down = self
             .down(reason.as_ref().ok().map(Shutdown::terminal))
             .await;
-        let reason = reason?;
+        let reason = if self.audit_failed() {
+            Ok(Shutdown::AuditLog)
+        } else {
+            reason
+        }?;
         down?;
         Ok(reason)
     }
@@ -634,9 +638,23 @@ impl Box {
         Ok(None)
     }
 
+    /// The notification remains available after the proxy workers join.
+    pub(crate) fn audit_failed(&mut self) -> bool {
+        if self.audit_done.is_none()
+            && let Some(server) = self.proxy.as_mut()
+        {
+            self.audit_done = match server.failure.try_recv() {
+                Ok(()) => Some(true),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(false),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+            };
+        }
+        self.audit_done == Some(true)
+    }
+
     /// Stop and remove the box, write `terminal` as the run's terminal
     /// record, then delete its state directory and acknowledge `box down`.
-    /// `None` writes no terminal record.
+    /// `None` writes no terminal record unless the egress audit failed.
     pub async fn down(&mut self, terminal: Option<Terminal>) -> io::Result<()> {
         if self.down {
             return Ok(());
@@ -645,6 +663,11 @@ impl Box {
         // already sees the end. A box that may still run gets none.
         let removed = self.child.down(&self.name).await;
         let workers = stop_proxy(&mut self.proxy);
+        let terminal = if self.audit_failed() {
+            Some(Shutdown::AuditLog.terminal())
+        } else {
+            terminal
+        };
         let result = removed
             .and_then(|synced| workers.map(|()| synced))
             .and_then(|synced| {

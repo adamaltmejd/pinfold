@@ -1087,6 +1087,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
             let down = box_.down(reason.as_ref().ok().map(Shutdown::terminal)).await
                 .and_then(|()| locator.remove());
             if down.is_err() { runs::write_teardown_failure(&box_.run_id); }
+            let reason_name = if box_.audit_failed() { "audit-log" } else { reason_name };
             let _ = wire::write_reply(&mut writer, Reply::Ended {
                 generation: box_.run_id.clone(), reason: reason_name.into(), teardown_ok: down.is_ok(),
             }).await;
@@ -1303,7 +1304,7 @@ async fn serve(
             .await;
         }
         // Admission is now closed, before any resource teardown.
-        let reason = terminal
+        let mut reason = terminal
             .as_ref()
             .map_or("owner-unavailable", |terminal| terminal.reason)
             .to_string();
@@ -1312,18 +1313,21 @@ async fn serve(
             Err(error) => (None, Some(error)),
         };
         let teardown = box_.down(terminal).await;
+        if box_.audit_failed() {
+            reason = "audit-log".into();
+        }
         let teardown = teardown.and_then(|()| locator.remove());
         if teardown.is_err() {
             runs::write_teardown_failure(&generation);
         }
         if let Some(mut writer) = final_leave {
-            let reply = if teardown.is_ok() {
+            let reply = if teardown.is_ok() && reason == "sessions-ended" {
                 Reply::Left {}
             } else {
                 Reply::Ended {
                     generation: generation.clone(),
                     reason: reason.clone(),
-                    teardown_ok: false,
+                    teardown_ok: teardown.is_ok(),
                 }
             };
             let _ = wire::write_reply(&mut writer, reply).await;
