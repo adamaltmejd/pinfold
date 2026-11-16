@@ -227,7 +227,14 @@ pub fn leftover_socket_dirs() -> io::Result<Vec<PathBuf>> {
                 continue;
             }
         };
-        if ownership::name_alive(&record.name)? {
+        let alive = match ownership::name_alive(&record.name) {
+            Ok(alive) => alive,
+            Err(error) => {
+                eprintln!("pinfold: socket measurement {:?}: {error}", record.name);
+                true
+            }
+        };
+        if alive {
             protected.insert(record.generation);
         }
     }
