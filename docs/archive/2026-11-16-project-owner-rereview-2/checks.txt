@@ -1,0 +1,8 @@
+Mac: set -e; df -g /System/Volumes/Data => 29 GiB; statvfs >=12 GiB enforced before build.
+Mac: CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo fmt --check => 0
+Mac: CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings => Finished dev profile in 0.19s; exit 0
+Mac: CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo build --locked => Finished dev profile in 0.16s; exit 0
+Linux: cargo fmt --check; RUSTC_WRAPPER= cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings; RUSTC_WRAPPER= cargo build --locked --target x86_64-unknown-linux-musl => Finished dev profile 0.12s/0.09s; R3-CHECKS-PASS
+Linux corrected lock/signal/fresh-evidence drivers => R3-ALL-CONTROLS-PASS; audit six-case driver => cleanup own boxes/disks=True
+Final disk: Mac Data 28 GiB available; Linux /dev/sda1 32G total, 5.8G used, 25G available. Native Mac volume inventory: header only, no volumes.
+Scope: git diff --name-only 8004c7f..HEAD => README/ARCH and four source files only; dependencies, earlier records and excluded paths unchanged.

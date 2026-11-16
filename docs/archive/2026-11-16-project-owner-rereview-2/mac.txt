@@ -1,0 +1,24 @@
+preflight-stop: real native helper SIGSTOP; Starting sustained bootstrap beyond12s; stop=0 client=125; CMD=absent; owner/helper kernel exit; claim/locator=absent launch=available; teardown=0.24s; next-start=0/STARTUP-CONTROL
+preflight-signal: real native helper SIGSTOP; Starting sustained bootstrap beyond12s; stop=not invoked client=143; CMD=absent; owner/helper kernel exit; claim/locator=absent launch=available; teardown=0.12s; next-start=0/STARTUP-CONTROL
+image-stop: real native helper SIGSTOP; Starting sustained bootstrap beyond12s; stop=0 client=125; CMD=absent; owner/helper kernel exit; claim/locator=absent launch=available; teardown=0.25s; next-start=0/STARTUP-CONTROL
+image-signal: real native helper SIGSTOP; Starting sustained bootstrap beyond12s; stop=not invoked client=143; CMD=absent; owner/helper kernel exit; claim/locator=absent launch=available; teardown=0.12s; next-start=0/STARTUP-CONTROL
+inventory-stop: real native helper SIGSTOP; Starting sustained bootstrap beyond12s; stop=0 client=125; CMD=absent; owner/helper kernel exit; claim/locator=absent launch=available; teardown=0.25s; next-start=0/STARTUP-CONTROL
+inventory-signal: real native helper SIGSTOP; Starting sustained bootstrap beyond12s; stop=not invoked client=143; CMD=absent; owner/helper kernel exit; claim/locator=absent launch=available; teardown=0.13s; next-start=0/STARTUP-CONTROL
+cleanup exact fixture boxes/disks=True
+audit-clean: pending real route; observed=0 client=0 reason=sessions-ended terminal=sessions-ended/null generation=clean seconds=0.82; same-box allowed HTTP=AUDIT-CONTROL; locator=absent
+audit-clean control: repaired own log; next start=0/AUDIT-RESTART; normal departure
+audit-clean: pending real route; observed=23 client=23 reason=sessions-ended terminal=sessions-ended/null generation=clean seconds=0.72; same-box allowed HTTP=AUDIT-CONTROL; locator=absent
+audit-clean control: repaired own log; next start=0/AUDIT-RESTART; normal departure
+audit-leave: pending real route; observed=0 client=0 reason=audit-log terminal=audit-log/null generation=notified seconds=0.74; same-box allowed HTTP=AUDIT-CONTROL; locator=absent
+audit-leave control: repaired own log; next start=0/AUDIT-RESTART; normal departure
+audit-leave: pending real route; observed=23 client=23 reason=audit-log terminal=audit-log/null generation=notified seconds=0.73; same-box allowed HTTP=AUDIT-CONTROL; locator=absent
+audit-leave control: repaired own log; next start=0/AUDIT-RESTART; normal departure
+audit-removal: pending real route; observed=0 client=0 reason=audit-log terminal=audit-log/null generation=notified seconds=0.72; same-box allowed HTTP=AUDIT-CONTROL; locator=absent
+audit-removal control: repaired own log; next start=0/AUDIT-RESTART; normal departure
+audit-removal: pending real route; observed=23 client=23 reason=audit-log terminal=audit-log/null generation=notified seconds=0.73; same-box allowed HTTP=AUDIT-CONTROL; locator=absent
+audit-removal control: repaired own log; next start=0/AUDIT-RESTART; normal departure
+cleanup own boxes/disks=True
+leave-signal Mac: host PTY foreground refusal -> Err; CMD=absent; native removal held at SIGTERM; client=143; signal-to-return=0.01s; restart=0/LEAVE-CONTROL
+leave-signal Mac: observed=0; native removal held at SIGTERM; client=0; signal-to-return=0.00s; restart=0/LEAVE-CONTROL
+leave-signal Mac: observed=23; native removal held at SIGTERM; client=23; signal-to-return=0.00s; restart=0/LEAVE-CONTROL
+cleanup own boxes/disks=True
