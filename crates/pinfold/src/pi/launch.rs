@@ -245,8 +245,13 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
                     cancel.store(true, std::sync::atomic::Ordering::Release);
                     let _ = worker.await;
                     match ended {
-                        Ok(ended) => (Ok(1), Some(ended.terminal())),
-                        Err(error) => (Err(error), None),
+                        Ok(ended) => (Ok(125), Some(ended.terminal())),
+                        Err(error) => {
+                            let generation = box_.as_ref().map_or(name.as_str(), |box_| box_.run_id.as_str());
+                            let message = format!("pinfold {verb}: {} ({generation}); pinfold box inspect {generation}", terminal_text(&error.to_string()));
+                            let _ = crate::pi::session::forward_diagnostics(message.into_bytes(), &mut signals).await;
+                            (Ok(125), None)
+                        },
                     }
                 },
                 signal = signals.recv() => {
@@ -264,7 +269,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
             Ok(code)
         }
         .await;
-        let left = lease.leave().await;
+        let left = lease.leave(&mut signals).await;
         match left {
             Ok(()) => result,
             Err(error) if matches!(result, Ok(0)) => Err(error),

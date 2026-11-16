@@ -55,6 +55,7 @@ pub(crate) enum Request {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "verb", rename_all = "kebab-case", deny_unknown_fields)]
 pub(crate) enum Reply {
+    Starting {},
     Compatible {},
     Admitted {
         name: String,

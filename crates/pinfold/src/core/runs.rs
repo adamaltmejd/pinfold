@@ -116,6 +116,13 @@ pub fn write_terminal(run_id: &str, terminal: &Terminal) {
 
 /// Record an unsuccessful cleanup attempt, without claiming the box ended.
 pub fn write_teardown_failure(run_id: &str) {
+    if !dir(run_id)
+        .ok()
+        .and_then(|dir| fs::symlink_metadata(dir.join(LAUNCH)).ok())
+        .is_some_and(|metadata| metadata.is_file())
+    {
+        return;
+    }
     let record = serde_json::json!({ "run_id": run_id, "time": rfc3339(now() as i64), "reason": "teardown-failed" });
     if let Err(error) = write(run_id, TEARDOWN, &record) {
         eprintln!("pinfold: teardown record: {error}");

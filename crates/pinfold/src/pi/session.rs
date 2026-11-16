@@ -32,6 +32,9 @@ use crate::pi::{launch, state};
 
 const CONTROL: Duration = Duration::from_secs(10);
 
+fn unavailable_at(source: &str) -> io::Error {
+    io::Error::other(format!("owner-unavailable: {source}"))
+}
 fn unavailable() -> io::Error {
     io::Error::other("owner-unavailable")
 }
@@ -64,6 +67,15 @@ fn reply_error(reply: Reply) -> io::Error {
     match reply {
         Reply::Error { reason, fields } if reason == "config-changed" => changed(fields),
         Reply::Error { reason, .. } if reason == "session-protocol" => protocol(),
+        Reply::Error { reason, .. } if reason == "stopped" => {
+            io::Error::other("stopped during startup")
+        }
+        Reply::Ended {
+            generation, reason, ..
+        } => io::Error::other(format!(
+            "{} ({generation}); pinfold box inspect {generation}",
+            terminal_text(&reason)
+        )),
         _ => unavailable(),
     }
 }
@@ -163,15 +175,35 @@ fn try_launch(root: &Path) -> io::Result<Option<File>> {
         Err((_, error)) => Err(error.into()),
     }
 }
-async fn launch_lock(root: &Path, signals: &mut Signals, deadline: Instant) -> io::Result<File> {
-    let mut poll = tokio::time::interval(Duration::from_millis(20));
+async fn maintenance(root: &Path, signals: &mut Signals) -> io::Result<File> {
+    let deadline = Instant::now() + CONTROL;
+    loop {
+        match Flock::lock(
+            ownership::open_lock(&format!("project:{}", state::project_id(root)))?,
+            FlockArg::LockSharedNonblock,
+        ) {
+            Ok(lock) => return Ok(close_only(lock)),
+            Err((_, nix::errno::Errno::EAGAIN)) => wait_tick(signals, deadline).await?,
+            Err((_, error)) => return Err(error.into()),
+        }
+    }
+}
+async fn launch_lock(root: &Path, signals: &mut Signals, noticed: &mut bool) -> io::Result<File> {
     loop {
         if let Some(lock) = try_launch(root)? {
             return Ok(lock);
         }
+        if !*noticed {
+            *noticed = true;
+            forward_diagnostics(
+                b"pinfold: waiting for the project box to start".to_vec(),
+                signals,
+            )
+            .await?;
+        }
         tokio::select! {
             _ = signals.recv() => return Err(io::ErrorKind::Interrupted.into()),
-            _ = timeout_at(deadline, poll.tick()) => if Instant::now() >= deadline { return Err(timed_out()); },
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {},
         }
     }
 }
@@ -231,7 +263,9 @@ fn discover(root: &Path) -> io::Result<Option<Locator>> {
             {
                 return Err(unavailable());
             }
-            if let Some(actual) = runtime().inspect(&record.name)?
+            if let Some(actual) = runtime()
+                .inspect(&record.name)
+                .map_err(|_| unavailable_at("inspect"))?
                 && (actual.labels.get(ownership::GENERATION_LABEL) != Some(&record.generation)
                     || actual.labels.get(clean::PROJECT_LABEL) != Some(&state::project_id(root)))
             {
@@ -268,22 +302,42 @@ fn discover(root: &Path) -> io::Result<Option<Locator>> {
     }
 }
 
-async fn connect(locator: &Locator) -> io::Result<UnixStream> {
-    let generation = locator.generation.as_deref().ok_or_else(unavailable)?;
-    let socket = sockets::Sockets::open(generation)?
-        .connect_control_until((Instant::now() + CONTROL).into_std())
-        .map_err(|_| unavailable())?;
-    wire::peer(&socket)?;
-    socket.set_nonblocking(true)?;
+async fn connect(
+    locator: &Locator,
+    signals: &mut Signals,
+    deadline: Instant,
+) -> io::Result<UnixStream> {
+    let generation = locator.generation.clone().ok_or_else(unavailable)?;
+    let socket = control_work(signals, deadline, move || {
+        let socket = sockets::Sockets::open(&generation)?
+            .connect_control_until(deadline.into_std())
+            .map_err(|_| unavailable_at("connect"))?;
+        wire::peer(&socket)?;
+        socket.set_nonblocking(true)?;
+        Ok(socket)
+    })
+    .await?;
     UnixStream::from_std(socket)
 }
-async fn exchange(locator: &Locator, request: Request) -> io::Result<(UnixStream, Reply)> {
-    let mut stream = connect(locator).await?;
+async fn exchange(
+    locator: &Locator,
+    request: Request,
+    signals: &mut Signals,
+    deadline: Instant,
+) -> io::Result<(UnixStream, Reply)> {
+    let mut stream = connect(locator, signals, deadline).await?;
     wire::write_request(&mut stream, request).await?;
-    let reply = wire::read_reply(&mut stream, false).await?;
+    let reply = wire::read_reply(&mut stream, false)
+        .await
+        .map_err(|_| unavailable_at("reply"))?;
     Ok((stream, reply))
 }
-async fn probe(root: &Path, locator: &Locator) -> io::Result<bool> {
+async fn probe(
+    root: &Path,
+    locator: &Locator,
+    signals: &mut Signals,
+    deadline: Instant,
+) -> io::Result<bool> {
     let (_, reply) = exchange(
         locator,
         Request::Probe {
@@ -291,6 +345,8 @@ async fn probe(root: &Path, locator: &Locator) -> io::Result<bool> {
             generation: locator.generation.clone().ok_or_else(unavailable)?,
             roots: Roots::resolve()?,
         },
+        signals,
+        deadline,
     )
     .await?;
     match reply {
@@ -310,6 +366,8 @@ struct Lease {
     reader: tokio::task::JoinHandle<()>,
     child: Option<Child>,
     ended: Option<io::Result<()>>,
+    reason: Option<String>,
+    draining: bool,
 }
 impl Lease {
     fn new(stream: UnixStream, name: String, generation: String, child: Option<Child>) -> Self {
@@ -333,20 +391,47 @@ impl Lease {
             reader,
             child,
             ended: None,
+            reason: None,
+            draining: false,
         }
     }
     fn remember(&mut self, reply: Option<io::Result<Reply>>, leaving: bool) {
         self.ended = Some(match reply {
             Some(Ok(Reply::Ended {
                 generation,
-                teardown_ok: true,
-                ..
-            })) if generation == self.generation => Ok(()),
+                reason,
+                teardown_ok,
+            })) if generation == self.generation => {
+                self.reason = Some(reason);
+                if teardown_ok {
+                    Ok(())
+                } else {
+                    Err(io::Error::other("teardown-failed"))
+                }
+            }
             Some(Ok(Reply::Left {})) if leaving => Ok(()),
             Some(Ok(other)) => Err(reply_error(other)),
-            Some(Err(error)) => Err(error),
-            None => Err(unavailable()),
+            Some(Err(error)) => {
+                self.reason = Some(error.to_string());
+                Err(error)
+            }
+            None => {
+                self.reason = Some("owner-unavailable".into());
+                Err(unavailable())
+            }
         });
+    }
+    async fn report_end(&mut self, signals: &mut Signals) -> io::Result<()> {
+        if let Some(reason) = self.reason.take() {
+            let message = format!(
+                "pinfold: {} ({}); pinfold box inspect {}",
+                terminal_text(&reason),
+                self.generation,
+                self.generation
+            );
+            forward_diagnostics(message.into_bytes(), signals).await?;
+        }
+        Ok(())
     }
     fn end_result(&self) -> io::Result<()> {
         match self.ended.as_ref().expect("observed lease departure") {
@@ -355,38 +440,51 @@ impl Lease {
         }
     }
     async fn ended(&mut self) -> io::Result<()> {
-        if self.ended.is_none() {
+        while self.ended.is_none() {
             let reply = self.replies.recv().await;
-            self.remember(reply, false);
+            if matches!(&reply, Some(Ok(Reply::Draining { generation })) if generation == &self.generation)
+            {
+                self.draining = true;
+                return Ok(());
+            } else {
+                self.remember(reply, false);
+            }
         }
         self.end_result()
     }
-    async fn leave(mut self) -> io::Result<()> {
-        let result = timeout_at(Instant::now() + CONTROL, async {
-            if self.ended.is_none() {
-                match self.replies.try_recv() {
-                    Ok(reply) => self.remember(Some(reply), false),
-                    Err(mpsc::error::TryRecvError::Disconnected) => self.remember(None, false),
-                    Err(mpsc::error::TryRecvError::Empty) => {
-                        // A successful Ended already in flight still decides teardown
-                        // after a concurrent owner close makes Leave fail to write.
-                        let _ = wire::write_request(&mut self.writer, Request::Leave {}).await;
-                        let reply = self.replies.recv().await;
-                        self.remember(reply, true);
-                    }
+    async fn leave(mut self, signals: &mut Signals) -> io::Result<()> {
+        let deadline = Instant::now() + CONTROL;
+        let mut acknowledged = self.draining;
+        if self.ended.is_none() {
+            let _ = wire::write_request(&mut self.writer, Request::Leave {}).await;
+            loop {
+                let reply = tokio::select! {
+                    biased;
+                    reply = self.replies.recv() => reply,
+                    _ = signals.recv() => break,
+                    _ = tokio::time::sleep_until(deadline), if !acknowledged => {
+                        self.ended = Some(Err(timed_out())); break;
+                    },
+                };
+                if matches!(&reply, Some(Ok(Reply::Draining { generation })) if generation == &self.generation)
+                {
+                    acknowledged = true;
+                    continue;
                 }
+                self.remember(reply, true);
+                break;
             }
-            self.end_result()
-        })
-        .await
-        .map_err(|_| timed_out())
-        .and_then(|r| r);
+        }
+        let reported = self.report_end(signals).await;
         self.reader.abort();
-        let _ = self.reader.await;
+        let _ = (&mut self.reader).await;
         if let Some(child) = &mut self.child {
             let _ = child.try_wait();
         }
-        result
+        if signals.last().is_some() && self.ended.is_none() {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        self.end_result().and(reported)
     }
 }
 
@@ -396,27 +494,30 @@ async fn admit(
     signals: &mut Signals,
     executable: &File,
 ) -> io::Result<Option<Lease>> {
-    let _maintenance = close_only(ownership::project_lock(&state::project_id(root))?);
-    let deadline = Instant::now() + CONTROL;
+    let _maintenance = maintenance(root, signals).await?;
+    let mut noticed = false;
     loop {
-        let launch = launch_lock(root, signals, deadline).await?;
-        let discovered = match discover(root) {
-            Ok(value) => value,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                wait_tick(signals, deadline).await?;
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
+        let launch = launch_lock(root, signals, &mut noticed).await?;
+        let deadline = Instant::now() + CONTROL;
+        let discovery_root = root.to_path_buf();
+        let discovered =
+            match control_work(signals, deadline, move || discover(&discovery_root)).await {
+                Ok(value) => value,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    wait_tick(signals, deadline).await?;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
         if let Some(locator) = discovered {
-            match probe(root, &locator).await {
+            match probe(root, &locator, signals, deadline).await {
                 Ok(true) => {}
                 Ok(false) => {
-                    wait_name(&locator.name, signals, deadline).await?;
+                    wait_name_owned(&locator.name, signals).await?;
                     continue;
                 }
                 Err(_error) if retired_or_removing(&locator)? => {
-                    wait_name(&locator.name, signals, deadline).await?;
+                    wait_name_owned(&locator.name, signals).await?;
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -435,10 +536,10 @@ async fn admit(
                     snapshot,
                 },
             };
-            let (stream, reply) = match exchange(&locator, request).await {
+            let (stream, reply) = match exchange(&locator, request, signals, deadline).await {
                 Ok(value) => value,
                 Err(_error) if retired_or_removing(&locator)? => {
-                    wait_name(&locator.name, signals, deadline).await?;
+                    wait_name_owned(&locator.name, signals).await?;
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -457,14 +558,7 @@ async fn admit(
                 Reply::Draining { generation }
                     if Some(&generation) == locator.generation.as_ref() =>
                 {
-                    // A confirmed draining owner cannot need launch during teardown.
-                    let mut poll = tokio::time::interval(Duration::from_millis(20));
-                    while ownership::name_alive(&locator.name)? {
-                        tokio::select! {
-                            _ = signals.recv() => return Err(io::ErrorKind::Interrupted.into()),
-                            _ = timeout_at(deadline, poll.tick()) => if Instant::now() >= deadline { return Err(timed_out()); },
-                        }
-                    }
+                    wait_name_owned(&locator.name, signals).await?;
                     drop(launch);
                     continue;
                 }
@@ -488,10 +582,16 @@ async fn admit(
             bootstrap_diagnostics(&mut child.2, signals).await?;
             return Err(error);
         }
-        let reply = tokio::select! {
-            biased;
-            reply = wire::read_reply(&mut stream, true) => reply,
-            _ = signals.recv() => Err(io::ErrorKind::Interrupted.into()),
+        let reply = loop {
+            let reply = tokio::select! {
+                biased;
+                reply = timeout_at(Instant::now() + CONTROL, wire::read_reply(&mut stream, true)) => reply.map_err(|_| timed_out()).and_then(|r| r),
+                _ = signals.recv() => break Err(io::ErrorKind::Interrupted.into()),
+            };
+            if matches!(reply, Ok(Reply::Starting {})) {
+                continue;
+            }
+            break reply;
         };
         // EOF cancels uncommitted bootstrap; wait for diagnostic drain without
         // keeping launch open after the child has completed failed cleanup.
@@ -741,7 +841,6 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
             },
         };
         crate::update::notice("--");
-        clean::maintain();
         let argv = args.expect("join has a command").to_vec();
         let name = lease.name.clone();
         let root = context.root;
@@ -783,7 +882,7 @@ async fn finish_client(
     result: io::Result<i32>,
     signals: &mut Signals,
 ) -> io::Result<i32> {
-    let leave = lease.leave().await;
+    let leave = lease.leave(signals).await;
     let code = match result {
         Ok(code) => code,
         Err(error) => {
@@ -793,8 +892,14 @@ async fn finish_client(
         }
     };
     if let Err(error) = leave {
+        if error.kind() == io::ErrorKind::Interrupted && signals.last().is_some() {
+            return Ok(code);
+        }
         let _ = forward_diagnostics(format!("pinfold: leave: {error}").into_bytes(), signals).await;
         return Ok(if code == 0 { 125 } else { code });
+    }
+    if signals.last().is_none() {
+        clean::maintain();
     }
     Ok(code)
 }
@@ -857,30 +962,36 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
             let bad = match &request { Ok(_) => !leave, Err(error) => error.kind() != io::ErrorKind::ConnectionAborted };
             let _ = event_sender.send(Event::Depart { id: 0, leave, bad }).await;
         });
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(2));
+        let mut launch = Some(launch);
+        let mut owned_box = None;
+        let mut owned_name = None;
+        let result = async {
         let setup_cancel = Arc::new(AtomicBool::new(false));
         let setup_flag = setup_cancel.clone();
         let setup_root = root.clone();
         let mut resolving = tokio::task::spawn_blocking(move || {
             crate::core::process::with_cancellation(setup_flag, || Snapshot::resolve(&setup_root))
         });
-        let setup = tokio::select! {
+        let setup = loop { tokio::select! {
             biased;
-            _ = received.recv() => { setup_cancel.store(true, Ordering::Release); let _ = resolving.await; Err(io::Error::from(io::ErrorKind::Interrupted)) },
-            _ = signals.recv() => { setup_cancel.store(true, Ordering::Release); let _ = resolving.await; Err(io::Error::from(io::ErrorKind::Interrupted)) },
-            resolved = &mut resolving => resolved.map_err(|_| io::Error::other("configuration worker failed")).and_then(|r| r),
-        };
+            _ = received.recv() => { setup_cancel.store(true, Ordering::Release); let _ = resolving.await; break Err(io::Error::from(io::ErrorKind::Interrupted)) },
+            _ = signals.recv() => { setup_cancel.store(true, Ordering::Release); let _ = resolving.await; break Err(io::Error::from(io::ErrorKind::Interrupted)) },
+            _ = heartbeat.tick() => { let _ = wire::write_reply(&mut writer, Reply::Starting {}).await; },
+            resolved = &mut resolving => break resolved.map_err(|_| io::Error::other("configuration worker failed")).and_then(|r| r),
+        }};
         let resolved = match setup {
             Ok(resolved) => resolved,
-            Err(error) => { initial.abort(); let _ = initial.await; return Err(error); },
+            Err(error) => return Err(error),
         };
         let fields = snapshot.differences(&resolved.snapshot);
         if !fields.is_empty() {
-            initial.abort(); let _ = initial.await;
             wire::write_reply(&mut writer, Reply::Error { reason: "config-changed".into(), fields }).await?;
             return Ok(125);
         }
         let plan = resolved.plan;
         let mut locator = Locator { version: 1, root: root.clone(), name: plan.name.clone(), generation: None };
+        owned_name = Some(locator.name.clone());
         locator.publish()?;
         state::record_run(&root)?;
         let (cancel, cancelled) = watch::channel(false);
@@ -889,25 +1000,25 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let started = {
         let startup = Box::up_project(&plan, resolved.config.profile, &image_id, &init, &mut signals, cancelled);
         tokio::pin!(startup);
-        tokio::select! {
+        loop { tokio::select! {
             biased;
-            _ = received.recv() => { let _ = cancel.send(true); startup.await },
-            result = &mut startup => result,
-        }
+            _ = received.recv() => { let _ = cancel.send(true); break startup.await },
+            _ = heartbeat.tick() => { let _ = wire::write_reply(&mut writer, Reply::Starting {}).await; },
+            result = &mut startup => break result,
+        }}
         };
-        let mut box_ = match started {
+        let box_ = match started {
             Ok(box_) => box_,
             Err(error) => {
-                initial.abort(); let _ = initial.await;
-                // The locator is bootstrap evidence only; failed core cleanup
+                    // The locator is bootstrap evidence only; failed core cleanup
                 // keeps the durable claim for checked recovery.
                 if ownership::record(&plan.name)?.is_none() { locator.remove()?; }
-                let reason = "owner-unavailable";
+                let reason = if matches!(error, crate::core::r#box::UpError::Control | crate::core::r#box::UpError::Signal) { "stopped" } else { "owner-unavailable" };
                 let _ = wire::write_reply(&mut writer, Reply::Error { reason: reason.into(), fields: vec![] }).await;
                 return Err(error.into());
             }
         };
-        let result = async {
+        let box_ = owned_box.insert(box_);
         locator.generation = Some(box_.run_id.clone());
         locator.publish()?;
         let sync_cancel = Arc::new(AtomicBool::new(false));
@@ -916,24 +1027,28 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let mut syncing = tokio::task::spawn_blocking(move || {
             if repository { launch::sync(&name, &sync_init, &sync_root, &worker_cancel); }
         });
-        let stopped = tokio::select! {
+        let stopped = loop { tokio::select! {
             biased;
-            _ = received.recv() => Some(Shutdown::Signal),
-            reason = box_.ended() => Some(reason?),
-            _ = signals.recv() => Some(Shutdown::Signal),
-            result = &mut syncing => { result.map_err(|_| io::Error::other("project synchronization worker failed"))?; None },
-        };
+            _ = received.recv() => break Some(Ok(Shutdown::Signal)),
+            reason = box_.ended() => break Some(reason),
+            _ = signals.recv() => break Some(Ok(Shutdown::Signal)),
+            _ = heartbeat.tick() => { let _ = wire::write_reply(&mut writer, Reply::Starting {}).await; },
+            result = &mut syncing => { result.map_err(|_| io::Error::other("project synchronization worker failed"))?; break None },
+        }};
         if let Some(reason) = stopped {
             sync_cancel.store(true, Ordering::SeqCst);
             let _ = syncing.await;
+            let reason = reason?;
             let down = box_.down(Some(reason.terminal())).await;
             if down.is_ok() { locator.remove()?; }
             down?;
+            let _ = wire::write_reply(&mut writer, Reply::Ended { generation: box_.run_id.clone(), reason: "stopped".into(), teardown_ok: true }).await;
             return Ok(125);
         }
         if received.try_recv().is_ok() {
             box_.down(Some(Shutdown::Signal.terminal())).await?;
             locator.remove()?;
+            let _ = wire::write_reply(&mut writer, Reply::Ended { generation: box_.run_id.clone(), reason: "stopped".into(), teardown_ok: true }).await;
             return Ok(125);
         }
         let listener = crate::core::process::Listener::from_std(sockets::Sockets::open(&box_.run_id)?.bind_control()?)?;
@@ -949,14 +1064,17 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
             leases.insert(0, writer);
             wire::write_reply(leases.get_mut(&0).expect("initial lease"), reply).await
         };
-        drop(launch);
+        drop(launch.take());
         if !keep && acknowledged.is_err() { leases.remove(&0); }
-        serve(&mut box_, &locator, &root, resolved.snapshot, listener, events, &mut received, leases, keep, &mut signals).await
+        serve(box_, &locator, &root, resolved.snapshot, listener, events, &mut received, leases, keep, &mut signals).await
         }.await;
         initial.abort(); let _ = initial.await;
         if result.is_err() {
-            let down = box_.down(None).await;
-            if down.is_ok() { let _ = locator.remove(); }
+            let down = match owned_box.as_mut() { Some(box_) => box_.down(None).await, None => Ok(()) };
+            if down.is_ok() && let Some(name) = owned_name.as_ref()
+                && ownership::record(name)?.is_none()
+                && let Some(locator) = read_locator(&root)?
+                && locator.name == *name { let _ = locator.remove(); }
             if let Err(error) = down { eprintln!("pinfold: owner cleanup: {}", terminal_text(&error.to_string())); }
         }
         drop((own_executable, own_maintenance));
@@ -1009,15 +1127,15 @@ async fn serve(
     let mut final_leave = None;
     let terminal = loop {
         if leases.is_empty() && !keep {
-            break runs::Terminal {
+            break Ok(runs::Terminal {
                 reason: "sessions-ended",
                 detail: None,
-            };
+            });
         }
         tokio::select! {
             biased;
-            reason = box_.ended() => break reason?.terminal(),
-            _ = signals.recv() => break Shutdown::Signal.terminal(),
+            reason = box_.ended() => break reason.map(|reason| reason.terminal()),
+            _ = signals.recv() => break Ok(Shutdown::Signal.terminal()),
             Some(event) = received.recv() => match event {
                 Event::Depart { id, leave, bad } => {
                     if let Some(mut writer) = leases.remove(&id) {
@@ -1066,8 +1184,14 @@ async fn serve(
                 }
             },
             accepted = listener.accept() => {
-                let (stream, _) = accepted?;
-                wire::peer(&stream)?;
+                let stream = match accepted {
+                    Ok((stream, _)) => stream,
+                    Err(error) => { if let Err(error) = report_accept(error) { break Err(error); } tokio::task::yield_now().await; continue; },
+                };
+                if let Err(error) = wire::peer(&stream) {
+                    eprintln!("pinfold: session peer: {}", terminal_text(&error.to_string()));
+                    continue;
+                }
                 let events = events.clone();
                 tasks.spawn(async move {
                     let mut stream = stream;
@@ -1083,75 +1207,160 @@ async fn serve(
     let (drain_done, mut draining) = watch::channel(false);
     let drain_generation = generation.clone();
     let drain_root = root.to_path_buf();
+    let (_, placeholder) = mpsc::channel(1);
+    let mut draining_received = std::mem::replace(received, placeholder);
     let drain = tokio::spawn(async move {
-        let mut parsers = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
                 _ = draining.changed() => break,
+                Some(event) = draining_received.recv() => {
+                    draining_reply(event, &drain_root, &drain_generation).await;
+                },
                 accepted = listener.accept() => {
-                    let Ok((mut stream, _)) = accepted else { break };
+                    let stream = match accepted {
+                        Ok((stream, _)) => stream,
+                        Err(error) => { if report_accept(error).is_err() { break; } continue; },
+                    };
                     if wire::peer(&stream).is_err() { continue; }
-                    let (generation, root) = (drain_generation.clone(), drain_root.clone());
-                    parsers.spawn(async move {
-                        let correct = match wire::read_request(&mut stream, false).await {
-                            Ok(Request::Probe { root:r, generation:g, .. } | Request::Join { root:r, generation:g, .. }
-                                | Request::Keep { root:r, generation:g, .. } | Request::Borrow { root:r, generation:g, .. }) => r == root && g == generation,
-                            _ => false,
-                        };
-                        let reply = if correct { Reply::Draining { generation } }
-                            else { Reply::Error { reason: "session-protocol".into(), fields: vec![] } };
-                        let _ = wire::write_reply(&mut stream, reply).await;
+                    let events = events.clone();
+                    tasks.spawn(async move {
+                        let mut stream = stream;
+                        match wire::read_request(&mut stream, false).await {
+                            Ok(request) => { let _ = events.send(Event::Request { stream, request: std::boxed::Box::new(request) }).await; },
+                            Err(_) => { let _ = wire::write_reply(&mut stream, Reply::Error { reason: "session-protocol".into(), fields: vec![] }).await; },
+                        }
                     });
-                }
-                Some(_) = parsers.join_next(), if !parsers.is_empty() => {},
+                },
+                Some(_) = tasks.join_next(), if !tasks.is_empty() => {},
             }
         }
-        parsers.abort_all();
-        while parsers.join_next().await.is_some() {}
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        while let Ok(event) = draining_received.try_recv() {
+            draining_reply(event, &drain_root, &drain_generation).await;
+        }
     });
-    // Admission is now closed, before any resource teardown.
-    let reason = terminal.reason.to_string();
-    let teardown = box_.down(Some(terminal)).await;
-    let teardown = teardown.and_then(|()| locator.remove());
-    if let Some(mut writer) = final_leave {
-        let reply = if teardown.is_ok() {
-            Reply::Left {}
-        } else {
-            Reply::Ended {
-                generation: generation.clone(),
-                reason: reason.clone(),
-                teardown_ok: false,
-            }
-        };
-        let _ = wire::write_reply(&mut writer, reply).await;
-    }
-    for (_, mut writer) in leases {
-        let _ = wire::write_reply(
-            &mut writer,
-            Reply::Ended {
-                generation: generation.clone(),
-                reason: reason.clone(),
-                teardown_ok: teardown.is_ok(),
-            },
-        )
-        .await;
-    }
-    let _ = drain_done.send(true);
-    let _ = drain.await;
-    tasks.abort_all();
-    while tasks.join_next().await.is_some() {}
-    while let Ok(event) = received.try_recv() {
-        if let Event::Request { mut stream, .. } = event {
+    let finish = async {
+        if let Some(writer) = final_leave.as_mut() {
             let _ = wire::write_reply(
-                &mut stream,
+                writer,
                 Reply::Draining {
                     generation: generation.clone(),
                 },
             )
             .await;
         }
+        for writer in leases.values_mut() {
+            let _ = wire::write_reply(
+                writer,
+                Reply::Draining {
+                    generation: generation.clone(),
+                },
+            )
+            .await;
+        }
+        // Admission is now closed, before any resource teardown.
+        let reason = terminal
+            .as_ref()
+            .map_or("owner-unavailable", |terminal| terminal.reason)
+            .to_string();
+        let (terminal, serving_error) = match terminal {
+            Ok(terminal) => (Some(terminal), None),
+            Err(error) => (None, Some(error)),
+        };
+        let teardown = box_.down(terminal).await;
+        let teardown = teardown.and_then(|()| locator.remove());
+        if teardown.is_err() {
+            runs::write_teardown_failure(&generation);
+        }
+        if let Some(mut writer) = final_leave {
+            let reply = if teardown.is_ok() {
+                Reply::Left {}
+            } else {
+                Reply::Ended {
+                    generation: generation.clone(),
+                    reason: reason.clone(),
+                    teardown_ok: false,
+                }
+            };
+            let _ = wire::write_reply(&mut writer, reply).await;
+        }
+        for (_, mut writer) in leases {
+            let _ = wire::write_reply(
+                &mut writer,
+                Reply::Ended {
+                    generation: generation.clone(),
+                    reason: reason.clone(),
+                    teardown_ok: teardown.is_ok(),
+                },
+            )
+            .await;
+        }
+        let _ = drain_done.send(true);
+        teardown.and_then(|()| serving_error.map_or(Ok(0), Err))
+    };
+    let result = finish.await;
+    let _ = drain.await;
+    result
+}
+
+fn report_accept(error: io::Error) -> io::Result<()> {
+    eprintln!(
+        "pinfold: session accept: {}",
+        terminal_text(&error.to_string())
+    );
+    if matches!(
+        error.raw_os_error(),
+        Some(libc::EBADF | libc::EINVAL | libc::ENOTSOCK)
+    ) {
+        Err(error)
+    } else {
+        Ok(())
     }
-    teardown.map(|()| 0)
+}
+
+async fn draining_reply(event: Event, root: &Path, generation: &str) {
+    let Event::Request {
+        mut stream,
+        request,
+    } = event
+    else {
+        return;
+    };
+    let correct = match *request {
+        Request::Probe {
+            root: r,
+            generation: g,
+            ..
+        }
+        | Request::Join {
+            root: r,
+            generation: g,
+            ..
+        }
+        | Request::Keep {
+            root: r,
+            generation: g,
+            ..
+        }
+        | Request::Borrow {
+            root: r,
+            generation: g,
+            ..
+        } => r == root && g == generation,
+        _ => false,
+    };
+    let reply = if correct {
+        Reply::Draining {
+            generation: generation.into(),
+        }
+    } else {
+        Reply::Error {
+            reason: "session-protocol".into(),
+            fields: vec![],
+        }
+    };
+    let _ = wire::write_reply(&mut stream, reply).await;
 }
 
 pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
@@ -1166,7 +1375,7 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
         let _executable = crate::update::working()?;
         let result = async {
             let root = Context::discover(&std::env::current_dir()?)?.root;
-            let _maintenance = ownership::project_lock(&state::project_id(&root))?;
+            let _maintenance = maintenance(&root, &mut signals).await?;
             let deadline = Instant::now() + CONTROL;
             let mut target: Option<Locator> = None;
             loop {
@@ -1182,11 +1391,7 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                         {
                             return Ok(0);
                         }
-                        let root = root.clone();
-                        stop_work(&mut signals, deadline, move || {
-                            stop_observed(&root, &record, deadline.into_std())
-                        })
-                        .await?;
+                        stop_target(root.clone(), record, &mut signals, deadline).await?;
                         return Ok(0);
                     }
                     if locator.generation.is_some() {
@@ -1199,7 +1404,7 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                             continue;
                         }
                         let locator = locator.clone();
-                        stop_work(&mut signals, deadline, move || {
+                        control_work(&mut signals, deadline, move || {
                             clean::remove_orphan(
                                 runtime(),
                                 &locator.name,
@@ -1221,7 +1426,7 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                             return Err(unavailable());
                         };
                         let locator = locator.clone();
-                        stop_work(&mut signals, deadline, move || {
+                        control_work(&mut signals, deadline, move || {
                             clean::remove_orphan(runtime(), &locator.name, None, &lock)?;
                             remove_matching_locator(&locator)
                         })
@@ -1229,7 +1434,7 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                         return Ok(0);
                     }
                     let discovery_root = root.clone();
-                    match stop_work(&mut signals, deadline, move || discover(&discovery_root))
+                    match control_work(&mut signals, deadline, move || discover(&discovery_root))
                         .await?
                     {
                         Some(locator) => {
@@ -1250,7 +1455,43 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
     })
 }
 
-async fn stop_work<T: Send + 'static>(
+async fn stop_target(
+    root: PathBuf,
+    record: ownership::Record,
+    signals: &mut Signals,
+    deadline: Instant,
+) -> io::Result<()> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let accepted = Arc::new(AtomicBool::new(false));
+    let (worker_cancel, worker_accepted) = (cancel.clone(), accepted.clone());
+    let mut worker = tokio::task::spawn_blocking(move || {
+        crate::core::process::with_cancellation(worker_cancel.clone(), || {
+            stop_observed(
+                &root,
+                &record,
+                deadline.into_std(),
+                &worker_cancel,
+                &worker_accepted,
+            )
+        })
+    });
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut worker => {
+                let result = result.map_err(|_| io::Error::other("project control worker failed"))?;
+                return result.map_err(|error| if accepted.load(Ordering::Acquire) { io::Error::new(error.kind(), format!("teardown-failed: {error}")) } else { error });
+            },
+            _ = signals.recv() => { cancel.store(true, Ordering::Release); let _ = worker.await; return Err(io::ErrorKind::Interrupted.into()); },
+            _ = tokio::time::sleep_until(deadline), if !accepted.load(Ordering::Acquire) => {
+                if accepted.load(Ordering::Acquire) { continue; }
+                cancel.store(true, Ordering::Release); let _ = worker.await; return Err(timed_out());
+            },
+        }
+    }
+}
+
+async fn control_work<T: Send + 'static>(
     signals: &mut Signals,
     deadline: Instant,
     work: impl FnOnce() -> io::Result<T> + Send + 'static,
@@ -1262,7 +1503,7 @@ async fn stop_work<T: Send + 'static>(
     });
     tokio::select! {
         biased;
-        result = &mut worker => result.map_err(|_| io::Error::other("project stop worker failed"))?,
+        result = &mut worker => result.map_err(|_| io::Error::other("project control worker failed"))?,
         _ = signals.recv() => {
             cancel.store(true, Ordering::Release);
             let _ = worker.await;
@@ -1298,6 +1539,15 @@ async fn wait_tick(signals: &mut Signals, deadline: Instant) -> io::Result<()> {
         },
     }
 }
+async fn wait_name_owned(name: &str, signals: &mut Signals) -> io::Result<()> {
+    while ownership::name_alive(name)? {
+        tokio::select! {
+            _ = signals.recv() => return Err(io::ErrorKind::Interrupted.into()),
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {},
+        }
+    }
+    Ok(())
+}
 async fn wait_name(name: &str, signals: &mut Signals, deadline: Instant) -> io::Result<()> {
     while ownership::name_alive(name)? {
         wait_tick(signals, deadline).await?;
@@ -1308,6 +1558,8 @@ fn stop_observed(
     root: &Path,
     observed: &ownership::Record,
     deadline: std::time::Instant,
+    cancel: &AtomicBool,
+    accepted: &AtomicBool,
 ) -> io::Result<()> {
     let current = ownership::record(&observed.name)?;
     if current
@@ -1319,7 +1571,7 @@ fn stop_observed(
     let answered = if current.is_none() {
         false
     } else {
-        ownership::request_stop_until(&observed.name, Some(observed), deadline)?
+        ownership::request_stop_project(&observed.name, observed, deadline, cancel, accepted)?
     };
     let after = ownership::record(&observed.name)?;
     if after
@@ -1331,7 +1583,10 @@ fn stop_observed(
     let acknowledged = answered || after.is_none();
     if acknowledged {
         while ownership::name_alive(&observed.name)? {
-            if std::time::Instant::now() >= deadline {
+            if cancel.load(Ordering::Acquire) {
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            if !accepted.load(Ordering::Acquire) && std::time::Instant::now() >= deadline {
                 return Err(timed_out());
             }
             nix::poll::poll(&mut [], 10u16)?;
@@ -1378,9 +1633,9 @@ impl CrossingLease {
             None => std::future::pending().await,
         }
     }
-    pub(crate) async fn leave(self) -> io::Result<()> {
+    pub(crate) async fn leave(self, signals: &mut Signals) -> io::Result<()> {
         if let Some(lease) = self.lease {
-            lease.leave().await?;
+            lease.leave(signals).await?;
         }
         Ok(())
     }
@@ -1389,31 +1644,22 @@ impl CrossingLease {
     }
 }
 pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<CrossingLease> {
-    let maintenance = close_only(ownership::project_lock(&state::project_id(root))?);
-    let deadline = Instant::now() + CONTROL;
+    let maintenance = maintenance(root, signals).await?;
+    let mut noticed = false;
     loop {
-        let launch = launch_lock(root, signals, deadline).await?;
-        let discovered = match discover(root) {
-            Ok(value) => value,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                wait_tick(signals, deadline).await?;
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        let lease = if let Some(locator) = discovered {
-            match probe(root, &locator).await {
-                Ok(true) => {}
-                Ok(false) => {
-                    wait_name(&locator.name, signals, deadline).await?;
-                    continue;
-                }
-                Err(_error) if retired_or_removing(&locator)? => {
-                    wait_name(&locator.name, signals, deadline).await?;
+        let launch = launch_lock(root, signals, &mut noticed).await?;
+        let deadline = Instant::now() + CONTROL;
+        let discovery_root = root.to_path_buf();
+        let discovered =
+            match control_work(signals, deadline, move || discover(&discovery_root)).await {
+                Ok(value) => value,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    wait_tick(signals, deadline).await?;
                     continue;
                 }
                 Err(error) => return Err(error),
-            }
+            };
+        let lease = if let Some(locator) = discovered {
             let generation = locator.generation.clone().ok_or_else(unavailable)?;
             let (stream, reply) = match exchange(
                 &locator,
@@ -1422,12 +1668,14 @@ pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<Cro
                     generation,
                     roots: Roots::resolve()?,
                 },
+                signals,
+                deadline,
             )
             .await
             {
                 Ok(value) => value,
                 Err(_error) if retired_or_removing(&locator)? => {
-                    wait_name(&locator.name, signals, deadline).await?;
+                    wait_name_owned(&locator.name, signals).await?;
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -1441,7 +1689,7 @@ pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<Cro
                 Reply::Draining { generation }
                     if Some(&generation) == locator.generation.as_ref() =>
                 {
-                    wait_name(&locator.name, signals, deadline).await?;
+                    wait_name_owned(&locator.name, signals).await?;
                     continue;
                 }
                 other => return Err(reply_error(other)),

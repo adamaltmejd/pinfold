@@ -329,7 +329,10 @@ A tag resolving to a different image during startup fails with
 `image-changed` in `detail` before `ready`.
 
 `down` uses a host-only control socket and addresses
-the observed generation. The owner acknowledges after teardown. A timed-out request
+the observed generation. Public requests retain the 64-byte generation and
+`done`, `gone` or `failed` reply. Private project requests prefix that generation
+with `P` and receive `stopping` after validation, before the final reply. The
+owner acknowledges completion after teardown. A timed-out request
 fails without releasing ownership or removing a live owner's state.
 Orphan removal and `prune` acquire the lifetime lock and recheck the
 generation before removing anything; an old observation cannot remove a
@@ -1385,12 +1388,13 @@ Automatic, never prompting:
   in the last hour stays, so the ref its `built` line named still comes
   up; past the hour the newest two rule applies.
 - At most once a day, at the start of any working command (not
-  `--version`, `--help`, `doctor`, `config`, `artifacts`, `update`, `box list`, `box down`, `box inspect`, `box events`, `stop`, the private owner entrypoint or `init`): prune boxes whose owner
+  `--version`, `--help`, `doctor`, `config`, `artifacts`, `update`, `box list`, `box down`, `box inspect`, `box events`, `--`, `stop`, the private owner entrypoint or `init`): prune boxes whose owner
   is gone (nothing owns its generation's lifetime lock), leftover sockets,
   artifact `<name>/<version>` directories no pin names (`init/` aside),
   builds beyond each source's newest two (the after-build rule, applied
   even when no build follows), and inactive runs' records (below).
-  Project clients run this pass after successful admission.
+  Project commands defer this pass until their session lease has ended.
+  `start` runs it after keep is committed, without a client lease.
 
 A run is inactive when its generation owns no lifetime lock. An inactive
 run's directory goes when its newest file is older than 14 days; then,
@@ -1434,7 +1438,8 @@ ownership and fresh eligibility checks while holding it. A cleanup
 measurement does not authorize a later deletion.
 
 The detached owner holds shared project-maintenance and executable ownership
-through teardown, including while kept without clients. Cleanup skips its
+through teardown, including while kept without clients. Daily maintenance for
+a project command runs only after its session lease has ended. Cleanup skips its
 project; executable replacement remains `update-busy`.
 
 ## pi layer
@@ -1462,8 +1467,15 @@ project; executable replacement remains `update-busy`.
 - **Keep/stop:** `pinfold start` keeps the project box past its last session.
   Repeated matching starts succeed. `pinfold stop` targets the observed
   generation, works without current configuration, and succeeds only after
-  teardown or confirmed absence. It never stops a replacement. Control waits
-  are bounded to ten seconds; timeout leaves ownership intact.
+  teardown or confirmed absence. It never stops a replacement. A silent owner
+  has a ten-second control deadline; timeout leaves ownership intact. Shared
+  maintenance ownership is acquired nonblocking within a signal-aware deadline.
+  Waiting for a live launcher remains signal-cancellable without a startup
+  deadline, with one waiting notice. The owner reports startup progress.
+  The last client and stop wait for acknowledged, owner-bounded teardown, not
+  the control deadline, and remain signal-cancellable. Observed command status
+  retains completed-exec precedence. Teardown failure is reported as
+  `teardown-failed` on stderr and in the run record.
 - **Admission:** joining and keeping never change running policy or
   credentials. Different host roots or effective startup configuration refuse
   as `config-changed`, naming differing fields without values or fingerprints.
@@ -1477,7 +1489,10 @@ project; executable replacement remains `update-busy`.
   A project admission frame is at most 16 MiB. Malformed, unsupported or
   oversized private messages fail as `session-protocol`; their contents are
   never reported. Unavailable ownership refuses as `owner-unavailable`;
-  a control deadline expires as `owner-timeout`.
+  a control deadline expires as `owner-timeout`. Transport failures retain a
+  fixed source (`connect`, `inspect` or `reply`) without request contents.
+  Peer and recoverable accept errors reject only that connection. Queued
+  requests and in-flight parsers receive `Draining` concurrently with teardown.
 - **Arguments** pass through unchanged, including empty arguments and
   `--help`. Commands start at the canonical invoking directory. Trusted init
   opens the guest project root and walks the relative cwd by directory
@@ -1502,7 +1517,9 @@ project; executable replacement remains `update-busy`.
 - **After a run:** when the box ends for a reason other than
   `sessions-ended` or `signal` (an `audit-log` stop, the box's init exiting),
   `pinfold -- CMD` prints that reason and `pinfold box inspect <run_id>` on
-  stderr after teardown. There is no exit summary or empty-disk inspection
+  stderr after teardown. An interrupted project crossing reports the same
+  reason and generation and exits 125. Stop accepted during startup reports
+  `stopped`. There is no exit summary or empty-disk inspection
   or automatic deletion. CMD owns stdout; diagnostics use stderr.
 
 ### Git

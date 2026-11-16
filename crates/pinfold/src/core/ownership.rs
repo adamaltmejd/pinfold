@@ -1,10 +1,11 @@
 //! Host-only locks and generation-targeted box shutdown.
 
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::fd::AsFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use nix::fcntl::{Flock, FlockArg};
@@ -393,6 +394,9 @@ impl Claim {
             self.record = None;
         }
         self.listener.take();
+        if !completed && let Some(record) = self.record.as_ref() {
+            crate::core::runs::write_teardown_failure(&record.generation);
+        }
         if let Some(mut request) = self.request.take() {
             let answer: &[u8] = if completed { b"done\n" } else { b"failed\n" };
             let _ = tokio::time::timeout(REQUEST_TIMEOUT, request.write_all(answer)).await;
@@ -419,13 +423,27 @@ async fn receive_stop(listener: &UnixListener, generation: &str) -> io::Result<U
     loop {
         let (mut stream, _) = listener.accept().await?;
         let mut requested = [0; 64];
-        if !matches!(
-            tokio::time::timeout(REQUEST_TIMEOUT, stream.read_exact(&mut requested)).await,
-            Ok(Ok(_))
-        ) {
-            continue;
-        }
+        let project = match tokio::time::timeout(REQUEST_TIMEOUT, async {
+            stream.read_exact(&mut requested).await?;
+            // The private project prefix asks for acceptance before the final
+            // reply. Public box down keeps its existing 64-byte request.
+            let project = requested[0] == b'P';
+            if project {
+                requested.copy_within(1.., 0);
+                stream.read_exact(&mut requested[63..]).await?;
+            }
+            Ok::<_, io::Error>(project)
+        })
+        .await
+        {
+            Ok(Ok(project)) => project,
+            _ => continue,
+        };
         if requested == generation.as_bytes() {
+            if project {
+                let _ =
+                    tokio::time::timeout(REQUEST_TIMEOUT, stream.write_all(b"stopping\n")).await;
+            }
             return Ok(stream);
         }
         let _ = tokio::time::timeout(REQUEST_TIMEOUT, stream.write_all(b"gone\n")).await;
@@ -457,12 +475,36 @@ pub(crate) fn request_stop_until(
     observed: Option<&Record>,
     deadline: Instant,
 ) -> io::Result<bool> {
+    request_stop_inner(name, observed, deadline, None)
+}
+
+pub(crate) fn request_stop_project(
+    name: &str,
+    observed: &Record,
+    deadline: Instant,
+    cancel: &AtomicBool,
+    accepted: &AtomicBool,
+) -> io::Result<bool> {
+    request_stop_inner(name, Some(observed), deadline, Some((cancel, accepted)))
+}
+
+fn request_stop_inner(
+    name: &str,
+    observed: Option<&Record>,
+    deadline: Instant,
+    project: Option<(&AtomicBool, &AtomicBool)>,
+) -> io::Result<bool> {
     // An unpublished claim is absent to this request. Adopting a record
     // later could target a replacement after an old owner removed its record.
     let Some(observed) = observed else {
         return Ok(false);
     };
+    let cancel = project.map(|(cancel, _)| cancel);
+    let accepted = || project.is_some_and(|(_, accepted)| accepted.load(Ordering::Acquire));
     loop {
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
         if let Some(lock) = try_name_lock(name)? {
             drop(lock);
             return Ok(false);
@@ -473,72 +515,49 @@ pub(crate) fn request_stop_until(
         let connected = sockets::connect_shutdown(&socket(name)?, deadline);
         match connected {
             Ok(mut stream) => {
-                let exchange: io::Result<Vec<u8>> = (|| {
+                let exchange: io::Result<bool> = (|| {
                     stream.set_nonblocking(true)?;
-                    let mut generation = observed.generation.as_bytes();
-                    while !generation.is_empty() {
-                        remaining(deadline, None, "box teardown")?;
-                        match stream.write(generation) {
-                            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-                            Ok(written) => generation = &generation[written..],
-                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                                crate::core::pipe::wait_ready(
-                                    Some(stream.as_fd()),
-                                    nix::poll::PollFlags::POLLOUT,
-                                    deadline,
-                                    None,
-                                    "box teardown",
-                                )?;
+                    let mut request = Vec::with_capacity(65);
+                    if project.is_some() {
+                        request.push(b'P');
+                    }
+                    request.extend(observed.generation.as_bytes());
+                    crate::core::pipe::write_all(
+                        &mut stream,
+                        &request,
+                        deadline,
+                        cancel,
+                        "box teardown",
+                    )?;
+                    loop {
+                        let answer = stop_reply(&mut stream, deadline, cancel, accepted())?;
+                        match answer.as_slice() {
+                            b"stopping\n" if project.is_some() && !accepted() => {
+                                project
+                                    .expect("project stop")
+                                    .1
+                                    .store(true, Ordering::Release);
                             }
-                            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                            Err(error) => return Err(error),
+                            b"done\n" => return Ok(true),
+                            b"gone\n" => return Ok(false),
+                            b"failed\n" => return Err(io::Error::other("box teardown failed")),
+                            _ => return Err(io::Error::other("invalid box teardown reply")),
                         }
                     }
-                    // At most "failed\n"; each read shares the control deadline.
-                    let mut answer = Vec::new();
-                    let mut bytes = [0; 7];
-                    while answer.len() < bytes.len() {
-                        remaining(deadline, None, "box teardown")?;
-                        let available = bytes.len() - answer.len();
-                        match stream.read(&mut bytes[..available]) {
-                            Ok(0) => break,
-                            Ok(read) => answer.extend_from_slice(&bytes[..read]),
-                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                                crate::core::pipe::wait_ready(
-                                    Some(stream.as_fd()),
-                                    nix::poll::PollFlags::POLLIN,
-                                    deadline,
-                                    None,
-                                    "box teardown",
-                                )?;
-                            }
-                            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                            Err(error) => return Err(error),
-                        }
-                    }
-                    if !answer.ends_with(b"\n") {
-                        return Err(io::ErrorKind::UnexpectedEof.into());
-                    }
-                    Ok(answer)
                 })();
                 match exchange {
-                    Ok(answer) => {
-                        return match &answer[..] {
-                            b"done\n" => Ok(true),
-                            b"gone\n" => Ok(false),
-                            b"failed\n" => Err(io::Error::other("box teardown failed")),
-                            _ => Err(io::Error::other("invalid box teardown reply")),
-                        };
-                    }
+                    Ok(answer) => return Ok(answer),
                     // Startup can finish while its select is reading this
-                    // request. Reconnect only to the observed generation.
+                    // request. Reconnect only before acceptance, and only to
+                    // the generation already observed.
                     Err(error)
-                        if matches!(
-                            error.kind(),
-                            io::ErrorKind::UnexpectedEof
-                                | io::ErrorKind::ConnectionReset
-                                | io::ErrorKind::BrokenPipe
-                        ) => {}
+                        if !accepted()
+                            && matches!(
+                                error.kind(),
+                                io::ErrorKind::UnexpectedEof
+                                    | io::ErrorKind::ConnectionReset
+                                    | io::ErrorKind::BrokenPipe
+                            ) => {}
                     Err(error) => {
                         if record(name)?
                             .is_none_or(|current| current.generation != observed.generation)
@@ -560,15 +579,56 @@ pub(crate) fn request_stop_until(
                 ) || error.raw_os_error() == Some(nix::libc::EINPROGRESS) => {}
             Err(error) => return Err(error),
         }
-        if Instant::now() >= deadline {
-            break;
-        }
+        remaining(deadline, cancel, "box teardown")?;
         std::thread::sleep(Duration::from_millis(10));
     }
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        "box owner did not complete teardown",
-    ))
+}
+
+fn stop_reply(
+    stream: &mut std::os::unix::net::UnixStream,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+    accepted: bool,
+) -> io::Result<Vec<u8>> {
+    let mut answer = Vec::with_capacity(9);
+    let mut byte = [0];
+    while answer.len() < 9 {
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        if !accepted {
+            remaining(deadline, cancel, "box teardown")?;
+        }
+        match stream.read(&mut byte) {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(_) => {
+                answer.push(byte[0]);
+                if byte[0] == b'\n' {
+                    return Ok(answer);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                let until = if accepted {
+                    Instant::now() + Duration::from_millis(100)
+                } else {
+                    deadline
+                };
+                match crate::core::pipe::wait_ready(
+                    Some(stream.as_fd()),
+                    nix::poll::PollFlags::POLLIN,
+                    until,
+                    cancel,
+                    "box teardown",
+                ) {
+                    Err(error) if accepted && error.kind() == io::ErrorKind::TimedOut => {}
+                    result => result?,
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::other("invalid box teardown reply"))
 }
 
 /// Published generations across every Pinfold state root. Consumers that
