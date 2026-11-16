@@ -178,25 +178,24 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
                     ..box_plan(&config, &id, &image)?
                 };
                 let name = plan.name.clone();
-                let unstarted = |error| Ok(cli::report_crossing(verb, &name, remote, Err(error)));
                 let box_ = match Box::up(&plan, &init, &mut signals).await {
                     Ok(box_) => box_,
                     Err(UpError::Control) => {
-                        return unstarted(CrossingError::Failed(
+                        return report_crossing(verb, &name, remote, Err(CrossingError::Failed(
                             "the transient box was stopped before ready".to_string(),
-                        ));
+                        )), &mut signals).await;
                     }
                     Err(UpError::Signal) => {
                         return Ok(128
                             + signals.last().unwrap_or(nix::sys::signal::Signal::SIGTERM) as i32);
                     }
                     Err(UpError::Refused(refusal)) => {
-                        return unstarted(CrossingError::Refused(refusal.reason, refusal.detail));
+                        return report_crossing(verb, &name, remote, Err(CrossingError::Refused(refusal.reason, refusal.detail)), &mut signals).await;
                     }
                     Err(error) => {
-                        return unstarted(CrossingError::Failed(
+                        return report_crossing(verb, &name, remote, Err(CrossingError::Failed(
                             io::Error::from(error).to_string(),
-                        ));
+                        )), &mut signals).await;
                     }
                 };
                 (name, Some(box_))
@@ -229,10 +228,13 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
             });
             let (code, terminal) = tokio::select! {
                 biased;
-                crossed = &mut worker => (crossed
-                    .map_err(|error| io::Error::other(format!("{verb} failed: {error}")))
-                    .map(|crossed| cli::report_crossing(verb, &name, remote, crossed)),
-                    Some(Shutdown::Signal.terminal())),
+                crossed = &mut worker => {
+                    let code = match crossed {
+                        Ok(crossed) => report_crossing(verb, &name, remote, crossed, &mut signals).await,
+                        Err(error) => Err(io::Error::other(format!("{verb} failed: {error}"))),
+                    };
+                    (code, Some(Shutdown::Signal.terminal()))
+                },
                 ended = async {
                     match box_.as_mut() {
                         Some(box_) => box_.ended().await,
@@ -274,11 +276,69 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
             Ok(()) => result,
             Err(error) if matches!(result, Ok(0)) => Err(error),
             Err(error) => {
-                eprintln!("pinfold {verb}: {}", terminal_text(&error.to_string()));
+                let message = format!("pinfold {verb}: {}", terminal_text(&error.to_string()));
+                let _ = crate::pi::session::forward_diagnostics(message.into_bytes(), &mut signals).await;
                 result
             }
         }
     })
+}
+
+async fn report_crossing(
+    verb: &str,
+    name: &str,
+    remote: &str,
+    result: Result<crossing::Refs, CrossingError>,
+    signals: &mut Signals,
+) -> io::Result<i32> {
+    use std::io::Write;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (report, code) = cli::crossing_report(verb, name, remote, result);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = cancel.clone();
+    let mut worker = tokio::task::spawn_blocking(move || {
+        crate::core::process::with_cancellation(worker_cancel.clone(), || {
+            let mut output = crate::core::process::StdioRelay::new(1, false)?;
+            let line = format!("{report}\n");
+            let mut bytes = line.as_bytes();
+            while !bytes.is_empty() {
+                if worker_cancel.load(Ordering::Acquire) {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                match output.write(bytes) {
+                    Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                    Ok(written) => bytes = &bytes[written..],
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+                        ) =>
+                    {
+                        nix::poll::poll(&mut [], 20u16)?;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            output.close();
+            while !output.finished()? {
+                if worker_cancel.load(Ordering::Acquire) {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                nix::poll::poll(&mut [], 20u16)?;
+            }
+            Ok(code)
+        })
+    });
+    tokio::select! {
+        biased;
+        result = &mut worker => result.map_err(io::Error::other)?,
+        signal = signals.recv() => {
+            cancel.store(true, Ordering::Release);
+            let _ = worker.await;
+            Ok(128 + signal as i32)
+        },
+    }
 }
 
 /// The canonical project root for `cwd`: the git top level, else `cwd`.

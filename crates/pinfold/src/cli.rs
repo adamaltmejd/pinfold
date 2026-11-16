@@ -322,27 +322,35 @@ pub(crate) fn report_crossing(
     remote: &str,
     result: Result<crossing::Refs, CrossingError>,
 ) -> i32 {
+    let (report, code) = crossing_report(verb, name, remote, result);
+    println!("{report}");
+    code
+}
+
+pub(crate) fn crossing_report(
+    verb: &str,
+    name: &str,
+    remote: &str,
+    result: Result<crossing::Refs, CrossingError>,
+) -> (serde_json::Value, i32) {
     match result {
-        Ok(refs) => {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "event": if verb == "push" { "pushed" } else { "fetched" },
-                    "box": name,
-                    "remote": remote,
-                    "refs": refs,
-                })
-            );
-            0
-        }
-        Err(CrossingError::Refused(reason, detail)) => refused("box", Some(name), reason, &detail),
-        Err(CrossingError::Failed(detail)) => {
-            println!(
-                "{}",
-                serde_json::json!({ "event": "failed", "box": name, "detail": detail })
-            );
-            1
-        }
+        Ok(refs) => (
+            serde_json::json!({
+                "event": if verb == "push" { "pushed" } else { "fetched" },
+                "box": name,
+                "remote": remote,
+                "refs": refs,
+            }),
+            0,
+        ),
+        Err(CrossingError::Refused(reason, detail)) => (
+            serde_json::json!({ "event": "refused", "box": name, "reason": reason, "detail": detail }),
+            1,
+        ),
+        Err(CrossingError::Failed(detail)) => (
+            serde_json::json!({ "event": "failed", "box": name, "detail": detail }),
+            1,
+        ),
     }
 }
 
