@@ -90,7 +90,7 @@ try:
  # A writable worktree pointer must not run host fsmonitor outside the project.
  trap=W/'trap';trap.mkdir();git(trap,'init','-q');hook=trap/'monitor';hook.write_text('#!/bin/sh\necho invoked > '+shlex.quote(str(W/'HOST-EXECUTED'))+'\n');hook.chmod(0o755)
  git(trap,'config','core.fsmonitor',str(hook));ex(p,'printf "gitdir: '+str(trap/'.git')+'\\n" > linked/.git')
- pf(wt,'--','true',code=125);assert not (W/'HOST-EXECUTED').exists();say('hostile-pointer no-outside-Git-execution=True (outside-read confinement inspected)')
+ pf(wt,'--','true',code=125);assert not (W/'HOST-EXECUTED').exists();say('hostile-pointer fixture-fsmonitor-marker-absent=True (not an execution/read trace)')
  # Changed mount and roots refuse; restore each and join same owner.
  saved=config(p).read_text();config(p).write_text(saved.replace('"share"','"disk"'))
  ex(p,'echo MUST-NOT-RUN',code=125)
@@ -122,6 +122,12 @@ try:
  # Old project disk is retained across explicit share launch of the same project.
  saved=config(disk).read_text();config(disk).write_text(saved.replace('"disk"','"share"'));pf(disk,'start');pf(disk,'stop')
  names=[x['name'] for x in map(json.loads,pf(disk,'disk','list','--json').stdout.splitlines())];assert report['project']['disks']['project'] in names;say('share launch preserves existing old project volume=True')
+ # Explicit disk startup fast-forward, running-owner joins and live crossing.
+ ff=setup('disk-ff',True,'disk');pf(ff,'start');pf(ff,'stop');(ff/'file').write_text('host-next\n');git(ff,'add','file');git(ff,'commit','-qm','host-next');head=git(ff,'rev-parse','HEAD')
+ pf(ff,'start');owner=listed(ff)[0];r=ex(ff,'git rev-parse HEAD');assert r.stdout.decode().strip()==head
+ saved=config(ff).read_text();config(ff).write_text(saved.replace('"disk"','"share"'))
+ for verb in ('push','fetch'):pf(ff,verb)
+ config(ff).write_text(saved);assert listed(ff)[0]['labels']['dev.pinfold.generation']==owner['labels']['dev.pinfold.generation'];pf(ff,'stop');say('Mac disk startup fast-forward/running join/live crossing incl config-now-share=True')
  # Completed statuses retain precedence across final departure.
  for code in (0,23,125,126,127):ex(p,'exit '+str(code),code)
  say('PASS selected Mac project-share acceptance; no image build')

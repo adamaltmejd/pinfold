@@ -1,5 +1,5 @@
 """Run in leased Debian VM; public CLI, no real credentials."""
-import hashlib,json,os,pathlib,shutil,subprocess as sp,tempfile
+import hashlib,json,os,pathlib,shutil,subprocess as sp,tempfile,sys
 B=pathlib.Path.home()/'pinfold/target/x86_64-unknown-linux-musl/debug/pinfold'
 W=pathlib.Path(tempfile.mkdtemp(prefix='pf280.',dir='/tmp'));P=W/'project';P.mkdir();(P/'file').write_text('initial\n')
 E={k:os.environ[k] for k in ('PATH','HOME')};E.update(PINFOLD_NO_UPDATE_CHECK='1',PINFOLD_CPUS='2',PINFOLD_MEMORY='1G',XDG_CONFIG_HOME=str(W/'c'),XDG_STATE_HOME=str(W/'s'),VISUAL='/usr/bin/true',EDITOR='/usr/bin/true',GIT_CONFIG_GLOBAL='/dev/null',GIT_CONFIG_NOSYSTEM='1')
@@ -23,6 +23,12 @@ try:
  for args in [('--','true'),('start',),('push',),('fetch',)]:
   r=pf(*args,e=refusal,code=125 if args[0] in ('--','start') else 1);assert b'spec' in r.stderr and b'share mounts are unsupported on Linux' in r.stderr
  assert before==inventory(roots);say('Linux share all-entrypoints spec refusal: config/state/cache/ownership inventories unchanged=True')
+ if '--refusal-only' in sys.argv:
+  C.write_text('mounts=[{host=".",kind="disk"}]\nimage="fixture-unavailable"\nallow=[]\n')
+  report=json.loads(pf('config').stdout);assert report['project']['mount']['kind']=='disk'
+  r=pf('--','true',code=125);assert b'image-missing' in r.stderr
+  say('PASS fix-round Linux refusal/default-disk/config control; running owner and startup fast-forward UNESTABLISHED (no existing image; no image built)')
+  sys.exit(0)
  context=W/'context';context.mkdir();recipe=W/'Containerfile';recipe.write_text('FROM debian:trixie-slim\nRUN apt-get update -qq && apt-get install -y -qq --no-install-recommends git && rm -rf /var/lib/apt/lists/*\n')
  ref=os.environ.get('PF280_LINUX_IMAGE')
  if not ref:

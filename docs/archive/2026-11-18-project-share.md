@@ -1,137 +1,121 @@
-# Mac project shares (#280)
+# Mac project shares (#280), PR #330 fix round 1
 
-Implemented and exercised on 2026-11-17; this record uses the date requested
-by the brief. Base `bbf396e`; implementation `aa01770`. No test, dependency,
-image inspection path, cache, Git wrapper or release was added.
+Recorded on 2026-11-17 with the filename requested by the brief.
+Base `bbf396e`; initial implementation `aa01770`, evidence `9f638bf`.
+Fix implementation `ba09f9e`. All three reviews and FIXES-1 were read.
+No test, dependency, image, profile rebuild or release was added in this round.
 
-## Implementation and inspected boundaries
+## Controls and consolidations
 
-Mac configuration creation selects `share`; Linux selects `disk`. Existing
-explicit disks remain disks. Shares use the existing core mount admission,
-alias walk, Git attachment and attachment order. Project validation calls
-that same implementation. Repeated common/profile protected-path checks are
-removed from share project admission; its resolved project configuration,
-recipe and directory remain additional exclusions, checked in both directions.
-Doctor/build retain their complete checks. Disk-only project validation does
-not perform share preparation or its init-path lookup.
+FIX1 / Sol1 / Astra1 / Claude C1: share discovery and verification never
+invoke host Git. Descriptor-relative no-follow metadata reads select roots,
+validate linked gitdir/commondir/backlinks, and bound directory-form commondir
+chains to the protected root. Cycles, symlinks and outside storage refuse.
+Disk verification retains host Git. Existing-root mount comparison precedes
+verification, including a share whose configuration has since become disk.
+Bootstrap re-resolution also checks its expected mount before verification.
 
-A share owner allocates only its home disk and skips Git synchronization.
-No code deletes or copies back an old project disk. Discovery and maintenance
-ownership still use the project identity and labels, independently of project
-disk presence. Snapshots add mount kind, canonical paths and generated Git
-protection definitions, never contents, HEAD, refs, index or mtimes.
-The owner compares Git layout before resolving a new admission. A non-Git
-share gaining a Git marker stays unprotected and refuses another admission.
-Recorded-root stop bypasses current Git discovery and configuration.
+FIX2 / Astra2: Probe, Join and Keep compare the current protection layout.
+Snapshots record mount kinds, paths and protection definitions, without an
+alias walk or Git contents, HEAD, refs, index or mtimes. A gained `.git`
+refuses grants only while the non-Git owner lives. After stop it is adopted
+and protected as data, without host Git. The spec warns against running host
+Git on such box-written metadata without inspecting it.
 
-Worktree discovery selects a plain ancestor main root independently of the
-pointer. Bounded descriptor-relative no-follow reads parse the marker,
-commondir and protected backlink. Inspection: no pointer-selected host Git
-is run, and these metadata reads stay beneath that selected root. Runtime
-hostile-pointer coverage below observes absence of outside execution; it is
-not a syscall trace proving absence of every outside read.
+FIX3–4 / Sol2–3: crossing consults recorded roots before marker discovery.
+The existing Borrow request checks roots and refuses a running share before
+registering a lease. Its separate absent-owner config fallback is retained:
+a stopped share needs refusal too. The extra crossing Probe and wire flag
+are deleted. A running disk still crosses if its file now says share.
+Discovery is metadata-only; admission compares roots before parsing current
+configuration or validating linked pointers. Error fallback consults recorded
+roots on both platforms; successful Linux discovery is not skipped.
 
-Crossing probes the owner's roots and share kind before reading changed
-configuration or taking a crossing lease. The owner also rejects Borrow.
-Read-only lock observation waits for launch ownership and leaves dead-owner
-recovery to the existing discovery path. Project push/fetch maintenance now
-runs after roots/mount admission, before a crossing lease. An initial Linux
-candidate reproduced maintenance writes before refusal; that ordering is fixed.
+FIX5–6 / Claude B1–2: one shared protected-path implementation returns the
+exact host-path-in-project token before project state. The duplicated project
+path list and share-only check method are removed. prepare is removed from
+validate_project. Inspection count: three alias-admission invocations per new
+share owner before (client snapshot, owner snapshot, startup), one after
+(startup only), zero on joins. Each invocation walks Git then the share.
+This is a source call-count inspection, not a timing measurement.
 
-All three native instruction paths share one embedded guidance source.
-Missing-only seeding is unchanged. Pi's `/work` advice is removed. README and
-ARCHITECTURE describe both kinds, reports, stop, ownership and the accepted
-large-tree Git status cost. Root-only Git protection, writable nested Git,
-image-alias limits and no cross-box coordination remain as in #328.
+FIX7: no extra Linux launch Probe or copied wait/notice loop remains. A cold
+Linux launch retains a read-only mount check, guarded by existing launch/name
+ownership, so unsupported shares refuse before writes; live owners retain the
+single existing roots Probe. Crossing maintenance stays after the owner/config
+decision, with signal handlers installed, and skips early refusals. This
+required timing change is retained. Mac stop checks only its exact active
+locator; on discovery failure it reads only that root's state file. The full
+state scan is deleted; Linux stop retains its original discovery path.
+Original disk worktree refusal text is restored. Successful disk clients add
+no extra metadata traversal after resolution. Expected mount is returned in
+the existing private roots reply, with no extra control round trip.
 
-## Public CLI observations
+FIX8: lock-wait and path-list duplications are removed. Pi's extension guidance
+is deliberately retained under FIX8's behavior exception: an existing native
+APPEND_SYSTEM.md blocks missing-only seeding, so deleting the extension would
+remove guidance coverage. Removing Pi's native seed would break the approved
+three-agent seed contract. No other consolidation was skipped.
 
-Run from this checkout with the existing default image; every script uses
-private configuration/state and disposable projects. Scripts and retained
-outputs are in [the evidence directory](2026-11-18-project-share/).
+## Real-binary evidence
 
-- `python3 docs/archive/2026-11-18-project-share/apple.py`:
-  [apple.txt](2026-11-18-project-share/apple.txt) records simultaneous first
-  sessions sharing one generation, edits from both, cancellation of one while
-  the other continues, keep/join/stop and final-departure races, escaped child
-  survival until checked box removal, and ordinary dead-owner recovery.
-  Protected path names, bytes, mode, device/inode, links, size, uid/gid and
-  mtime/ctime match across guest work. Read-induced atime is excluded.
-  A host commit permits joins and guest Git reads its new HEAD. A nested
-  linked worktree uses the invoking cwd, main owner and ordinary Git reads.
-  External/separate Git and a guest-written hostile pointer refuse.
-  Changed mount and roots refuse; restored configurations join.
-  Shares report null project disks, allocate none and create no host remote.
-  Non-Git shares expose files, retain home, refuse gained Git and stop without
-  config after a hostile marker appears. Explicit Mac disks isolate edits,
-  synchronize, push/fetch, and keep their old project volume after a share
-  launch. Command statuses 0, 23, 125, 126 and 127 pass through.
-- `python3 docs/archive/2026-11-18-project-share/lifecycle.py`:
-  [lifecycle.txt](2026-11-18-project-share/lifecycle.txt) records owner SIGKILL
-  during root socket startup, before CMD, and during teardown with the owner
-  held at an observed native kill/stop helper before rm. These are the exact
-  windows, not every instruction or a post-retiring-receipt crash. Replacement
-  is held before native rm: only the old box and claim exist, no replacement
-  command executes. After checked removal and retirement a distinct generation
-  runs. The completed command retains 0 across teardown-owner death.
-  Keep racing final departure retains one generation; stop removes it.
-- `python3 docs/archive/2026-11-18-project-share/edges.py`:
-  [edges.txt](2026-11-18-project-share/edges.txt) adds non-Git running-share
-  crossing after disk-config edits, hostile topology and restored controls,
-  untracked Git-subdirectory cwd, linked project config and core protected
-  roots with corrected successful controls, and no-config crossing. External
-  worktrees/separate Git refuse before configuration or project state exists.
-  A direct protected Git write fails read-only while ordinary writes and Git
-  reads succeed; the protected snapshot remains unchanged.
-- `python3 docs/archive/2026-11-18-project-share/guidance.py`:
-  [guidance.txt](2026-11-18-project-share/guidance.txt) observes both guidance
-  sections in actual Pi, Claude and Codex fixture HTTP requests. A subsequent
-  share-to-disk change preserves existing user instruction content; requests
-  carry the user marker and lack the seed guidance. Every response is fixture
-  HTTP 400 and agents exit 1: delivery, not compliance or model success.
-  No Mac profile/image rebuild was needed or performed.
+Scripts and excerpts are in [the evidence directory](2026-11-18-project-share/).
+`apple.py` and `edges.py` were rerun on the fixed binary, using private XDG
+roots and the existing default image. Every created box, disk and fixture is
+removed. [apple.txt](2026-11-18-project-share/apple.txt) covers simultaneous
+first sessions, two writers, cancellation, preserved Git bytes/metadata,
+host-commit joins, nested worktree cwd/Git, external/separate refusal, old-volume
+preservation, report shapes, home persistence, damaged-marker stop and statuses.
+It also shows Mac disk startup fast-forward, running joins and live push/fetch,
+including config edited to share. Keep/join/stop checks in that script are
+sequential. Ungated leave/join and keep/leave overlaps accept either ordering;
+they show one box, not a specified race winner or retention of the same generation.
 
-## Linux, corrections and cleanup
+[edges.txt](2026-11-18-project-share/edges.txt) records exact-token protected-root
+refusals with corrected controls. A host Git wrapper observes the old
+rev-parse verification argv and executes real Git: its positive control fires.
+Share startup, join, report, stop and post-stop adoption then record zero
+host-Git calls. Directory commondir outside the root refuses before host Git.
+The old apple fsmonitor case is narrowed to marker absence, not an execution
+or read trace. Changed roots precede malformed config and a hostile worktree
+pointer. A running non-Git share refuses crossing even with a hostile marker
+and config now selecting disk.
 
-The specified dev hostname failed DNS resolution. The approved disposable
-Debian 13 fallback used the homelab-trial-vm skill. Only public code changes
-and fixture scripts were transferred. Automatic review initially rejected
-transfer as potentially private; GitHub verified public visibility and the
-reviewed code-only patch was then approved. No connection bypass was used.
+Join and Keep are deterministic concurrent cases: a real candidate's image
+inspection helper and parent are stopped after its metadata read; an already
+admitted guest writer creates `.git`; the candidate resumes. The sole allowed
+outcome is 125/config-changed, with no command execution. Both passed. These
+exercise grant rechecks, not a new claim about stop/departure race ordering.
+The unchanged [lifecycle.txt](2026-11-18-project-share/lifecycle.txt) is the
+initial implementation's startup/teardown owner-death and gated orphan-removal
+record, not a fix-round rerun. Its keep/leave observation establishes one box
+only. [guidance.txt](2026-11-18-project-share/guidance.txt) remains the initial
+fixture-request delivery record: all three agents receive both seed sections;
+existing user files survive share-to-disk and block reseeding. HTTP 400/agent
+exit 1 establishes delivery only. TTY/transport and durable retirement internals
+were inspected; the suspended suite was not run.
 
-`linux.py` ran in that VM with the real musl binary. Its first run built the
-tiny Git fixture image named in [linux.txt](2026-11-18-project-share/linux.txt);
-the final-source run reused it. Linux config creation reports disk. With
-maintenance due, runtime PATH unavailable and absent state/cache roots, all
-four project entrypoints refuse share as spec; configuration, state, cache
-and ownership file-name/content inventories remain unchanged. Disk projects
-then run, preserve private project/home data, synchronize and push/fetch.
-All project boxes/disks and fixtures are removed before VM release.
+[linux.txt](2026-11-18-project-share/linux.txt) is the fix-round real musl binary:
+default disk config, four early share refusals with runtime PATH unavailable,
+maintenance due and unchanged config/state/cache/ownership inventories. The
+corrected disk config reports successfully, then names the unavailable image.
+The dev hostname did not resolve. The disposable Debian fallback had no image;
+none was built. Linux running-owner joins/crossing and startup fast-forward
+remain unestablished. The earlier Linux copy/push/fetch record is in `9f638bf`;
+it did not establish those cases and is not a fix-round runtime validation.
 
-Driver corrections: project setup refusals are 125, not 1; a non-Git
-subfolder is its own project, so the untracked-cwd case uses Git. Local model
-fixtures initially hit proxy 403; explicit loopback proxy exclusions fixed
-the driver. A short-lived rm helper escaped the first signal gate; holding
-the parent at native kill/stop fixed that observation. These were driver
-failures, not production failures. The initial compile lacked Deserialize;
-the first Linux target installation selected the wrong toolchain. Both were
-corrected. The sandbox's sccache denial was handled with RUSTC_WRAPPER empty.
+[checks.txt](2026-11-18-project-share/checks.txt) retains build disk checks,
+fmt, Mac/Linux clippy, call-count inspection and final cleanup/release. No
+unrelated resource was removed. All fix-round Mac builds had at least 30 GiB.
 
-[checks.txt](2026-11-18-project-share/checks.txt) records every Mac build's
-free-disk observation, final fmt and both platform clippy results, Linux
-builds, final inventory, VM release and free disk. All Mac builds had at least
-34 GiB available. No image was created on the Mac. Linux's fixture image goes
-with release of the erased disposable VM. No unrelated runtime resource was
-removed. Native TTY/transport behavior and durable retirement internals were
-inspected as retained implementation; the broader suspended suite was not run.
-
-Caller changes: Mac config creation defaults to share; explicit share config
-is accepted only on Mac. Nested linked worktrees beneath a shared main root
-join its owner. Config JSON replaces `project.guest` with `project.mount`
-(kind/host/guest), and shares report null `project.disks.project`.
-Shares have live host edits, no project disk/sync/crossing, share-no-crossing
-refusals, topology-sensitive config-changed admission and recorded-root stop
-with damaged markers. Built-in native instructions cover both kinds, with
-the missing-only limit. Project crossing maintenance is deferred until roots
-and mount admission. No CLI flag or exit code changes. No design departure;
-no migration, copy-back, performance workaround, push or PR.
+Caller changes since main: Mac default share and nested linked-worktree joins;
+project.mount is added (main had no project.guest); shares report null project
+disk and have live edits, no project disk/sync/crossing. Non-Git share crossing
+uses share-no-crossing rather than not-git. Layout changes refuse while the
+owner lives; recorded-root stop handles damaged markers. New missing-only home
+files are .claude/CLAUDE.md, .codex/AGENTS.md and .pi/agent/APPEND_SYSTEM.md,
+including Linux and Mac disk homes. Existing files block seeds. Retained FIX7
+changes are cold-Linux read-only admission, deferred crossing maintenance,
+recorded-root error precedence and Mac damaged-marker stop selection above.
+No CLI flag/exit-code changes, migration, copy-back, performance workaround,
+push or PR. The stronger no-host-Git share control is the operator's FIX1 change.

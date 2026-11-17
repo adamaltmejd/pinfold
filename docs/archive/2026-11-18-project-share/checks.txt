@@ -6,45 +6,36 @@ RUSTC_WRAPPER= cargo build --locked: available 34 GiB; Finished dev in 7.11s; ex
 RUSTC_WRAPPER= cargo build --locked: available 37 GiB; Finished dev in 3.45s; exit 0.
 RUSTC_WRAPPER= cargo build --locked: available 38 GiB; Finished dev in 3.19s; exit 0.
 RUSTC_WRAPPER= cargo build --locked: available 38 GiB; Finished dev in 3.46s; exit 0.
-$ df -g /System/Volumes/Data
-Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
-/dev/disk3s5       460  257        34    89% 2531645 362743400    1%   /System/Volumes/Data
-exit 0
+
+Fix round 1 checks:
+All fix-round Mac cargo builds preceded by df -g /System/Volumes/Data: available 32, 32, 32, 30 GiB.
+$ RUSTC_WRAPPER= cargo build --locked
+Finished dev in 4.11s; exit 0 (final source).
 $ cargo fmt --check
-(no output)
-exit 0
+(no output); exit 0
 $ RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings
-Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.33s
+Compiling pinfold v0.5.5 (/Users/user/code/.cache/pinfold-work/share280/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.41s
 exit 0
-Linux: dev SSH failed DNS resolution; approved disposable Debian 13 fallback.
-First VM apt attempt encountered cloud-init package-manager lock; waited using DPkg::Lock::Timeout.
-First Linux build installed musl only for stable; missing core for pinned 1.99.1; installed target in clone and rebuilt.
 $ cargo build --locked --target x86_64-unknown-linux-musl
 $ cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings
-Compiling pinfold v0.5.5 (/home/user/pinfold/crates/pinfold)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.95s
-   Compiling pinfold v0.5.5 (/home/user/pinfold/crates/pinfold)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.14s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 43.66s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.88s
 exit 0
+Inspection: before validate_project prepare call sites=1, reached by client Snapshot and owner Snapshot; core startup prepare=1: three alias-admission invocations per fresh share owner.
+Inspection: after validate_project prepare call sites=0; only core startup prepare=1: one alias-admission invocation per fresh share owner, zero on joins. Each invocation walks protected Git and the writable share. No elapsed-time claim.
 
-Final Mac cleanup:
+Fix-round final cleanup:
 $ container list --all --format json
-[{"id":"buildkit","state":"running"}]
+[{"id": "buildkit", "state": "running"}]
 exit 0
 $ container volume list --format json
 []
 exit 0
 $ df -g /System/Volumes/Data
 Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
-/dev/disk3s5       460  258        33    89% 2533032 350418840    1%   /System/Volumes/Data
+/dev/disk3s5       460  253        77    77% 2531678 812133800    0%   /System/Volumes/Data
 exit 0
-
-Observed driver/fix diagnostics (trimmed):
-Mac first driver: external worktree rc=125, expected 1; assertion failed; fixture-removed=True.
-Linux initial candidate: --/start/push/fetch spec refusals; inventory equality assertion failed after maintenance; fixture-removed=True.
-Guidance before loopback exclusions: AGENT-EXIT=1 / 403 status code (no body); no model request.
-Lifecycle first rm gate: AssertionError: native helper did not stop; fixture-removed=True.
-Edges first cwd case: no-config for nongit new-untracked-dir; fixture-removed=True.
 
 $ labvm release
 {"ok":true,"command":"release","status":"idle"}
