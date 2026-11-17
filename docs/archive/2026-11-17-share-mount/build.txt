@@ -1,0 +1,30 @@
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  257        53    83% 2536330 562083840    0%   /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  257        53    83% 2536347 558992360    0%   /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  257        53    83% 2540312 556219240    0%   /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  250        60    81% 2537760 633999240    0%   /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  250        60    81% 2537760 633813760    0%   /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  250        58    81% 2536366 619614080    0%   /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  250        58    81% 2536399 617226160    0%   /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  250        58    81% 2536402 616957320    0%   /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  253        56    82% 2536425 592405680    0%   /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  253        56    82% 2536451 591605440    0%   /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  253        57    82% 2536617 601692920    0%   /System/Volumes/Data
+{"base":null,"event":"built","id":"51e2aa92acce2698adad6c2aacaa8228e7cfe3a101b6627961a989aca3aa683d","image":"probe-share279-env","labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"","dev.pinfold.profile":"","dev.pinfold.project":""},"latest":"localhost/pinfold/image-probe-share279-env:latest","ref":"localhost/pinfold/image-probe-share279-env:18e8d1a1dc1ede48-31591"}
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  253        56    82% 2534299 596597960    0%   /System/Volumes/Data
+host uid=501
+host gid=20
+cargo fmt --check: passed
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.46s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.45s

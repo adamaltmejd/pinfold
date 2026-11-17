@@ -1,0 +1,28 @@
+6.12.107+deb13-cloud-amd64
+1000
+kvm-accessible
+refusal roots-before= [False, False, False, False] maintenance-due=True runtime-PATH=/nonexistent
+share refusal rc= 1 {"box":"probe-share279-linux-refuse","detail":"invalid box spec: share mounts are unsupported on Linux","event":"refused","reason":"spec"}
+refusal roots-after= [False, False, False, False]
+refusal roots-before= [False, False, False, True] maintenance-due=True runtime-PATH=/nonexistent
+share refusal rc= 1 {"box":"probe-share279-linux-refuse","detail":"invalid box spec: share mounts are unsupported on Linux","event":"refused","reason":"spec"}
+refusal roots-after= [False, False, False, True]
+supported box: {"box":"probe-share279-linux-1","egress_log":null,"event":"ready","image":{"id":"sha256:ab1ecb4a2f6843d7f0a9cead5b3d2280eca96d2aead98b884dba840cc7de9790","ref":"localhost/pinfold/image-probe-share279-linux:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"","dev.pinfold.generation":"f4db02e31832657c352043a6bb2d3b570c1f0dd0da22e2422aa9c7abda062abb","dev.pinfold.owner":"18770","dev.pinfold.profile":"","dev.pinfold.project":""},"owner":18770,"run_id":"f4db02e31832657c352043a6bb2d3b570c1f0dd0da22e2422aa9c7abda062abb"}
+supported exec rc= 0 readonly-fixture
+/bin/sh: 1: cannot create /readonly/fixture: Read-only file system
+disk-fixture
+supported down rc= 0
+owner rc= 0 {"box":"probe-share279-linux-1","event":"down","reason":"signal","run_id":"f4db02e31832657c352043a6bb2d3b570c1f0dd0da22e2422aa9c7abda062abb"}
+supported box: {"box":"probe-share279-linux-2","egress_log":null,"event":"ready","image":{"id":"sha256:ab1ecb4a2f6843d7f0a9cead5b3d2280eca96d2aead98b884dba840cc7de9790","ref":"localhost/pinfold/image-probe-share279-linux:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"","dev.pinfold.generation":"e87072bafc2193259f2cf5b118acac4c34a748099f8b704e92bb5fe4e69b9379","dev.pinfold.owner":"18800","dev.pinfold.profile":"","dev.pinfold.project":""},"owner":18800,"run_id":"e87072bafc2193259f2cf5b118acac4c34a748099f8b704e92bb5fe4e69b9379"}
+supported exec rc= 0 readonly-fixture
+/bin/sh: 1: cannot create /readonly/fixture: Read-only file system
+disk-fixture
+supported down rc= 0
+owner rc= 0 {"box":"probe-share279-linux-2","event":"down","reason":"signal","run_id":"e87072bafc2193259f2cf5b118acac4c34a748099f8b704e92bb5fe4e69b9379"}
+disk cleanup rc= 0 {"disk":"probe-share279-linux-disk","event":"removed","existed":true}
+box inventory: empty
+linux fixture removed= True
+   Compiling pinfold-init v0.5.5 (/home/user/pinfold/crates/pinfold-init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.98s
+    Checking pinfold-init v0.5.5 (/home/user/pinfold/crates/pinfold-init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.88s
