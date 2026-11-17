@@ -21,6 +21,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, timeout_at};
 
 use crate::cli;
+use crate::config::ProjectMount;
 use crate::core::r#box::{Box, Shutdown, Signals};
 use crate::core::runtime::{ExecContext, runtime, sockets};
 use crate::core::{artifacts, clean, ownership, runs};
@@ -115,6 +116,9 @@ struct Locator {
     root: PathBuf,
     name: String,
     generation: Option<String>,
+    // Old locators must remain readable for dead-generation recovery.
+    #[serde(default)]
+    mount: Option<ProjectMount>,
 }
 impl Locator {
     fn validate(&self, root: &Path) -> io::Result<()> {
@@ -1079,7 +1083,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
             return Ok(125);
         }
         let plan = resolved.plan;
-        let mut locator = Locator { version: 1, root: root.clone(), name: plan.name.clone(), generation: None };
+        let mut locator = Locator { version: 1, root: root.clone(), name: plan.name.clone(), generation: None, mount: Some(resolved.snapshot.project_mount()) };
         owned_name = Some(locator.name.clone());
         locator.publish()?;
         state::record_run(&root)?;
@@ -1262,6 +1266,10 @@ async fn serve(
                     };
                     if candidate_root != root || candidate_generation != &generation {
                         let _ = wire::write_reply(&mut stream, Reply::Error { reason: "session-protocol".into(), fields: vec![] }).await; continue;
+                    }
+                    if matches!(request, Request::Borrow { share_only: true, .. }) && !snapshot.is_share() {
+                        let _ = wire::write_reply(&mut stream, Reply::Compatible { mount: snapshot.project_mount() }).await;
+                        continue;
                     }
                     let mut fields = match &request {
                         Request::Join { snapshot: candidate, .. } | Request::Keep { snapshot: candidate, .. } => snapshot.differences(candidate),
@@ -1744,8 +1752,60 @@ fn stop_observed(
     Ok(())
 }
 
-/// Project crossing borrows a project-ready owner. A transient crossing
-/// instead retains launch ownership through its own complete teardown.
+/// The locator filters candidates; only the live owner can refuse crossing.
+pub(crate) async fn refuse_covering_share(cwd: &Path, signals: &mut Signals) -> io::Result<()> {
+    for root in cwd.ancestors() {
+        let Some(locator) = read_locator(root)? else {
+            continue;
+        };
+        if locator.mount != Some(ProjectMount::Share)
+            || (!ownership::name_alive(&locator.name)?
+                && !ownership::lock_alive(&launch_key(root))?)
+        {
+            continue;
+        }
+        let mut noticed = false;
+        let _launch = launch_lock(root, signals, &mut noticed).await?;
+        let Some(locator) = read_locator(root)? else {
+            continue;
+        };
+        if locator.mount != Some(ProjectMount::Share) || !ownership::name_alive(&locator.name)? {
+            continue;
+        }
+        let generation = locator.generation.clone().ok_or_else(unavailable)?;
+        let (_, reply) = match exchange(
+            &locator,
+            Request::Borrow {
+                root: root.into(),
+                generation: generation.clone(),
+                roots: Roots::resolve()?,
+                share_only: true,
+            },
+            signals,
+            Instant::now() + CONTROL,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(_) if !ownership::name_alive(&locator.name)? || retired_or_removing(&locator)? => {
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        match reply {
+            Reply::Compatible {
+                mount: ProjectMount::Disk,
+            } => {}
+            Reply::Draining {
+                generation: observed,
+            } if observed == generation => {}
+            other => return Err(reply_error(other)),
+        }
+    }
+    Ok(())
+}
+
+/// A disk crossing lease, or launch ownership for a transient disk box.
 pub(crate) struct CrossingLease {
     _maintenance: File,
     launch: Option<File>,
@@ -1796,6 +1856,7 @@ pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<Cro
                     root: root.into(),
                     generation,
                     roots: Roots::resolve()?,
+                    share_only: false,
                 },
                 signals,
                 deadline,

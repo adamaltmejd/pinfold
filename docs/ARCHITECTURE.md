@@ -1709,12 +1709,16 @@ project; executable replacement remains `update-busy`.
 This section applies only to disk projects. Shares have no startup
 synchronization or project crossing. `pinfold push` and `pinfold fetch`
 refuse a share as `share-no-crossing` before acquiring a crossing lease or
-starting a transient box. Crossing resolves a recorded root and asks its
-owner before marker discovery. Host roots are checked first. A running share
-owner refuses crossing regardless of box-written Git markers or a configuration
-file that now selects disk. A running disk owner retains disk crossing if the
-configuration now selects share. With no owner, configuration selects the
-mount kind.
+starting a transient box. Before marker discovery, crossing asks recorded
+share owners whose roots cover the invoking folder. A locator mount hint
+selects these requests; the live owner decides. Disk ancestors neither select
+the crossing root nor grant a lease for this check. Other crossing uses normal
+repository discovery; linked worktrees beneath a disk project refuse. Host
+roots are checked before a share owner refuses. A running share owner refuses
+crossing regardless of box-written Git markers or a configuration file that now
+selects disk. A running disk owner retains disk crossing and disk path validation
+when the file now selects share. With no owner, configuration selects the mount
+kind.
 
 The project disk holds the box's own repository. Only the host's
 branches enter it: no host `.git` content, config, hook, stash, reflog,

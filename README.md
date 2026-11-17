@@ -134,8 +134,8 @@ sends no signal on departure.
 
 `pinfold start` keeps the box without clients. Matching repeated starts
 succeed. `pinfold stop` stops its observed generation, without loading current
-configuration, including a hostile Git marker added during a share run,
-and cannot stop a replacement. Share edits remain after stop; it neither
+configuration, and cannot stop a replacement. From the recorded main root,
+it also works with a hostile Git marker added during a share run. Share edits remain after stop; it neither
 commits nor rolls them back. On Apple an orphan box may retain share access
 after owner death until checked removal. Both take no arguments and
 print nothing to stdout on success; infrastructure failures return 125.

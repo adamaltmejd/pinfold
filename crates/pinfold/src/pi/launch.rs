@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use tokio::runtime::Builder;
 
@@ -132,8 +132,9 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
     runtime.block_on(async {
         let mut signals = Signals::new()?;
         let cwd = state::canonical(&env::current_dir()?)?;
-        let root = crate::pi::session::recorded_root(&cwd)?
-            .map(Ok).unwrap_or_else(|| project_root(&cwd))?;
+        crate::pi::session::refuse_covering_share(&cwd, &mut signals).await?;
+        let context = Context::candidate(&cwd)?;
+        let root = context.root.clone();
         let mut lease = match crate::pi::session::borrow(&root, &mut signals).await {
             Ok(lease) => lease,
             Err(error) => {
@@ -145,7 +146,12 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
         };
         let result = async {
             // The owner's root probe precedes reading a different configuration root.
-            let config = Config::load(&root)?;
+            let mut config = Config::load(&root)?;
+            // Shares never grant crossing leases; a live lease is a disk owner.
+            if lease.name().is_some() {
+                config.mount = ProjectMount::Disk;
+            }
+            context.check_worktree(config.mount)?;
             config.check_host_paths(&root)?;
             let id = project_id(&root);
             let [_, disk] = state::disk_names(&id);
@@ -343,12 +349,6 @@ async fn report_crossing(
             Ok(128 + signal as i32)
         },
     }
-}
-
-/// The canonical project root for `cwd`: the git top level, else `cwd`.
-/// Refuses a `cwd` inside a git directory, and one outside the root.
-pub(crate) fn project_root(cwd: &Path) -> io::Result<PathBuf> {
-    Ok(Context::discover(cwd)?.root)
 }
 
 /// The admitted image source, also reported without resolving the runtime.

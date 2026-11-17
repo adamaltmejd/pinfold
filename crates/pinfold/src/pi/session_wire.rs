@@ -48,6 +48,8 @@ pub(crate) enum Request {
         root: PathBuf,
         generation: String,
         roots: Roots,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        share_only: bool,
     },
     Leave {},
 }
