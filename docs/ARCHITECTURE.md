@@ -502,7 +502,9 @@ The box spec `up` reads from stdin:
   contains or is contained by any resolved protected directory refuses as
   `spec`, including targets of externally linked directories. Selected
   profile files are protected too. These share checks add no refusal for
-  readonly mounts or disks unless an attachment touches protected Git.
+  readonly mounts or disks unless an attachment touches protected Git or its
+  destination is nested inside a share and is not reached through plain
+  directories.
 - Apple supplies Git an exact-path `safe.directory` exception for each
   share's guest root, never `safe.directory=*`. A share destination that Git
   would interpret as a pattern or otherwise not literally, including a

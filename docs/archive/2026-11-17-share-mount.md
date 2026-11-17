@@ -250,6 +250,7 @@ readonly Git protection and exact Git ownership exception; new share/source,
 protected-path and layout `spec` refusals; early Linux share refusal;
 per-mount kind and generated Git record. Readonly-only records retain their
 declared paths. Public exec/fetch return 3 before completed startup.
+An owner started by an earlier binary publishes no readiness, so exec and fetch against it exit 3 until it is restarted.
 Box-up parsing/admission precedes its maintenance and init extraction.
 No CLI flag or exit code changed. Project configuration still accepts disks.
 
