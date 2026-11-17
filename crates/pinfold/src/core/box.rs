@@ -965,7 +965,7 @@ async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
 }
 
 /// Check project structure without resolving credentials or materializing shares.
-pub(crate) fn validate_project(plan: &Plan, profile: &Profile) -> Result<Vec<Mount>, String> {
+pub(crate) fn validate_project(plan: &Plan, profile: &Profile) -> Result<(), String> {
     plan.validate_structure()?;
     let destinations = login_destinations(plan)?;
     let extra: Vec<&Path> = destinations.iter().map(PathBuf::as_path).collect();
@@ -979,27 +979,11 @@ pub(crate) fn validate_project(plan: &Plan, profile: &Profile) -> Result<Vec<Mou
             git: false,
         });
     }
-    if resolved
-        .mounts
-        .iter()
-        .any(|mount| mount.kind == MountKind::Share)
-    {
-        crate::core::mounts::prepare(
-            &mut resolved,
-            Some(profile),
-            &crate::core::artifacts::init_path().map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| format!("spec: {error}"))?;
-    }
     validate_generated(&resolved, &extra)?;
     if !profile.home.is_empty() {
         home_disk(&resolved, Vec::new()).map_err(|error| error.to_string())?;
     }
-    Ok(resolved
-        .mounts
-        .into_iter()
-        .filter(|mount| mount.git)
-        .collect())
+    Ok(())
 }
 
 /// Destinations and HOME are checked before any preparation or credential lookup.

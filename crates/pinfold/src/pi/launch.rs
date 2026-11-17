@@ -131,7 +131,9 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
     let runtime = Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async {
         let mut signals = Signals::new()?;
-        let root = project_root(&env::current_dir()?)?;
+        let cwd = state::canonical(&env::current_dir()?)?;
+        let root = crate::pi::session::recorded_root(&cwd)?
+            .map(Ok).unwrap_or_else(|| project_root(&cwd))?;
         let mut lease = match crate::pi::session::borrow(&root, &mut signals).await {
             Ok(lease) => lease,
             Err(error) => {

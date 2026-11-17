@@ -98,6 +98,16 @@ fn locator_path(root: &Path) -> io::Result<PathBuf> {
     Ok(sockets::host()?.0.join(format!("{}.project", key(root))))
 }
 
+/// Recorded owners are consulted before box-written marker discovery for crossing.
+pub(crate) fn recorded_root(cwd: &Path) -> io::Result<Option<PathBuf>> {
+    for root in cwd.ancestors() {
+        if read_locator(root)?.is_some() {
+            return Ok(Some(root.to_path_buf()));
+        }
+    }
+    Ok(None)
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Locator {
@@ -346,54 +356,36 @@ async fn probe(
     locator: &Locator,
     signals: &mut Signals,
     deadline: Instant,
-    crossing: bool,
-) -> io::Result<bool> {
+) -> io::Result<Option<crate::config::ProjectMount>> {
     let (_, reply) = exchange(
         locator,
         Request::Probe {
             root: root.into(),
             generation: locator.generation.clone().ok_or_else(unavailable)?,
             roots: Roots::resolve()?,
-            crossing,
         },
         signals,
         deadline,
     )
     .await?;
     match reply {
-        Reply::Compatible {} => Ok(true),
+        Reply::Compatible { mount } => Ok(Some(mount)),
         Reply::Draining { generation } if Some(&generation) == locator.generation.as_ref() => {
-            Ok(false)
+            Ok(None)
         }
         other => Err(reply_error(other)),
     }
 }
 
-// Read-only refusal precedes ownership writes. Recovery still belongs to discover.
-async fn preflight(root: &Path, signals: &mut Signals, crossing: bool) -> io::Result<()> {
-    let mut noticed = false;
-    while ownership::lock_alive(&launch_key(root))? {
-        if !noticed {
-            noticed = true;
-            forward_diagnostics(
-                b"pinfold: waiting for the project box to start".to_vec(),
-                signals,
-            )
-            .await?;
-        }
-        tokio::select! {
-            _ = signals.recv() => return Err(io::ErrorKind::Interrupted.into()),
-            _ = tokio::time::sleep(Duration::from_millis(20)) => {},
-        }
-    }
-    if let Some(locator) = read_locator(root)?
-        && locator.generation.is_some()
-        && ownership::name_alive(&locator.name)?
-    {
-        match probe(root, &locator, signals, Instant::now() + CONTROL, crossing).await {
-            Err(_) if retired_or_removing(&locator)? => {}
-            Err(error) => return Err(error),
-            Ok(_) => {}
+// Linux shares must refuse before first-owner locks or orphan cleanup can write.
+fn check_linux_mount(root: &Path) -> io::Result<()> {
+    if cfg!(target_os = "linux") && !ownership::lock_alive(&launch_key(root))? {
+        let live = match read_locator(root)? {
+            Some(locator) => ownership::name_alive(&locator.name)?,
+            None => false,
+        };
+        if !live {
+            crate::config::project_mount(root)?;
         }
     }
     Ok(())
@@ -531,6 +523,7 @@ impl Lease {
 
 async fn admit(
     root: &Path,
+    candidate: &io::Result<Context>,
     intent: Intent,
     signals: &mut Signals,
     executable: &File,
@@ -551,9 +544,9 @@ async fn admit(
                 Err(error) => return Err(error),
             };
         if let Some(locator) = discovered {
-            match probe(root, &locator, signals, deadline, false).await {
-                Ok(true) => {}
-                Ok(false) => {
+            let mount = match probe(root, &locator, signals, deadline).await {
+                Ok(Some(mount)) => mount,
+                Ok(None) => {
                     wait_name_owned(&locator.name, signals).await?;
                     continue;
                 }
@@ -562,8 +555,14 @@ async fn admit(
                     continue;
                 }
                 Err(error) => return Err(error),
-            }
-            let Resolved { snapshot, .. } = resolve_spec(root, false, signals).await?;
+            };
+            let Resolved {
+                snapshot, config, ..
+            } = resolve_spec(root, Some(mount), false, signals).await?;
+            candidate
+                .as_ref()
+                .map_err(|error| io::Error::new(error.kind(), error.to_string()))?
+                .check_worktree(config.mount)?;
             let generation = locator.generation.clone().ok_or_else(unavailable)?;
             let request = match intent {
                 Intent::Join => Request::Join {
@@ -606,7 +605,11 @@ async fn admit(
                 other => return Err(reply_error(other)),
             }
         }
-        let resolved = resolve_spec(root, true, signals).await?;
+        let resolved = resolve_spec(root, None, true, signals).await?;
+        candidate
+            .as_ref()
+            .map_err(|error| io::Error::new(error.kind(), error.to_string()))?
+            .check_worktree(resolved.config.mount)?;
         let mut child = spawn_owner(&resolved.snapshot, &launch, executable, &_maintenance)?;
         let mut stream = child.0;
         let sent = wire::write_request(
@@ -681,13 +684,18 @@ async fn admit(
     }
 }
 
-async fn resolve_spec(root: &Path, startup: bool, signals: &mut Signals) -> io::Result<Resolved> {
+async fn resolve_spec(
+    root: &Path,
+    expected_mount: Option<crate::config::ProjectMount>,
+    startup: bool,
+    signals: &mut Signals,
+) -> io::Result<Resolved> {
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = cancel.clone();
     let root = root.to_path_buf();
     let mut worker = tokio::task::spawn_blocking(move || {
         crate::core::process::with_cancellation(worker_cancel, || {
-            let resolved = Snapshot::resolve(&root)?;
+            let resolved = Snapshot::resolve(&root, expected_mount)?;
             let warnings = if startup {
                 launch::image_warnings(
                     &resolved.config,
@@ -887,18 +895,17 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
         let result = async {
         let executable = close_only(crate::update::working()?);
         let cwd = state::canonical(&std::env::current_dir()?)?;
-        let root = if read_locator(&cwd)?.is_some() {
-            cwd.clone()
-        } else {
-            Context::discover(&cwd)?.root
+        let candidate = Context::candidate(&cwd);
+        let root = match &candidate {
+            Ok(context) => context.root.clone(),
+            Err(error) => match recorded_root(&cwd)? {
+                Some(root) => root,
+                _ => return Err(io::Error::new(error.kind(), error.to_string())),
+            },
         };
-        let context = Context { root, repository: false };
-        if cfg!(target_os = "linux") {
-            preflight(&context.root, &mut signals, false).await?;
-            crate::config::project_mount(&context.root)?;
-        }
-        launch::utf8(&context.root, "project root")?;
-        let admitted = admit(&context.root, if args.is_some() { Intent::Join } else { Intent::Keep }, &mut signals, &executable).await;
+        check_linux_mount(&root)?;
+        launch::utf8(&root, "project root")?;
+        let admitted = admit(&root, &candidate, if args.is_some() { Intent::Join } else { Intent::Keep }, &mut signals, &executable).await;
         let mut lease = match admitted {
             Ok(Some(lease)) => lease,
             Ok(None) => { crate::update::notice("start"); clean::maintain(); return Ok(0); },
@@ -916,7 +923,6 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
         crate::update::notice("--");
         let argv = args.expect("join has a command").to_vec();
         let name = lease.name.clone();
-        let root = context.root;
         let init = artifacts::init()?;
         let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -1052,8 +1058,9 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let setup_cancel = Arc::new(AtomicBool::new(false));
         let setup_flag = setup_cancel.clone();
         let setup_root = root.clone();
+        let expected_mount = Some(snapshot.project_mount());
         let mut resolving = tokio::task::spawn_blocking(move || {
-            crate::core::process::with_cancellation(setup_flag, || Snapshot::resolve(&setup_root))
+            crate::core::process::with_cancellation(setup_flag, || Snapshot::resolve(&setup_root, expected_mount))
         });
         let setup = loop { tokio::select! {
             biased;
@@ -1262,17 +1269,17 @@ async fn serve(
                         _ => unreachable!(),
                     };
                     if fields.is_empty() && snapshot.is_share()
-                        && matches!(request, Request::Borrow { .. } | Request::Probe { crossing: true, .. })
+                        && matches!(request, Request::Borrow { .. })
                     {
                         let _ = wire::write_reply(&mut stream, Reply::Error { reason: "share-no-crossing".into(), fields: vec![] }).await;
                         continue;
                     }
-                    if fields.is_empty() && matches!(request, Request::Probe { .. }) {
+                    if fields.is_empty() && matches!(request, Request::Probe { .. } | Request::Join { .. } | Request::Keep { .. }) {
                         fields = snapshot.project_layout_differences(root);
                     }
                     if !fields.is_empty() { let _ = wire::write_reply(&mut stream, Reply::Error { reason: "config-changed".into(), fields }).await; continue; }
                     match request {
-                        Request::Probe { .. } => { let _ = wire::write_reply(&mut stream, Reply::Compatible {}).await; },
+                        Request::Probe { .. } => { let _ = wire::write_reply(&mut stream, Reply::Compatible { mount: snapshot.project_mount() }).await; },
                         Request::Keep { .. } => { keep = true; let _ = wire::write_reply(&mut stream, Reply::Kept { name: locator.name.clone(), generation: generation.clone() }).await; },
                         Request::Join { .. } | Request::Borrow { .. } => {
                             let id = next; next += 1;
@@ -1487,14 +1494,14 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
         let _executable = crate::update::working()?;
         let result = async {
             let cwd = state::canonical(&std::env::current_dir()?)?;
-            let root = if read_locator(&cwd)?.is_some()
-                || state::state_dirs()?
-                    .iter()
-                    .any(|project| project.root == cwd)
-            {
+            let root = if cfg!(target_os = "macos") && read_locator(&cwd)?.is_some() {
                 cwd
             } else {
-                Context::discover(&cwd)?.root
+                match Context::discover(&cwd) {
+                    Ok(context) => context.root,
+                    Err(_) if cfg!(target_os = "macos") && state::recorded(&cwd)? => cwd,
+                    Err(error) => return Err(error),
+                }
             };
             let _maintenance = maintenance(&root, &mut signals).await?;
             let deadline = Instant::now() + CONTROL;
@@ -1765,14 +1772,7 @@ impl CrossingLease {
     }
 }
 pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<CrossingLease> {
-    preflight(root, signals, true).await?;
-    if crate::config::project_mount(root)? == Some(crate::config::ProjectMount::Share) {
-        return Err(io::Error::other(
-            "share-no-crossing: shares have no project crossing",
-        ));
-    }
-    launch::require_repo(root)?;
-    clean::maintain();
+    check_linux_mount(root)?;
     let maintenance = maintenance(root, signals).await?;
     let mut noticed = false;
     loop {
@@ -1824,8 +1824,18 @@ pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<Cro
                 other => return Err(reply_error(other)),
             }
         } else {
+            if cfg!(target_os = "macos")
+                && crate::config::project_mount(root)? == Some(crate::config::ProjectMount::Share)
+            {
+                return Err(reply_error(Reply::Error {
+                    reason: "share-no-crossing".into(),
+                    fields: vec![],
+                }));
+            }
             None
         };
+        launch::require_repo(root)?;
+        clean::maintain();
         return Ok(CrossingLease {
             _maintenance: maintenance,
             launch: Some(launch),

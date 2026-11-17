@@ -154,8 +154,10 @@ comparison. Mount kind, canonical paths and protected Git attachment layout
 are startup configuration; working files, HEAD, refs, index and mtimes are
 not. Host edits and commits permit joining. Stop before adding or adopting
 Git in a running non-Git share; it remains unprotected for that owner and
-subsequent admission refuses the changed layout. Joining does not reseed,
-synchronize Git or refresh login.
+new grants refuse the changed layout while that owner lives. After stop,
+the next owner protects the box-written `.git` without running host Git.
+Inspect that metadata before running host Git in the folder. Joining does
+not reseed, synchronize Git or refresh login.
 
 Arguments after `--` pass literally to the command, including `--help`. Command exit codes
 pass through; project setup failure or external teardown before observed completion uses 125. CMD owns stdout;
@@ -211,9 +213,10 @@ rebuilt profile published. Caller `image build` retains its layer cache
 and `--no-cache` option.
 
 Every built-in image includes standalone Pi, native Claude and Codex with
-its code-mode host on PATH. Built-in profiles seed native home instructions
-for both mount kinds only when missing. Existing instruction files, including
-earlier seeds, stay untouched and can therefore miss updated guidance.
+its code-mode host on PATH. Built-in profiles seed `.pi/agent/APPEND_SYSTEM.md`,
+`.claude/CLAUDE.md` and `.codex/AGENTS.md` for both mount kinds only when missing,
+including Linux and explicit macOS disk homes. Existing instruction files,
+including earlier seeds, stay untouched and can therefore miss updated guidance.
 Instructions do not enforce containment. Home settings are also missing-only;
 rebuilding preserves edited settings.
 
@@ -225,7 +228,9 @@ Rebuild old Podman-only Linux images explicitly with `build` or `image build`.
 Old Podman storage, derived roots and managed agent disks remain untouched.
 
 For a share, host edits are live and only the host writes the protected
-top-level Git metadata. There is no startup synchronization or crossing;
+top-level Git metadata. Pinfold reads share Git metadata as data and never
+executes Git on the host for that project. There is no startup synchronization
+or crossing;
 `pinfold push` and `fetch` refuse as `share-no-crossing`. A share launch never
 deletes an old project disk or copies it back. To select disk behavior on
 macOS, set this in the project’s configuration:

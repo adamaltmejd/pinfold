@@ -236,13 +236,19 @@ impl Snapshot {
             .filter_map(|name| std::env::var_os(&name).map(|value| (name.into(), value)))
             .collect()
     }
-    pub(crate) fn resolve(root: &Path) -> io::Result<Resolved> {
+    pub(crate) fn resolve(
+        root: &Path,
+        expected_mount: Option<ProjectMount>,
+    ) -> io::Result<Resolved> {
         let roots = Roots::resolve()?;
         let context = Context::discover(root)?;
         if context.root != root {
             return Err(io::Error::other("git-discovery: project root changed"));
         }
         let mut config = Config::load(root)?;
+        if expected_mount.is_some_and(|mount| mount != config.mount) {
+            return Err(io::Error::other("config-changed: project.mount"));
+        }
         if config.repository != context.repository {
             return Err(io::Error::other(
                 "git-discovery: repository changed during configuration",
@@ -251,8 +257,8 @@ impl Snapshot {
         if let Some(Share::Directory(path)) = config.profile.share.as_mut() {
             *path = dirs::resolve_host_path(path)?;
         }
-        config.check_project_paths(root)?;
-        context.verify()?;
+        config.check_host_paths(root)?;
+        context.verify(config.mount)?;
         let id = state::project_id(root);
         let image = launch::resolve_image(&config, &id);
         let mut plan = launch::build_plan(&config, &id, root, &image)?;
@@ -264,8 +270,7 @@ impl Snapshot {
                 *from = dirs::resolve_host_path(from)?;
             }
         }
-        let protection = crate::core::r#box::validate_project(&plan, &config.profile)
-            .map_err(io::Error::other)?;
+        crate::core::r#box::validate_project(&plan, &config.profile).map_err(io::Error::other)?;
         if !config.cpus.is_finite() {
             return Err(io::Error::other("spec-invalid: CPUs must be finite"));
         }
@@ -275,7 +280,6 @@ impl Snapshot {
         let mut mounts = plan
             .mounts
             .iter()
-            .chain(&protection)
             .map(|mount| Mount {
                 source: MountSource::Host {
                     path: Bytes::path(&mount.host),
@@ -285,6 +289,15 @@ impl Snapshot {
                 git: mount.git,
             })
             .collect::<Vec<_>>();
+        if config.mount == ProjectMount::Share && context.repository {
+            let git = Bytes::path(&root.join(".git"));
+            mounts.push(Mount {
+                source: MountSource::Host { path: git.clone() },
+                guest: git,
+                kind: MountKind::Readonly,
+                git: true,
+            });
+        }
         if let Some(share) = &config.profile.share {
             mounts.push(Mount {
                 source: match share {
@@ -382,6 +395,10 @@ impl Snapshot {
         self.image.id.as_deref()
     }
 
+    pub(crate) fn project_mount(&self) -> ProjectMount {
+        self.project_mount
+    }
+
     pub(crate) fn is_share(&self) -> bool {
         self.project_mount == ProjectMount::Share
     }
@@ -391,10 +408,8 @@ impl Snapshot {
             return Vec::new();
         }
         let protected = self.mounts.iter().any(|mount| mount.git);
-        let matches = match std::fs::symlink_metadata(root.join(".git")) {
-            Ok(metadata) => protected && metadata.is_dir(),
-            Err(error) => !protected && error.kind() == io::ErrorKind::NotFound,
-        };
+        let matches =
+            crate::pi::context::share_repository(root).is_ok_and(|present| present == protected);
         if matches {
             Vec::new()
         } else {

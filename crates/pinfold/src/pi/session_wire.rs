@@ -33,7 +33,6 @@ pub(crate) enum Request {
         root: PathBuf,
         generation: String,
         roots: Roots,
-        crossing: bool,
     },
     Join {
         root: PathBuf,
@@ -57,7 +56,9 @@ pub(crate) enum Request {
 #[serde(tag = "verb", rename_all = "kebab-case", deny_unknown_fields)]
 pub(crate) enum Reply {
     Starting {},
-    Compatible {},
+    Compatible {
+        mount: crate::config::ProjectMount,
+    },
     Admitted {
         name: String,
         generation: String,

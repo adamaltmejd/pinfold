@@ -63,19 +63,24 @@ impl ProjectMount {
     }
 
     fn parse(value: Option<&toml::Value>, source: &str) -> io::Result<Self> {
-        for kind in [Self::Disk, Self::Share] {
-            let expected = toml::from_str::<toml::Table>(&kind.declaration())
-                .expect("the project mount is TOML")
-                .remove("mounts");
-            if value == expected.as_ref() {
-                if kind == Self::Share && cfg!(target_os = "linux") {
-                    return Err(invalid(
-                        source,
-                        "spec: share mounts are unsupported on Linux",
-                    ));
-                }
-                return Ok(kind);
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Attachment {
+            host: String,
+            kind: ProjectMount,
+        }
+        if let Some(value) = value
+            && let Ok(mounts) = value.clone().try_into::<Vec<Attachment>>()
+            && let [mount] = mounts.as_slice()
+            && mount.host == "."
+        {
+            if mount.kind == Self::Share && cfg!(target_os = "linux") {
+                return Err(invalid(
+                    source,
+                    "spec: share mounts are unsupported on Linux",
+                ));
             }
+            return Ok(mount.kind);
         }
         Err(invalid(
             source,
@@ -106,7 +111,7 @@ pub fn create(root: &Path) -> io::Result<PathBuf> {
         .and_then(|bytes| Layer::parse(&bytes, "").ok())
         .and_then(|layer| layer.profile);
     let profile = Profile::load(&profile_name(file)?).ok();
-    check_paths_outside(root, profile.as_ref())?;
+    check_paths_outside(root, profile.as_ref(), false)?;
     if read_optional(&path)?.is_some() {
         return Ok(path);
     }
@@ -250,25 +255,7 @@ impl Config {
     /// Refuse a project that holds what configures its boxes (see
     /// [`check_paths_outside`]).
     pub fn check_host_paths(&self, root: &Path) -> io::Result<()> {
-        check_paths_outside(root, Some(&self.profile))
-    }
-
-    /// Core share admission checks common paths; add only project-specific paths.
-    pub(crate) fn check_project_paths(&self, root: &Path) -> io::Result<()> {
-        if self.mount == ProjectMount::Disk {
-            self.check_host_paths(root)
-        } else {
-            let project = project_dir(root)?;
-            let paths = [
-                project.join("pinfold.toml"),
-                project.join("Containerfile"),
-                project,
-            ]
-            .into_iter()
-            .map(|path| dirs::resolve_host_path(&path))
-            .collect::<io::Result<Vec<_>>>()?;
-            crate::core::mounts::check_extra_paths_outside(root, paths, true)
-        }
+        check_paths_outside(root, Some(&self.profile), self.mount == ProjectMount::Share)
     }
 }
 
@@ -277,7 +264,11 @@ impl Config {
 /// project state is created: box content crosses into the project, so it
 /// must not reach them. Each file is named too, since resolving its
 /// directory does not follow a symlink below it.
-fn check_paths_outside(root: &Path, profile: Option<&Profile>) -> io::Result<()> {
+fn check_paths_outside(
+    root: &Path,
+    profile: Option<&Profile>,
+    bidirectional: bool,
+) -> io::Result<()> {
     let project = project_dir(&fs::canonicalize(root)?)?;
     crate::core::mounts::check_paths_outside(
         root,
@@ -287,6 +278,7 @@ fn check_paths_outside(root: &Path, profile: Option<&Profile>) -> io::Result<()>
             project.join("Containerfile"),
             project,
         ],
+        bidirectional,
     )
 }
 

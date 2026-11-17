@@ -92,7 +92,9 @@ Not protected:
   including during admission. Git protection holds against boxes sharing
   exactly the same root. The caller declares shares and must not give an
   ancestor of a protected repository to another box. There is no cross-box
-  coordination.
+  coordination. A box-created nested `.git` can change the project selected by
+  discovery, including a linked worktree’s selected main root, and cause a
+  missing-configuration refusal.
 - Symlinks resolve in the guest namespace and do not grant access to an
   otherwise unmounted host path; they can reach other paths already
   available in the box. Host tools following box-written symlinks can reach
@@ -1316,9 +1318,8 @@ with or without a TTY.
   describe both mount kinds. Share edits already affect host files; only the
   host writes the protected Git metadata. Disk commits reach the host through
   `pinfold fetch`. Instructions are guidance and do not enforce either boundary.
-  Supported updater
-  switches are recipe environment defaults. Route-generated system files
-  contain authentication configuration only.
+  Supported updater switches are recipe environment defaults. Route-generated
+  system files contain authentication configuration only.
 
 pi's two config levels both load in every run: the user level (pi's agent
 dir under `$HOME`, seeded from `home/`, with packages from `share/`) and
@@ -1331,7 +1332,8 @@ on by default: stdio servers run in the box, remote ones through the
 proxy. Every built-in includes the operating-context extension, which
 writes the box's facts into the system prompt (the allowlist from
 `PINFOLD_ALLOW`, that a 403 is final, and the share/disk guidance above).
-Deliverables belong in the project’s actual cwd. Documents and full include
+The extension retains project guidance when an existing native instruction
+file blocks its missing-only seed. Documents and full include
 `read-documents`. Full also registers fff and ponytail.
 
 Default and documents set no config. Full's `allow` is the default list
@@ -1529,8 +1531,9 @@ Automatic, never prompting:
   admission refusal runs no pass. Project commands defer it until their
   session lease has ended.
   `start` runs it after keep is committed, without a client lease.
-  Project `push` and `fetch` run it after roots and mount admission, before
-  acquiring a crossing lease; a share refusal runs no pass.
+  Project `push` and `fetch` defer it until the running owner’s mount decision,
+  or configuration mount admission when no owner runs. A share refusal runs
+  no pass. Signal handlers are installed before this deferred maintenance.
 
 A run is inactive when its generation owns no lifetime lock. An inactive
 run's directory goes when its newest file is older than 14 days; then,
@@ -1595,6 +1598,11 @@ project; executable replacement remains `update-busy`.
   directories and operational discovery errors never become non-Git projects.
   Independent nested repositories retain their own project discovery. When
   reached from an ancestor share, their Git metadata remains writable.
+- **Git metadata:** For a share, pinfold reads Git metadata as data and never
+  executes Git on the host. Main-root and linked-worktree topology, including
+  `gitdir:` files and `commondir` in directory-form repositories, uses bounded,
+  no-follow, descriptor-relative reads as the host uid. Pointers outside the
+  main root’s `.git` refuse. Disk projects retain host-Git verification.
 - **Lifetime:** one detached owner serves a canonical project host-wide,
   independently of HOME and XDG roots. A session ends when its command returns
   or its client disconnects. A departed session's command group is asked to
@@ -1646,9 +1654,13 @@ project; executable replacement remains `update-busy`.
   HEAD, refs, index contents and mtimes are excluded. Host edits and commits
   do not cause `config-changed`. Client resolution and owner re-resolution
   compare against the owner’s in-memory snapshot. A changed protection
-  layout requires stop and restart. A non-Git share remains unprotected if
-  `.git` appears during its lifetime; subsequent admission refuses the changed
-  layout. Stop before initializing or adopting it as a host repository.
+  layout requires stop and restart. The owner rechecks current protection
+  layout on every Join and Keep grant, not only the earlier roots probe. A
+  non-Git share remains unprotected if `.git` appears during its lifetime; new
+  grants refuse as `config-changed` while that owner lives. After stop, the next
+  owner treats the folder as a Git project and protects that box-written `.git`,
+  still without running host Git. The user should not run host Git in such a
+  folder without inspecting the box-written metadata.
   A project admission frame is at most 16 MiB. Malformed, unsupported or
   oversized private messages fail as `session-protocol`; their contents are
   never reported. Unavailable ownership refuses as `owner-unavailable`;
@@ -1697,8 +1709,12 @@ project; executable replacement remains `update-busy`.
 This section applies only to disk projects. Shares have no startup
 synchronization or project crossing. `pinfold push` and `pinfold fetch`
 refuse a share as `share-no-crossing` before acquiring a crossing lease or
-starting a transient box. Host roots are checked first. A running share
-owner also refuses crossing when the configuration file now selects disk.
+starting a transient box. Crossing resolves a recorded root and asks its
+owner before marker discovery. Host roots are checked first. A running share
+owner refuses crossing regardless of box-written Git markers or a configuration
+file that now selects disk. A running disk owner retains disk crossing if the
+configuration now selects share. With no owner, configuration selects the
+mount kind.
 
 The project disk holds the box's own repository. Only the host's
 branches enter it: no host `.git` content, config, hook, stash, reflog,
@@ -1712,10 +1728,9 @@ repository or home identity overrides it.
 the user merges; signing and host hooks are the user's. `pinfold push` is
 Crossing's push of the checkout; uncommitted host edits do not cross.
 
-Both load the configuration and check the project mount as `pinfold -- CMD`
-does, then use the project owner's box with a temporary crossing lease,
-or a transient box on the project disk without egress, and print
-Crossing's lines. With no project disk, or one whose
+Both use a running disk owner’s box with a temporary crossing lease, or
+load configuration and start a transient box on its project disk without
+egress when no owner runs. Both print Crossing’s lines. With no project disk, or one whose
 box never came ready (Disks), both exit nonzero and start no box.
 
 Project admission follows core readiness and completion of the initial Git
@@ -1871,10 +1886,11 @@ worktrees beneath that root, else the canonical invoking folder. A linked
 worktree is admitted only when its common Git directory is that main root’s
 protected `.git`. External linked worktrees and separate Git directories are
 refused. A moved or renamed project has a new identity and no configuration.
-Worktree `.git` files and `commondir` are parsed as data, without following
-symlinks, as the host uid; no host Git runs against a repository selected by
-a writable pointer. Independent nested repositories retain their own project
-discovery. Inside a Git directory, the command refuses as `project-in-git`.
+Discovery reads metadata only. No configuration is parsed before a live
+owner compares host roots; changed roots refuse as `config-changed` before
+configuration or worktree errors. For a share, topology is established by the
+Git-metadata control above. Independent nested repositories retain their own
+project discovery. Inside a Git directory, the command refuses as `project-in-git`.
 
 ## Guarantees
 
@@ -1920,7 +1936,7 @@ what the rewritten suite must show. Testing policy is in `AGENTS.md`.
 
 | 45 | Disk export writes only the requested new destination | While its box runs, export of its disk refuses as disk-in-use. After teardown, the same disk exports nested file bytes, executable mode and a symlink as a link without touching its target. Existing destinations refuse unchanged; a missing disk refuses as disk-missing and creates no disk. A special file refuses and leaves no destination; removing it makes the same disk export successfully. |
 
-| 47 | A project's sessions share one box | Simultaneous first launches use one owner and generation. Independent clients run in distinct invoking directories. Killing or disconnecting a client sends TERM to its command group, then KILL after two seconds if needed, while the second session keeps working. Keep and crossing leases retain the box but not a departed command group. A terminal departure hangs up its guest terminal first. A process that leaves the command group, or for a terminal session ignores hangup after leaving it, may keep running; stop ends everything. Normal completion preserves background children, with output delivered for up to one second. Plain stdin EOF does not cancel a command. The final unkept departure ends the box. Bootstrap death and final departure racing join, keep and stop never admit two writable generations. Start retains a box without clients; repeated start and stop succeed. Different effective configuration or host roots refuse as config-changed without executing CMD; restoring each changed input joins the same generation. The original proxy policy still decides. A stale stop cannot end a replacement. Two share sessions edit the same host files. Host edits and commits permit joining; mount-kind or protection-layout changes refuse as `config-changed`. Start creates no project disk or Git synchronization. Share crossing refuses before a lease or transient box. Stop ends box access and preserves host edits, including from the recorded main root without configuration after a hostile Git marker appears. |
+| 47 | A project's sessions share one box | Simultaneous first launches use one owner and generation. Independent clients run in distinct invoking directories. Killing or disconnecting a client sends TERM to its command group, then KILL after two seconds if needed, while the second session keeps working. Keep and crossing leases retain the box but not a departed command group. A terminal departure hangs up its guest terminal first. A process that leaves the command group, or for a terminal session ignores hangup after leaving it, may keep running; stop ends everything. Normal completion preserves background children, with output delivered for up to one second. Plain stdin EOF does not cancel a command. The final unkept departure ends the box. Bootstrap death and final departure racing join, keep and stop never admit two writable generations. Start retains a box without clients; repeated start and stop succeed. Different effective configuration or host roots refuse as config-changed without executing CMD; restoring each changed input joins the same generation. The original proxy policy still decides. A stale stop cannot end a replacement. Two share sessions edit the same host files. Host edits and commits permit joining; mount-kind or protection-layout changes refuse as `config-changed`; the owner checks current layout on every Join and Keep grant. A gained `.git` refuses only while that owner lives; a later owner protects it without host Git. Start creates no project disk or Git synchronization. Share crossing refuses before a lease or transient box. Stop ends box access and preserves host edits, including from the recorded main root without configuration after a hostile Git marker appears. |
 
 | 48 | A share confines direct writes and protects its admitted top-level Git metadata | On Apple, ordinary shared-file edits reach the host while direct metadata writes, deletion, rename and replacement fail without changing the protected host tree. Attempts to remove or replace the read-only mount fail. Generated Git protection attaches after all caller attachments. Nonliteral Git ownership destinations refuse as `spec`. Case-variant protected destinations refuse on case-insensitive sources. Lexically conflicting destinations, additional attachment sources at or beneath protected host `.git`, and share sources exposing another share's `.git` writable refuse as `spec`. An image symlink alias can change which declared source is visible, without permitting writes to protected host Git bytes. A symlink beneath protected `.git`, or a share file outside `.git` aliasing a multiply linked protected file, refuses as `spec`; hard links to outside content and ordinary hard-linked working files run. Corrected trees run. Guest traversal of outward symlinks cannot access an unmounted host fixture. Only the share-root `.git` is protected. Linked-worktree redirection and nested repositories remain outside this metadata guarantee. Protection is against boxes sharing exactly that root; other boxes with ancestor or descendant share roots can change or alias the protected tree, including during admission. |
 

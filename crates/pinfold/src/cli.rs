@@ -991,8 +991,7 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     let cwd = std::env::current_dir()?;
     // Host diagnostics run anywhere; a project that cannot be configured
     // is one finding among them.
-    let project = crate::pi::launch::project_root(&cwd).and_then(|root| {
-        let config = Config::load(&root)?;
+    let project = project_config(&cwd).and_then(|(root, config)| {
         config.check_host_paths(&root)?;
         Ok((root, config))
     });
@@ -1125,12 +1124,23 @@ fn pins_json() -> io::Result<serde_json::Value> {
     serde_json::to_value(artifacts::pins()?).map_err(io::Error::other)
 }
 
+fn project_config(cwd: &Path) -> io::Result<(PathBuf, Config)> {
+    let context = crate::pi::context::Context::discover(cwd)?;
+    let config = Config::load(&context.root)?;
+    if config.mount == crate::config::ProjectMount::Share {
+        context.verify(config.mount)?;
+    } else {
+        context.check_worktree(config.mount)?;
+    }
+    Ok((context.root, config))
+}
+
 /// Read-only: do not materialize profiles or record project state.
 pub fn config(args: &[String]) -> io::Result<i32> {
-    let root = match args {
+    let (root, config) = match args {
         [edit] if edit == "edit" => return config_edit(),
-        [] => crate::pi::launch::project_root(&std::env::current_dir()?)?,
-        [root] => crate::pi::launch::project_root(Path::new(root))?,
+        [] => project_config(&std::env::current_dir()?)?,
+        [root] => project_config(Path::new(root))?,
         _ => {
             return Err(usage(
                 "config",
@@ -1138,7 +1148,6 @@ pub fn config(args: &[String]) -> io::Result<i32> {
             ));
         }
     };
-    let config = Config::load(&root)?;
     println!("{}", config_report(&root, &config)?);
     Ok(0)
 }
@@ -1147,6 +1156,13 @@ pub fn config(args: &[String]) -> io::Result<i32> {
 /// missing, then open it in the user's editor and return its exit code.
 fn config_edit() -> io::Result<i32> {
     let project = crate::pi::context::Context::discover(&std::env::current_dir()?)?;
+    if project.is_worktree() {
+        let mount = crate::config::project_mount(&project.root)
+            .ok()
+            .flatten()
+            .unwrap_or(crate::config::ProjectMount::Share);
+        project.check_worktree(mount)?;
+    }
     let path = crate::config::create(&project.root)?;
     eprintln!("pinfold config: {}", terminal_text(&path.to_string_lossy()));
     let editor = ["VISUAL", "EDITOR"]
@@ -1285,8 +1301,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
     let (profile, project) = match profile_name {
         Some(name) => (Profile::load(name)?, None),
         None => {
-            let root = crate::pi::launch::project_root(&std::env::current_dir()?)?;
-            let config = Config::load(&root)?;
+            let (root, config) = project_config(&std::env::current_dir()?)?;
             config.check_host_paths(&root)?;
             if config.image.is_some() {
                 return Err(io::Error::new(
