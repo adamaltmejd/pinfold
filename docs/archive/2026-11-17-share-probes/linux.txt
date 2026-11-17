@@ -1,0 +1,40 @@
+Linux 6.12.107+deb13-cloud-amd64 uid 1000
+strace True runtime PATH empty; isolated cache
+malformed before {'config': False, 'state': False, 'cache': False}
+malformed exit 1
+{"box":null,"detail":"invalid box spec: EOF while parsing an object at line 2 column 0","event":"refused","reason":"spec"}
+malformed after {'config': [], 'state': ['pinfold', 'pinfold/maintenance'], 'cache': []}
+TRACE 15091 readlink("/proc/self/exe", "PINFOLD", 256) = 22
+TRACE 15092 stat("/tmp/pfp-linux/malformed/state/pinfold/maintenance", 0x7fe73664d6c0) = -1 ENOENT (No such file or directory)
+TRACE 15092 open("/tmp/pfp-linux/malformed/state/pinfold/maintenance", O_WRONLY|O_CREAT|O_TRUNC|O_LARGEFILE|O_CLOEXEC, 0666) = 10
+TRACE 15092 read(0, "{\n", 8192)              = 2
+TRACE 15092 read(0, "", 8192)                 = 0
+TRACE 15092 read(0, "", 8192)                 = 0
+unknown-kind before {'config': False, 'state': False, 'cache': False}
+unknown-kind exit 1
+{"box":"probe-order","detail":"invalid box spec: unknown field `kind`, expected `host` or `guest`","event":"refused","reason":"spec"}
+unknown-kind after {'config': [], 'state': ['pinfold', 'pinfold/maintenance'], 'cache': []}
+TRACE 15096 readlink("/proc/self/exe", "PINFOLD", 256) = 22
+TRACE 15097 stat("/tmp/pfp-linux/unknown-kind/state/pinfold/maintenance", 0x7f09cb5dd6c0) = -1 ENOENT (No such file or directory)
+TRACE 15097 open("/tmp/pfp-linux/unknown-kind/state/pinfold/maintenance", O_WRONLY|O_CREAT|O_TRUNC|O_LARGEFILE|O_CLOEXEC, 0666) = 10
+TRACE 15097 read(0, "{\"name\": \"probe-order\", \"image\": \"probe-absent-ordering\", \"mounts\": [{\"host\": \"/tmp/pfp-linux/share\", \"guest\": \"/work\", \"kind\": \"share\"}]}\n", 8192) = 148
+invalid-parsed before {'config': False, 'state': False, 'cache': False}
+invalid-parsed exit 1
+{"box":"probe-order","detail":"invalid box spec: mount /tmp/pfp-linux/share:relative must be absolute","event":"refused","reason":"spec"}
+invalid-parsed after {'config': [], 'state': ['pinfold', 'pinfold/maintenance'], 'cache': []}
+TRACE 15101 readlink("/proc/self/exe", "PINFOLD", 256) = 22
+TRACE 15102 stat("/tmp/pfp-linux/invalid-parsed/state/pinfold/maintenance", 0x7feb6000d6c0) = -1 ENOENT (No such file or directory)
+TRACE 15102 open("/tmp/pfp-linux/invalid-parsed/state/pinfold/maintenance", O_WRONLY|O_CREAT|O_TRUNC|O_LARGEFILE|O_CLOEXEC, 0666) = 10
+TRACE 15102 read(0, "{\"name\": \"probe-order\", \"image\": \"probe-absent-ordering\", \"mounts\": [{\"host\": \"/tmp/pfp-linux/share\", \"guest\": \"relative\"}]}\n", 8192) = 134
+TRACE 15101 readlink("/proc/self/exe", "PINFOLD", 256) = 22
+readonly-control before {'config': False, 'state': False, 'cache': False}
+readonly-control exit 1
+{"box":"probe-order","detail":"kvm: /dev/kvm: Permission denied (os error 13); the user needs to read, write and use /dev/kvm (the kvm group)","event":"refused","reason":"runtime"}
+readonly-control after {'config': [], 'state': ['pinfold', 'pinfold/maintenance'], 'cache': []}
+TRACE 15106 readlink("/proc/self/exe", "PINFOLD", 256) = 22
+TRACE 15107 stat("/tmp/pfp-linux/readonly-control/state/pinfold/maintenance", 0x7f8dce37d6c0) = -1 ENOENT (No such file or directory)
+TRACE 15107 open("/tmp/pfp-linux/readonly-control/state/pinfold/maintenance", O_WRONLY|O_CREAT|O_TRUNC|O_LARGEFILE|O_CLOEXEC, 0666) = 10
+TRACE 15107 read(0, "{\"name\": \"probe-order\", \"image\": \"probe-absent-ordering\", \"mounts\": [{\"host\": \"/tmp/pfp-linux/share\", \"guest\": \"/work\"}]}\n", 8192) = 131
+TRACE 15106 readlink("/proc/self/exe", "PINFOLD", 256) = 22
+readonly-control uses an absent image; successful runtime startup not established
+scratch removed

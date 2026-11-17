@@ -1,0 +1,49 @@
+{"host_git": "git version 2.56.1", "uid": 501, "fixture": "100001 tracked files, 1000 untracked files in 10 directories; one tracked edit"}
+{"admission": "100001", "sample": 0, "seconds": 0.202218, "entries": 101111, "protected_linked": 0, "symlinks": 0, "aliases": []}
+{"admission": "100001", "sample": 1, "seconds": 0.195108, "entries": 101111, "protected_linked": 0, "symlinks": 0, "aliases": []}
+{"admission": "100001", "sample": 2, "seconds": 0.193822, "entries": 101111, "protected_linked": 0, "symlinks": 0, "aliases": []}
+{"admission": "built-repository", "sample": 0, "seconds": 0.038433, "entries": 4860, "protected_linked": 25, "symlinks": 0, "aliases": []}
+{"admission": "built-repository", "sample": 1, "seconds": 0.018684, "entries": 4860, "protected_linked": 25, "symlinks": 0, "aliases": []}
+{"admission": "built-repository", "sample": 2, "seconds": 0.017845, "entries": 4860, "protected_linked": 25, "symlinks": 0, "aliases": []}
+{"admission_case": "outside-hardlink", "seconds": 4.7e-05, "entries": 1, "protected_linked": 0, "symlinks": 0, "aliases": []}
+{"admission_case": "protected-hardlink", "seconds": 7.9e-05, "entries": 2, "protected_linked": 1, "symlinks": 0, "aliases": ["protected-alias"]}
+{"admission_case": "git-symlink", "seconds": 4.1e-05, "entries": 1, "protected_linked": 0, "symlinks": 1, "aliases": []}
+{"cache": false, "guest_git": "git version 2.47.3", "cold_definition": "new VM for each cache condition; first status only; no OS host cache flush"}
+{"cache": false, "exec_only": 0, "seconds": 0.039517, "rc": 0}
+{"cache": false, "exec_only": 1, "seconds": 0.051453, "rc": 0}
+{"cache": false, "exec_only": 2, "seconds": 0.072713, "rc": 0}
+{"cache": false, "command": 0, "argv": ["git", "--no-optional-locks", "status", "--short", "--ignore-submodules=dirty"]}
+{"cache": false, "command": 0, "sample": 0, "side": "host", "git_seconds": 0.099045, "rc": 0, "correct": true}
+{"cache": false, "command": 0, "sample": 0, "side": "guest", "git_seconds": 15.188264, "exec_total": 15.27671, "rc": 0, "correct": true, "stderr": "", "protected_files_unchanged": true}
+{"cache": false, "command": 0, "sample": 1, "side": "host", "git_seconds": 0.101798, "rc": 0, "correct": true}
+{"cache": false, "command": 0, "sample": 1, "side": "guest", "git_seconds": 14.382625, "exec_total": 14.455817, "rc": 0, "correct": true, "stderr": "", "protected_files_unchanged": true}
+{"cache": false, "command": 0, "sample": 2, "side": "host", "git_seconds": 0.100031, "rc": 0, "correct": true}
+{"cache": false, "command": 0, "sample": 2, "side": "guest", "git_seconds": 14.276352, "exec_total": 14.336181, "rc": 0, "correct": true, "stderr": "", "protected_files_unchanged": true}
+{"cache": false, "command": 1, "argv": ["git", "status", "--porcelain", "--ignore-submodules=dirty"]}
+{"cache": false, "command": 1, "sample": 0, "side": "host", "git_seconds": 0.099241, "rc": 0, "correct": true}
+{"cache": false, "command": 1, "sample": 0, "side": "guest", "git_seconds": 10.426014, "exec_total": 10.491046, "rc": 0, "correct": true, "stderr": "", "protected_files_unchanged": true}
+{"cache": false, "command": 1, "sample": 1, "side": "host", "git_seconds": 0.098098, "rc": 0, "correct": true}
+{"cache": false, "command": 1, "sample": 1, "side": "guest", "git_seconds": 15.226581, "exec_total": 15.28819, "rc": 0, "correct": true, "stderr": "", "protected_files_unchanged": true}
+{"cache": false, "command": 1, "sample": 2, "side": "host", "git_seconds": 0.107836, "rc": 0, "correct": true}
+{"cache": false, "command": 1, "sample": 2, "side": "guest", "git_seconds": 10.896959, "exec_total": 10.954676, "rc": 0, "correct": true, "stderr": "", "protected_files_unchanged": true}
+{"cache": false, "protected_files_unchanged_across_host_and_guest": true}
+{"cache": true, "guest_git": "git version 2.47.3", "cold_definition": "new VM for each cache condition; first status only; no OS host cache flush"}
+{"cache": true, "exec_only": 0, "seconds": 0.043022, "rc": 0}
+{"cache": true, "exec_only": 1, "seconds": 0.043341, "rc": 0}
+{"cache": true, "exec_only": 2, "seconds": 0.024741, "rc": 0}
+{"cache": true, "command": 0, "argv": ["git", "--no-optional-locks", "status", "--short", "--ignore-submodules=dirty"]}
+{"cache": true, "command": 0, "sample": 0, "side": "host", "git_seconds": 0.078826, "rc": 0, "correct": true}
+{"cache": true, "command": 0, "sample": 0, "side": "guest", "git_seconds": 13.852285, "exec_total": 13.926146, "rc": 0, "correct": true, "stderr": "", "protected_files_unchanged": true}
+{"cache": true, "command": 0, "sample": 1, "side": "host", "git_seconds": 0.068304, "rc": 0, "correct": true}
+{"cache": true, "command": 0, "sample": 1, "side": "guest", "git_seconds": 13.736472, "exec_total": 13.781544, "rc": 0, "correct": true, "stderr": "", "protected_files_unchanged": true}
+{"cache": true, "command": 0, "sample": 2, "side": "host", "git_seconds": 0.067861, "rc": 0, "correct": true}
+{"cache": true, "command": 0, "sample": 2, "side": "guest", "git_seconds": 13.282785, "exec_total": 13.346142, "rc": 0, "correct": true, "stderr": "", "protected_files_unchanged": true}
+{"cache": true, "command": 1, "argv": ["git", "status", "--porcelain", "--ignore-submodules=dirty"]}
+{"cache": true, "command": 1, "sample": 0, "side": "host", "git_seconds": 0.069007, "rc": 0, "correct": true}
+{"cache": true, "command": 1, "sample": 0, "side": "guest", "git_seconds": 10.640607, "exec_total": 10.690545, "rc": 0, "correct": true, "stderr": "", "protected_files_unchanged": true}
+{"cache": true, "command": 1, "sample": 1, "side": "host", "git_seconds": 0.07025, "rc": 0, "correct": true}
+{"cache": true, "command": 1, "sample": 1, "side": "guest", "git_seconds": 13.370174, "exec_total": 13.436428, "rc": 0, "correct": true, "stderr": "", "protected_files_unchanged": true}
+{"cache": true, "command": 1, "sample": 2, "side": "host", "git_seconds": 0.068526, "rc": 0, "correct": true}
+{"cache": true, "command": 1, "sample": 2, "side": "guest", "git_seconds": 14.126538, "exec_total": 14.179826, "rc": 0, "correct": true, "stderr": "", "protected_files_unchanged": true}
+{"cache": true, "protected_files_unchanged_across_host_and_guest": true}
+{"fixture_and_own_containers_removed": true}
