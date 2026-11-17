@@ -1,9 +1,10 @@
 # pinfold
 
 Run a coding agent in a disposable micro-VM: Apple `container` on macOS,
-Firecracker on Linux. Project commands work on a private disk copy of the
-project's branches. Network egress uses the box's allowlisting proxy.
-`pinfold fetch` brings its commits back as branches.
+Firecracker on Linux. New macOS project configurations share host files
+directly, with the main root’s `.git` read-only. Linux projects use a private
+disk copy of committed branches; macOS also supports an explicit disk.
+Network egress uses the box’s allowlisting proxy.
 
 - **Interactive:** `pinfold -- pi`, `pinfold -- claude` or `pinfold -- bash`.
 - **From another agent:** `pinfold -- pi -p` (see below).
@@ -22,8 +23,11 @@ An image symlink can change which declared source the box sees, but cannot grant
 working files can be deleted or corrupted, and host tools can execute
 box-written content.
 See [Mounts](docs/ARCHITECTURE.md#mounts) and the
-[threat model](docs/ARCHITECTURE.md#threat-model). Project commands still use
-their persistent project disk.
+[threat model](docs/ARCHITECTURE.md#threat-model). A linked worktree beneath
+a shared main root uses that root’s configuration and owner, at its invoking
+cwd. External worktrees and separate Git directories refuse. Independent
+nested repositories retain their own project discovery; their Git metadata
+is writable when reached through an ancestor share.
 
 ## Requirements
 
@@ -103,8 +107,9 @@ In your working folder:
    Building needs network. Rebuild when a run shows `image-outdated`;
    it keeps project settings, sessions and logins.
 3. Run a command: `pinfold -- pi`, `pinfold -- claude` or `pinfold -- bash`.
-4. The project home and project disk persist between runs. A guest `/login`
-   stays in that project's home. `pinfold disk list` shows readable sizes and
+4. The project home persists between runs. A share exposes existing host
+   files and creates no project disk. A disk project also retains its project
+   disk. A guest `/login` stays in that project's home. `pinfold disk list` shows readable sizes and
    recorded originating folders; `disk rm --all` removes unattached disks
    in the current state root. An API key or a Claude or Codex subscription
    can instead stay on the host behind a login route in `routes`
@@ -129,7 +134,10 @@ sends no signal on departure.
 
 `pinfold start` keeps the box without clients. Matching repeated starts
 succeed. `pinfold stop` stops its observed generation, without loading current
-configuration, and cannot stop a replacement. Both take no arguments and
+configuration, including a hostile Git marker added during a share run,
+and cannot stop a replacement. Share edits remain after stop; it neither
+commits nor rolls them back. On Apple an orphan box may retain share access
+after owner death until checked removal. Both take no arguments and
 print nothing to stdout on success; infrastructure failures return 125.
 Admission and silent-owner control waits have a ten-second deadline; timeout
 leaves ownership intact. Waiting for a busy launcher has no startup deadline
@@ -142,7 +150,12 @@ Joining or keeping preserves the running policy and credentials. Changed
 host roots or effective configuration refuse as `config-changed`, naming
 only differing fields. Stop the owner before applying those changes. Command
 metadata, recipe freshness and seed/shared-file contents do not affect
-comparison. Joining does not reseed, synchronize Git or refresh login.
+comparison. Mount kind, canonical paths and protected Git attachment layout
+are startup configuration; working files, HEAD, refs, index and mtimes are
+not. Host edits and commits permit joining. Stop before adding or adopting
+Git in a running non-Git share; it remains unprotected for that owner and
+subsequent admission refuses the changed layout. Joining does not reseed,
+synchronize Git or refresh login.
 
 Arguments after `--` pass literally to the command, including `--help`. Command exit codes
 pass through; project setup failure or external teardown before observed completion uses 125. CMD owns stdout;
@@ -198,7 +211,10 @@ rebuilt profile published. Caller `image build` retains its layer cache
 and `--no-cache` option.
 
 Every built-in image includes standalone Pi, native Claude and Codex with
-its code-mode host on PATH. Home settings are seeded only when missing;
+its code-mode host on PATH. Built-in profiles seed native home instructions
+for both mount kinds only when missing. Existing instruction files, including
+earlier seeds, stay untouched and can therefore miss updated guidance.
+Instructions do not enforce containment. Home settings are also missing-only;
 rebuilding preserves edited settings.
 
 Linux build egress has its own allowlist. Add exact hosts with
@@ -208,7 +224,17 @@ Apple builds reject `--allow` additions.
 Rebuild old Podman-only Linux images explicitly with `build` or `image build`.
 Old Podman storage, derived roots and managed agent disks remain untouched.
 
-In Git, the box keeps its own repository. Only committed branches enter it;
+For a share, host edits are live and only the host writes the protected
+top-level Git metadata. There is no startup synchronization or crossing;
+`pinfold push` and `fetch` refuse as `share-no-crossing`. A share launch never
+deletes an old project disk or copies it back. To select disk behavior on
+macOS, set this in the project’s configuration:
+
+```toml
+mounts = [{ host = ".", kind = "disk" }]
+```
+
+A disk project keeps its own repository. Only committed branches enter it;
 commit local work (a WIP commit is enough) to send it in.
 `pinfold fetch` brings guest commits back as `pinfold/*` branches to merge;
 `pinfold push` sends host branches in as `host/*`. A new owner pushes and
@@ -216,9 +242,10 @@ fast-forwards the guest branch when clean and strictly behind, before admitting
 sessions or project crossing. Joining runs no synchronization. Explicit
 crossing retains the project box during transfer.
 
-Outside Git on macOS, runs reuse the folder's home and project disks.
-The project disk starts empty at the folder's canonical path; no host files
-are imported. On Linux a folder outside Git is refused as `not-git`. See
+Outside Git on macOS, a share exposes the folder’s existing host files and
+retains its home. An explicit disk instead starts empty at the folder’s
+canonical path and imports no host files. On Linux a folder outside Git is
+refused as `not-git`. See
 [Configuration](docs/ARCHITECTURE.md#configuration) for precedence and recipes.
 
 To save a stopped disk into a new host directory, run
@@ -272,7 +299,7 @@ A coding agent on the host can delegate to pi in a box:
 ```sh
 pinfold -- pi -p "TASK" </dev/null              # answer on stdout, pi's exit code
 pinfold -- pi -p --continue "FOLLOW-UP" </dev/null
-pinfold fetch                                 # box branches as pinfold/*
+pinfold fetch                                 # disk-project branches as pinfold/*
 ```
 
 Treat the box's output and branches as untrusted. The
@@ -281,31 +308,35 @@ agent this; copy its directory into the agent's skills directory.
 
 ## Fresh state
 
-All commands in a project reuse its home and project disks. To start fresh:
+All commands reuse the project home. Disk projects also reuse a project
+disk; shares use host files directly. To start fresh:
 
-1. Finish every command. In Git, commit guest work you want to keep, run
-   `pinfold fetch`, inspect the commits, then merge or give them a host
+1. Finish every command. For a disk Git project, commit guest work you want
+   to keep, run `pinfold fetch`, inspect the commits, then merge or give them a host
    branch to retain them. Stop a kept box with `pinfold stop`.
-   Use `disk export` for other files.
+   Use `disk export` for other disk files. Share edits already reside on the
+   host; stop revokes box access and preserves those edits.
 2. Run `pinfold config`. Read the exact names from `project.disks.home`
-   and `project.disks.project`.
+   and `project.disks.project` (null for a share).
 3. Run `pinfold disk rm NAME` for each disk you want to clear.
 4. Launch `pinfold -- pi` or `pinfold -- pi -p "TASK"` again. No image rebuild
    is needed.
 
-Remove both disks for a fresh home and project. Removing only the home
-preserves the guest repository; removing only the project preserves
+For a share, removing the home resets only home contents; it never clears
+host shared files. For a disk project, remove both disks for a fresh home
+and project. Removing only the home preserves the guest repository; removing only the project preserves
 sessions, settings and other home files. Everything on a deleted disk is
 lost, including uncommitted work and home-only files. Fetch brings back commits,
 not uncommitted or home-only files. Later fetches can move `pinfold/*` refs.
 
-Outside Git on macOS, save wanted files with `disk export` before removing
-the persistent disks.
+Outside Git in an explicit macOS disk project, save wanted files with
+`disk export` before removing the persistent disks.
 
 Disk removal refuses attached disks. The two removals are separate operations;
 serialize access to the project. Use `disk rm`, never delete state or volume
 files directly. Profiles, project configuration and the selected image remain intact.
-A `sync-failed` warning means source synchronization failed even if the command starts.
+For disk projects, a `sync-failed` warning means source synchronization failed
+even if the command starts.
 
 ## Configuration
 
@@ -319,9 +350,15 @@ For disposable Rust build outputs in guest memory:
 PINFOLD_ENV_CARGO_TARGET_DIR=/tmp/pinfold-target pinfold -- pi
 ```
 
-`/tmp` is in guest memory and goes with the box; commit deliverables in
-the project first.
+`/tmp` is in guest memory and goes with the box. Save deliverables in the
+project’s actual cwd; commit them for disk-project crossing.
 
 ## Limits
 
 Read the [threat model](docs/ARCHITECTURE.md#threat-model) and [disks](docs/ARCHITECTURE.md#disks) before use.
+
+Shared-file reads can be stale or internally inconsistent after host changes;
+no fixed recovery delay is guaranteed. `git status` on a very large shared
+tree measured 10–15 seconds in the guest against about 0.1 seconds on the
+host. This is a known cost. Only the share root’s `.git` is protected;
+nested repositories remain writable, and shares have no cross-box coordination.

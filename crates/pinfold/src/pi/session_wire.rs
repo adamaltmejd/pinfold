@@ -33,6 +33,7 @@ pub(crate) enum Request {
         root: PathBuf,
         generation: String,
         roots: Roots,
+        crossing: bool,
     },
     Join {
         root: PathBuf,

@@ -81,6 +81,10 @@ pub fn try_name_lock(name: &str) -> io::Result<Option<Flock<File>>> {
 
 /// Observe an existing lock without creating any host state.
 pub fn name_alive(name: &str) -> io::Result<bool> {
+    lock_alive(&format!("box:{name}"))
+}
+
+pub(crate) fn lock_alive(key: &str) -> io::Result<bool> {
     let metadata = match fs::symlink_metadata(host_dir()?) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
@@ -90,7 +94,7 @@ pub fn name_alive(name: &str) -> io::Result<bool> {
     let file = match File::options()
         .read(true)
         .custom_flags(nix::libc::O_NOFOLLOW)
-        .open(path(&format!("box:{name}"), "lock")?)
+        .open(path(key, "lock")?)
     {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),

@@ -1190,7 +1190,8 @@ fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> 
         "project": {
             "id": project,
             "home": crate::pi::state::HOME,
-            "disks": { "home": home_disk, "project": project_disk },
+            "mount": { "kind": config.mount, "host": utf8(root, "project root")?, "guest": utf8(root, "project root")? },
+            "disks": { "home": home_disk, "project": if config.mount == crate::config::ProjectMount::Disk { Some(project_disk) } else { None } },
         },
     }))
 }

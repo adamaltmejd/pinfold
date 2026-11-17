@@ -3,10 +3,12 @@
 use crate::core::process::CommandGuard;
 
 use std::fs;
-use std::io;
+use std::io::{self, Read};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use crate::core::crossing;
+use crate::config::{self, ProjectMount};
+use crate::core::{crossing, plan::guest_path};
 use crate::formatting::terminal_text;
 use crate::pi::state::canonical;
 
@@ -38,12 +40,8 @@ impl Context {
                         repository: true,
                     });
                 }
-                Ok(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "worktree: .git is not a directory; run pinfold from the main checkout",
-                    ));
-                }
+                Ok(metadata) if metadata.is_file() => return Self::linked(ancestor),
+                Ok(_) => return Err(worktree_error()),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error),
             }
@@ -60,6 +58,50 @@ impl Context {
         Ok(Self {
             root: cwd,
             repository: false,
+        })
+    }
+
+    fn linked(worktree: &Path) -> io::Result<Self> {
+        if !cfg!(target_os = "macos") {
+            return Err(worktree_error());
+        }
+        // Select the main root by ancestry, never by a writable Git pointer.
+        let root = worktree
+            .ancestors()
+            .skip(1)
+            .find(|ancestor| {
+                fs::symlink_metadata(ancestor.join(".git")).is_ok_and(|metadata| metadata.is_dir())
+            })
+            .ok_or_else(worktree_error)?;
+        if config::project_mount(root)?.unwrap_or(ProjectMount::Share) != ProjectMount::Share {
+            return Err(worktree_error());
+        }
+        let relative_worktree = worktree.strip_prefix(root).map_err(|_| worktree_error())?;
+        let marker = read_pointer(root, &relative_worktree.join(".git"))?;
+        let directory = marker
+            .strip_prefix(b"gitdir: ")
+            .ok_or_else(worktree_error)?;
+        let directory = pointer_path(worktree, directory);
+        let git = root.join(".git");
+        let relative = directory.strip_prefix(&git).map_err(|_| worktree_error())?;
+        let mut components = relative.components();
+        if components.next() != Some(std::path::Component::Normal("worktrees".as_ref()))
+            || !matches!(components.next(), Some(std::path::Component::Normal(_)))
+            || components.next().is_some()
+        {
+            return Err(worktree_error());
+        }
+        let common = read_pointer(root, &Path::new(".git").join(relative).join("commondir"))?;
+        if pointer_path(&directory, &common) != git {
+            return Err(worktree_error());
+        }
+        let backlink = read_pointer(root, &Path::new(".git").join(relative).join("gitdir"))?;
+        if pointer_path(&directory, &backlink) != worktree.join(".git") {
+            return Err(worktree_error());
+        }
+        Ok(Self {
+            root: root.to_path_buf(),
+            repository: true,
         })
     }
 
@@ -84,4 +126,60 @@ impl Context {
             "git-discovery: Git could not verify the project root",
         ))
     }
+}
+
+fn worktree_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "worktree: only linked worktrees beneath a shared main checkout are supported",
+    )
+}
+
+fn pointer_path(base: &Path, bytes: &[u8]) -> PathBuf {
+    guest_path(&base.join(Path::new(std::ffi::OsStr::from_bytes(bytes))))
+}
+
+/// Open every pointer component without following symlinks. Refuse special files
+/// and bound data before interpreting paths; no pointer-selected Git is executed.
+fn read_pointer(root: &Path, relative: &Path) -> io::Result<Vec<u8>> {
+    use nix::fcntl::{OFlag, open, openat};
+    use nix::sys::stat::Mode;
+    let directory_flags =
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let mut directory = open(root, directory_flags, Mode::empty()).map_err(|_| worktree_error())?;
+    let components: Vec<_> = relative.components().collect();
+    let (file, parents) = components.split_last().ok_or_else(worktree_error)?;
+    for component in parents {
+        let std::path::Component::Normal(name) = component else {
+            return Err(worktree_error());
+        };
+        directory = openat(&directory, *name, directory_flags, Mode::empty())
+            .map_err(|_| worktree_error())?;
+    }
+    let std::path::Component::Normal(name) = file else {
+        return Err(worktree_error());
+    };
+    let fd = openat(
+        &directory,
+        *name,
+        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| worktree_error())?;
+    let file = fs::File::from(fd);
+    if !file.metadata()?.is_file() {
+        return Err(worktree_error());
+    }
+    let mut data = Vec::new();
+    file.take(4097).read_to_end(&mut data)?;
+    if data.len() > 4096 {
+        return Err(worktree_error());
+    }
+    if data.last() == Some(&b'\n') {
+        data.pop();
+    }
+    if data.is_empty() || data.contains(&0) || data.contains(&b'\n') {
+        return Err(worktree_error());
+    }
+    Ok(data)
 }

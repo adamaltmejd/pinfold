@@ -115,6 +115,10 @@ pub(crate) fn host() -> io::Result<(PathBuf, File)> {
     open_host(true)?.ok_or_else(|| failure("host socket directory disappeared"))
 }
 
+pub(crate) fn existing_host() -> io::Result<Option<(PathBuf, File)>> {
+    open_host(false)
+}
+
 fn open_host(create: bool) -> io::Result<Option<(PathBuf, File)>> {
     let path = crate::core::ownership::host_dir()?;
     let parent = path.parent().expect("host directory has a parent");

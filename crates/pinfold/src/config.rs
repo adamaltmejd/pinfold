@@ -7,7 +7,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::plan::Route;
 use crate::core::profile::Profile;
@@ -31,9 +31,58 @@ const DEFAULT_ALLOW: [&str; 9] = [
     "pi.dev",
 ];
 
-/// The only mount this step accepts: the project itself, as a disk. Inline,
-/// so keys appended to the file stay top-level.
-const PROJECT_MOUNT: &str = "mounts = [{ host = \".\", kind = \"disk\" }]\n";
+/// The project itself is the only configurable mount.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProjectMount {
+    Disk,
+    Share,
+}
+
+impl ProjectMount {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disk => "disk",
+            Self::Share => "share",
+        }
+    }
+
+    fn default_kind() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Share
+        } else {
+            Self::Disk
+        }
+    }
+
+    fn declaration(self) -> String {
+        format!(
+            "mounts = [{{ host = \".\", kind = \"{}\" }}]\n",
+            self.as_str()
+        )
+    }
+
+    fn parse(value: Option<&toml::Value>, source: &str) -> io::Result<Self> {
+        for kind in [Self::Disk, Self::Share] {
+            let expected = toml::from_str::<toml::Table>(&kind.declaration())
+                .expect("the project mount is TOML")
+                .remove("mounts");
+            if value == expected.as_ref() {
+                if kind == Self::Share && cfg!(target_os = "linux") {
+                    return Err(invalid(
+                        source,
+                        "spec: share mounts are unsupported on Linux",
+                    ));
+                }
+                return Ok(kind);
+            }
+        }
+        Err(invalid(
+            source,
+            "spec: mounts must be exactly [{ host = \".\", kind = \"share\" }] or [{ host = \".\", kind = \"disk\" }]",
+        ))
+    }
+}
 
 /// `~/.config/pinfold/projects/<id>/`: the project's configuration file
 /// and its optional recipe. A moved project has another id, so no file.
@@ -70,7 +119,7 @@ pub fn create(root: &Path) -> io::Result<PathBuf> {
         .write(true)
         .create_new(true)
         .open(&staging)?
-        .write_all(PROJECT_MOUNT.as_bytes())?;
+        .write_all(ProjectMount::default_kind().declaration().as_bytes())?;
     let linked = fs::hard_link(&staging, &path);
     // A staging file left behind is harmless; the result is the link's.
     let _ = fs::remove_file(&staging);
@@ -80,8 +129,20 @@ pub fn create(root: &Path) -> io::Result<PathBuf> {
     }
 }
 
+/// Discovery needs only the existing mount selection, before any state exists.
+pub(crate) fn project_mount(root: &Path) -> io::Result<Option<ProjectMount>> {
+    let path = project_dir(root)?.join("pinfold.toml");
+    let Some(bytes) = read_optional(&path)? else {
+        return Ok(None);
+    };
+    let source = terminal_text(&path.to_string_lossy());
+    let layer = Layer::parse(&bytes, &source)?;
+    ProjectMount::parse(layer.mounts.as_ref(), &source).map(Some)
+}
+
 /// The merged configuration for one project run.
 pub struct Config {
+    pub mount: ProjectMount,
     /// Whether the project is a Git checkout to cross.
     pub repository: bool,
     /// The project's configuration file.
@@ -131,18 +192,7 @@ impl Config {
             ));
         };
         let mut project = Layer::parse(&bytes, &source)?;
-        let expected = toml::from_str::<toml::Table>(PROJECT_MOUNT)
-            .expect("the project mount is TOML")
-            .remove("mounts");
-        if project.mounts != expected {
-            return Err(invalid(
-                &source,
-                &format!(
-                    "spec: `mounts` must be exactly {}",
-                    PROJECT_MOUNT.trim_end()
-                ),
-            ));
-        }
+        let mount = ProjectMount::parse(project.mounts.as_ref(), &source)?;
         let profile_name = profile_name(project.profile.take())?;
         let profile = Profile::load(&profile_name)?;
         let top = project.over(Layer::from_env()?);
@@ -174,6 +224,7 @@ impl Config {
             ));
         }
         Ok(Config {
+            mount,
             repository,
             path,
             profile,
@@ -200,6 +251,24 @@ impl Config {
     /// [`check_paths_outside`]).
     pub fn check_host_paths(&self, root: &Path) -> io::Result<()> {
         check_paths_outside(root, Some(&self.profile))
+    }
+
+    /// Core share admission checks common paths; add only project-specific paths.
+    pub(crate) fn check_project_paths(&self, root: &Path) -> io::Result<()> {
+        if self.mount == ProjectMount::Disk {
+            self.check_host_paths(root)
+        } else {
+            let project = project_dir(root)?;
+            let paths = [
+                project.join("pinfold.toml"),
+                project.join("Containerfile"),
+                project,
+            ]
+            .into_iter()
+            .map(|path| dirs::resolve_host_path(&path))
+            .collect::<io::Result<Vec<_>>>()?;
+            crate::core::mounts::check_extra_paths_outside(root, paths, true)
+        }
     }
 }
 

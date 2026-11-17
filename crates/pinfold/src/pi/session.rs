@@ -67,6 +67,9 @@ fn reply_error(reply: Reply) -> io::Error {
     match reply {
         Reply::Error { reason, fields } if reason == "config-changed" => changed(fields),
         Reply::Error { reason, .. } if reason == "session-protocol" => protocol(),
+        Reply::Error { reason, .. } if reason == "share-no-crossing" => {
+            io::Error::other("share-no-crossing: shares have no project crossing")
+        }
         Reply::Error { reason, .. } if reason == "stopped" => {
             io::Error::other("stopped during startup")
         }
@@ -138,10 +141,13 @@ fn valid_generation(g: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 fn read_locator(root: &Path) -> io::Result<Option<Locator>> {
+    let Some((host, _)) = sockets::existing_host()? else {
+        return Ok(None);
+    };
     let mut file = match File::options()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
-        .open(locator_path(root)?)
+        .open(host.join(format!("{}.project", key(root))))
     {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -340,6 +346,7 @@ async fn probe(
     locator: &Locator,
     signals: &mut Signals,
     deadline: Instant,
+    crossing: bool,
 ) -> io::Result<bool> {
     let (_, reply) = exchange(
         locator,
@@ -347,6 +354,7 @@ async fn probe(
             root: root.into(),
             generation: locator.generation.clone().ok_or_else(unavailable)?,
             roots: Roots::resolve()?,
+            crossing,
         },
         signals,
         deadline,
@@ -359,6 +367,36 @@ async fn probe(
         }
         other => Err(reply_error(other)),
     }
+}
+
+// Read-only refusal precedes ownership writes. Recovery still belongs to discover.
+async fn preflight(root: &Path, signals: &mut Signals, crossing: bool) -> io::Result<()> {
+    let mut noticed = false;
+    while ownership::lock_alive(&launch_key(root))? {
+        if !noticed {
+            noticed = true;
+            forward_diagnostics(
+                b"pinfold: waiting for the project box to start".to_vec(),
+                signals,
+            )
+            .await?;
+        }
+        tokio::select! {
+            _ = signals.recv() => return Err(io::ErrorKind::Interrupted.into()),
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {},
+        }
+    }
+    if let Some(locator) = read_locator(root)?
+        && locator.generation.is_some()
+        && ownership::name_alive(&locator.name)?
+    {
+        match probe(root, &locator, signals, Instant::now() + CONTROL, crossing).await {
+            Err(_) if retired_or_removing(&locator)? => {}
+            Err(error) => return Err(error),
+            Ok(_) => {}
+        }
+    }
+    Ok(())
 }
 
 struct Lease {
@@ -513,7 +551,7 @@ async fn admit(
                 Err(error) => return Err(error),
             };
         if let Some(locator) = discovered {
-            match probe(root, &locator, signals, deadline).await {
+            match probe(root, &locator, signals, deadline, false).await {
                 Ok(true) => {}
                 Ok(false) => {
                     wait_name_owned(&locator.name, signals).await?;
@@ -849,7 +887,16 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
         let result = async {
         let executable = close_only(crate::update::working()?);
         let cwd = state::canonical(&std::env::current_dir()?)?;
-        let context = Context::discover(&cwd)?;
+        let root = if read_locator(&cwd)?.is_some() {
+            cwd.clone()
+        } else {
+            Context::discover(&cwd)?.root
+        };
+        let context = Context { root, repository: false };
+        if cfg!(target_os = "linux") {
+            preflight(&context.root, &mut signals, false).await?;
+            crate::config::project_mount(&context.root)?;
+        }
         launch::utf8(&context.root, "project root")?;
         let admitted = admit(&context.root, if args.is_some() { Intent::Join } else { Intent::Keep }, &mut signals, &executable).await;
         let mut lease = match admitted {
@@ -1059,7 +1106,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         locator.publish()?;
         let sync_cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = sync_cancel.clone();
-        let (name, sync_root, sync_init, repository) = (plan.name.clone(), root.clone(), init.clone(), resolved.config.repository);
+        let (name, sync_root, sync_init, repository) = (plan.name.clone(), root.clone(), init.clone(), resolved.config.repository && resolved.config.mount == crate::config::ProjectMount::Disk);
         let mut syncing = tokio::task::spawn_blocking(move || {
             if repository { launch::sync(&name, &sync_init, &sync_root, &worker_cancel); }
         });
@@ -1209,11 +1256,20 @@ async fn serve(
                     if candidate_root != root || candidate_generation != &generation {
                         let _ = wire::write_reply(&mut stream, Reply::Error { reason: "session-protocol".into(), fields: vec![] }).await; continue;
                     }
-                    let fields = match &request {
+                    let mut fields = match &request {
                         Request::Join { snapshot: candidate, .. } | Request::Keep { snapshot: candidate, .. } => snapshot.differences(candidate),
                         Request::Probe { roots, .. } | Request::Borrow { roots, .. } => snapshot.roots.differences(roots),
                         _ => unreachable!(),
                     };
+                    if fields.is_empty() && snapshot.is_share()
+                        && matches!(request, Request::Borrow { .. } | Request::Probe { crossing: true, .. })
+                    {
+                        let _ = wire::write_reply(&mut stream, Reply::Error { reason: "share-no-crossing".into(), fields: vec![] }).await;
+                        continue;
+                    }
+                    if fields.is_empty() && matches!(request, Request::Probe { .. }) {
+                        fields = snapshot.project_layout_differences(root);
+                    }
                     if !fields.is_empty() { let _ = wire::write_reply(&mut stream, Reply::Error { reason: "config-changed".into(), fields }).await; continue; }
                     match request {
                         Request::Probe { .. } => { let _ = wire::write_reply(&mut stream, Reply::Compatible {}).await; },
@@ -1430,7 +1486,16 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
         let mut signals = Signals::with_hangup()?;
         let _executable = crate::update::working()?;
         let result = async {
-            let root = Context::discover(&std::env::current_dir()?)?.root;
+            let cwd = state::canonical(&std::env::current_dir()?)?;
+            let root = if read_locator(&cwd)?.is_some()
+                || state::state_dirs()?
+                    .iter()
+                    .any(|project| project.root == cwd)
+            {
+                cwd
+            } else {
+                Context::discover(&cwd)?.root
+            };
             let _maintenance = maintenance(&root, &mut signals).await?;
             let deadline = Instant::now() + CONTROL;
             let mut target: Option<Locator> = None;
@@ -1700,6 +1765,14 @@ impl CrossingLease {
     }
 }
 pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<CrossingLease> {
+    preflight(root, signals, true).await?;
+    if crate::config::project_mount(root)? == Some(crate::config::ProjectMount::Share) {
+        return Err(io::Error::other(
+            "share-no-crossing: shares have no project crossing",
+        ));
+    }
+    launch::require_repo(root)?;
+    clean::maintain();
     let maintenance = maintenance(root, signals).await?;
     let mut noticed = false;
     loop {

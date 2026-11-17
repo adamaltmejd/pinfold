@@ -89,7 +89,7 @@ fn main() -> ExitCode {
     match (verb, args.first().map(String::as_str)) {
         (
             "init" | "update" | "doctor" | "config" | "artifacts" | "apparmor-profile" | "--"
-            | "start" | "stop" | "__project-owner",
+            | "start" | "stop" | "__project-owner" | "push" | "fetch",
             _,
         )
         | ("box", Some("up" | "list" | "down" | "inspect" | "events")) => {}
