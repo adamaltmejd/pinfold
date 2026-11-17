@@ -392,6 +392,8 @@ const HOST_OS_ARCH: &str = if cfg!(target_os = "macos") {
     "host-linux-x64"
 };
 
+const INIT: &[u8] = include_bytes!(env!("PINFOLD_INIT"));
+
 /// The init path, without extracting the embedded binary.
 ///
 /// On macOS the CLI embeds the `aarch64-unknown-linux-musl` build and
@@ -401,7 +403,6 @@ pub(crate) fn init_path() -> io::Result<PathBuf> {
     if cfg!(not(target_os = "macos")) {
         return std::env::current_exe();
     }
-    const INIT: &[u8] = include_bytes!(env!("PINFOLD_INIT"));
     let dir = dirs::artifacts_dir()?
         .join("init")
         .join(super::hex(&Sha256::digest(INIT)))
@@ -415,7 +416,6 @@ pub fn init() -> io::Result<PathBuf> {
     if cfg!(not(target_os = "macos")) {
         return Ok(path);
     }
-    const INIT: &[u8] = include_bytes!(env!("PINFOLD_INIT"));
     let dir = path.parent().expect("init has a directory");
     dirs::install_dir(dir, |staging| {
         let path = staging.join("pinfold");

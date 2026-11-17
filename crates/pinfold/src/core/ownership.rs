@@ -114,6 +114,8 @@ pub fn try_project_lock(id: &str) -> io::Result<Option<Flock<File>>> {
 pub struct Record {
     pub name: String,
     pub generation: String,
+    #[serde(default)]
+    pub ready: bool,
     /// Runtime removal was confirmed before any generation tree was deleted.
     #[serde(default)]
     pub retiring: bool,
@@ -163,6 +165,25 @@ pub fn record(name: &str) -> io::Result<Option<Record>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+/// Hold public dispatch against name reuse; startup publishes ready last.
+pub(crate) fn exec_lock(name: &str, generation: &str) -> io::Result<Option<Flock<File>>> {
+    let ready = |record: Option<Record>| {
+        record.is_some_and(|record| {
+            record.generation == generation && record.ready && !record.retiring
+        })
+    };
+    if !ready(record(name)?) {
+        return Ok(None);
+    }
+    let Some(lock) = try_lock(&format!("exec:{name}"), FlockArg::LockSharedNonblock)? else {
+        return Ok(None);
+    };
+    if !ready(record(name)?) {
+        return Ok(None);
+    }
+    Ok(Some(lock))
 }
 
 pub fn socket(name: &str) -> io::Result<PathBuf> {
@@ -218,6 +239,7 @@ pub fn remove_record(name: &str, generation: &str) -> io::Result<()> {
 pub struct Claim {
     name: String,
     _lock: Flock<File>,
+    startup_gate: Option<Flock<File>>,
     record: Option<Record>,
     listener: Option<UnixListener>,
     sockets: Option<Sockets>,
@@ -239,9 +261,20 @@ impl Claim {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
+        let startup_gate = loop {
+            if let Some(gate) = try_lock(&format!("exec:{name}"), FlockArg::LockExclusiveNonblock)?
+            {
+                break gate;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
         Ok(Some(Claim {
             name: name.to_string(),
             _lock: lock,
+            startup_gate: Some(startup_gate),
             record: None,
             listener: None,
             sockets: None,
@@ -292,6 +325,7 @@ impl Claim {
         self.record = Some(Record {
             name: self.name.clone(),
             generation: sha256_hex(random),
+            ready: false,
             retiring: false,
             state_dir: state_dir.to_path_buf(),
             disks: Vec::new(),
@@ -315,8 +349,15 @@ impl Claim {
         #[cfg(target_os = "linux")]
         crate::core::runtime::firecracker::prepare_vmm(state_dir)?;
         self.publish()?;
+        self.startup_gate.take();
         self.sockets = Some(Sockets::create(self.generation())?);
         Ok(())
+    }
+
+    /// Admit public work only after every startup operation completed.
+    pub fn ready(&mut self) -> io::Result<()> {
+        self.record.as_mut().expect("prepared ownership").ready = true;
+        self.publish()
     }
 
     /// Record the disks this generation attaches. The caller holds each

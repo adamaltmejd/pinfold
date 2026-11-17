@@ -1030,10 +1030,10 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         locator.publish()?;
         state::record_run(&root)?;
         let (cancel, cancelled) = watch::channel(false);
-        let init = artifacts::init()?;
+        let init = artifacts::init_path()?;
         let image_id = resolved.snapshot.image_id().ok_or_else(unavailable)?.to_string();
         let started = {
-        let startup = Box::up_project(&plan, resolved.config.profile, &image_id, &init, &mut signals, cancelled);
+        let startup = Box::up_project(&plan, resolved.config.profile, &image_id, &mut signals, cancelled);
         tokio::pin!(startup);
         let mut disconnected = false;
         loop { tokio::select! {

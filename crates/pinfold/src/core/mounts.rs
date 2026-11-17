@@ -17,6 +17,25 @@ pub(crate) fn check_paths_outside(
     extra: impl IntoIterator<Item = PathBuf>,
 ) -> io::Result<()> {
     let root = fs::canonicalize(root)?;
+    for path in protected_paths(profile, extra)? {
+        if source_beneath(&path, &root)? {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "host-path-in-project: {} resolves inside {}",
+                    crate::formatting::terminal_text(&path.to_string_lossy()),
+                    crate::formatting::terminal_text(&root.to_string_lossy())
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn protected_paths(
+    profile: Option<&Profile>,
+    extra: impl IntoIterator<Item = PathBuf>,
+) -> io::Result<BTreeSet<PathBuf>> {
     let config = dirs::config_dir()?;
     let mut paths = vec![
         config.clone(),
@@ -36,50 +55,65 @@ pub(crate) fn check_paths_outside(
             paths.push(share.path()?);
         }
     }
-    for path in paths {
-        if source_beneath(&dirs::resolve_host_path(&path)?, &root)? {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!(
-                    "host-path-in-project: {} resolves inside {}",
-                    crate::formatting::terminal_text(&path.to_string_lossy()),
-                    crate::formatting::terminal_text(&root.to_string_lossy())
-                ),
-            ));
-        }
-    }
-    Ok(())
+    paths
+        .into_iter()
+        .map(|path| dirs::resolve_host_path(&path))
+        .collect()
+}
+
+struct ProtectedGit {
+    owner: usize,
+    host: PathBuf,
+    guest: PathBuf,
 }
 
 /// Runs as the host uid, before credentials, claims or preparation writes.
 pub(crate) fn prepare(plan: &mut Plan, profile: Option<&Profile>, init: &Path) -> io::Result<()> {
+    let shares = plan
+        .mounts
+        .iter()
+        .any(|mount| mount.kind == MountKind::Share);
+    if !shares {
+        return Ok(());
+    }
+    let init = guest_path(
+        init.parent()
+            .ok_or_else(|| invalid("init has no directory"))?,
+    );
+    let paths = protected_paths(profile, [dirs::resolve_host_path(&init)?])?;
     let mut protection = Vec::new();
-    for mount in &mut plan.mounts {
+    for (owner, mount) in plan.mounts.iter_mut().enumerate() {
         mount.guest = guest_path(&mount.guest);
         if mount.kind == MountKind::Share {
+            if mount.guest.file_name() == Some(std::ffi::OsStr::new("*")) {
+                return Err(invalid(
+                    "share destination would be a Git safe.directory pattern",
+                ));
+            }
             if !fs::symlink_metadata(&mount.host)?.is_dir() {
                 return Err(invalid("share source must be a plain directory"));
             }
             mount.host = fs::canonicalize(&mount.host)?;
-            check_paths_outside(&mount.host, profile, [])?;
-            // A share inside a protected root exposes that root's contents too.
-            for path in [
-                dirs::config_dir()?,
-                dirs::state_dir()?,
-                dirs::cache_dir()?,
-                super::ownership::host_dir()?,
-            ] {
-                if source_beneath(&mount.host, &dirs::resolve_host_path(&path)?)? {
-                    return Err(invalid("share source is inside a protected host path"));
+            for path in &paths {
+                if source_beneath(path, &mount.host)? || source_beneath(&mount.host, path)? {
+                    return Err(invalid(format!(
+                        "share source overlaps protected host path {}",
+                        path.display()
+                    )));
                 }
+            }
+            if overlaps(&mount.guest, &init)
+                || (plan.egress.is_some()
+                    && overlaps(&mount.guest, Path::new("/var/host-services")))
+            {
+                return Err(invalid("share overlaps supplied init or forwarded socket"));
             }
             let git = mount.host.join(".git");
             match fs::symlink_metadata(&git) {
-                Ok(metadata) if metadata.is_dir() => protection.push(Mount {
+                Ok(metadata) if metadata.is_dir() => protection.push(ProtectedGit {
+                    owner,
                     host: git,
                     guest: mount.guest.join(".git"),
-                    kind: MountKind::Readonly,
-                    git: true,
                 }),
                 Ok(_) => return Err(invalid("share .git must be a plain directory")),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -89,53 +123,43 @@ pub(crate) fn prepare(plan: &mut Plan, profile: Option<&Profile>, init: &Path) -
             mount.host = dirs::resolve_host_path(&mount.host)?;
         }
     }
-    let init = guest_path(
-        init.parent()
-            .ok_or_else(|| invalid("init has no directory"))?,
-    );
-    if cfg!(target_os = "macos") {
-        plan.validate_guests(&[&init]).map_err(invalid)?;
-    }
     let guests: Vec<_> = plan
         .mounts
         .iter()
-        .map(|m| m.guest.clone())
-        .chain(plan.disks.iter().map(|d| guest_path(&d.guest)))
+        .map(|m| (m.guest.clone(), m.kind == MountKind::Share))
+        .chain(plan.disks.iter().map(|d| (guest_path(&d.guest), false)))
         .collect();
-    for guest in &guests {
-        if cfg!(target_os = "macos")
-            && (overlaps(guest, &init)
-                || (plan.egress.is_some() && overlaps(guest, Path::new("/var/host-services"))))
-        {
-            return Err(invalid(
-                "attachment overlaps supplied init or forwarded socket",
-            ));
-        }
-    }
     for (index, mount) in plan.mounts.iter().enumerate() {
         for git in &protection {
-            let owner = mount.kind == MountKind::Share && mount.host.join(".git") == git.host;
-            if !owner && overlaps(&mount.guest, &git.guest) {
+            if index != git.owner && overlaps(&mount.guest, &git.guest) {
                 return Err(invalid("attachment overlaps protected Git destination"));
             }
             if source_beneath(&mount.host, &git.host)? {
                 return Err(invalid("attachment source exposes protected Git metadata"));
             }
-        }
-        if mount.kind == MountKind::Share {
-            for other in &plan.mounts[..index] {
-                if other.kind == MountKind::Share
-                    && (source_beneath(&mount.host, &other.host)?
-                        || source_beneath(&other.host, &mount.host)?)
-                {
-                    return Err(invalid("writable share sources overlap"));
+            if mount.kind == MountKind::Share && source_beneath(&git.host, &mount.host)? {
+                let own = protection.iter().find(|other| other.owner == index);
+                let protected_here = match own {
+                    Some(own) => same_inode(&own.host, &git.host)?,
+                    None => false,
+                };
+                if !protected_here {
+                    return Err(invalid(
+                        "overlapping share exposes protected Git metadata writable",
+                    ));
                 }
             }
         }
-        // A nested host attachment cannot be redirected by its parent share.
-        for guest in &guests {
-            if let Ok(relative) = guest.strip_prefix(&mount.guest) {
-                check_destination(&mount.host, relative)?;
+        let git = protection
+            .iter()
+            .find(|git| git.owner == index)
+            .map(|git| nix::sys::stat::lstat(&git.host).map(|m| (m.st_dev, m.st_ino)))
+            .transpose()?;
+        for (guest, child_share) in &guests {
+            if (mount.kind == MountKind::Share || *child_share)
+                && let Ok(relative) = guest.strip_prefix(&mount.guest)
+            {
+                check_destination(&mount.host, relative, git)?;
             }
         }
     }
@@ -144,11 +168,14 @@ pub(crate) fn prepare(plan: &mut Plan, profile: Option<&Profile>, init: &Path) -
             if overlaps(&guest_path(&disk.guest), &git.guest) {
                 return Err(invalid("disk overlaps protected Git destination"));
             }
-            if let Some(from) = &disk.from {
-                let from = dirs::resolve_host_path(from)?;
-                if source_beneath(&from, &git.host)? {
-                    return Err(invalid("disk source exposes protected Git metadata"));
-                }
+            let share = &plan.mounts[git.owner];
+            if let Ok(relative) = guest_path(&disk.guest).strip_prefix(&share.guest) {
+                let metadata = nix::sys::stat::lstat(&git.host)?;
+                check_destination(
+                    &share.host,
+                    relative,
+                    Some((metadata.st_dev, metadata.st_ino)),
+                )?;
             }
         }
     }
@@ -185,7 +212,12 @@ pub(crate) fn prepare(plan: &mut Plan, profile: Option<&Profile>, init: &Path) -
             Ok(())
         })?;
     }
-    plan.mounts.extend(protection);
+    plan.mounts.extend(protection.into_iter().map(|git| Mount {
+        host: git.host,
+        guest: git.guest,
+        kind: MountKind::Readonly,
+        git: true,
+    }));
     Ok(())
 }
 
@@ -212,11 +244,21 @@ fn source_beneath(path: &Path, root: &Path) -> io::Result<bool> {
     Ok(false)
 }
 
+fn same_inode(a: &Path, b: &Path) -> io::Result<bool> {
+    let a = fs::symlink_metadata(a)?;
+    let b = fs::symlink_metadata(b)?;
+    Ok((a.dev(), a.ino()) == (b.dev(), b.ino()))
+}
+
 fn overlaps(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
 
-fn check_destination(root: &Path, relative: &Path) -> io::Result<()> {
+fn check_destination(
+    root: &Path,
+    relative: &Path,
+    git: Option<(nix::libc::dev_t, nix::libc::ino_t)>,
+) -> io::Result<()> {
     use nix::fcntl::{OFlag, open, openat};
     use nix::sys::stat::Mode;
     let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW;
@@ -239,6 +281,12 @@ fn check_destination(root: &Path, relative: &Path) -> io::Result<()> {
                 )));
             }
         };
+        let metadata = nix::sys::stat::fstat(&directory)?;
+        if git == Some((metadata.st_dev, metadata.st_ino)) {
+            return Err(invalid(
+                "attachment destination touches protected Git directory",
+            ));
+        }
     }
     Ok(())
 }
@@ -266,47 +314,14 @@ fn walk_directory(
 ) -> io::Result<()> {
     use nix::fcntl::{AtFlags, OFlag};
     use nix::sys::stat::{Mode, fstatat};
-    use std::os::fd::{AsRawFd, IntoRawFd};
-    use std::os::unix::ffi::OsStrExt;
-    struct Directory(*mut nix::libc::DIR);
-    impl Drop for Directory {
-        fn drop(&mut self) {
-            unsafe {
-                nix::libc::closedir(self.0);
-            }
-        }
-    }
-    let raw = directory.as_raw_fd();
-    let pointer = unsafe { nix::libc::fdopendir(raw) };
-    if pointer.is_null() {
-        return Err(io::Error::last_os_error());
-    }
-    let _ = directory.into_raw_fd();
-    let directory = Directory(pointer);
-    let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(raw) };
-    loop {
+    super::directory_entries(directory, |fd, name| {
         if super::process::is_cancelled() {
             return Err(io::ErrorKind::Interrupted.into());
         }
-        nix::errno::Errno::clear();
-        let entry = unsafe { nix::libc::readdir(directory.0) };
-        if entry.is_null() {
-            let error = nix::errno::Errno::last_raw();
-            return if error == 0 {
-                Ok(())
-            } else {
-                Err(io::Error::from_raw_os_error(error))
-            };
-        }
-        let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
-        if name == b"." || name == b".." {
-            continue;
-        }
-        let name = std::ffi::OsStr::from_bytes(name);
         let child = path.join(name);
         let metadata = fstatat(fd, name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
         if excluded == Some((metadata.st_dev, metadata.st_ino)) {
-            continue;
+            return Ok(());
         }
         inspect(&child, &metadata)?;
         if metadata.st_mode & nix::libc::S_IFMT == nix::libc::S_IFDIR {
@@ -318,7 +333,8 @@ fn walk_directory(
             )?;
             walk_directory(child_fd, &child, excluded, inspect)?;
         }
-    }
+        Ok(())
+    })
 }
 
 fn invalid(detail: impl Into<String>) -> io::Error {

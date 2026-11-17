@@ -16,9 +16,9 @@ Core `box up` specs can declare an Apple writable host mount with
 The default mount kind is `readonly`; Linux refuses `share` as `spec`.
 A share's plain top-level `.git` is attached read-only after all caller
 attachments. Admission refuses protected Git symlinks, working-file aliases
-to protected Git files, lexical attachment conflicts and sources exposing
-protected Git writable. An image symlink can change which declared source
-the box sees, but cannot grant writes to protected host `.git`. Shared
+to protected Git files, lexical attachment conflicts, any attachment source
+at or beneath protected Git, and overlapping shares exposing it writable.
+An image symlink can change which declared source the box sees, but cannot grant writes to protected host `.git`. Shared
 working files can be deleted or corrupted, and host tools can execute
 box-written content.
 See [Mounts](docs/ARCHITECTURE.md#mounts) and the

@@ -142,7 +142,7 @@ fn up(args: &[String]) -> io::Result<i32> {
         .build()?;
     let result = runtime.block_on(async {
         // This process owns the box, so it takes SIGTERM and SIGINT. The
-        // handlers come before the daily pass and the spec read, so a signal
+        // handlers come before the spec read, so a signal
         // from the first instant ends the stream with one `down` line, its
         // box null until the spec parsed.
         let mut signals = Signals::new()?;
@@ -150,13 +150,7 @@ fn up(args: &[String]) -> io::Result<i32> {
             biased;
             _ = signals.recv() => return Ok(down(None, None, Shutdown::Signal)),
             plan = tokio::task::spawn_blocking(|| {
-                let plan = Plan::from_reader(io::stdin())?;
-                plan.validate_platform().map_err(|detail| crate::core::r#box::Refusal {
-                    box_name: Some(plan.name.clone()),
-                    reason: crate::core::r#box::RefusalReason::Spec,
-                    detail,
-                })?;
-                Ok::<_, crate::core::r#box::Refusal>(plan)
+                Plan::from_reader(io::stdin())
             }) => match plan.map_err(io::Error::other)? {
                 Ok(plan) => plan,
                 Err(refusal) => return Ok(refused_box(&refusal)),
@@ -190,8 +184,7 @@ fn up(args: &[String]) -> io::Result<i32> {
 }
 
 async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
-    let init = artifacts::init_path()?;
-    let mut box_ = match Box::up(plan, &init, &mut signals).await {
+    let mut box_ = match Box::up(plan, &mut signals).await {
         Ok(box_) => box_,
         Err(UpError::Refused(refusal)) => return Ok(refused_box(&refusal)),
         Err(UpError::Signal | UpError::Control) => {
@@ -278,9 +271,9 @@ fn refused_box(refusal: &Refusal) -> i32 {
 fn exec(args: &[String]) -> io::Result<i32> {
     let (name, tty, argv) = parse_exec(args)?;
     let runtime = runtime();
-    if !present(runtime, "exec", &name)? {
+    let Some(_dispatch) = exec_admission(runtime, "exec", &name)? else {
         return Ok(3);
-    }
+    };
     // A TTY only makes sense when both ends are terminals; `--tty` forces it
     // for callers that drive pinfold through their own pty.
     let tty = tty || (io::stdin().is_terminal() && io::stdout().is_terminal());
@@ -313,9 +306,9 @@ fn stat(args: &[String]) -> io::Result<i32> {
 fn fetch(args: &[String]) -> io::Result<i32> {
     let (name, repo, into) = parse_fetch(args)?;
     let runtime = runtime();
-    if !present(runtime, "fetch", &name)? {
+    let Some(_dispatch) = exec_admission(runtime, "fetch", &name)? else {
         return Ok(3);
-    }
+    };
     let init = artifacts::init()?;
     let result = crossing::fetch(runtime, &init, &name, &repo, Path::new(&into), &name);
     Ok(report_crossing("fetch", &name, &name, result))
@@ -400,6 +393,25 @@ fn present(runtime: &dyn Runtime, verb: &str, name: &str) -> io::Result<bool> {
         eprintln!("pinfold box {verb}: no box named {name:?}");
     }
     Ok(found)
+}
+
+fn exec_admission(
+    runtime: &dyn Runtime,
+    verb: &str,
+    name: &str,
+) -> io::Result<Option<nix::fcntl::Flock<fs::File>>> {
+    let Some(box_) = runtime.inspect(name)?.filter(clean::pinfold_box) else {
+        eprintln!("pinfold box {verb}: no box named {name:?}");
+        return Ok(None);
+    };
+    let lock = match box_.labels.get(crate::core::ownership::GENERATION_LABEL) {
+        Some(generation) => crate::core::ownership::exec_lock(name, generation)?,
+        None => None,
+    };
+    if lock.is_none() {
+        eprintln!("pinfold box {verb}: box {name:?} has not completed startup");
+    }
+    Ok(lock)
 }
 
 fn list(args: &[String]) -> io::Result<i32> {

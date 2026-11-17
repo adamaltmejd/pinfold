@@ -414,7 +414,13 @@ fn proxy_socket(args: &[String]) -> io::Result<()> {
                 return true;
             };
             match mount.split_ascii_whitespace().nth(4) {
-                Some("/var" | "/var/host-services") => true,
+                Some("/var" | "/var/host-services") => {
+                    filesystem.split_ascii_whitespace().next() == Some("virtiofs")
+                        && mount
+                            .split_ascii_whitespace()
+                            .nth(5)
+                            .is_some_and(|options| options.split(',').any(|option| option == "rw"))
+                }
                 // Apple forwards the socket itself as a tmpfs bind.
                 Some("/var/host-services/ssh-auth.sock") => {
                     filesystem.split_ascii_whitespace().next() != Some("tmpfs")
@@ -439,22 +445,12 @@ fn proxy_socket(args: &[String]) -> io::Result<()> {
                 "forwarded proxy is not a root-owned socket",
             ));
         }
-        // O_PATH pins the checked socket; chmod must use that inode, never a
-        // path a concurrent process could replace after the check.
-        // libc lacks the arm64-musl constant; Linux arm64 and x64 use 452.
-        const FCHMODAT2: nix::libc::c_long = 452;
-        let result = unsafe {
-            nix::libc::syscall(
-                FCHMODAT2,
-                socket.as_raw_fd(),
-                c"".as_ptr(),
-                0o666,
-                nix::libc::AT_EMPTY_PATH,
-            )
-        };
-        if result != 0 {
-            return Err(io::Error::last_os_error());
-        }
+        // The proc fd link names the pinned inode, not its mutable original path.
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            format!("/proc/self/fd/{}", socket.as_raw_fd()),
+            fs::Permissions::from_mode(0o666),
+        )?;
         Ok(())
     }
     #[cfg(not(target_os = "linux"))]

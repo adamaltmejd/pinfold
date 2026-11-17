@@ -150,30 +150,24 @@ impl Box {
     /// The caller registered SIGTERM and SIGINT before reading the spec:
     /// before ready they remove what the start made and `up` returns
     /// [`UpError::Signal`]; after ready [`Box::hold`] watches them.
-    pub async fn up(plan: &Plan, init: &Path, signals: &mut Signals) -> Result<Box, UpError> {
-        Self::up_disks(plan, init, signals, false, None, None, None).await
+    pub async fn up(plan: &Plan, signals: &mut Signals) -> Result<Box, UpError> {
+        Self::up_disks(plan, signals, false, None, None, None).await
     }
 
     /// Export must never create a missing disk or inspect one another box holds.
-    pub(crate) async fn up_existing(
-        plan: &Plan,
-        init: &Path,
-        signals: &mut Signals,
-    ) -> Result<Box, UpError> {
-        Self::up_disks(plan, init, signals, true, None, None, None).await
+    pub(crate) async fn up_existing(plan: &Plan, signals: &mut Signals) -> Result<Box, UpError> {
+        Self::up_disks(plan, signals, true, None, None, None).await
     }
 
     pub(crate) async fn up_project(
         plan: &Plan,
         profile: Profile,
         image_id: &str,
-        init: &Path,
         signals: &mut Signals,
         cancel: tokio::sync::watch::Receiver<bool>,
     ) -> Result<Box, UpError> {
         Self::up_disks(
             plan,
-            init,
             signals,
             false,
             Some(profile),
@@ -185,7 +179,6 @@ impl Box {
 
     async fn up_disks(
         plan: &Plan,
-        init: &Path,
         signals: &mut Signals,
         existing_only: bool,
         profile: Option<Profile>,
@@ -196,11 +189,10 @@ impl Box {
         // or resolved.
         plan.validate()
             .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
+        let init_path = crate::core::artifacts::init_path()?;
+        let init = init_path.as_path();
         let destinations =
             login_destinations(plan).map_err(|error| refused(plan, RefusalReason::Spec, error))?;
-        let extra: Vec<&Path> = destinations.iter().map(PathBuf::as_path).collect();
-        validate_generated(plan, &extra)
-            .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
         let directories = generated_directories(plan, &destinations);
 
         // The profile's image, share and home seeds are the box's to apply;
@@ -212,15 +204,6 @@ impl Box {
         let seeds = profile.as_mut().and_then(|profile| {
             (!profile.home.is_empty()).then(|| std::mem::take(&mut profile.home))
         });
-        // The `share/` mount is known only now.
-        if profile
-            .as_ref()
-            .is_some_and(|profile| profile.share.is_some())
-        {
-            validate_generated(&plan, &extra)
-                .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
-        }
-
         let layout_init = init.to_path_buf();
         let layout_destinations = destinations.clone();
         let maintenance = expected_image.is_none() && !existing_only;
@@ -521,6 +504,10 @@ impl Box {
             stop = claim.stop_requested() => match stop { Ok(()) => Err(Stop::Control), Err(error) => Err(Stop::Failed(error)) },
             started = starting => started,
         };
+        let started = started.and_then(|result| {
+            claim.ready().map_err(Stop::Failed)?;
+            Ok(result)
+        });
         let (labels, egress_log) = match started {
             Ok(started) => started,
             Err(stop) => {
@@ -992,12 +979,6 @@ pub(crate) fn validate_project(plan: &Plan, profile: &Profile) -> Result<(), Str
             git: false,
         });
     }
-    crate::core::mounts::prepare(
-        &mut resolved,
-        Some(profile),
-        &crate::core::artifacts::init_path().map_err(|e| e.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
     validate_generated(&resolved, &extra)?;
     if !profile.home.is_empty() {
         home_disk(&resolved, Vec::new()).map_err(|error| error.to_string())?;
