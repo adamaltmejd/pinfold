@@ -1,0 +1,23 @@
+Command: python3 docs/archive/2026-11-17-share-probes/instructions.py
+native container run: network none; read-only root; cap-drop ALL; host uid:gid; writable project + protected .git; fresh home
+uid=501 gid=20(dialout) groups=20(dialout)
+git version 2.47.3
+1.5.2
+2.1.311 (Claude Code)
+codex-cli 0.169.0
+Git control (no safe.directory setting): '' stderr="fatal: detected dubious ownership in repository at '/project'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /project\nfatal: detected dubious ownership in repository at '/project'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /project\n" chain_exit=1
+Git exact-path exception control: '0:0 /project\n0:0 /project/.git\nbase\n' stderr='' exit=0
+pi native seed /home/user/.pi/agent/APPEND_SYSTEM.md; command pi --approve --no-extensions -p --provider fixture --model fixture
+{"agent": "pi", "case": "share", "exit": 1, "requests": 1, "markers": ["DISK_GUIDANCE", "HOME_USER", "PROJECT_USER", "SHARE_GUIDANCE"], "existing_bytes_preserved": true, "seed_sha256": "caf8e47b80b4406781e348bc556c3b18235d5d34f033d955738c66741f8742e4"}
+{"agent": "pi", "case": "disk", "exit": 1, "requests": 1, "markers": ["DISK_GUIDANCE", "HOME_USER", "PROJECT_USER", "SHARE_GUIDANCE"], "existing_bytes_preserved": true, "seed_sha256": "caf8e47b80b4406781e348bc556c3b18235d5d34f033d955738c66741f8742e4"}
+{"agent": "pi", "case": "existing", "exit": 1, "requests": 1, "markers": ["HOME_USER", "PROJECT_USER"], "existing_bytes_preserved": true, "seed_sha256": "7409d7c09f33d959f2176e080454ee0b4042c71fc2efa40bbd3e36e3b60c5966"}
+claude native seed /home/user/.claude/CLAUDE.md; command claude -p --dangerously-skip-permissions --model claude-sonnet-4-5
+{"agent": "claude", "case": "share", "exit": 1, "requests": 6, "markers": ["DISK_GUIDANCE", "PROJECT_USER", "SHARE_GUIDANCE"], "existing_bytes_preserved": true, "seed_sha256": "caf8e47b80b4406781e348bc556c3b18235d5d34f033d955738c66741f8742e4"}
+{"agent": "claude", "case": "disk", "exit": 1, "requests": 6, "markers": ["DISK_GUIDANCE", "PROJECT_USER", "SHARE_GUIDANCE"], "existing_bytes_preserved": true, "seed_sha256": "caf8e47b80b4406781e348bc556c3b18235d5d34f033d955738c66741f8742e4"}
+{"agent": "claude", "case": "existing", "exit": 1, "requests": 6, "markers": ["HOME_USER", "PROJECT_USER"], "existing_bytes_preserved": true, "seed_sha256": "7409d7c09f33d959f2176e080454ee0b4042c71fc2efa40bbd3e36e3b60c5966"}
+codex native seed /home/user/.codex/AGENTS.md; command codex exec --dangerously-bypass-approvals-and-sandbox --json
+{"agent": "codex", "case": "share", "exit": 1, "requests": 1, "markers": ["DISK_GUIDANCE", "PROJECT_USER", "SHARE_GUIDANCE"], "existing_bytes_preserved": true, "seed_sha256": "caf8e47b80b4406781e348bc556c3b18235d5d34f033d955738c66741f8742e4"}
+{"agent": "codex", "case": "disk", "exit": 1, "requests": 1, "markers": ["DISK_GUIDANCE", "PROJECT_USER", "SHARE_GUIDANCE"], "existing_bytes_preserved": true, "seed_sha256": "caf8e47b80b4406781e348bc556c3b18235d5d34f033d955738c66741f8742e4"}
+{"agent": "codex", "case": "existing", "exit": 1, "requests": 1, "markers": ["HOME_USER", "PROJECT_USER"], "existing_bytes_preserved": true, "seed_sha256": "7409d7c09f33d959f2176e080454ee0b4042c71fc2efa40bbd3e36e3b60c5966"}
+All HTTP responses were fixture 400; no model behavior or production seed delivery established. Share/disk cases use unchanged generic seed, new harness process and a mode prompt; no mount lifecycle switch.
+Cleanup: own container and scratch removed; no image, disk or volume created.

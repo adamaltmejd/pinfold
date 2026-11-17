@@ -1,0 +1,22 @@
+$ pinfold --version
+pinfold 0.5.5
+rc=0
+spec {"name": "probe-public-3531d3", "image": "localhost/pinfold/profile-default:latest", "mounts": [{"host": "$W/repo", "guest": "/project"}]}
+{"box":"probe-public-3531d3","egress_log":null,"event":"ready","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"068ddcd1ef9494ab4e74e395d9010ec6c7b62e6014b60a3db0f5b42a4f23f470","dev.pinfold.owner":"11193","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":11193,"run_id":"068ddcd1ef9494ab4e74e395d9010ec6c7b62e6014b60a3db0f5b42a4f23f470"}
+$ pinfold box exec probe-public-3531d3 -- sh -c id; cat /project/a; printf denied >> /project/a
+uid=501 gid=20(dialout) groups=20(dialout)
+fixture
+sh: 1: cannot create /project/a: Read-only file system
+rc=2
+$ pinfold box exec probe-public-3531d3 -- git -c safe.directory=/project -C /project log -1 --format=%s
+fixture
+rc=0
+host bytes 'fixture\n'
+$ pinfold box down probe-public-3531d3
+rc=0
+{"box":"probe-public-3531d3","event":"down","reason":"signal","run_id":"068ddcd1ef9494ab4e74e395d9010ec6c7b62e6014b60a3db0f5b42a4f23f470"}
+up rc=0
+$ pinfold box stat probe-public-3531d3
+pinfold box stat: no box named "probe-public-3531d3"
+rc=3
+own public box and scratch removed=True; no disk created
