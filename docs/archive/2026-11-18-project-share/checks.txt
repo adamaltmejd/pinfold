@@ -1,0 +1,51 @@
+Base: bbf396e; macOS Apple container client/server 1.7.1; existing default image b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27.
+All Mac cargo build commands were preceded by df -g /System/Volumes/Data:
+cargo build --locked: available 35 GiB; sccache Operation not permitted; exit 101.
+RUSTC_WRAPPER= cargo build --locked: available 36 GiB; missing ProjectMount Deserialize during integration; exit 101.
+RUSTC_WRAPPER= cargo build --locked: available 34 GiB; Finished dev in 7.11s; exit 0.
+RUSTC_WRAPPER= cargo build --locked: available 37 GiB; Finished dev in 3.45s; exit 0.
+RUSTC_WRAPPER= cargo build --locked: available 38 GiB; Finished dev in 3.19s; exit 0.
+RUSTC_WRAPPER= cargo build --locked: available 38 GiB; Finished dev in 3.46s; exit 0.
+$ df -g /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  257        34    89% 2531645 362743400    1%   /System/Volumes/Data
+exit 0
+$ cargo fmt --check
+(no output)
+exit 0
+$ RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.33s
+exit 0
+Linux: dev SSH failed DNS resolution; approved disposable Debian 13 fallback.
+First VM apt attempt encountered cloud-init package-manager lock; waited using DPkg::Lock::Timeout.
+First Linux build installed musl only for stable; missing core for pinned 1.99.1; installed target in clone and rebuilt.
+$ cargo build --locked --target x86_64-unknown-linux-musl
+$ cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings
+Compiling pinfold v0.5.5 (/home/user/pinfold/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.95s
+   Compiling pinfold v0.5.5 (/home/user/pinfold/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.14s
+exit 0
+
+Final Mac cleanup:
+$ container list --all --format json
+[{"id":"buildkit","state":"running"}]
+exit 0
+$ container volume list --format json
+[]
+exit 0
+$ df -g /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  258        33    89% 2533032 350418840    1%   /System/Volumes/Data
+exit 0
+
+Observed driver/fix diagnostics (trimmed):
+Mac first driver: external worktree rc=125, expected 1; assertion failed; fixture-removed=True.
+Linux initial candidate: --/start/push/fetch spec refusals; inventory equality assertion failed after maintenance; fixture-removed=True.
+Guidance before loopback exclusions: AGENT-EXIT=1 / 403 status code (no body); no model request.
+Lifecycle first rm gate: AssertionError: native helper did not stop; fixture-removed=True.
+Edges first cwd case: no-config for nongit new-untracked-dir; fixture-removed=True.
+
+$ labvm release
+{"ok":true,"command":"release","status":"idle"}
+exit 0

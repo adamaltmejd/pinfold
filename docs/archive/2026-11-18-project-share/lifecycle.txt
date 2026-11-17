@@ -1,0 +1,47 @@
+CLI ['config', 'edit'] cwd=$W/startup-death: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/startup-death-45ad00152656/pinfold.toml'
+SPAWN pinfold -- sh -c 'echo MUST-NOT-RUN; cat >/dev/null' cwd=$W/startup-death
+CLI ['box', 'list', '--label', 'dev.pinfold.project=startup-death-45ad00152656'] cwd=$W/startup-death: rc=0 out='{"created":"2026-11-17T13:30:51Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"6a58e224857656c3c76b97b31bef58f77fda1221ed1d2d0f01d1d591fb50195e","dev.pinfold.owner":"22531","dev.pinfold.profile":"default","dev.pinfold.project":"startup-death-45ad00152656"},"name":"pi-startup-death-45ad00152656-31a8e3efe981","owner":22531,"owner_alive":true,"state":"running"}' err=''
+startup-owner-killed client=125 command-bytes=0 err='pinfold --: session-protocol'
+SPAWN pinfold -- sh -c 'echo REPLACEMENT; cat >/dev/null' cwd=$W/startup-death
+CLI ['box', 'list', '--label', 'dev.pinfold.project=startup-death-45ad00152656'] cwd=$W/startup-death: rc=0 out='{"created":"2026-11-17T13:30:51Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"6a58e224857656c3c76b97b31bef58f77fda1221ed1d2d0f01d1d591fb50195e","dev.pinfold.owner":"22531","dev.pinfold.profile":"default","dev.pinfold.project":"startup-death-45ad00152656"},"name":"pi-startup-death-45ad00152656-31a8e3efe981","owner":22531,"owner_alive":true,"state":"running"}' err=''
+orphan-removal barrier before native rm: old-generation=6a58e224857656c3c76b97b31bef58f77fda1221ed1d2d0f01d1d591fb50195e replacement-command=absent replacement-box=absent claim=present
+READY REPLACEMENT
+CLI ['box', 'list', '--label', 'dev.pinfold.project=startup-death-45ad00152656'] cwd=$W/startup-death: rc=0 out='{"created":"2026-11-17T13:30:55Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"63ab588fd94f959749f7d441a7da817bae083d606718c0cdb6ad98ae1ef59576","dev.pinfold.owner":"22978","dev.pinfold.profile":"default","dev.pinfold.project":"startup-death-45ad00152656"},"name":"pi-startup-death-45ad00152656-c680537b6622","owner":22978,"owner_alive":true,"state":"running"}' err=''
+CLI ['box', 'stat', 'pi-startup-death-45ad00152656-31a8e3efe981'] cwd=$W/startup-death: rc=3 out='' err='pinfold box stat: no box named "pi-startup-death-45ad00152656-31a8e3efe981"'
+CLIENT rc=0 out='' err=''
+CLI ['box', 'list', '--label', 'dev.pinfold.project=startup-death-45ad00152656'] cwd=$W/startup-death: rc=0 out='' err=''
+replacement followed checked old-box removal and claim retirement=True
+CLI ['config', 'edit'] cwd=$W/retirement-death: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/retirement-death-ed3573247d41/pinfold.toml'
+SPAWN pinfold -- sh -c 'echo READY-TO-LEAVE; cat >/dev/null' cwd=$W/retirement-death
+READY READY-TO-LEAVE
+CLI ['box', 'list', '--label', 'dev.pinfold.project=retirement-death-ed3573247d41'] cwd=$W/retirement-death: rc=0 out='{"created":"2026-11-17T13:30:59Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"303bcb36782376f7cf8944f3d75b6a9f48dbb828f24bf7fd7a8aef7b755ffd67","dev.pinfold.owner":"23179","dev.pinfold.profile":"default","dev.pinfold.project":"retirement-death-ed3573247d41"},"name":"pi-retirement-death-ed3573247d41-a4beb423948c","owner":23179,"owner_alive":true,"state":"running"}' err=''
+CLIENT rc=0 out='' err='pinfold: session-protocol (303bcb36782376f7cf8944f3d75b6a9f48dbb828f24bf7fd7a8aef7b755ffd67); pinfold box inspect 303bcb36782376f7cf8944f3d75b6a9f48dbb828f24bf7fd7a8aef7b755ffd67\npinfold: leave: session-protocol'
+retirement-owner-killed: owner stopped with native kill/stop helper observed, before rm; completed status retained=True
+SPAWN pinfold -- sh -c 'echo REPLACEMENT; cat >/dev/null' cwd=$W/retirement-death
+CLI ['box', 'list', '--label', 'dev.pinfold.project=retirement-death-ed3573247d41'] cwd=$W/retirement-death: rc=0 out='{"created":"2026-11-17T13:30:59Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"303bcb36782376f7cf8944f3d75b6a9f48dbb828f24bf7fd7a8aef7b755ffd67","dev.pinfold.owner":"23179","dev.pinfold.profile":"default","dev.pinfold.project":"retirement-death-ed3573247d41"},"name":"pi-retirement-death-ed3573247d41-a4beb423948c","owner":23179,"owner_alive":true,"state":"running"}' err=''
+orphan-removal barrier before native rm: old-generation=303bcb36782376f7cf8944f3d75b6a9f48dbb828f24bf7fd7a8aef7b755ffd67 replacement-command=absent replacement-box=absent claim=present
+READY REPLACEMENT
+CLI ['box', 'list', '--label', 'dev.pinfold.project=retirement-death-ed3573247d41'] cwd=$W/retirement-death: rc=0 out='{"created":"2026-11-17T13:31:02Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"4156146717be1b7a9c6f0ed2ca643ca9cb7c2a690cf9c9e97ce0c17437e8c220","dev.pinfold.owner":"23369","dev.pinfold.profile":"default","dev.pinfold.project":"retirement-death-ed3573247d41"},"name":"pi-retirement-death-ed3573247d41-bc4b22d0fcd2","owner":23369,"owner_alive":true,"state":"running"}' err=''
+CLI ['box', 'stat', 'pi-retirement-death-ed3573247d41-a4beb423948c'] cwd=$W/retirement-death: rc=3 out='' err='pinfold box stat: no box named "pi-retirement-death-ed3573247d41-a4beb423948c"'
+CLIENT rc=0 out='' err=''
+CLI ['box', 'list', '--label', 'dev.pinfold.project=retirement-death-ed3573247d41'] cwd=$W/retirement-death: rc=0 out='' err=''
+replacement followed checked old-box removal and claim retirement=True
+CLI ['config', 'edit'] cwd=$W/keep-leave-race: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/keep-leave-race-6e8a5782925e/pinfold.toml'
+SPAWN pinfold -- sh -c 'echo LEAVE; cat >/dev/null' cwd=$W/keep-leave-race
+READY LEAVE
+CLIENT rc=0 out='' err=''
+CLIENT rc=0 out='' err=''
+CLI ['box', 'list', '--label', 'dev.pinfold.project=keep-leave-race-6e8a5782925e'] cwd=$W/keep-leave-race: rc=0 out='{"created":"2026-11-17T13:31:09Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"761718a4ec440381a094800fad54fd3f0e8f28d97af80dc5c4fdb84780e9ea7a","dev.pinfold.owner":"23730","dev.pinfold.profile":"default","dev.pinfold.project":"keep-leave-race-6e8a5782925e"},"name":"pi-keep-leave-race-6e8a5782925e-b9443ff254a8","owner":23730,"owner_alive":true,"state":"running"}' err=''
+CLI ['stop'] cwd=$W/keep-leave-race: rc=0 out='' err=''
+CLI ['box', 'list', '--label', 'dev.pinfold.project=keep-leave-race-6e8a5782925e'] cwd=$W/keep-leave-race: rc=0 out='' err=''
+keep/final-leave race kept one generation; stop removed it=True
+PASS startup and retirement owner death; no image build
+CLI ['stop'] cwd=$W/startup-death: rc=0 out='' err=''
+CLI ['stop'] cwd=$W/retirement-death: rc=0 out='' err=''
+CLI ['stop'] cwd=$W/keep-leave-race: rc=0 out='' err=''
+CLI ['disk', 'list', '--json'] cwd=$W: rc=0 out='{"allocated":6946816,"attached":[],"clean":true,"name":"pi-keep-leave-race-6e8a5782925e-home","size":68719476736}\n{"allocated":6946816,"attached":[],"clean":true,"name":"pi-startup-death-45ad00152656-home","size":68719476736}\n{"allocated":6946816,"attached":[],"clean":true,"name":"pi-retirement-death-ed3573247d41-home","size":68719476736}' err=''
+CLI ['disk', 'rm', 'pi-keep-leave-race-6e8a5782925e-home', '--json'] cwd=$W: rc=0 out='{"disk":"pi-keep-leave-race-6e8a5782925e-home","event":"removed","existed":true}' err=''
+CLI ['disk', 'rm', 'pi-startup-death-45ad00152656-home', '--json'] cwd=$W: rc=0 out='{"disk":"pi-startup-death-45ad00152656-home","event":"removed","existed":true}' err=''
+CLI ['disk', 'rm', 'pi-retirement-death-ed3573247d41-home', '--json'] cwd=$W: rc=0 out='{"disk":"pi-retirement-death-ed3573247d41-home","event":"removed","existed":true}' err=''
+CLI ['disk', 'list', '--json'] cwd=$W: rc=0 out='' err=''
+fixture-removed=True

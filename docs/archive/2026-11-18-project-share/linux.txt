@@ -1,0 +1,27 @@
+Initial fixture-image build:
+CLI ('image', 'build', 'probe-project-share280-linux', '--containerfile', '$W/Containerfile', '--context', '$W/context') rc=0 out='{"base":null,"event":"built","id":"sha256:47d9180b71649108e06e050c41c071d7765ae307799e9f729a276f3abc2c9b45","image":"probe-project-share280-linux","labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"","dev.pinfold.profile":"","dev.pinfold.project":""},"latest":"localhost/pinfold/image-probe-project-share280-linux:latest","ref":"localhost/pinfold/image-probe-project-share280-linux:18e8d82098ca2dcb-17172"}\n' err='pinfold: building image probe-project-share280-linux\npinfold: build run c7155061b709cd70246b3c9d8c87bc8c4983b9797840e341c074c265127e8f52; egress log $W/s/pinfold/runs/c7155061b709cd70246b3c9d8c87bc8c4983b9797840e341c074c265127e8f52/egress.jsonl\n'
+Final-source Linux run, reusing that image:
+CLI ('config', 'edit') rc=0 out='' err='pinfold config: $W/c/pinfold/projects/project-625284918f9f/pinfold.toml\n'
+Linux config edit default=disk
+Linux refusal roots before=[('$W/c', True), ('$W/absent-state', False), ('$W/absent-cache', False), ('/tmp/pinfold-1000', True)] maintenance-due=True runtime-PATH=/nonexistent
+CLI ('--', 'true') rc=125 out='' err='pinfold --: $W/c/pinfold/projects/project-625284918f9f/pinfold.toml: spec: share mounts are unsupported on Linux\n'
+CLI ('start',) rc=125 out='' err='pinfold start: $W/c/pinfold/projects/project-625284918f9f/pinfold.toml: spec: share mounts are unsupported on Linux\n'
+CLI ('push',) rc=1 out='' err='pinfold push: $W/c/pinfold/projects/project-625284918f9f/pinfold.toml: spec: share mounts are unsupported on Linux\n'
+CLI ('fetch',) rc=1 out='' err='pinfold fetch: $W/c/pinfold/projects/project-625284918f9f/pinfold.toml: spec: share mounts are unsupported on Linux\n'
+Linux share all-entrypoints spec refusal: config/state/cache/ownership inventories unchanged=True
+Reused fixture image=localhost/pinfold/image-probe-project-share280-linux:latest
+CLI ('config',) rc=0 out='{"config":"$W/c/pinfold/projects/project-625284918f9f/pinfold.toml","containerfile":null,"cpus":2.0,"egress":{"allow":[],"routes":{}},"env":[],"image":"localhost/pinfold/image-probe-project-share280-linux:latest","image_built":true,"image_error":null,"image_source":"explicit","memory":"1G","profile":"default","project":{"disks":{"home":"pi-project-625284918f9f-home","project":"pi-project-625284918f9f-project"},"home":"/home/pi","id":"project-625284918f9f","mount":{"guest":"$W/project","host":"$W/project","kind":"disk"}},"root":"$W/project"}\n' err=''
+Linux disk config report={"disks": {"home": "pi-project-625284918f9f-home", "project": "pi-project-625284918f9f-project"}, "home": "/home/pi", "id": "project-625284918f9f", "mount": {"guest": "$W/project", "host": "$W/project", "kind": "disk"}}
+CLI ('--', 'sh', '-c', 'test "$(cat file)" = initial; printf guest > file; git -c user.name=user -c user.email=user@fixture.invalid add file; git -c user.name=user -c user.email=user@fixture.invalid commit -qm guest; printf home > "$HOME/kept"; echo DISK-FIRST') rc=0 out='DISK-FIRST\n' err=''
+CLI ('--', 'sh', '-c', 'test "$(cat file)" = guest; test "$(cat "$HOME/kept")" = home; echo DISK-REUSED') rc=0 out='DISK-REUSED\n' err=''
+CLI ('push',) rc=0 out='{"box":"pi-project-625284918f9f-e7f916f02a83","event":"pushed","refs":{"refs/remotes/host/main":"a17c862ebceb6940ae1d0dccc14c2720be69e7e3"},"remote":"host"}\n' err=''
+CLI ('fetch',) rc=0 out='{"box":"pi-project-625284918f9f-02f8381bc978","event":"fetched","refs":{"refs/remotes/pinfold/main":"f9105b4e26eb517c471939b44f79bd74917fc461"},"remote":"pinfold"}\n' err=''
+Linux existing disk isolation/reuse/sync/push/fetch=True
+PASS Linux project-share refusal and existing disk behavior
+CLI ('stop',) rc=0 out='' err=''
+CLI ('disk', 'list', '--json') rc=0 out='{"allocated":7708672,"attached":[],"clean":true,"name":"pi-project-625284918f9f-project","size":68719476736}\n{"allocated":7245824,"attached":[],"clean":true,"name":"pi-project-625284918f9f-home","size":68719476736}\n' err=''
+CLI ('disk', 'rm', 'pi-project-625284918f9f-project', '--json') rc=0 out='{"disk":"pi-project-625284918f9f-project","event":"removed","existed":true}\n' err=''
+CLI ('disk', 'rm', 'pi-project-625284918f9f-home', '--json') rc=0 out='{"disk":"pi-project-625284918f9f-home","event":"removed","existed":true}\n' err=''
+CLI ('disk', 'list', '--json') rc=0 out='' err=''
+CLI ('box', 'list', '--label', 'dev.pinfold.project=project-625284918f9f') rc=0 out='' err=''
+Linux fixture-removed=True
