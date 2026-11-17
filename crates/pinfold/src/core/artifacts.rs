@@ -392,12 +392,12 @@ const HOST_OS_ARCH: &str = if cfg!(target_os = "macos") {
     "host-linux-x64"
 };
 
-/// The Linux init binary to mount into a box.
+/// The init path, without extracting the embedded binary.
 ///
 /// On macOS the CLI embeds the `aarch64-unknown-linux-musl` build and
 /// extracts it once per content into the artifact cache. On Linux the CLI
 /// is itself a static Linux binary and mounts its own executable.
-pub fn init() -> io::Result<PathBuf> {
+pub(crate) fn init_path() -> io::Result<PathBuf> {
     if cfg!(not(target_os = "macos")) {
         return std::env::current_exe();
     }
@@ -406,7 +406,18 @@ pub fn init() -> io::Result<PathBuf> {
         .join("init")
         .join(super::hex(&Sha256::digest(INIT)))
         .join("linux-arm64");
-    dirs::install_dir(&dir, |staging| {
+    Ok(dir.join("pinfold"))
+}
+
+/// Prepare this build's init for attachment.
+pub fn init() -> io::Result<PathBuf> {
+    let path = init_path()?;
+    if cfg!(not(target_os = "macos")) {
+        return Ok(path);
+    }
+    const INIT: &[u8] = include_bytes!(env!("PINFOLD_INIT"));
+    let dir = path.parent().expect("init has a directory");
+    dirs::install_dir(dir, |staging| {
         let path = staging.join("pinfold");
         fs::write(&path, INIT)?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755))

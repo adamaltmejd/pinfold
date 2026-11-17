@@ -395,6 +395,18 @@ fn valid_header_name(name: &str) -> bool {
 pub struct Mount {
     pub host: PathBuf,
     pub guest: PathBuf,
+    #[serde(default)]
+    pub kind: MountKind,
+    #[serde(skip)]
+    pub(crate) git: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MountKind {
+    #[default]
+    Readonly,
+    Share,
 }
 
 /// One named disk and where it appears in the box.
@@ -516,7 +528,15 @@ impl Plan {
         self.validate_inputs(false)
     }
 
+    pub(crate) fn validate_platform(&self) -> Result<(), String> {
+        if cfg!(target_os = "linux") && self.mounts.iter().any(|m| m.kind == MountKind::Share) {
+            return Err(invalid("share mounts are unsupported on Linux"));
+        }
+        Ok(())
+    }
+
     fn validate_inputs(&self, values: bool) -> Result<(), String> {
+        self.validate_platform()?;
         if !valid_name(&self.name) {
             return Err(invalid(format!(
                 "name {:?} must start alphanumeric and hold only [A-Za-z0-9._-]",

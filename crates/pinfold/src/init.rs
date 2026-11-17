@@ -164,6 +164,7 @@ pub fn run(args: &[String]) -> ! {
         #[cfg(target_os = "linux")]
         Some("session-exec") => exit_with("session-exec", session_exec()),
         Some("setup") => exit_with("setup", setup(&args[1..])),
+        Some("proxy-socket") => exit_with("proxy-socket", proxy_socket(&args[1..])),
         Some("receive") => exit_with("receive", receive(&args[1..])),
         Some("send") => exit_with("send", export::run(&args[1..])),
         #[cfg(target_os = "linux")]
@@ -393,6 +394,74 @@ fn exit_with(verb: &str, result: io::Result<()>) -> ! {
 }
 
 const SETUP_USAGE: &str = "usage: pinfold init setup [--own UID:GID DIR]... [--user UID:GID [--fill ROOT]... [--mkdir ROOT RELATIVE]...]";
+
+fn proxy_socket(args: &[String]) -> io::Result<()> {
+    if !args.is_empty() {
+        return Err(io::Error::other("usage: pinfold init proxy-socket"));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use nix::fcntl::OFlag;
+        use nix::sys::stat::{Mode, SFlag};
+
+        std::env::set_current_dir("/")?;
+        nix::sys::prctl::set_no_new_privs()?;
+        // Image symlinks can alias declared destinations. Inspect kernel
+        // mount data before opening any part of the fixed socket directory.
+        let mounts = fs::read_to_string("/proc/self/mountinfo")?;
+        if mounts.lines().any(|line| {
+            let Some((mount, filesystem)) = line.split_once(" - ") else {
+                return true;
+            };
+            match mount.split_ascii_whitespace().nth(4) {
+                Some("/var" | "/var/host-services") => true,
+                // Apple forwards the socket itself as a tmpfs bind.
+                Some("/var/host-services/ssh-auth.sock") => {
+                    filesystem.split_ascii_whitespace().next() != Some("tmpfs")
+                }
+                _ => false,
+            }
+        }) {
+            return Err(io::Error::other("forwarded proxy path is an attachment"));
+        }
+        let flags = OFlag::O_PATH | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+        let mut directory = nix::fcntl::open("/", flags | OFlag::O_DIRECTORY, Mode::empty())?;
+        for name in ["var", "host-services"] {
+            directory =
+                nix::fcntl::openat(&directory, name, flags | OFlag::O_DIRECTORY, Mode::empty())?;
+        }
+        let socket = nix::fcntl::openat(&directory, "ssh-auth.sock", flags, Mode::empty())?;
+        let metadata = nix::sys::stat::fstat(&socket)?;
+        if SFlag::from_bits_truncate(metadata.st_mode) & SFlag::S_IFMT != SFlag::S_IFSOCK
+            || metadata.st_uid != 0
+        {
+            return Err(io::Error::other(
+                "forwarded proxy is not a root-owned socket",
+            ));
+        }
+        // O_PATH pins the checked socket; chmod must use that inode, never a
+        // path a concurrent process could replace after the check.
+        // libc lacks the arm64-musl constant; Linux arm64 and x64 use 452.
+        const FCHMODAT2: nix::libc::c_long = 452;
+        let result = unsafe {
+            nix::libc::syscall(
+                FCHMODAT2,
+                socket.as_raw_fd(),
+                c"".as_ptr(),
+                0o666,
+                nix::libc::AT_EMPTY_PATH,
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    Err(io::Error::other(
+        "proxy socket setup requires the guest kernel",
+    ))
+}
 
 /// Own only fresh disk roots, then drop privileges before preparing paths.
 fn setup(args: &[String]) -> io::Result<()> {

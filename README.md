@@ -1,15 +1,29 @@
 # pinfold
 
 Run a coding agent in a disposable micro-VM: Apple `container` on macOS,
-Firecracker on Linux. The box works on its own clone of the project's branches, and
-its only way out is its own allowlisting proxy. `pinfold fetch` brings its
-commits back as branches.
+Firecracker on Linux. Project commands work on a private disk copy of the
+project's branches. Network egress uses the box's allowlisting proxy.
+`pinfold fetch` brings its commits back as branches.
 
 - **Interactive:** `pinfold -- pi`, `pinfold -- claude` or `pinfold -- bash`.
 - **From another agent:** `pinfold -- pi -p` (see below).
 - **Programmatic:** drive boxes through `pinfold box` (JSON on stdio, the
   [box spec](docs/ARCHITECTURE.md#process-interface)), and read project settings with `pinfold config`.
 - Spec: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
+Core `box up` specs can declare an Apple writable host mount with
+`{"host":"/path/to/folder","guest":"/work","kind":"share"}`.
+The default mount kind is `readonly`; Linux refuses `share` as `spec`.
+A share's plain top-level `.git` is attached read-only after all caller
+attachments. Admission refuses protected Git symlinks, working-file aliases
+to protected Git files, lexical attachment conflicts and sources exposing
+protected Git writable. An image symlink can change which declared source
+the box sees, but cannot grant writes to protected host `.git`. Shared
+working files can be deleted or corrupted, and host tools can execute
+box-written content.
+See [Mounts](docs/ARCHITECTURE.md#mounts) and the
+[threat model](docs/ARCHITECTURE.md#threat-model). Project commands still use
+their persistent project disk.
 
 ## Requirements
 

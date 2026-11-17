@@ -1,11 +1,11 @@
 # pinfold architecture
 
 pinfold runs a coding agent in a disposable box: a micro-VM, Apple
-`container` on macOS and Firecracker on Linux. The box sees its
-disks and read-only mounts and nothing else of the host. Its only way out is
-its own allowlisting proxy. Automatic project crossing reaches the host as
-git branches through `fetch`; explicit disk export copies user-requested
-untrusted files into a new directory.
+`container` on macOS and Firecracker on Linux. The box sees its disks and
+declared host mounts. Apple shares expose host files writable; other host
+mounts are read-only. Network egress uses the box's allowlisting proxy.
+Disk-project branches cross through `fetch`; explicit disk export copies
+user-requested untrusted files into a new directory.
 
 ## Terms
 
@@ -45,15 +45,18 @@ Deleting it there reseeds it at the next start.
 | pi | project commands, per-project state, disks and config, herdr | the `pinfold` CLI |
 | profiles | box defaults, an optional image recipe, pi's user-level config | applied as data |
 
-Core knows nothing of pi; its only git is the branch crossing (Disks). To
-core, a profile's pi config is files.
+Core knows nothing of pi. It protects a share's top-level `.git` as a
+read-only attachment (Mounts) and owns branch crossing (Disks). To core,
+a profile's pi config is files.
 Core never reads a profile's `pinfold.toml`; the pi layer does, when it
 writes a box spec. Profiles hold no code except pi packages.
 
 ## Threat model
 
-A prompt injection turns the agent into an exfiltration path or into code
-running on the host.
+The primary threat is an agent reaching data available to the host through
+its files, credentials or network position. Prompt injection can turn the
+agent against the user. Hostile models are also untrusted. A share
+deliberately grants access to selected host files.
 
 | Control | Effect |
 |---|---|
@@ -62,10 +65,31 @@ running on the host.
 | Kernel boundary | A VM per box, with its own guest kernel. |
 | No privilege | Box work runs as the host uid with an empty capability bounding set; read-only root, no setuid files. On Linux only the guest's PID 1 stays root (Always applied). |
 | VMM jail | On Linux the VMM runs as the user in a jail the box owner builds: it reaches only its own VM's files. |
-| Host files | A box writes no host file. Automatic project crossing uses only `fetch`: git refs under one remote namespace, no guest hook or config. Explicit disk export copies user-requested untrusted files into a new directory. |
+| Host files | Direct guest filesystem access reaches only declared mounts and disks. A writable share exposes its host files to modification. The admitted top-level `.git` directory is mounted read-only. Share admission rejects the aliases specified under Mounts. Disk crossing and explicit export retain their separate rules. |
 | Profiles and configuration | Nothing a box can write maps to a profile or a project's configuration. Only host-side commands change them. A project that holds pinfold's own configuration, state or cache is refused (Configuration). |
 
 Not protected:
+- A share exposes all its readable contents, including ignored and untracked
+  files, Git history and repository configuration. Allowed model endpoints
+  can receive those contents. Working files have no protection against
+  deletion, corruption or concurrent edits. There is no conflict detection
+  or atomic snapshot. Reads may be stale; a failed write may still damage
+  a file. No fixed visibility delay is guaranteed.
+- Host execution or interpretation of box-written files is outside
+  containment. This includes hooks and hook managers, build and package
+  scripts, editor tasks and extensions, shell integrations, and Git
+  configuration and attributes read by host tools. Attributes can select
+  filters already configured on the host. Linked-worktree `.git` files and
+  nested repositories remain writable: redirecting Git to a box-written
+  directory can make even host `git status` execute a box-written fsmonitor.
+  Matching ownership is no defense because box work uses the host uid.
+- Symlinks resolve in the guest namespace and do not grant access to an
+  otherwise unmounted host path; they can reach other paths already
+  available in the box. Host tools following box-written symlinks can reach
+  outside the share. Checking a file before using it is not an execution
+  boundary: another process can replace it between the check and use.
+  Host creation of aliases or replacement of admitted mount sources during
+  a run is outside the admission guarantee.
 - Project contents: an agent with a model API can put them in a prompt.
 - What the host does with fetched refs: merging, checking out, building
   or opening them runs the box's content as the user. A merged
@@ -182,8 +206,11 @@ sysctl rather than the failing call.
    later. On Linux PID 1 then puts box work in Always applied's state. Before
    ready, the box copies the profile's missing home seeds as the box user.
 6. Apple only: wait until the runtime lists the box running, including
-   without egress. One transient root exec makes the socket connectable,
-   when there is one.
+   without egress. When egress is present, one transient root invocation of
+   the supplied init changes only the fixed forwarded socket's permissions;
+   it executes no image program and inspects no share content. The operation
+   uses a fixed cwd, no environment lookup and no share traversal, and
+   validates the socket without following a symlink.
 7. `exec` work runs with `HTTPS_PROXY` and `http_proxy` set to
    `http://127.0.0.1:3128`.
 8. Sync and unmount the disks (Linux: init, after ending box work with
@@ -420,11 +447,48 @@ The box spec `up` reads from stdin:
   disk, including explicit images without profiles. Generated mount paths
   may not overlap each other or a caller mount, contain a disk destination,
   or sit below a read-only disk. Paths are compared after lexical normalization.
-- Every mount is read-only and shows its host directory as of `up`; a
-  later host change may or may not appear. A box writes only to its disks
-  and its tmpfs `/tmp`.
-- Mount hosts must resolve to existing directories (symlinks to directories
-  are accepted); a host path that cannot be read or is not a directory is
+
+#### Mounts
+
+- A mount's kind is `readonly` by default, or `share`. Read-only mounts
+  retain their existing visibility semantics. A share exposes an existing
+  canonical host directory writable on Apple. Linux refuses a share
+  as `spec` before maintenance, artifact preparation, credential resolution,
+  claims or resource creation. A box writes to its disks, tmpfs and share mounts.
+  Read-only mounts show the host directory as of `up`; a later host change
+  may or may not appear.
+- For a share with a plain top-level `.git` directory, pinfold adds an
+  inseparable read-only attachment at the corresponding guest path, after
+  that share and every other caller attachment. A top-level `.git` file or
+  symlink refuses as `spec`. A share without `.git` has no protected Git metadata.
+  The supplied init attaches read-only after generated Git protection.
+- Before resource creation, validation refuses as `spec` a caller attachment
+  whose lexically normalized destination is at, above-and-after, or beneath
+  a share's `.git` destination. The lexical overlap check is independent of
+  caller order. Generated Git protection is validated with caller, profile,
+  init and login attachments.
+- An additional attachment whose host source is at or beneath a share's
+  host `.git` refuses as `spec`. So does a share source containing another
+  share's source in a way that exposes its `.git` writable. Share sources
+  must be plain directories. Admission resolves their host ancestors without
+  following a final source symlink.
+- A symlink in the image can make two declared destinations name one guest
+  path. This can change which declared source the box sees there, never
+  grant a write to a protected host `.git`. Admission does not inspect the
+  image tree.
+- Before admission, pinfold walks shares without following symlinks, as the
+  host uid. A symlink beneath the protected `.git`, or a file outside `.git`
+  in the share with the same device and inode as a multiply linked file
+  beneath `.git`, refuses as `spec`. A share file hard-linked to content
+  outside the share is allowed.
+- Every core share receives Configuration's protected-path validation,
+  including selected profile sources and pinfold's configuration, state,
+  cache, artifacts and ownership directory. A protected path inside the
+  share, or a share source inside a protected root, refuses as `spec`.
+- Apple supplies Git an exact-path `safe.directory` exception for each
+  share's guest root, never `safe.directory=*`.
+- Mount hosts must resolve to existing directories (read-only mounts accept
+  symlinks to directories); a host path that cannot be read or is not a directory is
   refused as `spec`, naming it. A mount or disk nested in another applies
   inside it whatever the spec's order; two at one lexical guest path, with
   `.` and `..` resolved, are refused as `spec` before preparation.
@@ -449,6 +513,9 @@ The box spec `up` reads from stdin:
   `/tmp` or empty `/etc/resolv.conf`.
 - A mount or disk path holding `,` or an ASCII control character is
   refused as `spec`, naming the path.
+
+#### Other validation
+
 - `memory` is a whole number followed by `M` or `G`, at least `256M`;
   anything else is refused as `spec`, naming it. So is a malformed `size`.
 - A string route value must be `host:port`, the port a number in
@@ -473,7 +540,7 @@ The launch record is written once, atomically, after the box accepts
 cleanup removes the run's directory:
 
 ```json
-{"run_id":ID,"box":NAME,"time":RFC3339,"pinfold":VERSION,"runtime":{"name":"apple"|"firecracker","version":V},"image":{"id":ID,"ref":REF},"profile":NAME|null,"labels":{…},"mounts":[{"host":PATH,"guest":PATH}],"disks":[{"name":NAME,"guest":PATH,"readonly":BOOL}],"env":[NAME,…],"egress":{"allow":[…],"routes":{NAME:{"kind":"host-service"|"injecting"|"login","to":TARGET}}}|null,"cpus":N,"memory":M}
+{"run_id":ID,"box":NAME,"time":RFC3339,"pinfold":VERSION,"runtime":{"name":"apple"|"firecracker","version":V},"image":{"id":ID,"ref":REF},"profile":NAME|null,"labels":{…},"mounts":[{"host":PATH,"guest":PATH,"kind":"readonly"|"share"}],"disks":[{"name":NAME,"guest":PATH,"readonly":BOOL}],"env":[NAME,…],"egress":{"allow":[…],"routes":{NAME:{"kind":"host-service"|"injecting"|"login","to":TARGET}}}|null,"cpus":N,"memory":M}
 ```
 
 Every field is a value the box spec carries or that `ready`, `list`,
@@ -481,6 +548,8 @@ Every field is a value the box spec carries or that `ready`, `list`,
 value or prefix, a login token, argv or command output. `env` lists names
 only. A route's `to` is its `host:port` or origin. The record is what this
 run applied at start; a later change to config leaves it as it is.
+Each recorded mount includes its applied access kind; generated Git
+protection is recorded as a read-only mount.
 
 The terminal record is written once, after teardown, before the owner
 acknowledges `box down` and before `up` prints `down`:
@@ -569,6 +638,14 @@ run ...` (or `events`); it may never have existed or have been removed
   by pinfold or diagnostic payloads. On Linux the spec's env reaches
   the guest only over the exec connection, after boot, and the exec
   service holds it in memory.
+
+On Apple, read-only is a guest mount flag; pinfold does not rely on the
+host share server enforcing it. Box work has the host uid:gid, an empty
+capability bounding set and `no_new_privs`. The root is read-only and
+nested user namespaces are disabled and checked before readiness. These
+controls prevent ordinary box processes from removing or replacing the
+read-only mount. A guest-kernel compromise is outside this protection.
+Every process that looks at a share runs as the host uid.
 
 Runtime command lines and VM configurations are built as data.
 
@@ -696,7 +773,7 @@ process. Getting further needs a host kernel bug.
 - **Apple `container`:** `--ssh` with `SSH_AUTH_SOCK` set to the proxy socket
   for that one `container run`. It appears at
   `/var/host-services/ssh-auth.sock`, root-owned and not connectable by the
-  box user; the root exec in step 6 chmods it.
+  box user; the supplied init's fixed operation in step 6 changes its mode.
 
 Socket directories are user-owned 0700. Sockets are created 0600. Bind,
 validation, vsock connection and VMM mounting use retained directory or socket
@@ -1742,15 +1819,15 @@ what the rewritten suite must show. Testing policy is in `AGENTS.md`.
 | 1 | No network but loopback | Inside: only `lo`; `1.1.1.1` unreachable. Without `egress`, nothing gets out, not even through a route: a request to the proxy's port is refused, and on Linux a vsock connection to the host proxy's port is reset. Control: with a route, the fixture answers through the proxy. On Linux, from inside, a vsock connection to CID 2 on the exec port and on an unused port is reset at once, not timed out; control: CID 2 port 3128 reaches the proxy. The guest kernel's `/proc/config.gz` leaves vsock loopback unset. |
 | 2 | Only allowlisted hosts get through | `api.github.com` answers. `example.com` gets a proxy 403, logged "not allowlisted"; `ready` names that log's path. Each trick has a positive control in the same box: IP literal, loopback resolution, SNI mismatch, CONNECT to a route and ambiguous Content-Length framing are refused, each logged with its own reason. A raw valid Content-Length POST delivers its body to the same host fixture. |
 | 4 | A route reaches exactly one host service | A route reaches the fixture with the Host header rewritten from the client's and logs method, queryless path and upstream status. Replacing its writable audit log with a directory makes the next request stop the owner with audit-log, exit 1 and, on Apple, no runtime box. |
-| 5 | Nothing can gain privileges | `CapBnd` 0 and the host uid in exec'd processes; an exec workload's fork+exec descendant reports `NoNewPrivs` 1; no setuid or setgid files; rootfs not writable; init's credentials are the host uid and its `NoNewPrivs` is 1 on Apple; on Linux PID 1 is root with `CapBnd` exactly `CAP_SYS_ADMIN`, the exec service is the host uid with every capability set empty and box work cannot list its `/proc/<pid>/fd`. On both runtimes `user.max_user_namespaces` is 0, a descendant's `unshare -U` fails with ENOSPC, and a plain child succeeds in the same box. The box's `uname -r` differs from the host's; on Linux it is the guest kernel `vmm.toml` pins. |
+| 5 | Nothing can gain privileges | `CapBnd` 0 and the host uid in exec'd processes; an exec workload's fork+exec descendant reports `NoNewPrivs` 1; no setuid or setgid files; rootfs not writable; init's credentials are the host uid and its `NoNewPrivs` is 1 on Apple; on Linux PID 1 is root with `CapBnd` exactly `CAP_SYS_ADMIN`, the exec service is the host uid with every capability set empty and box work cannot list its `/proc/<pid>/fd`. On both runtimes `user.max_user_namespaces` is 0, a descendant's `unshare -U` fails with ENOSPC, and a plain child succeeds in the same box. The box's `uname -r` differs from the host's; on Linux it is the guest kernel `vmm.toml` pins. Share-inspecting initialization, execution and session helpers use the host uid and retain the stated privilege restrictions. |
 | 6 | The environment is exactly the spec | A caller box whose `up` has unprefixed proxy variables does not get them. Guest PATH, HOME, `XDG_RUNTIME_DIR`, `LD_PRELOAD`, multiline values and a transport-prefixed name arrive exactly while local list/exec/down still manage the box. Always-applied values win. PINFOLD_ALLOW defaults to the spec allowlist without routes and an explicit spec value wins. Guarantee 39 shows PINFOLD_ENV_SECRET's path. |
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, egress fails closed; another XDG root sees the owner dead, prunes the box and reuses its name. The run's launch record stays `available` and its terminal `not-observed`, also after the prune. An abandoned partial claim is reclaimable. On Linux the VM ends with its owner (guarantee 43), so the egress half runs on Apple. Repeat owner death with a detached project owner, including a kept owner without clients. Surviving clients report 125 unless they already observed command completion. Prune and restart preserve the missing terminal record and existing dirty-disk recovery rules. Owner death during gated startup or retirement remains recoverable, including after identity deletion and before claim unlink. |
 | 9 | The lifecycle works for a caller | `exec` immediately after `ready` streams both streams and returns the exit code, and exits 3 on an absent box; `ready` and `list` name the image's id, and without egress `ready`'s `egress_log` is null; `down` of an absent, empty or flag-like name exits 0, prints nothing and leaves the live box alone; closing `up`'s stdin tears the box down with reason `stdin-closed`. A real terminal exec preserves the caller's input file flags, whether initially blocking or nonblocking. On Apple, a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. |
 | 10 | Project branches cross only by fetch | A box's writes on its disk leave the host project's bytes, modes and mtimes unchanged. A populated copied Git tree has sampled caller uid/gid ownership, no effective `safe.directory` exemption, and a clean ordinary-user status before mutation. `fetch` lands only the box's branches, under `refs/remotes/<box>/*`, and no tag, two that shadow a branch's names included; after a merge and two checkouts on the host, nothing the box planted (hooks under every client-side name, `core.hooksPath`, `core.fsmonitor`, tracked `.githooks/` and `.husky/`) has run; control: a host hook runs. Each of five hostile bundles, an injected refspec head, a `.git` tree entry, a missing commit, `x` beside `x/y`, and a listed branch it omits, fails the fetch naming its cause and changes no host ref and nothing under `.git/objects`. |
-| 11 | Disks persist and attach exclusively | A disk created with `from` holds the host tree's files, exec bits and symlink; after its owner is SIGKILLed during the copy and its box pruned, the next `up` naming it holds the whole tree. A file one box writes is read by the next box that attaches it; another state root naming the same disk gets its own. While a box attaches a disk writable, another `up` naming it and `disk rm` (including `--all`) are refused as `disk-in-use` and create nothing; of two writable `up`s racing for one new disk exactly one runs and the other is refused as `disk-in-use`; two read-only boxes at once can write neither the disk nor a mount. A sparse `from` past the disk's `size` is refused as `limit`. After the runtime kills a writer's box, or the writer's owner is SIGKILLed, a read-only attachment is refused as `disk-unclean` until a writable one has run, and then reads the disk. On macOS, a dead owner's box the runtime created but never started holds its disk. `disk rm ../escape` is refused as `spec`; after writers stop, `disk rm --all` removes the remaining disks. On Linux, a nested disk whose mount point is a symlink the box planted ends the start `failed` and leaves nothing at the link's target. A fresh home whose source contains `.pi/agent/settings.json` starts with a Pi login route and retains those settings; a reused home ignores changed initial-source content. On both platforms, generated parents on a fresh or reused home are created as the numeric box user through descriptor-relative no-follow traversal; an existing symlink fails startup without writing through it, and its corrected directory succeeds without changing existing ownership. |
+| 11 | Disks persist and attach exclusively | A disk created with `from` holds the host tree's files, exec bits and symlink; after its owner is SIGKILLed during the copy and its box pruned, the next `up` naming it holds the whole tree. A file one box writes is read by the next box that attaches it; another state root naming the same disk gets its own. While a box attaches a disk writable, another `up` naming it and `disk rm` (including `--all`) are refused as `disk-in-use` and create nothing; of two writable `up`s racing for one new disk exactly one runs and the other is refused as `disk-in-use`; two boxes attaching a disk read-only cannot write it or a read-only host mount. A sparse `from` past the disk's `size` is refused as `limit`. After the runtime kills a writer's box, or the writer's owner is SIGKILLed, a read-only attachment is refused as `disk-unclean` until a writable one has run, and then reads the disk. On macOS, a dead owner's box the runtime created but never started holds its disk. `disk rm ../escape` is refused as `spec`; after writers stop, `disk rm --all` removes the remaining disks. On Linux, a nested disk whose mount point is a symlink the box planted ends the start `failed` and leaves nothing at the link's target. A fresh home whose source contains `.pi/agent/settings.json` starts with a Pi login route and retains those settings; a reused home ignores changed initial-source content. On both platforms, generated parents on a fresh or reused home are created as the numeric box user through descriptor-relative no-follow traversal; an existing symlink fails startup without writing through it, and its corrected directory succeeds without changing existing ownership. |
 | 13 | Project state persists and stays separate | Nested Git metadata and bare-repository paths refuse as `project-in-git`; a nested linked-worktree path refuses as `worktree`, leaving state unchanged and no disks. The main checkout runs. State, config or cache roots inside the project, reached through a symlinked ancestor whose suffix does not exist, and the project's configuration file, directory or Containerfile or the profile's `pinfold.toml` symlinked into the checkout, make build and project commands refuse as `host-path-in-project` and create no project state; `config edit` refuses the selected profile's directory symlinked into the checkout, whether `PINFOLD_PROFILE` or the existing file selects it, and writes no file; with external roots the same project runs. Guest writes in two same-named projects remain separate on A/B/A runs. The first start's box repository is checked out clean at the host's HEAD commit, on a branch two tags shadow by its short and its full name, holding its committed file, and holds none of the host's untracked `.env`, unstaged blob, stash, remote URL or hook. With no identity in the repository or home, the box's commits arrive authored `pi <pi@pinfold.invalid>`. A new project owner pushes host commits in: a clean box branch strictly behind is fast-forwarded to the host's commit; a dirty tracked file or a local box commit leaves the box's HEAD where it was while `host/main` still moves; an untracked box file the fast-forward would overwrite prints `sync-failed` and CMD still runs. Outside Git on macOS, a second run from one canonical folder reads edited home and project files from the same disks, while another folder has separate disks; no host fixture file enters. These folders receive the same protected-path checks and project maintenance ownership as Git projects. Each protected-path refusal creates no project state or configuration, and external roots permit the same project. On Linux the non-Git folder is refused as `not-git`; a configured Git checkout runs. A long valid project basename launches. Joining does not push or fast-forward. Project crossing cannot enter between core readiness and completed initial synchronization. |
 | 15 | Cleanup removes only pinfold's garbage | One project image supplies a live box alongside an idle project's state and disk. Both projects' state bytes and disks survive `clean --dry-run --unused 0s`; plain `clean` keeps both disks. Real `clean --unused 0s` removes idle state and disk while preserving live state bytes and a write read back through the live box's disk. On Apple an externally started container and an unlabeled external image survive cleanup. One caller image held by a running box survives `image rm`, reports `in_use` and still serves its fixture bytes; after the box stops the same removal reclaims its refs and, on Linux, its observed root disk. A kept project with no clients retains its state bytes, disks and readable guest writes through cleanup; after stop, the same eligible cleanup removes them. |
-| 17 | up refuses before it creates | A missing image, a misspelled nested spec key, a bad env name, a `dev.pinfold.` label, case-colliding route names, a suffix allow entry on or above a public suffix, a mount or disk `from` path with a comma, a disk at or below `/proc`, `/sys` or `/dev` or at `/`, `/tmp`, `/etc` or `/etc/resolv.conf`, each reached through `..` or `.`, a flag- or path-like disk name and a live name are refused as data, naming the cause; the misspelled key's refusal also names the box; each leaves no box and no state dir. Pi login HOME without an absolute writable-disk backing, overlapping generated destinations and Linux attachment 15 refuse before preparation; corrected HOME/mounts and Linux attachment 14 run. A recipe-less profile refuses with `image-source-missing` even when its old managed tag exists; the same profile with an explicit image runs. Of two `up`s racing for one name exactly one wins, and the winner answers exec and reaches each distinct route name. Long valid XDG state roots permit startup, exec, stat, shutdown, restart and orphan recovery on both runtimes. An unsafe socket path needed by a new generation refuses as runtime-path without changing its target; a checked private directory permits the same start. After confirmed runtime removal, an unverifiable old generation directory remains unchanged while its dead claim retires and a fresh generation starts. |
+| 17 | up refuses before it creates | A missing image, a misspelled nested spec key, a bad env name, a `dev.pinfold.` label, case-colliding route names, a suffix allow entry on or above a public suffix, a mount or disk `from` path with a comma, a disk at or below `/proc`, `/sys` or `/dev` or at `/`, `/tmp`, `/etc` or `/etc/resolv.conf`, each reached through `..` or `.`, a flag- or path-like disk name and a live name are refused as data, naming the cause; the misspelled key's refusal also names the box; each leaves no box and no state dir. Pi login HOME without an absolute writable-disk backing, overlapping generated destinations and Linux attachment 15 refuse before preparation; corrected HOME/mounts and Linux attachment 14 run. A recipe-less profile refuses with `image-source-missing` even when its old managed tag exists; the same profile with an explicit image runs. Of two `up`s racing for one name exactly one wins, and the winner answers exec and reaches each distinct route name. Long valid XDG state roots permit startup, exec, stat, shutdown, restart and orphan recovery on both runtimes. An unsafe socket path needed by a new generation refuses as runtime-path without changing its target; a checked private directory permits the same start. After confirmed runtime removal, an unverifiable old generation directory remains unchanged while its dead claim retires and a fresh generation starts. A Linux share refuses as `spec` before write-producing startup work, with absent pinfold roots remaining absent; a supported mount succeeds. |
 | 18 | A caller reads the effective configuration as data | Without a runtime, config reports host policy without creating state/cache/config files. Linux reports known availability from its local catalog, including false for an absent catalog; Apple reports image_built null and image_error when its native probe is unavailable. An existing Linux image remains reportable with empty PATH and KVM denied, without changing the catalog. A project with no configuration file, a `.pinfold.toml` in its folder included, makes config, build and project commands refuse as `no-config` and create no project state; `config edit` with `EDITOR=true` writes the file, and the same commands proceed; `config edit` still opens the editor when the file names a missing profile; a moved copy of the project is refused again. A `mounts` other than the project disk, of any shape, is refused as `spec`; a dangling configuration symlink is refused, and `config edit` writes nothing through it. Unknown project/profile TOML keys and a profile's `mounts` are refused with the source and key; correcting the same file restores the fixture policy. With `PINFOLD_PROFILE=full` and no project `allow`, config reports the default list plus `github.com` and `api.github.com`. Layered image defaults and project overrides report `image_source` and null recipe for explicit images, and `build` refuses an explicit image as `image-no-recipe`; a project recipe works with a recipe-less profile. Conflicting, missing and empty sources refuse with their tokens before box/project/disk/run state; correcting the fixture succeeds. After a managed rebuild, config reports the selected image reference, source and availability. On macOS a non-Git folder reports persistent home/project disks at the canonical project path. Guarantee 39 shows the live report. |
 | 20 | A caller can tell an OOM kill from a failure | On both runtimes stat reports the limits in force, every field is present, and `exec`'d processes start with `oom_score_adj` 1000. On Linux, the guest kernel's `MemTotal` is within 64 MiB under the box's memory. In one process and its fork+exec descendant, -999 is allowed, modern -1000 and legacy -17 return EACCES with unchanged scores, and legacy 15 succeeds. The service parent stays -1000. A sole workload at -999 touches a finite 1 GiB mapping in the 256 MiB box, exits 137, and stat's oom_kills rises; a fresh probe succeeds afterward. |
 | 21 | An injecting route keeps the credential on the host | The fixture behind an injecting route receives the header; the box's environment and the egress log never hold the value; an https route reaches api.github.com over TLS. |
@@ -1761,7 +1838,7 @@ what the rewritten suite must show. Testing policy is in `AGENTS.md`.
 | 34 | Blocked route writes release the upstream | A small routed POST and response succeed. In concurrent connections, a guest stops reading a response and a host fixture stops reading an upload while sending a response. Both fixture connections close after the production write deadline while the guest holders remain alive. The upload producer's completion is timed independently to exclude an early failure followed by a read timeout. |
 | 36 | CONNECT tunnels share activity | Initially idle TLS tunnels start at staggered times and expire after the production idle interval. Real TLS tunnels carry upload-only and download-only traffic for longer than the production idle deadline. Neither closes while bytes flow; both then close after a full idle interval with `idle timeout` in the egress log while the guest holders remain alive. |
 | 38 | Each run's history is its own | Two `up`s of one name in sequence; the first makes an allowed and a refused request, and when `box down` returns, `inspect` already reports its terminal `signal`. The second's `ready.run_id` equals its `dev.pinfold.generation` label and differs from the first's, and its `ready.egress_log` is empty before its first request. Its 150 decisions, paged at the default limit while its box appends 50 more after the first page, return every line once, in order, across `next`; `events` for the first run still returns exactly its two decisions. Each `down` names its own run_id. A no-egress box SIGKILLed from the host (its init through Apple's runtime, its VMM on Linux) makes `up` exit 1 with `down` reason `exited`, and terminal `exited` whose detail names exit status 137. With no runtime on `PATH`, `inspect` and `events` answer for finished runs, and the no-egress run reports egress `not-applicable`. A malformed run id, `--limit 101` and another run's cursor exit 1; an unknown run id exits 3. A project's last unkept departure records sessions-ended with null detail before its final leave completes. Project stop records signal before returning. A replacement has a distinct generation. |
-| 39 | The launch record is the applied policy | A project command starts with an explicit local image and a recipe-less profile, from its configuration file with an allow list, cpus, memory, a host-service route and an injecting route whose header comes from a host variable, plus `PINFOLD_ENV_SECRET`, under environment overrides of the allow list, cpus and memory. `config` reports the file's list, the built image and the home disk; the environment's `PINFOLD_ROUTES` replaces the file's routes; an invalid UTF-8 override fails without disclosing its bytes. The box attaches the reported home disk writable at `$HOME`; its kernel sees the environment's cpus and memory; SECRET arrives without entering host argv, and on Linux is in neither `/proc/cmdline`, the VM configuration, the init disk nor any disk image. Its seeds are readable and its share refuses guest writes without changing host bytes. While it runs, the file's image and allow list change: `config` reports the change, but `inspect` still reports the started allow list, route kinds and targets, cpus and memory, equal to what the test wrote, plus env names that include `SECRET`, no harness version field, and the started image reference and runtime-observed id; the started list decides, refusing the file's hosts as `not allowlisted`. No file under the state root holds the secret or the header value. When the last unkept lease ends, the terminal record is `sessions-ended` with null detail, without argv, output or session statuses. On a second start, the guest-edited seed survives and current shared bytes appear. Literal argv retains empty arguments, spaces, shell metacharacters and `--help`; binary stdin/stdout and separate stderr pass through. Exits 0, 23, 125, 126 and 127 pass through, as do signal statuses `128+n`. Project setup failures, including cwd, terminal and executable lookup failures before CMD starts, use 125. External box down, cleanup or shutdown accepted during startup before an observed command completion uses 125; a signal received by pinfold itself uses 128+n. A completed exec result is checked before a ready shutdown or signal, so its observed status is retained. An observed command status survives leave or teardown failure, including after command success; the failure is reported on stderr and in the run record. Public box exec retains its codes. Nested canonical cwd matches the invoking host folder. A guest-planted symlink in that cwd refuses as setup failure, including a symlink within the project; a plain directory succeeds. An execute-only project subdirectory works as cwd through search-only descriptors, while symlinks still refuse. A new untracked host subdirectory missing in the guest refuses as setup failure, with a tracked-directory control. Fresh project disks have no empty formatter lost+found or related Git warnings. `HERDR_AGENT` is the exact first argv word, including an executable path, and wins over a conflicting forwarded value. Separate fast Apple TTY commands inspect host dimensions and TERM/COLORTERM at their first instruction, before any resize; interactive resize then follows the host. Non-TTY execution is the control. Public forced-TTY exec with redirected stdout succeeds without a host size; zero dimensions are not sent. Host raw setup failure dispatches no command, and guest terminal setup failure is refused. Linux interrupted foreground TTY execution restores owned termios. A non-raw command with terminal stdin and redirected stdout preserves a deliberate later host stty change. Restoration checks foreground ownership before changing termios. No-config, missing-image and malformed-command refusals each have a corrected invocation that runs; discovery, configuration, protected paths and local image availability are validated before project state is recorded. On Apple and Linux, foreground handoff followed by client SIGTERM preserves the new foreground group's full terminal settings; the signalled client exits 143. Each joined command retains these argv, cwd, environment, terminal and status properties. |
+| 39 | The launch record is the applied policy | A project command starts with an explicit local image and a recipe-less profile, from its configuration file with an allow list, cpus, memory, a host-service route and an injecting route whose header comes from a host variable, plus `PINFOLD_ENV_SECRET`, under environment overrides of the allow list, cpus and memory. `config` reports the file's list, the built image and the home disk; the environment's `PINFOLD_ROUTES` replaces the file's routes; an invalid UTF-8 override fails without disclosing its bytes. The box attaches the reported home disk writable at `$HOME`; its kernel sees the environment's cpus and memory; SECRET arrives without entering host argv, and on Linux is in neither `/proc/cmdline`, the VM configuration, the init disk nor any disk image. Its seeds are readable and its read-only profile files refuse guest writes without changing host bytes. While it runs, the file's image and allow list change: `config` reports the change, but `inspect` still reports the started allow list, route kinds and targets, cpus and memory, equal to what the test wrote, plus env names that include `SECRET`, no harness version field, and the started image reference and runtime-observed id; the started list decides, refusing the file's hosts as `not allowlisted`. No file under the state root holds the secret or the header value. When the last unkept lease ends, the terminal record is `sessions-ended` with null detail, without argv, output or session statuses. On a second start, the guest-edited seed survives and current shared bytes appear. Literal argv retains empty arguments, spaces, shell metacharacters and `--help`; binary stdin/stdout and separate stderr pass through. Exits 0, 23, 125, 126 and 127 pass through, as do signal statuses `128+n`. Project setup failures, including cwd, terminal and executable lookup failures before CMD starts, use 125. External box down, cleanup or shutdown accepted during startup before an observed command completion uses 125; a signal received by pinfold itself uses 128+n. A completed exec result is checked before a ready shutdown or signal, so its observed status is retained. An observed command status survives leave or teardown failure, including after command success; the failure is reported on stderr and in the run record. Public box exec retains its codes. Nested canonical cwd matches the invoking host folder. A guest-planted symlink in that cwd refuses as setup failure, including a symlink within the project; a plain directory succeeds. An execute-only project subdirectory works as cwd through search-only descriptors, while symlinks still refuse. A new untracked host subdirectory missing in the guest refuses as setup failure, with a tracked-directory control. Fresh project disks have no empty formatter lost+found or related Git warnings. `HERDR_AGENT` is the exact first argv word, including an executable path, and wins over a conflicting forwarded value. Separate fast Apple TTY commands inspect host dimensions and TERM/COLORTERM at their first instruction, before any resize; interactive resize then follows the host. Non-TTY execution is the control. Public forced-TTY exec with redirected stdout succeeds without a host size; zero dimensions are not sent. Host raw setup failure dispatches no command, and guest terminal setup failure is refused. Linux interrupted foreground TTY execution restores owned termios. A non-raw command with terminal stdin and redirected stdout preserves a deliberate later host stty change. Restoration checks foreground ownership before changing termios. No-config, missing-image and malformed-command refusals each have a corrected invocation that runs; discovery, configuration, protected paths and local image availability are validated before project state is recorded. On Apple and Linux, foreground handoff followed by client SIGTERM preserves the new foreground group's full terminal settings; the signalled client exits 143. Each joined command retains these argv, cwd, environment, terminal and status properties. The recorded mount kinds and generated Git protection match the applied attachments. |
 | 42 | Run records are retained within bounds | With inactive runs padded on the host past 128 MiB in valid decision lines, `clean` removes the oldest inactive run, keeps the newest, and leaves a live run's log unchanged. Once the newest is aged 15 days on the host, `clean` removes it (`inspect` exits 3), while a live run aged the same stays `available` and its log keeps appending. With that live log padded to 128 MiB minus one byte, the next real route request stops the owner with `audit-log`, exit 1, and leaves the log length unchanged. A kept owner without clients still protects its run from retention cleanup. Audit failure stops that owner and incomplete project clients return 125; completed command status retains precedence. An append failure as the last session leaves or during runtime removal survives proxy joining: the terminal record and final client notification name `audit-log`, while observed command codes 0 and 23 remain unchanged. A writable-log departure records `sessions-ended`. |
 | 43 | The VMM reaches only its own box | Linux only. With two boxes up, each VMM is a child of its box owner, including a detached project owner, and runs as the user with `CapBnd` 0 and `NoNewPrivs` 1; its user, mount, PID, network, IPC and UTS namespaces differ from the owner's; its root, read through `/proc/PID/root`, holds its own disk and not the other box's disk; none of its mount points is under the user's home; its fds 0–2 are `/dev/null` and none is under the home; SIGKILL of the owner ends the VM. Its jail exposes neither project session nor shutdown control sockets. |
 
@@ -1770,6 +1847,8 @@ what the rewritten suite must show. Testing policy is in `AGENTS.md`.
 | 45 | Disk export writes only the requested new destination | While its box runs, export of its disk refuses as disk-in-use. After teardown, the same disk exports nested file bytes, executable mode and a symlink as a link without touching its target. Existing destinations refuse unchanged; a missing disk refuses as disk-missing and creates no disk. A special file refuses and leaves no destination; removing it makes the same disk export successfully. |
 
 | 47 | A project's sessions share one box | Simultaneous first launches use one owner and generation. Independent clients run in distinct invoking directories. Killing or disconnecting a client sends TERM to its command group, then KILL after two seconds if needed, while the second session keeps working. Keep and crossing leases retain the box but not a departed command group. A terminal departure hangs up its guest terminal first. A process that leaves the command group, or for a terminal session ignores hangup after leaving it, may keep running; stop ends everything. Normal completion preserves background children, with output delivered for up to one second. Plain stdin EOF does not cancel a command. The final unkept departure ends the box. Bootstrap death and final departure racing join, keep and stop never admit two writable generations. Start retains a box without clients; repeated start and stop succeed. Different effective configuration or host roots refuse as config-changed without executing CMD; restoring each changed input joins the same generation. The original proxy policy still decides. A stale stop cannot end a replacement. |
+
+| 48 | A share confines direct writes and protects its admitted top-level Git metadata | On Apple, ordinary shared-file edits reach the host while direct metadata writes, deletion, rename and replacement fail without changing the protected host tree. Attempts to remove or replace the read-only mount fail. Generated Git protection attaches after all caller attachments. Lexically conflicting destinations, additional attachment sources at or beneath protected host `.git`, and share sources exposing another share's `.git` writable refuse as `spec`. An image symlink alias can change which declared source is visible, without permitting writes to protected host Git bytes. A symlink beneath protected `.git`, or a share file outside `.git` aliasing a multiply linked protected file, refuses as `spec`; hard links to outside content and ordinary hard-linked working files run. Corrected trees run. Guest traversal of outward symlinks cannot access an unmounted host fixture. Linked-worktree redirection and nested repositories remain outside this metadata guarantee. |
 
 ## Code
 

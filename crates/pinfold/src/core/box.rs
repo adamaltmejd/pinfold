@@ -11,7 +11,7 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::core::clean;
 use crate::core::disk::Seeding;
-use crate::core::plan::{Disk, Env, Login, Mount, Plan, Route, valid_name};
+use crate::core::plan::{Disk, Env, Login, Mount, MountKind, Plan, Route, valid_name};
 use crate::core::profile::{Profile, Seed};
 use crate::core::runs::{self, Terminal};
 use crate::core::runtime::{self, BoxInfo, Child, Prepared, runtime};
@@ -145,9 +145,7 @@ impl Box {
     /// Start a box, wait for init's `ready` line, and return it. The
     /// profile, the host's runtime and the image are checked first. Then
     /// `up` claims the name, and only the claim's owner creates anything.
-    /// File aliases are checked after preparation, before runtime startup.
-    /// An alias refusal removes claimed state; prepared artifacts and home
-    /// seeds remain.
+    /// Share layout and aliases are checked before maintenance or preparation.
     ///
     /// The caller registered SIGTERM and SIGINT before reading the spec:
     /// before ready they remove what the start made and `up` returns
@@ -222,6 +220,23 @@ impl Box {
             validate_generated(&plan, &extra)
                 .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
         }
+
+        let layout_init = init.to_path_buf();
+        let layout_destinations = destinations.clone();
+        let maintenance = expected_image.is_none() && !existing_only;
+        let (mut plan, profile) = startup_work(signals, &mut cancel_start, None, move || {
+            crate::core::mounts::prepare(&mut plan, profile.as_ref(), &layout_init)
+                .map_err(|error| refused(&plan, RefusalReason::Spec, error.to_string()))?;
+            let extra: Vec<&Path> = layout_destinations.iter().map(PathBuf::as_path).collect();
+            validate_generated(&plan, &extra)
+                .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
+            if maintenance {
+                clean::maintain();
+            }
+            crate::core::artifacts::init()?;
+            Ok((plan, profile))
+        })
+        .await?;
 
         // A login route's token is read before the claim, so a missing
         // variable or an unusable Codex login refuses as `login` and leaves
@@ -911,6 +926,7 @@ fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json
         .iter()
         .map(|mount| {
             serde_json::json!({
+                "kind": mount.kind,
                 "host": mount.host.to_string_lossy(),
                 "guest": mount.guest.to_string_lossy(),
             })
@@ -972,8 +988,16 @@ pub(crate) fn validate_project(plan: &Plan, profile: &Profile) -> Result<(), Str
         resolved.mounts.push(Mount {
             host: share.path().map_err(|error| error.to_string())?,
             guest: PathBuf::from("/opt/pinfold/profile"),
+            kind: MountKind::Readonly,
+            git: false,
         });
     }
+    crate::core::mounts::prepare(
+        &mut resolved,
+        Some(profile),
+        &crate::core::artifacts::init_path().map_err(|e| e.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
     validate_generated(&resolved, &extra)?;
     if !profile.home.is_empty() {
         home_disk(&resolved, Vec::new()).map_err(|error| error.to_string())?;
@@ -1118,6 +1142,8 @@ fn prepare_logins(plan: &mut Plan, state_dir: &Path) -> io::Result<()> {
         plan.mounts.push(Mount {
             host: dir,
             guest: destination,
+            kind: MountKind::Readonly,
+            git: false,
         });
     }
     Ok(())
@@ -1147,6 +1173,8 @@ fn resolve_profile(plan: &mut Plan, supplied: Option<Profile>) -> io::Result<Opt
         plan.mounts.push(Mount {
             host: share.path()?,
             guest: PathBuf::from("/opt/pinfold/profile"),
+            kind: MountKind::Readonly,
+            git: false,
         });
     }
     Ok(Some(profile))

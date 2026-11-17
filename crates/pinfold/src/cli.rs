@@ -150,8 +150,13 @@ fn up(args: &[String]) -> io::Result<i32> {
             biased;
             _ = signals.recv() => return Ok(down(None, None, Shutdown::Signal)),
             plan = tokio::task::spawn_blocking(|| {
-                clean::maintain();
-                Plan::from_reader(io::stdin())
+                let plan = Plan::from_reader(io::stdin())?;
+                plan.validate_platform().map_err(|detail| crate::core::r#box::Refusal {
+                    box_name: Some(plan.name.clone()),
+                    reason: crate::core::r#box::RefusalReason::Spec,
+                    detail,
+                })?;
+                Ok::<_, crate::core::r#box::Refusal>(plan)
             }) => match plan.map_err(io::Error::other)? {
                 Ok(plan) => plan,
                 Err(refusal) => return Ok(refused_box(&refusal)),
@@ -185,7 +190,7 @@ fn up(args: &[String]) -> io::Result<i32> {
 }
 
 async fn hold_up(plan: &Plan, mut signals: Signals) -> io::Result<i32> {
-    let init = artifacts::init()?;
+    let init = artifacts::init_path()?;
     let mut box_ = match Box::up(plan, &init, &mut signals).await {
         Ok(box_) => box_,
         Err(UpError::Refused(refusal)) => return Ok(refused_box(&refusal)),

@@ -22,7 +22,7 @@ use tokio::process::{Child, ChildStderr, Command};
 use crate::core::disk::{self, Directory, Fill, Seeding};
 use crate::core::image::service::inspect;
 use crate::core::image::{BuildRequest, ImageInfo, ImageService};
-use crate::core::plan::Plan;
+use crate::core::plan::{MountKind, Plan};
 use crate::core::runtime::{
     BoxInfo, BoxStat, DiskInfo, ExecContext, MemoryStat, PidsStat, Runtime, output, parse_json,
     spawn_error,
@@ -109,11 +109,45 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
     for (key, value) in &plan.labels {
         command.arg("--label").arg(format!("{key}={value}"));
     }
-    for (name, value) in super::guest_vars(plan) {
+    let mut vars: BTreeMap<_, _> = super::guest_vars(plan).into_iter().collect();
+    let shares: Vec<_> = plan
+        .mounts
+        .iter()
+        .filter(|mount| mount.kind == MountKind::Share)
+        .collect();
+    if !shares.is_empty() {
+        let mut count = match vars.get("GIT_CONFIG_COUNT") {
+            None => 0usize,
+            Some(value) => value
+                .to_str()
+                .and_then(|value| value.parse::<usize>().ok())
+                .ok_or_else(|| {
+                    io::Error::other("GIT_CONFIG_COUNT must be a nonnegative integer")
+                })?,
+        };
+        for mount in shares {
+            let next = count
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("GIT_CONFIG_COUNT is too large"))?;
+            vars.insert(format!("GIT_CONFIG_KEY_{count}"), "safe.directory".into());
+            vars.insert(
+                format!("GIT_CONFIG_VALUE_{count}"),
+                crate::core::plan::guest_path(&mount.guest).into_os_string(),
+            );
+            count = next;
+        }
+        // Apple's read-only Git attachment is root-owned in the guest.
+        vars.insert("GIT_CONFIG_COUNT".into(), count.to_string().into());
+    }
+    for (name, value) in vars {
         guest_env(command.as_std_mut(), &name, &value);
     }
-    for mount in &plan.mounts {
-        command.arg("--mount").arg(bind(&mount.host, &mount.guest));
+    for mount in plan.mounts.iter().filter(|mount| !mount.git) {
+        command.arg("--mount").arg(bind(
+            &mount.host,
+            &mount.guest,
+            mount.kind == MountKind::Readonly,
+        ));
     }
     for disk in &plan.disks {
         let mut value = OsString::from(format!(
@@ -125,6 +159,11 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
             value.push(",readonly");
         }
         command.arg("--mount").arg(value);
+    }
+    for mount in plan.mounts.iter().filter(|mount| mount.git) {
+        command
+            .arg("--mount")
+            .arg(bind(&mount.host, &mount.guest, true));
     }
     command
         .arg("--mount")
@@ -155,13 +194,14 @@ fn guest_env(command: &mut std::process::Command, name: &str, value: &OsStr) {
     command.args(["--env", &transport]).env(transport, encoded);
 }
 
-/// A read-only `type=bind` mount value.
-fn bind(host: &Path, guest: &Path) -> OsString {
+fn bind(host: &Path, guest: &Path, readonly: bool) -> OsString {
     let mut value = OsString::from("type=bind,source=");
     value.push(host);
     value.push(",target=");
     value.push(guest);
-    value.push(",readonly");
+    if readonly {
+        value.push(",readonly");
+    }
     value
 }
 
@@ -170,7 +210,7 @@ fn init_mount(init: &Path) -> OsString {
     let dir = init
         .parent()
         .expect("init lives in the artifacts directory");
-    bind(dir, dir)
+    bind(dir, dir, true)
 }
 
 /// The attached `container run` process that owns a box.
@@ -550,7 +590,7 @@ impl Runtime for Apple {
         // Wait even without egress, before the caller's first exec.
         let actual = wait_until_running(name, cancel)?;
         if proxy_socket.is_some() {
-            make_proxy_connectable(name)?;
+            make_proxy_connectable(name, init)?;
         }
         if let Some(seeding) = seeding {
             copy_in(name, init, seeding, cancel)?;
@@ -1126,19 +1166,22 @@ fn wait_until_running(name: &str, cancel: &AtomicBool) -> io::Result<BoxInfo> {
 }
 
 /// Make the forwarded proxy socket in box `name` connectable by the box
-/// user: it arrives root-owned and mode 000. The one transient root exec.
-fn make_proxy_connectable(name: &str) -> io::Result<()> {
-    output(&[
-        "container",
-        "exec",
-        "--user",
-        "0:0",
-        name,
-        "chmod",
-        "666",
-        GUEST_PROXY_SOCKET,
-    ])
-    .map(drop)
+/// user: it arrives root-owned. The one transient root exec.
+fn make_proxy_connectable(name: &str, init: &Path) -> io::Result<()> {
+    let result = std::process::Command::new("container")
+        .args(["exec", "--user", "0:0", "--workdir", "/", name])
+        .arg(init)
+        .args(["init", "proxy-socket"])
+        .stdin(Stdio::null())
+        .output_guarded()
+        .map_err(|error| spawn_error("container", error))?;
+    if !result.status.success() {
+        return Err(io::Error::other(format!(
+            "proxy socket permissions: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        )));
+    }
+    Ok(())
 }
 
 /// Copy missing profile seeds without buffering another copy of their bytes.

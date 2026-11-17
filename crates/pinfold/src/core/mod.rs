@@ -9,6 +9,7 @@ pub mod disk_export;
 pub mod download;
 pub mod image;
 pub mod login;
+pub(crate) mod mounts;
 pub mod network;
 pub mod ownership;
 pub(crate) mod pipe;
