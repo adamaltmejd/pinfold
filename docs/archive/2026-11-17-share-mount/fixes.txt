@@ -1,0 +1,95 @@
+BEFORE .GIT/hooks: 31d23ec
+before Git names: ['hooks', 'protected']
+{"box":"probe-share279-fixes-before","egress_log":null,"event":"ready","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"38bdb538417681e3090ebe19ba3ed84328ba2de5ef3b614c3d97ba0d36592b18","dev.pinfold.owner":"47081","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":47081,"run_id":"38bdb538417681e3090ebe19ba3ed84328ba2de5ef3b614c3d97ba0d36592b18"}
+after Git names: ['hooks', 'protected']
+protected bytes: protected
+down rc= 0
+fixture removed= True
+BEFORE missing .GIT/new destination: 31d23ec
+before Git names: ['protected']
+{"box":"probe-share279-fixes-before","detail":"box exited before ready: Error: mount failed with errno 30: failed to create directory 'created'\\nError: failed to start process probe-share279-fixes-before in container probe-share279-fixes-before (cause: \"internalError: \"failed to start process (cause: \"internalError: \"startProcess: failed to start process: internalError: \"vmexec error: mount failed with errno 30: failed to create directory 'created'\"\"\")\"\")\\n: exit status: 1","event":"failed"}
+after Git names: ['protected']
+protected bytes: protected
+down rc= 0
+fixture removed= True
+BEFORE startup gate: 31d23ec
+preparation-helper-observed= True
+early exec rc= 0 stdout= 0 stderr=
+up: {"box":"probe-share279-startup-before","egress_log":null,"event":"ready","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"97f0c3fbd9b0b1139735c2aebb1a4ee4f5482e47b59f255bda4329765c0052d1","dev.pinfold.owner":"54573","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":54573,"run_id":"97f0c3fbd9b0b1139735c2aebb1a4ee4f5482e47b59f255bda4329765c0052d1"}
+down rc= 0
+disk cleanup: 0 {"disk":"probe-share279-startup-before-disk","event":"removed","existed":true}
+fixture removed= True
+AFTER startup gate
+preparation-helper-observed= True
+early exec rc= 3 stdout=  stderr= pinfold box exec: box "probe-share279-startup-after" has not completed startup
+early fetch rc= 3 stderr= pinfold box fetch: box "probe-share279-startup-after" has not completed startup
+up: {"box":"probe-share279-startup-after","egress_log":null,"event":"ready","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"d6bc4860de41d20ac1d1d019ab0644d8e3e469a9dfabc7132747a04f3f6ef621","dev.pinfold.owner":"64890","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":64890,"run_id":"d6bc4860de41d20ac1d1d019ab0644d8e3e469a9dfabc7132747a04f3f6ef621"}
+ready exec rc= 0 uid= 501
+ready fetch rc= 0 {"box":"probe-share279-startup-after","event":"fetched","refs":{"refs/remotes/probe-share279-startup-after/main":"48e70d81a6b094680a3cb4c997cc17e0e837961d"},"remote":"probe-share279-startup-after"}
+down rc= 0
+disk cleanup: 0 {"disk":"probe-share279-startup-after-disk","event":"removed","existed":true}
+fixture removed= True
+FIX-ROUND ADMISSION AND LEGACY SHAPES
+case destination .GIT/hooks: {"box":"probe-share279-fix-57821-1","detail":"attachment destination touches protected Git directory","event":"refused","reason":"spec"}
+case destination .GIT/new-dir: {"box":"probe-share279-fix-57821-2","detail":"attachment destination touches protected Git directory","event":"refused","reason":"spec"}
+case refusals: protected bytes and metadata unchanged=True
+Git pattern /project/*: {"box":"probe-share279-fix-57821-3","detail":"share destination would be a Git safe.directory pattern","event":"refused","reason":"spec"}
+Git pattern /project/*/: {"box":"probe-share279-fix-57821-4","detail":"share destination would be a Git safe.directory pattern","event":"refused","reason":"spec"}
+Git pattern /work/../*: {"box":"probe-share279-fix-57821-5","detail":"share destination would be a Git safe.directory pattern","event":"refused","reason":"spec"}
+external artifacts descendant: {"box":"probe-share279-fix-57821-6","detail":"share source overlaps protected host path $W/external-artifacts","event":"refused","reason":"spec"}
+external profile directory descendant: {"box":"probe-share279-fix-57821-7","detail":"share source overlaps protected host path $W/external-profile","event":"refused","reason":"spec"}
+external profile share descendant: {"box":"probe-share279-fix-57821-8","detail":"share source overlaps protected host path $W/external-profile/share","event":"refused","reason":"spec"}
+up probe-share279-fix-57821-9: {"box": "probe-share279-fix-57821-9", "egress_log": null, "event": "ready", "image": {"id": "b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27", "ref": "localhost/pinfold/profile-default"}, "labels": {"dev.pinfold.base": "", "dev.pinfold.containerfile-sha256": "ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f", "dev.pinfold.generation": "95edeb51fefef5df6d20b58be11487fba0b01001b469428e12498f9beef158ee", "dev.pinfold.owner": "57843", "dev.pinfold.profile": "default", "dev.pinfold.project": ""}, "owner": 57843, "run_id": "95edeb51fefef5df6d20b58be11487fba0b01001b469428e12498f9beef158ee"}
+literal embedded star Git read: rc=0 /work/star*name
+down probe-share279-fix-57821-9: owner=0 {"box":"probe-share279-fix-57821-9","event":"down","reason":"signal","run_id":"95edeb51fefef5df6d20b58be11487fba0b01001b469428e12498f9beef158ee"}
+up probe-share279-fix-57821-10: {"box": "probe-share279-fix-57821-10", "egress_log": null, "event": "ready", "image": {"id": "b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27", "ref": "localhost/pinfold/profile-default"}, "labels": {"dev.pinfold.base": "", "dev.pinfold.containerfile-sha256": "ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f", "dev.pinfold.generation": "1470c0956b7642b104006c5351c9d722002cee48f32685b05dccd19e69e5d10a", "dev.pinfold.owner": "57936", "dev.pinfold.profile": "default", "dev.pinfold.project": ""}, "owner": 57936, "run_id": "1470c0956b7642b104006c5351c9d722002cee48f32685b05dccd19e69e5d10a"}
+readonly nested symlink shape: rc=0 readonly
+down probe-share279-fix-57821-10: owner=0 {"box":"probe-share279-fix-57821-10","event":"down","reason":"signal","run_id":"1470c0956b7642b104006c5351c9d722002cee48f32685b05dccd19e69e5d10a"}
+up probe-share279-fix-57821-11: {"box": "probe-share279-fix-57821-11", "egress_log": null, "event": "ready", "image": {"id": "b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27", "ref": "localhost/pinfold/profile-default"}, "labels": {"dev.pinfold.base": "", "dev.pinfold.containerfile-sha256": "ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f", "dev.pinfold.generation": "e986174012c03b4de2a83c520d0ff329b8ac0cdb4fb2c4817ce01ff4f5aad903", "dev.pinfold.owner": "58035", "dev.pinfold.profile": "default", "dev.pinfold.project": ""}, "owner": 58035, "run_id": "e986174012c03b4de2a83c520d0ff329b8ac0cdb4fb2c4817ce01ff4f5aad903"}
+readonly init-ancestor shape: rc=0 501
+down probe-share279-fix-57821-11: owner=0 {"box":"probe-share279-fix-57821-11","event":"down","reason":"signal","run_id":"e986174012c03b4de2a83c520d0ff329b8ac0cdb4fb2c4817ce01ff4f5aad903"}
+up probe-share279-fix-57821-12: {"box": "probe-share279-fix-57821-12", "egress_log": null, "event": "ready", "image": {"id": "b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27", "ref": "localhost/pinfold/profile-default"}, "labels": {"dev.pinfold.base": "", "dev.pinfold.containerfile-sha256": "ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f", "dev.pinfold.generation": "668d8b24980d6a8702beb72687e5f087f26ffd7e08f7743bbb9c5a2de0784a80", "dev.pinfold.owner": "58133", "dev.pinfold.profile": "default", "dev.pinfold.project": ""}, "owner": 58133, "run_id": "668d8b24980d6a8702beb72687e5f087f26ffd7e08f7743bbb9c5a2de0784a80"}
+disk init-ancestor shape: rc=0 disk
+down probe-share279-fix-57821-12: owner=0 {"box":"probe-share279-fix-57821-12","event":"down","reason":"signal","run_id":"668d8b24980d6a8702beb72687e5f087f26ffd7e08f7743bbb9c5a2de0784a80"}
+up probe-share279-fix-57821-13: {"box": "probe-share279-fix-57821-13", "egress_log": null, "event": "ready", "image": {"id": "b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27", "ref": "localhost/pinfold/profile-default"}, "labels": {"dev.pinfold.base": "", "dev.pinfold.containerfile-sha256": "ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f", "dev.pinfold.generation": "53d7e7df123eed201e16b8115f563ea777da66f647e0e6be85ad533a3f2c305f", "dev.pinfold.owner": "58264", "dev.pinfold.profile": "default", "dev.pinfold.project": ""}, "owner": 58264, "run_id": "53d7e7df123eed201e16b8115f563ea777da66f647e0e6be85ad533a3f2c305f"}
+disk from Git is a copy: rc=0 copied-Git-data
+down probe-share279-fix-57821-13: owner=0 {"box":"probe-share279-fix-57821-13","event":"down","reason":"signal","run_id":"53d7e7df123eed201e16b8115f563ea777da66f647e0e6be85ad533a3f2c305f"}
+up probe-share279-fix-57821-14: {"box": "probe-share279-fix-57821-14", "egress_log": null, "event": "ready", "image": {"id": "b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27", "ref": "localhost/pinfold/profile-default"}, "labels": {"dev.pinfold.base": "", "dev.pinfold.containerfile-sha256": "ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f", "dev.pinfold.generation": "8e4cfa47bbe53e6614ead76840008c705f0ce8a3b1eb6c10d6348b9a359733a5", "dev.pinfold.owner": "58396", "dev.pinfold.profile": "default", "dev.pinfold.project": ""}, "owner": 58396, "run_id": "8e4cfa47bbe53e6614ead76840008c705f0ce8a3b1eb6c10d6348b9a359733a5"}
+overlapping no-Git shares: rc=0
+down probe-share279-fix-57821-14: owner=0 {"box":"probe-share279-fix-57821-14","event":"down","reason":"signal","run_id":"8e4cfa47bbe53e6614ead76840008c705f0ce8a3b1eb6c10d6348b9a359733a5"}
+up probe-share279-fix-57821-15: {"box": "probe-share279-fix-57821-15", "egress_log": null, "event": "ready", "image": {"id": "b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27", "ref": "localhost/pinfold/profile-default"}, "labels": {"dev.pinfold.base": "", "dev.pinfold.containerfile-sha256": "ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f", "dev.pinfold.generation": "5056ece6099a893528e785ce397ad5cf7001485a6e8e1a346d7b3cc125b846d1", "dev.pinfold.owner": "58487", "dev.pinfold.profile": "default", "dev.pinfold.project": ""}, "owner": 58487, "run_id": "5056ece6099a893528e785ce397ad5cf7001485a6e8e1a346d7b3cc125b846d1"}
+overlap outside protected Git: rc=0
+down probe-share279-fix-57821-15: owner=0 {"box":"probe-share279-fix-57821-15","event":"down","reason":"signal","run_id":"5056ece6099a893528e785ce397ad5cf7001485a6e8e1a346d7b3cc125b846d1"}
+up probe-share279-fix-57821-16: {"box": "probe-share279-fix-57821-16", "egress_log": null, "event": "ready", "image": {"id": "b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27", "ref": "localhost/pinfold/profile-default"}, "labels": {"dev.pinfold.base": "", "dev.pinfold.containerfile-sha256": "ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f", "dev.pinfold.generation": "a769baff8c45d86581fb9b50e019d952addf92831467e2cc50c2e5256daef2bd", "dev.pinfold.owner": "58582", "dev.pinfold.profile": "default", "dev.pinfold.project": ""}, "owner": 58582, "run_id": "a769baff8c45d86581fb9b50e019d952addf92831467e2cc50c2e5256daef2bd"}
+same-root shares protect both views: rc=0 97059dd02afb1220871b9101f4495d9a8cdcf789 | 97059dd02afb1220871b9101f4495d9a8cdcf789
+down probe-share279-fix-57821-16: owner=0 {"box":"probe-share279-fix-57821-16","event":"down","reason":"signal","run_id":"a769baff8c45d86581fb9b50e019d952addf92831467e2cc50c2e5256daef2bd"}
+overlap exposes nested protected Git: {"box":"probe-share279-fix-57821-17","detail":"share source overlaps protected host path $W/config/pinfold","event":"refused","reason":"spec"}
+ancestor exposes nested protected Git: {"box":"probe-share279-fix-57821-18","detail":"overlapping share exposes protected Git metadata writable","event":"refused","reason":"spec"}
+up probe-share279-fix-57821-19: {"box": "probe-share279-fix-57821-19", "egress_log": "$W/state/pinfold/runs/0eb6d7cbbf51f1522e7dd04e3b98cba8caf137bdd60af5ef9600c780f8b68d29/egress.jsonl", "event": "ready", "image": {"id": "51e2aa92acce2698adad6c2aacaa8228e7cfe3a101b6627961a989aca3aa683d", "ref": "localhost/pinfold/image-probe-share279-env:latest"}, "labels": {"dev.pinfold.base": "", "dev.pinfold.containerfile-sha256": "", "dev.pinfold.generation": "0eb6d7cbbf51f1522e7dd04e3b98cba8caf137bdd60af5ef9600c780f8b68d29", "dev.pinfold.owner": "58679", "dev.pinfold.profile": "", "dev.pinfold.project": ""}, "owner": 58679, "run_id": "0eb6d7cbbf51f1522e7dd04e3b98cba8caf137bdd60af5ef9600c780f8b68d29"}
+fixed root operation: rc=0 666 socket
+positive-control harmless target: rc=0
+old root PATH positive control: rc=1 marker=0
+down probe-share279-fix-57821-19: owner=0 {"box":"probe-share279-fix-57821-19","event":"down","reason":"signal","run_id":"0eb6d7cbbf51f1522e7dd04e3b98cba8caf137bdd60af5ef9600c780f8b68d29"}
+disk cleanup: {"disk":"probe-share279-fix-init-disk","event":"removed","existed":true}
+disk cleanup: {"disk":"probe-share279-fix-from-git","event":"removed","existed":true}
+fix-round fixtures removed=True
+CORRECTED POSITIVE CONTROL AND ONE HOST COMMIT
+up probe-share279-fix-59045-1: {"box": "probe-share279-fix-59045-1", "egress_log": "$W/state/pinfold/runs/5964edaea0888a71e45228dd8c82388444f1517b1caf7fd3066bbc6bff6c33f0/egress.jsonl", "event": "ready", "image": {"id": "51e2aa92acce2698adad6c2aacaa8228e7cfe3a101b6627961a989aca3aa683d", "ref": "localhost/pinfold/image-probe-share279-env:latest"}, "labels": {"dev.pinfold.base": "", "dev.pinfold.containerfile-sha256": "", "dev.pinfold.generation": "5964edaea0888a71e45228dd8c82388444f1517b1caf7fd3066bbc6bff6c33f0", "dev.pinfold.owner": "59053", "dev.pinfold.profile": "", "dev.pinfold.project": ""}, "owner": 59053, "run_id": "5964edaea0888a71e45228dd8c82388444f1517b1caf7fd3066bbc6bff6c33f0"}
+fixed root operation: rc=0 666 socket
+positive-control harmless target: rc=0
+old root PATH positive control: rc=0 marker=0
+case protected-name operation: rc=1 mv: cannot move '/project/.GIT' to '/project/moved': Device or resource busy
+case protected-name operation: rc=1 rmdir: failed to remove '/project/.GIT': Device or resource busy
+case protected-name operation: rc=2 /bin/sh: 1: cannot create /project/.GIT/HEAD: Read-only file system
+before host commit Git: rc=0 203c16f81aa10ebc4e176d6693a2df0334a8a523
+concurrent Git: reads=10 errors=6
+immediate Git: ?? bin/ | ?? file | ?? gate | ?? live | ?? old-root-marker | fatal: your current branch 'main' does not have any commits yet | status=0 log=128
+later Git checkpoint: recovered=True observations=5 elapsed=1.071s ?? bin/ | ?? gate | ?? live | ?? old-root-marker | 8473fd80ef14fbf1ff057d8d776731453939f202 | status=0 log=0
+host commit protected snapshot unchanged=True
+down probe-share279-fix-59045-1: owner=0 {"box":"probe-share279-fix-59045-1","event":"down","reason":"signal","run_id":"5964edaea0888a71e45228dd8c82388444f1517b1caf7fd3066bbc6bff6c33f0"}
+fix-round fixtures removed=True
+READONLY SOCKET ANCESTOR
+up probe-share279-fix-63594-1: {"box": "probe-share279-fix-63594-1", "egress_log": "$W/state/pinfold/runs/1e4f92da5540d9c38883404aedf13788272a5fb204dcf9643abbfe055e418047/egress.jsonl", "event": "ready", "image": {"id": "b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27", "ref": "localhost/pinfold/profile-default"}, "labels": {"dev.pinfold.base": "", "dev.pinfold.containerfile-sha256": "ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f", "dev.pinfold.generation": "1e4f92da5540d9c38883404aedf13788272a5fb204dcf9643abbfe055e418047", "dev.pinfold.owner": "63666", "dev.pinfold.profile": "default", "dev.pinfold.project": ""}, "owner": 63666, "run_id": "1e4f92da5540d9c38883404aedf13788272a5fb204dcf9643abbfe055e418047"}
+readonly socket-ancestor shape: rc=0 666 socket
+down probe-share279-fix-63594-1: owner=0 {"box":"probe-share279-fix-63594-1","event":"down","reason":"signal","run_id":"1e4f92da5540d9c38883404aedf13788272a5fb204dcf9643abbfe055e418047"}
+fix-round fixtures removed=True

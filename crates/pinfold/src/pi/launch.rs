@@ -155,7 +155,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
                 ("fetch", "pinfold")
             };
             let box_runtime = crate::core::runtime::runtime();
-            let init = artifacts::init()?;
+            let init = artifacts::init_path()?;
             let (name, mut box_) = if let Some(name) = lease.name().map(str::to_string) {
                 lease.release_launch();
                 (name, None)
@@ -178,7 +178,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
                     ..box_plan(&config, &id, &image)?
                 };
                 let name = plan.name.clone();
-                let box_ = match Box::up(&plan, &init, &mut signals).await {
+                let box_ = match Box::up(&plan, &mut signals).await {
                     Ok(box_) => box_,
                     Err(UpError::Control) => {
                         return report_crossing(verb, &name, remote, Err(CrossingError::Failed(
@@ -200,6 +200,9 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
                 };
                 (name, Some(box_))
             };
+            if box_.is_none() {
+                artifacts::init()?;
+            }
             let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let worker_cancel = cancel.clone();
             let target = name.clone();

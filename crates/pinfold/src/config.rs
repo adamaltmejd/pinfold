@@ -209,42 +209,16 @@ impl Config {
 /// must not reach them. Each file is named too, since resolving its
 /// directory does not follow a symlink below it.
 fn check_paths_outside(root: &Path, profile: Option<&Profile>) -> io::Result<()> {
-    let root = fs::canonicalize(root)?;
-    let config_dir = dirs::config_dir()?;
-    let project = project_dir(&root)?;
-    let mut paths = vec![
-        project.join("pinfold.toml"),
-        project.join("Containerfile"),
-        project,
-        config_dir.clone(),
-        dirs::state_dir()?,
-        dirs::artifacts_dir()?,
-        dirs::cache_dir()?,
-        crate::core::ownership::host_dir()?,
-    ];
-    if let Some(profile) = profile {
-        let dir = config_dir.join("profiles").join(&profile.name);
-        for file in ["pinfold.toml", "Containerfile", "home", "share"] {
-            paths.push(dir.join(file));
-        }
-        paths.push(dir);
-        if let Some(share) = &profile.share {
-            paths.push(share.path()?);
-        }
-    }
-    for path in paths {
-        if dirs::resolve_host_path(&path)?.starts_with(&root) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!(
-                    "host-path-in-project: {} resolves inside {}",
-                    terminal_text(&path.to_string_lossy()),
-                    terminal_text(&root.to_string_lossy())
-                ),
-            ));
-        }
-    }
-    Ok(())
+    let project = project_dir(&fs::canonicalize(root)?)?;
+    crate::core::mounts::check_paths_outside(
+        root,
+        profile,
+        [
+            project.join("pinfold.toml"),
+            project.join("Containerfile"),
+            project,
+        ],
+    )
 }
 
 /// A file's bytes, `None` when it is absent. A dangling symlink or an

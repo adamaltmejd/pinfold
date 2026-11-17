@@ -1,0 +1,28 @@
+container CLI version 1.7.1 (build: release, commit: unspeci)
+image: localhost/pinfold/profile-default:latest
+image id: b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27
+ID        IMAGE                                                OS     ARCH   STATE    IP               CPUS  MEMORY   STARTED
+buildkit  ghcr.io/apple/container-builder-shim/builder:0.13.3  linux  arm64  running  192.168.64.2/24  2     2048 MB  2026-11-16T18:43:32Z
+NAME  TYPE  DRIVER  OPTIONS
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  257        53    83% 2536242 564590520    0%   /System/Volumes/Data
+image-link fixture absent
+image-build fixture and task compiler cache removed
+container CLI version 1.7.1 (build: release, commit: unspeci)
+ID        IMAGE                                                OS     ARCH   STATE    IP               CPUS  MEMORY   STARTED
+buildkit  ghcr.io/apple/container-builder-shim/builder:0.13.3  linux  arm64  running  192.168.64.2/24  2     2048 MB  2026-11-16T18:43:32Z
+NAME  TYPE  DRIVER  OPTIONS
+retained probe image: localhost/pinfold/image-probe-share279-env:latest 51e2aa92acce2698adad6c2aacaa8228e7cfe3a101b6627961a989aca3aa683d
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  253        53    83% 2529192 563892120    0%   /System/Volumes/Data
+labvm release: {"ok":true,"command":"release","status":"idle"}
+labvm status: {"ok":true,"command":"status","status":"idle"}
+FIXES-2 task compiler cache removed
+FIXES-2 final inventory
+container CLI version 1.7.1 (build: release, commit: unspeci)
+ID        IMAGE                                                OS     ARCH   STATE    IP               CPUS  MEMORY   STARTED
+buildkit  ghcr.io/apple/container-builder-shim/builder:0.13.3  linux  arm64  running  192.168.64.2/24  2     2048 MB  2026-11-16T18:43:32Z
+NAME  TYPE  DRIVER  OPTIONS
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  255        46    85% 2532001 491133800    1%   /System/Volumes/Data
+{"ok":true,"command":"status","status":"idle"}

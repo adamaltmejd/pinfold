@@ -1,0 +1,88 @@
+git -c core.hooksPath=/dev/null -c user.name=user -c user.email=user@example.invalid -C $W/share init -q: rc=0
+git -c core.hooksPath=/dev/null -c user.name=user -c user.email=user@example.invalid -C $W/share add file: rc=0
+git -c core.hooksPath=/dev/null -c user.name=user -c user.email=user@example.invalid -C $W/share commit -qm initial: rc=0
+reordered protected destination: rc=1 {"box":"probe-share279-37643-1","detail":"attachment overlaps protected Git destination","event":"refused","reason":"spec"}
+reordered protected destination: rc=1 {"box":"probe-share279-37643-2","detail":"attachment overlaps protected Git destination","event":"refused","reason":"spec"}
+nested protected destination: rc=1 {"box":"probe-share279-37643-3","detail":"attachment overlaps protected Git destination","event":"refused","reason":"spec"}
+parent destination: rc=1 {"box":"probe-share279-37643-4","detail":"attachment overlaps protected Git destination","event":"refused","reason":"spec"}
+protected source alias: rc=1 {"box":"probe-share279-37643-5","detail":"attachment source exposes protected Git metadata","event":"refused","reason":"spec"}
+case alias source .GIT: rc=1 {"box":"probe-share279-37643-6","detail":"attachment source exposes protected Git metadata","event":"refused","reason":"spec"}
+overlapping writable sources: rc=1 {"box":"probe-share279-37643-7","detail":"writable share sources overlap","event":"refused","reason":"spec"}
+nested symlink destination: rc=1 {"box":"probe-share279-37643-8","detail":"attachment destination is not a plain directory: $W/share/link/sub: ENOTDIR: Not a directory","event":"refused","reason":"spec"}
+protected hardlink: rc=1 {"box":"probe-share279-37643-9","detail":"writable alias of protected Git: $W/share/protected-alias","event":"refused","reason":"spec"}
+protected symlink: rc=1 {"box":"probe-share279-37643-10","detail":"symlink in protected Git: $W/share/.git/link","event":"refused","reason":"spec"}
+top-level Git file: rc=1 {"box":"probe-share279-37643-11","detail":"share .git must be a plain directory","event":"refused","reason":"spec"}
+top-level Git symlink: rc=1 {"box":"probe-share279-37643-12","detail":"share .git must be a plain directory","event":"refused","reason":"spec"}
+final share source symlink: rc=1 {"box":"probe-share279-37643-13","detail":"share source must be a plain directory","event":"refused","reason":"spec"}
+core share contains protected roots: rc=1 {"box":"probe-share279-37643-14","detail":"host-path-in-project: $W/config/pinfold resolves inside $W","event":"refused","reason":"spec"}
+cross-share protected hardlink: rc=1 {"box":"probe-share279-37643-15","detail":"writable alias of protected Git: $W/other/cross-alias","event":"refused","reason":"spec"}
+readonly source symlink to protected Git: rc=1 {"box":"probe-share279-37643-16","detail":"attachment source exposes protected Git metadata","event":"refused","reason":"spec"}
+selected profile source inside core share: rc=1 {"box":"probe-share279-37643-17","detail":"host-path-in-project: $W/config/pinfold/profiles/probe-path/share resolves inside $W/share","event":"refused","reason":"spec"}
+normalized init overlap: rc=1 {"box":"probe-share279-37643-18","detail":"attachment overlaps supplied init or forwarded socket","event":"refused","reason":"spec"}
+layout/alias refusals: no box or run state created
+ordinary hardlinks=256 source=copy of actual target/debug/pinfold sha256=09c5ba601be79a7dae2ed01f54730010e627f4bd727b2c3a9ddb8a52b8147661
+box up probe-share279-37643-19: {"box":"probe-share279-37643-19","egress_log":"$W/state/pinfold/runs/95de9705d578249c591cd373f13fe3c12b1d59a3ef732f11e4d79a8cb6312877/egress.jsonl","event":"ready","image":{"id":"51e2aa92acce2698adad6c2aacaa8228e7cfe3a101b6627961a989aca3aa683d","ref":"localhost/pinfold/image-probe-share279-env:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"","dev.pinfold.generation":"95de9705d578249c591cd373f13fe3c12b1d59a3ef732f11e4d79a8cb6312877","dev.pinfold.owner":"37686","dev.pinfold.profile":"","dev.pinfold.project":""},"owner":37686,"run_id":"95de9705d578249c591cd373f13fe3c12b1d59a3ef732f11e4d79a8cb6312877"}
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box exec probe-share279-37643-19 -- /bin/sh -c 'test ! -e /project/root-marker && /usr/bin/stat -c "socket-mode=%a uid=%u" /var/host-services/ssh-auth.sock && test "$(/usr/bin/stat -c %a /var/host-services/ssh-auth.sock)" = 666 && echo hostile-marker-absent': rc=0 socket-mode=666 uid=0 | hostile-marker-absent
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box exec probe-share279-37643-19 -- /bin/sh -c 'grep -E "^(Uid|Gid|CapBnd|NoNewPrivs):" /proc/self/status; printf userns-limit=; cat /proc/sys/user/max_user_namespaces': rc=0 Uid:	501	501	501	501 | Gid:	20	20	20	20 | CapBnd:	0000000000000000 | NoNewPrivs:	1 | userns-limit=0
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box exec probe-share279-37643-19 -- /bin/sh -c 'printf "image-PATH=%s\n" "$PATH"; command -v mount umount unshare truncate; test -r /project/link/sub/file': rc=0 image-PATH=/project/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin | /usr/bin/mount
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box exec probe-share279-37643-19 -- /bin/sh -c 'git -C /project config --get-all safe.directory; cat /project/outside-hardlink': rc=0 /project | outside
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box exec probe-share279-37643-19 -- /bin/sh -c 'git -C /project rev-parse --show-toplevel && git -C /project config core.abbrev && printf ordinary-edit > /project/edit && cat /readonly/file': rc=0 /project | 11 | readonly
+launch mounts=[{"guest":"/project","host":"$W/share","kind":"share"},{"guest":"/project/link/sub","host":"$W/other","kind":"readonly"},{"guest":"/readonly","host":"$W/other","kind":"readonly"},{"guest":"/project/.git","host":"$W/share/.git","kind":"readonly"}]
+protected snapshot before=d5c8dc063c5fc2bbe70d4e3dcdfb1663b8c583660cc388508cc77e68e370032b
+append: rc=2 /bin/sh: 1: cannot create /project/.git/protected: Read-only file system
+append: protected-snapshot=d5c8dc063c5fc2bbe70d4e3dcdfb1663b8c583660cc388508cc77e68e370032b unchanged=True
+truncate: rc=1 truncate: cannot open '/project/.git/protected' for writing: Read-only file system
+truncate: protected-snapshot=d5c8dc063c5fc2bbe70d4e3dcdfb1663b8c583660cc388508cc77e68e370032b unchanged=True
+unlink: rc=1 rm: cannot remove '/project/.git/protected': Read-only file system
+unlink: protected-snapshot=d5c8dc063c5fc2bbe70d4e3dcdfb1663b8c583660cc388508cc77e68e370032b unchanged=True
+file rename: rc=1 mv: cannot remove '/project/.git/protected': Read-only file system
+file rename: protected-snapshot=d5c8dc063c5fc2bbe70d4e3dcdfb1663b8c583660cc388508cc77e68e370032b unchanged=True
+file replace: rc=1 mv: inter-device move failed: '/tmp/replacement' to '/project/.git/protected'; unable to remove target: Read-only file system
+file replace: protected-snapshot=d5c8dc063c5fc2bbe70d4e3dcdfb1663b8c583660cc388508cc77e68e370032b unchanged=True
+Git rename: rc=1 mv: cannot move '/project/.git' to '/project/git-moved': Device or resource busy
+Git rename: protected-snapshot=d5c8dc063c5fc2bbe70d4e3dcdfb1663b8c583660cc388508cc77e68e370032b unchanged=True
+Git replace: rc=1 mv: inter-device move failed: '/tmp/replacement-dir' to '/project/.git'; unable to remove target: Device or resource busy
+Git replace: protected-snapshot=d5c8dc063c5fc2bbe70d4e3dcdfb1663b8c583660cc388508cc77e68e370032b unchanged=True
+Git remove: rc=1 rm: cannot remove '/project/.git/config': Read-only file system | rm: cannot remove '/project/.git/objects/pack': Read-only file system | rm: cannot remove '/project/.git/objects/info': Read-only file system | rm: cannot remove '/project/.git/objects/99/f2e3e1cb15f9b52fa29f66d380dda061d917ab': Read-only file system | rm: cannot remove '/project/.git/objects/e7/9c5e8f964493290a409888d5413a737e8e5dd5': Read-only file system | rm: cannot remove '/project/.git/objects/14/694d8c604380bffce1039c0cdbe73307d5f0a7': Read-only file system
+Git remove: protected-snapshot=d5c8dc063c5fc2bbe70d4e3dcdfb1663b8c583660cc388508cc77e68e370032b unchanged=True
+case alias protected: rc=2 /bin/sh: 1: cannot create /project/.GIT/protected: Read-only file system
+case alias protected: protected-snapshot=d5c8dc063c5fc2bbe70d4e3dcdfb1663b8c583660cc388508cc77e68e370032b unchanged=True
+case alias HEAD: rc=2 /bin/sh: 1: cannot create /project/.GIT/HEAD: Read-only file system
+case alias HEAD: protected-snapshot=d5c8dc063c5fc2bbe70d4e3dcdfb1663b8c583660cc388508cc77e68e370032b unchanged=True
+remount: rc=32 mount: /project/.git: must be superuser to use mount. |        dmesg(1) may have more information after failed mount system call.
+unmount: rc=32 umount: /project/.git: must be superuser to unmount.
+mount-over: rc=32 mount: /project/.git: must be superuser to use mount. |        dmesg(1) may have more information after failed mount system call.
+user namespace: rc=1 unshare: unshare failed: No space left on device
+outward symlink: rc=1 cat: /project/outward: No such file or directory
+readonly write: rc=2 /bin/sh: 1: cannot create /readonly/file: Read-only file system
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box exec probe-share279-37643-19 -- /bin/sh -c 'printf after-denials > /project/edit; git -C /project rev-parse HEAD': rc=0 14694d8c604380bffce1039c0cdbe73307d5f0a7
+LIVE_READY
+git -c core.hooksPath=/dev/null -c user.name=user -c user.email=user@example.invalid -C $W/share add file: rc=0
+git -c core.hooksPath=/dev/null -c user.name=user -c user.email=user@example.invalid -C $W/share commit -qm host-concurrent: rc=0
+git -c core.hooksPath=/dev/null -c user.name=user -c user.email=user@example.invalid -C $W/share rev-parse HEAD: rc=0 cf2ab56f6f6fca125f8fb07fff4606b4268b1de5
+concurrent guest rc=0 concurrent-reads=11 errors=6
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box exec probe-share279-37643-19 -- /bin/sh -c 'git -C /project log -1 --format=%s; echo guest-Git-status=$?; printf final > /project/edit': rc=0 fatal: your current branch 'master' does not have any commits yet | guest-Git-status=128
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box down probe-share279-37643-19: rc=0
+owner probe-share279-37643-19: rc=0 {"box":"probe-share279-37643-19","event":"down","reason":"signal","run_id":"95de9705d578249c591cd373f13fe3c12b1d59a3ef732f11e4d79a8cb6312877"}
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box stat probe-share279-37643-19: rc=3 pinfold box stat: no box named "probe-share279-37643-19"
+box up probe-share279-37643-20: {"box":"probe-share279-37643-20","egress_log":null,"event":"ready","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"2118f3a157b9ee3dee2eb7cdfc8729c6b3d87c586ec0fa37cd1e67f7a272b3ff","dev.pinfold.owner":"38182","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":38182,"run_id":"2118f3a157b9ee3dee2eb7cdfc8729c6b3d87c586ec0fa37cd1e67f7a272b3ff"}
+image-alias visible-source write: rc=0 alias-write-status=0
+image-alias protected-host-unchanged=True
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box down probe-share279-37643-20: rc=0
+owner probe-share279-37643-20: rc=0 {"box":"probe-share279-37643-20","event":"down","reason":"signal","run_id":"2118f3a157b9ee3dee2eb7cdfc8729c6b3d87c586ec0fa37cd1e67f7a272b3ff"}
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box stat probe-share279-37643-20: rc=3 pinfold box stat: no box named "probe-share279-37643-20"
+box up probe-share279-37643-21: {"box":"probe-share279-37643-21","egress_log":null,"event":"ready","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"00c21adc9e259d7fa41bc8fc5a6bb00bdf71faf267d70250e230680a1130abc5","dev.pinfold.owner":"38275","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":38275,"run_id":"00c21adc9e259d7fa41bc8fc5a6bb00bdf71faf267d70250e230680a1130abc5"}
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box exec probe-share279-37643-21 -- /bin/sh -c 'printf plain-edit > /project/file; test ! -e /project/.git': rc=0
+launch mounts=[{"guest":"/project","host":"$W/plain","kind":"share"}]
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box down probe-share279-37643-21: rc=0
+owner probe-share279-37643-21: rc=0 {"box":"probe-share279-37643-21","event":"down","reason":"signal","run_id":"00c21adc9e259d7fa41bc8fc5a6bb00bdf71faf267d70250e230680a1130abc5"}
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box stat probe-share279-37643-21: rc=3 pinfold box stat: no box named "probe-share279-37643-21"
+box up probe-share279-37643-22: {"box":"probe-share279-37643-22","egress_log":null,"event":"ready","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"0a1faf3a069a7c8bca3009919ffd6609185d299ef954bc5f75559f0d54cb60b2","dev.pinfold.owner":"38367","dev.pinfold.profile":"default","dev.pinfold.project":""},"owner":38367,"run_id":"0a1faf3a069a7c8bca3009919ffd6609185d299ef954bc5f75559f0d54cb60b2"}
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box exec probe-share279-37643-22 -- /bin/sh -c 'cat /readonly/file; cat /opt/pinfold/profile/pi/package.json; test -f /home/pi/.pi/agent/settings.json': rc=0 readonly | { |     "name": "pinfold-default-profile-pi", |     "private": true, |     "pi": { |         "extensions": ["extensions/operating-context.ts"],
+profile readonly write: rc=2 /bin/sh: 1: cannot create /opt/pinfold/profile/pi/package.json: Read-only file system
+launch mounts=[{"guest":"/readonly","host":"$W/other","kind":"readonly"},{"guest":"/opt/pinfold/profile","host":"/Users/user/code/.cache/pinfold/profiles/31e35c75237b1ba86c86c563b35683aa63eea45c26dfda0bf8b954df4b7409f1/share","kind":"readonly"}]
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box down probe-share279-37643-22: rc=0
+owner probe-share279-37643-22: rc=0 {"box":"probe-share279-37643-22","event":"down","reason":"signal","run_id":"0a1faf3a069a7c8bca3009919ffd6609185d299ef954bc5f75559f0d54cb60b2"}
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold box stat probe-share279-37643-22: rc=3 pinfold box stat: no box named "probe-share279-37643-22"
+/Users/user/code/.cache/pinfold-work/share279/target/debug/pinfold disk rm probe-share279-home-37643: rc=0 Removed probe-share279-home-37643
+fixture-removed=True

@@ -1,0 +1,96 @@
+image-path-native.txt
+declared Git target: /run/probe-share279/.git
+declared other target: /var/run/probe-share279/.git
+[0/6] [0s]
+[1/6] Fetching image [0s]
+[2/6] Unpacking image [0s]
+[3/6] Fetching kernel [0s]
+[4/6] Fetching init image [0s]
+[5/6] Unpacking init image [0s]
+[6/6] Starting container [0s]
+[6/6] Starting container [0s]
+lrwxrwxrwx 1 root root 4 Nov  4 21:23 /var/run -> /run
+effective Git: replacement
+53 46 0:27 /af3a6204b3f0199c6a18e156168f58a7621e /run/probe-share279 rw,relatime - virtiofs virtiofs rw
+55 53 0:27 /2bd35314abdab6f706a63982d0f73cbdc2f8 /run/probe-share279/.git ro,relatime - virtiofs virtiofs rw
+56 55 0:27 /78c4a0bc18e166148c29794535d3f5310225 /run/probe-share279/.git rw,relatime - virtiofs virtiofs rw
+exit: 0
+host protected: protected
+
+host replacement: changed
+control: remove aliased attachment
+[0/6] [0s]
+[1/6] Fetching image [0s]
+[2/6] Unpacking image [0s]
+[3/6] Fetching kernel [0s]
+[4/6] Fetching init image [0s]
+[5/6] Unpacking init image [0s]
+[6/6] Starting container [0s]
+[6/6] Starting container [0s]
+effective Git: protected
+/bin/sh: 1: cannot create /run/probe-share279/.git/config: Read-only file system
+exit: 0
+host ordinary: ordinary
+host protected after control: protected
+
+fixture removed: True
+layout-native.txt
+host alternate-case resolves: True
+[0/6] [0s]
+[1/6] Fetching image [0s]
+[2/6] Unpacking image [0s]
+[3/6] Fetching kernel [0s]
+[4/6] Fetching init image [0s]
+[5/6] Unpacking init image [0s]
+[6/6] Starting container [0s]
+[6/6] Starting container [0s]
+direct: /bin/sh: 1: cannot create /project/.git/config: Read-only file system
+alternate: /bin/sh: 1: cannot create /project/.GIT/config: Read-only file system
+protected
+protected
+host protected bytes: protected
+
+fixture removed: True
+ruling-native.txt
+case=root order=caller,share,git exit=0
+REFUSED /run/project/.git/protected
+REFUSED /var/run/project/.git/protected
+REFUSED /var/run/project/.git/new
+REFUSED /run/project/.git/new
+protected-host-bytes-unchanged=True
+case=root order=share,caller,git exit=0
+REFUSED /run/project/.git/protected
+REFUSED /var/run/project/.git/protected
+REFUSED /var/run/project/.git/new
+REFUSED /run/project/.git/new
+protected-host-bytes-unchanged=True
+case=git order=caller,share,git exit=0
+WRITE /run/project/.git/protected
+WRITE /var/run/project/.git/protected
+WRITE /var/run/project/.git/new
+WRITE /run/project/.git/new
+protected-host-bytes-unchanged=True
+case=git order=share,caller,git exit=0
+WRITE /run/project/.git/protected
+WRITE /var/run/project/.git/protected
+WRITE /var/run/project/.git/new
+WRITE /run/project/.git/new
+protected-host-bytes-unchanged=True
+case=parent order=caller,share,git exit=0
+REFUSED /run/project/.git/protected
+REFUSED /var/run/project/.git/protected
+REFUSED /var/run/project/.git/new
+REFUSED /run/project/.git/new
+protected-host-bytes-unchanged=True
+case=parent order=share,caller,git exit=0
+REFUSED /run/project/.git/protected
+REFUSED /var/run/project/.git/protected
+REFUSED /var/run/project/.git/new
+REFUSED /run/project/.git/new
+protected-host-bytes-unchanged=True
+fixture-removed=True
+socket topology from native fixture probe
+52 44 0:21 /sockets/C99A0114-B755-464D-BE5C-1F283ADF1F9E.sock /var/host-services/ssh-auth.sock rw,relatime - tmpfs tmpfs rw
+socket mode=755 uid=0
+exit 0
+socket fixture removed True

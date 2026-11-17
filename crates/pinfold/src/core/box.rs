@@ -11,7 +11,7 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::core::clean;
 use crate::core::disk::Seeding;
-use crate::core::plan::{Disk, Env, Login, Mount, Plan, Route, valid_name};
+use crate::core::plan::{Disk, Env, Login, Mount, MountKind, Plan, Route, valid_name};
 use crate::core::profile::{Profile, Seed};
 use crate::core::runs::{self, Terminal};
 use crate::core::runtime::{self, BoxInfo, Child, Prepared, runtime};
@@ -145,37 +145,29 @@ impl Box {
     /// Start a box, wait for init's `ready` line, and return it. The
     /// profile, the host's runtime and the image are checked first. Then
     /// `up` claims the name, and only the claim's owner creates anything.
-    /// File aliases are checked after preparation, before runtime startup.
-    /// An alias refusal removes claimed state; prepared artifacts and home
-    /// seeds remain.
+    /// Share layout and aliases are checked before maintenance or preparation.
     ///
     /// The caller registered SIGTERM and SIGINT before reading the spec:
     /// before ready they remove what the start made and `up` returns
     /// [`UpError::Signal`]; after ready [`Box::hold`] watches them.
-    pub async fn up(plan: &Plan, init: &Path, signals: &mut Signals) -> Result<Box, UpError> {
-        Self::up_disks(plan, init, signals, false, None, None, None).await
+    pub async fn up(plan: &Plan, signals: &mut Signals) -> Result<Box, UpError> {
+        Self::up_disks(plan, signals, false, None, None, None).await
     }
 
     /// Export must never create a missing disk or inspect one another box holds.
-    pub(crate) async fn up_existing(
-        plan: &Plan,
-        init: &Path,
-        signals: &mut Signals,
-    ) -> Result<Box, UpError> {
-        Self::up_disks(plan, init, signals, true, None, None, None).await
+    pub(crate) async fn up_existing(plan: &Plan, signals: &mut Signals) -> Result<Box, UpError> {
+        Self::up_disks(plan, signals, true, None, None, None).await
     }
 
     pub(crate) async fn up_project(
         plan: &Plan,
         profile: Profile,
         image_id: &str,
-        init: &Path,
         signals: &mut Signals,
         cancel: tokio::sync::watch::Receiver<bool>,
     ) -> Result<Box, UpError> {
         Self::up_disks(
             plan,
-            init,
             signals,
             false,
             Some(profile),
@@ -187,7 +179,6 @@ impl Box {
 
     async fn up_disks(
         plan: &Plan,
-        init: &Path,
         signals: &mut Signals,
         existing_only: bool,
         profile: Option<Profile>,
@@ -198,11 +189,10 @@ impl Box {
         // or resolved.
         plan.validate()
             .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
+        let init_path = crate::core::artifacts::init_path()?;
+        let init = init_path.as_path();
         let destinations =
             login_destinations(plan).map_err(|error| refused(plan, RefusalReason::Spec, error))?;
-        let extra: Vec<&Path> = destinations.iter().map(PathBuf::as_path).collect();
-        validate_generated(plan, &extra)
-            .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
         let directories = generated_directories(plan, &destinations);
 
         // The profile's image, share and home seeds are the box's to apply;
@@ -214,14 +204,22 @@ impl Box {
         let seeds = profile.as_mut().and_then(|profile| {
             (!profile.home.is_empty()).then(|| std::mem::take(&mut profile.home))
         });
-        // The `share/` mount is known only now.
-        if profile
-            .as_ref()
-            .is_some_and(|profile| profile.share.is_some())
-        {
+        let layout_init = init.to_path_buf();
+        let layout_destinations = destinations.clone();
+        let maintenance = expected_image.is_none() && !existing_only;
+        let (mut plan, profile) = startup_work(signals, &mut cancel_start, None, move || {
+            crate::core::mounts::prepare(&mut plan, profile.as_ref(), &layout_init)
+                .map_err(|error| refused(&plan, RefusalReason::Spec, error.to_string()))?;
+            let extra: Vec<&Path> = layout_destinations.iter().map(PathBuf::as_path).collect();
             validate_generated(&plan, &extra)
                 .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
-        }
+            if maintenance {
+                clean::maintain();
+            }
+            crate::core::artifacts::init()?;
+            Ok((plan, profile))
+        })
+        .await?;
 
         // A login route's token is read before the claim, so a missing
         // variable or an unusable Codex login refuses as `login` and leaves
@@ -506,6 +504,10 @@ impl Box {
             stop = claim.stop_requested() => match stop { Ok(()) => Err(Stop::Control), Err(error) => Err(Stop::Failed(error)) },
             started = starting => started,
         };
+        let started = started.and_then(|result| {
+            claim.ready().map_err(Stop::Failed)?;
+            Ok(result)
+        });
         let (labels, egress_log) = match started {
             Ok(started) => started,
             Err(stop) => {
@@ -911,6 +913,7 @@ fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json
         .iter()
         .map(|mount| {
             serde_json::json!({
+                "kind": mount.kind,
                 "host": mount.host.to_string_lossy(),
                 "guest": mount.guest.to_string_lossy(),
             })
@@ -972,6 +975,8 @@ pub(crate) fn validate_project(plan: &Plan, profile: &Profile) -> Result<(), Str
         resolved.mounts.push(Mount {
             host: share.path().map_err(|error| error.to_string())?,
             guest: PathBuf::from("/opt/pinfold/profile"),
+            kind: MountKind::Readonly,
+            git: false,
         });
     }
     validate_generated(&resolved, &extra)?;
@@ -1118,6 +1123,8 @@ fn prepare_logins(plan: &mut Plan, state_dir: &Path) -> io::Result<()> {
         plan.mounts.push(Mount {
             host: dir,
             guest: destination,
+            kind: MountKind::Readonly,
+            git: false,
         });
     }
     Ok(())
@@ -1147,6 +1154,8 @@ fn resolve_profile(plan: &mut Plan, supplied: Option<Profile>) -> io::Result<Opt
         plan.mounts.push(Mount {
             host: share.path()?,
             guest: PathBuf::from("/opt/pinfold/profile"),
+            kind: MountKind::Readonly,
+            git: false,
         });
     }
     Ok(Some(profile))

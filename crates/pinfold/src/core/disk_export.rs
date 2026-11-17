@@ -50,13 +50,13 @@ pub fn run(name: &str, destination: &Path, image: Option<&str>) -> io::Result<i3
         }],
         ..Plan::default()
     };
-    let init = artifacts::init()?;
+    let init = artifacts::init_path()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let result = runtime.block_on(async {
         let mut signals = Signals::with_hangup()?;
-        let mut box_ = match Box::up_existing(&plan, &init, &mut signals).await {
+        let mut box_ = match Box::up_existing(&plan, &mut signals).await {
             Ok(box_) => box_,
             Err(UpError::Signal) => return Ok(128 + signals.last().unwrap_or(nix::sys::signal::Signal::SIGTERM) as i32),
             Err(error) => return Err(error.into()),

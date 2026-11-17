@@ -9,6 +9,7 @@ pub mod disk_export;
 pub mod download;
 pub mod image;
 pub mod login;
+pub(crate) mod mounts;
 pub mod network;
 pub mod ownership;
 pub(crate) mod pipe;
@@ -26,6 +27,52 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
+
+/// Visit names through an owned directory descriptor without following paths.
+pub(crate) fn directory_entries(
+    directory: std::os::fd::OwnedFd,
+    mut inspect: impl FnMut(std::os::fd::BorrowedFd<'_>, &std::ffi::OsStr) -> io::Result<()>,
+) -> io::Result<()> {
+    use std::os::fd::{AsRawFd, IntoRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    struct Entries(*mut nix::libc::DIR);
+    impl Drop for Entries {
+        fn drop(&mut self) {
+            // SAFETY: this is the sole owner of the open directory stream.
+            unsafe { nix::libc::closedir(self.0) };
+        }
+    }
+    let raw = directory.as_raw_fd();
+    // SAFETY: fdopendir takes ownership only on success.
+    let pointer = unsafe { nix::libc::fdopendir(raw) };
+    if pointer.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let _ = directory.into_raw_fd();
+    let entries = Entries(pointer);
+    loop {
+        nix::errno::Errno::clear();
+        // SAFETY: the stream remains live; the entry is used before readdir.
+        let entry = unsafe { nix::libc::readdir(entries.0) };
+        if entry.is_null() {
+            let error = nix::errno::Errno::last_raw();
+            return if error == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::from_raw_os_error(error))
+            };
+        }
+        // SAFETY: readdir returned a valid entry with a terminated d_name.
+        let leaf = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if leaf != b"." && leaf != b".." {
+            // SAFETY: the stream owns raw through this callback.
+            inspect(
+                unsafe { std::os::fd::BorrowedFd::borrow_raw(raw) },
+                std::ffi::OsStr::from_bytes(leaf),
+            )?;
+        }
+    }
+}
 
 /// Write `bytes` at `path` atomically: a 0600 file beside it, following no
 /// symlink, synced and renamed into place.

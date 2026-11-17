@@ -1,7 +1,7 @@
 //! Checked generation socket directories, independent of the state root.
 
 use std::collections::BTreeSet;
-use std::ffi::{CStr, CString, OsStr};
+use std::ffi::{CString, OsStr};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
@@ -944,38 +944,12 @@ pub(crate) fn remove_socket(path: &Path) -> io::Result<()> {
 fn entries(directory: &File) -> io::Result<Vec<std::ffi::OsString>> {
     let mut names = Vec::new();
     let copy = directory_at(directory, OsStr::new(".")).map_err(failure)?;
-    // SAFETY: fdopendir takes ownership only on success.
-    let entries = unsafe { libc::fdopendir(copy.as_raw_fd()) };
-    if entries.is_null() {
-        return Err(failure(io::Error::last_os_error()));
-    }
-    std::mem::forget(copy);
-    struct Entries(*mut libc::DIR);
-    impl Drop for Entries {
-        fn drop(&mut self) {
-            // SAFETY: this is the sole owner of the open directory stream.
-            unsafe { libc::closedir(self.0) };
-        }
-    }
-    let entries = Entries(entries);
-    loop {
-        nix::errno::Errno::clear();
-        // SAFETY: the stream remains live; the entry is used before readdir.
-        let entry = unsafe { libc::readdir(entries.0) };
-        if entry.is_null() {
-            let error = nix::errno::Errno::last();
-            return if error == nix::errno::Errno::UnknownErrno {
-                Ok(names)
-            } else {
-                Err(failure(error))
-            };
-        }
-        // SAFETY: readdir returned a valid entry with a terminated d_name.
-        let leaf = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
-        if leaf != b"." && leaf != b".." {
-            names.push(OsStr::from_bytes(leaf).to_owned());
-        }
-    }
+    crate::core::directory_entries(copy.into(), |_, leaf| {
+        names.push(leaf.to_owned());
+        Ok(())
+    })
+    .map_err(failure)?;
+    Ok(names)
 }
 
 fn check_entries(directory: &File, allowed: &[&[u8]]) -> io::Result<()> {
