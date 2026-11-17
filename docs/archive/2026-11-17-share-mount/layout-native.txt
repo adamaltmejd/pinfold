@@ -1,0 +1,16 @@
+host alternate-case resolves: True
+[0/6] [0s]
+[1/6] Fetching image [0s]
+[2/6] Unpacking image [0s]
+[3/6] Fetching kernel [0s]
+[4/6] Fetching init image [0s]
+[5/6] Unpacking init image [0s]
+[6/6] Starting container [0s]
+[6/6] Starting container [0s]
+direct: /bin/sh: 1: cannot create /project/.git/config: Read-only file system
+alternate: /bin/sh: 1: cannot create /project/.GIT/config: Read-only file system
+protected
+protected
+host protected bytes: protected
+
+fixture removed: True

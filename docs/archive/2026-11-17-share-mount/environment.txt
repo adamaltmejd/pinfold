@@ -1,0 +1,9 @@
+container CLI version 1.7.1 (build: release, commit: unspeci)
+image: localhost/pinfold/profile-default:latest
+image id: b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27
+ID        IMAGE                                                OS     ARCH   STATE    IP               CPUS  MEMORY   STARTED
+buildkit  ghcr.io/apple/container-builder-shim/builder:0.13.3  linux  arm64  running  192.168.64.2/24  2     2048 MB  2026-11-16T18:43:32Z
+NAME  TYPE  DRIVER  OPTIONS
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  257        53    83% 2536242 564590520    0%   /System/Volumes/Data
+image-link fixture absent
