@@ -28,3 +28,25 @@ host gid=20
 cargo fmt --check: passed
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.46s
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.45s
+FIXES-2
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  254        51    84% 2530225 545718200    0%   /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  254        51    84% 2534213 542741600    0%   /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  254        51    84% 2534183 536670120    0%   /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  255        48    85% 2536298 504868760    0%   /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  255        48    85% 2536309 505185600    0%   /System/Volumes/Data
+COMMAND cargo fmt --check
+FMT_EXIT=0
+COMMAND cargo clippy --all-targets --locked -- -D warnings
+   Compiling pinfold v0.5.5 (/Users/user/code/.cache/pinfold-work/share279/crates/pinfold)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.56s
+MAC_CLIPPY_EXIT=0
+COMMAND cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings
+    Checking toml v1.2.1+spec-1.1.0
+    Checking pinfold-init v0.5.5 (/home/user/pinfold/crates/pinfold-init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 23.17s
+LINUX_CLIPPY_EXIT=0
