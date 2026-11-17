@@ -19,6 +19,20 @@ Existing image `localhost/pinfold/profile-default:latest`, id
 The image reports pi 1.5.2, Claude Code 2.1.311 and Codex 0.169.0.
 Claude differs from the earlier probe's 2.1.325. No image was rebuilt.
 
+Retained excerpts from the original tool output follow. No command below
+was rerun for this correction. Exit statuses are the tool's completion status.
+
+```text
+$ container system status
+status              running
+client.version      1.7.1
+host.os             Version 27.2.1 (Build 26B131)
+host.architecture   arm64
+host.cpus           10
+server.version      1.7.1
+[exit 0]
+```
+
 The directory [share-probes](2026-11-17-share-probes/) contains five scripts
 and their sanitized output. Run each Python script from this checkout.
 `linux.py` instead takes the absolute Linux binary path and runs on Linux.
@@ -29,6 +43,23 @@ The build with the wrapper disabled passed. No configuration was changed.
 `RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings` passed.
 The Linux binary was cross-built here with
 `RUSTC_WRAPPER= cargo zigbuild --locked --target x86_64-unknown-linux-musl --bin pinfold`.
+
+Retained build and check output excerpts:
+
+```text
+$ cargo build --locked
+error: process didn't exit successfully: `sccache rustc -vV` (exit status: 2)
+sccache: error: Operation not permitted (os error 1)
+$ RUSTC_WRAPPER= cargo build --locked
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.91s
+[exit 0]
+$ RUSTC_WRAPPER= cargo zigbuild --locked --target x86_64-unknown-linux-musl --bin pinfold
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 35.88s
+[exit 0]
+$ cargo fmt --check && RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.13s
+[exit 0]
+```
 
 All homes and model endpoints are fixtures. No login store was read.
 Instruction endpoints run on guest loopback with no network interface.
@@ -105,7 +136,8 @@ folders, not the fixture share. Spec env is separately encoded under
 `PINFOLD_BOX_ENV_*`; a spec PATH does not automatically become root PATH.
 
 Observed, mounts.txt lines 32–37: the same root executable lookup against a
-harmless `/tmp/harmless-fixture` selects system chmod with default PATH.
+harmless `/tmp/harmless-fixture` returns 0 without the fixture marker under
+default PATH. Which executable ran in that case is unestablished.
 With the native container's PATH explicitly set to begin at share `bin/`,
 it executes the fixture script and prints `SHARE_CHMOD uid=0 cwd=/`.
 This proves run-environment lookup influence, not a changed image's behavior.
@@ -155,7 +187,8 @@ It has 100,001 tracked files, one tracked edit and 1,000 untracked files.
 Expected output is generated independently: one modified path and ten untracked folders.
 Global/system Git config is disabled. Both sides get the exact fixture-path
 safe.directory exception through GIT_CONFIG_*; no wildcard or Git wrapper.
-The guest has four CPUs and 4 GiB RAM. The host has ten CPUs.
+`timing.py` requests four guest CPUs and 4 GiB RAM; applied guest resources
+were not independently observed. The retained host status reports ten CPUs.
 Git versions differ, so this is not a filesystem-only causal comparison.
 
 The earlier agent trace observed Claude's
@@ -214,26 +247,54 @@ The retained trace opens the maintenance stamp before reading stdin.
 A parsed relative mount also refuses as `spec`, after an additional
 `readlink(/proc/self/exe)`. Correcting that mount reaches runtime validation
 and refuses for KVM permissions. It does not start a Linux box.
-The extra startup readlink before maintenance is also retained; only the
-second one in parsed cases corresponds to init preparation.
+The extra startup readlink before maintenance is also retained.
 
 Read from `cli.rs:148–155,187–189`, `core/box.rs:199`,
 `core/clean.rs:53–70` and `core/artifacts.rs:401–414`:
 maintenance precedes parsing; init preparation precedes structural validation.
+Those call sites identify the second readlink in parsed cases as init preparation.
 Linux init preparation returns current_exe; it does not extract/download init.
 Mac init extraction can write cache. This qualifies PLAN item 27.
 Recognized-share early refusal remains untested until #279 exists.
 The corrected successful Linux runtime control also remains unestablished.
-The disposable VM's probe directory was removed and the lease released idle.
+The probe-directory removal command exited 0, and release reported idle.
+Retained original tool output:
+
+```text
+$ labvm exec -- rm -rf /tmp/pfp-order
+[exit 0; no output]
+$ labvm release
+{"ok":true,"command":"release","status":"idle"}
+[exit 0]
+```
 
 ## Cleanup and scope
 
 Each script removes its own boxes and fixtures. No image or volume was created.
-The final runtime inventory contained only the pre-existing running buildkit.
+The final runtime inventory reported only the pre-existing running buildkit.
+The original inventory command decoded
+`container list --all --format json` and printed each id and state:
+
+```text
+Final runtime boxes: [('buildkit', 'running')]
+[exit 0]
+```
+
 The existing image was left in place. The service stayed running.
 The 100,001-file fixture lived under TMPDIR and was removed after measurement.
-Free space was checked before every build and large fixture, always above 12 GiB.
-The first check reported 17 GiB; final free disk: 44 GiB.
+The original initial and final disk snapshots reported 17 and 44 GiB available:
+
+```text
+$ df -g /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  276        17    94% 2531283 186550880    1%   /System/Volumes/Data
+$ df -g /System/Volumes/Data
+Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
+/dev/disk3s5       460  249        44    85% 2535191 463626320    1%   /System/Volumes/Data
+```
+
+Complete per-build and per-fixture check coverage, and the claimed 12 GiB
+floor throughout the work, remain unestablished by the retained evidence.
 Only this record, its evidence directory and the corrected plan are committed.
 BRIEF.md and PLAN.md remain untracked. No ticket was changed or release cut.
 
