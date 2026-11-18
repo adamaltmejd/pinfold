@@ -68,9 +68,9 @@ fn reply_error(reply: Reply) -> io::Error {
     match reply {
         Reply::Error { reason, fields } if reason == "config-changed" => changed(fields),
         Reply::Error { reason, .. } if reason == "session-protocol" => protocol(),
-        Reply::Error { reason, .. } if reason == "share-no-crossing" => {
-            io::Error::other("share-no-crossing: shares have no project crossing")
-        }
+        Reply::Error { reason, .. } if reason == "share-no-crossing" => io::Error::other(
+            "share-no-crossing: edits in this shared project are already visible on the host and in the box",
+        ),
         Reply::Error { reason, .. } if reason == "stopped" => {
             io::Error::other("stopped during startup")
         }

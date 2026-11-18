@@ -125,9 +125,11 @@ pub(crate) fn require_repo(root: &Path) -> io::Result<()> {
 /// the box that attaches its project disk, or with a transient box on that
 /// disk, without egress, when none does.
 pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
-    if !args.is_empty() {
-        return Err(cli::usage(verb, &format!("{verb} takes no arguments")));
-    }
+    let json = match args {
+        [] => false,
+        [flag] if flag == "--json" => true,
+        _ => return Err(cli::usage(verb, "expected only an optional --json")),
+    };
     let runtime = Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async {
         let mut signals = Signals::new()?;
@@ -188,7 +190,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
                 let box_ = match Box::up(&plan, &mut signals).await {
                     Ok(box_) => box_,
                     Err(UpError::Control) => {
-                        return report_crossing(verb, &name, remote, Err(CrossingError::Failed(
+                        return report_crossing(json, verb, &name, remote, Err(CrossingError::Failed(
                             "the transient box was stopped before ready".to_string(),
                         )), &mut signals).await;
                     }
@@ -197,10 +199,10 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
                             + signals.last().unwrap_or(nix::sys::signal::Signal::SIGTERM) as i32);
                     }
                     Err(UpError::Refused(refusal)) => {
-                        return report_crossing(verb, &name, remote, Err(CrossingError::Refused(refusal.reason, refusal.detail)), &mut signals).await;
+                        return report_crossing(json, verb, &name, remote, Err(CrossingError::Refused(refusal.reason, refusal.detail)), &mut signals).await;
                     }
                     Err(error) => {
-                        return report_crossing(verb, &name, remote, Err(CrossingError::Failed(
+                        return report_crossing(json, verb, &name, remote, Err(CrossingError::Failed(
                             io::Error::from(error).to_string(),
                         )), &mut signals).await;
                     }
@@ -240,7 +242,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
                 biased;
                 crossed = &mut worker => {
                     let code = match crossed {
-                        Ok(crossed) => report_crossing(verb, &name, remote, crossed, &mut signals).await,
+                        Ok(crossed) => report_crossing(json, verb, &name, remote, crossed, &mut signals).await,
                         Err(error) => Err(io::Error::other(format!("{verb} failed: {error}"))),
                     };
                     (code, Some(Shutdown::Signal.terminal()))
@@ -295,6 +297,7 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
 }
 
 async fn report_crossing(
+    json: bool,
     verb: &str,
     name: &str,
     remote: &str,
@@ -304,12 +307,52 @@ async fn report_crossing(
     use std::io::Write;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
-    let (report, code) = cli::crossing_report(verb, name, remote, result);
+    let (report, code) = if json {
+        let (line, code) = cli::crossing_report(verb, name, remote, result);
+        (line.to_string(), code)
+    } else {
+        match result {
+            Ok(refs) => {
+                let direction = if verb == "push" {
+                    "host to box"
+                } else {
+                    "box to host"
+                };
+                let mut lines = vec![format!("Updated refs ({direction}): {}", refs.len())];
+                for (reference, commit) in refs {
+                    let reference = reference
+                        .strip_prefix("refs/remotes/")
+                        .unwrap_or(&reference);
+                    lines.push(format!(
+                        "  {}  {}",
+                        terminal_text(reference),
+                        terminal_text(&commit)
+                    ));
+                }
+                (lines.join("\n"), 0)
+            }
+            Err(CrossingError::Refused(reason, detail)) => {
+                let reason = serde_json::json!(reason);
+                (
+                    format!(
+                        "pinfold {verb}: {}: {}",
+                        reason.as_str().unwrap_or("refused"),
+                        terminal_text(&detail)
+                    ),
+                    1,
+                )
+            }
+            Err(CrossingError::Failed(detail)) => {
+                (format!("pinfold {verb}: {}", terminal_text(&detail)), 1)
+            }
+        }
+    };
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = cancel.clone();
     let mut worker = tokio::task::spawn_blocking(move || {
         crate::core::process::with_cancellation(worker_cancel.clone(), || {
-            let mut output = crate::core::process::StdioRelay::new(1, false)?;
+            let fd = if json || code == 0 { 1 } else { 2 };
+            let mut output = crate::core::process::StdioRelay::new(fd, false)?;
             let line = format!("{report}\n");
             let mut bytes = line.as_bytes();
             while !bytes.is_empty() {

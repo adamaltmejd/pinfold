@@ -167,7 +167,7 @@ impl std::fmt::Display for NoConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "no-config: {} has no configuration; run `pinfold config edit`",
+            "no-config: {} has no configuration. Run `pinfold -- pi` or `pinfold -- sh` in a terminal to set it up",
             terminal_text(&self.0.to_string_lossy())
         )
     }

@@ -9,7 +9,7 @@ Network egress uses the box’s allowlisting proxy.
 - **Interactive:** `pinfold -- pi`, `pinfold -- claude` or `pinfold -- bash`.
 - **From another agent:** `pinfold -- pi -p` (see below).
 - **Programmatic:** drive boxes through `pinfold box` (JSON on stdio, the
-  [box spec](docs/ARCHITECTURE.md#process-interface)), and read project settings with `pinfold config`.
+  [box spec](docs/ARCHITECTURE.md#process-interface)), and read project settings with `pinfold config --json`.
 - Spec: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 Core `box up` specs can declare an Apple writable host mount with
@@ -113,6 +113,10 @@ command. A build needs network access. An explicit `image` must already
 be available locally. Rebuild with `pinfold build` if a later launch
 reports `image-outdated`.
 
+Run `pinfold config` to see which folder, profile and image the project uses.
+Run `pinfold doctor` to check for problems. Bare `pinfold` shows launch
+examples and `pinfold --help` lists the available commands.
+
 For scripts, prepare the project first with `pinfold config edit` and
 `pinfold build`. `config edit` opens
 `~/.config/pinfold/projects/<id>/pinfold.toml`. A project recipe is a
@@ -207,8 +211,11 @@ over every path at its origin. It does not inspect request bodies or prevent
 a reflecting upstream from returning credentials. See
 [Login routes](docs/ARCHITECTURE.md#egress-proxy) for the exact policy.
 An explicit project `routes` table replaces the profile's routes.
-For scripts, add `--json` to `pinfold disk` commands for exact byte counts
-and structured results.
+Project reports use readable text, including when piped. Add `--json` to
+`config`, `doctor`, `push`, `fetch`, disk operations or caller image operations
+for structured output. Use `pinfold doctor --artifacts --json` for artifact pins.
+The `box` process interface retains its JSON records. Guest commands own
+their stdout and stderr.
 
 Managed builds re-resolve stable agent releases through the built-in profile
 recipes every time. Installation
@@ -304,7 +311,7 @@ Custom profiles can omit `Containerfile` when an image or project recipe is
 selected. Keep Pi settings, extensions and skills in their native files under
 `home/` and `share/`. Home seeds fill missing files; changing profiles keeps
 saved settings, sessions and disks. Shared files are read-only at every start.
-`pinfold config` reports `image_source` and the selected recipe, even without
+`pinfold config --json` reports `image_source` and the selected recipe, even without
 a runtime installed.
 
 ## From another agent
@@ -331,7 +338,7 @@ disk; shares use host files directly. To start fresh:
    branch to retain them. Stop a kept box with `pinfold stop`.
    Use `disk export` for other disk files. Share edits already reside on the
    host; stop revokes box access and preserves those edits.
-2. Run `pinfold config`. Read the exact names from `project.disks.home`
+2. Run `pinfold config --json`. Read the exact names from `project.disks.home`
    and `project.disks.project` (null for a share).
 3. Run `pinfold disk rm NAME` for each disk you want to clear.
 4. Launch `pinfold -- pi` or `pinfold -- pi -p "TASK"` again. No image rebuild

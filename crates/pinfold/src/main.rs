@@ -29,7 +29,7 @@ fn main() -> ExitCode {
         }
     };
     if rest.is_empty() {
-        cli::print_help();
+        cli::print_intro();
         return ExitCode::SUCCESS;
     }
     let verb = rest.first().map(String::as_str).unwrap_or_default();
@@ -51,7 +51,6 @@ fn main() -> ExitCode {
         "clean" => cli::clean,
         "disk" => cli::disk,
         "doctor" => cli::doctor,
-        "artifacts" => cli::artifacts,
         "apparmor-profile" => cli::apparmor_profile,
         "config" => cli::config,
         "profile" => cli::profile,
@@ -88,8 +87,8 @@ fn main() -> ExitCode {
     // Project admission and box up install their signal handlers first.
     match (verb, args.first().map(String::as_str)) {
         (
-            "init" | "update" | "doctor" | "config" | "artifacts" | "apparmor-profile" | "--"
-            | "start" | "stop" | "__project-owner" | "push" | "fetch",
+            "init" | "update" | "doctor" | "config" | "apparmor-profile" | "--" | "start" | "stop"
+            | "__project-owner" | "push" | "fetch",
             _,
         )
         | ("box", Some("up" | "list" | "down" | "inspect" | "events")) => {}
