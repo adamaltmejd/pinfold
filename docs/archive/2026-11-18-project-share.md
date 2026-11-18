@@ -139,3 +139,12 @@ Every comparison removed its boxes, disks and fixture; the separate absent-owner
 inventory is only the unrelated stopped buildkit, with no volumes. The VM lease is idle. The container service is left
 running. No image was built or removed; the existing default image is unchanged. Older repeated CLI output was shortened
 to excerpts to keep this cumulative record within its evidence budget.
+
+## Follow-up runs on the Linux dev VM
+
+The [owner record](2026-11-18-project-share/linux-owner.md) at `6444bd3`
+covers joins, startup fast-forward, divergence and crossing. The subsequent
+[crossing recheck](2026-11-18-project-share/linux-crossing.md) at `3e7be92`
+covers live and transient push/fetch, independent child repositories,
+linked-worktree refusals and Linux share admission. The later docs correction
+changes no executable code.
