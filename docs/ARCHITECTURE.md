@@ -1716,9 +1716,10 @@ the crossing root nor grant a lease for this check. Other crossing uses normal
 repository discovery; linked worktrees beneath a disk project refuse. Host
 roots are checked before a share owner refuses. A running share owner refuses
 crossing regardless of box-written Git markers or a configuration file that now
-selects disk. A running disk owner retains disk crossing and disk path validation
-when the file now selects share. With no owner, configuration selects the mount
-kind.
+selects disk. On macOS, a running disk owner retains disk crossing and disk path
+validation when the file now selects share. On Linux, a share configuration is
+invalid and refuses on every path, including push and fetch against a running
+disk owner. With no owner, configuration selects the mount kind.
 
 The project disk holds the box's own repository. Only the host's
 branches enter it: no host `.git` content, config, hook, stash, reflog,

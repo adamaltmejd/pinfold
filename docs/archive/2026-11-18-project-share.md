@@ -120,7 +120,8 @@ were exercised for every row:
 | Disk owner beneath state root, file now Share | 1/host-path-in-project | Disk path allowed with supported Disk file | Allowed with file now Share |
 
 Main does not support Share configuration. Its Sol control deliberately retains the supported Disk file; it does not
-establish acceptance of the literal edited input on main. Direct-root push/fetch succeeds in each linked-worktree case.
+establish acceptance of the literal edited input on main. Direct-root push/fetch was verified only with the owner running
+in each linked-worktree comparison.
 Child host remote refs independently confirm the selected repository. Running Share, guest-written hostile marker, and
 file edited to Disk each retain 1/share-no-crossing for both verbs before and after. Output excerpts are appended to
 edges.txt. The `absent` mode also verifies both verbs use the current Share file without an owner, refusing with
