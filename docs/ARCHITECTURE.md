@@ -1647,7 +1647,9 @@ project; executable replacement remains `update-busy`.
   `teardown-failed` on stderr and in the run record.
 - **Admission:** joining and keeping never change running policy or
   credentials. Different host roots or effective startup configuration refuse
-  as `config-changed`, naming differing fields without values or fingerprints.
+  as `config-changed`, naming differing fields. On a known profile mismatch
+  the diagnostic identifies the running profile, the requested profile and
+  its source, and how to retry. Other values and fingerprints are omitted.
   Comparison uses the owner's in-memory startup snapshot, not its launch record.
   Compare host roots, profile selection, image source/reference/resolved
   identity, resources, mount and disk definitions, ordered allow entries,
@@ -1890,9 +1892,14 @@ entry also reports the recipe identity. Without `--json`, `doctor --artifacts`
 prints a readable inventory. Plain `doctor` leads with findings and remedies.
 `doctor --json` prints the diagnostic report as structured data.
 
-`pinfold --version` (`-V`), `pinfold --help` (`-h`) and bare `pinfold`
-answer without touching the runtime or the state dir; bare invocation
-prints launch examples and succeeds. Explicit help groups the command inventory
+`pinfold --version` (`-V`) and `pinfold --help` (`-h`) answer without
+touching the runtime or the state directory. Bare `pinfold` reports the
+project root, box status, profile, project mount, image and settings path.
+With no configuration it previews interactive setup, including whether
+the selected image can be built. It reads project and owner information
+without creating state, starting a box or querying the container runtime.
+Unavailable details are identified. It shows `pinfold -- CMD` and succeeds.
+Explicit help groups the command inventory
 by task. Report commands use human output unless `--json` is requested,
 including when stdout is redirected. The box protocol and guest stdio retain
 their own output contracts. Unknown top-level commands name the

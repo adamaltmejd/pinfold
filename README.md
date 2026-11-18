@@ -114,8 +114,9 @@ be available locally. Rebuild with `pinfold build` if a later launch
 reports `image-outdated`.
 
 Run `pinfold config` to see which folder, profile and image the project uses.
-Run `pinfold doctor` to check for problems. Bare `pinfold` shows launch
-examples and `pinfold --help` lists the available commands.
+Run `pinfold` to see the box status and project settings. Before setup it
+previews the initial profile, file sharing and image. Run `pinfold doctor`
+to check for problems or `pinfold --help` to list the commands.
 
 For scripts, prepare the project first with `pinfold config edit` and
 `pinfold build`. `config edit` opens
@@ -284,6 +285,11 @@ Optional profiles add tools. To edit one, copy it with
 |---|---|
 | `documents` | Bun, AnyDoc for local document conversion, Poppler for PDFs |
 | `full` | documents tools plus gh, fff (pi extension) and ponytail; allows `github.com` and `api.github.com` |
+
+The [profile definitions](crates/pinfold/src/core/profile.rs) assemble the
+[image recipes](profile/image). All three seed these [Pi settings](profile/home/.pi/agent/settings.json).
+In a running box, `cat /opt/pinfold/agents/install.txt` shows the agent versions
+installed at build time. `cat ~/.pi/agent/settings.json` shows the current guest settings.
 
 Build and select one explicitly:
 

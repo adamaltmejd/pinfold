@@ -16,7 +16,7 @@ use crate::formatting::terminal_text;
 use crate::pi::state::project_id;
 
 /// The built-in defaults (ARCHITECTURE.md, Configuration).
-const DEFAULT_PROFILE: &str = "default";
+pub(crate) const DEFAULT_PROFILE: &str = "default";
 const DEFAULT_CPUS: f64 = 4.0;
 const DEFAULT_MEMORY: &str = "8G";
 const DEFAULT_ALLOW: [&str; 9] = [
@@ -182,6 +182,7 @@ pub struct Config {
     pub repository: bool,
     /// The project's configuration file.
     pub path: PathBuf,
+    pub project_profile: Option<String>,
     pub profile: Profile,
     pub image: Option<String>,
     /// The project's `Containerfile` beside its configuration file: its path
@@ -209,11 +210,6 @@ impl Config {
     }
 
     pub fn load(root: &Path) -> io::Result<Config> {
-        let repository = match fs::symlink_metadata(root.join(".git")) {
-            Ok(metadata) => metadata.is_dir(),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-            Err(error) => return Err(error),
-        };
         let dir = project_dir(root)?;
         let path = dir.join("pinfold.toml");
         let source = terminal_text(&path.to_string_lossy());
@@ -223,9 +219,33 @@ impl Config {
                 NoConfig(root.to_owned()),
             ));
         };
-        let mut project = Layer::parse(&bytes, &source)?;
+        let project = Layer::parse(&bytes, &source)?;
         let mount = ProjectMount::parse(project.mounts.as_ref(), &source)?;
-        let profile_name = profile_name(project.profile.take())?;
+        Self::from_project(root, dir, project, mount)
+    }
+
+    pub(crate) fn first_run_preview(root: &Path) -> io::Result<Self> {
+        Self::from_project(
+            root,
+            project_dir(root)?,
+            Layer::default(),
+            ProjectMount::default_kind(),
+        )
+    }
+
+    fn from_project(
+        root: &Path,
+        dir: PathBuf,
+        mut project: Layer,
+        mount: ProjectMount,
+    ) -> io::Result<Self> {
+        let repository = match fs::symlink_metadata(root.join(".git")) {
+            Ok(metadata) => metadata.is_dir(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error),
+        };
+        let project_profile = project.profile.take();
+        let profile_name = profile_name(project_profile.clone())?;
         let profile = Profile::load(&profile_name)?;
         let top = project.over(Layer::from_env()?);
         let profile_source = format!("profile {profile_name:?} pinfold.toml");
@@ -258,7 +278,8 @@ impl Config {
         Ok(Config {
             mount,
             repository,
-            path,
+            path: dir.join("pinfold.toml"),
+            project_profile,
             profile,
             image: merged.image,
             containerfile,

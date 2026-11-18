@@ -61,12 +61,55 @@ fn is_output_failure(error: &io::Error) -> bool {
 fn protocol() -> io::Error {
     io::Error::other("session-protocol")
 }
-fn changed(fields: Vec<String>) -> io::Error {
-    io::Error::other(format!("config-changed: {}", fields.join(", ")))
+fn changed(fields: &[String], explanation: &str) -> io::Error {
+    io::Error::other(format!(
+        "config-changed: {explanation} Differing settings: {}.",
+        fields.join(", ")
+    ))
+}
+fn join_changed(fields: &[String], locator: &Locator, config: &crate::config::Config) -> io::Error {
+    let requested = &config.profile.name;
+    if fields.iter().any(|field| field == "profile")
+        && let Some(running) = running_profile(locator)
+        && running != *requested
+    {
+        let override_set = std::env::var_os("PINFOLD_PROFILE").is_some();
+        let source = if override_set {
+            "PINFOLD_PROFILE"
+        } else if config.project_profile.is_some() {
+            "The project configuration"
+        } else {
+            "The default configuration"
+        };
+        let saved = config
+            .project_profile
+            .as_deref()
+            .unwrap_or(crate::config::DEFAULT_PROFILE);
+        let hint = if override_set && saved == running {
+            "Run `unset PINFOLD_PROFILE` to use the project profile and retry.".to_owned()
+        } else {
+            format!(
+                "To request the running profile, retry with `PINFOLD_PROFILE={running}` before `pinfold`."
+            )
+        };
+        return changed(
+            fields,
+            &format!(
+                "The running box uses profile {running:?}. {source} selects {requested:?}. {hint}"
+            ),
+        );
+    }
+    changed(
+        fields,
+        "This command requests different settings from the running box. Restore the original settings to join it, or finish active sessions and run `pinfold stop` before retrying with the new settings.",
+    )
 }
 fn reply_error(reply: Reply) -> io::Error {
     match reply {
-        Reply::Error { reason, fields } if reason == "config-changed" => changed(fields),
+        Reply::Error { reason, fields } if reason == "config-changed" => changed(
+            &fields,
+            "The project settings have changed. Check `pinfold config` and retry with the original settings.",
+        ),
         Reply::Error { reason, .. } if reason == "session-protocol" => protocol(),
         Reply::Error { reason, .. } if reason == "share-no-crossing" => io::Error::other(
             "share-no-crossing: edits in this shared project are already visible on the host and in the box",
@@ -160,7 +203,7 @@ fn read_locator(root: &Path) -> io::Result<Option<Locator>> {
     };
     let mut file = match File::options()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(host.join(format!("{}.project", key(root))))
     {
         Ok(file) => file,
@@ -355,12 +398,12 @@ async fn exchange(
         .map_err(|_| unavailable_at("reply"))?;
     Ok((stream, reply))
 }
-async fn probe(
+async fn probe_reply(
     root: &Path,
     locator: &Locator,
     signals: &mut Signals,
     deadline: Instant,
-) -> io::Result<Option<crate::config::ProjectMount>> {
+) -> io::Result<Reply> {
     let (_, reply) = exchange(
         locator,
         Request::Probe {
@@ -372,6 +415,16 @@ async fn probe(
         deadline,
     )
     .await?;
+    Ok(reply)
+}
+
+async fn probe(
+    root: &Path,
+    locator: &Locator,
+    signals: &mut Signals,
+    deadline: Instant,
+) -> io::Result<Option<crate::config::ProjectMount>> {
+    let reply = probe_reply(root, locator, signals, deadline).await?;
     match reply {
         Reply::Compatible { mount } => Ok(Some(mount)),
         Reply::Draining { generation } if Some(&generation) == locator.generation.as_ref() => {
@@ -379,6 +432,60 @@ async fn probe(
         }
         other => Err(reply_error(other)),
     }
+}
+
+fn running_profile(locator: &Locator) -> Option<String> {
+    runs::launch_profile(locator.generation.as_deref()?, &locator.name)
+}
+
+pub(crate) enum ProjectStatus {
+    Stopped,
+    Starting,
+    Running { profile: Option<String> },
+    Stopping,
+    Unavailable,
+}
+
+/// Observe the existing owner without admitting a client or recovering stale state.
+pub(crate) fn project_status(root: &Path) -> io::Result<ProjectStatus> {
+    let locator = match read_locator(root)? {
+        Some(locator) if locator.generation.is_some() => locator,
+        _ if ownership::lock_alive(&launch_key(root))? => return Ok(ProjectStatus::Starting),
+        Some(_) => return Ok(ProjectStatus::Unavailable),
+        None => return Ok(ProjectStatus::Stopped),
+    };
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    executor.block_on(async {
+        let mut signals = Signals::with_hangup()?;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let result = timeout_at(
+            deadline,
+            probe_reply(root, &locator, &mut signals, deadline),
+        )
+        .await;
+        match result {
+            Ok(Ok(Reply::Compatible { .. })) => {}
+            Ok(Ok(Reply::Error { reason, .. })) if reason == "config-changed" => {}
+            Ok(Ok(Reply::Draining { generation }))
+                if Some(&generation) == locator.generation.as_ref() =>
+            {
+                return Ok(ProjectStatus::Stopping);
+            }
+            // The owner publishes its generation before it finishes the initial disk sync.
+            Ok(Err(_))
+                if ownership::lock_alive(&launch_key(root))?
+                    && ownership::name_alive(&locator.name)? =>
+            {
+                return Ok(ProjectStatus::Starting);
+            }
+            _ => return Ok(ProjectStatus::Unavailable),
+        }
+        Ok(ProjectStatus::Running {
+            profile: running_profile(&locator),
+        })
+    })
 }
 
 // Linux shares must refuse before first-owner locks or orphan cleanup can write.
@@ -605,6 +712,9 @@ async fn admit(
                     wait_name_owned(&locator.name, signals).await?;
                     drop(launch);
                     continue;
+                }
+                Reply::Error { reason, fields } if reason == "config-changed" => {
+                    return Err(join_changed(&fields, &locator, &config));
                 }
                 other => return Err(reply_error(other)),
             }

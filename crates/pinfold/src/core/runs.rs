@@ -135,13 +135,16 @@ pub fn write_teardown_failure(run_id: &str) {
 fn read_record(dir: &Path, name: &str) -> Option<(&'static str, serde_json::Value)> {
     let file = match File::options()
         .read(true)
-        .custom_flags(nix::libc::O_NOFOLLOW)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
         .open(dir.join(name))
     {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
         Err(_) => return Some(("unavailable", serde_json::Value::Null)),
     };
+    if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+        return Some(("unavailable", serde_json::Value::Null));
+    }
     let mut bytes = Vec::new();
     let parsed = file
         .take(LIMIT_BYTES as u64 + 1)
@@ -154,6 +157,17 @@ fn read_record(dir: &Path, name: &str) -> Option<(&'static str, serde_json::Valu
         Some(record) => ("available", record),
         None => ("unavailable", serde_json::Value::Null),
     })
+}
+
+/// The recorded profile is the owner’s selection, even for an explicit image.
+pub(crate) fn launch_profile(run_id: &str, box_name: &str) -> Option<String> {
+    let (_, launch) = Records::read(run_id).ok()??.launch?;
+    if launch["run_id"].as_str()? != run_id || launch["box"].as_str()? != box_name {
+        return None;
+    }
+    let profile = launch["profile"].as_str()?;
+    crate::core::profile::check_name("profile", profile).ok()?;
+    Some(profile.to_owned())
 }
 
 /// A run's directory and its launch record, read once per query.

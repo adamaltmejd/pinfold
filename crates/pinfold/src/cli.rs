@@ -21,15 +21,86 @@ use crate::formatting::terminal_text;
 use crate::pi::launch::utf8;
 
 pub fn print_intro() {
-    println!(
-        "Run a command in an isolated box for this project.
+    if let Err(error) = project_intro() {
+        println!(
+            "Project details unavailable. {}",
+            terminal_text(&error.to_string())
+        );
+    }
+    println!("\nRun a command    pinfold -- CMD\nAll commands     pinfold --help");
+}
 
-  pinfold -- pi       Start Pi
-  pinfold -- sh       Open a shell
+fn project_intro() -> io::Result<()> {
+    use crate::pi::session::{ProjectStatus, project_status};
 
-On first use, Pinfold helps you choose a profile and set up the project.
-Run pinfold --help for all commands."
-    );
+    let context = crate::pi::context::Context::discover(&std::env::current_dir()?)?;
+    let root = &context.root;
+    println!("Project   {}", terminal_text(&root.to_string_lossy()));
+    match project_status(root) {
+        Ok(ProjectStatus::Stopped) => println!("Box       stopped"),
+        Ok(ProjectStatus::Starting) => println!("Box       starting"),
+        Ok(ProjectStatus::Stopping) => println!("Box       stopping"),
+        Ok(ProjectStatus::Running {
+            profile: Some(profile),
+        }) => println!("Box       running with profile {}", terminal_text(&profile)),
+        Ok(ProjectStatus::Running { profile: None }) => println!("Box       running"),
+        Ok(ProjectStatus::Unavailable) | Err(_) => println!("Box       status unavailable"),
+    }
+    let (config, preview) = match Config::load(root) {
+        Ok(config) => (config, false),
+        Err(error)
+            if error
+                .get_ref()
+                .is_some_and(|e| e.is::<crate::config::NoConfig>()) =>
+        {
+            println!("\nNo project configuration yet. These are the proposed settings.");
+            (Config::first_run_preview(root)?, true)
+        }
+        Err(error) => return Err(error),
+    };
+    check_report_mount(&context, config.mount)?;
+    config.check_host_paths(root)?;
+    println!("Profile   {}", profile_description(&config));
+    let saved = config
+        .project_profile
+        .as_deref()
+        .unwrap_or(crate::config::DEFAULT_PROFILE);
+    if !preview && saved != config.profile.name {
+        println!(
+            "          Project selects {} without PINFOLD_PROFILE.",
+            terminal_text(saved)
+        );
+    }
+    println!("Files     {}", project_files(config.mount));
+    let image = crate::pi::launch::resolve_image(&config, &crate::pi::state::project_id(root));
+    println!("Image     {}", terminal_text(&image));
+    if preview {
+        if std::env::var_os("PINFOLD_PROFILE").is_some() {
+            println!("\nIn a terminal, confirm these settings to save them.");
+        } else {
+            println!("\nIn a terminal, choose a profile and confirm the settings to save them.");
+        }
+        if config.image.is_some() {
+            println!("This profile uses an explicit image. It must already be available locally.");
+        } else {
+            println!("Pinfold will offer to build the image if it is missing.");
+        }
+    } else {
+        println!(
+            "Settings  {}",
+            terminal_text(&config.path.to_string_lossy())
+        );
+    }
+    Ok(())
+}
+
+fn project_files(mount: crate::config::ProjectMount) -> &'static str {
+    match mount {
+        crate::config::ProjectMount::Share => "Shared with the box. Edits appear on your Mac.",
+        crate::config::ProjectMount::Disk => {
+            "Stored on a private project disk. Use push and fetch to transfer branches."
+        }
+    }
 }
 
 pub fn print_help() {
@@ -1226,12 +1297,18 @@ pub fn apparmor_profile(args: &[String]) -> io::Result<i32> {
 fn project_config(cwd: &Path) -> io::Result<(PathBuf, Config)> {
     let context = crate::pi::context::Context::discover(cwd)?;
     let config = Config::load(&context.root)?;
-    if config.mount == crate::config::ProjectMount::Share {
-        context.verify(config.mount)?;
-    } else {
-        context.check_worktree(config.mount)?;
-    }
+    check_report_mount(&context, config.mount)?;
     Ok((context.root, config))
+}
+
+fn check_report_mount(
+    context: &crate::pi::context::Context,
+    mount: crate::config::ProjectMount,
+) -> io::Result<()> {
+    match mount {
+        crate::config::ProjectMount::Share => context.verify(mount),
+        crate::config::ProjectMount::Disk => context.check_worktree(mount),
+    }
 }
 
 /// Read-only: do not materialize profiles or record project state.
@@ -1267,14 +1344,7 @@ pub fn config(args: &[String]) -> io::Result<i32> {
         return Ok(0);
     }
     println!("Project   {}", terminal_text(&root.to_string_lossy()));
-    println!(
-        "Files     {}",
-        match config.mount {
-            crate::config::ProjectMount::Share => "Shared with the box. Edits appear on your Mac.",
-            crate::config::ProjectMount::Disk =>
-                "Stored on a private project disk. Use push and fetch to transfer branches.",
-        }
-    );
+    println!("Files     {}", project_files(config.mount));
     println!("Profile   {}", profile_description(&config));
     let availability = match report["image_built"].as_bool() {
         Some(true) => "available locally",
