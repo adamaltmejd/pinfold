@@ -29,7 +29,7 @@ fn main() -> ExitCode {
         }
     };
     if rest.is_empty() {
-        println!("{}", cli::USAGE);
+        cli::print_help();
         return ExitCode::SUCCESS;
     }
     let verb = rest.first().map(String::as_str).unwrap_or_default();
@@ -40,7 +40,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         "--help" | "-h" => {
-            println!("{}", cli::USAGE);
+            cli::print_help();
             return ExitCode::SUCCESS;
         }
         // PID 1 never returns, so it never reaches `report`.
@@ -63,7 +63,7 @@ fn main() -> ExitCode {
         "fetch" => |args| launch::crossing("fetch", args),
         "update" => update::run,
         _ => {
-            eprintln!("{}", cli::USAGE);
+            eprintln!("pinfold: unknown command {verb:?}. Run `pinfold --help` for commands.");
             return ExitCode::from(1);
         }
     };

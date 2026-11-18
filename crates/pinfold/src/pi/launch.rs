@@ -372,6 +372,25 @@ pub(crate) fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct MissingManagedImage {
+    pub(crate) reference: String,
+    pub(crate) mount: ProjectMount,
+    profile: Option<String>,
+}
+
+impl std::fmt::Display for MissingManagedImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "image {} is missing; run `pinfold build", self.reference)?;
+        if let Some(profile) = &self.profile {
+            write!(f, " --profile {profile}")?;
+        }
+        write!(f, "`")
+    }
+}
+
+impl std::error::Error for MissingManagedImage {}
+
 pub(crate) fn image_warnings(config: &Config, image: &str) -> io::Result<Vec<String>> {
     if config.image.is_some() {
         return match service().resolve_image(image)? {
@@ -405,11 +424,27 @@ pub(crate) fn image_warnings(config: &Config, image: &str) -> io::Result<Vec<Str
                 .expect("config admitted a recipe"),
         ),
     };
-    let Ok(built) = service().resolve_image(image)? else {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("image {image} is missing; run `{build}`"),
-        ));
+    let built = match service().resolve_image(image)? {
+        Ok(built) => built,
+        #[cfg(target_os = "macos")]
+        Err(message) if message != format!("Error: image not found: {image}") => {
+            return Err(io::Error::other(format!(
+                "container image inspect: {message}"
+            )));
+        }
+        Err(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                MissingManagedImage {
+                    reference: image.to_owned(),
+                    mount: config.mount,
+                    profile: config
+                        .containerfile
+                        .is_none()
+                        .then(|| config.profile.name.clone()),
+                },
+            ));
+        }
     };
     let mut warnings = Vec::new();
     if let Some(warning) = containerfile_warning(&built, containerfile, build) {

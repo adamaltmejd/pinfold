@@ -47,7 +47,7 @@ impl ProjectMount {
         }
     }
 
-    fn default_kind() -> Self {
+    pub(crate) fn default_kind() -> Self {
         if cfg!(target_os = "macos") {
             Self::Share
         } else {
@@ -99,38 +99,53 @@ pub fn project_dir(root: &Path) -> io::Result<PathBuf> {
 /// written with the project mount when it is missing. The project is
 /// checked first, with the profile a run would select, so nothing is
 /// created inside it.
-pub fn create(root: &Path) -> io::Result<PathBuf> {
+pub fn create(root: &Path, selected: Option<&str>) -> io::Result<(PathBuf, bool)> {
     let dir = project_dir(root)?;
     let path = dir.join("pinfold.toml");
     // A file that cannot be read or parsed selects no profile, and a
     // profile that cannot be loaded has no paths to check: the editor
     // must still open to fix either.
-    let file = read_optional(&path)
-        .ok()
-        .flatten()
-        .and_then(|bytes| Layer::parse(&bytes, "").ok())
-        .and_then(|layer| layer.profile);
-    let profile = Profile::load(&profile_name(file)?).ok();
-    check_paths_outside(root, profile.as_ref(), false)?;
+    let profile = match selected {
+        Some(name) => Some(Profile::load(name)?),
+        None => {
+            let file = read_optional(&path)
+                .ok()
+                .flatten()
+                .and_then(|bytes| Layer::parse(&bytes, "").ok())
+                .and_then(|layer| layer.profile);
+            Profile::load(&profile_name(file)?).ok()
+        }
+    };
+    check_paths_outside(
+        root,
+        profile.as_ref(),
+        selected.is_some() && ProjectMount::default_kind() == ProjectMount::Share,
+    )?;
     if read_optional(&path)?.is_some() {
-        return Ok(path);
+        return Ok((path, false));
     }
     fs::create_dir_all(&dir)?;
     // Linking a complete file into place creates it in one step, and never
     // replaces one a concurrent edit created. `create_new` refuses a
     // planted staging symlink.
     let staging = dir.join(format!(".pinfold.toml.tmp-{}", std::process::id()));
+    let mut contents = ProjectMount::default_kind().declaration();
+    if let Some(name) = selected {
+        // Profile::load accepts only ASCII names safe in a TOML string.
+        contents.push_str(&format!("profile = \"{name}\"\n"));
+    }
     fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&staging)?
-        .write_all(ProjectMount::default_kind().declaration().as_bytes())?;
+        .write_all(contents.as_bytes())?;
     let linked = fs::hard_link(&staging, &path);
     // A staging file left behind is harmless; the result is the link's.
     let _ = fs::remove_file(&staging);
     match linked {
-        Err(error) if error.kind() != io::ErrorKind::AlreadyExists => Err(error),
-        _ => Ok(path),
+        Ok(()) => Ok((path, true)),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok((path, false)),
+        Err(error) => Err(error),
     }
 }
 
@@ -144,6 +159,21 @@ pub(crate) fn project_mount(root: &Path) -> io::Result<Option<ProjectMount>> {
     let layer = Layer::parse(&bytes, &source)?;
     ProjectMount::parse(layer.mounts.as_ref(), &source).map(Some)
 }
+
+#[derive(Debug)]
+pub(crate) struct NoConfig(PathBuf);
+
+impl std::fmt::Display for NoConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "no-config: {} has no configuration; run `pinfold config edit`",
+            terminal_text(&self.0.to_string_lossy())
+        )
+    }
+}
+
+impl std::error::Error for NoConfig {}
 
 /// The merged configuration for one project run.
 pub struct Config {
@@ -190,10 +220,7 @@ impl Config {
         let Some(bytes) = read_optional(&path)? else {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
-                format!(
-                    "no-config: {} has no configuration; run `pinfold config edit`",
-                    terminal_text(&root.to_string_lossy())
-                ),
+                NoConfig(root.to_owned()),
             ));
         };
         let mut project = Layer::parse(&bytes, &source)?;
@@ -398,7 +425,7 @@ fn profile_name(file: Option<String>) -> io::Result<String> {
         .unwrap_or_else(|| DEFAULT_PROFILE.to_string()))
 }
 
-fn override_value(name: &str) -> io::Result<Option<String>> {
+pub(crate) fn override_value(name: &str) -> io::Result<Option<String>> {
     match env::var(name) {
         Ok(value) => Ok(Some(value)),
         Err(env::VarError::NotPresent) => Ok(None),

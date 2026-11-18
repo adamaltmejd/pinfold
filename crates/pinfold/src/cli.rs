@@ -20,36 +20,52 @@ use crate::dirs;
 use crate::formatting::terminal_text;
 use crate::pi::launch::utf8;
 
-/// One line per verb from the CLI table in docs/ARCHITECTURE.md but `init`,
-/// which only the box runs, plus the options that answer before a verb is chosen: the syntax, three or more
-/// spaces, the description. Printed on stdout by `--help`, on stderr for a
-/// malformed invocation, and one line at a time by [`syntax`].
-pub const USAGE: &str = "\
-pinfold -- CMD [args…]           start or join a project session
-pinfold start                   keep this project's box
-pinfold stop                    stop its observed box
-pinfold push                     this checkout's branches into its box as refs/remotes/host/*
-pinfold fetch                    its box's branches into refs/remotes/pinfold/*
-pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this project's image, or a profile's; prints the ref
-pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]…   a caller's image from its own context; one JSON line
-pinfold image rm NAME            retire a caller image name; one JSON line
-pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
-pinfold clean [--dry-run] [--unused AGE]   reclaim unused disk space
-pinfold doctor                   runtime, kernel, image, artifacts, config, disk use
-pinfold artifacts                pinned host helper and infrastructure as JSON
-pinfold apparmor-profile         the AppArmor profile for this executable (Linux)
-pinfold update [--check]         check for a release, or download and install it
-pinfold config [ROOT]            effective configuration and project facts as JSON
-pinfold config edit              create this project's configuration file if missing, and open it in $VISUAL or $EDITOR
-pinfold box …                    the process interface
-pinfold disk list [--json]       list managed disks
-pinfold disk rm NAME|--all [--json]   remove unattached disks
-pinfold disk export NAME DEST [--image IMAGE] [--json]   copy an unattached disk into a new directory
-pinfold --version                print the version
-pinfold --help                   print this usage";
+pub fn print_help() {
+    println!(
+        "Run a command in this project
+  pinfold -- pi
+  pinfold -- CMD [args…]
 
-/// The process interface's verbs, which the table above does not spell out.
-const BOX_USAGE: &str = "\
+Project commands
+  config edit   Open project settings in your editor
+  config        Show effective settings as JSON
+  build         Build the selected image
+  start, stop   Keep or stop the project box
+  push, fetch   Transfer Git branches for disk projects
+
+Other commands
+  doctor, clean, update
+  profile, image, box, disk, artifacts"
+    );
+    #[cfg(target_os = "linux")]
+    println!("  apparmor-profile");
+    println!(
+        "
+Use pinfold COMMAND --help for syntax, or pinfold --version."
+    );
+}
+
+const SYNTAX: &str = "\
+pinfold init
+pinfold -- CMD [args…]
+pinfold start
+pinfold stop
+pinfold push
+pinfold fetch
+pinfold build [--profile NAME] [--no-cache] [--allow HOST]…
+pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]…
+pinfold image rm NAME
+pinfold profile new NAME [--from PROFILE]
+pinfold clean [--dry-run] [--unused AGE]
+pinfold doctor
+pinfold artifacts
+pinfold apparmor-profile
+pinfold update [--check]
+pinfold config [ROOT]
+pinfold config edit
+pinfold disk list [--json]
+pinfold disk rm NAME|--all [--json]
+pinfold disk export NAME DEST [--image IMAGE] [--json]
 pinfold box up < spec.json
 pinfold box exec BOX [--tty] -- argv…
 pinfold box stat BOX
@@ -62,7 +78,11 @@ pinfold box fetch BOX --repo GUEST_REPO --into REPO";
 
 pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
     result.unwrap_or_else(|error| {
-        let _ = writeln!(io::stderr(), "pinfold {verb}: {error}");
+        if verb == "--" {
+            let _ = writeln!(io::stderr(), "pinfold: {error}");
+        } else {
+            let _ = writeln!(io::stderr(), "pinfold {verb}: {error}");
+        }
         if matches!(verb, "--" | "start" | "stop" | "__project-owner") {
             125
         } else {
@@ -79,20 +99,14 @@ pub(crate) fn usage(verb: &str, message: &str) -> io::Error {
     )
 }
 
-/// `verb`'s syntax: [`BOX_USAGE`] for box, else its [`USAGE`] lines up to the
-/// three-space gap. The one place [`usage`] and [`help`] read a syntax line.
 fn syntax(verb: &str) -> String {
-    match verb {
-        "box" => return BOX_USAGE.to_string(),
-        "init" => return "pinfold init".to_string(),
-        _ => {}
-    }
-    let prefix = format!("pinfold {verb} ");
-    USAGE
+    let prefix = format!("pinfold {verb}");
+    SYNTAX
         .lines()
-        .chain(BOX_USAGE.lines())
-        .filter(|line| line.starts_with(&prefix) || *line == prefix.trim_end())
-        .filter_map(|line| line.split("   ").next())
+        .filter(|line| {
+            line.strip_prefix(&prefix)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -135,7 +149,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
 
 fn up(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
-        return Err(usage("box", "up takes no arguments"));
+        return Err(usage("box up", "up takes no arguments"));
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -355,29 +369,34 @@ pub(crate) fn crossing_report(
 fn parse_fetch(args: &[String]) -> io::Result<(String, String, String)> {
     let (name, mut rest) = match args {
         [name, rest @ ..] if !name.starts_with('-') => (name.clone(), rest),
-        _ => return Err(usage("box", "fetch needs a box name")),
+        _ => return Err(usage("box fetch", "fetch needs a box name")),
     };
     let (mut repo, mut into) = (None, None);
     while let [option, value, tail @ ..] = rest {
         let slot = match option.as_str() {
             "--repo" => &mut repo,
             "--into" => &mut into,
-            _ => return Err(usage("box", &format!("unknown fetch option {option:?}"))),
+            _ => {
+                return Err(usage(
+                    "box fetch",
+                    &format!("unknown fetch option {option:?}"),
+                ));
+            }
         };
         if slot.replace(value.clone()).is_some() {
-            return Err(usage("box", &format!("fetch takes {option} once")));
+            return Err(usage("box fetch", &format!("fetch takes {option} once")));
         }
         rest = tail;
     }
     if let [option] = rest {
         return Err(usage(
-            "box",
+            "box fetch",
             &format!("fetch option {option:?} needs a value"),
         ));
     }
     match (repo, into) {
         (Some(repo), Some(into)) => Ok((name, repo, into)),
-        _ => Err(usage("box", "fetch needs --repo and --into")),
+        _ => Err(usage("box fetch", "fetch needs --repo and --into")),
     }
 }
 
@@ -446,7 +465,7 @@ fn list(args: &[String]) -> io::Result<i32> {
 
 fn prune(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
-        return Err(usage("box", "prune takes no arguments"));
+        return Err(usage("box prune", "prune takes no arguments"));
     }
     let runtime = runtime();
     let boxes = match clean::boxes(runtime) {
@@ -473,9 +492,9 @@ fn prune(args: &[String]) -> io::Result<i32> {
 
 fn inspect(args: &[String]) -> io::Result<i32> {
     let [run_id] = args else {
-        return Err(usage("box", "inspect needs exactly one run id"));
+        return Err(usage("box inspect", "inspect needs exactly one run id"));
     };
-    let run_id = parse_run_id(run_id)?;
+    let run_id = parse_run_id("box inspect", run_id)?;
     answer("inspect", run_id, runs::inspect(run_id)?)
 }
 
@@ -483,9 +502,9 @@ fn inspect(args: &[String]) -> io::Result<i32> {
 /// egress log. Every argument is checked before any path is built.
 fn events(args: &[String]) -> io::Result<i32> {
     let Some((run_id, options)) = args.split_first() else {
-        return Err(usage("box", "events needs a run id"));
+        return Err(usage("box events", "events needs a run id"));
     };
-    let run_id = parse_run_id(run_id)?;
+    let run_id = parse_run_id("box events", run_id)?;
     let mut limit = runs::MAX_EVENTS;
     let mut after = None;
     let mut options = options.iter();
@@ -497,28 +516,35 @@ fn events(args: &[String]) -> io::Result<i32> {
                     .parse()
                     .ok()
                     .filter(|limit| (1..=runs::MAX_EVENTS).contains(limit))
-                    .ok_or_else(|| usage("box", &format!("--limit {value:?} is not 1 to 100")))?;
+                    .ok_or_else(|| {
+                        usage("box events", &format!("--limit {value:?} is not 1 to 100"))
+                    })?;
             }
             ("--after", Some(value)) => {
                 after = Some(runs::Cursor::parse(run_id, value).ok_or_else(|| {
                     usage(
-                        "box",
+                        "box events",
                         &format!("--after {value:?} is not a cursor of this run"),
                     )
                 })?);
             }
-            _ => return Err(usage("box", &format!("unknown events option {option:?}"))),
+            _ => {
+                return Err(usage(
+                    "box events",
+                    &format!("unknown events option {option:?}"),
+                ));
+            }
         }
     }
     answer("events", run_id, runs::events(run_id, limit, after)?)
 }
 
-fn parse_run_id(run_id: &str) -> io::Result<&str> {
+fn parse_run_id<'a>(verb: &str, run_id: &'a str) -> io::Result<&'a str> {
     if runs::valid_id(run_id) {
         Ok(run_id)
     } else {
         Err(usage(
-            "box",
+            verb,
             &format!("run id {run_id:?} is not 64 lowercase hex characters"),
         ))
     }
@@ -665,6 +691,9 @@ pub fn disk(args: &[String]) -> io::Result<i32> {
             Ok(status)
         }
         [verb, name] if verb == "rm" => remove_disk(runtime, name, json),
+        [verb, ..] if matches!(verb.as_str(), "list" | "export" | "rm") => {
+            Err(usage(&format!("disk {verb}"), "invalid arguments"))
+        }
         _ => Err(usage(
             "disk",
             "expected list, rm NAME|--all, or export NAME DEST [--image IMAGE], with optional --json",
@@ -1139,6 +1168,9 @@ fn project_config(cwd: &Path) -> io::Result<(PathBuf, Config)> {
 pub fn config(args: &[String]) -> io::Result<i32> {
     let (root, config) = match args {
         [edit] if edit == "edit" => return config_edit(),
+        [edit, ..] if edit == "edit" => {
+            return Err(usage("config edit", "edit takes no arguments"));
+        }
         [] => project_config(&std::env::current_dir()?)?,
         [root] => project_config(Path::new(root))?,
         _ => {
@@ -1163,8 +1195,9 @@ fn config_edit() -> io::Result<i32> {
             .unwrap_or(crate::config::ProjectMount::Share);
         project.check_worktree(mount)?;
     }
-    let path = crate::config::create(&project.root)?;
-    eprintln!("pinfold config: {}", terminal_text(&path.to_string_lossy()));
+    let (path, created) = crate::config::create(&project.root, None)?;
+    let action = if created { "Created" } else { "Opening" };
+    eprintln!("{action} {}", terminal_text(&path.to_string_lossy()));
     let editor = ["VISUAL", "EDITOR"]
         .into_iter()
         .filter_map(std::env::var_os)
@@ -1179,7 +1212,13 @@ fn config_edit() -> io::Result<i32> {
         .arg("sh")
         .arg(&path)
         .status_guarded()?;
-    Ok(exit_code(status))
+    let code = exit_code(status);
+    if code != 0 {
+        eprintln!(
+            "pinfold: editor exited with status {code}. Open the file above directly or set VISUAL to a working editor and rerun `pinfold config edit`."
+        );
+    }
+    Ok(code)
 }
 
 fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> {
@@ -1216,7 +1255,7 @@ fn parse_exec(args: &[String]) -> io::Result<(String, bool, Vec<String>)> {
     let mut args = args.iter();
     let name = args
         .next()
-        .ok_or_else(|| usage("box", "exec needs a box name"))?
+        .ok_or_else(|| usage("box exec", "exec needs a box name"))?
         .clone();
     let mut tty = false;
     loop {
@@ -1224,14 +1263,17 @@ fn parse_exec(args: &[String]) -> io::Result<(String, bool, Vec<String>)> {
             Some("--") => break,
             Some("--tty") => tty = true,
             Some(option) => {
-                return Err(usage("box", &format!("unknown exec option {option:?}")));
+                return Err(usage(
+                    "box exec",
+                    &format!("unknown exec option {option:?}"),
+                ));
             }
-            None => return Err(usage("box", "exec needs `-- argv`")),
+            None => return Err(usage("box exec", "exec needs `-- argv`")),
         }
     }
     let argv: Vec<String> = args.cloned().collect();
     if argv.is_empty() {
-        return Err(usage("box", "exec needs a command after `--`"));
+        return Err(usage("box exec", "exec needs a command after `--`"));
     }
     Ok((name, tty, argv))
 }
@@ -1239,7 +1281,10 @@ fn parse_exec(args: &[String]) -> io::Result<(String, bool, Vec<String>)> {
 fn single_name(args: &[String], verb: &str) -> io::Result<String> {
     match args {
         [name] => Ok(name.clone()),
-        _ => Err(usage("box", &format!("{verb} needs exactly one box name"))),
+        _ => Err(usage(
+            &format!("box {verb}"),
+            &format!("{verb} needs exactly one box name"),
+        )),
     }
 }
 
@@ -1248,18 +1293,21 @@ fn parse_labels(args: &[String]) -> io::Result<Vec<(String, Option<String>)>> {
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         if arg != "--label" {
-            return Err(usage("box", "list takes only --label k=v or --label k"));
+            return Err(usage(
+                "box list",
+                "list takes only --label k=v or --label k",
+            ));
         }
         let label = args
             .next()
-            .ok_or_else(|| usage("box", "--label needs k=v or k"))?;
+            .ok_or_else(|| usage("box list", "--label needs k=v or k"))?;
         match label.split_once('=') {
             Some((key, value)) => filters.push((key.to_string(), Some(value.to_string()))),
             None => filters.push((label.to_string(), None)),
         }
     }
     if filters.is_empty() {
-        return Err(usage("box", "list needs at least one --label"));
+        return Err(usage("box list", "list needs at least one --label"));
     }
     Ok(filters)
 }

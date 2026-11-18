@@ -326,10 +326,14 @@ fn exec(args: &[String]) -> ! {
         command.env("HERDR_AGENT", agent);
     }
     let error = command.exec();
-    eprintln!(
-        "pinfold init exec: {}: {error}",
-        formatting::terminal_text(program)
-    );
+    let program = formatting::terminal_text(program);
+    if project && error.kind() == io::ErrorKind::NotFound {
+        eprintln!(
+            "pinfold: could not start {program:?} in the project image. Check that the command and its interpreter are installed in the image selected by `pinfold config`."
+        );
+    } else {
+        eprintln!("pinfold init exec: {program}: {error}");
+    }
     // Public exec keeps the shell's executable lookup codes.
     process::exit(if project {
         125

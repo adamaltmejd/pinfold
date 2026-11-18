@@ -95,28 +95,38 @@ install -m 0755 target/x86_64-unknown-linux-musl/release/pinfold ~/.local/bin/pi
 
 ## First run
 
-In your working folder:
+Start Pi from your project folder.
 
-1. Create its configuration: `pinfold config edit`. It writes
-   `~/.config/pinfold/projects/<id>/pinfold.toml` and opens it in your
-   editor. A project without one is refused as `no-config`; so is a moved
-   or renamed project. A project recipe is a `Containerfile` beside it.
-2. Build the selected recipe: `pinfold build`. Without a project Containerfile
-   it builds the profile's recipe; with one it builds the project's.
-   An explicit `image` must already be present locally and needs no build.
-   Building needs network. Rebuild when a run shows `image-outdated`;
-   it keeps project settings, sessions and logins.
-3. Run a command: `pinfold -- pi`, `pinfold -- claude` or `pinfold -- bash`.
-4. The project home persists between runs. A share exposes existing host
-   files and creates no project disk. A disk project also retains its project
-   disk. A guest `/login` stays in that project's home. `pinfold disk list` shows readable sizes and
-   recorded originating folders; `disk rm --all` removes unattached disks
-   in the current state root. An API key or a Claude or Codex subscription
-   can instead stay on the host behind a login route in `routes`
-   (ARCHITECTURE.md, Egress proxy); an API key can also arrive through the
-   environment. Using a Claude subscription through pi is subject to
-   Anthropic's terms: pi presents the token as Claude Code and may bill it
-   as extra usage.
+```sh
+pinfold -- pi
+```
+
+Use `pinfold -- sh` for a shell. Anything after `--` is the command and
+its arguments. Bare `pinfold --` exits with a usage error.
+
+On the first interactive run, choose the profile and confirm the project
+folder. If your shell sets `PINFOLD_PROFILE`, that selects the profile.
+Unset it to choose a different one. On macOS the box can edit files in
+that folder and its top-level `.git` is read-only. Linux uses a private project disk. If the selected
+managed image is missing, Pinfold offers to build it and then starts your
+command. A build needs network access. An explicit `image` must already
+be available locally. Rebuild with `pinfold build` if a later launch
+reports `image-outdated`.
+
+For scripts, prepare the project first with `pinfold config edit` and
+`pinfold build`. `config edit` opens
+`~/.config/pinfold/projects/<id>/pinfold.toml`. A project recipe is a
+`Containerfile` beside it. Moving or renaming a project gives it a new
+configuration path.
+
+A guest `/login` persists in the project home. A disk project also retains
+its project disk. `pinfold disk list` shows sizes and originating folders.
+`disk rm --all` removes unattached disks in the current state root. An API
+key or a Claude or Codex subscription can stay on the host behind a login
+route in `routes` (ARCHITECTURE.md, Egress proxy). An API key can also
+arrive through the environment. Using a Claude subscription through Pi is
+subject to Anthropic's terms: Pi presents the token as Claude Code and may
+bill it as extra usage.
 
 One detached owner serves each canonical project host-wide, independently of
 HOME and XDG roots. Each `pinfold -- CMD` starts or joins a session. Ending or
@@ -287,7 +297,7 @@ image = "localhost/pinfold/image-research-tools:latest"
 
 `image` can also be a profile default. A project `image` overrides it;
 there is no environment override. An explicit image cannot be combined with
-a project Containerfile. Launch never pulls or builds. With an explicit
+a project Containerfile. Explicit images resolve locally. With an explicit
 image, `pinfold build` reports that there is no selected recipe to build.
 
 Custom profiles can omit `Containerfile` when an image or project recipe is
