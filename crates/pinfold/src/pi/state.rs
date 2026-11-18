@@ -45,6 +45,21 @@ pub fn record_run(root: &Path) -> io::Result<()> {
     fs::write(dir.join("state.json"), json)
 }
 
+/// Read only this root's record when damaged Git metadata prevents discovery.
+pub(crate) fn recorded(root: &Path) -> io::Result<bool> {
+    let path = dirs::state_dir()?
+        .join("projects")
+        .join(project_id(root))
+        .join("state.json");
+    match fs::read(path) {
+        Ok(bytes) => {
+            Ok(serde_json::from_slice::<StateFile>(&bytes).is_ok_and(|state| state.root == root))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 /// The project's home disk, attached at [`HOME`], and its project disk,
 /// attached at the project's own path. `id` is a [`project_id`].
 pub fn disk_names(id: &str) -> [String; 2] {

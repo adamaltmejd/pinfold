@@ -15,7 +15,11 @@ const FULL: &[u8] = include_bytes!("../../../../profile/image/full.Containerfile
 const HARDEN: &[u8] = include_bytes!("../../../../profile/image/harden.Containerfile");
 const CONFIG: &[u8] = include_bytes!("../../../../profile/pinfold.toml");
 const FULL_CONFIG: &[u8] = include_bytes!("../../../../profile/full/pinfold.toml");
+const PROJECT_GUIDANCE: &[u8] = include_bytes!("../../../../profile/project-guidance.md");
 const HOME: &[(&str, &[u8])] = &[
+    (".pi/agent/APPEND_SYSTEM.md", PROJECT_GUIDANCE),
+    (".claude/CLAUDE.md", PROJECT_GUIDANCE),
+    (".codex/AGENTS.md", PROJECT_GUIDANCE),
     (
         ".pi/agent/settings.json",
         include_bytes!("../../../../profile/home/.pi/agent/settings.json"),

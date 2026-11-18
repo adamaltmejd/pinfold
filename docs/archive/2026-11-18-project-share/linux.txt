@@ -1,0 +1,16 @@
+CLI ('config', 'edit') rc=0 out='' err='pinfold config: $W/c/pinfold/projects/project-6f75b6e73e60/pinfold.toml\n'
+Linux config edit default=disk
+Linux refusal roots before=[('$W/c', True), ('$W/absent-state', False), ('$W/absent-cache', False), ('/tmp/pinfold-1000', False)] maintenance-due=True runtime-PATH=/nonexistent
+CLI ('--', 'true') rc=125 out='' err='pinfold --: $W/c/pinfold/projects/project-6f75b6e73e60/pinfold.toml: spec: share mounts are unsupported on Linux\n'
+CLI ('start',) rc=125 out='' err='pinfold start: $W/c/pinfold/projects/project-6f75b6e73e60/pinfold.toml: spec: share mounts are unsupported on Linux\n'
+CLI ('push',) rc=1 out='' err='pinfold push: $W/c/pinfold/projects/project-6f75b6e73e60/pinfold.toml: spec: share mounts are unsupported on Linux\n'
+CLI ('fetch',) rc=1 out='' err='pinfold fetch: $W/c/pinfold/projects/project-6f75b6e73e60/pinfold.toml: spec: share mounts are unsupported on Linux\n'
+Linux share all-entrypoints spec refusal: config/state/cache/ownership inventories unchanged=True
+CLI ('config',) rc=0 out='{"config":"$W/c/pinfold/projects/project-6f75b6e73e60/pinfold.toml","containerfile":null,"cpus":2.0,"egress":{"allow":[],"routes":{}},"env":[],"image":"fixture-unavailable","image_built":false,"image_error":null,"image_source":"explicit","memory":"1G","profile":"default","project":{"disks":{"home":"pi-project-6f75b6e73e60-home","project":"pi-project-6f75b6e73e60-project"},"home":"/home/pi","id":"project-6f75b6e73e60","mount":{"guest":"$W/project","host":"$W/project","kind":"disk"}},"root":"$W/project"}\n' err=''
+CLI ('--', 'true') rc=125 out='' err='pinfold --: image-missing: image fixture-unavailable is not present locally; build or pull it explicitly\n'
+PASS fix-round Linux refusal/default-disk/config control; running owner and startup fast-forward UNESTABLISHED (no existing image; no image built)
+CLI ('stop',) rc=0 out='' err=''
+CLI ('disk', 'list', '--json') rc=0 out='' err=''
+CLI ('disk', 'list', '--json') rc=0 out='' err=''
+CLI ('box', 'list', '--label', 'dev.pinfold.project=project-6f75b6e73e60') rc=0 out='' err=''
+Linux fixture-removed=True

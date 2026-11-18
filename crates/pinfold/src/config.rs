@@ -7,7 +7,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::plan::Route;
 use crate::core::profile::Profile;
@@ -31,9 +31,63 @@ const DEFAULT_ALLOW: [&str; 9] = [
     "pi.dev",
 ];
 
-/// The only mount this step accepts: the project itself, as a disk. Inline,
-/// so keys appended to the file stay top-level.
-const PROJECT_MOUNT: &str = "mounts = [{ host = \".\", kind = \"disk\" }]\n";
+/// The project itself is the only configurable mount.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProjectMount {
+    Disk,
+    Share,
+}
+
+impl ProjectMount {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disk => "disk",
+            Self::Share => "share",
+        }
+    }
+
+    fn default_kind() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Share
+        } else {
+            Self::Disk
+        }
+    }
+
+    fn declaration(self) -> String {
+        format!(
+            "mounts = [{{ host = \".\", kind = \"{}\" }}]\n",
+            self.as_str()
+        )
+    }
+
+    fn parse(value: Option<&toml::Value>, source: &str) -> io::Result<Self> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Attachment {
+            host: String,
+            kind: ProjectMount,
+        }
+        if let Some(value) = value
+            && let Ok(mounts) = value.clone().try_into::<Vec<Attachment>>()
+            && let [mount] = mounts.as_slice()
+            && mount.host == "."
+        {
+            if mount.kind == Self::Share && cfg!(target_os = "linux") {
+                return Err(invalid(
+                    source,
+                    "spec: share mounts are unsupported on Linux",
+                ));
+            }
+            return Ok(mount.kind);
+        }
+        Err(invalid(
+            source,
+            "spec: mounts must be exactly [{ host = \".\", kind = \"share\" }] or [{ host = \".\", kind = \"disk\" }]",
+        ))
+    }
+}
 
 /// `~/.config/pinfold/projects/<id>/`: the project's configuration file
 /// and its optional recipe. A moved project has another id, so no file.
@@ -57,7 +111,7 @@ pub fn create(root: &Path) -> io::Result<PathBuf> {
         .and_then(|bytes| Layer::parse(&bytes, "").ok())
         .and_then(|layer| layer.profile);
     let profile = Profile::load(&profile_name(file)?).ok();
-    check_paths_outside(root, profile.as_ref())?;
+    check_paths_outside(root, profile.as_ref(), false)?;
     if read_optional(&path)?.is_some() {
         return Ok(path);
     }
@@ -70,7 +124,7 @@ pub fn create(root: &Path) -> io::Result<PathBuf> {
         .write(true)
         .create_new(true)
         .open(&staging)?
-        .write_all(PROJECT_MOUNT.as_bytes())?;
+        .write_all(ProjectMount::default_kind().declaration().as_bytes())?;
     let linked = fs::hard_link(&staging, &path);
     // A staging file left behind is harmless; the result is the link's.
     let _ = fs::remove_file(&staging);
@@ -80,8 +134,20 @@ pub fn create(root: &Path) -> io::Result<PathBuf> {
     }
 }
 
+/// Discovery needs only the existing mount selection, before any state exists.
+pub(crate) fn project_mount(root: &Path) -> io::Result<Option<ProjectMount>> {
+    let path = project_dir(root)?.join("pinfold.toml");
+    let Some(bytes) = read_optional(&path)? else {
+        return Ok(None);
+    };
+    let source = terminal_text(&path.to_string_lossy());
+    let layer = Layer::parse(&bytes, &source)?;
+    ProjectMount::parse(layer.mounts.as_ref(), &source).map(Some)
+}
+
 /// The merged configuration for one project run.
 pub struct Config {
+    pub mount: ProjectMount,
     /// Whether the project is a Git checkout to cross.
     pub repository: bool,
     /// The project's configuration file.
@@ -131,18 +197,7 @@ impl Config {
             ));
         };
         let mut project = Layer::parse(&bytes, &source)?;
-        let expected = toml::from_str::<toml::Table>(PROJECT_MOUNT)
-            .expect("the project mount is TOML")
-            .remove("mounts");
-        if project.mounts != expected {
-            return Err(invalid(
-                &source,
-                &format!(
-                    "spec: `mounts` must be exactly {}",
-                    PROJECT_MOUNT.trim_end()
-                ),
-            ));
-        }
+        let mount = ProjectMount::parse(project.mounts.as_ref(), &source)?;
         let profile_name = profile_name(project.profile.take())?;
         let profile = Profile::load(&profile_name)?;
         let top = project.over(Layer::from_env()?);
@@ -174,6 +229,7 @@ impl Config {
             ));
         }
         Ok(Config {
+            mount,
             repository,
             path,
             profile,
@@ -199,7 +255,7 @@ impl Config {
     /// Refuse a project that holds what configures its boxes (see
     /// [`check_paths_outside`]).
     pub fn check_host_paths(&self, root: &Path) -> io::Result<()> {
-        check_paths_outside(root, Some(&self.profile))
+        check_paths_outside(root, Some(&self.profile), self.mount == ProjectMount::Share)
     }
 }
 
@@ -208,7 +264,11 @@ impl Config {
 /// project state is created: box content crosses into the project, so it
 /// must not reach them. Each file is named too, since resolving its
 /// directory does not follow a symlink below it.
-fn check_paths_outside(root: &Path, profile: Option<&Profile>) -> io::Result<()> {
+fn check_paths_outside(
+    root: &Path,
+    profile: Option<&Profile>,
+    bidirectional: bool,
+) -> io::Result<()> {
     let project = project_dir(&fs::canonicalize(root)?)?;
     crate::core::mounts::check_paths_outside(
         root,
@@ -218,6 +278,7 @@ fn check_paths_outside(root: &Path, profile: Option<&Profile>) -> io::Result<()>
             project.join("Containerfile"),
             project,
         ],
+        bidirectional,
     )
 }
 

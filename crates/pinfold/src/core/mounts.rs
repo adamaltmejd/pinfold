@@ -15,15 +15,30 @@ pub(crate) fn check_paths_outside(
     root: &Path,
     profile: Option<&Profile>,
     extra: impl IntoIterator<Item = PathBuf>,
+    bidirectional: bool,
+) -> io::Result<()> {
+    check_extra_paths_outside(root, protected_paths(profile, extra)?, bidirectional)
+}
+
+/// The pi layer adds its resolved project configuration paths to share admission.
+pub(crate) fn check_extra_paths_outside(
+    root: &Path,
+    paths: impl IntoIterator<Item = PathBuf>,
+    bidirectional: bool,
 ) -> io::Result<()> {
     let root = fs::canonicalize(root)?;
-    for path in protected_paths(profile, extra)? {
-        if source_beneath(&path, &root)? {
+    for path in paths {
+        if source_beneath(&path, &root)? || (bidirectional && source_beneath(&root, &path)?) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 format!(
-                    "host-path-in-project: {} resolves inside {}",
+                    "host-path-in-project: {} {} {}",
                     crate::formatting::terminal_text(&path.to_string_lossy()),
+                    if bidirectional {
+                        "overlaps"
+                    } else {
+                        "resolves inside"
+                    },
                     crate::formatting::terminal_text(&root.to_string_lossy())
                 ),
             ));
@@ -94,14 +109,7 @@ pub(crate) fn prepare(plan: &mut Plan, profile: Option<&Profile>, init: &Path) -
                 return Err(invalid("share source must be a plain directory"));
             }
             mount.host = fs::canonicalize(&mount.host)?;
-            for path in &paths {
-                if source_beneath(path, &mount.host)? || source_beneath(&mount.host, path)? {
-                    return Err(invalid(format!(
-                        "share source overlaps protected host path {}",
-                        path.display()
-                    )));
-                }
-            }
+            check_extra_paths_outside(&mount.host, paths.iter().cloned(), true)?;
             if overlaps(&mount.guest, &init)
                 || (plan.egress.is_some()
                     && overlaps(&mount.guest, Path::new("/var/host-services")))

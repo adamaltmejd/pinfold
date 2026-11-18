@@ -1,0 +1,53 @@
+Historical fix-round 1 excerpts, 2026-11-17; not a round-2 rerun.
+Selected original output lines follow. Full transcript remains in commit 6444bd3; fixture commands remain in apple.py.
+one-generation=1cce2850d709f737feac5d1aa8dfad980be9cfc04273724108a6e5df73358b0f
+CLIENT rc=143 out='' err=''
+two-session edits='one\ntwo\nalpha\nbeta\nafter-one-left\n' protected-bytes-and-metadata-unchanged=True
+CLI ['start'] cwd=$W/race: rc=0 out='' err=''
+CLI ['box', 'list', '--label', 'dev.pinfold.project=race-d9e53ba5fdcd'] cwd=$W/race: rc=0 out='{"created":"2026-11-17T14:05:25Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"1cce2850d709f737feac5d1aa8dfad980be9cfc04273724108a6e5df73358b0f","dev.pinfold.owner":"53798","dev.pinfold.profile":"default","dev.pinfold.project":"race-d9e53ba5fdcd"},"name":"pi-race-d9e53ba5fdcd-1e17a7e7dd4c","owner":53798,"owner_alive":true,"state":"running"}' err=''
+CLI ['stop'] cwd=$W/race: rc=0 out='' err=''
+CLIENT rc=125 out='' err='pinfold: signal (1cce2850d709f737feac5d1aa8dfad980be9cfc04273724108a6e5df73358b0f); pinfold box inspect 1cce2850d709f737feac5d1aa8dfad980be9cfc04273724108a6e5df73358b0f'
+CLI ['box', 'list', '--label', 'dev.pinfold.project=race-d9e53ba5fdcd'] cwd=$W/race: rc=0 out='' err=''
+CLI ['stop'] cwd=$W/race: rc=0 out='' err=''
+READY NEXT
+CLI ['box', 'list', '--label', 'dev.pinfold.project=race-d9e53ba5fdcd'] cwd=$W/race: rc=0 out='{"created":"2026-11-17T14:05:32Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"e32153c0e924ac883848af11f1705f36caf41e0a98617a089d1e97195914ac22","dev.pinfold.owner":"54159","dev.pinfold.profile":"default","dev.pinfold.project":"race-d9e53ba5fdcd"},"name":"pi-race-d9e53ba5fdcd-0dbc56be2255","owner":54159,"owner_alive":true,"state":"running"}' err=''
+CLI ['box', 'list', '--label', 'dev.pinfold.project=race-d9e53ba5fdcd'] cwd=$W/race: rc=0 out='' err=''
+CLI ['--', 'sh', '-c', 'kill -0 "$(cat escaped)"; echo ESCAPED-ALIVE'] cwd=$W/race: rc=0 out='ESCAPED-ALIVE' err=''
+CLI ['box', 'stat', 'pi-race-d9e53ba5fdcd-df7429e56471'] cwd=$W/race: rc=3 out='' err='pinfold box stat: no box named "pi-race-d9e53ba5fdcd-df7429e56471"'
+escaped descendant ended with checked box removal=True
+owner-death orphan checked recovery=True old-generation=4edd18e406a9a5621236235d74e68e84f7e43bdff657fd967fecd39631a7f58e
+CLI ['--', 'sh', '-c', 'git log -1 --format=%H'] cwd=$W/race: rc=0 out='ec69357cc5621ea829b4f0f15ad19cc7d14a6901' err=''
+host-commit join=True box-log-matches=True metadata-unchanged=True
+CLI ['--', 'sh', '-c', 'pwd; printf nested > nested-edit'] cwd=$W/race/linked: rc=0 out='$W/race/linked' err=''
+CLI ['--', 'sh', '-c', 'git status --porcelain'] cwd=$W/race/linked: rc=0 out='?? nested-edit' err=''
+CLI ['--', 'true'] cwd=$W/race/linked: rc=125 out='' err='pinfold --: worktree: .git is not a directory; run pinfold from the main checkout'
+hostile-pointer fixture-fsmonitor-marker-absent=True (not an execution/read trace)
+CLI ['--', 'sh', '-c', 'echo MUST-NOT-RUN'] cwd=$W/race: rc=125 out='' err='pinfold --: config-changed: project.mount'
+CLI ['--', 'sh', '-c', 'echo MOUNT-RESTORED'] cwd=$W/race: rc=0 out='MOUNT-RESTORED' err=''
+CLI ['--', 'true'] cwd=$W/race: rc=125 out='' err='pinfold --: config-changed: roots.state'
+CLI ['--', 'sh', '-c', 'echo ROOTS-RESTORED'] cwd=$W/race: rc=0 out='ROOTS-RESTORED' err=''
+share report={"disks": {"home": "pi-race-d9e53ba5fdcd-home", "project": null}, "home": "/home/pi", "id": "race-d9e53ba5fdcd", "mount": {"guest": "$W/race", "host": "$W/race", "kind": "share"}} no-project-disk=True no-host-remote=True
+CLI ['--', 'sh', '-c', 'for f in .pi/agent/APPEND_SYSTEM.md .claude/CLAUDE.md .codex/AGENTS.md; do grep -q "For a share project" "$HOME/$f" && grep -q "For a disk project" "$HOME/$f" || exit; done; echo THREE-GUIDANCE-SEEDS; printf USER-INSTRUCTION > "$HOME/.codex/AGENTS.md"'] cwd=$W/race: rc=0 out='THREE-GUIDANCE-SEEDS' err=''
+CLI ['push'] cwd=$W/race: rc=1 out='' err='pinfold push: share-no-crossing: shares have no project crossing'
+CLI ['fetch'] cwd=$W/race: rc=1 out='' err='pinfold fetch: share-no-crossing: shares have no project crossing'
+CLI ['--', 'sh', '-c', 'cat file; printf HOME-KEPT > "$HOME/kept"; printf host-edit > file'] cwd=$W/nongit: rc=0 out='initial' err=''
+CLI ['--', 'sh', '-c', 'true'] cwd=$W/nongit: rc=125 out='' err='pinfold --: config-changed: project.protection'
+CLI ['--', 'sh', '-c', 'cat "$HOME/kept"'] cwd=$W/nongit: rc=0 out='HOME-KEPT' err=''
+nonGit home-persistence=True stop-hostile-marker-without-config=True
+CLI ['--', 'sh', '-c', 'test ! -e untracked; test "$(cat file)" = initial; printf disk-edit > file; git add file; git commit -qm guest; echo DISK-ISOLATED'] cwd=$W/disk: rc=0 out='DISK-ISOLATED' err=''
+CLI ['push'] cwd=$W/disk: rc=0 out='{"box":"pi-disk-37bdfa8bed4b-b62bcdaa52a8","event":"pushed","refs":{"refs/remotes/host/main":"97c4d0d8353dd221e750d1af92339195b5f5f67b"},"remote":"host"}' err=''
+CLI ['fetch'] cwd=$W/disk: rc=0 out='{"box":"pi-disk-37bdfa8bed4b-7e6f15556c29","event":"fetched","refs":{"refs/remotes/pinfold/main":"0828e0bfdd286bbb5e5ff398a02ceef4ce23e011"},"remote":"pinfold"}' err=''
+disk report={"disks": {"home": "pi-disk-37bdfa8bed4b-home", "project": "pi-disk-37bdfa8bed4b-project"}, "home": "/home/pi", "id": "disk-37bdfa8bed4b", "mount": {"guest": "$W/disk", "host": "$W/disk", "kind": "disk"}} private-copy-and-crossing=True
+share launch preserves existing old project volume=True
+CLI ['--', 'sh', '-c', 'git rev-parse HEAD'] cwd=$W/disk-ff: rc=0 out='1a321faf1f4e1246423e1dcf10697cd1408e6c55' err=''
+CLI ['push'] cwd=$W/disk-ff: rc=0 out='{"box":"pi-disk-ff-42c3f7002c5b-18b291ca9a5b","event":"pushed","refs":{"refs/remotes/host/main":"1a321faf1f4e1246423e1dcf10697cd1408e6c55"},"remote":"host"}' err=''
+CLI ['fetch'] cwd=$W/disk-ff: rc=0 out='{"box":"pi-disk-ff-42c3f7002c5b-18b291ca9a5b","event":"fetched","refs":{"refs/remotes/pinfold/main":"1a321faf1f4e1246423e1dcf10697cd1408e6c55"},"remote":"pinfold"}' err=''
+Mac disk startup fast-forward/running join/live crossing incl config-now-share=True
+CLI ['--', 'sh', '-c', 'exit 0'] cwd=$W/race: rc=0 out='' err=''
+CLI ['--', 'sh', '-c', 'exit 23'] cwd=$W/race: rc=23 out='' err=''
+CLI ['--', 'sh', '-c', 'exit 125'] cwd=$W/race: rc=125 out='' err=''
+CLI ['--', 'sh', '-c', 'exit 126'] cwd=$W/race: rc=126 out='' err=''
+CLI ['--', 'sh', '-c', 'exit 127'] cwd=$W/race: rc=127 out='' err=''
+PASS selected Mac project-share acceptance; no image build
+CLI ['disk', 'list', '--json'] cwd=$W: rc=0 out='' err=''
+fixture-removed=True

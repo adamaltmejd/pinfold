@@ -7,9 +7,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::config::Config;
+use crate::config::{Config, ProjectMount};
 use crate::core::image::service;
-use crate::core::plan::{Env, Plan, Route, memory_mib};
+use crate::core::plan::{Env, MountKind, Plan, Route, memory_mib};
 use crate::core::profile::Share;
 use crate::dirs;
 use crate::pi::{context::Context, launch, state};
@@ -131,6 +131,8 @@ enum MountSource {
 struct Mount {
     source: MountSource,
     guest: Bytes,
+    kind: MountKind,
+    git: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,6 +188,7 @@ enum EnvSource {
 pub(crate) struct Snapshot {
     pub(crate) roots: Roots,
     repository: bool,
+    project_mount: ProjectMount,
     profile: ProfileSelection,
     image: Image,
     resources: Resources,
@@ -233,13 +236,19 @@ impl Snapshot {
             .filter_map(|name| std::env::var_os(&name).map(|value| (name.into(), value)))
             .collect()
     }
-    pub(crate) fn resolve(root: &Path) -> io::Result<Resolved> {
+    pub(crate) fn resolve(
+        root: &Path,
+        expected_mount: Option<ProjectMount>,
+    ) -> io::Result<Resolved> {
         let roots = Roots::resolve()?;
         let context = Context::discover(root)?;
         if context.root != root {
             return Err(io::Error::other("git-discovery: project root changed"));
         }
         let mut config = Config::load(root)?;
+        if expected_mount.is_some_and(|mount| mount != config.mount) {
+            return Err(io::Error::other("config-changed: project.mount"));
+        }
         if config.repository != context.repository {
             return Err(io::Error::other(
                 "git-discovery: repository changed during configuration",
@@ -249,7 +258,7 @@ impl Snapshot {
             *path = dirs::resolve_host_path(path)?;
         }
         config.check_host_paths(root)?;
-        context.verify()?;
+        context.verify(config.mount)?;
         let id = state::project_id(root);
         let image = launch::resolve_image(&config, &id);
         let mut plan = launch::build_plan(&config, &id, root, &image)?;
@@ -276,8 +285,19 @@ impl Snapshot {
                     path: Bytes::path(&mount.host),
                 },
                 guest: Bytes::path(&mount.guest),
+                kind: mount.kind,
+                git: mount.git,
             })
             .collect::<Vec<_>>();
+        if config.mount == ProjectMount::Share && context.repository {
+            let git = Bytes::path(&root.join(".git"));
+            mounts.push(Mount {
+                source: MountSource::Host { path: git.clone() },
+                guest: git,
+                kind: MountKind::Readonly,
+                git: true,
+            });
+        }
         if let Some(share) = &config.profile.share {
             mounts.push(Mount {
                 source: match share {
@@ -289,6 +309,8 @@ impl Snapshot {
                     },
                 },
                 guest: Bytes::path(Path::new("/opt/pinfold/profile")),
+                kind: MountKind::Readonly,
+                git: false,
             });
         }
         let disks = plan
@@ -340,6 +362,7 @@ impl Snapshot {
         let snapshot = Self {
             roots,
             repository: config.repository,
+            project_mount: config.mount,
             profile: ProfileSelection {
                 name: config.profile.name.clone(),
                 built_in: config.profile.built_in,
@@ -372,10 +395,36 @@ impl Snapshot {
         self.image.id.as_deref()
     }
 
+    pub(crate) fn project_mount(&self) -> ProjectMount {
+        self.project_mount
+    }
+
+    pub(crate) fn is_share(&self) -> bool {
+        self.project_mount == ProjectMount::Share
+    }
+
+    pub(crate) fn project_layout_differences(&self, root: &Path) -> Vec<String> {
+        if !self.is_share() {
+            return Vec::new();
+        }
+        let protected = self.mounts.iter().any(|mount| mount.git);
+        let matches =
+            crate::pi::context::share_repository(root).is_ok_and(|present| present == protected);
+        if matches {
+            Vec::new()
+        } else {
+            vec!["project.protection".into()]
+        }
+    }
+
     pub(crate) fn differences(&self, candidate: &Self) -> Vec<String> {
         let mut fields = self.roots.differences(&candidate.roots);
         for (different, field) in [
             (self.repository != candidate.repository, "repository"),
+            (
+                self.project_mount != candidate.project_mount,
+                "project.mount",
+            ),
             (self.profile != candidate.profile, "profile"),
             (self.image.source != candidate.image.source, "image.source"),
             (
