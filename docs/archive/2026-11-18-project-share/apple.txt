@@ -1,104 +1,47 @@
-CLI ['config', 'edit'] cwd=$W/race: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/race-d9e53ba5fdcd/pinfold.toml'
-SPAWN pinfold -- sh -c 'echo one >> shared; echo FIRST; while read x; do echo "$x" >> shared; echo WROTE; done' cwd=$W/race
-SPAWN pinfold -- sh -c 'echo two >> shared; echo SECOND; while read x; do echo "$x" >> shared; echo WROTE; done' cwd=$W/race
-READY FIRST
-READY SECOND
-CLI ['box', 'list', '--label', 'dev.pinfold.project=race-d9e53ba5fdcd'] cwd=$W/race: rc=0 out='{"created":"2026-11-17T14:05:25Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"1cce2850d709f737feac5d1aa8dfad980be9cfc04273724108a6e5df73358b0f","dev.pinfold.owner":"53798","dev.pinfold.profile":"default","dev.pinfold.project":"race-d9e53ba5fdcd"},"name":"pi-race-d9e53ba5fdcd-1e17a7e7dd4c","owner":53798,"owner_alive":true,"state":"running"}' err=''
+Historical fix-round 1 excerpts, 2026-11-17; not a round-2 rerun.
+Selected original output lines follow. Full transcript remains in commit 6444bd3; fixture commands remain in apple.py.
 one-generation=1cce2850d709f737feac5d1aa8dfad980be9cfc04273724108a6e5df73358b0f
-READY WROTE
-READY WROTE
 CLIENT rc=143 out='' err=''
-READY WROTE
 two-session edits='one\ntwo\nalpha\nbeta\nafter-one-left\n' protected-bytes-and-metadata-unchanged=True
 CLI ['start'] cwd=$W/race: rc=0 out='' err=''
-CLIENT rc=0 out='' err='pinfold: waiting for the project box to start'
 CLI ['box', 'list', '--label', 'dev.pinfold.project=race-d9e53ba5fdcd'] cwd=$W/race: rc=0 out='{"created":"2026-11-17T14:05:25Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"1cce2850d709f737feac5d1aa8dfad980be9cfc04273724108a6e5df73358b0f","dev.pinfold.owner":"53798","dev.pinfold.profile":"default","dev.pinfold.project":"race-d9e53ba5fdcd"},"name":"pi-race-d9e53ba5fdcd-1e17a7e7dd4c","owner":53798,"owner_alive":true,"state":"running"}' err=''
-SPAWN pinfold -- sh -c 'echo JOIN; cat >/dev/null' cwd=$W/race
-READY JOIN
 CLI ['stop'] cwd=$W/race: rc=0 out='' err=''
 CLIENT rc=125 out='' err='pinfold: signal (1cce2850d709f737feac5d1aa8dfad980be9cfc04273724108a6e5df73358b0f); pinfold box inspect 1cce2850d709f737feac5d1aa8dfad980be9cfc04273724108a6e5df73358b0f'
 CLI ['box', 'list', '--label', 'dev.pinfold.project=race-d9e53ba5fdcd'] cwd=$W/race: rc=0 out='' err=''
 CLI ['stop'] cwd=$W/race: rc=0 out='' err=''
-SPAWN pinfold -- sh -c 'echo LAST; cat >/dev/null' cwd=$W/race
-READY LAST
-SPAWN pinfold -- sh -c 'echo NEXT; cat >/dev/null' cwd=$W/race
 READY NEXT
-CLIENT rc=0 out='' err=''
 CLI ['box', 'list', '--label', 'dev.pinfold.project=race-d9e53ba5fdcd'] cwd=$W/race: rc=0 out='{"created":"2026-11-17T14:05:32Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"e32153c0e924ac883848af11f1705f36caf41e0a98617a089d1e97195914ac22","dev.pinfold.owner":"54159","dev.pinfold.profile":"default","dev.pinfold.project":"race-d9e53ba5fdcd"},"name":"pi-race-d9e53ba5fdcd-0dbc56be2255","owner":54159,"owner_alive":true,"state":"running"}' err=''
-CLIENT rc=0 out='' err=''
 CLI ['box', 'list', '--label', 'dev.pinfold.project=race-d9e53ba5fdcd'] cwd=$W/race: rc=0 out='' err=''
-CLI ['start'] cwd=$W/race: rc=0 out='' err=''
-CLI ['--', 'sh', '-c', 'setsid sh -c "echo \\$\\$ > escaped; exec tail -f /dev/null" </dev/null >/dev/null 2>&1 &'] cwd=$W/race: rc=0 out='' err=''
 CLI ['--', 'sh', '-c', 'kill -0 "$(cat escaped)"; echo ESCAPED-ALIVE'] cwd=$W/race: rc=0 out='ESCAPED-ALIVE' err=''
-CLI ['box', 'list', '--label', 'dev.pinfold.project=race-d9e53ba5fdcd'] cwd=$W/race: rc=0 out='{"created":"2026-11-17T14:05:35Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"83ba55dd231d0b1b93a2d21c34d3a3c06f198907f62a3a233c57fe9832c0864c","dev.pinfold.owner":"54289","dev.pinfold.profile":"default","dev.pinfold.project":"race-d9e53ba5fdcd"},"name":"pi-race-d9e53ba5fdcd-df7429e56471","owner":54289,"owner_alive":true,"state":"running"}' err=''
-CLI ['stop'] cwd=$W/race: rc=0 out='' err=''
 CLI ['box', 'stat', 'pi-race-d9e53ba5fdcd-df7429e56471'] cwd=$W/race: rc=3 out='' err='pinfold box stat: no box named "pi-race-d9e53ba5fdcd-df7429e56471"'
 escaped descendant ended with checked box removal=True
-CLI ['start'] cwd=$W/race: rc=0 out='' err=''
-CLI ['box', 'list', '--label', 'dev.pinfold.project=race-d9e53ba5fdcd'] cwd=$W/race: rc=0 out='{"created":"2026-11-17T14:05:39Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"4edd18e406a9a5621236235d74e68e84f7e43bdff657fd967fecd39631a7f58e","dev.pinfold.owner":"54476","dev.pinfold.profile":"default","dev.pinfold.project":"race-d9e53ba5fdcd"},"name":"pi-race-d9e53ba5fdcd-35112ea7e411","owner":54476,"owner_alive":true,"state":"running"}' err=''
-CLI ['--', 'sh', '-c', 'echo RECOVERED'] cwd=$W/race: rc=0 out='RECOVERED' err=''
-CLI ['box', 'list', '--label', 'dev.pinfold.project=race-d9e53ba5fdcd'] cwd=$W/race: rc=0 out='' err=''
 owner-death orphan checked recovery=True old-generation=4edd18e406a9a5621236235d74e68e84f7e43bdff657fd967fecd39631a7f58e
-CLI ['start'] cwd=$W/race: rc=0 out='' err=''
-CLI ['--', 'sh', '-c', 'printf guest >> file; git log -1 --format=%H'] cwd=$W/race: rc=0 out='ac82716ffb06b5b45476d9d2195319d3a016dcd5' err=''
-CLI ['--', 'sh', '-c', 'echo JOIN-AFTER-HOST-COMMIT; git status --porcelain'] cwd=$W/race: rc=0 out='JOIN-AFTER-HOST-COMMIT\nA  file\nA  host-only\n?? escaped\n?? shared' err=''
 CLI ['--', 'sh', '-c', 'git log -1 --format=%H'] cwd=$W/race: rc=0 out='ec69357cc5621ea829b4f0f15ad19cc7d14a6901' err=''
 host-commit join=True box-log-matches=True metadata-unchanged=True
 CLI ['--', 'sh', '-c', 'pwd; printf nested > nested-edit'] cwd=$W/race/linked: rc=0 out='$W/race/linked' err=''
-CLI ['box', 'list', '--label', 'dev.pinfold.project=race-d9e53ba5fdcd'] cwd=$W/race: rc=0 out='{"created":"2026-11-17T14:05:45Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"21c42465ff9787aa4fd6bf68e72fbaec0afa413fe8e5d2977f097cd6e54d9889","dev.pinfold.owner":"54721","dev.pinfold.profile":"default","dev.pinfold.project":"race-d9e53ba5fdcd"},"name":"pi-race-d9e53ba5fdcd-9e969465584d","owner":54721,"owner_alive":true,"state":"running"}' err=''
 CLI ['--', 'sh', '-c', 'git status --porcelain'] cwd=$W/race/linked: rc=0 out='?? nested-edit' err=''
-CLI ['--', 'true'] cwd=$W/outside: rc=125 out='' err='pinfold --: worktree: .git is not a directory; run pinfold from the main checkout'
-CLI ['--', 'true'] cwd=$W/separate: rc=125 out='' err='pinfold --: worktree: .git is not a directory; run pinfold from the main checkout'
-CLI ['--', 'sh', '-c', 'printf "gitdir: $W/trap/.git\\n" > linked/.git'] cwd=$W/race: rc=0 out='' err=''
 CLI ['--', 'true'] cwd=$W/race/linked: rc=125 out='' err='pinfold --: worktree: .git is not a directory; run pinfold from the main checkout'
 hostile-pointer fixture-fsmonitor-marker-absent=True (not an execution/read trace)
 CLI ['--', 'sh', '-c', 'echo MUST-NOT-RUN'] cwd=$W/race: rc=125 out='' err='pinfold --: config-changed: project.mount'
-CLI ['push'] cwd=$W/race: rc=1 out='' err='pinfold push: share-no-crossing: shares have no project crossing'
-CLI ['fetch'] cwd=$W/race: rc=1 out='' err='pinfold fetch: share-no-crossing: shares have no project crossing'
 CLI ['--', 'sh', '-c', 'echo MOUNT-RESTORED'] cwd=$W/race: rc=0 out='MOUNT-RESTORED' err=''
 CLI ['--', 'true'] cwd=$W/race: rc=125 out='' err='pinfold --: config-changed: roots.state'
 CLI ['--', 'sh', '-c', 'echo ROOTS-RESTORED'] cwd=$W/race: rc=0 out='ROOTS-RESTORED' err=''
-CLI ['push'] cwd=$W/race: rc=1 out='' err='pinfold push: share-no-crossing: shares have no project crossing'
-CLI ['fetch'] cwd=$W/race: rc=1 out='' err='pinfold fetch: share-no-crossing: shares have no project crossing'
-CLI ['config'] cwd=$W/race: rc=0 out='{"config":"$W/c/pinfold/projects/race-d9e53ba5fdcd/pinfold.toml","containerfile":null,"cpus":2.0,"egress":{"allow":[],"routes":{}},"env":[],"image":"localhost/pinfold/profile-default","image_built":true,"image_error":null,"image_source":"explicit","memory":"1G","profile":"default","project":{"disks":{"home":"pi-race-d9e53ba5fdcd-home","project":null},"home":"/home/pi","id":"race-d9e53ba5fdcd","mount":{"guest":"$W/race","host":"$W/race","kind":"share"}},"root":"$W/race"}' err=''
-CLI ['disk', 'list', '--json'] cwd=$W/race: rc=0 out='{"allocated":6946816,"attached":[{"box":"pi-race-d9e53ba5fdcd-9e969465584d","readonly":false}],"clean":false,"name":"pi-race-d9e53ba5fdcd-home","size":68719476736}' err=''
 share report={"disks": {"home": "pi-race-d9e53ba5fdcd-home", "project": null}, "home": "/home/pi", "id": "race-d9e53ba5fdcd", "mount": {"guest": "$W/race", "host": "$W/race", "kind": "share"}} no-project-disk=True no-host-remote=True
 CLI ['--', 'sh', '-c', 'for f in .pi/agent/APPEND_SYSTEM.md .claude/CLAUDE.md .codex/AGENTS.md; do grep -q "For a share project" "$HOME/$f" && grep -q "For a disk project" "$HOME/$f" || exit; done; echo THREE-GUIDANCE-SEEDS; printf USER-INSTRUCTION > "$HOME/.codex/AGENTS.md"'] cwd=$W/race: rc=0 out='THREE-GUIDANCE-SEEDS' err=''
-CLI ['stop'] cwd=$W/race: rc=0 out='' err=''
 CLI ['push'] cwd=$W/race: rc=1 out='' err='pinfold push: share-no-crossing: shares have no project crossing'
 CLI ['fetch'] cwd=$W/race: rc=1 out='' err='pinfold fetch: share-no-crossing: shares have no project crossing'
-CLI ['config', 'edit'] cwd=$W/nongit: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/nongit-3ab90b1ad18b/pinfold.toml'
-CLI ['start'] cwd=$W/nongit: rc=0 out='' err=''
 CLI ['--', 'sh', '-c', 'cat file; printf HOME-KEPT > "$HOME/kept"; printf host-edit > file'] cwd=$W/nongit: rc=0 out='initial' err=''
-CLI ['--', 'sh', '-c', 'mkdir .git'] cwd=$W/nongit: rc=0 out='' err=''
 CLI ['--', 'sh', '-c', 'true'] cwd=$W/nongit: rc=125 out='' err='pinfold --: config-changed: project.protection'
-CLI ['config'] cwd=$W/nongit: rc=0 out='{"config":"$W/c/pinfold/projects/nongit-3ab90b1ad18b/pinfold.toml","containerfile":null,"cpus":2.0,"egress":{"allow":[],"routes":{}},"env":[],"image":"localhost/pinfold/profile-default","image_built":true,"image_error":null,"image_source":"explicit","memory":"1G","profile":"default","project":{"disks":{"home":"pi-nongit-3ab90b1ad18b-home","project":null},"home":"/home/pi","id":"nongit-3ab90b1ad18b","mount":{"guest":"$W/nongit","host":"$W/nongit","kind":"share"}},"root":"$W/nongit"}' err=''
-CLI ['box', 'list', '--label', 'dev.pinfold.project=nongit-3ab90b1ad18b'] cwd=$W/nongit: rc=0 out='{"created":"2026-11-17T14:05:56Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"52d182097f3c5b1445c2feb23ef9e9793addbfac9b295e2ab4e3c68b84875a21","dev.pinfold.owner":"55205","dev.pinfold.profile":"default","dev.pinfold.project":"nongit-3ab90b1ad18b"},"name":"pi-nongit-3ab90b1ad18b-08830bd5469a","owner":55205,"owner_alive":true,"state":"running"}' err=''
-CLI ['stop'] cwd=$W/nongit: rc=0 out='' err=''
-CLI ['stop'] cwd=$W/nongit: rc=0 out='' err=''
-CLI ['config', 'edit'] cwd=$W/nongit: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/nongit-3ab90b1ad18b/pinfold.toml'
 CLI ['--', 'sh', '-c', 'cat "$HOME/kept"'] cwd=$W/nongit: rc=0 out='HOME-KEPT' err=''
 nonGit home-persistence=True stop-hostile-marker-without-config=True
-CLI ['config', 'edit'] cwd=$W/disk: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/disk-37bdfa8bed4b/pinfold.toml'
-CLI ['config'] cwd=$W/disk: rc=0 out='{"config":"$W/c/pinfold/projects/disk-37bdfa8bed4b/pinfold.toml","containerfile":null,"cpus":2.0,"egress":{"allow":[],"routes":{}},"env":[],"image":"localhost/pinfold/profile-default","image_built":true,"image_error":null,"image_source":"explicit","memory":"1G","profile":"default","project":{"disks":{"home":"pi-disk-37bdfa8bed4b-home","project":"pi-disk-37bdfa8bed4b-project"},"home":"/home/pi","id":"disk-37bdfa8bed4b","mount":{"guest":"$W/disk","host":"$W/disk","kind":"disk"}},"root":"$W/disk"}' err=''
 CLI ['--', 'sh', '-c', 'test ! -e untracked; test "$(cat file)" = initial; printf disk-edit > file; git add file; git commit -qm guest; echo DISK-ISOLATED'] cwd=$W/disk: rc=0 out='DISK-ISOLATED' err=''
 CLI ['push'] cwd=$W/disk: rc=0 out='{"box":"pi-disk-37bdfa8bed4b-b62bcdaa52a8","event":"pushed","refs":{"refs/remotes/host/main":"97c4d0d8353dd221e750d1af92339195b5f5f67b"},"remote":"host"}' err=''
 CLI ['fetch'] cwd=$W/disk: rc=0 out='{"box":"pi-disk-37bdfa8bed4b-7e6f15556c29","event":"fetched","refs":{"refs/remotes/pinfold/main":"0828e0bfdd286bbb5e5ff398a02ceef4ce23e011"},"remote":"pinfold"}' err=''
 disk report={"disks": {"home": "pi-disk-37bdfa8bed4b-home", "project": "pi-disk-37bdfa8bed4b-project"}, "home": "/home/pi", "id": "disk-37bdfa8bed4b", "mount": {"guest": "$W/disk", "host": "$W/disk", "kind": "disk"}} private-copy-and-crossing=True
-CLI ['start'] cwd=$W/disk: rc=0 out='' err=''
-CLI ['stop'] cwd=$W/disk: rc=0 out='' err=''
-CLI ['disk', 'list', '--json'] cwd=$W/disk: rc=0 out='{"allocated":6963200,"attached":[],"clean":true,"name":"pi-race-d9e53ba5fdcd-home","size":68719476736}\n{"allocated":7356416,"attached":[],"clean":true,"name":"pi-disk-37bdfa8bed4b-project","size":68719476736}\n{"allocated":6946816,"attached":[],"clean":true,"name":"pi-disk-37bdfa8bed4b-home","size":68719476736}\n{"allocated":6963200,"attached":[],"clean":true,"name":"pi-nongit-3ab90b1ad18b-home","size":68719476736}' err=''
 share launch preserves existing old project volume=True
-CLI ['config', 'edit'] cwd=$W/disk-ff: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/disk-ff-42c3f7002c5b/pinfold.toml'
-CLI ['start'] cwd=$W/disk-ff: rc=0 out='' err=''
-CLI ['stop'] cwd=$W/disk-ff: rc=0 out='' err=''
-CLI ['start'] cwd=$W/disk-ff: rc=0 out='' err=''
-CLI ['box', 'list', '--label', 'dev.pinfold.project=disk-ff-42c3f7002c5b'] cwd=$W/disk-ff: rc=0 out='{"created":"2026-11-17T14:06:23Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"4fbf6008d5111ad5b74a5dc9ab7cd2e62884df3e60724ff7de21b5c47ae7ebdb","dev.pinfold.owner":"56604","dev.pinfold.profile":"default","dev.pinfold.project":"disk-ff-42c3f7002c5b"},"name":"pi-disk-ff-42c3f7002c5b-18b291ca9a5b","owner":56604,"owner_alive":true,"state":"running"}' err=''
 CLI ['--', 'sh', '-c', 'git rev-parse HEAD'] cwd=$W/disk-ff: rc=0 out='1a321faf1f4e1246423e1dcf10697cd1408e6c55' err=''
 CLI ['push'] cwd=$W/disk-ff: rc=0 out='{"box":"pi-disk-ff-42c3f7002c5b-18b291ca9a5b","event":"pushed","refs":{"refs/remotes/host/main":"1a321faf1f4e1246423e1dcf10697cd1408e6c55"},"remote":"host"}' err=''
 CLI ['fetch'] cwd=$W/disk-ff: rc=0 out='{"box":"pi-disk-ff-42c3f7002c5b-18b291ca9a5b","event":"fetched","refs":{"refs/remotes/pinfold/main":"1a321faf1f4e1246423e1dcf10697cd1408e6c55"},"remote":"pinfold"}' err=''
-CLI ['box', 'list', '--label', 'dev.pinfold.project=disk-ff-42c3f7002c5b'] cwd=$W/disk-ff: rc=0 out='{"created":"2026-11-17T14:06:23Z","image":{"id":"b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27","ref":"localhost/pinfold/profile-default:latest"},"labels":{"dev.pinfold.base":"","dev.pinfold.containerfile-sha256":"ea0a9fecc5adba3a4656ed5955c958dacc8491c51967c97bd9011feeac01bd6f","dev.pinfold.generation":"4fbf6008d5111ad5b74a5dc9ab7cd2e62884df3e60724ff7de21b5c47ae7ebdb","dev.pinfold.owner":"56604","dev.pinfold.profile":"default","dev.pinfold.project":"disk-ff-42c3f7002c5b"},"name":"pi-disk-ff-42c3f7002c5b-18b291ca9a5b","owner":56604,"owner_alive":true,"state":"running"}' err=''
-CLI ['stop'] cwd=$W/disk-ff: rc=0 out='' err=''
 Mac disk startup fast-forward/running join/live crossing incl config-now-share=True
 CLI ['--', 'sh', '-c', 'exit 0'] cwd=$W/race: rc=0 out='' err=''
 CLI ['--', 'sh', '-c', 'exit 23'] cwd=$W/race: rc=23 out='' err=''
@@ -106,16 +49,5 @@ CLI ['--', 'sh', '-c', 'exit 125'] cwd=$W/race: rc=125 out='' err=''
 CLI ['--', 'sh', '-c', 'exit 126'] cwd=$W/race: rc=126 out='' err=''
 CLI ['--', 'sh', '-c', 'exit 127'] cwd=$W/race: rc=127 out='' err=''
 PASS selected Mac project-share acceptance; no image build
-CLI ['stop'] cwd=$W/race: rc=0 out='' err=''
-CLI ['stop'] cwd=$W/nongit: rc=0 out='' err=''
-CLI ['stop'] cwd=$W/disk: rc=0 out='' err=''
-CLI ['stop'] cwd=$W/disk-ff: rc=0 out='' err=''
-CLI ['disk', 'list', '--json'] cwd=$W: rc=0 out='{"allocated":6963200,"attached":[],"clean":true,"name":"pi-race-d9e53ba5fdcd-home","size":68719476736}\n{"allocated":7356416,"attached":[],"clean":true,"name":"pi-disk-37bdfa8bed4b-project","size":68719476736}\n{"allocated":6946816,"attached":[],"clean":true,"name":"pi-disk-37bdfa8bed4b-home","size":68719476736}\n{"allocated":7290880,"attached":[],"clean":true,"name":"pi-disk-ff-42c3f7002c5b-project","size":68719476736}\n{"allocated":6946816,"attached":[],"clean":true,"name":"pi-disk-ff-42c3f7002c5b-home","size":68719476736}\n{"allocated":6963200,"attached":[],"clean":true,"name":"pi-nongit-3ab90b1ad18b-home","size":68719476736}' err=''
-CLI ['disk', 'rm', 'pi-race-d9e53ba5fdcd-home', '--json'] cwd=$W: rc=0 out='{"disk":"pi-race-d9e53ba5fdcd-home","event":"removed","existed":true}' err=''
-CLI ['disk', 'rm', 'pi-disk-37bdfa8bed4b-project', '--json'] cwd=$W: rc=0 out='{"disk":"pi-disk-37bdfa8bed4b-project","event":"removed","existed":true}' err=''
-CLI ['disk', 'rm', 'pi-disk-37bdfa8bed4b-home', '--json'] cwd=$W: rc=0 out='{"disk":"pi-disk-37bdfa8bed4b-home","event":"removed","existed":true}' err=''
-CLI ['disk', 'rm', 'pi-disk-ff-42c3f7002c5b-project', '--json'] cwd=$W: rc=0 out='{"disk":"pi-disk-ff-42c3f7002c5b-project","event":"removed","existed":true}' err=''
-CLI ['disk', 'rm', 'pi-disk-ff-42c3f7002c5b-home', '--json'] cwd=$W: rc=0 out='{"disk":"pi-disk-ff-42c3f7002c5b-home","event":"removed","existed":true}' err=''
-CLI ['disk', 'rm', 'pi-nongit-3ab90b1ad18b-home', '--json'] cwd=$W: rc=0 out='{"disk":"pi-nongit-3ab90b1ad18b-home","event":"removed","existed":true}' err=''
 CLI ['disk', 'list', '--json'] cwd=$W: rc=0 out='' err=''
 fixture-removed=True

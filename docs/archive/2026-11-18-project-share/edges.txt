@@ -1,92 +1,87 @@
-CLI ['config', 'edit'] cwd=$W/topology: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/topology-d20d6c0593ac/pinfold.toml'
-CLI ['start'] cwd=$W/topology: rc=0 out='' err=''
+Historical fix-round 1 excerpts, 2026-11-17; not a round-2 rerun.
+Selected original output lines follow; | joins related lines. Full transcript remains in commit 6444bd3; commands remain in edges.py.
 CLI ['push'] cwd=$W/topology: rc=1 out='' err='pinfold push: share-no-crossing: shares have no project crossing'
 CLI ['fetch'] cwd=$W/topology: rc=1 out='' err='pinfold fetch: share-no-crossing: shares have no project crossing'
 CLI ['--', 'sh', '-c', 'echo MUST-NOT-RUN'] cwd=$W/topology: rc=125 out='' err='pinfold --: config-changed: project.protection'
 CLI ['--', 'sh', '-c', 'echo TOPOLOGY-RESTORED'] cwd=$W/topology: rc=0 out='TOPOLOGY-RESTORED' err=''
-CLI ['stop'] cwd=$W/topology: rc=0 out='' err=''
-CLI ['start'] cwd=$W/topology: rc=0 out='' err=''
-CLI ['start'] cwd=$W/topology: rc=0 out='' err=''
-CLI ['stop'] cwd=$W/topology: rc=0 out='' err=''
-CLI ['stop'] cwd=$W/topology: rc=0 out='' err=''
-CLI ['config', 'edit'] cwd=$W/path: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/path-1a7207ee43b5/pinfold.toml'
-CLI ['--', 'sh', '-c', 'if printf refused >> .git/config; then exit 1; fi; printf allowed > ordinary; git log -1 --format=%s; echo GIT-READONLY-WORKFILE-WRITABLE'] cwd=$W/path: rc=0 out='initial\nGIT-READONLY-WORKFILE-WRITABLE' err='sh: 1: cannot create .git/config: Read-only file system'
-protected metadata unchanged after refused write=True
+CLI ['--', 'sh', '-c', 'if printf refused >> .git/config; then exit 1; fi; printf allowed > ordinary; git log -1 --format=%s; echo GIT-READONLY-WORKFILE-WRITABLE'] cwd=$W/path: rc=0 out='initial\nGIT-READONLY-WORKFILE-WRITABLE' err='sh: 1: cannot create .git/config: Read-only file system' | protected metadata unchanged after refused write=True
 CLI ['--', 'sh', '-c', 'pwd; echo CWD-AVAILABLE'] cwd=$W/path/new-untracked-dir: rc=0 out='$W/path/new-untracked-dir\nCWD-AVAILABLE' err=''
 CLI ['--', 'sh', '-c', 'true'] cwd=$W/path: rc=125 out='' err='pinfold --: host-path-in-project: $W/path/config-source overlaps $W/path'
 CLI ['--', 'sh', '-c', 'echo CONFIG-PATH-RESTORED'] cwd=$W/path: rc=0 out='CONFIG-PATH-RESTORED' err=''
-CLI ['--', 'true'] cwd=$W/path: rc=125 out='' err='pinfold --: host-path-in-project: $W/path/protected/pinfold overlaps $W/path'
-CLI ['--', 'true'] cwd=$W/path: rc=125 out='' err='pinfold --: host-path-in-project: $W/path/protected/pinfold overlaps $W/path'
+CLI ['--', 'true'] cwd=$W/path: rc=125 out='' err='pinfold --: host-path-in-project: $W/path/protected/pinfold overlaps $W/path' | CLI ['--', 'true'] cwd=$W/path: rc=125 out='' err='pinfold --: host-path-in-project: $W/path/protected/pinfold overlaps $W/path'
 CLI ['--', 'sh', '-c', 'echo CORE-PATH-RESTORED'] cwd=$W/path: rc=0 out='CORE-PATH-RESTORED' err=''
-CLI ['config', 'edit'] cwd=$W/no-config: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/no-config-bc416e92d7c0/pinfold.toml'
-CLI ['--', 'true'] cwd=$W/external-worktree: rc=125 out='' err='pinfold --: worktree: .git is not a directory; run pinfold from the main checkout'
-unsupported Git layout config-and-project-state-absent=True folder=$W/external-worktree
-CLI ['--', 'true'] cwd=$W/separate-git: rc=125 out='' err='pinfold --: worktree: .git is not a directory; run pinfold from the main checkout'
-unsupported Git layout config-and-project-state-absent=True folder=$W/separate-git
+CLI ['--', 'true'] cwd=$W/external-worktree: rc=125 out='' err='pinfold --: worktree: .git is not a directory; run pinfold from the main checkout' | unsupported Git layout config-and-project-state-absent=True folder=$W/external-worktree
+CLI ['--', 'true'] cwd=$W/separate-git: rc=125 out='' err='pinfold --: worktree: .git is not a directory; run pinfold from the main checkout' | unsupported Git layout config-and-project-state-absent=True folder=$W/separate-git
 CLI ['push'] cwd=$W/no-config: rc=1 out='' err='pinfold push: no-config: $W/no-config has no configuration; run `pinfold config edit`'
 CLI ['fetch'] cwd=$W/no-config: rc=1 out='' err='pinfold fetch: no-config: $W/no-config has no configuration; run `pinfold config edit`'
-CLI ['config', 'edit'] cwd=$W/no-config: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/no-config-bc416e92d7c0/pinfold.toml'
 CLI ['--', 'sh', '-c', 'echo CONFIG-RESTORED'] cwd=$W/no-config: rc=0 out='CONFIG-RESTORED' err=''
-CLI ['config', 'edit'] cwd=$W/no-host-git: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/no-host-git-64ecdce0d9e6/pinfold.toml'
 host-Git observer positive-control fired=True argv=rev-parse --show-toplevel
-CLI ['start'] cwd=$W/no-host-git: rc=0 out='' err=''
 CLI ['--', 'sh', '-c', 'git init -q; printf %s $W/observer-repo/.git > .git/commondir'] cwd=$W/no-host-git: rc=0 out='' err=''
-CLI ['--', 'sh', '-c', 'true'] cwd=$W/no-host-git: rc=125 out='' err='pinfold --: config-changed: project.protection'
-CLI ['stop'] cwd=$W/no-host-git: rc=0 out='' err=''
 CLI ['--', 'sh', '-c', 'true'] cwd=$W/no-host-git: rc=125 out='' err='pinfold --: worktree: .git is not a directory; run pinfold from the main checkout'
-CLI ['start'] cwd=$W/no-host-git: rc=0 out='' err=''
 CLI ['--', 'sh', '-c', 'if printf x >> .git/config; then exit 1; fi; echo ADOPTED-GIT-PROTECTED'] cwd=$W/no-host-git: rc=0 out='ADOPTED-GIT-PROTECTED' err='sh: 1: cannot create .git/config: Read-only file system'
-CLI ['config'] cwd=$W/no-host-git: rc=0 out='{"config":"$W/c/pinfold/projects/no-host-git-64ecdce0d9e6/pinfold.toml","containerfile":null,"cpus":2.0,"egress":{"allow":[],"routes":{}},"env":[],"image":"localhost/pinfold/profile-default","image_built":true,"image_error":null,"image_source":"explicit","memory":"1G","profile":"default","project":{"disks":{"home":"pi-no-host-git-64ecdce0d9e6-home","project":null},"home":"/home/pi","id":"no-host-git-64ecdce0d9e6","mount":{"guest":"$W/no-host-git","host":"$W/no-host-git","kind":"share"}},"root":"$W/no-host-git"}' err=''
 CLI ['--', 'sh', '-c', 'true'] cwd=$W/no-host-git: rc=125 out='' err='pinfold --: config-changed: project.mount'
-CLI ['stop'] cwd=$W/no-host-git: rc=0 out='' err=''
 share startup/join/report/stop and post-stop adoption: host-Git observer calls=0
-CLI ['config', 'edit'] cwd=$W/hostile-crossing: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/hostile-crossing-0fe7b3373689/pinfold.toml'
-CLI ['start'] cwd=$W/hostile-crossing: rc=0 out='' err=''
-CLI ['--', 'sh', '-c', 'printf "gitdir: /outside-hostile\\n" > .git'] cwd=$W/hostile-crossing: rc=0 out='' err=''
 CLI ['push'] cwd=$W/hostile-crossing: rc=1 out='' err='pinfold push: share-no-crossing: shares have no project crossing'
 CLI ['fetch'] cwd=$W/hostile-crossing: rc=1 out='' err='pinfold fetch: share-no-crossing: shares have no project crossing'
-CLI ['stop'] cwd=$W/hostile-crossing: rc=0 out='' err=''
 hostile-marker crossing consults owner before discovery=True
-CLI ['config', 'edit'] cwd=$W/linked-roots: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/linked-roots-05a5010ba625/pinfold.toml'
-CLI ['start'] cwd=$W/linked-roots: rc=0 out='' err=''
-CLI ['--', 'sh', '-c', 'printf "gitdir: /outside-hostile\\n" > linked/.git'] cwd=$W/linked-roots: rc=0 out='' err=''
 CLI ['--', 'true'] cwd=$W/linked-roots/linked: rc=125 out='' err='pinfold --: config-changed: roots.config'
 CLI ['--', 'true'] cwd=$W/linked-roots/linked: rc=125 out='' err='pinfold --: worktree: .git is not a directory; run pinfold from the main checkout'
 CLI ['--', 'sh', '-c', 'pwd'] cwd=$W/linked-roots/linked: rc=0 out='$W/linked-roots/linked' err=''
-CLI ['stop'] cwd=$W/linked-roots: rc=0 out='' err=''
 changed roots precede malformed config and worktree pointer=True
-CLI ['config', 'edit'] cwd=$W/grant-join: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/grant-join-14cf2c57bd88/pinfold.toml'
-SPAWN pinfold -- sh -c 'echo WRITER; while read cmd; do eval "$cmd"; echo MADE; done' cwd=$W/grant-join
-READY WRITER
-SPAWN pinfold -- sh -c 'echo MUST-NOT-RUN' cwd=$W/grant-join
-READY MADE
 grant join: metadata captured without Git; guest gained .git before grant; single allowed outcome=125/config-changed; command absent=True
-CLI ['stop'] cwd=$W/grant-join: rc=0 out='' err=''
-CLIENT rc=125 out='' err='pinfold: signal (39b299de60120905d99d79c44244549a62f6b37da372c1112da1fea9c9403321); pinfold box inspect 39b299de60120905d99d79c44244549a62f6b37da372c1112da1fea9c9403321'
-CLI ['config', 'edit'] cwd=$W/grant-keep: rc=0 out='' err='pinfold config: $W/c/pinfold/projects/grant-keep-51ce58385d5b/pinfold.toml'
-SPAWN pinfold -- sh -c 'echo WRITER; while read cmd; do eval "$cmd"; echo MADE; done' cwd=$W/grant-keep
-READY WRITER
-READY MADE
 grant keep: metadata captured without Git; guest gained .git before grant; single allowed outcome=125/config-changed; command absent=True
-CLI ['stop'] cwd=$W/grant-keep: rc=0 out='' err=''
-CLIENT rc=125 out='' err='pinfold: signal (1b834f88c901b997cbeb6f68e7076c928b44592f7572d09505601f5720e13f6d); pinfold box inspect 1b834f88c901b997cbeb6f68e7076c928b44592f7572d09505601f5720e13f6d'
 PASS nonGit running-owner crossing, hostile layout refusal, cwd, linked config, core roots, no-config controls
-CLI ['stop'] cwd=$W/topology: rc=0 out='' err=''
-CLI ['stop'] cwd=$W/path: rc=0 out='' err=''
-CLI ['stop'] cwd=$W/no-config: rc=0 out='' err=''
-CLI ['stop'] cwd=$W/no-host-git: rc=0 out='' err=''
-CLI ['stop'] cwd=$W/hostile-crossing: rc=0 out='' err=''
-CLI ['stop'] cwd=$W/linked-roots: rc=0 out='' err=''
-CLI ['stop'] cwd=$W/grant-join: rc=0 out='' err=''
-CLI ['stop'] cwd=$W/grant-keep: rc=0 out='' err=''
-CLI ['disk', 'list', '--json'] cwd=$W: rc=0 out='{"allocated":6946816,"attached":[],"clean":true,"name":"pi-topology-d20d6c0593ac-home","size":68719476736}\n{"allocated":6946816,"attached":[],"clean":true,"name":"pi-no-config-bc416e92d7c0-home","size":68719476736}\n{"allocated":6946816,"attached":[],"clean":true,"name":"pi-linked-roots-05a5010ba625-home","size":68719476736}\n{"allocated":6946816,"attached":[],"clean":true,"name":"pi-hostile-crossing-0fe7b3373689-home","size":68719476736}\n{"allocated":6946816,"attached":[],"clean":true,"name":"pi-no-host-git-64ecdce0d9e6-home","size":68719476736}\n{"allocated":6946816,"attached":[],"clean":true,"name":"pi-grant-keep-51ce58385d5b-home","size":68719476736}\n{"allocated":6946816,"attached":[],"clean":true,"name":"pi-grant-join-14cf2c57bd88-home","size":68719476736}\n{"allocated":6946816,"attached":[],"clean":true,"name":"pi-path-1a7207ee43b5-home","size":68719476736}' err=''
-CLI ['disk', 'rm', 'pi-topology-d20d6c0593ac-home', '--json'] cwd=$W: rc=0 out='{"disk":"pi-topology-d20d6c0593ac-home","event":"removed","existed":true}' err=''
-CLI ['disk', 'rm', 'pi-no-config-bc416e92d7c0-home', '--json'] cwd=$W: rc=0 out='{"disk":"pi-no-config-bc416e92d7c0-home","event":"removed","existed":true}' err=''
-CLI ['disk', 'rm', 'pi-linked-roots-05a5010ba625-home', '--json'] cwd=$W: rc=0 out='{"disk":"pi-linked-roots-05a5010ba625-home","event":"removed","existed":true}' err=''
-CLI ['disk', 'rm', 'pi-hostile-crossing-0fe7b3373689-home', '--json'] cwd=$W: rc=0 out='{"disk":"pi-hostile-crossing-0fe7b3373689-home","event":"removed","existed":true}' err=''
-CLI ['disk', 'rm', 'pi-no-host-git-64ecdce0d9e6-home', '--json'] cwd=$W: rc=0 out='{"disk":"pi-no-host-git-64ecdce0d9e6-home","event":"removed","existed":true}' err=''
-CLI ['disk', 'rm', 'pi-grant-keep-51ce58385d5b-home', '--json'] cwd=$W: rc=0 out='{"disk":"pi-grant-keep-51ce58385d5b-home","event":"removed","existed":true}' err=''
-CLI ['disk', 'rm', 'pi-grant-join-14cf2c57bd88-home', '--json'] cwd=$W: rc=0 out='{"disk":"pi-grant-join-14cf2c57bd88-home","event":"removed","existed":true}' err=''
-CLI ['disk', 'rm', 'pi-path-1a7207ee43b5-home', '--json'] cwd=$W: rc=0 out='{"disk":"pi-path-1a7207ee43b5-home","event":"removed","existed":true}' err=''
 CLI ['disk', 'list', '--json'] cwd=$W: rc=0 out='' err=''
 edges fixture-removed=True
+Round 2 retained excerpts, before:
+$ python3 docs/archive/2026-11-18-project-share/edges.py /tmp/pf330r2/before/target/debug/pinfold before
+root-selection push: mode=before parent-selected=True refs=refs/remotes/host/main,refs/remotes/host/parent-only
+root-selection fetch: mode=before parent-selected=True refs=refs/remotes/pinfold/main,refs/remotes/pinfold/parent-only
+child host receiving refs=''
+linked disk owner=False: WRONG accepted
+linked disk owner=True: WRONG accepted
+linked case direct-root positive control=True
+CLI ['push'] cwd=$W/s/pinfold/work/state-descendant: rc=1 out='' err='pinfold push: host-path-in-project: $W/s/pinfold overlaps $W/s/pinfold/work/state-descendant'
+CLI ['fetch'] cwd=$W/s/pinfold/work/state-descendant: rc=1 out='' err='pinfold fetch: host-path-in-project: $W/s/pinfold overlaps $W/s/pinfold/work/state-descendant'
+owner path rules: WRONG share restrictions refused disk owner with file now share
+share control ordinary: push/fetch=share-no-crossing
+share control hostile-marker: push/fetch=share-no-crossing
+share control config-disk: push/fetch=share-no-crossing
+PASS round2 before crossing observations; no image built
+edges fixture-removed=True
+Round 2 retained excerpts, main:
+$ python3 docs/archive/2026-11-18-project-share/edges.py /tmp/pf330r2/main/target/debug/pinfold main
+root-selection push: mode=main parent-selected=False refs=refs/remotes/host/child-only,refs/remotes/host/main
+root-selection fetch: mode=main parent-selected=False refs=refs/remotes/pinfold/child-only,refs/remotes/pinfold/main
+child host receiving refs='refs/remotes/pinfold/child-only\nrefs/remotes/pinfold/main'
+linked disk owner=False: worktree refusal
+linked disk owner=True: worktree refusal
+linked case direct-root positive control=True
+owner path rules: disk rules permit descendant path (main control keeps supported disk configuration)
+PASS round2 main crossing observations; no image built
+edges fixture-removed=True
+Round 2 retained excerpts, after:
+$ python3 docs/archive/2026-11-18-project-share/edges.py target/debug/pinfold after
+root-selection push: mode=after parent-selected=False refs=refs/remotes/host/child-only,refs/remotes/host/main
+root-selection fetch: mode=after parent-selected=False refs=refs/remotes/pinfold/child-only,refs/remotes/pinfold/main
+child host receiving refs='refs/remotes/pinfold/child-only\nrefs/remotes/pinfold/main'
+CLI ['push'] cwd=$W/linked-disk/worktree: rc=1 out='' err='pinfold push: worktree: .git is not a directory; run pinfold from the main checkout'
+linked disk owner=False: worktree refusal
+CLI ['push'] cwd=$W/linked-disk/worktree: rc=1 out='' err='pinfold push: worktree: .git is not a directory; run pinfold from the main checkout'
+linked disk owner=True: worktree refusal
+linked case direct-root positive control=True
+owner path rules: disk rules permit descendant path with file now share
+share control ordinary: push/fetch=share-no-crossing
+share control hostile-marker: push/fetch=share-no-crossing
+share control config-disk: push/fetch=share-no-crossing
+PASS round2 after crossing observations; no image built
+edges fixture-removed=True
+Round 2 retained excerpts, absent:
+$ python3 docs/archive/2026-11-18-project-share/edges.py target/debug/pinfold absent
+CLI ['push'] cwd=$W/s/pinfold/work/absent: rc=1 out='' err='pinfold push: share-no-crossing: shares have no project crossing'
+CLI ['fetch'] cwd=$W/s/pinfold/work/absent: rc=1 out='' err='pinfold fetch: share-no-crossing: shares have no project crossing'
+absent owner: current share file decides; push/fetch=share-no-crossing
+CLI ['disk', 'list', '--json'] cwd=$W: rc=0 out='' err=''
+CLI ['disk', 'list', '--json'] cwd=$W: rc=0 out='' err=''
+edges fixture-removed=True
+All four round-2 invocations exited 0; private disk inventories empty (script assertions).

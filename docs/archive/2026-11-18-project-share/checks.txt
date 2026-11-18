@@ -3,10 +3,7 @@ All Mac cargo build commands were preceded by df -g /System/Volumes/Data:
 cargo build --locked: available 35 GiB; sccache Operation not permitted; exit 101.
 RUSTC_WRAPPER= cargo build --locked: available 36 GiB; missing ProjectMount Deserialize during integration; exit 101.
 RUSTC_WRAPPER= cargo build --locked: available 34 GiB; Finished dev in 7.11s; exit 0.
-RUSTC_WRAPPER= cargo build --locked: available 37 GiB; Finished dev in 3.45s; exit 0.
-RUSTC_WRAPPER= cargo build --locked: available 38 GiB; Finished dev in 3.19s; exit 0.
-RUSTC_WRAPPER= cargo build --locked: available 38 GiB; Finished dev in 3.46s; exit 0.
-
+RUSTC_WRAPPER= cargo build --locked, three further builds: available 37/38/38 GiB; Finished dev 3.45/3.19/3.46s; all exit 0.
 Fix round 1 checks:
 All fix-round Mac cargo builds preceded by df -g /System/Volumes/Data: available 32, 32, 32, 30 GiB.
 $ RUSTC_WRAPPER= cargo build --locked
@@ -24,19 +21,45 @@ $ cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D w
 exit 0
 Inspection: before validate_project prepare call sites=1, reached by client Snapshot and owner Snapshot; core startup prepare=1: three alias-admission invocations per fresh share owner.
 Inspection: after validate_project prepare call sites=0; only core startup prepare=1: one alias-admission invocation per fresh share owner, zero on joins. Each invocation walks protected Git and the writable share. No elapsed-time claim.
-
-Fix-round final cleanup:
+Round 1 final cleanup:
 $ container list --all --format json
 [{"id": "buildkit", "state": "running"}]
 exit 0
 $ container volume list --format json
-[]
-exit 0
+[]; exit 0
 $ df -g /System/Volumes/Data
-Filesystem   1G-blocks Used Available Capacity iused     ifree %iused  Mounted on
-/dev/disk3s5       460  253        77    77% 2531678 812133800    0%   /System/Volumes/Data
-exit 0
-
+available 77 GiB; exit 0 (retained df excerpt).
 $ labvm release
 {"ok":true,"command":"release","status":"idle"}
 exit 0
+Fix round 2, resumed 2026-11-18; source f581087:
+Before first CLI: old fixture roots absent; service stopped; labvm status=idle.
+$ container system start --disable-kernel-install
+exit 0; initial inventory: only buildkit, stopped; volumes=[]; no interrupted resource.
+Source-only snapshots: git archive 6444bd3 and bbf396e (Cargo files, crates, profile).
+Every cargo build preceded by df -g /: at least 24 GiB; 24 GiB before each successful build.
+Initial builds failed on read-only shared Cargo build directory. CLI-local override then
+failed on read-only Zig cache. No source/tool/global configuration change was needed.
+Successful environment (task-local caches; used for before, main and after):
+RUSTC_WRAPPER= ZIG_GLOBAL_CACHE_DIR=/tmp/pf330r2/zig-global ZIG_LOCAL_CACHE_DIR=/tmp/pf330r2/zig-local CARGO_BUILD_BUILD_DIR=/tmp/pf330r2/build-<mode>
+$ cargo build --locked [--manifest-path /tmp/pf330r2/<before|main>/Cargo.toml]
+Finished dev: before 19.92s, main 9.15s, after 9.16s; all exit 0.
+$ cargo fmt --check
+(no output); exit 0
+$ cargo clippy --all-targets --locked -- -D warnings (same after-build environment)
+Finished dev in 4.83s; exit 0
+Linux fallback: source-only git diff bbf396e --binary -- crates profile, applied on bbf396e.
+$ cargo clippy --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings
+Finished dev in 23.46s; exit 0. No image built; no Linux runtime rerun claimed.
+$ labvm release
+{"ok":true,"command":"release","status":"idle"}
+$ container list --all --format json (id/state excerpt)
+[{"id":"buildkit","state":"stopped"}]
+$ container volume list --format json
+[]
+$ labvm status
+{"ok":true,"command":"status","status":"idle"}
+Final fixture directory scan (pf280., pf279., pf330.): []; all three runs removed their W.
+Service left running; unrelated buildkit stayed stopped. No image built or removed.
+Existing default image b3ed8b3ddc10b0526546fc8da159efed2ada7196166826f0943637d1a088be27 unchanged.
+Final scratch /tmp/pf330r2 removed; df -g /: available 25 GiB. Evidence: 12 text files, 899 lines.
