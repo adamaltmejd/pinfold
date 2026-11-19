@@ -929,7 +929,7 @@ fn valid_env_name(name: &str) -> bool {
 /// A mount path that survives `type=bind,source=HOST,target=GUEST`: the
 /// value is concatenated, not CSV-quoted, and the runtime's option parser
 /// reads a comma as a separator and a control character as noise.
-fn valid_mount_path(path: &Path) -> bool {
+pub(crate) fn valid_mount_path(path: &Path) -> bool {
     !path
         .as_os_str()
         .as_encoded_bytes()

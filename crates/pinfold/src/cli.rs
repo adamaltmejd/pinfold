@@ -1375,7 +1375,8 @@ fn config_report(
         "egress": { "allow": &config.allow, "routes": &config.routes },
         "cpus": config.cpus,
         "memory": &config.memory,
-        "env": &config.env,
+        // The project box ignores a configured HOME.
+        "env": config.env.iter().filter(|(name, _)| *name != "HOME").collect::<std::collections::BTreeMap<_, _>>(),
         "project": {
             "id": project,
             "home": crate::pi::state::HOME,

@@ -78,7 +78,20 @@ impl Share {
     pub fn path(&self, name: &str) -> io::Result<PathBuf> {
         match self {
             Self::Directory(path) => Ok(path.clone()),
-            Self::Files(_) => Ok(dirs::box_state_dir(name)?.join(SHARE_COPY)),
+            Self::Files(_) => {
+                let path = dirs::box_state_dir(name)?.join(SHARE_COPY);
+                // The copy does not exist when the spec's mount checks run,
+                // but its path still goes into a mount option.
+                if !super::plan::valid_mount_path(&path) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "mount path {path:?} must not hold ',' or an ASCII control character"
+                        ),
+                    ));
+                }
+                Ok(path)
+            }
         }
     }
 
@@ -196,17 +209,14 @@ impl Profile {
         above.push(name.to_string());
         let base = Self::load_chain(&base, above)
             .map_err(|error| io::Error::new(error.kind(), format!("profile {name:?}: {error}")))?;
-        // A recipe FROMs its base's own image. A recipe-less base has none;
-        // a stale image under its name would not be the one recorded.
-        if profile.containerfile.is_some()
-            && base.containerfile.is_none()
-            && let Some(recipe) = base.recipe()
-        {
+        // A recipe FROMs its base's own image, which only a base with a
+        // recipe has; a stale image under its name would go unrecorded.
+        if profile.containerfile.is_some() && base.containerfile.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "profile {name:?} has a Containerfile, so its base {:?} needs one too (its image is {:?}'s)",
-                    base.name, recipe.name
+                    "profile {name:?} has a Containerfile, so its base {:?} needs one too",
+                    base.name
                 ),
             ));
         }

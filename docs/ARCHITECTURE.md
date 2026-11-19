@@ -473,7 +473,9 @@ The box spec `up` reads from stdin:
   `[A-Za-z_][A-Za-z0-9_]*`; any other name is refused as `spec`, naming it.
   `{ "from": "NAME" }` reads the caller's value. Guest values travel under
   private transport names and are restored by `init exec`, so they cannot
-  configure the host runtime client. Values never reach argv or files;
+  configure the host runtime client. Values never reach argv or a file
+  pinfold writes; on Apple the runtime itself stores them while the box
+  exists (Configuration, #351);
   multiline values remain intact. The runtime executable is found on the
   host's `PATH`, never the spec's.
 - A label key starting with `dev.pinfold.` is refused as `spec`, naming
@@ -1944,7 +1946,8 @@ Only the environment and the project's file select `profile`; a profile's
 own `profile` value is ignored. `env` is the exception to whole-key
 replacement: each layer replaces it name by name, so a name a lower layer
 sets cannot be unset above it. A configured `HOME` is ignored:
-the project box sets it, as it does the always-applied names.
+the project box sets it, as it does the always-applied names, and
+`config --json` omits it.
 
 A `from` value is read once, when a new box starts. A missing variable
 refuses the start before any owner starts, and so does a missing injecting
@@ -1954,8 +1957,8 @@ value does: in the environment of the detached owner and its runtime
 client, and, for the join comparison, in the admission snapshot, held in
 memory and sent over the private project socket. Argv,
 `config --json`, the launch record and every file pinfold writes name the
-variable, never its value. On Apple, `container` 1.7.1 itself records
-every box variable, hex-encoded, in the box's `config.json` and
+variable, never its value. On Apple (#351), `container` 1.7.1 itself
+records every variable pinfold passes it, hex-encoded, in the box's `config.json` and
 `runtime-configuration.json` (mode 0644, under its Application Support
 directory) and shows it in `container inspect`, until the box is
 removed. A literal is configuration, not a secret:

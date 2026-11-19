@@ -270,6 +270,31 @@ Profile (adam link on macOS, `pf-local` on Linux): `PF_LITERAL =
   literals and limits agent re-resolution to chains ending in the bundled
   recipe.
 
+### Re-review fixes (PR #350, after 0b440d7)
+
+- **Direct base.** The guard no longer asks whether any ancestor has a
+  recipe: a profile with a Containerfile refuses when its direct base has
+  none. macOS: a user `default` with an empty `pinfold.toml` and no
+  Containerfile, under bundled `documents`: `build --profile documents`
+  and `config --json` both refused, exit 1, `profile "documents" has a
+  Containerfile, so its base "default" needs one too`. With a one-line
+  user `default` Containerfile, `config --json` resolved `documents` to
+  `localhost/pinfold/profile-documents:latest` (exit 0). It was not
+  built: the real names are the user's images in the shared store.
+- **Merged-share path.** The copy's path is now checked as spec mount
+  paths are (no `,` or control byte) when pinfold computes it, so the
+  client refuses before an owner starts. macOS, `XDG_STATE_HOME` with a
+  comma and a merged share: `pinfold: mount path "…/st,ate/pinfold/boxes/
+  …/profile-share" must not hold ',' or an ASCII control character`, exit
+  125. Control without the comma: the box read the merged file, exit 0.
+- **HOME in `config --json`.** With `HOME` and `PF_LIT` configured, `env`
+  showed only `{"PF_LIT": "lit"}`.
+- Spec: the box spec's env bullet cites the Apple exception (#351), and
+  the Configuration text limits it to variables pinfold passes. README
+  says plainly that on macOS Apple stores reversible values on disk and
+  shows them in `container inspect` while the box runs, and that agent
+  re-resolution applies to chains containing the bundled `default`.
+
 ### Checks
 
 `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`
