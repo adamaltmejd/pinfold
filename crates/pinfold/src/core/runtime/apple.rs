@@ -3,7 +3,7 @@
 use crate::core::process::{AsyncCommandGuard, CommandGuard};
 
 use std::collections::{BTreeMap, VecDeque};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io::{self, Write};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use nix::libc;
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, Command};
 
 use crate::core::disk::{self, Directory, Fill, Seeding};
@@ -30,7 +30,6 @@ use crate::core::runtime::{
 use crate::core::{clean, ownership};
 use crate::dirs;
 use crate::formatting::terminal_text;
-use crate::init::BOX_ENV_PREFIX;
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
 pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
@@ -73,10 +72,8 @@ fn volume(name: &str) -> io::Result<String> {
 /// stdout piped. When `proxy_socket` is set, carry that host unix socket
 /// into the box, where init relays to it.
 ///
-/// Guest values are encoded under prefixed names in the child's
-/// environment, so they cannot configure the host client, a spec `PATH`
-/// cannot choose the runtime (GitHub #70), argv holds only names, and `ps`
-/// cannot read a secret.
+/// The box's environment is not given to the runtime, which records what
+/// it is given (#351): [`Client::ready`] sends it to init on stdin.
 ///
 /// `init` is a host path; it and its directory are mounted read-only at the
 /// same path, so it is also the path PID 1 runs.
@@ -139,9 +136,16 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
         // Apple mount tops are root-owned in the guest.
         vars.insert("GIT_CONFIG_COUNT".into(), count.to_string().into());
     }
-    for (name, value) in vars {
-        guest_env(command.as_std_mut(), &name, &value);
-    }
+    let vars: Vec<_> = vars
+        .into_iter()
+        .map(|(name, value)| (name.into(), value))
+        .collect();
+    let mut env = Vec::new();
+    crate::init::exec_wire::write_frame(
+        &mut env,
+        crate::init::exec_wire::ENV,
+        &super::exec_transport::env_payload(&vars),
+    )?;
     for mount in &plan.mounts {
         command.arg("--mount").arg(bind(
             &mount.host,
@@ -176,17 +180,9 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
         .spawn_guarded()
         .map(|mut child| {
             let stderr = child.stderr.take();
-            Client(child, stderr, None, None, None)
+            Client(child, stderr, None, None, None, env)
         })
         .map_err(|error| spawn_error("container", error))
-}
-
-/// Pass guest variable `name` through the child's environment, hex-encoded
-/// under a prefixed name, so argv holds only the name.
-fn guest_env(command: &mut std::process::Command, name: &str, value: &OsStr) {
-    let transport = format!("{BOX_ENV_PREFIX}{name}");
-    let encoded = crate::core::hex(value.as_bytes());
-    command.args(["--env", &transport]).env(transport, encoded);
 }
 
 fn bind(host: &Path, guest: &Path, readonly: bool) -> OsString {
@@ -216,6 +212,8 @@ pub struct Client(
     Option<StderrDrain>,
     Option<tokio::task::JoinHandle<()>>,
     Option<Removal>,
+    /// The ENV frame for init, until `ready` sends it.
+    Vec<u8>,
 );
 
 const STARTUP_DIAGNOSTICS: usize = 64 * 1024;
@@ -229,8 +227,37 @@ struct Removal {
 
 #[cfg_attr(target_os = "linux", expect(dead_code))]
 impl Client {
-    /// Wait until init reports ready. The error is why it did not.
+    /// Send init the box's environment and wait until it reports ready,
+    /// which it does only once it holds the environment. The error is why
+    /// it did not.
     pub async fn ready(&mut self) -> Result<(), String> {
+        let mut input = self
+            .0
+            .stdin
+            .take()
+            .ok_or("the runtime did not pipe the box's stdin")?;
+        let env = std::mem::take(&mut self.5);
+        // Its own task: init reads only once the box has booted, and the
+        // frame can exceed the pipe's buffer.
+        let writer = tokio::spawn(async move {
+            input.write_all(&env).await?;
+            input.flush().await?;
+            Ok::<_, io::Error>(input)
+        });
+        if let Err(error) = self.wait_ready().await {
+            writer.abort();
+            return Err(error);
+        }
+        let input = writer
+            .await
+            .map_err(|error| format!("box environment: {error}"))?
+            .map_err(|error| format!("box environment: {error}"))?;
+        // Held open as before: the box's stdin stays attached.
+        self.0.stdin = Some(input);
+        Ok(())
+    }
+
+    async fn wait_ready(&mut self) -> Result<(), String> {
         let stdout = self
             .0
             .stdout
@@ -1132,7 +1159,7 @@ fn exec_command(
     command
         .arg(name)
         .arg(init)
-        .args(["init", "exec", "--"])
+        .args(["init", "exec", "--box-env", "--"])
         .args(argv);
     Ok(command)
 }

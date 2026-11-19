@@ -38,7 +38,7 @@
 //!   work cgroup, syncs and unmounts every attachment, answered CLEAN or
 //!   FAILED (text).
 
-use super::exec_wire::{EXEC, FAILED, STDERR, read_frame, write_frame};
+use super::exec_wire::{ENV, EXEC, FAILED, STDERR, read_frame, write_frame};
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
@@ -78,7 +78,6 @@ const WORK: &str = "/sys/fs/cgroup/work";
 
 pub const BOOT: u8 = b'B';
 pub const READY: u8 = b'R';
-pub const ENV: u8 = b'V';
 pub const ENV_SET: u8 = b'v';
 pub const STAT: u8 = b'S';
 pub const UNMOUNT: u8 = b'U';
@@ -885,9 +884,7 @@ fn request(mut connection: UnixStream, env: &Env) -> io::Result<()> {
     let (kind, payload) = read_frame(&mut connection)?;
     match kind {
         ENV => {
-            let mut fields = Fields(&payload);
-            let vars = pairs(&mut fields)?;
-            fields.end()?;
+            let vars = decode_env(&payload)?;
             let mut held = env.vars.lock().expect("env lock");
             if held.is_some() {
                 return write_frame(&mut connection, FAILED, b"the environment is already set");
@@ -914,10 +911,14 @@ fn request(mut connection: UnixStream, env: &Env) -> io::Result<()> {
     }
 }
 
-fn pairs(fields: &mut Fields) -> io::Result<Vec<(OsString, OsString)>> {
-    (0..fields.u32()?)
+/// An ENV payload's names and values.
+pub(super) fn decode_env(payload: &[u8]) -> io::Result<Vec<(OsString, OsString)>> {
+    let mut fields = Fields(payload);
+    let vars = (0..fields.u32()?)
         .map(|_| Ok((fields.os()?, fields.os()?)))
-        .collect()
+        .collect::<io::Result<_>>()?;
+    fields.end()?;
+    Ok(vars)
 }
 
 /// Run one EXEC request in its own session through `init exec`, which sets
@@ -950,7 +951,7 @@ pub(super) fn exec(
         return Err(io::Error::other("an exec without argv"));
     };
 
-    // `init exec` restores the environment from Apple's transport names, so
+    // `init exec` restores the environment from these transport names, so
     // a name that itself carries the prefix arrives exactly.
     let transport = vars.into_iter().map(|(name, value)| {
         let mut key = OsString::from(super::BOX_ENV_PREFIX);

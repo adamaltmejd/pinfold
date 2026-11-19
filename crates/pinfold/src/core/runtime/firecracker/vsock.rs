@@ -3,7 +3,6 @@
 
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 
 use std::sync::atomic::AtomicBool;
@@ -12,8 +11,8 @@ use std::time::{Duration, Instant};
 use crate::core::runtime::sockets::Sockets;
 use crate::formatting::terminal_text;
 
-use crate::init::exec_wire::{FAILED, read_frame, write_frame};
-use crate::init::firecracker::{CONTROL_PORT, ENV, ENV_SET, EXEC_PORT, STAT, UNMOUNT};
+use crate::init::exec_wire::{ENV, FAILED, read_frame, write_frame};
+use crate::init::firecracker::{CONTROL_PORT, ENV_SET, EXEC_PORT, STAT, UNMOUNT};
 
 /// A host-initiated connection to the guest's `port`.
 pub fn connect(sockets: &Sockets, port: u32) -> io::Result<UnixStream> {
@@ -54,15 +53,7 @@ fn answer(stream: &mut impl Read, kind: u8) -> io::Result<Vec<u8>> {
     }
 }
 
-use super::super::exec_transport::{Cancellable, cancelled, put};
-
-fn put_pairs(payload: &mut Vec<u8>, pairs: &[(OsString, OsString)]) {
-    payload.extend((pairs.len() as u32).to_be_bytes());
-    for (name, value) in pairs {
-        put(payload, name.as_bytes());
-        put(payload, value.as_bytes());
-    }
-}
+use super::super::exec_transport::{Cancellable, cancelled, env_payload};
 
 /// Give the exec service the box's environment, once.
 pub fn set_env(
@@ -73,9 +64,7 @@ pub fn set_env(
     cancelled(Some(cancel))?;
     let stream = exec_connection(sockets, Some(cancel))?;
     let mut transport = Cancellable::startup(&stream, cancel);
-    let mut payload = Vec::new();
-    put_pairs(&mut payload, vars);
-    write_frame(&mut transport, ENV, &payload)?;
+    write_frame(&mut transport, ENV, &env_payload(vars))?;
     answer(&mut transport, ENV_SET).map(drop)
 }
 
