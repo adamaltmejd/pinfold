@@ -295,7 +295,7 @@ impl Snapshot {
                     Share::Directory(path) => MountSource::Host {
                         path: Bytes::path(path),
                     },
-                    Share::Embedded(_) => MountSource::Embedded {
+                    Share::Files(_) => MountSource::Embedded {
                         profile: config.profile.name.clone(),
                     },
                 },

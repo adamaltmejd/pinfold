@@ -1,3 +1,20 @@
+ARG TARGETARCH
+FROM debian:trixie-slim AS base
+
+RUN set -eux; \
+    export DEBIAN_FRONTEND=noninteractive; \
+    apt-get update; \
+    apt-get upgrade -y; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl git ripgrep fd-find jq less procps; \
+    ln -s /usr/bin/fdfind /usr/local/bin/fd; \
+    git config --system user.name pi; \
+    git config --system user.email pi@pinfold.invalid; \
+    rm -rf /var/lib/apt/lists/*
+
+# Agents are resolved and installed only here; profiles built on this
+# image inherit them. Each build passes a new PINFOLD_AGENT_RESOLVE, so the
+# resolver reruns and the install reruns only when a version changed.
 FROM base AS agent-resolve
 ARG TARGETARCH
 ARG PINFOLD_AGENT_RESOLVE=default
@@ -87,3 +104,6 @@ RUN set -eu; \
     ln -s /opt/pinfold/agents/codex/bin/codex-code-mode-host /usr/local/bin/codex-code-mode-host
 ENV PI_TELEMETRY=0 PI_SKIP_VERSION_CHECK=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_UPDATES=1
+
+# Every built-in recipe ends here, so this link's own installs are stripped too.
+RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} +

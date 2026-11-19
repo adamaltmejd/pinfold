@@ -218,16 +218,16 @@ for structured output. Use `pinfold doctor --artifacts --json` for artifact pins
 The `box` process interface retains its JSON records. Guest commands own
 their stdout and stderr.
 
-Managed builds re-resolve stable agent releases through the built-in profile
-recipes every time. Installation
+Managed builds of a chain that contains the bundled `default` recipe
+re-resolve stable agent releases through it every time. Installation
 reruns when a resolved version changes; other steps use the layer cache.
 Use `pinfold build` or `pinfold build --profile NAME` to update.
 Add `--no-cache` to force the full recipe to run. Launch never installs agents.
-A project build first rebuilds its selected profile recipe when present.
-A project build republishes that profile; other projects using it report
-`image-outdated` at their next launch if its identity changed.
-The two images publish separately; a failed project build can leave the
-rebuilt profile published. Caller `image build` retains its layer cache
+A build first rebuilds every profile beneath it, root first: a project
+build its selected profile and that profile's bases. Other projects and
+profiles on a rebuilt image report `image-outdated` at their next launch
+if its identity changed. Each image publishes separately; a failed build
+can leave the rebuilt images beneath it published. Caller `image build` retains its layer cache
 and `--no-cache` option.
 
 Every built-in image includes standalone Pi, native Claude and Codex with
@@ -292,16 +292,15 @@ An attached or unclean disk is refused. Exported files are untrusted: inspect
 them before opening or executing them. Symlinks remain symlinks and are never
 followed during export. An existing destination is never replaced.
 
-Optional profiles add tools. To edit one, copy it with
-`pinfold profile new NAME --from full`:
+Optional profiles add tools. Each builds on the one above it:
 
-| Profile | Adds |
-|---|---|
-| `documents` | Bun, AnyDoc for local document conversion, Poppler for PDFs |
-| `full` | documents tools plus gh, fff (pi extension) and ponytail; allows `github.com` and `api.github.com` |
+| Profile | Base | Adds |
+|---|---|---|
+| `documents` | `default` | Bun, AnyDoc for local document conversion, Poppler for PDFs |
+| `adam` | `documents` | gh, fff (pi extension) and ponytail; allows `github.com` and `api.github.com` |
 
-The [profile definitions](crates/pinfold/src/core/profile.rs) assemble the
-[image recipes](profile/image). All three seed these [Pi settings](profile/home/.pi/agent/settings.json).
+Their [image recipes](profile/image) each add only their own tools. All
+three seed these [Pi settings](profile/home/.pi/agent/settings.json).
 In a running box, `cat /opt/pinfold/agents/install.txt` shows the agent versions
 installed at build time. `cat ~/.pi/agent/settings.json` shows the current guest settings.
 
@@ -326,6 +325,33 @@ image = "localhost/pinfold/image-research-tools:latest"
 there is no environment override. An explicit image cannot be combined with
 a project Containerfile. Explicit images resolve locally. With an explicit
 image, `pinfold build` reports that there is no selected recipe to build.
+
+### Your own profile
+
+A profile lives in `~/.config/pinfold/profiles/NAME/`. To add to a
+published one without copying it, give it a `base`. This profile adds one
+tool to `adam`:
+
+```toml
+# ~/.config/pinfold/profiles/adam-local/pinfold.toml
+base = "adam"
+```
+
+```dockerfile
+# ~/.config/pinfold/profiles/adam-local/Containerfile
+FROM localhost/pinfold/profile-adam:latest
+RUN apt-get update && apt-get install -y --no-install-recommends tree && rm -rf /var/lib/apt/lists/*
+```
+
+`pinfold build --profile adam-local` builds `default`, `documents`,
+`adam`, then `adam-local`. The base's settings are defaults the profile's
+own keys replace, one key at a time; a list such as `allow` replaces the
+base's whole. The profile's `home/` and `share/` files lie over the
+base's, file by file. Without a `Containerfile` a profile uses its base's
+image. When a base changes, the profiles above it report `image-outdated`
+until rebuilt. `pinfold profile new NAME --from adam` copies `adam`'s own
+files, so the copy still builds on `documents`. A profile named like a
+built-in replaces it, also as a base.
 
 Custom profiles can omit `Containerfile` when an image or project recipe is
 selected. Keep Pi settings, extensions and skills in their native files under
@@ -401,7 +427,34 @@ failed even if the command starts, and it is not retried. Check that
 
 See [Configuration](docs/ARCHITECTURE.md#configuration) for layers, keys and defaults.
 
-For `pinfold -- CMD`, forward host variables with `PINFOLD_ENV_<NAME>`.
+A profile's `pinfold.toml` or the project's configuration sets the box's
+environment with `env`. A literal is plain configuration and shows in
+`pinfold config --json`; `from` reads the value from your shell when the box
+starts; pinfold never writes it down. On macOS, Apple's `container`
+does: from the box's creation until its removal, it stores each variable
+pinfold passes on disk in a reversible hex encoding, and
+`container inspect` shows it. Use `from` for anything secret:
+
+```toml
+[env]
+GIT_AUTHOR_NAME = "my-agent"
+GH_TOKEN = { from = "MY_AGENT_GH_TOKEN" }
+```
+
+The project's names replace the profile's one by one, and the profile's
+its base's. A missing `from` variable refuses the start. A second command
+joining a running box with a different value for that variable is refused
+as `config-changed`; stop the box to change it.
+
+For a single command, forward host variables with `PINFOLD_ENV_<NAME>`.
+It wins over `env`.
+
+### GitHub access
+
+Give the box a token through `env` with `from`, as `GH_TOKEN` above, and
+allow `api.github.com` (the `adam` profile does). Prefer a fine-grained
+token scoped to the one repository the box works on, with only the
+permissions it needs. Every process in the box can read the token.
 
 For disposable Rust build outputs in guest memory:
 

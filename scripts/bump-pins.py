@@ -21,9 +21,9 @@ KERNEL = ROOT / "guest-kernel" / "pins"
 # comes after one whose dependencies or optionalDependencies name it at the
 # same version.
 IMAGE_TOOLS = {
-    "bun": (IMAGE / "bun.Containerfile", ["/tmp/bun-aarch64.zip", "/tmp/bun-x64.zip"]),
+    "bun": (IMAGE / "documents.Containerfile", ["/tmp/bun-aarch64.zip", "/tmp/bun-x64.zip"]),
     "fff": (
-        IMAGE / "full.Containerfile",
+        IMAGE / "adam.Containerfile",
         [
             "/tmp/pi-fff.tgz",
             "/tmp/fff-bun.tgz",
@@ -31,7 +31,7 @@ IMAGE_TOOLS = {
             "/tmp/fff-bin-x64.tgz",
         ],
     ),
-    "ponytail": (IMAGE / "full.Containerfile", ["/tmp/ponytail.tgz"]),
+    "ponytail": (IMAGE / "adam.Containerfile", ["/tmp/ponytail.tgz"]),
     "anydoc": (
         IMAGE / "documents.Containerfile",
         ["/tmp/anydoc.tgz", "/tmp/anydoc-aarch64.tgz", "/tmp/anydoc-x64.tgz"],

@@ -475,7 +475,7 @@ impl Box {
         };
         let starting = async {
             if let Some(share) = profile.as_ref().and_then(|profile| profile.share.as_ref()) {
-                share.materialize()?;
+                share.materialize(&state_dir)?;
             }
             runs::create(&run_id)?;
             let (observed, egress_log) = start(
@@ -975,13 +975,14 @@ async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
 /// Check project structure without resolving credentials or materializing shares.
 pub(crate) fn validate_project(plan: &Plan, profile: &Profile) -> Result<(), String> {
     plan.validate_structure()?;
+    plan.check_variables()?;
     let destinations = login_destinations(plan)?;
     let extra: Vec<&Path> = destinations.iter().map(PathBuf::as_path).collect();
     validate_generated(plan, &extra)?;
     let mut resolved = plan.clone();
     if let Some(share) = &profile.share {
         resolved.mounts.push(Mount {
-            host: share.path().map_err(|error| error.to_string())?,
+            host: share.path(&plan.name).map_err(|error| error.to_string())?,
             guest: PathBuf::from("/opt/pinfold/profile"),
             kind: MountKind::Readonly,
         });
@@ -1148,17 +1149,17 @@ fn resolve_profile(plan: &mut Plan, supplied: Option<Profile>) -> io::Result<Opt
         None => Profile::load(&name)?,
     };
     if plan.image.is_none() {
-        if profile.containerfile.is_none() {
+        let Some(recipe) = profile.recipe() else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "image-source-missing: profile has no Containerfile; select an image",
             ));
-        }
-        plan.image = Some(profile.image_ref());
+        };
+        plan.image = Some(recipe.image_ref());
     }
     if let Some(share) = &profile.share {
         plan.mounts.push(Mount {
-            host: share.path()?,
+            host: share.path(&plan.name)?,
             guest: PathBuf::from("/opt/pinfold/profile"),
             kind: MountKind::Readonly,
         });

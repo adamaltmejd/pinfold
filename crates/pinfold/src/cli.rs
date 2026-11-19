@@ -1375,7 +1375,8 @@ fn config_report(
         "egress": { "allow": &config.allow, "routes": &config.routes },
         "cpus": config.cpus,
         "memory": &config.memory,
-        "env": &config.env,
+        // The project box ignores a configured HOME.
+        "env": config.env.iter().filter(|(name, _)| *name != "HOME").collect::<std::collections::BTreeMap<_, _>>(),
         "project": {
             "id": project,
             "home": crate::pi::state::HOME,
@@ -1497,8 +1498,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
             (config.profile, project)
         }
     };
-    let profile_recipe = profile.containerfile.as_deref();
-    if project.is_none() && profile_recipe.is_none() {
+    if project.is_none() && profile.recipe().is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "image-no-recipe: profile has no Containerfile; there is nothing to build",
@@ -1526,27 +1526,35 @@ pub fn build(args: &[String]) -> io::Result<i32> {
             io::Error::other(format!("the {} build failed", images.program()))
         })
     };
-    let profile_built = profile_recipe
-        .map(|bytes| build(clean::PROFILE_LABEL, &profile.name, bytes, None))
-        .transpose()?;
-    let built = match project {
-        Some((id, bytes)) => {
-            if let Some(profile) = &profile_built {
-                eprintln!("pinfold: profile published {}", profile.reference);
-            }
-            // Record the rebuild's identity. Linux also binds its source to it.
-            let base = profile_built.as_ref().and_then(|built| built.id.clone());
-            #[cfg(target_os = "linux")]
-            if profile_built.is_some() && base.is_none() {
-                return Err(io::Error::other(
-                    "image-base-changed: rebuilt profile identity unavailable",
-                ));
-            }
-            build(clean::PROJECT_LABEL, &id, &bytes, base)?
+    // Root first: each image records the identity of the one just built
+    // beneath it, and Linux also binds its source to it. Each is published
+    // on its own, so a later failure leaves the lower ones published.
+    let recipes = profile
+        .links()
+        .into_iter()
+        .filter_map(|link| {
+            Some((
+                clean::PROFILE_LABEL,
+                link.name.clone(),
+                link.containerfile.clone()?,
+            ))
+        })
+        .chain(project.map(|(id, bytes)| (clean::PROJECT_LABEL, id, bytes)));
+    let mut below: Option<image::Built> = None;
+    for (label, source, bytes) in recipes {
+        if let Some(built) = &below {
+            eprintln!("pinfold: profile published {}", built.reference);
         }
-        None => profile_built.expect("a profile build has a recipe"),
-    };
-    println!("{}", built.latest);
+        let base = below.as_ref().and_then(|built| built.id.clone());
+        #[cfg(target_os = "linux")]
+        if below.is_some() && base.is_none() {
+            return Err(io::Error::other(
+                "image-base-changed: rebuilt profile identity unavailable",
+            ));
+        }
+        below = Some(build(label, &source, &bytes, base)?);
+    }
+    println!("{}", below.expect("a build has a recipe").latest);
     Ok(0)
 }
 
@@ -1743,7 +1751,7 @@ pub fn profile(args: &[String]) -> io::Result<i32> {
 fn profile_new(args: &[String]) -> io::Result<()> {
     let (name, from) = parse_profile_new(args)?;
     profile::check_name("profile", &name)?;
-    let source = Profile::load(&from);
+    let source = Profile::link(&from);
     let profiles = dirs::config_dir()?.join("profiles");
     fs::create_dir_all(&profiles)?;
     let target = profiles.join(&name);

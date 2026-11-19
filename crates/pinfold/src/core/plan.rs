@@ -448,8 +448,10 @@ fn digits(number: &str) -> Option<u64> {
         .then(|| number.parse().ok())?
 }
 
-/// One environment entry.
-#[derive(Debug, Clone)]
+/// One environment entry. It serializes as declared, never as a value read
+/// from the caller.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
 pub enum Env {
     /// A literal value from the spec.
     Exact(String),
@@ -524,6 +526,36 @@ impl Plan {
 
     pub(crate) fn validate_structure(&self) -> Result<(), String> {
         self.validate_inputs(false)
+    }
+
+    /// Refuse, naming the first unset one, when a caller variable the spec
+    /// reads (an env `from`, an injecting header, a login route) is missing.
+    /// Only presence is checked; no value is read.
+    pub(crate) fn check_variables(&self) -> Result<(), String> {
+        let env = self.env.values().filter_map(|value| match value {
+            Env::From { from } => Some(from.as_str()),
+            Env::Exact(_) => None,
+        });
+        let routes = self
+            .egress
+            .iter()
+            .flat_map(|egress| egress.routes.values())
+            .flat_map(|route| match route {
+                Route::Inject(inject) => inject
+                    .headers
+                    .values()
+                    .map(|header| header.from.as_str())
+                    .collect(),
+                Route::Login(login) => login.from.as_deref().into_iter().collect(),
+                Route::Address(_) => Vec::new(),
+            });
+        match env
+            .chain(routes)
+            .find(|name| std::env::var_os(name).is_none())
+        {
+            Some(name) => Err(format!("environment variable {name} is not set")),
+            None => Ok(()),
+        }
     }
 
     pub(crate) fn validate_platform(&self) -> Result<(), String> {
@@ -897,7 +929,7 @@ fn valid_env_name(name: &str) -> bool {
 /// A mount path that survives `type=bind,source=HOST,target=GUEST`: the
 /// value is concatenated, not CSV-quoted, and the runtime's option parser
 /// reads a comma as a separator and a control character as noise.
-fn valid_mount_path(path: &Path) -> bool {
+pub(crate) fn valid_mount_path(path: &Path) -> bool {
     !path
         .as_os_str()
         .as_encoded_bytes()

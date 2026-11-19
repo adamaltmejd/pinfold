@@ -1,7 +1,7 @@
 //! Pi configuration: the project's file under pinfold's host configuration
 //! directory, the selected profile, and the host environment.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io::{self, Write};
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::plan::Route;
+use crate::core::plan::{Env, Route};
 use crate::core::profile::Profile;
 use crate::dirs;
 use crate::formatting::terminal_text;
@@ -193,9 +193,10 @@ pub struct Config {
     pub(crate) route_declarations: BTreeMap<String, toml::Value>,
     pub cpus: f64,
     pub memory: String,
-    /// The `<NAME>`s of the host's `PINFOLD_ENV_<NAME>` variables. Their
-    /// values stay on the host; a box spec passes each by name only.
-    pub env: BTreeSet<String>,
+    /// The box's variables: the configured `env` tables, then each host
+    /// `PINFOLD_ENV_<NAME>` as `<NAME>`. A `from` value stays on the host;
+    /// a box spec passes it by name only.
+    pub env: BTreeMap<String, Env>,
 }
 
 impl Config {
@@ -247,15 +248,26 @@ impl Config {
         let project_profile = project.profile.take();
         let profile_name = profile_name(project_profile.clone())?;
         let profile = Profile::load(&profile_name)?;
+        if project.base.is_some() {
+            return Err(invalid(
+                &terminal_text(&dir.join("pinfold.toml").to_string_lossy()),
+                "`base` is a profile key",
+            ));
+        }
         let top = project.over(Layer::from_env()?);
-        let profile_source = format!("profile {profile_name:?} pinfold.toml");
-        let profile_layer = Layer::parse(&profile.config, &profile_source)?;
-        if profile_layer.mounts.is_some() {
-            return Err(invalid(&profile_source, "`mounts` is a project key"));
+        // The chain's root first: each profile's keys replace its base's.
+        let mut merged = Layer::default();
+        for link in profile.links() {
+            let source = format!("profile {:?} pinfold.toml", link.name);
+            let layer = Layer::parse(&link.config, &source)?;
+            if layer.mounts.is_some() {
+                return Err(invalid(&source, "`mounts` is a project key"));
+            }
+            merged = merged.over(layer);
         }
         let containerfile = read_optional(&dir.join("Containerfile"))?
             .map(|bytes| (dir.join("Containerfile"), bytes));
-        let merged = profile_layer.over(top);
+        let merged = merged.over(top);
         if let Some(image) = &merged.image {
             if image.is_empty() {
                 return Err(invalid(
@@ -269,7 +281,7 @@ impl Config {
                     "image-source-conflict: image and project Containerfile cannot be combined",
                 ));
             }
-        } else if containerfile.is_none() && profile.containerfile.is_none() {
+        } else if containerfile.is_none() && profile.recipe().is_none() {
             return Err(invalid(
                 "configuration",
                 "image-source-missing: select an image or supply a Containerfile",
@@ -290,12 +302,15 @@ impl Config {
             route_declarations: merged.route_declarations.unwrap_or_default(),
             cpus: merged.cpus.unwrap_or(DEFAULT_CPUS),
             memory: merged.memory.unwrap_or_else(|| DEFAULT_MEMORY.to_string()),
-            env: env::vars_os()
-                .filter_map(|(name, _)| {
-                    name.to_str()?
-                        .strip_prefix("PINFOLD_ENV_")
-                        .map(str::to_string)
-                })
+            env: merged
+                .env
+                .unwrap_or_default()
+                .into_iter()
+                .chain(env::vars_os().filter_map(|(name, _)| {
+                    let name = name.to_str()?.strip_prefix("PINFOLD_ENV_")?.to_string();
+                    let from = format!("PINFOLD_ENV_{name}");
+                    Some((name, Env::From { from }))
+                }))
                 .collect(),
         })
     }
@@ -358,6 +373,8 @@ struct Layer {
     /// Read from the project's file only, by [`profile_name`]; a profile's
     /// own value is ignored.
     profile: Option<String>,
+    /// A profile's file only; core resolves the chain it names.
+    base: Option<String>,
     image: Option<String>,
     /// Checked whole against the project mount, so any other value is
     /// refused as `spec`.
@@ -368,6 +385,7 @@ struct Layer {
     route_declarations: Option<BTreeMap<String, toml::Value>>,
     cpus: Option<f64>,
     memory: Option<String>,
+    env: Option<BTreeMap<String, Env>>,
 }
 
 impl Layer {
@@ -410,6 +428,7 @@ impl Layer {
         });
         Ok(Layer {
             profile: None,
+            base: None,
             image: None,
             mounts: None,
             allow: override_value("PINFOLD_ALLOW")?.as_deref().map(split_list),
@@ -423,6 +442,7 @@ impl Layer {
                 })
                 .transpose()?,
             memory: override_value("PINFOLD_MEMORY")?,
+            env: None,
         })
     }
 
@@ -434,6 +454,14 @@ impl Layer {
         self.allow = higher.allow.or(self.allow);
         self.routes = higher.routes.or(self.routes);
         self.route_declarations = higher.route_declarations.or(self.route_declarations);
+        // Unlike the other keys, `env` is replaced name by name.
+        self.env = match (self.env, higher.env) {
+            (Some(mut lower), Some(higher)) => {
+                lower.extend(higher);
+                Some(lower)
+            }
+            (lower, higher) => higher.or(lower),
+        };
         self
     }
 }

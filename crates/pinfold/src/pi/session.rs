@@ -1094,7 +1094,7 @@ async fn confirm_first_run(
         name.clone()
     } else {
         let Some(name) = setup_answer(
-            "Choose a profile (default, documents, full, or a saved profile) [default]".into(),
+            "Choose a profile (default, documents, adam, or a saved profile) [default]".into(),
             signals,
         )
         .await?
