@@ -5,8 +5,9 @@ pinfold runs a coding agent in a disposable box: a micro-VM, Apple
 declared host mounts. Apple shares expose host files writable, Git
 metadata included; other host mounts are read-only. Network egress uses
 the box's allowlisting proxy.
-Disk-project branches cross through `fetch`; explicit disk export copies
-user-requested untrusted files into a new directory.
+Disk-project branches cross through the project's Git remote, `box`;
+explicit disk export copies user-requested untrusted files into a new
+directory.
 
 ## Terms
 
@@ -110,6 +111,23 @@ Not protected:
   or opening them runs the box's content as the user. A merged
   `.husky/pre-commit`, editor config or planted `sub/.git`
   is the user's from then on.
+- The Git remote's guarantee ends at refs under `refs/remotes/box/*`, and
+  Git writes them:
+  - A refspec on the command line (`git fetch box main:other`) and
+    `git pull box` write the user's own branches, and `git pull` checks out
+    box content.
+  - With `--prune` or `fetch.prune`, the box deletes `box/*` branches by
+    deleting its own.
+  - A box branch named `HEAD` lands as `refs/remotes/box/HEAD`, so `box`
+    names a commit the box chose.
+  - A fetch may update some `box/*` refs and fail others, such as `x/y`
+    beside an existing `box/x`. `--atomic` moves none, but leaves the
+    checked objects in the repository.
+  - Git's own fetch behaviour applies: it writes `FETCH_HEAD`, may run
+    auto maintenance, and may fetch submodule commits the box's history
+    names from the submodules' own remotes.
+  - `git push box` moves `refs/remotes/box/BRANCH` to the pushed commit
+    until the next fetch.
 - CDN fronting beyond the SNI check (Host-header fronting needs TLS
   interception).
 - Allowlisted services that accept writes (GitHub with a token, registries).
@@ -234,7 +252,7 @@ sysctl rather than the failing call.
    delete the socket.
 
 The box owner does steps 1–6, holds the proxy, and does step 8 on shutdown.
-Public `box exec`/`box fetch` and project commands are admitted only after steps 1–6
+Public `box exec` and project commands are admitted only after steps 1–6
 complete, including the fixed root socket operation. No caller command runs
 before that boundary. Public `pinfold box up` ends on `down`, stdin EOF or
 SIGTERM. If the owner dies, the
@@ -252,7 +270,6 @@ pinfold box list --label KEY[=VALUE]…      # JSON lines; repeat --label to AND
 pinfold box prune                 # remove boxes whose `up` is gone, print each removed
 pinfold box inspect RUN           # one JSON object: a run's retained records
 pinfold box events RUN [--limit N] [--after CURSOR]   # one JSON object: a page of a run's egress log
-pinfold box fetch BOX --repo GUEST_REPO --into REPO   # box branches into REPO; one JSON line
 pinfold disk list [--json]        # managed disks and their recorded origins
 pinfold disk rm NAME|--all [--json] # unattached disks in this state root
 pinfold disk export NAME DEST [--image IMAGE] [--json] # untrusted files into a new directory
@@ -295,9 +312,8 @@ a bad name is refused as `spec` like a build's:
 ```
 
 On an absent box, `exec` exits 3 with `pinfold box exec: no box named ...`;
-any other exit code is the command's. `box fetch` (see Disks) exits 3 the
-same way. Both exit 3 without running a caller command until startup
-completes. Agent executables come from the image and launch through PATH.
+any other exit code is the command's. It exits 3 without running a caller
+command until startup completes. Agent executables come from the image and launch through PATH.
 
 `stat` prints one JSON object with every key present:
 
@@ -1305,7 +1321,7 @@ with or without a TTY.
   earlier seed; changing profiles does not update it. Built-in instructions
   describe both mount kinds. Share edits already affect host files, and box
   commits land on the host's branch. Disk commits reach the host through
-  `pinfold fetch`. Instructions are guidance and do not enforce either boundary.
+  `git fetch box`. Instructions are guidance and do not enforce either boundary.
   Supported updater switches are recipe environment defaults. Route-generated
   system files contain authentication configuration only.
 
@@ -1366,47 +1382,39 @@ gets its own.
 ### Crossing
 
 A disk's `from` copies host files in once, when pinfold creates the
-disk; the pi layer's disks name none. Otherwise data
-crosses only as git branches, through `push` and `fetch`, each against a
-live box and run in it as the box user. Neither touches a working tree.
-`box fetch`, `push --json` and `fetch --json` print one JSON line and exit 0.
-In that JSON form, a crossing refusal prints
-`{"event":"refused","box":NAME,"reason":"spec"|"limit","detail":TEXT}`
-and exits 1, and a transfer that breaks off prints
-`{"event":"failed","box":NAME,"detail":TEXT}` and exits 1. Without `--json`,
-`push` and `fetch` print either failure as text on stderr and exit 1. A
-transfer that breaks off changes no ref on the receiving side.
+disk; the pi layer's disks name none. Otherwise data crosses only as git
+branches, through a disk project's Git remote (Git), against a live box
+and run in it as the box user. Neither direction touches a working tree.
 
-- **`push`** (`pinfold push`) bundles the checkout's branches on the host
-  and fetches them in the box into the box repository's
-  `refs/remotes/host/*`. The box merges or rebases them itself.
-  `{"event":"pushed","box":NAME,"remote":"host","refs":{REF:OID,…}}`
-- **`fetch --repo GUEST_REPO --into REPO`** has the box bundle
-  GUEST_REPO's branches, less what REPO's `refs/remotes/NAME/*` already
-  hold. NAME is the box name; `pinfold fetch` uses `pinfold`. On the host, pinfold runs `git bundle verify`, then
-  `git index-pack --fsck-objects` of the bundle's pack, then `git fetch`
-  of the bundle, both into a quarantine object directory inside REPO's.
-  It force-updates `refs/remotes/NAME/*` from the box's `refs/heads/*` in
-  one `update-ref` transaction, prepared before the quarantine's packs
-  move into REPO and committed after, so a rejected bundle leaves REPO's
-  object store as it was. pinfold removes the quarantine as the fetch
-  returns; the next fetch into REPO removes one whose process is gone.
-  Fetch has no deadline or memory bound: a box can stall it, or load the
-  host, with a bundle slow to write or costly to index, until the caller
-  kills it; a kill before the ref transaction commits changes no ref.
-  A branch the bundle leaves out lands only
-  at a commit `refs/remotes/NAME/*` already reaches. Every branch name,
+- **Push** bundles the host refs Git names and fetches them in the box
+  into the box repository's `refs/remotes/host/*` only, in one
+  transaction, with no tags. The box merges or rebases them itself. The
+  host reads nothing from the box but its exit status.
+- **Fetch** has the box bundle its repository's branches, less what the
+  host's `refs/remotes/NAME/*` already hold, where NAME is the remote.
+  The box first lists its branches: lines of at most 4096 bytes, each
+  `OID refs/heads/BRANCH` with a full object id, then an empty line. More
+  than 4096 listed or bundled branches fail the fetch. Every branch name,
   listed or in the bundle, must pass `git check-ref-format` under
-  `refs/remotes/NAME/` before git sees it; a box with more than 4096
-  branches fails. Tags and other refs
-  stay in the box. A bundle carries no hook or config, and nothing is
-  checked out; a filtered bundle fails. REPO's own hooks and config are
-  the user's and apply as to any fetch. A bundle past 4 GiB is refused as
-  `limit`.
-  `{"event":"fetched","box":NAME,"remote":NAME,"refs":{REF:OID,…}}`
-
-NAME is validated like a profile name. REF is the full ref set on the
-receiving side.
+  `refs/remotes/NAME/` before git sees it. Tags, symrefs and other refs
+  stay in the box. A bundle past 4 GiB is refused as `limit`, and the
+  box's command is killed. On the host, pinfold runs `git bundle verify`;
+  a filtered bundle fails. It then runs `git index-pack --fsck-objects`
+  of the bundle's pack and `git fetch` of the bundle, both into a
+  quarantine object directory inside the repository's, so fetch's
+  connectivity check runs there too. A branch the bundle leaves out lands
+  only at a commit `refs/remotes/NAME/*` already reaches. A bundle carries
+  no hook or config, and nothing is checked out. Only branches that pass
+  every check reach Git, and the quarantine's packs move into the
+  repository only when Git asks for their objects: each index after its
+  pack, a partial move undone, and a quarantine another fetch swept away
+  fails. A rejected bundle leaves the repository's objects and refs as
+  they were. pinfold removes the quarantine as the helper exits; the next
+  fetch removes one whose process is gone. Fetch has no deadline or
+  memory bound: a box can stall it, or load the host, with a bundle slow
+  to write or costly to index, until the caller kills it; a kill before
+  Git writes changes no ref. The repository's own hooks and config are
+  the user's and apply as to any fetch.
 
 `disk` prints human-readable output by default. `list` shows each disk's
 allocated storage, capacity, clean state, attachments and recorded full
@@ -1521,7 +1529,7 @@ Automatic, never prompting:
   admission refusal runs no pass. Project commands defer it until their
   session lease has ended.
   `start` runs it after keep is committed, without a client lease.
-  Project `push` and `fetch` defer it until the running owner’s mount decision,
+  The Git remote helper defers it until the running owner’s mount decision,
   or configuration mount admission when no owner runs. A share refusal runs
   no pass. Signal handlers are installed before this deferred maintenance.
 
@@ -1685,8 +1693,8 @@ project; executable replacement remains `update-busy`.
 - **After a run:** when the box ends for a reason other than
   `sessions-ended` or `signal` (an `audit-log` stop, the box's init exiting),
   `pinfold -- CMD` prints that reason and `pinfold box inspect <run_id>` on
-  stderr after teardown. An interrupted project crossing reports the same
-  reason and generation and exits 125. Stop accepted during startup reports
+  stderr after teardown. An interrupted crossing reports the same reason
+  and generation, and the helper fails. Stop accepted during startup reports
   `stopped`. There is no exit summary or empty-disk inspection
   or automatic deletion. CMD owns stdout; diagnostics use stderr.
   A share has no project disk, disk attachment, unfilled marker or clean/unclean
@@ -1700,9 +1708,9 @@ project; executable replacement remains `update-busy`.
 ### Git
 
 This section applies only to disk projects. Shares have no startup
-synchronization or project crossing. `pinfold push` and `pinfold fetch`
-refuse a share as `share-no-crossing` before acquiring a crossing lease or
-starting a transient box. Before marker discovery, crossing asks recorded
+synchronization or project crossing. The Git remote refuses a share as
+`share-no-crossing` before acquiring a crossing lease or starting a
+transient box. Before marker discovery, crossing asks recorded
 share owners whose roots cover the invoking folder. A locator mount hint
 selects these requests; the live owner decides. Disk ancestors neither select
 the crossing root nor grant a lease for this check. Other crossing uses normal
@@ -1711,7 +1719,7 @@ roots are checked before a share owner refuses. A running share owner refuses
 crossing regardless of box-written Git markers or a configuration file that now
 selects disk. On macOS, a running disk owner retains disk crossing and disk path
 validation when the file now selects share. On Linux, a share configuration is
-invalid and refuses on every path, including push and fetch against a running
+invalid and refuses on every path, including crossing against a running
 disk owner. With no owner, configuration selects the mount kind.
 
 The project disk holds the box's own repository. Only the host's
@@ -1722,33 +1730,59 @@ under the box's hooks and config, none of which reach the host. Built-in
 images set git's system identity to `pi <pi@pinfold.invalid>`; a
 repository or home identity overrides it.
 
-`pinfold fetch` is Crossing's fetch into the checkout;
-the user merges; signing and host hooks are the user's. `pinfold push` is
-Crossing's push of the checkout; uncommitted host edits do not cross.
+**The Git remote.** The host repository's remote `box` has the URL
+`pinfold::ROOT`, ROOT being the canonical project root. Git runs it
+through `git-remote-pinfold`, a link to the pinfold executable on PATH;
+invoked by that name, pinfold is the helper. `git fetch box` is
+Crossing's fetch into `refs/remotes/box/*`; `git push box BRANCH` is
+Crossing's push into the box's `refs/remotes/host/*`. The user merges;
+signing and host hooks are the user's. Uncommitted host edits do not
+cross. The helper:
 
-Both use a running disk owner’s box with a temporary crossing lease, or
-load configuration and start a transient box on its project disk without
-egress when no owner runs. Both report the direction and transferred refs. With `--json` they print Crossing’s lines. With no project disk, or one whose
-box never came ready (Disks), both exit nonzero and start no box.
+- offers `fetch` (with `list`) and `push`, never `connect`, `import` or
+  `option`, so Git refuses `push --atomic` and `push --dry-run`;
+- refuses a remote name that is not a plain name, as Git passes a URL
+  given on the command line; a URL whose ROOT is not the project Git
+  runs in; a `GIT_DIR` other than ROOT's `.git`; and a configured
+  `remote.NAME.fetch`, from a file or `git -c`, whose destination lies
+  outside `refs/remotes/NAME/`;
+- does the whole box exchange and every check at Git's `list`, answers
+  with the checked branches only, and moves the quarantine's packs in at
+  Git's `fetch`; it serves one listing per process;
+- pushes each `SRC:refs/heads/BRANCH` Git sends to the box's
+  `refs/remotes/host/BRANCH`, rejecting other destinations and
+  deletions; a box failure rejects every ref of that push;
+- speaks Git's protocol on its own descriptors: its standard input is
+  `/dev/null` and its standard output is stderr.
 
-Project admission follows core readiness and completion of the initial Git
-synchronization. Synchronization runs once per new owner, never on join.
-Explicit project crossing waits for this boundary and retains the box during
-transfer. Synchronization prints nothing. A project disk without `.git` first
-gets a new repository, by `git init` in the box as the box user, its initial branch
+A refusal or failure prints `pinfold remote: DETAIL` on stderr, with any
+box-controlled text escaped, and the helper exits nonzero; Git reports
+it with its own exit code. A crossing refusal names `spec` or `limit`.
+Both directions use a running disk owner’s box with a temporary crossing
+lease, or load configuration and start a transient box on its project
+disk without egress when no owner runs. With no project disk, or one
+whose box never came ready (Disks), they fail and start no box.
+
+**First start.** Project admission follows core readiness and completion
+of the initial Git synchronization, which runs once per new owner,
+never on join, and acts only on a project disk without `.git`, its first
+start. Explicit crossing waits for this boundary and retains the box
+during transfer. Synchronization prints nothing. The box gets a new
+repository, by `git init` in the box as the box user, its initial branch
 named for the host's checked-out branch, or git's default when the
-host's HEAD is detached. The start then does `pinfold push`'s push into
-it, and fast-forwards the box's checked-out branch to `host/<branch>`, by
-`git merge --ff-only` in the box as the box user, only when that branch
-is unborn, or is a proper ancestor of `host/<branch>` and the working
-tree has no tracked changes. Otherwise (diverged, ahead, equal,
-detached, no such `host/<branch>`) the checkout stays as the box left
-it. CMD is not yet running; the box's own hooks apply. The push bundles
-every branch's full history, so it grows with the repository, and no
-step has a deadline. A checkout with no branches skips the push and the
-fast-forward silently. A failed step skips the rest. A failure prints
-`pinfold: sync-failed: DETAIL` on stderr, and CMD starts; the next
-new owner retries.
+host's HEAD is detached. Unless the host repository already sets
+`remote.box.url`, pinfold then writes the remote as `git remote add box
+pinfold::ROOT` does: `remote.box.url` and `remote.box.fetch =
++refs/heads/*:refs/remotes/box/*`, and no other configuration or hook.
+It pushes every host branch into `refs/remotes/host/*` and checks out
+`host/<branch>` on the new repository's unborn branch, by `git merge
+--ff-only` in the box as the box user. CMD is not yet running; the box's
+own hooks apply. The push bundles every branch's full history, so it
+grows with the repository, and no step has a deadline. A checkout with
+no branches skips the push and the checkout silently. A failed step
+skips the rest. A failure prints `pinfold: sync-failed: DETAIL` on
+stderr, and CMD starts. A disk that holds `.git` gets no automatic
+push; later host commits cross by `git push box`.
 
 ## Configuration
 
@@ -1767,8 +1801,8 @@ profile and mount and continues with the original command and arguments.
 Refusal or EOF before confirmation exits 125 without creating the file.
 If another caller creates the file while the prompt is open, this launch
 refuses and leaves that file in place. Without interactive I/O, `-- CMD` refuses
-as `no-config` and leaves stdin untouched. `start`, `push`, `fetch`, `build`
-and `config` also refuse as `no-config`. The diagnostic names the interactive
+as `no-config` and leaves stdin untouched. `start`, `build`, `config` and
+the Git remote also refuse as `no-config`. The diagnostic names the interactive
 `pinfold -- pi` and `pinfold -- sh` setup commands.
 `doctor` reports it as a finding. An unreadable file
 or a dangling symlink fails. `pinfold config edit` checks a project as
@@ -1795,7 +1829,7 @@ profile's directory, its `pinfold.toml`, `Containerfile`, `home` or `share`,
 `artifacts/` and the lock directory. Resolution follows symlinked ancestors
 too, including missing suffixes and a dangling profile share symlink:
 box content crosses into the project and must not reach them.
-`-- CMD`, `start`, `push`, `fetch`, `build` and `config edit` check it, and `doctor`
+`-- CMD`, `start`, the Git remote, `build` and `config edit` check it, and `doctor`
 reports it as a finding. Project clients perform admission checks before
 automatic maintenance or notices. Other working commands may already have
 run the daily maintenance pass and written under the state root before
@@ -1855,8 +1889,6 @@ recipe freshness. Launch records retain the resolved image id and reference
 pinfold -- CMD [args…]           start or join a project session
 pinfold start                   keep this project's box
 pinfold stop                    stop its observed box
-pinfold push [--json]            this checkout's branches into its box as refs/remotes/host/*
-pinfold fetch [--json]           its box's branches into refs/remotes/pinfold/*
 pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this project's image, or a profile's; prints the ref
 pinfold image build|rm NAME … [--json]   a caller's image, built from its own context, or retired (Process interface)
 pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
@@ -1868,6 +1900,7 @@ pinfold config [ROOT] [--json]   selected project settings and image
 pinfold config edit              create this project's configuration file if missing, and open it in $VISUAL or $EDITOR
 pinfold box …                    the process interface
 pinfold init                     PID 1 in the box (Linux builds)
+git fetch box / git push box     a disk project's branches, through git-remote-pinfold (Git)
 ```
 
 `doctor --artifacts --json` prints one JSON array: the host `codex` helper, then on Linux
@@ -1938,10 +1971,10 @@ what the rewritten suite must show. Testing policy is in `AGENTS.md`.
 | 5 | Nothing can gain privileges | `CapBnd` 0 and the host uid in exec'd processes; an exec workload's fork+exec descendant reports `NoNewPrivs` 1; no setuid or setgid files; rootfs not writable; init's credentials are the host uid and its `NoNewPrivs` is 1 on Apple; on Linux PID 1 is root with `CapBnd` exactly `CAP_SYS_ADMIN`, the exec service is the host uid with every capability set empty and box work cannot list its `/proc/<pid>/fd`. On both runtimes `user.max_user_namespaces` is 0, a descendant's `unshare -U` fails with ENOSPC, and a plain child succeeds in the same box. The box's `uname -r` differs from the host's; on Linux it is the guest kernel `vmm.toml` pins. Share-inspecting initialization, execution and session helpers use the host uid and retain the stated privilege restrictions. |
 | 6 | The environment follows the spec and always-applied values | A caller box whose `up` has unprefixed proxy variables does not get them. Guest PATH, HOME, `XDG_RUNTIME_DIR`, `LD_PRELOAD`, multiline values and a transport-prefixed name arrive exactly while local list/exec/down still manage the box. Always-applied values win. Apple shares append exact-root Git ownership entries through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n`, preserving declared Git entries. PINFOLD_ALLOW defaults to the spec allowlist without routes and an explicit spec value wins. Guarantee 39 shows PINFOLD_ENV_SECRET's path. |
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, egress fails closed; another XDG root sees the owner dead, prunes the box and reuses its name. The run's launch record stays `available` and its terminal `not-observed`, also after the prune. An abandoned partial claim is reclaimable. On Linux the VM ends with its owner (guarantee 43), so the egress half runs on Apple. Repeat owner death with a detached project owner, including a kept owner without clients. Surviving clients report 125 unless they already observed command completion. Prune and restart preserve the missing terminal record and existing dirty-disk recovery rules. Owner death during gated startup or retirement remains recoverable, including after identity deletion and before claim unlink. An Apple orphan may retain share access until checked removal; replacement waits for removal and retirement. |
-| 9 | The lifecycle works for a caller | Before startup completes, public `exec` and `fetch` exit 3 without starting a caller command; after `ready`, the same commands succeed. `exec` immediately after `ready` streams both streams and returns the exit code, and exits 3 on an absent box; `ready` and `list` name the image's id, and without egress `ready`'s `egress_log` is null; `down` of an absent, empty or flag-like name exits 0, prints nothing and leaves the live box alone; closing `up`'s stdin tears the box down with reason `stdin-closed`. A real terminal exec preserves the caller's input file flags, whether initially blocking or nonblocking. On Apple, a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. |
-| 10 | Disk-project branches cross only by fetch | For disk projects, a box’s writes on its disk leave the host project's bytes, modes and mtimes unchanged. A populated copied Git tree has sampled caller uid/gid ownership, no effective `safe.directory` exemption, and a clean ordinary-user status before mutation. `fetch` lands only the box's branches, under `refs/remotes/<box>/*`, and no tag, two that shadow a branch's names included; after a merge and two checkouts on the host, nothing the box planted (hooks under every client-side name, `core.hooksPath`, `core.fsmonitor`, tracked `.githooks/` and `.husky/`) has run; control: a host hook runs. Each of five hostile bundles, an injected refspec head, a `.git` tree entry, a missing commit, `x` beside `x/y`, and a listed branch it omits, fails the fetch naming its cause and changes no host ref and nothing under `.git/objects`. |
+| 9 | The lifecycle works for a caller | Before startup completes, public `exec` exits 3 without starting a caller command; after `ready`, the same command succeeds. `exec` immediately after `ready` streams both streams and returns the exit code, and exits 3 on an absent box; `ready` and `list` name the image's id, and without egress `ready`'s `egress_log` is null; `down` of an absent, empty or flag-like name exits 0, prints nothing and leaves the live box alone; closing `up`'s stdin tears the box down with reason `stdin-closed`. A real terminal exec preserves the caller's input file flags, whether initially blocking or nonblocking. On Apple, a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. |
+| 10 | Disk-project branches cross only through the Git remote, and end at refs | For disk projects, a box’s writes on its disk leave the host project's bytes, modes and mtimes unchanged. A populated copied Git tree has sampled caller uid/gid ownership, no effective `safe.directory` exemption, and a clean ordinary-user status before mutation. `git fetch box` lands only the box's branches, under `refs/remotes/box/*`, and no tag, two that shadow a branch's names included; after a merge and two checkouts on the host, nothing the box planted (hooks under every client-side name, `core.hooksPath`, `core.fsmonitor`, tracked `.githooks/` and `.husky/`) has run; control: a host hook runs. From a box that sends its own bytes, each of five hostile bundles, a bundle past 4 GiB, a symref or tag line, a malformed or control-character branch name, more than 4096 branches, a `.git` tree entry, a missing tree, a filtered bundle and a listed branch at a commit `box/*` does not reach fails the fetch naming its cause and changes no host ref and nothing under `.git/objects`; control: a listed branch at a reached commit lands. A configured fetch refspec outside `refs/remotes/box/`, from the file or `git -c`, and a `pinfold::` URL on the command line are refused the same way. SIGKILL of the helper during the box's stream or after `list` changes no ref; the next fetch removes the left quarantine, and against a transient box finds the disk clean. Two concurrent fetches both succeed and leave a repository fsck accepts. `git push box BRANCH` lands in the box's `refs/remotes/host/*` only; a tag destination and a deletion are rejected. |
 | 11 | Disks persist and attach exclusively | A disk created with `from` holds the host tree's files, exec bits and symlink; after its owner is SIGKILLed during the copy and its box pruned, the next `up` naming it holds the whole tree. A file one box writes is read by the next box that attaches it; another state root naming the same disk gets its own. While a box attaches a disk writable, another `up` naming it and `disk rm` (including `--all`) are refused as `disk-in-use` and create nothing; of two writable `up`s racing for one new disk exactly one runs and the other is refused as `disk-in-use`; two boxes attaching a disk read-only cannot write it or a read-only host mount. A sparse `from` past the disk's `size` is refused as `limit`. After the runtime kills a writer's box, or the writer's owner is SIGKILLed, a read-only attachment is refused as `disk-unclean` until a writable one has run, and then reads the disk. On macOS, a dead owner's box the runtime created but never started holds its disk. `disk rm ../escape` is refused as `spec`; after writers stop, `disk rm --all` removes the remaining disks. On Linux, a nested disk whose mount point is a symlink the box planted ends the start `failed` and leaves nothing at the link's target. A fresh home whose source contains `.pi/agent/settings.json` starts with a Pi login route and retains those settings; a reused home ignores changed initial-source content. On both platforms, generated parents on a fresh or reused home are created as the numeric box user through descriptor-relative no-follow traversal; an existing symlink fails startup without writing through it, and its corrected directory succeeds without changing existing ownership. |
-| 13 | Project state persists and stays separate | Nested Git metadata and bare-repository paths refuse as `project-in-git`; a linked worktree beneath a shared main root uses that root’s configuration and owner at its invoking cwd; external worktrees and separate Git directories refuse before project state. The main checkout runs. State, config or cache roots inside the project, reached through a symlinked ancestor whose suffix does not exist, and the project's configuration file, directory or Containerfile or the profile's `pinfold.toml` symlinked into the checkout, make build and project commands refuse as `host-path-in-project` and create no project state; `config edit` refuses the selected profile's directory symlinked into the checkout, whether `PINFOLD_PROFILE` or the existing file selects it, and writes no file; with external roots the same project runs. Guest writes in two same-named projects remain separate on A/B/A runs. For disk projects, the first start’s box repository is checked out clean at the host's HEAD commit, on a branch two tags shadow by its short and its full name, holding its committed file, and holds none of the host's untracked `.env`, unstaged blob, stash, remote URL or hook. For disk projects, with no identity in the repository or home, the box's commits arrive authored `pi <pi@pinfold.invalid>`. For disk projects, a new project owner pushes host commits in: a clean box branch strictly behind is fast-forwarded to the host's commit; a dirty tracked file or a local box commit leaves the box's HEAD where it was while `host/main` still moves; an untracked box file the fast-forward would overwrite prints `sync-failed` and CMD still runs. A non-Git macOS share exposes existing host files and retains its home across owners; another canonical folder has a separate owner and home. These folders receive the same protected-path checks and project maintenance ownership as Git projects. Each protected-path refusal creates no project state or configuration, and external roots permit the same project. On Linux the non-Git folder is refused as `not-git`; a configured Git checkout runs. A long valid project basename launches. For disk projects, joining does not push or fast-forward, and project crossing cannot enter between core readiness and completed initial synchronization. |
+| 13 | Project state persists and stays separate | Nested Git metadata and bare-repository paths refuse as `project-in-git`; a linked worktree beneath a shared main root uses that root’s configuration and owner at its invoking cwd; external worktrees and separate Git directories refuse before project state. The main checkout runs. State, config or cache roots inside the project, reached through a symlinked ancestor whose suffix does not exist, and the project's configuration file, directory or Containerfile or the profile's `pinfold.toml` symlinked into the checkout, make build and project commands refuse as `host-path-in-project` and create no project state; `config edit` refuses the selected profile's directory symlinked into the checkout, whether `PINFOLD_PROFILE` or the existing file selects it, and writes no file; with external roots the same project runs. Guest writes in two same-named projects remain separate on A/B/A runs. For disk projects, the first start’s box repository is checked out clean at the host's HEAD commit, on a branch two tags shadow by its short and its full name, holding its committed file, and holds none of the host's untracked `.env`, unstaged blob, stash, remote URL or hook. For disk projects, with no identity in the repository or home, the box's commits arrive authored `pi <pi@pinfold.invalid>`. For disk projects, the first start adds the host remote `box` at `pinfold::ROOT`, leaves an existing `remote.box.url` as it was, and writes no other configuration; a later owner does not push, so a host commit made after the first start leaves the box's `host/main` where it was. A non-Git macOS share exposes existing host files and retains its home across owners; another canonical folder has a separate owner and home. These folders receive the same protected-path checks and project maintenance ownership as Git projects. Each protected-path refusal creates no project state or configuration, and external roots permit the same project. On Linux the non-Git folder is refused as `not-git`; a configured Git checkout runs. A long valid project basename launches. For disk projects, joining does not push, and project crossing cannot enter between core readiness and completed initial synchronization. |
 | 15 | Cleanup removes only pinfold's garbage | One project image supplies a live box alongside an idle project's state and disk. Both projects' state bytes and disks survive `clean --dry-run --unused 0s`; plain `clean` keeps both disks. Real `clean --unused 0s` removes idle state and disk while preserving live state bytes and a write read back through the live box's disk. On Apple an externally started container and an unlabeled external image survive cleanup. One caller image held by a running box survives `image rm`, reports `in_use` and still serves its fixture bytes; after the box stops the same removal reclaims its refs and, on Linux, its observed root disk. A kept project with no clients retains its state bytes, disks and readable guest writes through cleanup; after stop, the same eligible cleanup removes them. Share-project cleanup never removes host shared files. |
 | 17 | up refuses before it creates | A missing image, a misspelled nested spec key, a bad env name, a `dev.pinfold.` label, case-colliding route names, a suffix allow entry on or above a public suffix, a mount or disk `from` path with a comma, a disk at or below `/proc`, `/sys` or `/dev` or at `/`, `/tmp`, `/etc` or `/etc/resolv.conf`, each reached through `..` or `.`, a flag- or path-like disk name and a live name are refused as data, naming the cause; the misspelled key's refusal also names the box; each leaves no box and no state dir. Pi login HOME without an absolute writable-disk backing, overlapping generated destinations and Linux attachment 15 refuse before preparation; corrected HOME/mounts and Linux attachment 14 run. A recipe-less profile refuses with `image-source-missing` even when its old managed tag exists; the same profile with an explicit image runs. Of two `up`s racing for one name exactly one wins, and the winner answers exec and reaches each distinct route name. Long valid XDG state roots permit startup, exec, stat, shutdown, restart and orphan recovery on both runtimes. An unsafe socket path needed by a new generation refuses as runtime-path without changing its target; a checked private directory permits the same start. After confirmed runtime removal, an unverifiable old generation directory remains unchanged while its dead claim retires and a fresh generation starts. A Linux share refuses as `spec` before write-producing startup work, with absent pinfold roots remaining absent; a supported mount succeeds. |
 | 18 | A caller reads the effective configuration as data | Without a runtime, `config --json` reports host policy without creating state/cache/config files. Linux reports known availability from its local catalog, including false for an absent catalog; Apple reports image_built null and image_error when its native probe is unavailable. An existing Linux image remains reportable with empty PATH and KVM denied, without changing the catalog. A project with no configuration file, a `.pinfold.toml` in its folder included, makes config, build and project commands refuse as `no-config` and create no project state; `config edit` with `EDITOR=true` writes the file, and the same commands proceed; `config edit` still opens the editor when the file names a missing profile; a moved copy of the project is refused again. Unsupported project mount shapes and Linux shares refuse as `spec`; a dangling configuration symlink is refused, and `config edit` writes nothing through it. Unknown project/profile TOML keys and a profile's `mounts` are refused with the source and key; correcting the same file restores the fixture policy. With `PINFOLD_PROFILE=full` and no project `allow`, `config --json` reports the default list plus `github.com` and `api.github.com`. Layered image defaults and project overrides report `image_source` and null recipe for explicit images, and `build` refuses an explicit image as `image-no-recipe`; a project recipe works with a recipe-less profile. Conflicting, missing and empty sources refuse with their tokens before box/project/disk/run state; correcting the fixture succeeds. After a managed rebuild, config reports the selected image reference, source and availability. `project` reports its id, home path and `mount`, containing `kind`, canonical `host` and `guest`. `project.disks.home` names the persistent home disk. `project.disks.project` names the disk for a disk project and is null for a share. Guarantee 39 shows the live report. |
@@ -1960,7 +1993,7 @@ what the rewritten suite must show. Testing policy is in `AGENTS.md`.
 
 | 44 | Linux image work stays in its own VM | During an audited RUN, SIGINT ends the build with exit 1 and one failed line whose log names `cancelled`; its VMM ends and public refs stay unchanged. The next ordinary build succeeds in the same cache. Real RUN observes the approved rootful OCI role, no_new_privs, disabled user namespaces and only loopback. In the same build, api.github.com succeeds and example.com gets proxy 403 with its denial audited; explicitly admitting example.com permits it. Cache-mount exhaustion fails with unchanged public refs; its next ordinary build succeeds without manual cache cleanup. Roots, aggregate OCI payloads and selected local-base inputs above the former 512 MiB limit build and launch within their separate bounds. Exceeding each enlarged output bound fails without publication; its smaller control succeeds. Caller context retains its separate bound. After clean removes the idle cache and the pinned builder is unavailable, the completed above-old-limit image still launches and reads its fixture. |
 
-| 45 | Disk export writes only the requested new destination | While its box runs, export of its disk refuses as disk-in-use. After teardown, the same disk exports nested file bytes, executable mode and a symlink as a link without touching its target. Existing destinations refuse unchanged; a missing disk refuses as disk-missing and creates no disk. A special file refuses and leaves no destination; removing it makes the same disk export successfully. |
+| 45 | Files leave a disk without Git only by export into a new destination | While its box runs, export of its disk, a project disk included, refuses as disk-in-use. After teardown, or `pinfold stop` for a project, the same disk exports nested file bytes, executable mode and a symlink as a link without touching its target. Existing destinations refuse unchanged; a missing disk refuses as disk-missing and creates no disk. A special file refuses and leaves no destination; removing it makes the same disk export successfully. |
 
 | 47 | A project's sessions share one box | Simultaneous first launches use one owner and generation. Independent clients run in distinct invoking directories. Killing or disconnecting a client sends TERM to its command group, then KILL after two seconds if needed, while the second session keeps working. Keep and crossing leases retain the box but not a departed command group. A terminal departure hangs up its guest terminal first. A process that leaves the command group, or for a terminal session ignores hangup after leaving it, may keep running; stop ends everything. Normal completion preserves background children, with output delivered for up to one second. Plain stdin EOF does not cancel a command. The final unkept departure ends the box. Bootstrap death and final departure racing join, keep and stop never admit two writable generations. Start retains a box without clients; repeated start and stop succeed. Different effective configuration or host roots refuse as config-changed without executing CMD; restoring each changed input joins the same generation. The original proxy policy still decides. A stale stop cannot end a replacement. Two share sessions edit the same host files. Host and box edits and commits permit joining; mount-kind changes refuse as `config-changed`. A gained root `.git` refuses as `config-changed` only while that owner lives; a later owner runs it as a Git project without host Git. Start creates no project disk or Git synchronization. Share crossing refuses before a lease or transient box. Stop ends box access and preserves host edits, including from the recorded main root without configuration after a hostile Git marker appears. |
 

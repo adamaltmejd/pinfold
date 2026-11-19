@@ -54,7 +54,11 @@ install. macOS (Apple silicon):
 shasum -a 256 -c --ignore-missing SHA256SUMS
 mkdir -p ~/.local/bin
 install -m 0755 pinfold-*-aarch64-apple-darwin ~/.local/bin/pinfold
+ln -sf pinfold ~/.local/bin/git-remote-pinfold
 ```
+
+The `git-remote-pinfold` link is a disk project's Git remote (below); Git
+finds it on PATH.
 
 `pinfold update` installs the latest stable release, verified; `--check`
 only reports it. Close boxes and other pinfold commands first; the install
@@ -70,6 +74,7 @@ Linux, a static musl binary:
 sha256sum -c --ignore-missing SHA256SUMS
 mkdir -p ~/.local/bin
 install -m 0755 pinfold-*-x86_64-unknown-linux-musl ~/.local/bin/pinfold
+ln -sf pinfold ~/.local/bin/git-remote-pinfold
 ```
 
 Or build from a checkout; `rust-toolchain.toml` pins the toolchain:
@@ -81,11 +86,13 @@ mkdir -p ~/.local/bin
 rustup target add aarch64-unknown-linux-musl
 cargo build --release
 install -m 0755 target/release/pinfold ~/.local/bin/pinfold
+ln -sf pinfold ~/.local/bin/git-remote-pinfold
 
 # Linux
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --target x86_64-unknown-linux-musl
 install -m 0755 target/x86_64-unknown-linux-musl/release/pinfold ~/.local/bin/pinfold
+ln -sf pinfold ~/.local/bin/git-remote-pinfold
 ```
 
 ## First run
@@ -206,7 +213,7 @@ a reflecting upstream from returning credentials. See
 [Login routes](docs/ARCHITECTURE.md#egress-proxy) for the exact policy.
 An explicit project `routes` table replaces the profile's routes.
 Project reports use readable text, including when piped. Add `--json` to
-`config`, `doctor`, `push`, `fetch`, disk operations or caller image operations
+`config`, `doctor`, disk operations or caller image operations
 for structured output. Use `pinfold doctor --artifacts --json` for artifact pins.
 The `box` process interface retains its JSON records. Guest commands own
 their stdout and stderr.
@@ -246,8 +253,7 @@ deleted (see the threat model). Export `GIT_OPTIONAL_LOCKS=0` in the shell
 that runs `pinfold` and in host tools that poll `git status`; unless it is
 exactly `0`, `pinfold -- CMD` warns `git-optional-locks` on stderr. It does not cover
 host `git diff` or host commits while the box commits. There is no startup synchronization
-or crossing;
-`pinfold push` and `fetch` refuse as `share-no-crossing`. A share launch never
+or crossing; the Git remote refuses as `share-no-crossing`. A share launch never
 deletes an old project disk or copies it back. To select disk behavior on
 macOS, set this in the project’s configuration:
 
@@ -256,12 +262,22 @@ mounts = [{ host = ".", kind = "disk" }]
 ```
 
 A disk project keeps its own repository. Only committed branches enter it;
-commit local work (a WIP commit is enough) to send it in.
-`pinfold fetch` brings guest commits back as `pinfold/*` branches to merge;
-`pinfold push` sends host branches in as `host/*`. A new owner pushes and
-fast-forwards the guest branch when clean and strictly behind, before admitting
-sessions or project crossing. Joining runs no synchronization. Explicit
-crossing retains the project box during transfer.
+commit local work (a WIP commit is enough) to send it in. Its first start
+pushes every host branch in as `host/*`, checks out the current one, and
+adds the Git remote `box` (`pinfold::` and the project root) to the host
+repository unless a `box` remote exists. After that:
+
+```sh
+git fetch box             # guest branches as box/*, to inspect and merge
+git push box main         # a host branch into the box as host/main
+```
+
+Every byte from the box is checked before Git sees a ref, but the
+remote ends at refs: `git pull box`, a refspec on the command line
+(`git fetch box main:other`) and `--prune` let the box's branches reach
+or delete your refs, and a box branch named `HEAD` makes `box` name it.
+Without a running box, crossing starts a transient one on the project
+disk, without egress.
 
 Outside Git on macOS, a share exposes the folder’s existing host files and
 retains its home. An explicit disk instead starts empty at the folder’s
@@ -325,7 +341,7 @@ A coding agent on the host can delegate to pi in a box:
 ```sh
 pinfold -- pi -p "TASK" </dev/null              # answer on stdout, pi's exit code
 pinfold -- pi -p --continue "FOLLOW-UP" </dev/null
-pinfold fetch                                 # disk-project branches as pinfold/*
+git fetch box                                 # disk-project branches as box/*
 ```
 
 Treat the box's output and branches as untrusted. The
@@ -338,7 +354,7 @@ All commands reuse the project home. Disk projects also reuse a project
 disk; shares use host files directly. To start fresh:
 
 1. Finish every command. For a disk Git project, commit guest work you want
-   to keep, run `pinfold fetch`, inspect the commits, then merge or give them a host
+   to keep, run `git fetch box`, inspect the commits, then merge or give them a host
    branch to retain them. Stop a kept box with `pinfold stop`.
    Use `disk export` for other disk files. Share edits already reside on the
    host; stop revokes box access and preserves those edits.
@@ -353,7 +369,7 @@ host shared files. For a disk project, remove both disks for a fresh home
 and project. Removing only the home preserves the guest repository; removing only the project preserves
 sessions, settings and other home files. Everything on a deleted disk is
 lost, including uncommitted work and home-only files. Fetch brings back commits,
-not uncommitted or home-only files. Later fetches can move `pinfold/*` refs.
+not uncommitted or home-only files. Later fetches can move `box/*` refs.
 
 Outside Git in an explicit macOS disk project, save wanted files with
 `disk export` before removing the persistent disks.
@@ -361,8 +377,8 @@ Outside Git in an explicit macOS disk project, save wanted files with
 Disk removal refuses attached disks. The two removals are separate operations;
 serialize access to the project. Use `disk rm`, never delete state or volume
 files directly. Profiles, project configuration and the selected image remain intact.
-For disk projects, a `sync-failed` warning means source synchronization failed
-even if the command starts.
+For disk projects, a `sync-failed` warning means the first start's push
+failed even if the command starts; `git push box BRANCH` sends it later.
 
 ## Configuration
 

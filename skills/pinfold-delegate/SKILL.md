@@ -16,11 +16,12 @@ only as git branches you fetch and review.
 - Run from the project's main checkout. A git worktree is refused as
   `worktree`. This workflow needs branches to fetch: initialize Git and
   commit before delegating from a folder without a repository.
-- Only committed branches cross, always. Each start pushes the
-  checkout's branches into the box as `host/<branch>` and checks out the
-  current branch there on the first start. Untracked, ignored and
-  uncommitted files never cross: commit work the box needs, on a branch
-  (a WIP commit will do), before starting.
+- Only committed branches cross, always. The first start pushes the
+  checkout's branches into the box as `host/<branch>`, checks out the
+  current branch there and adds the Git remote `box` on the host. Later
+  host commits cross only by `git push box BRANCH`. Untracked, ignored
+  and uncommitted files never cross: commit work the box needs, on a
+  branch (a WIP commit will do), before the first start.
 - Setup is the user's: `pinfold config edit`, `pinfold build`, and a
   model login (`/login` in pi, or a pi login route). Never run
   `pinfold config edit` or `pinfold build` yourself. If a run fails on one of these, stop and
@@ -34,15 +35,15 @@ pinfold -- pi -p "TASK" </dev/null
 
 pi prints its answer on stdout and the command exits with pi's code. A
 pinfold refusal prints `pinfold --: REASON: DETAIL` on stderr and exits 125.
-`pinfold: sync-failed: DETAIL` is not a refusal: pi ran, but without
-the host's latest branches.
+`pinfold: sync-failed: DETAIL` is not a refusal: pi ran, but the first
+start's push failed; `git push box BRANCH` sends a branch.
 Tasks can take minutes: run the command in the background and wait for it
 to exit. Pass pi's own flags (`--provider`, `--model`) as usual.
 
 Ask the delegate to commit its work on a new branch, for example
 `delegate/<topic>`. The box keeps its repository between runs. New host
-commits reach it as `host/<branch>`; tell the delegate to rebase or merge
-onto `host/main` when it needs them.
+commits reach it after `git push box <branch>` as `host/<branch>`; tell
+the delegate to rebase or merge onto `host/main` when it needs them.
 
 ## Follow up
 
@@ -59,15 +60,16 @@ refused as `disk-in-use`: wait for the first call to exit.
 ## Bring the work back
 
 ```sh
-pinfold fetch --json
-git log --oneline HEAD..pinfold/delegate/<topic>
-git diff HEAD...pinfold/delegate/<topic>
+git fetch box
+git log --oneline HEAD..box/delegate/<topic>
+git diff HEAD...box/delegate/<topic>
 ```
 
-`pinfold fetch --json` prints one JSON line naming the `pinfold/*` refs; the
-box's branches land as `refs/remotes/pinfold/*`. Read the whole diff
-before merging, and merge the commit id you read, not the ref name: a
-later fetch can move it. Merging, signing and pushing are yours and the user's.
+The box's branches land as `refs/remotes/box/*`. Fetch only with the
+configured remote: never `git pull box`, a refspec on the command line or
+`--prune`, which let the box write or delete your refs. Read the whole
+diff before merging, and merge the commit id you read, not the ref name:
+a later fetch can move it. Merging, signing and pushing are yours and the user's.
 
 ## Trust
 

@@ -10,7 +10,6 @@ use std::time::Duration;
 use crate::config::Config;
 use crate::core::artifacts;
 use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, Signals, UpError};
-use crate::core::crossing::{self, CrossingError};
 use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
 use crate::core::plan::{Plan, valid_name};
 use crate::core::profile::{self, Profile};
@@ -109,7 +108,7 @@ fn project_files(mount: crate::config::ProjectMount) -> &'static str {
     match mount {
         crate::config::ProjectMount::Share => "Shared with the box. Edits appear on your Mac.",
         crate::config::ProjectMount::Disk => {
-            "Stored on a private project disk. Use push and fetch to transfer branches."
+            "Stored on a private project disk. Use git fetch box and git push box for branches."
         }
     }
 }
@@ -128,8 +127,9 @@ Project
   stop            Shut down the project box
 
 Disk projects
-  push            Send host branches into the box
-  fetch           Bring guest branches back to the host
+  git fetch box   Bring guest branches back as box/* (needs git-remote-pinfold)
+  git push box    Send a host branch into the box as host/*
+  disk export     Copy a stopped disk's files into a new directory
 
 Maintenance
   doctor          Check the runtime, project setup and disk use
@@ -155,8 +155,6 @@ pinfold init
 pinfold -- CMD [args…]
 pinfold start
 pinfold stop
-pinfold push [--json]
-pinfold fetch [--json]
 pinfold build [--profile NAME] [--no-cache] [--allow HOST]…
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]… [--json]
 pinfold image rm NAME [--json]
@@ -177,8 +175,7 @@ pinfold box down BOX
 pinfold box list --label KEY[=VALUE]…
 pinfold box prune
 pinfold box inspect RUN
-pinfold box events RUN [--limit N] [--after CURSOR]
-pinfold box fetch BOX --repo GUEST_REPO --into REPO";
+pinfold box events RUN [--limit N] [--after CURSOR]";
 
 pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
     result.unwrap_or_else(|error| {
@@ -245,7 +242,6 @@ pub fn run(args: &[String]) -> io::Result<i32> {
         Some("prune") => prune(&args[1..]),
         Some("inspect") => inspect(&args[1..]),
         Some("events") => events(&args[1..]),
-        Some("fetch") => fetch(&args[1..]),
         Some(verb) => Err(usage("box", &format!("unknown box verb {verb:?}"))),
         None => Err(usage("box", "a box verb is required")),
     }
@@ -417,91 +413,6 @@ fn stat(args: &[String]) -> io::Result<i32> {
     let report = serde_json::to_string(&runtime.stat(&name)?).map_err(io::Error::other)?;
     println!("{report}");
     Ok(0)
-}
-
-/// `box fetch`: one JSON line, exit 0, 1 on a refusal or a broken
-/// transfer, 3 on an absent box. The remote is the box's name.
-fn fetch(args: &[String]) -> io::Result<i32> {
-    let (name, repo, into) = parse_fetch(args)?;
-    let runtime = runtime();
-    let Some(_dispatch) = exec_admission(runtime, "fetch", &name)? else {
-        return Ok(3);
-    };
-    let init = artifacts::init()?;
-    let result = crossing::fetch(runtime, &init, &name, &repo, Path::new(&into), &name);
-    Ok(report_crossing("fetch", &name, &name, result))
-}
-
-pub(crate) fn report_crossing(
-    verb: &str,
-    name: &str,
-    remote: &str,
-    result: Result<crossing::Refs, CrossingError>,
-) -> i32 {
-    let (report, code) = crossing_report(verb, name, remote, result);
-    println!("{report}");
-    code
-}
-
-pub(crate) fn crossing_report(
-    verb: &str,
-    name: &str,
-    remote: &str,
-    result: Result<crossing::Refs, CrossingError>,
-) -> (serde_json::Value, i32) {
-    match result {
-        Ok(refs) => (
-            serde_json::json!({
-                "event": if verb == "push" { "pushed" } else { "fetched" },
-                "box": name,
-                "remote": remote,
-                "refs": refs,
-            }),
-            0,
-        ),
-        Err(CrossingError::Refused(reason, detail)) => (
-            serde_json::json!({ "event": "refused", "box": name, "reason": reason, "detail": detail }),
-            1,
-        ),
-        Err(CrossingError::Failed(detail)) => (
-            serde_json::json!({ "event": "failed", "box": name, "detail": detail }),
-            1,
-        ),
-    }
-}
-
-fn parse_fetch(args: &[String]) -> io::Result<(String, String, String)> {
-    let (name, mut rest) = match args {
-        [name, rest @ ..] if !name.starts_with('-') => (name.clone(), rest),
-        _ => return Err(usage("box fetch", "fetch needs a box name")),
-    };
-    let (mut repo, mut into) = (None, None);
-    while let [option, value, tail @ ..] = rest {
-        let slot = match option.as_str() {
-            "--repo" => &mut repo,
-            "--into" => &mut into,
-            _ => {
-                return Err(usage(
-                    "box fetch",
-                    &format!("unknown fetch option {option:?}"),
-                ));
-            }
-        };
-        if slot.replace(value.clone()).is_some() {
-            return Err(usage("box fetch", &format!("fetch takes {option} once")));
-        }
-        rest = tail;
-    }
-    if let [option] = rest {
-        return Err(usage(
-            "box fetch",
-            &format!("fetch option {option:?} needs a value"),
-        ));
-    }
-    match (repo, into) {
-        (Some(repo), Some(into)) => Ok((name, repo, into)),
-        _ => Err(usage("box fetch", "fetch needs --repo and --into")),
-    }
 }
 
 /// Whether the runtime lists pinfold box `name`. An absent box is pinfold's

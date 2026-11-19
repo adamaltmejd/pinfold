@@ -4,83 +4,114 @@ use std::collections::BTreeMap;
 use std::env;
 use std::io;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::runtime::Builder;
 
-use crate::cli;
 use crate::config::{Config, ProjectMount};
 use crate::core::r#box::{Box, Shutdown, Signals, UpError};
 use crate::core::clean;
 use crate::core::crossing::CrossingError;
 use crate::core::image::{ImageInfo, service};
 use crate::core::plan::{Disk, Egress, Env, Mount, MountKind, Plan};
-use crate::core::runtime::{ExecContext, runtime};
+use crate::core::runtime::{ExecContext, Runtime, runtime};
 use crate::core::{artifacts, crossing, disk, image, sha256_hex};
 use crate::formatting::terminal_text;
 use crate::pi::context::Context;
 use crate::pi::state::{self, project_id};
 
 /// `$1` is the project's guest path, `$2` the host's branch or empty.
-/// Creates the box's repository there unless `.git` exists.
+/// Creates the box's repository there, or exits [`REPOSITORY_EXISTS`] when
+/// `.git` exists.
 const INIT_SCRIPT: &str = r#"
-[ -e "$1/.git" ] && exit
+[ -e "$1/.git" ] && exit 100
 exec git init -q ${2:+"--initial-branch=$2"} "$1"
 "#;
 
-/// `$1` is the project's guest repository, `$2` the push's remote. Exits 0
-/// without a merge unless the checked-out branch is unborn, or clean and a
-/// proper ancestor of its `$2/` counterpart.
-const FAST_FORWARD_SCRIPT: &str = r#"
+/// [`INIT_SCRIPT`]'s exit code when the disk already holds a repository.
+const REPOSITORY_EXISTS: i32 = 100;
+
+/// `$1` is the project's new guest repository. Checks out the host's
+/// counterpart of its unborn branch, when the push brought one.
+const CHECKOUT_SCRIPT: &str = r#"
 cd "$1" || exit
 ref=$(git symbolic-ref -q HEAD) || exit 0
-host=$(git rev-parse -q --verify "refs/remotes/$2/${ref#refs/heads/}") || exit 0
-if head=$(git rev-parse -q --verify HEAD); then
-  [ "$head" != "$host" ] && git merge-base --is-ancestor "$head" "$host" || exit 0
-  # The refresh keeps stat-only differences from counting as changes.
-  git update-index -q --refresh >/dev/null
-  git diff-index --quiet HEAD -- || exit 0
-fi
+host=$(git rev-parse -q --verify "refs/remotes/host/${ref#refs/heads/}") || exit 0
 exec git merge -q --ff-only "$host"
 "#;
 
-/// Create the box's repository if the project disk has none, push the
-/// checkout's branches into it, then fast-forward its checkout (Git). A
-/// failure is reported and never stops the command.
-pub(crate) fn sync(name: &str, init: &Path, root: &Path, cancel: &std::sync::atomic::AtomicBool) {
+/// The first start of a project disk, one without `.git` (Git): create the
+/// box's repository, add the host's `box` remote unless one exists, push
+/// the checkout's branches in and check out the host's branch. A failure is
+/// reported and never stops the command.
+pub(crate) fn first_push(
+    name: &str,
+    init: &Path,
+    root: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
+) {
     let Some(guest) = root.to_str() else { return };
     let failed = |detail: &str| eprintln!("pinfold: sync-failed: {}", terminal_text(detail.trim()));
     // `--short` would print `heads/<b>` when a tag shares the branch's name.
     let branch = git(root, &["symbolic-ref", "-q", "HEAD"], cancel)
         .and_then(|head| head.strip_prefix("refs/heads/").map(str::to_string))
         .unwrap_or_default();
-    if let Err(detail) = in_box(name, init, INIT_SCRIPT, &[guest, &branch], cancel) {
-        return failed(&detail);
+    match in_box(name, init, INIT_SCRIPT, &[guest, &branch], cancel) {
+        Ok(()) => {}
+        Err((Some(REPOSITORY_EXISTS), _)) => return,
+        Err((_, detail)) => return failed(&detail),
     }
-    // No branch: nothing to push.
-    if !git(root, &["for-each-ref", "--count=1", "refs/heads/"], cancel)
-        .is_some_and(|out| !out.is_empty())
+    if git(root, &["config", "--get", "remote.box.url"], cancel).is_none()
+        && git(
+            root,
+            &["remote", "add", "box", &format!("pinfold::{guest}")],
+            cancel,
+        )
+        .is_none()
     {
+        failed("the host's `box` remote could not be added");
+    }
+    let Some(branches) = git(
+        root,
+        &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+        cancel,
+    ) else {
+        return failed("the host's branches could not be listed");
+    };
+    let sources: Vec<String> = branches.lines().map(str::to_string).collect();
+    // No branch: nothing to push.
+    if sources.is_empty() {
         return;
     }
+    let refspecs = ["+refs/heads/*:refs/remotes/host/*".to_string()];
     if let Err(CrossingError::Refused(_, detail) | CrossingError::Failed(detail)) =
-        crossing::push_cancellable(runtime(), init, name, root, guest, "host", cancel)
+        crossing::push_cancellable(
+            runtime(),
+            init,
+            name,
+            root,
+            guest,
+            &sources,
+            &refspecs,
+            cancel,
+        )
     {
         return failed(&detail);
     }
-    if let Err(detail) = in_box(name, init, FAST_FORWARD_SCRIPT, &[guest, "host"], cancel) {
+    if let Err((_, detail)) = in_box(name, init, CHECKOUT_SCRIPT, &[guest], cancel) {
         failed(&detail);
     }
 }
 
-/// Run `script` with `args` in the box as the box user; a failure's detail
-/// is its stderr.
+/// Run `script` with `args` in the box as the box user; a failure carries
+/// its exit code and stderr.
 fn in_box(
     name: &str,
     init: &Path,
     script: &str,
     args: &[&str],
     cancel: &std::sync::atomic::AtomicBool,
-) -> Result<(), String> {
+) -> Result<(), (Option<i32>, String)> {
     let argv: Vec<String> = ["sh", "-c", script, "sh"]
         .iter()
         .chain(args)
@@ -88,17 +119,20 @@ fn in_box(
         .collect();
     let mut command = runtime()
         .exec_command(name, init, &ExecContext::default(), &argv)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| (None, error.to_string()))?;
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
     let output = crossing::output_discard_cancellable(&mut command, None, cancel)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| (None, error.to_string()))?;
     if output.status.success() {
         Ok(())
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).into_owned())
+        Err((
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ))
     }
 }
 
@@ -121,30 +155,43 @@ pub(crate) fn require_repo(root: &Path) -> io::Result<()> {
     }
 }
 
-/// `pinfold push` and `pinfold fetch`: cross this checkout's branches with
-/// the box that attaches its project disk, or with a transient box on that
-/// disk, without egress, when none does.
-pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
-    let json = match args {
-        [] => false,
-        [flag] if flag == "--json" => true,
-        _ => return Err(cli::usage(verb, "expected only an optional --json")),
-    };
+/// One crossing for the Git remote helper: find the disk project at the
+/// current directory, let CHECK refuse its root, then run WORK against the
+/// box that attaches its project disk, or a transient box on that disk,
+/// without egress, when none does. WORK gets the runtime, init, the box's
+/// name, the root, its guest path and a flag that a signal or the box's end
+/// sets.
+pub(crate) fn cross<T, W>(
+    check: impl FnOnce(&Path) -> io::Result<()>,
+    work: W,
+) -> io::Result<Result<T, CrossingError>>
+where
+    T: Send + 'static,
+    W: FnOnce(
+            &'static dyn Runtime,
+            &Path,
+            &str,
+            &Path,
+            &str,
+            &AtomicBool,
+        ) -> Result<T, CrossingError>
+        + Send
+        + 'static,
+{
     let runtime = Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async {
         let mut signals = Signals::new()?;
+        let interrupted = |signal: nix::sys::signal::Signal| {
+            io::Error::new(io::ErrorKind::Interrupted, format!("interrupted by {signal}"))
+        };
         let cwd = state::canonical(&env::current_dir()?)?;
         crate::pi::session::refuse_covering_share(&cwd, &mut signals).await?;
         let context = Context::candidate(&cwd)?;
         let root = context.root.clone();
+        check(&root)?;
         let mut lease = match crate::pi::session::borrow(&root, &mut signals).await {
             Ok(lease) => lease,
-            Err(error) => {
-                return match signals.last() {
-                    Some(signal) => Ok(128 + signal as i32),
-                    None => Err(error),
-                };
-            }
+            Err(error) => return Err(signals.last().map_or(error, interrupted)),
         };
         let result = async {
             // The owner's root probe precedes reading a different configuration root.
@@ -158,11 +205,6 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
             let id = project_id(&root);
             let [_, disk] = state::disk_names(&id);
             let guest = utf8(&root, "project root")?.to_string();
-            let (verb, remote) = if verb == "push" {
-                ("push", "host")
-            } else {
-                ("fetch", "pinfold")
-            };
             let box_runtime = crate::core::runtime::runtime();
             let init = artifacts::init_path()?;
             let (name, mut box_) = if let Some(name) = lease.name().map(str::to_string) {
@@ -186,67 +228,42 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
                     disks: vec![empty_writable_disk(disk, &root)],
                     ..box_plan(&config, &id, &image)?
                 };
-                let name = plan.name.clone();
                 let box_ = match Box::up(&plan, &mut signals).await {
                     Ok(box_) => box_,
                     Err(UpError::Control) => {
-                        return report_crossing(json, verb, &name, remote, Err(CrossingError::Failed(
+                        return Ok(Err(CrossingError::Failed(
                             "the transient box was stopped before ready".to_string(),
-                        )), &mut signals).await;
+                        )));
                     }
                     Err(UpError::Signal) => {
-                        return Ok(128
-                            + signals.last().unwrap_or(nix::sys::signal::Signal::SIGTERM) as i32);
+                        return Err(interrupted(
+                            signals
+                                .last()
+                                .unwrap_or(nix::sys::signal::Signal::SIGTERM),
+                        ));
                     }
                     Err(UpError::Refused(refusal)) => {
-                        return report_crossing(json, verb, &name, remote, Err(CrossingError::Refused(refusal.reason, refusal.detail)), &mut signals).await;
+                        return Ok(Err(CrossingError::Refused(refusal.reason, refusal.detail)));
                     }
-                    Err(error) => {
-                        return report_crossing(json, verb, &name, remote, Err(CrossingError::Failed(
-                            io::Error::from(error).to_string(),
-                        )), &mut signals).await;
-                    }
+                    Err(error) => return Err(error.into()),
                 };
-                (name, Some(box_))
+                (plan.name, Some(box_))
             };
             if box_.is_none() {
                 artifacts::init()?;
             }
-            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let cancel = std::sync::Arc::new(AtomicBool::new(false));
             let worker_cancel = cancel.clone();
             let target = name.clone();
             let mut worker = tokio::task::spawn_blocking(move || {
-                if verb == "push" {
-                    crossing::push_cancellable(
-                        box_runtime,
-                        &init,
-                        &target,
-                        &root,
-                        &guest,
-                        remote,
-                        &worker_cancel,
-                    )
-                } else {
-                    crossing::fetch_cancellable(
-                        box_runtime,
-                        &init,
-                        &target,
-                        &guest,
-                        &root,
-                        remote,
-                        &worker_cancel,
-                    )
-                }
+                work(box_runtime, &init, &target, &root, &guest, &worker_cancel)
             });
-            let (code, terminal) = tokio::select! {
+            let (crossed, terminal) = tokio::select! {
                 biased;
-                crossed = &mut worker => {
-                    let code = match crossed {
-                        Ok(crossed) => report_crossing(json, verb, &name, remote, crossed, &mut signals).await,
-                        Err(error) => Err(io::Error::other(format!("{verb} failed: {error}"))),
-                    };
-                    (code, Some(Shutdown::Signal.terminal()))
-                },
+                crossed = &mut worker => (
+                    crossed.map_err(|error| io::Error::other(format!("crossing failed: {error}"))),
+                    Some(Shutdown::Signal.terminal()),
+                ),
                 ended = async {
                     match box_.as_mut() {
                         Some(box_) => box_.ended().await,
@@ -256,142 +273,48 @@ pub fn crossing(verb: &str, args: &[String]) -> io::Result<i32> {
                         },
                     }
                 } => {
-                    cancel.store(true, std::sync::atomic::Ordering::Release);
+                    cancel.store(true, Ordering::Release);
                     let _ = worker.await;
+                    let generation = box_.as_ref().map_or(name.as_str(), |box_| box_.run_id.as_str());
                     match ended {
-                        Ok(ended) => (Ok(125), Some(ended.terminal())),
-                        Err(error) => {
-                            let generation = box_.as_ref().map_or(name.as_str(), |box_| box_.run_id.as_str());
-                            let message = format!("pinfold {verb}: {} ({generation}); pinfold box inspect {generation}", terminal_text(&error.to_string()));
-                            let _ = crate::pi::session::forward_diagnostics(message.into_bytes(), &mut signals).await;
-                            (Ok(125), None)
-                        },
+                        Ok(ended) => (
+                            Err(io::Error::other(format!("the box ended during the transfer ({generation})"))),
+                            Some(ended.terminal()),
+                        ),
+                        Err(error) => (
+                            Err(io::Error::other(format!(
+                                "{} ({generation}); pinfold box inspect {generation}",
+                                terminal_text(&error.to_string())
+                            ))),
+                            None,
+                        ),
                     }
                 },
                 signal = signals.recv() => {
-                    cancel.store(true, std::sync::atomic::Ordering::Release);
+                    cancel.store(true, Ordering::Release);
                     let _ = worker.await;
-                    (Ok(128 + signal as i32), Some(Shutdown::Signal.terminal()))
+                    (Err(interrupted(signal)), Some(Shutdown::Signal.terminal()))
                 },
             };
             let down = match box_.as_mut() {
                 Some(box_) => box_.down(terminal).await,
                 None => Ok(()),
             };
-            let code = code?;
+            let crossed = crossed?;
             down?;
-            Ok(code)
+            Ok(crossed)
         }
         .await;
         let left = lease.leave(&mut signals).await;
         match left {
             Ok(()) => result,
-            Err(error) if matches!(result, Ok(0)) => Err(error),
+            Err(error) if matches!(result, Ok(Ok(_))) => Err(error),
             Err(error) => {
-                let message = format!("pinfold {verb}: {}", terminal_text(&error.to_string()));
-                let _ = crate::pi::session::forward_diagnostics(message.into_bytes(), &mut signals).await;
+                eprintln!("pinfold: {}", terminal_text(&error.to_string()));
                 result
             }
         }
     })
-}
-
-async fn report_crossing(
-    json: bool,
-    verb: &str,
-    name: &str,
-    remote: &str,
-    result: Result<crossing::Refs, CrossingError>,
-    signals: &mut Signals,
-) -> io::Result<i32> {
-    use std::io::Write;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    let (report, code) = if json {
-        let (line, code) = cli::crossing_report(verb, name, remote, result);
-        (line.to_string(), code)
-    } else {
-        match result {
-            Ok(refs) => {
-                let direction = if verb == "push" {
-                    "host to box"
-                } else {
-                    "box to host"
-                };
-                let mut lines = vec![format!("Updated refs ({direction}): {}", refs.len())];
-                for (reference, commit) in refs {
-                    let reference = reference
-                        .strip_prefix("refs/remotes/")
-                        .unwrap_or(&reference);
-                    lines.push(format!(
-                        "  {}  {}",
-                        terminal_text(reference),
-                        terminal_text(&commit)
-                    ));
-                }
-                (lines.join("\n"), 0)
-            }
-            Err(CrossingError::Refused(reason, detail)) => {
-                let reason = serde_json::json!(reason);
-                (
-                    format!(
-                        "pinfold {verb}: {}: {}",
-                        reason.as_str().unwrap_or("refused"),
-                        terminal_text(&detail)
-                    ),
-                    1,
-                )
-            }
-            Err(CrossingError::Failed(detail)) => {
-                (format!("pinfold {verb}: {}", terminal_text(&detail)), 1)
-            }
-        }
-    };
-    let cancel = Arc::new(AtomicBool::new(false));
-    let worker_cancel = cancel.clone();
-    let mut worker = tokio::task::spawn_blocking(move || {
-        crate::core::process::with_cancellation(worker_cancel.clone(), || {
-            let fd = if json || code == 0 { 1 } else { 2 };
-            let mut output = crate::core::process::StdioRelay::new(fd, false)?;
-            let line = format!("{report}\n");
-            let mut bytes = line.as_bytes();
-            while !bytes.is_empty() {
-                if worker_cancel.load(Ordering::Acquire) {
-                    return Err(io::ErrorKind::Interrupted.into());
-                }
-                match output.write(bytes) {
-                    Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-                    Ok(written) => bytes = &bytes[written..],
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
-                        ) =>
-                    {
-                        nix::poll::poll(&mut [], 20u16)?;
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            output.close();
-            while !output.finished()? {
-                if worker_cancel.load(Ordering::Acquire) {
-                    return Err(io::ErrorKind::Interrupted.into());
-                }
-                nix::poll::poll(&mut [], 20u16)?;
-            }
-            Ok(code)
-        })
-    });
-    tokio::select! {
-        biased;
-        result = &mut worker => result.map_err(io::Error::other)?,
-        signal = signals.recv() => {
-            cancel.store(true, Ordering::Release);
-            let _ = worker.await;
-            Ok(128 + signal as i32)
-        },
-    }
 }
 
 /// The admitted image source, also reported without resolving the runtime.

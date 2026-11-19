@@ -1492,7 +1492,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let worker_cancel = sync_cancel.clone();
         let (name, sync_root, sync_init, repository) = (plan.name.clone(), root.clone(), init.clone(), resolved.config.repository && resolved.config.mount == crate::config::ProjectMount::Disk);
         let mut syncing = tokio::task::spawn_blocking(move || {
-            if repository { launch::sync(&name, &sync_init, &sync_root, &worker_cancel); }
+            if repository { launch::first_push(&name, &sync_init, &sync_root, &worker_cancel); }
         });
         let stopped = loop { tokio::select! {
             biased;
