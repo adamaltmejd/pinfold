@@ -218,7 +218,8 @@ for structured output. Use `pinfold doctor --artifacts --json` for artifact pins
 The `box` process interface retains its JSON records. Guest commands own
 their stdout and stderr.
 
-Managed builds re-resolve stable agent releases through the `default`
+Managed builds of a bundled profile, or of a chain that ends in the
+bundled `default` recipe, re-resolve stable agent releases through that
 recipe every time. Installation
 reruns when a resolved version changes; other steps use the layer cache.
 Use `pinfold build` or `pinfold build --profile NAME` to update.
@@ -429,8 +430,10 @@ See [Configuration](docs/ARCHITECTURE.md#configuration) for layers, keys and def
 
 A profile's `pinfold.toml` or the project's configuration sets the box's
 environment with `env`. A literal is plain configuration and shows in
-`pinfold config`; `from` reads the value from your shell when the box
-starts and never writes it down. Use `from` for anything secret:
+`pinfold config --json`; `from` reads the value from your shell when the box
+starts; pinfold never writes it down. On macOS, Apple's `container`
+keeps it in its own state for the box while the box exists. Use `from`
+for anything secret:
 
 ```toml
 [env]

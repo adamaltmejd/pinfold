@@ -1,7 +1,6 @@
 //! Profile lookup: the user's copy under the config dir, else the embedded
 //! profiles. A profile may name a `base`, applied beneath it.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
@@ -60,32 +59,35 @@ const ADAM_SHARE: &[(&str, &[u8])] = &[(
 /// whether it is executable.
 pub type ShareFile = (String, Vec<u8>, bool);
 
-/// A profile's read-only shared files. Held files are materialized only
-/// when a box starts; metadata lookup and copying do not populate the cache.
+/// A profile's read-only shared files.
 #[derive(Clone)]
 pub enum Share {
+    /// A user directory, mounted live.
     Directory(PathBuf),
     /// A built-in's files, or the files of a chain with more than one
-    /// share, merged by path.
+    /// share, merged by path. Each box start writes a fresh copy into its
+    /// own state dir, which goes with that generation.
     Files(Vec<ShareFile>),
 }
 
+/// The copy's directory in a box's state dir.
+const SHARE_COPY: &str = "profile-share";
+
 impl Share {
-    /// The host mount path, without creating it.
-    pub fn path(&self) -> io::Result<PathBuf> {
+    /// The host mount path for box `name`, without creating it.
+    pub fn path(&self, name: &str) -> io::Result<PathBuf> {
         match self {
             Self::Directory(path) => Ok(path.clone()),
-            Self::Files(files) => Ok(dirs::cache_dir()?
-                .join("profiles")
-                .join(super::sha256_hex(serde_json::to_vec(files)?))
-                .join("share")),
+            Self::Files(_) => Ok(dirs::box_state_dir(name)?.join(SHARE_COPY)),
         }
     }
 
-    /// Install held files after the box has claimed its name.
-    pub fn materialize(&self) -> io::Result<()> {
+    /// Write held files into the claimed box's state dir.
+    pub fn materialize(&self, state_dir: &Path) -> io::Result<()> {
         if let Self::Files(files) = self {
-            dirs::install_dir(&self.path()?, |staging| write_share(files, staging))?;
+            let dir = state_dir.join(SHARE_COPY);
+            fs::create_dir(&dir)?;
+            write_share(files, &dir)?;
         }
         Ok(())
     }
@@ -194,26 +196,33 @@ impl Profile {
         above.push(name.to_string());
         let base = Self::load_chain(&base, above)
             .map_err(|error| io::Error::new(error.kind(), format!("profile {name:?}: {error}")))?;
-        let mut seeds: BTreeMap<PathBuf, Seed> = BTreeMap::new();
-        for seed in base.home.iter().chain(&profile.home) {
-            seeds.insert(seed.path.clone(), seed.clone());
+        // A recipe FROMs its base's own image. A recipe-less base has none;
+        // a stale image under its name would not be the one recorded.
+        if profile.containerfile.is_some()
+            && base.containerfile.is_none()
+            && let Some(recipe) = base.recipe()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "profile {name:?} has a Containerfile, so its base {:?} needs one too (its image is {:?}'s)",
+                    base.name, recipe.name
+                ),
+            ));
         }
-        profile.home = seeds.into_values().collect();
+        profile.home = overlay(
+            base.home.clone(),
+            std::mem::take(&mut profile.home),
+            |seed| &seed.path,
+        );
         // One contributing share keeps its own form: a user directory stays
         // a live mount. Two or more are merged by path into a copy.
         profile.share = match (base.share.as_ref(), profile.share.take()) {
-            (Some(lower), Some(upper)) => {
-                let mut files = BTreeMap::new();
-                for (path, bytes, executable) in lower.files()?.into_iter().chain(upper.files()?) {
-                    files.insert(path, (bytes, executable));
-                }
-                Some(Share::Files(
-                    files
-                        .into_iter()
-                        .map(|(path, (bytes, executable))| (path, bytes, executable))
-                        .collect(),
-                ))
-            }
+            (Some(lower), Some(upper)) => Some(Share::Files(overlay(
+                lower.files()?,
+                upper.files()?,
+                |(path, _, _)| Path::new(path),
+            ))),
             (lower, upper) => upper.or_else(|| lower.cloned()),
         };
         profile.base = Some(Box::new(base));
@@ -294,6 +303,23 @@ impl Profile {
     pub fn image_ref(&self) -> String {
         format!("localhost/pinfold/profile-{}:latest", self.name)
     }
+}
+
+/// `upper`'s files over `lower`'s, sorted by path. An upper path replaces
+/// the lower file at that path and, where one is a directory in the other
+/// link, everything lower beneath it or above it on that path.
+fn overlay<T>(lower: Vec<T>, upper: Vec<T>, path: impl Fn(&T) -> &Path) -> Vec<T> {
+    let mut files: Vec<T> = lower
+        .into_iter()
+        .filter(|low| {
+            !upper
+                .iter()
+                .any(|high| path(low).starts_with(path(high)) || path(high).starts_with(path(low)))
+        })
+        .collect();
+    files.extend(upper);
+    files.sort_by(|a, b| path(a).cmp(path(b)));
+    files
 }
 
 /// The `base` a profile's `pinfold.toml` names. Configuration checks the

@@ -475,7 +475,7 @@ impl Box {
         };
         let starting = async {
             if let Some(share) = profile.as_ref().and_then(|profile| profile.share.as_ref()) {
-                share.materialize()?;
+                share.materialize(&state_dir)?;
             }
             runs::create(&run_id)?;
             let (observed, egress_log) = start(
@@ -982,7 +982,7 @@ pub(crate) fn validate_project(plan: &Plan, profile: &Profile) -> Result<(), Str
     let mut resolved = plan.clone();
     if let Some(share) = &profile.share {
         resolved.mounts.push(Mount {
-            host: share.path().map_err(|error| error.to_string())?,
+            host: share.path(&plan.name).map_err(|error| error.to_string())?,
             guest: PathBuf::from("/opt/pinfold/profile"),
             kind: MountKind::Readonly,
         });
@@ -1159,7 +1159,7 @@ fn resolve_profile(plan: &mut Plan, supplied: Option<Profile>) -> io::Result<Opt
     }
     if let Some(share) = &profile.share {
         plan.mounts.push(Mount {
-            host: share.path()?,
+            host: share.path(&plan.name)?,
             guest: PathBuf::from("/opt/pinfold/profile"),
             kind: MountKind::Readonly,
         });

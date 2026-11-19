@@ -7,7 +7,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use super::plan::{MountKind, Plan, guest_path};
-use super::profile::Profile;
+use super::profile::{Profile, Share};
 use crate::dirs;
 
 /// Reused by project admission; `extra` names its configuration files too.
@@ -69,8 +69,9 @@ fn protected_paths(
             }
             paths.push(dir);
         }
-        if let Some(share) = &profile.share {
-            paths.push(share.path()?);
+        // A copied share lives in the box's state dir, under the state root.
+        if let Some(Share::Directory(path)) = &profile.share {
+            paths.push(path.clone());
         }
     }
     paths

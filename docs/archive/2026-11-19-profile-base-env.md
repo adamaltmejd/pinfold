@@ -65,7 +65,8 @@ suspended.
   refuses as `config-changed` naming `env.values`, exactly as for
   `PINFOLD_ENV_` and route variables. #344 says the value never appears in
   the snapshot; the operator accepted it there, on condition that it
-  reaches no file.
+  reaches no file. Review on PR #350 found that it does on Apple (see
+  Review fixes).
 - **Missing variable.** First built as the owner's refusal, which reached
   the client only as `owner-unavailable` (125), for env and route
   variables alike. Fixed in a follow-up: project admission
@@ -219,12 +220,62 @@ Profile (adam link on macOS, `pf-local` on Linux): `PF_LITERAL =
 - Cleanup: images are only pruned per source after a build, never
   `latest`, so a base no project selects is not removed.
 
+### Review fixes (PR #350)
+
+- **Apple keeps box env in its own state.** macOS, `container` 1.7.1,
+  a kept project box with `PF_FROM = { from = "PF343_FROM" }` and
+  `PINFOLD_ENV_PF_ENV`, both dummies. `container inspect` held both hex
+  values (once each) under `PINFOLD_BOX_ENV_PF_FROM` and
+  `PINFOLD_BOX_ENV_PF_ENV`, and every other box variable the same way;
+  the plain values did not appear. Of Apple's metadata files, the box's
+  `containers/<box>/config.json` and `runtime-configuration.json` held
+  them, both `-rw-r--r--` owned by the user, under `com.apple.container`
+  (`drwxr-xr-x`). When the owner ended, the box and that directory were
+  removed. origin/main passes env through the same `guest_env`, so
+  `PINFOLD_ENV_` values were already recorded there. A full-tree grep
+  of Apple's 26 GB directory was stopped as too slow; images, snapshots
+  and volumes were not searched. Linux sends env over vsock after boot
+  (`vsock::set_env`); with a `from` dummy in a running box, `grep -rlI`
+  of the value and its hex over the private roots, `/tmp` and
+  `/run/user/<uid>` listed nothing. The spec and README now state the
+  Apple exception; the fix is ticketed separately.
+- **Merged share per start.** The content-addressed cache with its
+  manifest is gone. A merged share is written at each start into the
+  box's state dir (`profile-share`), which the owner already removes when
+  the generation ends and with a dead owner's record. macOS and Linux,
+  `pf343s` (`base = "default"`, own `share/`): the copy existed while
+  the box ran and none remained after `stop`, in state or cache.
+- **File over directory.** `pf343s` with `share/pi` a file (the base has
+  `pi/`) and `home/.codex` a file (the base seeds `.codex/…`): on both
+  machines the box saw only the upper `pi` file and an executable
+  `extra/run.sh`, and `~/.codex` was the upper file. A first Mac run
+  showed `.codex` as a directory: it reused a home disk from the
+  aborted env run, and seeds are written only when missing. A fresh disk
+  gave the file.
+- **HOME.** A configured `HOME = "/tmp/not-home"` is ignored: the box
+  printed `HOME=/home/pi` on both machines. The always-applied names
+  already won in the runtime.
+- **Removed base.** macOS `pf343t` (`base = "pf343r"`) built; doctor
+  showed no hint. With `base` removed and the Containerfile unchanged,
+  doctor and a launch printed `image-outdated: image …pf343t:latest was
+  built from image 5e2dee50…; it now has no base`, and the launch
+  proceeded (exit 0).
+- **Recipe over a recipe-less base.** A user `documents` (`base =
+  "default"`, no Containerfile) under built-in `adam`: `pinfold build
+  --profile adam` refused, exit 1, `profile "adam" has a Containerfile,
+  so its base "documents" needs one too (its image is "default"'s)`.
+  This is a refusal, not a build argument: user recipes write a literal
+  `FROM` too, and a build argument would need the builder protocol.
+- The first-run prompt offers `adam`. README names `config --json` for
+  literals and limits agent re-resolution to chains ending in the bundled
+  recipe.
+
 ### Checks
 
 `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`
 and `cargo clippy -p pinfold --all-targets --locked --target
 x86_64-unknown-linux-musl -- -D warnings` (zig as ring's C compiler) were
-clean at both code commits.
+clean at both code commits and at the review fixes.
 
 ## Not run
 

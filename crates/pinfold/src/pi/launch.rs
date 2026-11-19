@@ -457,7 +457,7 @@ pub(crate) fn image_warnings_for(
                 outdated.then(|| "builds on an outdated image".to_string())
             }
         } else {
-            None
+            recorded.map(|recorded| format!("was built from image {recorded}; it now has no base"))
         };
         if let Some(reason) = reason {
             warnings.push(format!(
@@ -476,8 +476,10 @@ fn recipe_changed(image: &ImageInfo, bytes: &[u8]) -> bool {
 }
 
 pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> io::Result<Plan> {
-    let mut env = BTreeMap::from([("HOME".to_string(), Env::Exact(state::HOME.to_string()))]);
-    env.extend(config.env.clone());
+    // HOME is the project box's own; like the always-applied names it wins
+    // over configured and forwarded entries.
+    let mut env = config.env.clone();
+    env.insert("HOME".to_string(), Env::Exact(state::HOME.to_string()));
     let [home, project] = state::disk_names(id);
     let mut disks = vec![empty_writable_disk(home, Path::new(state::HOME))];
     let mounts = match config.mount {

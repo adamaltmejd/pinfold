@@ -674,7 +674,8 @@ run ...` (or `events`); it may never have existed or have been removed
   user-requested bytes to a new host directory, never credentials forwarded
   by pinfold or diagnostic payloads. On Linux the spec's env reaches
   the guest only over the exec connection, after boot, and the exec
-  service holds it in memory.
+  service holds it in memory. On Apple, `container` records the spec's
+  env in its own box state while the box exists (Configuration).
 
 On Apple, read-only is a guest mount flag; pinfold does not rely on the
 host share server enforcing it. Box work has the host uid:gid, an empty
@@ -1083,8 +1084,9 @@ A project recipe typically `FROM`s the profile image.
   changed or unrecorded Containerfile inputs produce an `image-outdated`
   hint with the rebuild command. A launch checks every image beneath the
   selected one the same way, even before it is rebuilt. An image whose
-  recorded base is not the current base image's id, or whose base is
-  itself outdated, also names `image-outdated`, so a change at a chain's
+  recorded base is not the current base image's id, that records a base
+  when its chain now has none, or whose base is itself outdated, also
+  names `image-outdated`, so a change at a chain's
   root names every image above it. Explicit
   images get no recipe freshness hints. Hints never refuse the launch.
   Harness pins and home settings are not image inputs.
@@ -1331,12 +1333,16 @@ with or without a TTY.
   or a missing base refuses as `profile`. The chain applies root first:
   each profile's `pinfold.toml` keys replace its base's as the project's
   replace the profile's (Configuration); its `home/` and `share/` files
-  lie over its base's by path, whole files. A share from one profile in the
+  lie over its base's by path, whole files; an upper path also replaces
+  every lower entry beneath it or above it on that path, so a file and a
+  directory never meet. A share from one profile in the
   chain mounts as that profile's own; shares from two or more mount as a
-  copy of the merged files, bytes and executable bit, made at start. A
-  profile's Containerfile `FROM`s the stable ref of its nearest base with a
-  recipe; pinfold does not read the `FROM`. A profile without one uses that
-  base's image. The box spec's `profile` applies the whole chain.
+  copy of the merged files, bytes and executable bit, written at each
+  start into the box's state dir and removed with it. A
+  profile's Containerfile `FROM`s the stable ref of its base's image;
+  pinfold does not read the `FROM`. A profile with a Containerfile whose
+  direct base has none refuses as `profile`. A profile without one uses
+  its nearest base's image. The box spec's `profile` applies the whole chain.
 - `pinfold profile new` writes a copy of `default`, or of the profile named
   by `--from`: that profile's own files and `base`, not its base's files.
 - A profile whose chain has no recipe needs an explicit image or, for project commands, a project recipe.
@@ -1937,7 +1943,8 @@ An override containing non-UTF-8 bytes is refused, naming only its key.
 Only the environment and the project's file select `profile`; a profile's
 own `profile` value is ignored. `env` is the exception to whole-key
 replacement: each layer replaces it name by name, so a name a lower layer
-sets cannot be unset above it.
+sets cannot be unset above it. A configured `HOME` is ignored:
+the project box sets it, as it does the always-applied names.
 
 A `from` value is read once, when a new box starts. A missing variable
 refuses the start before any owner starts, and so does a missing injecting
@@ -1945,9 +1952,13 @@ or login route variable: the client prints `environment variable VAR is
 not set` on stderr and exits 125. The value travels as a `PINFOLD_ENV_`
 value does: in the environment of the detached owner and its runtime
 client, and, for the join comparison, in the admission snapshot, held in
-memory and sent over the private project socket, never written. Argv,
+memory and sent over the private project socket. Argv,
 `config --json`, the launch record and every file pinfold writes name the
-variable, never its value. A literal is configuration, not a secret:
+variable, never its value. On Apple, `container` 1.7.1 itself records
+every box variable, hex-encoded, in the box's `config.json` and
+`runtime-configuration.json` (mode 0644, under its Application Support
+directory) and shows it in `container inspect`, until the box is
+removed. A literal is configuration, not a secret:
 `config --json` shows it; the launch record names it, like every box
 variable, without its value. Secrets belong in `from`. Always-applied names follow the
 box spec's rules (Always applied).
