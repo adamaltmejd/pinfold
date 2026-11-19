@@ -1549,13 +1549,11 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         // A first start's Rex setup yields to stop, box exit, a signal or the client leaving.
         let (stopped, status) = if stopped.is_none() && matches!(intent, Intent::KeepRex) {
             let request = relay.request();
-            // One `ended` across heartbeats: a stop request half read is never dropped.
-            let ended = box_.ended();
-            tokio::pin!(request, ended);
+            tokio::pin!(request);
             loop { tokio::select! {
                 biased;
                 _ = received.recv() => break (Some(Ok(Shutdown::Signal)), None),
-                reason = &mut ended => break (Some(reason), None),
+                reason = box_.ended() => break (Some(reason), None),
                 _ = signals.recv() => break (Some(Ok(Shutdown::Signal)), None),
                 _ = heartbeat.tick() => { let _ = wire::write_reply(&mut writer, Reply::Starting {}).await; },
                 status = &mut request => break (None, status),
