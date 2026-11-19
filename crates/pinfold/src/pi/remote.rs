@@ -56,11 +56,11 @@ pub fn run(args: &[String]) -> io::Result<i32> {
                         )
                     },
                 )?)?;
-                let mut listing: String = landing
-                    .refs
-                    .iter()
-                    .map(|(branch, oid)| format!("{oid} refs/heads/{branch}\n"))
-                    .collect();
+                // Git reads a listing's object ids as SHA-1 unless told.
+                let mut listing = format!(":object-format {}\n", object_format()?);
+                for (branch, oid) in &landing.refs {
+                    listing.push_str(&format!("{oid} refs/heads/{branch}\n"));
+                }
                 listing.push('\n');
                 fetched = Some(landing);
                 send(&mut output, &listing)?;
@@ -111,7 +111,10 @@ fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Re
             "refs/remotes/host/{}",
             destination.strip_prefix("refs/heads/").unwrap_or_default()
         );
-        if source.is_empty()
+        // Git names a pushed ref by its full name, so a stash, a tag or a
+        // commit expression mapped to a branch is not a host branch.
+        if !source.starts_with("refs/heads/")
+            || !crossing::valid_ref(repo, source, &cancel)?
             || !destination.starts_with("refs/heads/")
             || !crossing::valid_ref(repo, &target, &cancel)?
         {
@@ -162,13 +165,57 @@ fn check(root: &Path, remote: &str, address: &str) -> io::Result<()> {
             "remote-repository: run Git in the project's main checkout",
         ));
     }
+    // Each moves the refs, objects or configuration Git and the checks
+    // below use away from ROOT's `.git`. Git sets none for a helper.
+    for name in [
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG",
+        "GIT_NAMESPACE",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_GRAFT_FILE",
+    ] {
+        if std::env::var_os(name).is_some() {
+            return Err(refused(&format!(
+                "remote-repository: unset {name} to cross with the project's repository"
+            )));
+        }
+    }
+    let namespace = format!("refs/remotes/{remote}/");
+    // Only the configuration names the remote: Git's legacy
+    // `.git/remotes` and `.git/branches` files carry refspecs unchecked here.
+    let Some(_) = config(root, &["--get", &format!("remote.{remote}.url")])? else {
+        return Err(refused(&format!(
+            "remote-url: set remote.{remote}.url; run `git remote add {remote} pinfold::{}`",
+            terminal_text(&root.to_string_lossy())
+        )));
+    };
+    // Git writes through a symbolic ref to its target.
     let mut command = crossing::git_command(root);
     command
-        .args(["config", "--get-all", &format!("remote.{remote}.fetch")])
+        .args(["for-each-ref", "--format=%(refname) %(symref)", &namespace])
         .stdin(std::process::Stdio::null());
-    let configured = crossing::output_cancellable(&mut command, None, &AtomicBool::new(false))?;
-    let namespace = format!("refs/remotes/{remote}/");
-    for refspec in String::from_utf8_lossy(&configured.stdout).lines() {
+    let refs = crossing::output_cancellable(&mut command, None, &AtomicBool::new(false))?;
+    if !refs.status.success() {
+        return Err(refused(
+            "remote-repository: Git could not list the remote's refs",
+        ));
+    }
+    for line in String::from_utf8_lossy(&refs.stdout).lines() {
+        if let Some((name, target)) = line.split_once(' ')
+            && !target.is_empty()
+        {
+            return Err(refused(&format!(
+                "remote-refspec: {} is a symbolic ref to {}; delete it",
+                terminal_text(name),
+                terminal_text(target)
+            )));
+        }
+    }
+    let configured = config(root, &["--get-all", &format!("remote.{remote}.fetch")])?;
+    for refspec in configured.as_deref().unwrap_or_default().lines() {
         let destination = refspec
             .strip_prefix('+')
             .unwrap_or(refspec)
@@ -185,6 +232,41 @@ fn check(root: &Path, remote: &str, address: &str) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// The repository's object format, as `git rev-parse` names it.
+fn object_format() -> io::Result<String> {
+    let mut command = crossing::git_command(Path::new("."));
+    command
+        .args(["rev-parse", "--show-object-format"])
+        .stdin(std::process::Stdio::null());
+    let output = crossing::output_cancellable(&mut command, None, &AtomicBool::new(false))?;
+    let format = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || format.is_empty() {
+        return Err(refused(
+            "remote-repository: Git could not name the object format",
+        ));
+    }
+    Ok(format)
+}
+
+/// `git config ARGS` in ROOT: the value, `None` when unset, and a refusal
+/// when Git cannot read the configuration.
+fn config(root: &Path, args: &[&str]) -> io::Result<Option<String>> {
+    let mut command = crossing::git_command(root);
+    command
+        .arg("config")
+        .args(args)
+        .stdin(std::process::Stdio::null());
+    let output = crossing::output_cancellable(&mut command, None, &AtomicBool::new(false))?;
+    match output.status.code() {
+        Some(0) => Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned())),
+        Some(1) => Ok(None),
+        _ => Err(refused(&format!(
+            "remote-repository: Git could not read the configuration: {}",
+            terminal_text(String::from_utf8_lossy(&output.stderr).trim())
+        ))),
+    }
 }
 
 /// The fds Git speaks to the helper on. Standard input becomes

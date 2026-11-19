@@ -20,12 +20,12 @@ use crate::formatting::terminal_text;
 use crate::pi::context::Context;
 use crate::pi::state::{self, project_id};
 
-/// `$1` is the project's guest path, `$2` the host's branch or empty.
-/// Creates the box's repository there, or exits [`REPOSITORY_EXISTS`] when
-/// `.git` exists.
+/// `$1` is the project's guest path, `$2` the host's object format, `$3`
+/// the host's branch or empty. Creates the box's repository there, or exits
+/// [`REPOSITORY_EXISTS`] when `.git` exists.
 const INIT_SCRIPT: &str = r#"
 [ -e "$1/.git" ] && exit 100
-exec git init -q ${2:+"--initial-branch=$2"} "$1"
+exec git init -q --object-format="$2" ${3:+"--initial-branch=$3"} "$1"
 "#;
 
 /// [`INIT_SCRIPT`]'s exit code when the disk already holds a repository.
@@ -40,10 +40,11 @@ host=$(git rev-parse -q --verify "refs/remotes/host/${ref#refs/heads/}") || exit
 exec git merge -q --ff-only "$host"
 "#;
 
-/// The first start of a project disk, one without `.git` (Git): create the
-/// box's repository, add the host's `box` remote unless one exists, push
-/// the checkout's branches in and check out the host's branch. A failure is
-/// reported and never stops the command.
+/// The first start of a project disk (Git), recorded on the host before
+/// anything crosses: create the box's repository, add the host's `box`
+/// remote unless one exists, push the checkout's branches in and check out
+/// the host's branch. A failure is reported, never retried, and never stops
+/// the command.
 pub(crate) fn first_push(
     name: &str,
     init: &Path,
@@ -51,12 +52,28 @@ pub(crate) fn first_push(
     cancel: &std::sync::atomic::AtomicBool,
 ) {
     let Some(guest) = root.to_str() else { return };
-    let failed = |detail: &str| eprintln!("pinfold: sync-failed: {}", terminal_text(detail.trim()));
+    let failed = |detail: &str| {
+        eprintln!(
+            "pinfold: sync-failed: {}; check that `git remote get-url box` prints pinfold::{} (or `git remote add box pinfold::{}`), then `git push box BRANCH`",
+            terminal_text(detail.trim()),
+            terminal_text(guest),
+            terminal_text(guest)
+        )
+    };
+    let [_, disk] = state::disk_names(&project_id(root));
+    match disk::first_start(&disk) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => return failed(&error.to_string()),
+    }
+    let Some(format) = git(root, &["rev-parse", "--show-object-format"], cancel) else {
+        return failed("the host's object format could not be read");
+    };
     // `--short` would print `heads/<b>` when a tag shares the branch's name.
     let branch = git(root, &["symbolic-ref", "-q", "HEAD"], cancel)
         .and_then(|head| head.strip_prefix("refs/heads/").map(str::to_string))
         .unwrap_or_default();
-    match in_box(name, init, INIT_SCRIPT, &[guest, &branch], cancel) {
+    match in_box(name, init, INIT_SCRIPT, &[guest, &format, &branch], cancel) {
         Ok(()) => {}
         Err((Some(REPOSITORY_EXISTS), _)) => return,
         Err((_, detail)) => return failed(&detail),

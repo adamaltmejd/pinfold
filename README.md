@@ -378,7 +378,9 @@ Disk removal refuses attached disks. The two removals are separate operations;
 serialize access to the project. Use `disk rm`, never delete state or volume
 files directly. Profiles, project configuration and the selected image remain intact.
 For disk projects, a `sync-failed` warning means the first start's push
-failed even if the command starts; `git push box BRANCH` sends it later.
+failed even if the command starts, and it is not retried. Check that
+`git remote get-url box` prints `pinfold::` and the project root (or
+`git remote add box pinfold::ROOT`), then `git push box BRANCH`.
 
 ## Configuration
 

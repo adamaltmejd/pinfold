@@ -278,6 +278,7 @@ pub fn claim(
             }
             // Marked first, so a crash anywhere in the fill leaves the mark.
             mark(&disk.name, UNFILLED)?;
+            unmark(&disk.name, STARTED)?;
             if existing.contains(&disk.name) {
                 runtime.remove_disk(&disk.name)?;
             }
@@ -423,6 +424,19 @@ fn record_attachments(
 const UNCLEAN: &str = "unclean";
 /// Written before pinfold creates a disk; removed once its box is ready.
 const UNFILLED: &str = "unfilled";
+/// Written at a project disk's first start, before anything crosses into
+/// it; a disk pinfold creates starts without it.
+const STARTED: &str = "started";
+
+/// Record the disk's first start: whether this is it. A disk created anew
+/// has none recorded; the box cannot erase one.
+pub fn first_start(name: &str) -> io::Result<bool> {
+    if marked(name, STARTED)? {
+        return Ok(false);
+    }
+    mark(name, STARTED)?;
+    Ok(true)
+}
 
 fn marker(name: &str, kind: &str) -> io::Result<PathBuf> {
     Ok(dirs::state_dir()?
@@ -604,5 +618,6 @@ pub fn remove(runtime: &dyn Runtime, name: &str) -> io::Result<Removal> {
     }
     unmark(name, UNCLEAN)?;
     unmark(name, UNFILLED)?;
+    unmark(name, STARTED)?;
     Ok(Removal::Removed { existed })
 }

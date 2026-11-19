@@ -36,7 +36,8 @@ pinfold -- pi -p "TASK" </dev/null
 pi prints its answer on stdout and the command exits with pi's code. A
 pinfold refusal prints `pinfold --: REASON: DETAIL` on stderr and exits 125.
 `pinfold: sync-failed: DETAIL` is not a refusal: pi ran, but the first
-start's push failed; `git push box BRANCH` sends a branch.
+start's push failed and is not retried. Check that `git remote get-url
+box` prints `pinfold::` and the project root, then `git push box BRANCH`.
 Tasks can take minutes: run the command in the background and wait for it
 to exit. Pass pi's own flags (`--provider`, `--model`) as usual.
 
