@@ -1,0 +1,11 @@
+git status --porcelain: index replaced 20 of 20
+starship prompt: index replaced 0 of 20
+git --no-optional-locks status --porcelain: index replaced 0 of 20
+GIT_OPTIONAL_LOCKS=0 git status --porcelain: index replaced 0 of 20
+git log -1: index replaced 0 of 20
+git diff --stat: index replaced 2 of 20
+--- starship prompt output (ANSI stripped):
+
+\[\]…/\[\]ctl2\[\]\[\] \[\] main\[\] \[\]!\[\] \[\]                                                                \[\]
+\[\]❯\[\] --- starship trace, git commands executed:
+[TRACE] - (starship::context::git_repo): Executing git command: GIT_OPTIONAL_LOCKS="0" "/opt/homebrew/bin/git" "-C" "ROOT/ctl2" "--git-dir" "ROOT/ctl2/.git" "-c" "core.fsmonitor=" "--work-tree" "ROOT/ctl2" "for-each-ref" "--format" "%(upstream) %(upstream:track)" "refs/heads/main"
