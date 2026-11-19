@@ -69,7 +69,7 @@ pub(crate) fn first_push(
         )
         .is_none()
     {
-        failed("the host's `box` remote could not be added");
+        return failed("the host's `box` remote could not be added");
     }
     let Some(branches) = git(
         root,
