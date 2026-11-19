@@ -435,8 +435,17 @@ impl std::fmt::Display for MissingManagedImage {
 impl std::error::Error for MissingManagedImage {}
 
 pub(crate) fn image_warnings(config: &Config, image: &str) -> io::Result<Vec<String>> {
+    image_warnings_for(config, image, &service().resolve_image(image)?)
+}
+
+/// Warnings for `image` from an already resolved lookup.
+pub(crate) fn image_warnings_for(
+    config: &Config,
+    image: &str,
+    resolved: &Result<ImageInfo, String>,
+) -> io::Result<Vec<String>> {
     if config.image.is_some() {
-        return match service().resolve_image(image)? {
+        return match resolved {
             Ok(_) => Ok(Vec::new()),
             Err(_) => Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -467,10 +476,10 @@ pub(crate) fn image_warnings(config: &Config, image: &str) -> io::Result<Vec<Str
                 .expect("config admitted a recipe"),
         ),
     };
-    let built = match service().resolve_image(image)? {
+    let built = match resolved {
         Ok(built) => built,
         #[cfg(target_os = "macos")]
-        Err(message) if message != format!("Error: image not found: {image}") => {
+        Err(message) if *message != format!("Error: image not found: {image}") => {
             return Err(io::Error::other(format!(
                 "container image inspect: {message}"
             )));
@@ -490,7 +499,7 @@ pub(crate) fn image_warnings(config: &Config, image: &str) -> io::Result<Vec<Str
         }
     };
     let mut warnings = Vec::new();
-    if let Some(warning) = containerfile_warning(&built, containerfile, build) {
+    if let Some(warning) = containerfile_warning(built, containerfile, build) {
         warnings.push(warning);
     }
     if let Some(base) = base {

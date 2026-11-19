@@ -107,7 +107,7 @@ its arguments. Bare `pinfold --` exits with a usage error.
 On the first interactive run, choose the profile and confirm the project
 folder. If your shell sets `PINFOLD_PROFILE`, that selects the profile.
 Unset it to choose a different one. On macOS the box can edit files in
-that folder and its top-level `.git` is read-only. Linux uses a private project disk. If the selected
+that folder. A top-level `.git` present when the box starts is read-only. Linux uses a private project disk. If the selected
 managed image is missing, Pinfold offers to build it and then starts your
 command. A build needs network access. An explicit `image` must already
 be available locally. Rebuild with `pinfold build` if a later launch

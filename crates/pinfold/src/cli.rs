@@ -36,15 +36,26 @@ fn project_intro() -> io::Result<()> {
     let context = crate::pi::context::Context::discover(&std::env::current_dir()?)?;
     let root = &context.root;
     println!("Project   {}", terminal_text(&root.to_string_lossy()));
-    match project_status(root) {
+    let status = project_status(root);
+    match &status {
         Ok(ProjectStatus::Stopped) => println!("Box       stopped"),
         Ok(ProjectStatus::Starting) => println!("Box       starting"),
         Ok(ProjectStatus::Stopping) => println!("Box       stopping"),
-        Ok(ProjectStatus::Running {
-            profile: Some(profile),
-        }) => println!("Box       running with profile {}", terminal_text(&profile)),
-        Ok(ProjectStatus::Running { profile: None }) => println!("Box       running"),
+        Ok(ProjectStatus::Running { profile, mount }) => {
+            match profile {
+                Some(profile) => {
+                    println!("Box       running with profile {}", terminal_text(profile))
+                }
+                None => println!("Box       running"),
+            }
+            if let Some(mount) = mount {
+                println!("Box files {}", project_files(*mount));
+            }
+        }
         Ok(ProjectStatus::Unavailable) | Err(_) => println!("Box       status unavailable"),
+    }
+    if matches!(status, Ok(ProjectStatus::Running { .. })) {
+        println!("\nThe next launch uses these settings.");
     }
     let (config, preview) = match Config::load(root) {
         Ok(config) => (config, false),
@@ -1170,15 +1181,20 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         Ok((root, config)) => {
             let reference =
                 crate::pi::launch::resolve_image(config, &crate::pi::state::project_id(root));
-            if ready || cfg!(target_os = "linux") {
-                match crate::pi::launch::image_warnings(config, &reference) {
-                    Ok(warnings) => findings.extend(warnings),
-                    Err(error) => findings.push(format!("Image: {error}")),
-                }
+            let resolved = (ready || cfg!(target_os = "linux"))
+                .then(|| image::service().resolve_image(&reference));
+            let warnings = match &resolved {
+                Some(Ok(found)) => crate::pi::launch::image_warnings_for(config, &reference, found),
+                Some(Err(error)) => Err(io::Error::other(error.to_string())),
+                None => Ok(Vec::new()),
+            };
+            match warnings {
+                Ok(warnings) => findings.extend(warnings),
+                Err(error) => findings.push(format!("Image: {error}")),
             }
             image = Some(reference);
             if json {
-                configuration = Some(config_report(root, config)?);
+                configuration = Some(config_report(root, config, resolved.as_ref())?);
             }
         }
         Err(error) => findings.push(error.to_string()),
@@ -1200,17 +1216,27 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         ));
     }
     if json {
+        // `json!` panics on a path that is not UTF-8.
+        let pins = serde_json::to_value(&pins)?;
+        let what = if project.is_ok() {
+            "project root"
+        } else {
+            "working directory"
+        };
+        let disk = match &disk {
+            Some(plan) => Some(serde_json::json!({
+                "automatic_bytes": plan.automatic_bytes, "run_bytes": plan.run_bytes,
+                "build_cache_bytes": plan.build_cache_bytes, "project_state_bytes": plan.project_state,
+                "disk_bytes": plan.disk_bytes, "moved": serde_json::to_value(&plan.moved)?
+            })),
+            None => None,
+        };
         println!(
             "{}",
             serde_json::json!({
-                "root": root, "runtime": runtime.describe(), "runtime_ready": ready,
+                "root": utf8(root, what)?, "runtime": runtime.describe(), "runtime_ready": ready,
                 "version": version, "kernel": kernel, "config": configuration, "image": image,
-                "artifacts": pins, "findings": findings,
-                "disk": disk.as_ref().map(|plan| serde_json::json!({
-                    "automatic_bytes": plan.automatic_bytes, "run_bytes": plan.run_bytes,
-                    "build_cache_bytes": plan.build_cache_bytes, "project_state_bytes": plan.project_state,
-                    "disk_bytes": plan.disk_bytes, "moved": plan.moved
-                }))
+                "artifacts": pins, "findings": findings, "disk": disk
             })
         );
         return Ok(0);
@@ -1338,7 +1364,9 @@ pub fn config(args: &[String]) -> io::Result<i32> {
         Some(path) => project_config(path)?,
         None => project_config(&std::env::current_dir()?)?,
     };
-    let report = config_report(&root, &config)?;
+    let reference = crate::pi::launch::resolve_image(&config, &crate::pi::state::project_id(&root));
+    let resolved = image::service().resolve_image(&reference);
+    let report = config_report(&root, &config, Some(&resolved))?;
     if json {
         println!("{report}");
         return Ok(0);
@@ -1405,18 +1433,24 @@ fn config_edit() -> io::Result<i32> {
     Ok(code)
 }
 
-fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> {
+/// `resolved` is the lookup of the config's image, or `None` when it was skipped.
+fn config_report(
+    root: &Path,
+    config: &Config,
+    resolved: Option<&io::Result<Result<image::ImageInfo, String>>>,
+) -> io::Result<serde_json::Value> {
     let project = crate::pi::state::project_id(root);
     let [home_disk, project_disk] = crate::pi::state::disk_names(&project);
     let image = crate::pi::launch::resolve_image(config, &project);
-    let (image_built, image_error) = match image::service().resolve_image(&image) {
-        Ok(Ok(_)) => (Some(true), None),
+    let (image_built, image_error) = match resolved {
+        None => (None, None),
+        Some(Ok(Ok(_))) => (Some(true), None),
         #[cfg(target_os = "macos")]
-        Ok(Err(message)) if !message.starts_with("Error: image not found: ") => {
-            (None, Some(message))
+        Some(Ok(Err(message))) if !message.starts_with("Error: image not found: ") => {
+            (None, Some(message.clone()))
         }
-        Ok(Err(_)) => (Some(false), None),
-        Err(error) => (None, Some(error.to_string())),
+        Some(Ok(Err(_))) => (Some(false), None),
+        Some(Err(error)) => (None, Some(error.to_string())),
     };
     Ok(serde_json::json!({
         "root": utf8(root, "project root")?,
@@ -1606,24 +1640,31 @@ pub fn build(args: &[String]) -> io::Result<i32> {
 }
 
 pub fn image(args: &[String]) -> io::Result<i32> {
-    let json = args.last().is_some_and(|arg| arg == "--json");
-    let args = if json { &args[..args.len() - 1] } else { args };
     match args.first().map(String::as_str) {
-        Some("build") => Ok(image_build(&args[1..], json)),
-        Some("rm") => image_rm(&args[1..], json),
+        Some("build") => Ok(image_build(&args[1..])),
+        Some("rm") => {
+            let json = args.last().is_some_and(|arg| arg == "--json");
+            image_rm(&args[1..args.len() - usize::from(json)], json)
+        }
         Some(verb) => Err(usage("image", &format!("unknown image verb {verb:?}"))),
         None => Err(usage("image", "an image verb is required")),
     }
 }
 
-fn image_build(args: &[String], json: bool) -> i32 {
+fn image_build(args: &[String]) -> i32 {
     let name = args
         .first()
         .map(String::as_str)
         .filter(|arg| !arg.starts_with("--"));
-    let result = parse_image_build(name, &args[usize::from(name.is_some())..])
-        .map_err(|detail| ImageError::Refused(RefusalReason::Spec, detail))
-        .and_then(image::build_image);
+    let options = &args[usize::from(name.is_some())..];
+    let (json, result) = match parse_image_build(name, options) {
+        Ok((request, json)) => (json, image::build_image(request)),
+        // A malformed invocation still reports in the form it asked for.
+        Err(detail) => (
+            options.iter().any(|arg| arg == "--json"),
+            Err(ImageError::Refused(RefusalReason::Spec, detail)),
+        ),
+    };
     let (line, code) = match result {
         Ok(built) if !json => {
             println!("Built {}", terminal_text(&built.latest));
@@ -1723,8 +1764,9 @@ fn image_rm(args: &[String], json: bool) -> io::Result<i32> {
     Ok(0)
 }
 
-fn parse_image_build(name: Option<&str>, args: &[String]) -> Result<ImageRequest, String> {
+fn parse_image_build(name: Option<&str>, args: &[String]) -> Result<(ImageRequest, bool), String> {
     let name = name.ok_or("image build needs an image name")?.to_string();
+    let mut json = false;
     let mut containerfile = None;
     let mut context = None;
     let mut labels = BTreeMap::new();
@@ -1753,17 +1795,19 @@ fn parse_image_build(name: Option<&str>, args: &[String]) -> Result<ImageRequest
             }
             "--no-cache" => cache = false,
             "--allow" => allow.push(args.next().ok_or("--allow needs a host")?.clone()),
+            "--json" if !json => json = true,
             option => return Err(format!("unknown image build option {option:?}")),
         }
     }
-    Ok(ImageRequest {
+    let request = ImageRequest {
         name,
         containerfile: containerfile.ok_or("image build needs --containerfile PATH")?,
         context: context.ok_or("image build needs --context DIR")?,
         labels,
         cache,
         allow,
-    })
+    };
+    Ok((request, json))
 }
 
 pub fn profile(args: &[String]) -> io::Result<i32> {

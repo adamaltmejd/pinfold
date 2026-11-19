@@ -441,7 +441,10 @@ fn running_profile(locator: &Locator) -> Option<String> {
 pub(crate) enum ProjectStatus {
     Stopped,
     Starting,
-    Running { profile: Option<String> },
+    Running {
+        profile: Option<String>,
+        mount: Option<ProjectMount>,
+    },
     Stopping,
     Unavailable,
 }
@@ -465,9 +468,9 @@ pub(crate) fn project_status(root: &Path) -> io::Result<ProjectStatus> {
             probe_reply(root, &locator, &mut signals, deadline),
         )
         .await;
-        match result {
-            Ok(Ok(Reply::Compatible { .. })) => {}
-            Ok(Ok(Reply::Error { reason, .. })) if reason == "config-changed" => {}
+        let mount = match result {
+            Ok(Ok(Reply::Compatible { mount })) => Some(mount),
+            Ok(Ok(Reply::Error { reason, .. })) if reason == "config-changed" => None,
             Ok(Ok(Reply::Draining { generation }))
                 if Some(&generation) == locator.generation.as_ref() =>
             {
@@ -481,9 +484,10 @@ pub(crate) fn project_status(root: &Path) -> io::Result<ProjectStatus> {
                 return Ok(ProjectStatus::Starting);
             }
             _ => return Ok(ProjectStatus::Unavailable),
-        }
+        };
         Ok(ProjectStatus::Running {
             profile: running_profile(&locator),
+            mount,
         })
     })
 }
@@ -1002,21 +1006,27 @@ async fn setup_answer(message: String, signals: &mut Signals) -> io::Result<Opti
     // SAFETY: this handle owns the nonblocking terminal descriptor.
     let reader = unsafe { tokio::io::unix::AsyncFd::register(terminal) }?;
     forward_diagnostics(message.into_bytes(), signals).await?;
-    // One canonical terminal read consumes at most one line, leaving later
-    // input for the next prompt or the guest command.
-    let mut answer = [0; 4096];
-    let count = tokio::select! {
-        biased;
-        _ = signals.recv() => return Err(io::ErrorKind::Interrupted.into()),
-        result = reader.async_io(tokio::io::Interest::READABLE, |mut tty| tty.read(&mut answer)) => result?,
-    };
-    if count == 0 {
-        return Ok(None);
+    // One byte per read: a noncanonical terminal can deliver a line in pieces,
+    // and input after the newline belongs to the next prompt or the guest.
+    let mut answer = Vec::new();
+    loop {
+        let mut byte = [0];
+        let count = tokio::select! {
+            biased;
+            _ = signals.recv() => return Err(io::ErrorKind::Interrupted.into()),
+            result = reader.async_io(tokio::io::Interest::READABLE, |mut tty| tty.read(&mut byte)) => result?,
+        };
+        match byte[0] {
+            _ if count == 0 => return Ok(None),
+            b'\n' => break,
+            _ if answer.len() >= 4096 => {
+                return Err(io::Error::other("terminal answer is too long"));
+            }
+            byte => answer.push(byte),
+        }
     }
-    let line = std::str::from_utf8(&answer[..count])
-        .ok()
-        .and_then(|line| line.strip_suffix('\n'))
-        .ok_or_else(|| io::Error::other("expected a complete line of terminal input"))?;
+    let line =
+        String::from_utf8(answer).map_err(|_| io::Error::other("terminal answer is not UTF-8"))?;
     Ok(Some(line.trim().to_owned()))
 }
 
@@ -1068,7 +1078,9 @@ async fn confirm_first_run(
     let command = terminal_text(command);
     let mount = match ProjectMount::default_kind() {
         ProjectMount::Share => {
-            format!("The box can edit files in {path}. Its top-level .git is read-only.")
+            format!(
+                "The box can edit files in {path}. A top-level .git present when the box starts is read-only."
+            )
         }
         ProjectMount::Disk => format!(
             "The box uses an isolated project disk for {path}. Host files stay separate from edits in the box."
@@ -1100,26 +1112,70 @@ async fn run_setup_build(cwd: &Path, signals: &mut Signals) -> io::Result<()> {
         .arg("build")
         .current_dir(cwd)
         .stdin(Stdio::null())
-        .stdout(Stdio::null());
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
     command.as_std_mut().process_group(0);
     let mut child = command.kill_on_drop(true).spawn_guarded()?;
     let group = Pid::from_raw(child.id().expect("just spawned") as i32);
-    tokio::select! {
+    // The build's group is in the background, where `stty tostop` would stop
+    // its terminal writes. This foreground client writes them instead.
+    let mut relay = tokio::spawn(relay_output(child.stderr.take().expect("piped stderr")));
+    let status = tokio::select! {
         biased;
         _ = signals.recv() => {
             // TERM lets the Linux builder retire its VM on cancellation.
             let _ = killpg(group, Signal::SIGTERM);
             child.wait().await?;
-            Err(io::ErrorKind::Interrupted.into())
+            relay.abort();
+            return Err(io::ErrorKind::Interrupted.into());
         }
-        status = child.wait() => {
-            if status?.success() {
-                Ok(())
-            } else {
-                Err(io::Error::other("the image build failed; the project command did not start"))
+        status = child.wait() => status?,
+    };
+    tokio::select! {
+        biased;
+        _ = signals.recv() => {
+            relay.abort();
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        _ = &mut relay => {}
+    }
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(
+            "the image build failed; the project command did not start",
+        ))
+    }
+}
+
+async fn relay_output(mut source: tokio::process::ChildStderr) -> io::Result<()> {
+    use tokio::io::{AsyncReadExt, Interest, unix::AsyncFd};
+    let relay = crate::core::process::StdioRelay::new(2, false)?;
+    // SAFETY: the relay owns its pipe endpoint until `into_inner`.
+    let mut sink = unsafe { AsyncFd::register_with_interest(relay, Interest::WRITABLE) }?;
+    let mut bytes = [0; 8192];
+    loop {
+        let count = source.read(&mut bytes).await?;
+        if count == 0 {
+            break;
+        }
+        let mut rest = &bytes[..count];
+        while !rest.is_empty() {
+            let written = sink
+                .async_io_mut(Interest::WRITABLE, |relay| io::Write::write(relay, rest))
+                .await?;
+            if written == 0 {
+                return Err(io::ErrorKind::WriteZero.into());
             }
+            rest = &rest[written..];
         }
     }
+    let mut relay = sink.into_inner();
+    relay.close();
+    while !relay.finished()? {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Ok(())
 }
 
 pub(crate) fn run(args: &[String]) -> io::Result<i32> {
