@@ -182,6 +182,16 @@ Profile (adam link on macOS, `pf-local` on Linux): `PF_LITERAL =
   config-changed: … Differing settings: env.values.`, exit 125. With the
   same value it joined and printed the token.
 
+- Edge names (macOS, project `env`, explicit local image):
+  `"1BAD"` refused with `invalid box spec: env name "1BAD" must match
+  [A-Za-z_][A-Za-z0-9_]*`; `HTTPS_PROXY = "http://evil:1"` arrived as the
+  always-applied `http://127.0.0.1:3128`; `PINFOLD_ALLOW = "example.com"`
+  replaced the variable's text, as the box spec's own env does (policy
+  still comes from `allow`); `HOME = "/tmp/elsewhere"` refused with
+  `$HOME=/tmp/elsewhere is not on a disk`, as `PINFOLD_ENV_HOME` would.
+- Cleanup: images are only pruned per source after a build, never
+  `latest`, so a base no project selects is not removed.
+
 ### Checks
 
 `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`

@@ -1016,8 +1016,8 @@ network listener, no token: the socket identifies the box.
 ## Images
 
 An image is a toolchain and may package agents. A project selects an explicit
-`image`, otherwise the project's Containerfile, otherwise the profile's
-Containerfile. An explicit image and project Containerfile together refuse
+`image`, otherwise the project's Containerfile, otherwise the nearest
+Containerfile in the profile's chain (Profiles). An explicit image and project Containerfile together refuse
 as `image-source-conflict` after layering. An explicit image overrides the
 profile recipe. No source refuses as `image-source-missing`; an empty image
 refuses as `image-invalid`, before state is created.
@@ -1940,9 +1940,11 @@ replacement: each layer replaces it name by name, so a name a lower layer
 sets cannot be unset above it.
 
 A `from` value is read once, when a new box starts. A missing variable
-refuses the start, as an injecting route's does. The value enters the box
-only; argv, `config --json`, the launch record and every file pinfold
-writes name the variable, never its value. A literal is configuration, not
+refuses the start, as an injecting route's does. The value travels as a
+`PINFOLD_ENV_` value does: in the detached owner's environment and the
+in-memory admission snapshot, into the box. Argv, `config --json`, the
+launch record and every file pinfold writes name the variable, never its
+value. A literal is configuration, not
 a secret: `config --json` shows it; the launch record names it like every
 box variable. Secrets belong in `from`. Always-applied names follow the
 box spec's rules (Always applied).
@@ -2107,7 +2109,7 @@ what the rewritten suite must show. Testing policy is in `AGENTS.md`.
 
 | 48 | A share confines direct writes to paths in its declared host directory | On Apple, ordinary shared-file edits reach the host, and a box `git add` and `git commit` land on the host's branch with the host's prior commit as parent and the staged tree, from the main checkout and from a linked worktree beneath the root. A share prints `git-optional-locks` on stderr unless the caller's `GIT_OPTIONAL_LOCKS` is exactly `0`; unset, `1` and `false` print it; a disk project omits it. Nonliteral Git ownership destinations refuse as `spec`. A share source that is not a plain directory, and a destination nested in a share that is not reached through plain directories, refuse as `spec`; corrected trees run. Guest traversal of outward symlinks cannot access an unmounted host fixture. Confinement is by path: A share file hard-linked to a file outside the share, Git objects from a local clone included, can be changed in place through the share. |
 | 49 | The Rex relay ends with its box generation and never reaches another box; `start` creates it only while Remote Control is off | macOS only. A start in a Rex pane on an image with `rex` prints the relay address, and a host `rex -S` lists and creates guest sessions through it. A second start reuses the socket. With a live owner, a connection held across `stop` ends, the socket is gone and a new connection is refused. After SIGKILL of the owner a held connection ends, no dial exec remains and connections are refused; a following `stop` leaves no socket, and a following start serves only the new generation's server. A start without the relay keeps a live owner's socket. Two concurrent starts share one server and socket. A `stop` during a first start's or a running owner's setup leaves no relay and prints no address for the stopped generation. A host client killed mid-stream leaves no dial exec. After the guest server is killed, the next start relays again. Without `REX_SESSION`, without terminals or without `rex` in the image, start prints nothing new and binds no socket. With Remote Control on, start prints `rex-remote-control` and binds no socket. |
-| 50 | A profile with a base applies the base beneath it and is outdated when the base changes | A four-link user chain (a profile on `adam` on `documents` on `default`, the top with a one-line Containerfile) builds root first; each image's `dev.pinfold.base` is the id of the one beneath it. Its box has every link's tools, the base seeds, a seed and a share file the top replaces by path, and the share files of every link; `config --json` reports the top's `allow` over adam's. After a change to the root's recipe, a launch names `image-outdated` for every image above it; after the rebuild, none. On Linux, an image beneath that moves during the build ends it with `image-base-changed`. A cycle, a self-reference and a missing base refuse as `profile` in `box up` and in `config`; correcting the base runs. A profile without `base` keeps its own share directory mounted live. `full` is an unknown profile. |
+| 50 | A profile with a base applies the base beneath it and is outdated when the base changes | A four-link user chain (a profile on `adam` on `documents` on `default`, the top with a one-line Containerfile) builds root first; each image's `dev.pinfold.base` is the id of the one beneath it. Its box has every link's tools, the base seeds, a seed and a share file the top replaces by path, and the share files of every link; `config --json` reports the top's `allow` over adam's. After a change to the root's recipe, a launch names `image-outdated` for every image above it; after the rebuild, none. On Linux, a base's `latest` moved by another build during the build leaves it on the recorded identity; that identity removed ends it with `image-base-changed`. A cycle, a self-reference and a missing base refuse as `profile` in `box up` and in `config`; correcting the base runs. A profile without `base` keeps its own share directory mounted live. `full` is an unknown profile. |
 
 ## Code
 
