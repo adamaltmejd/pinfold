@@ -29,7 +29,7 @@ use crate::formatting::terminal_text;
 use crate::pi::context::Context;
 use crate::pi::session_snapshot::{Resolved, Roots, Snapshot};
 use crate::pi::session_wire::{self as wire, Intent, Reply, Request};
-use crate::pi::{launch, state};
+use crate::pi::{launch, rex, state};
 
 const CONTROL: Duration = Duration::from_secs(10);
 
@@ -694,10 +694,11 @@ async fn admit(
                     generation,
                     snapshot,
                 },
-                Intent::Keep => Request::Keep {
+                Intent::Keep | Intent::KeepRex => Request::Keep {
                     root: root.into(),
                     generation,
                     snapshot,
+                    rex: matches!(intent, Intent::KeepRex),
                 },
             };
             let (stream, reply) = match exchange(&locator, request, signals, deadline).await {
@@ -715,9 +716,12 @@ async fn admit(
                     let share = config.mount == crate::config::ProjectMount::Share;
                     return Ok(Some(Lease::new(stream, name, generation, None, share)));
                 }
-                Reply::Kept { name, generation }
-                    if name == locator.name && Some(&generation) == locator.generation.as_ref() =>
-                {
+                Reply::Kept {
+                    name,
+                    generation,
+                    rex,
+                } if name == locator.name && Some(&generation) == locator.generation.as_ref() => {
+                    let _ = rex::report(rex, &key(root), signals).await;
                     return Ok(None);
                 }
                 Reply::Draining { generation }
@@ -810,8 +814,9 @@ async fn admit(
                     share,
                 )));
             }
-            Reply::Kept { .. } => {
+            Reply::Kept { rex, .. } => {
                 let _ = child.1.try_wait();
+                let _ = rex::report(rex, &key(root), signals).await;
                 return Ok(None);
             }
             other => return Err(reply_error(other)),
@@ -1230,7 +1235,7 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
         };
         check_linux_mount(&root)?;
         launch::utf8(&root, "project root")?;
-        let intent = if args.is_some() { Intent::Join } else { Intent::Keep };
+        let intent = if args.is_some() { Intent::Join } else if rex::wanted() { Intent::KeepRex } else { Intent::Keep };
         let discover = || -> io::Result<Context> {
             let current = Context::discover(&cwd)?;
             if current.root != root {
@@ -1537,11 +1542,13 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         }
         let listener = crate::core::process::Listener::from_std(sockets::Sockets::open(&box_.run_id)?.bind_control()?)?;
         let mut leases = BTreeMap::new();
-        let keep = matches!(intent, Intent::Keep);
-        // Commit before acknowledgement, including when that acknowledgement is lost.
-        let reply = if keep { Reply::Kept { name: plan.name.clone(), generation: box_.run_id.clone() } }
-            else { Reply::Admitted { name: plan.name.clone(), generation: box_.run_id.clone() } };
+        let keep = !matches!(intent, Intent::Join);
         redirect_stderr()?;
+        let relay = rex::Rex::new(&plan.name, init.clone(), &key(&root));
+        let status = if matches!(intent, Intent::KeepRex) { Some(relay.request().await) } else { None };
+        // Commit before acknowledgement, including when that acknowledgement is lost.
+        let reply = if keep { Reply::Kept { name: plan.name.clone(), generation: box_.run_id.clone(), rex: status } }
+            else { Reply::Admitted { name: plan.name.clone(), generation: box_.run_id.clone() } };
         let acknowledged = if keep {
             wire::write_reply(&mut writer, reply).await
         } else {
@@ -1550,7 +1557,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         };
         drop(launch.take());
         if !keep && acknowledged.is_err() { leases.remove(&0); }
-        serve(box_, &locator, &root, resolved.snapshot, listener, events, &mut received, leases, keep, &mut signals).await
+        serve(box_, &locator, &root, resolved.snapshot, listener, events, &mut received, leases, keep, relay, &mut signals).await
         }.await;
         initial.abort(); let _ = initial.await;
         if result.is_err() {
@@ -1603,6 +1610,7 @@ async fn serve(
     received: &mut mpsc::Receiver<Event>,
     mut leases: BTreeMap<u64, OwnedWriteHalf>,
     mut keep: bool,
+    relay: rex::Rex,
     signals: &mut Signals,
 ) -> io::Result<i32> {
     let generation = box_.run_id.clone();
@@ -1661,7 +1669,16 @@ async fn serve(
                     if !fields.is_empty() { let _ = wire::write_reply(&mut stream, Reply::Error { reason: "config-changed".into(), fields }).await; continue; }
                     match request {
                         Request::Probe { .. } => { let _ = wire::write_reply(&mut stream, Reply::Compatible { mount: snapshot.project_mount() }).await; },
-                        Request::Keep { .. } => { keep = true; let _ = wire::write_reply(&mut stream, Reply::Kept { name: locator.name.clone(), generation: generation.clone() }).await; },
+                        Request::Keep { rex: false, .. } => { keep = true; let _ = wire::write_reply(&mut stream, Reply::Kept { name: locator.name.clone(), generation: generation.clone(), rex: None }).await; },
+                        // Relay setup runs exec helpers; admission and box_.ended() keep running.
+                        Request::Keep { rex: true, .. } => {
+                            keep = true;
+                            let (relay, name, generation) = (relay.clone(), locator.name.clone(), generation.clone());
+                            tasks.spawn(async move {
+                                let rex = Some(relay.request().await);
+                                let _ = wire::write_reply(&mut stream, Reply::Kept { name, generation, rex }).await;
+                            });
+                        },
                         Request::Join { .. } | Request::Borrow { .. } => {
                             let id = next; next += 1;
                             let (mut reader, writer) = stream.into_split();
@@ -1765,6 +1782,7 @@ async fn serve(
             Ok(terminal) => (Some(terminal), None),
             Err(error) => (None, Some(error)),
         };
+        relay.close().await;
         let teardown = box_.down(terminal).await;
         if box_.audit_failed() {
             reason = "audit-log".into();

@@ -19,6 +19,8 @@ const FRAME_TIMEOUT: Duration = Duration::from_secs(1);
 pub(crate) enum Intent {
     Join,
     Keep,
+    /// Keep, and relay the box's Rex server to the host.
+    KeepRex,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -43,6 +45,8 @@ pub(crate) enum Request {
         root: PathBuf,
         generation: String,
         snapshot: Snapshot,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        rex: bool,
     },
     Borrow {
         root: PathBuf,
@@ -68,6 +72,8 @@ pub(crate) enum Reply {
     Kept {
         name: String,
         generation: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rex: Option<crate::pi::rex::Status>,
     },
     Left {},
     Draining {

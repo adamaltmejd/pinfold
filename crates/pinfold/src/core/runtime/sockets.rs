@@ -402,6 +402,56 @@ impl Sockets {
     }
 }
 
+/// One bind at a fixed leaf of the host directory, outside any generation.
+pub(crate) struct HostSocket {
+    leaf: String,
+    identity: (u64, u64),
+}
+
+impl HostSocket {
+    /// Bind `leaf`, replacing a stale socket of this user's there.
+    pub(crate) fn bind(leaf: &str) -> io::Result<(Self, std::os::unix::net::UnixListener)> {
+        let (base, host) = host()?;
+        check_length(&base.join(leaf))?;
+        check_socket(&host, OsStr::new(leaf), true, false)?;
+        unlink_at(&host, OsStr::new(leaf), 0)?;
+        let listener = bind_at(&host, OsStr::new(leaf))?;
+        let identity = socket_identity(&host, OsStr::new(leaf))?;
+        let leaf = leaf.to_owned();
+        Ok((Self { leaf, identity }, listener))
+    }
+
+    /// Unlink the socket only while it is still this bind's.
+    pub(crate) fn remove(&self) -> io::Result<()> {
+        let (_, host) = host()?;
+        let leaf = OsStr::new(&self.leaf);
+        match socket_identity(&host, leaf) {
+            Ok(identity) if identity == self.identity => unlink_at(&host, leaf, 0),
+            _ => Ok(()),
+        }
+    }
+}
+
+fn socket_identity(parent: &File, leaf: &OsStr) -> io::Result<(u64, u64)> {
+    let leaf = name(leaf)?;
+    let mut metadata: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: a live directory, terminated leaf and initialized output.
+    syscall(unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            leaf.as_ptr(),
+            &mut metadata,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    })
+    .map_err(failure)?;
+    if metadata.st_mode & libc::S_IFMT != libc::S_IFSOCK {
+        return Err(failure("unsafe socket"));
+    }
+    #[allow(clippy::unnecessary_cast)]
+    Ok((metadata.st_dev as u64, metadata.st_ino as u64))
+}
+
 fn check_identity(parent: &File, leaf: &OsStr, expected: &File) -> io::Result<()> {
     let leaf = name(leaf)?;
     let mut metadata: libc::stat = unsafe { std::mem::zeroed() };
