@@ -789,10 +789,11 @@ fn host_failed(output: &Output) -> CrossingError {
     ))
 }
 
-/// Whether PID, a leftover's name part, names a crossing process that is
-/// gone. Only a canonical positive pid counts; any other name is left
-/// alone. A process runs one crossing, so one under its own pid is a dead
-/// process's too. A reused pid keeps its leftover until that process ends.
+/// Whether a bundle or quarantine about to be created may remove the
+/// leftover named PID: a canonical positive pid that no process has, or
+/// the creating process's own, since it holds at most one of each at a
+/// time. Any other name is left alone. A reused pid keeps its leftover
+/// until that process ends.
 fn crossing_gone(pid: &str) -> bool {
     let canonical = !pid.starts_with('0') && pid.bytes().all(|byte| byte.is_ascii_digit());
     let Some(pid) = pid.parse::<i32>().ok().filter(|_| canonical) else {
