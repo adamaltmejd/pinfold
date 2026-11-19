@@ -1,7 +1,7 @@
 //! Pi configuration: the project's file under pinfold's host configuration
 //! directory, the selected profile, and the host environment.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io::{self, Write};
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::plan::Route;
+use crate::core::plan::{Env, Route};
 use crate::core::profile::Profile;
 use crate::dirs;
 use crate::formatting::terminal_text;
@@ -193,9 +193,10 @@ pub struct Config {
     pub(crate) route_declarations: BTreeMap<String, toml::Value>,
     pub cpus: f64,
     pub memory: String,
-    /// The `<NAME>`s of the host's `PINFOLD_ENV_<NAME>` variables. Their
-    /// values stay on the host; a box spec passes each by name only.
-    pub env: BTreeSet<String>,
+    /// The box's variables: the configured `env` tables, then each host
+    /// `PINFOLD_ENV_<NAME>` as `<NAME>`. A `from` value stays on the host;
+    /// a box spec passes it by name only.
+    pub env: BTreeMap<String, Env>,
 }
 
 impl Config {
@@ -301,12 +302,15 @@ impl Config {
             route_declarations: merged.route_declarations.unwrap_or_default(),
             cpus: merged.cpus.unwrap_or(DEFAULT_CPUS),
             memory: merged.memory.unwrap_or_else(|| DEFAULT_MEMORY.to_string()),
-            env: env::vars_os()
-                .filter_map(|(name, _)| {
-                    name.to_str()?
-                        .strip_prefix("PINFOLD_ENV_")
-                        .map(str::to_string)
-                })
+            env: merged
+                .env
+                .unwrap_or_default()
+                .into_iter()
+                .chain(env::vars_os().filter_map(|(name, _)| {
+                    let name = name.to_str()?.strip_prefix("PINFOLD_ENV_")?.to_string();
+                    let from = format!("PINFOLD_ENV_{name}");
+                    Some((name, Env::From { from }))
+                }))
                 .collect(),
         })
     }
@@ -381,6 +385,7 @@ struct Layer {
     route_declarations: Option<BTreeMap<String, toml::Value>>,
     cpus: Option<f64>,
     memory: Option<String>,
+    env: Option<BTreeMap<String, Env>>,
 }
 
 impl Layer {
@@ -437,6 +442,7 @@ impl Layer {
                 })
                 .transpose()?,
             memory: override_value("PINFOLD_MEMORY")?,
+            env: None,
         })
     }
 
@@ -448,6 +454,14 @@ impl Layer {
         self.allow = higher.allow.or(self.allow);
         self.routes = higher.routes.or(self.routes);
         self.route_declarations = higher.route_declarations.or(self.route_declarations);
+        // Unlike the other keys, `env` is replaced name by name.
+        self.env = match (self.env, higher.env) {
+            (Some(mut lower), Some(higher)) => {
+                lower.extend(higher);
+                Some(lower)
+            }
+            (lower, higher) => higher.or(lower),
+        };
         self
     }
 }

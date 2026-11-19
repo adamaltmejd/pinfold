@@ -477,10 +477,7 @@ fn recipe_changed(image: &ImageInfo, bytes: &[u8]) -> bool {
 
 pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> io::Result<Plan> {
     let mut env = BTreeMap::from([("HOME".to_string(), Env::Exact(state::HOME.to_string()))]);
-    env.extend(config.env.iter().map(|name| {
-        let from = format!("PINFOLD_ENV_{name}");
-        (name.clone(), Env::From { from })
-    }));
+    env.extend(config.env.clone());
     let [home, project] = state::disk_names(id);
     let mut disks = vec![empty_writable_disk(home, Path::new(state::HOME))];
     let mounts = match config.mount {

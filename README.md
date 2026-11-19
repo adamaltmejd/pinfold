@@ -427,7 +427,31 @@ failed even if the command starts, and it is not retried. Check that
 
 See [Configuration](docs/ARCHITECTURE.md#configuration) for layers, keys and defaults.
 
-For `pinfold -- CMD`, forward host variables with `PINFOLD_ENV_<NAME>`.
+A profile's `pinfold.toml` or the project's configuration sets the box's
+environment with `env`. A literal is plain configuration and shows in
+`pinfold config`; `from` reads the value from your shell when the box
+starts and never writes it down. Use `from` for anything secret:
+
+```toml
+[env]
+GIT_AUTHOR_NAME = "my-agent"
+GH_TOKEN = { from = "MY_AGENT_GH_TOKEN" }
+```
+
+The project's names replace the profile's one by one, and the profile's
+its base's. A missing `from` variable refuses the start. A second command
+joining a running box with a different value for that variable is refused
+as `config-changed`; stop the box to change it.
+
+For a single command, forward host variables with `PINFOLD_ENV_<NAME>`.
+It wins over `env`.
+
+### GitHub access
+
+Give the box a token through `env` with `from`, as `GH_TOKEN` above, and
+allow `api.github.com` (the `adam` profile does). Prefer a fine-grained
+token scoped to the one repository the box works on, with only the
+permissions it needs. Every process in the box can read the token.
 
 For disposable Rust build outputs in guest memory:
 

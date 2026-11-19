@@ -448,8 +448,10 @@ fn digits(number: &str) -> Option<u64> {
         .then(|| number.parse().ok())?
 }
 
-/// One environment entry.
-#[derive(Debug, Clone)]
+/// One environment entry. It serializes as declared, never as a value read
+/// from the caller.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
 pub enum Env {
     /// A literal value from the spec.
     Exact(String),
