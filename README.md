@@ -431,9 +431,9 @@ A profile's `pinfold.toml` or the project's configuration sets the box's
 environment with `env`. A literal is plain configuration and shows in
 `pinfold config --json`; `from` reads the value from your shell when the box
 starts; pinfold never writes it down. On macOS, Apple's `container`
-does: while the box runs, it stores every box variable on disk in a
-reversible hex encoding, and `container inspect` shows it. Use `from`
-for anything secret:
+does: from the box's creation until its removal, it stores each variable
+pinfold passes on disk in a reversible hex encoding, and
+`container inspect` shows it. Use `from` for anything secret:
 
 ```toml
 [env]
