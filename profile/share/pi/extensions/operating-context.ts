@@ -10,7 +10,7 @@ export default function operatingContext(pi) {
             "## Box operating context",
             `- The proxy allows only these hosts: ${allow.length > 0 ? allow.join(", ") : "none"}.`,
             "- A proxy 403 is final. Do not retry it, route around it, or probe other hosts.",
-            "- Work and save deliverables in the project’s actual current directory. In a share project, edits already affect host files, and your commits are the host's commits. In a disk project, commit work here; the user runs `pinfold fetch` to bring branches back, or explicitly exports other retained disk files. These instructions are guidance, not enforcement.",
+            "- Work and save deliverables in the project’s actual current directory. In a share project, edits already affect host files, and your commits are the host's commits. In a disk project, commit work here; the user runs `git fetch box` to bring branches back, or explicitly exports other retained disk files. These instructions are guidance, not enforcement.",
         ].join("\n");
         event.systemPromptOptions.sections.pinfold = facts;
     });

@@ -12,11 +12,14 @@ mod update;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-use crate::pi::{launch, session};
+use crate::pi::{remote, session};
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os();
-    args.next();
+    // Git runs the remote helper by this name, a link to pinfold (Git).
+    let helper = args.next().is_some_and(|zero| {
+        std::path::Path::new(&zero).file_name() == Some("git-remote-pinfold".as_ref())
+    });
     let args: Vec<_> = args.collect();
     let project_command = args
         .first()
@@ -28,12 +31,18 @@ fn main() -> ExitCode {
             return ExitCode::from(if project_command { 125 } else { 1 });
         }
     };
-    if rest.is_empty() {
+    if rest.is_empty() && !helper {
         cli::print_intro();
         return ExitCode::SUCCESS;
     }
-    let verb = rest.first().map(String::as_str).unwrap_or_default();
-    let args = rest.get(1..).unwrap_or_default();
+    let (verb, args) = if helper {
+        ("remote", &rest[..])
+    } else {
+        (
+            rest.first().map(String::as_str).unwrap_or_default(),
+            rest.get(1..).unwrap_or_default(),
+        )
+    };
     let run: fn(&[String]) -> io::Result<i32> = match verb {
         "--version" | "-V" => {
             println!("pinfold {}", env!("CARGO_PKG_VERSION"));
@@ -58,15 +67,14 @@ fn main() -> ExitCode {
         "start" => session::start,
         "stop" => session::stop,
         "__project-owner" => session::owner,
-        "push" => |args| launch::crossing("push", args),
-        "fetch" => |args| launch::crossing("fetch", args),
+        "remote" if helper => remote::run,
         "update" => update::run,
         _ => {
             eprintln!("pinfold: unknown command {verb:?}. Run `pinfold --help` for commands.");
             return ExitCode::from(1);
         }
     };
-    if cli::help(verb, args) {
+    if !helper && cli::help(verb, args) {
         return ExitCode::SUCCESS;
     }
     // `update` takes the executable lock itself, exclusively.
@@ -88,7 +96,7 @@ fn main() -> ExitCode {
     match (verb, args.first().map(String::as_str)) {
         (
             "init" | "update" | "doctor" | "config" | "apparmor-profile" | "--" | "start" | "stop"
-            | "__project-owner" | "push" | "fetch",
+            | "__project-owner" | "remote",
             _,
         )
         | ("box", Some("up" | "list" | "down" | "inspect" | "events")) => {}
