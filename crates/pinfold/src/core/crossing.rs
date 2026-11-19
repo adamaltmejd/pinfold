@@ -789,8 +789,22 @@ fn host_failed(output: &Output) -> CrossingError {
     ))
 }
 
-/// A bundle file under pinfold's state dir, removed on drop. A process
-/// runs one crossing, so one under its pid is a dead process's.
+/// Whether a bundle or quarantine about to be created may remove the
+/// leftover named PID: a canonical positive pid that no process has, or
+/// the creating process's own, since it holds at most one of each at a
+/// time. Any other name is left alone. A reused pid keeps its leftover
+/// until that process ends.
+fn crossing_gone(pid: &str) -> bool {
+    let canonical = !pid.starts_with('0') && pid.bytes().all(|byte| byte.is_ascii_digit());
+    let Some(pid) = pid.parse::<i32>().ok().filter(|_| canonical) else {
+        return false;
+    };
+    pid as u32 == std::process::id()
+        || nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None)
+            == Err(nix::errno::Errno::ESRCH)
+}
+
+/// A bundle file under pinfold's state dir, removed on drop.
 struct Bundle {
     path: String,
 }
@@ -799,6 +813,19 @@ impl Bundle {
     fn new() -> io::Result<Bundle> {
         let dir = dirs::state_dir()?.join("crossing");
         fs::create_dir_all(&dir)?;
+        // A killed crossing's bundle outlives it; remove those whose
+        // process is gone, this one's included.
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            if entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.strip_suffix(".bundle"))
+                .is_some_and(crossing_gone)
+            {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
         let path = dir.join(format!("{}.bundle", std::process::id()));
         let path = path
             .to_str()
@@ -809,7 +836,6 @@ impl Bundle {
                 ))
             })?
             .to_string();
-        let _ = fs::remove_file(&path);
         fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -861,27 +887,19 @@ impl Quarantine {
         alternates.push(b'"');
         let objects = PathBuf::from(OsString::from_vec(objects));
         // A killed fetch's quarantine outlives it, and git never prunes
-        // one; remove those whose process is gone. A process runs one
-        // crossing, so one under its own pid is a dead process's too.
-        let own = std::process::id();
+        // one; remove those whose process is gone.
         for entry in fs::read_dir(&objects)? {
             let entry = entry?;
-            let name = entry.file_name();
-            let Some(pid) = name
+            if entry
+                .file_name()
                 .to_str()
                 .and_then(|name| name.strip_prefix(QUARANTINE))
-                .and_then(|pid| pid.parse::<u32>().ok())
-            else {
-                continue;
-            };
-            let gone = pid == own
-                || nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None)
-                    == Err(nix::errno::Errno::ESRCH);
-            if gone {
+                .is_some_and(crossing_gone)
+            {
                 let _ = fs::remove_dir_all(entry.path());
             }
         }
-        let dir = objects.join(format!("{QUARANTINE}{own}"));
+        let dir = objects.join(format!("{QUARANTINE}{}", std::process::id()));
         fs::create_dir(&dir)?;
         Ok(Quarantine {
             objects,

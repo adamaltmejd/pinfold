@@ -271,7 +271,13 @@ pub(crate) fn diagnostic(message: impl std::fmt::Display) {
         let mut relay = StdioRelay::until(2, false, deadline)?;
         super::pipe::write_all(
             &mut relay,
-            format!("pinfold: {message}\n").as_bytes(),
+            // One record per line: interpolated text, a tool's stderr
+            // included, keeps no line break of its own.
+            format!(
+                "pinfold: {}\n",
+                crate::formatting::terminal_text(&message.to_string())
+            )
+            .as_bytes(),
             deadline,
             None,
             "diagnostic",

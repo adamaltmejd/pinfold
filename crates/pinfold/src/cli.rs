@@ -179,7 +179,12 @@ pinfold box events RUN [--limit N] [--after CURSOR]";
 
 pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
     result.unwrap_or_else(|error| {
-        if verb == "--" {
+        if verb == "__project-owner" {
+            // The client forwards the owner's stderr by line, so an error's
+            // external text must not add one.
+            let text = crate::formatting::terminal_text(&error.to_string());
+            let _ = writeln!(io::stderr(), "pinfold {verb}: {text}");
+        } else if verb == "--" {
             let _ = writeln!(io::stderr(), "pinfold: {error}");
         } else {
             let _ = writeln!(io::stderr(), "pinfold {verb}: {error}");

@@ -2,9 +2,9 @@
 //!
 //! The init always comes from the CLI's own build. On macOS the CLI embeds
 //! the `aarch64-unknown-linux-musl` init binary, so this script cross-builds it
-//! with `cargo zigbuild` into its own target directory: the outer build
-//! holds the lock on the workspace's `target/`. Linux builds mount the CLI
-//! itself and never run `zig`.
+//! with `cargo zigbuild` into its own target and build directories: the
+//! outer build holds the lock on both of its own (#354). Linux builds mount
+//! the CLI itself and never run `zig`.
 
 use std::env;
 use std::fs;
@@ -50,6 +50,7 @@ fn main() {
         ])
         .current_dir(&manifest)
         .env("CARGO_TARGET_DIR", &target_dir)
+        .env("CARGO_BUILD_BUILD_DIR", &target_dir)
         .status()
         .expect("run cargo zigbuild");
     assert!(

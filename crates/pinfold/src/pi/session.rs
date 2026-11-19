@@ -292,7 +292,7 @@ fn matching_claims(root: &Path) -> io::Result<Vec<ownership::Record>> {
                 claims.push(record)
             }
             Ok(_) => {}
-            Err(error) => crate::core::process::diagnostic(terminal_text(&error.to_string())),
+            Err(error) => crate::core::process::diagnostic(error),
         }
     }
     Ok(claims)
@@ -994,14 +994,29 @@ async fn bootstrap_diagnostics(drain: &mut Diagnostics, signals: &mut Signals) -
     let bytes = (&mut drain.worker)
         .await
         .map_err(|_| unavailable_at("diagnostics"))??;
-    forward_diagnostics(bytes, signals).await
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    // The owner's stderr is lines; only their contents are escaped.
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<_> = text
+        .strip_suffix('\n')
+        .unwrap_or(&text)
+        .split('\n')
+        .map(terminal_text)
+        .collect();
+    write_diagnostics(lines.join("\n"), signals).await
 }
 
 pub(crate) async fn forward_diagnostics(bytes: Vec<u8>, signals: &mut Signals) -> io::Result<()> {
     if bytes.is_empty() {
         return Ok(());
     }
-    let mut escaped = terminal_text(&String::from_utf8_lossy(&bytes)).into_bytes();
+    write_diagnostics(terminal_text(&String::from_utf8_lossy(&bytes)), signals).await
+}
+
+async fn write_diagnostics(text: String, signals: &mut Signals) -> io::Result<()> {
+    let mut escaped = text.into_bytes();
     escaped.push(b'\n');
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = cancel.clone();
