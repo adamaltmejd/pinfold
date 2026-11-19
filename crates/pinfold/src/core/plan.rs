@@ -528,6 +528,36 @@ impl Plan {
         self.validate_inputs(false)
     }
 
+    /// Refuse, naming the first unset one, when a caller variable the spec
+    /// reads (an env `from`, an injecting header, a login route) is missing.
+    /// Only presence is checked; no value is read.
+    pub(crate) fn check_variables(&self) -> Result<(), String> {
+        let env = self.env.values().filter_map(|value| match value {
+            Env::From { from } => Some(from.as_str()),
+            Env::Exact(_) => None,
+        });
+        let routes = self
+            .egress
+            .iter()
+            .flat_map(|egress| egress.routes.values())
+            .flat_map(|route| match route {
+                Route::Inject(inject) => inject
+                    .headers
+                    .values()
+                    .map(|header| header.from.as_str())
+                    .collect(),
+                Route::Login(login) => login.from.as_deref().into_iter().collect(),
+                Route::Address(_) => Vec::new(),
+            });
+        match env
+            .chain(routes)
+            .find(|name| std::env::var_os(name).is_none())
+        {
+            Some(name) => Err(format!("environment variable {name} is not set")),
+            None => Ok(()),
+        }
+    }
+
     pub(crate) fn validate_platform(&self) -> Result<(), String> {
         if cfg!(target_os = "linux") && self.mounts.iter().any(|m| m.kind == MountKind::Share) {
             return Err(invalid("share mounts are unsupported on Linux"));

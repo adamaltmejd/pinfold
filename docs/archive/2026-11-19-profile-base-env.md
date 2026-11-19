@@ -56,17 +56,22 @@ suspended.
 - **`base` in a project file** is refused, as `mounts` is in a profile.
 - **`env` merges name by name** (the other keys replace whole). An
   inherited name cannot be unset.
-- **Launch record** keeps naming env variables only, literals included,
-  as for every box variable. The issue says literals show there; that
-  would change the core run record for every caller, so it is left for
-  the operator.
+- **Launch record** names env variables only, literals included, as for
+  every box variable. #344 says literals show there; the operator
+  accepted names only, since values would change the core run record for
+  every caller.
 - **Join rule.** The snapshot already compares `from` values (hex, in
   memory, over the private socket), so a joining client with another value
   refuses as `config-changed` naming `env.values`, exactly as for
-  `PINFOLD_ENV_` and route variables.
-- **Missing `from` variable** gives the same `owner-unavailable` (125) as
-  a missing injecting-route variable. The diagnostic is poor for both;
-  that is a separate ticket.
+  `PINFOLD_ENV_` and route variables. #344 says the value never appears in
+  the snapshot; the operator accepted it there, on condition that it
+  reaches no file.
+- **Missing variable.** First built as the owner's refusal, which reached
+  the client only as `owner-unavailable` (125), for env and route
+  variables alike. Fixed in a follow-up: project admission
+  (`validate_project`) checks that every env `from`, injecting header and
+  login route variable is set, by presence only, and the client prints the
+  variable's name.
 
 ## Setup
 
@@ -174,7 +179,12 @@ Profile (adam link on macOS, `pf-local` on Linux): `PF_LITERAL =
   value is in the environment of the detached project owner (Linux
   `/proc/PID/environ` of `pinfold __project-owner` alone; macOS `ps -E`
   matched three same-user processes, not identified), as `PINFOLD_ENV_` and
-  route variables already are.
+  route variables already are. A follow-up run on macOS passed the value
+  only in `pinfold start`'s own environment and listed `ps -axwwE` with
+  pids. Exactly two processes held it: the detached `pinfold
+  __project-owner` (ppid 1) and its child `container run`. The earlier
+  third match was the test shell, which had exported the variable. No
+  process outside the owner and its children held the value.
 - `grep -rl` of the value and of its hex encoding over the config, state
   and cache roots and the lock directory found nothing (exit 1); the
   variable name was found in the profile's `pinfold.toml` (control).
@@ -189,6 +199,23 @@ Profile (adam link on macOS, `pf-local` on Linux): `PF_LITERAL =
   replaced the variable's text, as the box spec's own env does (policy
   still comes from `allow`); `HOME = "/tmp/elsewhere"` refused with
   `$HOME=/tmp/elsewhere is not on a disk`, as `PINFOLD_ENV_HOME` would.
+- **Follow-up, missing variable (macOS, after the fix).** With an env
+  `from = "PF343_MISSING_ENV"` unset: `pinfold: environment variable
+  PF343_MISSING_ENV is not set`, exit 125. With an injecting route header
+  `from = "PF343_MISSING_ROUTE"` unset: the same line naming
+  `PF343_MISSING_ROUTE`, exit 125. Control, both set to dummy values: the
+  box printed `PF_TOKEN=dummy-a`, exit 0.
+- **Follow-up, running box whose base image was rebuilt (macOS).** Chain
+  `pf343b-top` (`FROM` `pf343b-root`) built, then `pinfold start`. Root
+  recipe changed and only the root rebuilt: a joining `pinfold -- …`
+  joined the running box (exit 0) without a warning, and it still lacked
+  the root's new file. Admission ignores recipe freshness, and the selected
+  image's id had not changed. `doctor` reported the top `image-outdated`
+  ("was built from image a6157877…; its base is now ce52a521…"). After
+  the top was rebuilt too, a join refused with `config-changed … Differing
+  settings: image.id.`, exit 125. After `pinfold stop`, a new start read
+  the root's new file. All of this matches the spec, so nothing was
+  changed.
 - Cleanup: images are only pruned per source after a build, never
   `latest`, so a base no project selects is not removed.
 
