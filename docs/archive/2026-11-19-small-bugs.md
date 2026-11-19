@@ -30,7 +30,7 @@ releases the blocked readers and removes it.
 
 ## #349: owner diagnostics print a literal `\n`
 
-**Reproduced, both platforms.** A new project with `.git/config.lock`
+**Reproduced on macOS** (Linux ran only after the fix). A new project with `.git/config.lock`
 held on the host: `touch .git/config.lock; pinfold -- true
 2>err`. Exit 0. The last bytes of `err` under `od -c` were
 `` ` \ n \n ``: the `sync-failed` line ended in the two characters `\n`
@@ -40,8 +40,11 @@ and then a real newline.
 through `terminal_text`, which escapes every control character, the
 buffer's newlines included, then appended a newline.
 
-**Fix.** Escape each line and keep the line breaks; one trailing newline
-is not doubled. Other control characters stay escaped.
+**Fix.** `bootstrap_diagnostics`, the one caller that forwards the
+owner's stderr, escapes each line and keeps the line breaks; one trailing
+newline is not doubled. Other callers pass single messages, some with
+error text that was never escaped (an `io::Error`, a socket path), so
+they keep escaping the whole text, newlines included.
 
 **After.** The same command on a fresh project name (a reused disk is no
 longer a first start): the line ends `` B R A N C H ` \n ``, one real
@@ -61,12 +64,14 @@ and `C` still held the dead pid's file.
 
 **Fix.** `Bundle::new` removes every `N.bundle` whose process is gone
 (`kill(N, 0)` is `ESRCH`, or N is its own pid), the same check the
-quarantine sweep makes; both now share it. There is no crossing-wide
-lock to run this under: the borrow lease drops the launch lock before
-the crossing, and guarantee 10 has two fetches run at once. The
-directory is shared by every project under one state root, so liveness
-is what protects another crossing's file. Guarantee 10 and the Crossing
-section say so.
+quarantine sweep makes; both now share it. The sweep runs under no lock
+of its own. A crossing lease holds its project's `project:ID` lock
+shared, and its project's launch lock only for a transient box; against
+a live box it releases the launch lock first, and guarantee 10 has two
+fetches run at once. Both locks are per project, while `crossing/` is
+shared by every project under one state root. So liveness is what
+protects another crossing's file. Guarantee 10 and the Crossing section
+name the bundle file.
 
 **After, both platforms.** Two projects `pa` and `pb` under one state
 root, both started and kept. In `pa`: plant the FIFO, SIGKILL a first
@@ -91,13 +96,14 @@ listed the stalled fetch script's process group (`sh -c`, `sh -c`, `git
 
 Linux, SIGTERM instead of SIGKILL: Git printed `pinfold remote:
 interrupted by SIGTERM`, exit 128, and three seconds later the box still
-ran the same three processes. Cancellation kills only the host child.
+ran the same three processes. From the code, cancellation kills only
+the host child's process group.
 
 Control, Linux, same kept box: `pinfold -- sleep 600 &`, `kill -9` of
 that client; `sleep 600` was running before and gone three seconds
 after.
 
-**Affected commands.** Every caller of `Runtime::exec_command` runs a
+**Affected commands** (read from the code, not run). Every caller of `Runtime::exec_command` runs a
 public, non-project exec: crossing push and fetch, the first-start sync
 (`launch.rs` `in_box`), Rex helpers and disk export. Only crossings can
 outlive their box's holder: the first-start sync and Rex run in the
