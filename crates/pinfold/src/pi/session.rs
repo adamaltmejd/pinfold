@@ -510,6 +510,7 @@ fn check_linux_mount(root: &Path) -> io::Result<()> {
 struct Lease {
     name: String,
     generation: String,
+    share: bool,
     writer: OwnedWriteHalf,
     replies: mpsc::Receiver<io::Result<Reply>>,
     reader: tokio::task::JoinHandle<()>,
@@ -519,7 +520,13 @@ struct Lease {
     draining: bool,
 }
 impl Lease {
-    fn new(stream: UnixStream, name: String, generation: String, child: Option<Child>) -> Self {
+    fn new(
+        stream: UnixStream,
+        name: String,
+        generation: String,
+        child: Option<Child>,
+        share: bool,
+    ) -> Self {
         let (mut read, writer) = stream.into_split();
         let (send, replies) = mpsc::channel(2);
         let reader = tokio::spawn(async move {
@@ -535,6 +542,7 @@ impl Lease {
         Self {
             name,
             generation,
+            share,
             writer,
             replies,
             reader,
@@ -704,7 +712,8 @@ async fn admit(
                 Reply::Admitted { name, generation }
                     if name == locator.name && Some(&generation) == locator.generation.as_ref() =>
                 {
-                    return Ok(Some(Lease::new(stream, name, generation, None)));
+                    let share = config.mount == crate::config::ProjectMount::Share;
+                    return Ok(Some(Lease::new(stream, name, generation, None, share)));
                 }
                 Reply::Kept { name, generation }
                     if name == locator.name && Some(&generation) == locator.generation.as_ref() =>
@@ -729,6 +738,7 @@ async fn admit(
             .as_ref()
             .map_err(|error| io::Error::new(error.kind(), error.to_string()))?
             .check_worktree(resolved.config.mount)?;
+        let share = resolved.config.mount == crate::config::ProjectMount::Share;
         let mut child = spawn_owner(&resolved.snapshot, &launch, executable, &_maintenance)?;
         let mut stream = child.0;
         let sent = wire::write_request(
@@ -792,7 +802,13 @@ async fn admit(
         bootstrap_diagnostics(&mut child.2, signals).await?;
         match reply {
             Reply::Admitted { name, generation } => {
-                return Ok(Some(Lease::new(stream, name, generation, Some(child.1))));
+                return Ok(Some(Lease::new(
+                    stream,
+                    name,
+                    generation,
+                    Some(child.1),
+                    share,
+                )));
             }
             Reply::Kept { .. } => {
                 let _ = child.1.try_wait();
@@ -1078,9 +1094,7 @@ async fn confirm_first_run(
     let command = terminal_text(command);
     let mount = match ProjectMount::default_kind() {
         ProjectMount::Share => {
-            format!(
-                "The box can edit files in {path}. A top-level .git present when the box starts is read-only."
-            )
+            format!("The box can edit files in {path}, including its Git metadata.")
         }
         ProjectMount::Disk => format!(
             "The box uses an isolated project disk for {path}. Host files stay separate from edits in the box."
@@ -1194,6 +1208,8 @@ pub(crate) fn start(args: &[String]) -> io::Result<i32> {
     }
     client(None)
 }
+const OPTIONAL_LOCKS_WARNING: &str = "pinfold: git-optional-locks: host `git status` can refresh the index when optional locks are enabled, which can make box commits record files as deleted; set GIT_OPTIONAL_LOCKS=0.";
+
 fn client(args: Option<&[String]>) -> io::Result<i32> {
     let executor = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1276,6 +1292,13 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
             },
         };
         crate::update::notice("--");
+        if lease.share && std::env::var_os("GIT_OPTIONAL_LOCKS").is_none_or(|value| value != "0") {
+            // A failed write is not fatal, but a signal received during it is.
+            let _ = forward_diagnostics(OPTIONAL_LOCKS_WARNING.as_bytes().to_vec(), &mut signals).await;
+            if signals.last().is_some() {
+                return finish_client(lease, Ok(125), None, &mut signals).await;
+            }
+        }
         let argv = args.expect("join has a command").to_vec();
         let name = lease.name.clone();
         let init = artifacts::init()?;
@@ -1633,7 +1656,7 @@ async fn serve(
                         continue;
                     }
                     if fields.is_empty() && matches!(request, Request::Probe { .. } | Request::Join { .. } | Request::Keep { .. }) {
-                        fields = snapshot.project_layout_differences(root);
+                        fields = snapshot.repository_differences(root);
                     }
                     if !fields.is_empty() { let _ = wire::write_reply(&mut stream, Reply::Error { reason: "config-changed".into(), fields }).await; continue; }
                     match request {
@@ -2224,7 +2247,7 @@ pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<Cro
                 Reply::Admitted { name, generation }
                     if name == locator.name && Some(&generation) == locator.generation.as_ref() =>
                 {
-                    Some(Lease::new(stream, name, generation, None))
+                    Some(Lease::new(stream, name, generation, None, false))
                 }
                 Reply::Draining { generation }
                     if Some(&generation) == locator.generation.as_ref() =>

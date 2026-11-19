@@ -132,7 +132,6 @@ struct Mount {
     source: MountSource,
     guest: Bytes,
     kind: MountKind,
-    git: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,18 +287,8 @@ impl Snapshot {
                 },
                 guest: Bytes::path(&mount.guest),
                 kind: mount.kind,
-                git: mount.git,
             })
             .collect::<Vec<_>>();
-        if config.mount == ProjectMount::Share && context.repository {
-            let git = Bytes::path(&root.join(".git"));
-            mounts.push(Mount {
-                source: MountSource::Host { path: git.clone() },
-                guest: git,
-                kind: MountKind::Readonly,
-                git: true,
-            });
-        }
         if let Some(share) = &config.profile.share {
             mounts.push(Mount {
                 source: match share {
@@ -312,7 +301,6 @@ impl Snapshot {
                 },
                 guest: Bytes::path(Path::new("/opt/pinfold/profile")),
                 kind: MountKind::Readonly,
-                git: false,
             });
         }
         let disks = plan
@@ -405,17 +393,16 @@ impl Snapshot {
         self.project_mount == ProjectMount::Share
     }
 
-    pub(crate) fn project_layout_differences(&self, root: &Path) -> Vec<String> {
-        if !self.is_share() {
-            return Vec::new();
-        }
-        let protected = self.mounts.iter().any(|mount| mount.git);
-        let matches =
-            crate::pi::context::share_repository(root).is_ok_and(|present| present == protected);
-        if matches {
+    /// The owner rechecks a share's root Git marker without following it,
+    /// since both snapshots can predate a `.git` that appears later.
+    pub(crate) fn repository_differences(&self, root: &Path) -> Vec<String> {
+        if !self.is_share()
+            || crate::pi::context::share_repository(root)
+                .is_ok_and(|present| present == self.repository)
+        {
             Vec::new()
         } else {
-            vec!["project.protection".into()]
+            vec!["repository".into()]
         }
     }
 

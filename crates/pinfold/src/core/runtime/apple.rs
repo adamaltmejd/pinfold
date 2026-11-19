@@ -136,13 +136,13 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
             );
             count = next;
         }
-        // Apple's read-only Git attachment is root-owned in the guest.
+        // Apple mount tops are root-owned in the guest.
         vars.insert("GIT_CONFIG_COUNT".into(), count.to_string().into());
     }
     for (name, value) in vars {
         guest_env(command.as_std_mut(), &name, &value);
     }
-    for mount in plan.mounts.iter().filter(|mount| !mount.git) {
+    for mount in &plan.mounts {
         command.arg("--mount").arg(bind(
             &mount.host,
             &mount.guest,
@@ -159,11 +159,6 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
             value.push(",readonly");
         }
         command.arg("--mount").arg(value);
-    }
-    for mount in plan.mounts.iter().filter(|mount| mount.git) {
-        command
-            .arg("--mount")
-            .arg(bind(&mount.host, &mount.guest, true));
     }
     command
         .arg("--mount")

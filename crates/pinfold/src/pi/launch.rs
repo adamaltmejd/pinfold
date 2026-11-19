@@ -553,7 +553,6 @@ pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) ->
             host: root.to_path_buf(),
             guest: root.to_path_buf(),
             kind: MountKind::Share,
-            git: false,
         }],
     };
     Ok(Plan {

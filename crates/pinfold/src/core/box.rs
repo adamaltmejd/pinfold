@@ -976,7 +976,6 @@ pub(crate) fn validate_project(plan: &Plan, profile: &Profile) -> Result<(), Str
             host: share.path().map_err(|error| error.to_string())?,
             guest: PathBuf::from("/opt/pinfold/profile"),
             kind: MountKind::Readonly,
-            git: false,
         });
     }
     validate_generated(&resolved, &extra)?;
@@ -1124,7 +1123,6 @@ fn prepare_logins(plan: &mut Plan, state_dir: &Path) -> io::Result<()> {
             host: dir,
             guest: destination,
             kind: MountKind::Readonly,
-            git: false,
         });
     }
     Ok(())
@@ -1155,7 +1153,6 @@ fn resolve_profile(plan: &mut Plan, supplied: Option<Profile>) -> io::Result<Opt
             host: share.path()?,
             guest: PathBuf::from("/opt/pinfold/profile"),
             kind: MountKind::Readonly,
-            git: false,
         });
     }
     Ok(Some(profile))

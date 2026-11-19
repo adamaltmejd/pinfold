@@ -1,0 +1,32 @@
+
+## profile pfl: debian:trixie-slim plus git
+  cfg: mounts = [{ host = ".", kind = "disk" }]
+build exit: 0
+
+## L1 disk project runs, no warning, box commit crosses by fetch
+$ /home/agent/pfl334.BHAt/src/target/x86_64-unknown-linux-musl/debug/pinfold -- sh -c git log -1 --format=%s && echo d > d && git add d && git commit -qm lbox
+  out: c0
+  exit: 0
+  warning: no
+$ /home/agent/pfl334.BHAt/src/target/x86_64-unknown-linux-musl/debug/pinfold fetch
+  out: Updated refs (box to host): 1
+  out:   pinfold/main  583a6369b8cc8ca11e8c1b6058300e146b368572
+  exit: 0
+host: pinfold/main subject=lbox
+
+## L2 project share configuration refused
+  cfg: mounts = [{ host = ".", kind = "share" }]
+$ /home/agent/pfl334.BHAt/src/target/x86_64-unknown-linux-musl/debug/pinfold -- true
+  err: pinfold: /tmp/pfl.HFGp/config/pinfold/projects/proj-4fb52ff8e477/pinfold.toml: spec: share mounts are unsupported on Linux
+  exit: 125
+
+## L3 core box up with a share refused
+$ /home/agent/pfl334.BHAt/src/target/x86_64-unknown-linux-musl/debug/pinfold box up
+  out: {"box":"pfl334","detail":"invalid box spec: share mounts are unsupported on Linux","event":"refused","reason":"spec"}
+  exit: 1
+
+## cleanup
+  Removed pi-proj-4fb52ff8e477-home
+  Removed pi-proj-4fb52ff8e477-project
+  left: NAME	ALLOCATED	CAPACITY	STATE	ATTACHED	ORIGIN
+done

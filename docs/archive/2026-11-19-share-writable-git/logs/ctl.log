@@ -1,0 +1,7 @@
+git diff --stat: 20/20
+GIT_OPTIONAL_LOCKS=0 git diff --stat: 20/20
+git --no-optional-locks diff --stat: 20/20
+git diff: 20/20
+GIT_OPTIONAL_LOCKS=0 git diff: 20/20
+git status --porcelain: 20/20
+GIT_OPTIONAL_LOCKS=0 git status --porcelain: 0/20
