@@ -65,7 +65,7 @@ and `git-remote-pinfold`. The project was a fresh repository with
 branches `main` and `side`, configured `kind = "disk"`. `T` below is the
 temporary root.
 
-- **macOS:** 27.2, Apple `container` 1.7.1, host git from Homebrew, the
+- **macOS:** 27.2, Apple `container` 1.7.1, git 2.56.1 from Homebrew, the
   debug build of this branch. Image `localhost/pinfold/profile-default`
   already in the store.
 - **Linux:** the dev VM, Debian 13, kernel 6.12.105, git 2.47.3,
@@ -113,13 +113,16 @@ Both platforms unless marked. Paths are shortened to `T/`.
   `host/side`. `git push box main:refs/tags/v1` and `git push box
   :refs/heads/side` (macOS) printed `! [remote rejected] … (only
   branches can be pushed)`, exit 1. `git push --atomic box main`:
-  `fatal: helper pinfold does not support --atomic`, exit 128 (macOS).
+  `fatal: helper pinfold does not support --atomic`, exit 128 (macOS);
+  `git push --dry-run box main`: `fatal: helper pinfold does not support
+  dry-run`, exit 128 (Linux). `git ls-remote box` printed the box's
+  `main` and left no quarantine (Linux).
   After the push, the host's `refs/remotes/box/main` and `box/renamed`
   pointed at the host's own commit `f530490` until the next fetch.
 - **Later owner:** after `pinfold stop` and a new host commit, a new
   owner's box still had `refs/remotes/host/main` at the old commit; the
   host's `main` had moved.
-- **Existing remote** (macOS): a second project whose host repository
+- **Existing remote:** a second project whose host repository
   already had `remote.box.url https://example.invalid/box.git` kept that
   URL after its first start.
 - **Concurrent fetches,** both with a running owner and with none: both
@@ -141,10 +144,10 @@ Each changed no state.
   `fatal: remote helper 'pinfold' aborted session`, exit 128.
 - A remote `other` at `pinfold::/elsewhere`: `remote-url: other's URL
   names /elsewhere, not this project; run \`git remote set-url other
-  pinfold::T/host\``, exit 128 (macOS).
+  pinfold::T/host\``, exit 128.
 - The helper run by hand with `GIT_DIR` of another repository: it
   answered `capabilities`, then refused `list` with `remote-repository:
-  run Git in the project's main checkout`, exit 1 (macOS).
+  run Git in the project's main checkout`, exit 1.
 - A share project (macOS) with a `box` remote: `git fetch box` and `git
   push box main` printed `share-no-crossing: edits in this shared
   project are already visible on the host and in the box`, with no
@@ -160,20 +163,20 @@ state.
 | Case | Box sent | `pinfold remote:` |
 |---|---|---|
 | symref | `OID refs/heads/main`, `@refs/heads/main HEAD` | `the box's branch listing is malformed` |
-| tag (macOS) | `OID refs/tags/v1` | the same |
-| long line (macOS) | a 5011-byte name | the same |
-| names (macOS) | `a..b`, `x y`, `x:y`, `@{1}` | `the box named a malformed branch: "a..b"` and so on |
+| tag | `OID refs/tags/v1` | the same |
+| long line | a 5011-byte name | the same |
+| names | `a..b`, `x y`, `x:y`, `@{1}` | `the box named a malformed branch: "a..b"` and so on |
 | control bytes | `a` ESC `[31mb` CR | `the box named a malformed branch: "a\u{1b}[31mb\r"` |
-| branch limit (macOS) | 4097 listed branches | `the box has more than 4096 branches` |
+| branch limit | 4097 listed branches | `the box has more than 4096 branches` |
 | reach rule | `stolen` at a host-only commit, no bundle | `branch "stolen" names 2a67…, which the bundle does not carry and refs/remotes/box/* does not reach` |
 | fsck | the email-less commit | `git on the host failed: error: object 3708ee83…: missingEmail: invalid author/committer line - missing email\nfatal: fsck error in packed object` |
 | `.git` entry | the hook tree | `… hasDotgit: contains '.git'\nfatal: fsck error in packed object` |
 | missing tree | the hand-written bundle | `git on the host failed: fatal: bad tree object 0ee5b16c…\nerror: T/xdg/state/pinfold/crossing/PID.bundle did not send all necessary objects` |
-| filtered (macOS) | a v3 header with `@filter=blob:none` | `the box sent a filtered bundle` |
+| filtered | a v3 header with `@filter=blob:none` | `the box sent a filtered bundle` |
 | size limit (Linux) | 4294967400 zero bytes | `limit: the bundle is past 4294967296 bytes`, after 48 s; no `head -c` left in the box |
 
 Control: `alias` listed at the box's `main`, no bundle: `* [new branch]
-alias -> box/alias`, exit 0 (macOS).
+alias -> box/alias`, exit 0.
 
 ### Not protected, as specified
 
@@ -210,8 +213,12 @@ alias -> box/alias`, exit 0 (macOS).
 - **SIGKILL with a transient box:** Git exited 128 as above. The
   transient box ended with the helper (macOS: no container left; Linux:
   no Firecracker process). `pinfold disk list` showed the project disk
-  `unclean`, attached to the dead box. The next start recovered it: the
-  disk read `clean` after it.
+  `unclean`, attached to the dead box. The next `git fetch box` started
+  a transient box on that disk. On macOS it succeeded and the disk read
+  `clean`. On Linux the test's stall marker was still on the disk, so
+  the new box showed the disk attached to it; SIGINT to the helper then
+  ended the fetch (`interrupted by SIGINT`, exit 128, no state change)
+  and the disk read `clean`.
 - **SIGINT** (macOS, a fetch stalled against a transient box): `pinfold
   remote: interrupted by SIGINT`, exit 128; the box was torn down and
   the disk was clean.
@@ -236,13 +243,22 @@ alias -> box/alias`, exit 0 (macOS).
   script kept running in a kept box after the helper died. It ends with
   the box.
 - **Auto maintenance** runs after each fetch now, as the probe inferred.
+- **A failed first start is final.** Linux, a new project with
+  `.git/config.lock` held on the host: `pinfold: sync-failed: the host's
+  \`box\` remote could not be added\n`, CMD ran, and the box held an
+  empty repository (`.git` only, no commits, no refs). After the lock
+  was removed, a second start did nothing: still no remote and no refs.
+  Recovery is by hand: `git remote add box pinfold::ROOT`, `git push box
+  BRANCH`, and a checkout of `host/BRANCH` in the box.
+- **Owner diagnostics print a literal `\n`.** The detached owner's
+  stderr reaches the client through `forward_diagnostics`, which escapes
+  the whole buffer, its final newline included. Not new here.
 
 ## Not run
 
-- Linux: the tag, long-line, name, branch-limit, filtered, URL-address,
-  `GIT_DIR` and existing-remote cases, and the share-owner refusal (no
-  share on Linux). Each is the same code on both platforms.
-- macOS: the 4 GiB limit.
+- Linux: the share refusals (Linux has no shares) and the `-c` refspec
+  and partial-update cases.
+- macOS: the 4 GiB limit and `push --dry-run`.
 - 4096 real branches, a host repository past the first push's argv
   limits, sha256 repositories, `git clone pinfold::…`, `git pull box`
   with a hostile bundle, submodule recursion.
