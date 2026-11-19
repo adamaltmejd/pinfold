@@ -1,0 +1,107 @@
+{"side": "host", "repo": "hc5356_1", "iter": 0, "odd_status": [], "out": "?? mine\n--\nrc=128\nfatal: Unable to create '/private/tmp/pfs.7ILi/hc5356_1/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale"}
+{"side": "host", "repo": "hc5356_1", "iter": 1, "odd_status": ["D  a", "D  b", "?? a", "?? b"], "out": "D  a\nD  b\nM  theirs\n?? a\n?? b\n?? mine\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 2, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 3, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 4, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 5, "odd_status": ["?? a", "?? b"], "out": "M mine\n M theirs\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 6, "odd_status": ["?? a", "?? b"], "out": "M mine\n M theirs\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 7, "odd_status": ["?? a", "?? b"], "out": "M mine\n M theirs\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 8, "odd_status": ["?? a", "?? b"], "out": "M mine\n M theirs\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 9, "odd_status": ["?? a", "?? b"], "out": "M mine\n M theirs\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 10, "odd_status": ["D  mine", "?? a", "?? b"], "out": "D  mine\nM  theirs\n?? a\n?? b\n?? mine\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 11, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 12, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 13, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 14, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 15, "odd_status": ["D  mine", "?? a", "?? b"], "out": "D  mine\nM  theirs\n?? a\n?? b\n?? mine\n--\nrc=128\nfatal: Unable to create '/private/tmp/pfs.7ILi/hc5356_1/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale"}
+{"side": "host", "repo": "hc5356_1", "iter": 16, "odd_status": ["?? a", "?? b"], "out": "?? a\n?? b\n?? mine\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 17, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 18, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 19, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 20, "odd_status": ["?? a", "?? b"], "out": "M mine\n M theirs\n?? a\n?? b\n--\nrc=128\nfatal: Unable to create '/private/tmp/pfs.7ILi/hc5356_1/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale"}
+{"side": "host", "repo": "hc5356_1", "iter": 21, "odd_status": ["?? a", "?? b"], "out": "?? a\n?? b\n?? mine\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 22, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 23, "odd_status": ["?? a", "?? b"], "out": "M mine\n M theirs\n?? a\n?? b\n--\nrc=128\nfatal: Unable to create '/private/tmp/pfs.7ILi/hc5356_1/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale"}
+{"side": "host", "repo": "hc5356_1", "iter": 24, "odd_status": ["D  mine", "?? a", "?? b"], "out": "D  mine\nM  theirs\n?? a\n?? b\n?? mine\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 25, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 26, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 27, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_1", "iter": 28, "odd_status": ["D  mine", "?? a", "?? b"], "out": "D  mine\nM  theirs\n?? a\n?? b\n?? mine\n--\nrc=128\nfatal: cannot lock ref 'HEAD': is at 5268f399865d8ef8839c94c6ecba1e79744534d5 but expected e68b1a889afce3b22c57f3dd363e071f2768ec43"}
+{"side": "host", "repo": "hc5356_1", "iter": 29, "odd_status": ["?? a", "?? b"], "out": "AM mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "guest", "repo": "hc5356_1", "iter": 8, "odd_status": ["D  a", "D  b", "D  theirs", "?? a", "?? b"], "line": "8 rc=0 st=D  a;D  b;D  theirs;?? a;?? b;?? mine;?? theirs; err="}
+{"side": "guest", "repo": "hc5356_1", "iter": 9, "odd_status": ["?? a", "?? b"], "line": "9 rc=128 st=?? a;?? b;?? mine;?? theirs; err="}
+{"side": "guest", "repo": "hc5356_1", "iter": 10, "odd_status": ["?? a", "?? b"], "line": "10 rc=0 st=?? a;?? b;?? mine;?? theirs; err="}
+{"side": "guest", "repo": "hc5356_1", "iter": 11, "odd_status": ["?? a", "?? b"], "line": "11 rc=0 st=?? a;?? b;?? mine;?? theirs; err="}
+{"side": "guest", "repo": "hc5356_1", "iter": 12, "odd_status": ["?? a", "?? b"], "line": "12 rc=0 st=?? a;?? b;?? mine;?? theirs; err="}
+{"side": "guest", "repo": "hc5356_1", "iter": 13, "odd_status": ["?? a", "?? b"], "line": "13 rc=0 st=?? a;?? b;?? mine;?? theirs; err="}
+{"side": "guest", "repo": "hc5356_1", "iter": 14, "odd_status": ["?? a", "?? b"], "line": "14 rc=0 st=?? a;?? b;?? mine;?? theirs; err="}
+{"summary": true, "repo": "hc5356_1", "host_iters": 30, "host_bad": 30, "host_first_bad": 0, "host_refusals": 5, "host_refused": ["create '/private/tmp/pfs.7ILi/hc5356_1/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale", "create '/private/tmp/pfs.7ILi/hc5356_1/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale", "create '/private/tmp/pfs.7ILi/hc5356_1/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale", "create '/private/tmp/pfs.7ILi/hc5356_1/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale", "rc=128\nfatal: cannot lock ref 'HEAD': is at 5268f399865d8ef8839c94c6ecba1e79744534d5 but expected e68b1a889afce3b22c57f3dd363e071f2768ec43"], "host_committed": 25, "host_on_main": 1, "guest_iters": 14, "guest_bad": 7, "guest_first_bad": 8, "guest_refusals": 1, "guest_refused": [""], "guest_committed": 13, "guest_on_main": 1, "commits_on_main": 2, "roots": 1, "reflog_entries": 35, "tree": ["mine", "theirs"], "mine_lines": 30, "theirs_lines": 14, "cached": "", "status": ["?? a", "?? b"], "fsck_rc": 0, "fsck": "dangling commit 1fb586b00a7a17d5d7b4ce26600f54fb7afc199f\ndangling blob 573541ac9702dd3969c9bc859d2b91ec1f7e6e56\ndangling blob 5bc6c8de802793f64434ca452c71fbf88db7289e\ndangling commit f6961c64ef02498293b849b9000bdc94747b797b", "clean": false}
+{"side": "host", "repo": "hc5356_2", "iter": 1, "odd_status": ["D  a", "D  b", "D  mine", "?? a", "?? b"], "out": "D  a\nD  b\nD  mine\nM  theirs\n?? a\n?? b\n?? mine\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 2, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 3, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 4, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 5, "odd_status": ["?? a", "?? b"], "out": "M mine\n M theirs\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 6, "odd_status": ["?? a", "?? b"], "out": "M mine\n M theirs\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 7, "odd_status": ["?? a", "?? b"], "out": "M mine\n M theirs\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 8, "odd_status": ["?? a", "?? b"], "out": "M mine\n M theirs\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 9, "odd_status": ["?? a", "?? b"], "out": "M mine\n M theirs\n?? a\n?? b\n--\nrc=128\nfatal: Unable to create '/private/tmp/pfs.7ILi/hc5356_2/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale"}
+{"side": "host", "repo": "hc5356_2", "iter": 10, "odd_status": ["?? a", "?? b"], "out": "MM mine\n M theirs\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 11, "odd_status": ["?? a", "?? b"], "out": "?? a\n?? b\n?? mine\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 12, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 13, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 14, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 15, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 16, "odd_status": ["?? a", "?? b"], "out": "?? a\n?? b\n?? mine\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 17, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 18, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 19, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n?? theirs\n--\nrc=128\nfatal: Unable to create '/private/tmp/pfs.7ILi/hc5356_2/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale"}
+{"side": "host", "repo": "hc5356_2", "iter": 20, "odd_status": ["?? a", "?? b"], "out": "MM mine\n?? a\n?? b\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 21, "odd_status": ["?? a", "?? b"], "out": "?? a\n?? b\n?? mine\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 22, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 23, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 24, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 25, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 26, "odd_status": ["?? a", "?? b"], "out": "?? a\n?? b\n?? mine\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 27, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 28, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n?? theirs\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_2", "iter": 29, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n?? theirs\n--\nrc=0"}
+{"side": "guest", "repo": "hc5356_2", "iter": 8, "odd_status": ["?? a", "?? b"], "line": "8 rc=0 st=?? a;?? b;?? mine;?? theirs; err="}
+{"side": "guest", "repo": "hc5356_2", "iter": 9, "odd_status": ["?? a", "?? b"], "line": "9 rc=128 st=?? a;?? b;?? mine;?? theirs; err="}
+{"side": "guest", "repo": "hc5356_2", "iter": 10, "odd_status": ["?? a", "?? b"], "line": "10 rc=1 st=?? a;?? b;?? mine;?? theirs; err="}
+{"side": "guest", "repo": "hc5356_2", "iter": 11, "odd_status": ["?? a", "?? b"], "line": "11 rc=1 st=?? a;?? b;?? mine;?? theirs; err="}
+{"side": "guest", "repo": "hc5356_2", "iter": 12, "odd_status": ["?? a", "?? b"], "line": "12 rc=1 st=?? a;?? b;?? mine;?? theirs; err="}
+{"side": "guest", "repo": "hc5356_2", "iter": 13, "odd_status": ["?? a", "?? b"], "line": "13 rc=1 st=?? a;?? b;?? mine;?? theirs; err="}
+{"side": "guest", "repo": "hc5356_2", "iter": 14, "odd_status": ["?? a", "?? b"], "line": "14 rc=0 st=?? a;?? b;?? mine;?? theirs; err="}
+{"summary": true, "repo": "hc5356_2", "host_iters": 30, "host_bad": 29, "host_first_bad": 1, "host_refusals": 2, "host_refused": ["create '/private/tmp/pfs.7ILi/hc5356_2/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale", "create '/private/tmp/pfs.7ILi/hc5356_2/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale"], "host_committed": 28, "host_on_main": 0, "guest_iters": 14, "guest_bad": 7, "guest_first_bad": 8, "guest_refusals": 5, "guest_refused": ["", "", "", "", ""], "guest_committed": 9, "guest_on_main": 1, "commits_on_main": 1, "roots": 1, "reflog_entries": 37, "tree": ["theirs"], "mine_lines": 0, "theirs_lines": 14, "cached": "", "status": ["?? a", "?? b", "?? mine"], "fsck_rc": 0, "fsck": "64434ca452c71fbf88db7289e\ndangling blob 8b1acc12b635c26f3decadeaa251729d3ce512e9\ndangling blob 8e435da93deb7bff843097ef72c7532c09311cf5\ndangling blob 96f27ec188fc086644debad7acf84c6bab9643b2\ndangling blob b033488efab1e39523a9506d74c2ea5fbb1e39d1\ndangling blob f00c965d8307308469e537302baa73048488f162", "clean": false}
+{"side": "host", "repo": "hc5356_3", "iter": 0, "odd_status": [], "out": "M theirs\n?? mine\n--\nrc=128\nfatal: Unable to create '/private/tmp/pfs.7ILi/hc5356_3/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale"}
+{"side": "host", "repo": "hc5356_3", "iter": 5, "odd_status": [], "out": "M mine\n M theirs\n--\nrc=128\nfatal: Unable to create '/private/tmp/pfs.7ILi/hc5356_3/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale"}
+{"side": "host", "repo": "hc5356_3", "iter": 6, "odd_status": ["D  a", "D  b", "D  mine", "?? a", "?? b"], "out": "D  a\nD  b\nD  mine\nM  theirs\n?? a\n?? b\n?? mine\n--\nrc=128\nfatal: Unable to create '/private/tmp/pfs.7ILi/hc5356_3/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale"}
+{"side": "host", "repo": "hc5356_3", "iter": 7, "odd_status": ["?? a", "?? b"], "out": "?? a\n?? b\n?? mine\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 8, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 9, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 10, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 11, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 12, "odd_status": ["D  mine", "?? a", "?? b"], "out": "D  mine\nM  theirs\n?? a\n?? b\n?? mine\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 13, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 14, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 15, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 16, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 17, "odd_status": ["D  mine", "?? a", "?? b"], "out": "D  mine\nM  theirs\n?? a\n?? b\n?? mine\n--\nrc=128\nfatal: Unable to create '/private/tmp/pfs.7ILi/hc5356_3/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale"}
+{"side": "host", "repo": "hc5356_3", "iter": 18, "odd_status": ["?? a", "?? b"], "out": "?? a\n?? b\n?? mine\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 19, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 20, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 21, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 22, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=128\nfatal: Unable to create '/private/tmp/pfs.7ILi/hc5356_3/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale"}
+{"side": "host", "repo": "hc5356_3", "iter": 23, "odd_status": ["?? a", "?? b"], "out": "MM mine\n M theirs\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 24, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 25, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 26, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 27, "odd_status": ["?? a", "?? b"], "out": "M mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "host", "repo": "hc5356_3", "iter": 28, "odd_status": ["D  mine", "?? a", "?? b"], "out": "D  mine\nM  theirs\n?? a\n?? b\n?? mine\n--\nrc=128\nfatal: cannot lock ref 'HEAD': is at 222418b560c0727d78460ecb4ce452da99330861 but expected 0a921194cda8a05c05dc5b44e83a66dda876b375"}
+{"side": "host", "repo": "hc5356_3", "iter": 29, "odd_status": ["?? a", "?? b"], "out": "AM mine\n?? a\n?? b\n--\nrc=0"}
+{"side": "guest", "repo": "hc5356_3", "iter": 9, "odd_status": ["?? a", "?? b"], "line": "9 rc=0 st=?? a;?? b;?? mine;?? theirs; err="}
+{"side": "guest", "repo": "hc5356_3", "iter": 10, "odd_status": ["?? a", "?? b"], "line": "10 rc=0 st=?? a;?? b;?? mine;?? theirs; err="}
+{"side": "guest", "repo": "hc5356_3", "iter": 11, "odd_status": ["?? a", "?? b"], "line": "11 rc=0 st=?? a;?? b;?? mine;?? theirs; err="}
+{"side": "guest", "repo": "hc5356_3", "iter": 12, "odd_status": ["?? a", "?? b"], "line": "12 rc=128 st=?? a;?? b;?? mine;?? theirs; err=fatal: Unable to create '/work/hc5356_3/.git/index.lock': File exists.  Another git process seems to be running in this repository, e.g. an editor opened by 'git commit'. Please make sure all processes are terminated then try again. If it still fails, a git process may have crashed in this repository earlier: remove the file manually to continue. "}
+{"side": "guest", "repo": "hc5356_3", "iter": 13, "odd_status": ["?? a", "?? b"], "line": "13 rc=0 st=?? a;?? b;?? mine;?? theirs; err="}
+{"summary": true, "repo": "hc5356_3", "host_iters": 30, "host_bad": 26, "host_first_bad": 0, "host_refusals": 6, "host_refused": ["create '/private/tmp/pfs.7ILi/hc5356_3/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale", "create '/private/tmp/pfs.7ILi/hc5356_3/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale", "create '/private/tmp/pfs.7ILi/hc5356_3/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale", "create '/private/tmp/pfs.7ILi/hc5356_3/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale", "create '/private/tmp/pfs.7ILi/hc5356_3/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, or the lock file may be stale", "rc=128\nfatal: cannot lock ref 'HEAD': is at 222418b560c0727d78460ecb4ce452da99330861 but expected 0a921194cda8a05c05dc5b44e83a66dda876b375"], "host_committed": 24, "host_on_main": 1, "guest_iters": 13, "guest_bad": 5, "guest_first_bad": 9, "guest_refusals": 1, "guest_refused": ["ll processes are terminated then try again. If it still fails, a git process may have crashed in this repository earlier: remove the file manually to continue. "], "guest_committed": 12, "guest_on_main": 1, "commits_on_main": 2, "roots": 1, "reflog_entries": 33, "tree": ["mine", "theirs"], "mine_lines": 30, "theirs_lines": 13, "cached": "", "status": ["?? a", "?? b"], "fsck_rc": 0, "fsck": "dangling commit 1dd70d6f46995f2ee2cb69729d9f736ed8fcb52f\ndangling commit 31c773b64bdcefb8a23007b337d2b2a6c0412d34\ndangling blob a2f6ef71fa2e14980d85447e926e1e45ecee16db", "clean": false}
