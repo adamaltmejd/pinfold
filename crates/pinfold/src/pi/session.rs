@@ -292,7 +292,7 @@ fn matching_claims(root: &Path) -> io::Result<Vec<ownership::Record>> {
                 claims.push(record)
             }
             Ok(_) => {}
-            Err(error) => crate::core::process::diagnostic(terminal_text(&error.to_string())),
+            Err(error) => crate::core::process::diagnostic(error),
         }
     }
     Ok(claims)

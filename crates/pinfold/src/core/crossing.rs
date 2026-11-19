@@ -789,11 +789,17 @@ fn host_failed(output: &Output) -> CrossingError {
     ))
 }
 
-/// Whether the crossing process PID left behind is gone. A process runs one
-/// crossing, so one under its own pid is a dead process's too.
-fn crossing_gone(pid: u32) -> bool {
-    pid == std::process::id()
-        || nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None)
+/// Whether PID, a leftover's name part, names a crossing process that is
+/// gone. Only a canonical positive pid counts; any other name is left
+/// alone. A process runs one crossing, so one under its own pid is a dead
+/// process's too. A reused pid keeps its leftover until that process ends.
+fn crossing_gone(pid: &str) -> bool {
+    let canonical = !pid.starts_with('0') && pid.bytes().all(|byte| byte.is_ascii_digit());
+    let Some(pid) = pid.parse::<i32>().ok().filter(|_| canonical) else {
+        return false;
+    };
+    pid as u32 == std::process::id()
+        || nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None)
             == Err(nix::errno::Errno::ESRCH)
 }
 
@@ -814,7 +820,6 @@ impl Bundle {
                 .file_name()
                 .to_str()
                 .and_then(|name| name.strip_suffix(".bundle"))
-                .and_then(|pid| pid.parse::<u32>().ok())
                 .is_some_and(crossing_gone)
             {
                 let _ = fs::remove_file(entry.path());
@@ -888,7 +893,6 @@ impl Quarantine {
                 .file_name()
                 .to_str()
                 .and_then(|name| name.strip_prefix(QUARANTINE))
-                .and_then(|pid| pid.parse::<u32>().ok())
                 .is_some_and(crossing_gone)
             {
                 let _ = fs::remove_dir_all(entry.path());

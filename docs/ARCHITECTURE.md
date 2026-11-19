@@ -1468,8 +1468,9 @@ and run in it as the box user. Neither direction touches a working tree.
   fails. Moves into one object store run one at a time, under a lock on
   its `pack` directory. A rejected bundle leaves the repository's objects and refs as
   they were. pinfold removes the quarantine and its bundle file as the
-  helper exits; the next fetch removes a quarantine whose process is gone,
-  and the next crossing such a bundle file. Fetch has no deadline or
+  helper exits. A killed helper's quarantine is removed by the next fetch,
+  and its bundle file by the next crossing, once no process has its pid;
+  a reused pid keeps it until that process ends. Fetch has no deadline or
   memory bound: a box can stall it, or load the host, with a bundle slow
   to write or costly to index, until the caller kills it; a kill before
   Git writes changes no ref. The repository's own hooks and config are

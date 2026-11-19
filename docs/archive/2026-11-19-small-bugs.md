@@ -154,3 +154,21 @@ close #348. The proposal above is the smaller path for #348 alone.
 - The #348 SIGTERM variant on macOS.
 
 I removed everything I created.
+
+## Review round
+
+- Both sweeps take only a canonical positive pid (decimal digits, no
+  sign or leading zero, within `pid_t`, above 0). macOS: with
+  `007.bundle`, `+5.bundle`, `0.bundle`, `abc.bundle`,
+  `99999999999.bundle`, `pinfold-incoming-0099` and
+  `pinfold-incoming-+7` planted, the #347 run above repeated with the
+  same results, and every planted name survived.
+- `process::diagnostic` escapes its whole message, so a record it writes
+  is one line even when it carries a tool's stderr (`container volume
+  rm` through disk cleanup). Two callers that escaped first no longer
+  do. The owner's `eprintln!` sites in `pi/` already escape; core's
+  remaining ones print host file and socket errors, not tool output.
+  macOS: the #349 run still ends in one real newline.
+- The Crossing section now says what the sweep does: a leftover goes once
+  no process has its pid, and a reused pid keeps it until that process
+  ends.

@@ -1079,7 +1079,7 @@ fn project_exec(
     });
     let diagnostics: Vec<_> = diagnostics.close().into_iter().collect();
     if result.is_err() && !diagnostics.is_empty() {
-        crate::core::process::diagnostic(terminal_text(&String::from_utf8_lossy(&diagnostics)));
+        crate::core::process::diagnostic(String::from_utf8_lossy(&diagnostics));
     }
     result.map(|code| ExitStatus::from_raw(code << 8))
 }
