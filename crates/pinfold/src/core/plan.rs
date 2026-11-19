@@ -397,8 +397,6 @@ pub struct Mount {
     pub guest: PathBuf,
     #[serde(default)]
     pub kind: MountKind,
-    #[serde(skip)]
-    pub(crate) git: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]

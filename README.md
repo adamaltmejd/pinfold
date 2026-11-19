@@ -2,7 +2,7 @@
 
 Run a coding agent in a disposable micro-VM: Apple `container` on macOS,
 Firecracker on Linux. New macOS project configurations share host files
-directly, with the main root’s `.git` read-only. Linux projects use a private
+directly, `.git` included, so an agent commits with ordinary Git. Linux projects use a private
 disk copy of committed branches; macOS also supports an explicit disk.
 Network egress uses the box’s allowlisting proxy.
 
@@ -15,19 +15,14 @@ Network egress uses the box’s allowlisting proxy.
 Core `box up` specs can declare an Apple writable host mount with
 `{"host":"/path/to/folder","guest":"/work","kind":"share"}`.
 The default mount kind is `readonly`; Linux refuses `share` as `spec`.
-A share's plain top-level `.git` is attached read-only after all caller
-attachments. Admission refuses protected Git symlinks, working-file aliases
-to protected Git files, lexical attachment conflicts, any attachment source
-at or beneath protected Git, and overlapping shares exposing it writable.
-An image symlink can change which declared source the box sees, but cannot grant writes to protected host `.git`. Shared
-working files can be deleted or corrupted, and host tools can execute
-box-written content.
+A share is writable throughout, `.git` included. Shared working files and
+Git history can be deleted or corrupted, and host tools can execute
+box-written content, Git hooks and configuration included.
 See [Mounts](docs/ARCHITECTURE.md#mounts) and the
 [threat model](docs/ARCHITECTURE.md#threat-model). A linked worktree beneath
 a shared main root uses that root’s configuration and owner, at its invoking
 cwd. External worktrees and separate Git directories refuse. Independent
-nested repositories retain their own project discovery; their Git metadata
-is writable when reached through an ancestor share.
+nested repositories retain their own project discovery.
 
 ## Requirements
 
@@ -107,7 +102,7 @@ its arguments. Bare `pinfold --` exits with a usage error.
 On the first interactive run, choose the profile and confirm the project
 folder. If your shell sets `PINFOLD_PROFILE`, that selects the profile.
 Unset it to choose a different one. On macOS the box can edit files in
-that folder. A top-level `.git` present when the box starts is read-only. Linux uses a private project disk. If the selected
+that folder, including its Git metadata. Linux uses a private project disk. If the selected
 managed image is missing, Pinfold offers to build it and then starts your
 command. A build needs network access. An explicit `image` must already
 be available locally. Rebuild with `pinfold build` if a later launch
@@ -165,14 +160,11 @@ Joining or keeping preserves the running policy and credentials. Changed
 host roots or effective configuration refuse as `config-changed`, naming
 only differing fields. Stop the owner before applying those changes. Command
 metadata, recipe freshness and seed/shared-file contents do not affect
-comparison. Mount kind, canonical paths and protected Git attachment layout
-are startup configuration; working files, HEAD, refs, index and mtimes are
-not. Host edits and commits permit joining. Stop before adding or adopting
-Git in a running non-Git share; it remains unprotected for that owner and
-new grants refuse the changed layout while that owner lives. After stop,
-the next owner protects the box-written `.git` without running host Git.
-Inspect that metadata before running host Git in the folder. Joining does
-not reseed, synchronize Git or refresh login.
+comparison. Mount kind and canonical paths are startup configuration;
+working files, HEAD, refs, index and mtimes are not. Host and box edits and
+commits permit joining. A share that gains or loses its root `.git` refuses
+new grants as `config-changed` until stop. Joining does not reseed,
+synchronize Git or refresh login.
 
 Arguments after `--` pass literally to the command, including `--help`. Command exit codes
 pass through; project setup failure or external teardown before observed completion uses 125. CMD owns stdout;
@@ -245,9 +237,14 @@ Apple builds reject `--allow` additions.
 Rebuild old Podman-only Linux images explicitly with `build` or `image build`.
 Old Podman storage, derived roots and managed agent disks remain untouched.
 
-For a share, host edits are live and only the host writes the protected
-top-level Git metadata. Pinfold reads share Git metadata as data and never
-executes Git on the host for that project. There is no startup synchronization
+For a share, host edits are live and the box stages and commits in the
+host's `.git`; a box commit is the host's commit. Pinfold reads share Git
+metadata as data and never executes Git on the host for that project.
+Host and box Git at the same moment can lose commits or record files as
+deleted (see the threat model). Export `GIT_OPTIONAL_LOCKS=0` in the shell
+that runs `pinfold`, and in host tools that poll Git; otherwise
+`pinfold -- CMD` warns `git-optional-locks` on stderr. Avoid committing on
+the host while the box commits. There is no startup synchronization
 or crossing;
 `pinfold push` and `fetch` refuse as `share-no-crossing`. A share launch never
 deletes an old project disk or copies it back. To select disk behavior on
@@ -388,5 +385,4 @@ Read the [threat model](docs/ARCHITECTURE.md#threat-model) and [disks](docs/ARCH
 Shared-file reads can be stale or internally inconsistent after host changes;
 no fixed recovery delay is guaranteed. `git status` on a very large shared
 tree measured 10–15 seconds in the guest against about 0.1 seconds on the
-host. This is a known cost. Only the share root’s `.git` is protected;
-nested repositories remain writable, and shares have no cross-box coordination.
+host. This is a known cost. Shares have no cross-box coordination.

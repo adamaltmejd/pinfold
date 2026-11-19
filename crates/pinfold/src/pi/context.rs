@@ -192,8 +192,7 @@ impl Context {
     }
 }
 
-/// The protection definition is a plain root Git directory, or no marker.
-/// Callers compare this shape before accepting a new share grant.
+/// A share's root Git marker is a plain directory, or absent.
 pub(crate) fn share_repository(root: &Path) -> io::Result<bool> {
     let directory = open_directory(root, Path::new(""))?;
     match marker(&directory, ".git")? {
