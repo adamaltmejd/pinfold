@@ -1,7 +1,6 @@
 # Rex Mac client isolation audit, 18 November 2026
 
-**Decision.** Guest-only Rex is suitable for coordination within one
-Pinfold box. This review did not establish the isolation required to
+**Finding.** This review did not establish the isolation required to
 automatically connect the user's native Rex app to an untrusted box.
 
 ## What was inspected
@@ -27,9 +26,9 @@ that compares identities and returns the refusal “this app makes calls to
 other servers only for its home server.” Its compiled model distinguishes
 the home and focused servers. The local server reported that this Mac was
 the configured home. The ordinary guest endpoint in the trial had been
-added as a remote host. This is an implemented client-side protection that
-the generic API description alone did not establish. The static check did
-not verify how the app classifies every endpoint alias or reconnect.
+added as a remote host. The branch exists in the inspected code, which the generic API
+description alone did not establish. The static check did not exercise
+how the app classifies the relay endpoint, other aliases or a reconnect.
 
 **Mac app actions.** A separate Remote Control handler reads the boolean
 preference `rex.client.remoteControl` and takes a refusal branch when it
@@ -53,18 +52,8 @@ the isolation verdict. [Server API](https://www.superlogical.com/rex/docs/refere
 disabled. The trial carried native Rex traffic over a host-initiated exec.
 Each new `pinfold -- …` invocation discovers the current project owner and
 may start a box. An old relay accepting a new client could therefore select
-or start a replacement. A production connection must use the originally
-observed owner and generation and close on owner loss. Pinfold already
+or start a replacement. Pinfold already
 checks the generation during admission and cancels an admitted exec on
 lease loss. This finding comes from source review. The trial did not
 exercise a restart. See `crates/pinfold/src/core/runtime/apple.rs` and
 `crates/pinfold/src/pi/session.rs`.
-
-## Implementation consequence
-
-The home-server check narrows one important question. The open requirement
-is a Mac-enforced policy covering app actions and other host effects from
-an ordinary guest connection, including while the user's normal Mac Remote
-Control preference is enabled. Shipping a Rex binary in the guest cannot
-supply that policy. Until it is verified, keep native auto-attachment out
-of `pinfold start`. Guest-local Rex can be considered independently.

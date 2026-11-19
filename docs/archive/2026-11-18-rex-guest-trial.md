@@ -38,11 +38,3 @@ Three parts of Rex's contract matter here.
 We found no documented Mac-enforced restriction for an individual endpoint
 covering these paths. The trial established native interaction. Whether a
 hostile guest can cause actions on the Mac remains unverified.
-
-## Implications for Pinfold
-
-Guest agents can use a guest-local Rex server independently of a native Mac
-attachment. Automatic attachment would require a client mode that confines
-this connection to guest sessions even when the user enables Remote Control
-for their Mac sessions. The Mac must apply that policy to the relay's Unix
-socket as an untrusted endpoint. A setting inside the guest cannot enforce it.

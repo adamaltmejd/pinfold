@@ -2,9 +2,11 @@
 
 On 18 November 2026, Rex Beta build 1996 accepted an ordinary client
 action from a non-home server and opened its native Settings window.
-This fails the proposed requirement that a connected Pinfold server have
-no control over the Mac app outside its own panes while Remote Control
-stays enabled for trusted clients such as a phone.
+The server was a local preview.20 fixture, not a server in a Pinfold box.
+The result fails the proposed requirement that a connected server have no
+control over the Mac app outside its own panes while Remote Control stays
+enabled for trusted clients such as a phone. The same request through the
+Pinfold relay was not tested.
 
 ## Observation
 
@@ -41,9 +43,3 @@ The Settings window was closed, the original Mac session restored, and
 the fixture server and its directory removed. The CLI's host list (`rex hosts`) had
 no entries for either this fixture or the previous guest trial. Remote
 Control was still enabled.
-
-Guest agents can use Rex inside their box. Keep automatic native
-attachment out of `pinfold start` on this build when the user requires
-zero guest control of the Mac app. A native integration would need the Mac
-client to distinguish trusted control connections from guest sessions and
-enforce the distinction for app actions and other host effects.
