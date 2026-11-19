@@ -332,6 +332,21 @@ Treat the box's output and branches as untrusted. The
 [pinfold-delegate](skills/pinfold-delegate/SKILL.md) skill teaches an
 agent this; copy its directory into the agent's skills directory.
 
+## Rex on macOS
+
+Bundled profiles do not ship Rex. To use it, install the Linux `rex` in
+your own profile or project image, from Superlogical's package repository:
+
+```dockerfile
+RUN curl -fsSL https://pkgs.superlogical.com/rex/install.sh | sh -s -- --tarball
+```
+
+Rebuild the image to update it. Then run `pinfold start` in a Rex pane. It
+starts Rex in the box and prints a `unix://` address. Add it once in the
+Rex app under Add Remote Host…. The host is reachable while the box runs.
+Turn off Remote Control in the Rex app first; with it on, `start` sets up
+nothing. Read the threat model's Rex entry before use.
+
 ## Fresh state
 
 All commands reuse the project home. Disk projects also reuse a project

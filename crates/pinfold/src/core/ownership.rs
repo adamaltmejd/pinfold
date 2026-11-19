@@ -248,6 +248,7 @@ pub struct Claim {
     listener: Option<UnixListener>,
     sockets: Option<Sockets>,
     request: Option<UnixStream>,
+    reading: Option<Reading>,
     running: bool,
 }
 
@@ -283,6 +284,7 @@ impl Claim {
             listener: None,
             sockets: None,
             request: None,
+            reading: None,
             running: false,
         }))
     }
@@ -428,6 +430,7 @@ impl Claim {
         StartupControl {
             listener: self.listener.take().expect("prepared ownership"),
             request: self.request.take(),
+            reading: self.reading.take(),
             generation: self.generation().to_string(),
         }
     }
@@ -435,12 +438,16 @@ impl Claim {
     pub(crate) fn restore_startup_control(&mut self, control: StartupControl) {
         self.listener = Some(control.listener);
         self.request = control.request;
+        self.reading = control.reading;
     }
 
+    /// Cancel safe: a request read in part continues on the next call.
     pub async fn stop_requested(&mut self) -> io::Result<()> {
+        let generation = &self.record.as_ref().expect("prepared ownership").generation;
         let request = receive_stop(
             self.listener.as_ref().expect("prepared ownership"),
-            self.generation(),
+            generation,
+            &mut self.reading,
         )
         .await?;
         self.request = Some(request);
@@ -485,43 +492,89 @@ impl Claim {
 pub(crate) struct StartupControl {
     listener: UnixListener,
     request: Option<UnixStream>,
+    reading: Option<Reading>,
     generation: String,
 }
 
 impl StartupControl {
     pub(crate) async fn stop_requested(&mut self) -> io::Result<()> {
-        self.request = Some(receive_stop(&self.listener, &self.generation).await?);
+        self.request =
+            Some(receive_stop(&self.listener, &self.generation, &mut self.reading).await?);
         Ok(())
     }
 }
 
-async fn receive_stop(listener: &UnixListener, generation: &str) -> io::Result<UnixStream> {
+/// A stop connection and the request bytes read from it so far.
+/// `acknowledged` counts the bytes of `stopping\n` written once the request
+/// matched.
+struct Reading {
+    stream: UnixStream,
+    bytes: Vec<u8>,
+    deadline: tokio::time::Instant,
+    acknowledged: Option<usize>,
+}
+
+const STOPPING: &[u8] = b"stopping\n";
+
+/// Every await is cancel safe: the accepted connection, the bytes read and
+/// the acknowledgement written live in `reading`, so a dropped wait loses
+/// no request.
+async fn receive_stop(
+    listener: &UnixListener,
+    generation: &str,
+    reading: &mut Option<Reading>,
+) -> io::Result<UnixStream> {
     loop {
-        let (mut stream, _) = listener.accept().await?;
-        let mut requested = [0; 64];
-        let project = match tokio::time::timeout(REQUEST_TIMEOUT, async {
-            stream.read_exact(&mut requested).await?;
-            // The private project prefix asks for acceptance before the final
-            // reply. Public box down keeps its existing 64-byte request.
-            let project = requested[0] == b'P';
-            if project {
-                requested.copy_within(1.., 0);
-                stream.read_exact(&mut requested[63..]).await?;
+        let current = match reading {
+            Some(current) => current,
+            None => {
+                let (stream, _) = listener.accept().await?;
+                reading.insert(Reading {
+                    stream,
+                    bytes: Vec::with_capacity(65),
+                    deadline: tokio::time::Instant::now() + REQUEST_TIMEOUT,
+                    acknowledged: None,
+                })
             }
-            Ok::<_, io::Error>(project)
-        })
-        .await
-        {
-            Ok(Ok(project)) => project,
-            _ => continue,
         };
-        if requested == generation.as_bytes() {
-            if project {
-                let _ =
-                    tokio::time::timeout(REQUEST_TIMEOUT, stream.write_all(b"stopping\n")).await;
+        if let Some(written) = current.acknowledged {
+            if written < STOPPING.len()
+                && let Ok(Ok(sent @ 1..)) = tokio::time::timeout_at(
+                    current.deadline,
+                    current.stream.write(&STOPPING[written..]),
+                )
+                .await
+            {
+                current.acknowledged = Some(written + sent);
+                continue;
             }
-            return Ok(stream);
+            // Written, or failed within the bound: stopping proceeds either way.
+            return Ok(reading.take().expect("matched request").stream);
         }
+        // The private project prefix asks for acceptance before the final
+        // reply. Public box down keeps its existing 64-byte request.
+        let project = current.bytes.first() == Some(&b'P');
+        let wanted = if project { 65 } else { 64 };
+        if current.bytes.len() < wanted {
+            let mut chunk = [0; 65];
+            let free = wanted - current.bytes.len();
+            match tokio::time::timeout_at(current.deadline, current.stream.read(&mut chunk[..free]))
+                .await
+            {
+                Ok(Ok(read)) if read > 0 => current.bytes.extend_from_slice(&chunk[..read]),
+                _ => *reading = None,
+            }
+            continue;
+        }
+        if &current.bytes[usize::from(project)..] == generation.as_bytes() {
+            if project {
+                current.acknowledged = Some(0);
+                current.deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+                continue;
+            }
+            return Ok(reading.take().expect("matched request").stream);
+        }
+        let mut stream = reading.take().expect("complete request").stream;
         let _ = tokio::time::timeout(REQUEST_TIMEOUT, stream.write_all(b"gone\n")).await;
     }
 }
