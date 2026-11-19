@@ -400,8 +400,12 @@ fn rex_dial() -> io::Result<()> {
     let mut upload = server.try_clone()?;
     let mut stdin = File::from(io::stdin().as_fd().try_clone_to_owned()?);
     thread::Builder::new().spawn(move || {
-        let _ = exec_wire::copy_stream(&mut stdin, &mut upload);
-        let _ = upload.shutdown(Shutdown::Write);
+        // EOF half-closes; an error also ends the server's direction.
+        let how = match exec_wire::copy_stream(&mut stdin, &mut upload) {
+            Ok(()) => Shutdown::Write,
+            Err(_) => Shutdown::Both,
+        };
+        let _ = upload.shutdown(how);
     })?;
     let mut stdout = File::from(io::stdout().as_fd().try_clone_to_owned()?);
     exec_wire::copy_stream(&mut &server, &mut stdout)

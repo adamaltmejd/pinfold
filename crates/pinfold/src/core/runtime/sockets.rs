@@ -409,39 +409,25 @@ pub(crate) struct HostSocket {
 }
 
 impl HostSocket {
-    /// Bind `leaf`, replacing a stale socket of this user's there.
+    /// Bind `leaf`, replacing a socket left there. The caller holds the
+    /// exclusion that makes it the only live user of `leaf`.
     pub(crate) fn bind(leaf: &str) -> io::Result<(Self, std::os::unix::net::UnixListener)> {
         let (base, host) = host()?;
         check_length(&base.join(leaf))?;
-        check_socket(&host, OsStr::new(leaf), true, false)?;
-        unlink_at(&host, OsStr::new(leaf), 0)?;
+        Self::remove_left(leaf)?;
         let listener = bind_at(&host, OsStr::new(leaf))?;
         let identity = socket_identity(&host, OsStr::new(leaf))?;
         let leaf = leaf.to_owned();
         Ok((Self { leaf, identity }, listener))
     }
 
-    /// Unlink a socket at `leaf` that refuses connections: its listener is
-    /// gone. A live listener's socket stays.
-    pub(crate) fn remove_stale(leaf: &str) -> io::Result<()> {
-        let Some((base, host)) = existing_host()? else {
+    /// Unlink a socket at `leaf`, under the same exclusion as [`Self::bind`].
+    pub(crate) fn remove_left(leaf: &str) -> io::Result<()> {
+        let Some((_, host)) = existing_host()? else {
             return Ok(());
         };
-        let leaf = OsStr::new(leaf);
-        check_socket(&host, leaf, true, false)?;
-        let Ok(identity) = socket_identity(&host, leaf) else {
-            return Ok(());
-        };
-        match std::os::unix::net::UnixStream::connect(base.join(leaf)) {
-            // A socket a new owner bound meanwhile has another identity.
-            Err(error)
-                if error.kind() == io::ErrorKind::ConnectionRefused
-                    && socket_identity(&host, leaf).ok() == Some(identity) =>
-            {
-                unlink_at(&host, leaf, 0)
-            }
-            _ => Ok(()),
-        }
+        check_socket(&host, OsStr::new(leaf), true, false)?;
+        unlink_at(&host, OsStr::new(leaf), 0)
     }
 
     /// Unlink the socket only while it is still this bind's.

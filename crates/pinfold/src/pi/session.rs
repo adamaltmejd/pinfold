@@ -398,6 +398,24 @@ async fn exchange(
         .map_err(|_| unavailable_at("reply"))?;
     Ok((stream, reply))
 }
+/// Relay setup answers within its own bound, not one frame's.
+async fn exchange_rex(
+    locator: &Locator,
+    request: Request,
+    signals: &mut Signals,
+    deadline: Instant,
+) -> io::Result<(UnixStream, Reply)> {
+    let mut stream = connect(locator, signals, deadline).await?;
+    wire::write_request(&mut stream, request).await?;
+    let reply = tokio::select! {
+        reply = timeout_at(Instant::now() + rex::REPLY_DEADLINE, wire::read_reply(&mut stream, true)) => reply,
+        _ = signals.recv() => return Err(io::ErrorKind::Interrupted.into()),
+    };
+    let reply = reply
+        .map_err(|_| timed_out())?
+        .map_err(|_| unavailable_at("reply"))?;
+    Ok((stream, reply))
+}
 async fn probe_reply(
     root: &Path,
     locator: &Locator,
@@ -701,7 +719,12 @@ async fn admit(
                     rex: matches!(intent, Intent::KeepRex),
                 },
             };
-            let (stream, reply) = match exchange(&locator, request, signals, deadline).await {
+            let exchanged = if matches!(intent, Intent::KeepRex) {
+                exchange_rex(&locator, request, signals, deadline).await
+            } else {
+                exchange(&locator, request, signals, deadline).await
+            };
+            let (stream, reply) = match exchanged {
                 Ok(value) => value,
                 Err(_error) if retired_or_removing(&locator)? => {
                     wait_name_owned(&locator.name, signals).await?;
@@ -1545,7 +1568,15 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let keep = !matches!(intent, Intent::Join);
         redirect_stderr()?;
         let relay = rex::Rex::new(&plan.name, init.clone(), &key(&root));
-        let status = if matches!(intent, Intent::KeepRex) { Some(relay.request().await) } else { None };
+        let status = if matches!(intent, Intent::KeepRex) {
+            let request = relay.request();
+            tokio::pin!(request);
+            loop { tokio::select! {
+                biased;
+                status = &mut request => break status,
+                _ = heartbeat.tick() => { let _ = wire::write_reply(&mut writer, Reply::Starting {}).await; },
+            }}
+        } else { None };
         // Commit before acknowledgement, including when that acknowledgement is lost.
         let reply = if keep { Reply::Kept { name: plan.name.clone(), generation: box_.run_id.clone(), rex: status } }
             else { Reply::Admitted { name: plan.name.clone(), generation: box_.run_id.clone() } };
@@ -1675,8 +1706,12 @@ async fn serve(
                             keep = true;
                             let (relay, name, generation) = (relay.clone(), locator.name.clone(), generation.clone());
                             tasks.spawn(async move {
-                                let rex = Some(relay.request().await);
-                                let _ = wire::write_reply(&mut stream, Reply::Kept { name, generation, rex }).await;
+                                // Setup cancelled by shutdown answers as a draining owner does.
+                                let reply = match relay.request().await {
+                                    Some(status) => Reply::Kept { name, generation, rex: Some(status) },
+                                    None => Reply::Draining { generation },
+                                };
+                                let _ = wire::write_reply(&mut stream, reply).await;
                             });
                         },
                         Request::Join { .. } | Request::Borrow { .. } => {
@@ -1718,6 +1753,7 @@ async fn serve(
             Some(_) = tasks.join_next(), if !tasks.is_empty() => {},
         }
     };
+    relay.begin_close();
     let (drain_done, mut draining) = watch::channel(false);
     let drain_generation = generation.clone();
     let drain_root = root.to_path_buf();
@@ -1891,7 +1927,6 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
     executor.block_on(async {
         let mut signals = Signals::with_hangup()?;
         let _executable = crate::update::working()?;
-        let mut stopped = None;
         let result = async {
             let cwd = state::canonical(&std::env::current_dir()?)?;
             let root = if cfg!(target_os = "macos") && read_locator(&cwd)?.is_some() {
@@ -1903,83 +1938,96 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                     Err(error) => return Err(error),
                 }
             };
-            stopped = Some(key(&root));
             let _maintenance = maintenance(&root, &mut signals).await?;
-            let deadline = Instant::now() + CONTROL;
-            let mut target: Option<Locator> = None;
-            loop {
-                if target.is_none() {
-                    target = read_locator(&root)?;
-                }
-                if let Some(locator) = &target {
-                    if let Some(record) = ownership::record(&locator.name)? {
-                        if locator
-                            .generation
-                            .as_ref()
-                            .is_some_and(|g| g != &record.generation)
-                        {
+            let code = async {
+                let deadline = Instant::now() + CONTROL;
+                let mut target: Option<Locator> = None;
+                loop {
+                    if target.is_none() {
+                        target = read_locator(&root)?;
+                    }
+                    if let Some(locator) = &target {
+                        if let Some(record) = ownership::record(&locator.name)? {
+                            if locator
+                                .generation
+                                .as_ref()
+                                .is_some_and(|g| g != &record.generation)
+                            {
+                                return Ok(0);
+                            }
+                            stop_target(root.clone(), record, &mut signals, deadline).await?;
                             return Ok(0);
                         }
-                        stop_target(root.clone(), record, &mut signals, deadline).await?;
-                        return Ok(0);
-                    }
-                    if locator.generation.is_some() {
-                        // A completed observation remains the target across replacement.
-                        wait_name(&locator.name, &mut signals, deadline).await?;
-                        let Some(lock) = ownership::try_name_lock(&locator.name)? else {
-                            continue;
-                        };
-                        if ownership::record(&locator.name)?.is_some() {
-                            continue;
+                        if locator.generation.is_some() {
+                            // A completed observation remains the target across replacement.
+                            wait_name(&locator.name, &mut signals, deadline).await?;
+                            let Some(lock) = ownership::try_name_lock(&locator.name)? else {
+                                continue;
+                            };
+                            if ownership::record(&locator.name)?.is_some() {
+                                continue;
+                            }
+                            let locator = locator.clone();
+                            control_work(&mut signals, deadline, move || {
+                                clean::remove_orphan(
+                                    runtime(),
+                                    &locator.name,
+                                    locator.generation.as_deref(),
+                                    &lock,
+                                )?;
+                                remove_matching_locator(&locator)
+                            })
+                            .await?;
+                            return Ok(0);
                         }
-                        let locator = locator.clone();
-                        control_work(&mut signals, deadline, move || {
-                            clean::remove_orphan(
-                                runtime(),
-                                &locator.name,
-                                locator.generation.as_deref(),
-                                &lock,
-                            )?;
-                            remove_matching_locator(&locator)
-                        })
-                        .await?;
-                        return Ok(0);
                     }
-                }
-                if let Some(_launch) = try_launch(&root)? {
-                    if let Some(locator) = &target {
-                        if ownership::record(&locator.name)?.is_some() {
-                            continue;
+                    if let Some(_launch) = try_launch(&root)? {
+                        if let Some(locator) = &target {
+                            if ownership::record(&locator.name)?.is_some() {
+                                continue;
+                            }
+                            let Some(lock) = ownership::try_name_lock(&locator.name)? else {
+                                return Err(unavailable());
+                            };
+                            let locator = locator.clone();
+                            control_work(&mut signals, deadline, move || {
+                                clean::remove_orphan(runtime(), &locator.name, None, &lock)?;
+                                remove_matching_locator(&locator)
+                            })
+                            .await?;
+                            return Ok(0);
                         }
-                        let Some(lock) = ownership::try_name_lock(&locator.name)? else {
-                            return Err(unavailable());
-                        };
-                        let locator = locator.clone();
-                        control_work(&mut signals, deadline, move || {
-                            clean::remove_orphan(runtime(), &locator.name, None, &lock)?;
-                            remove_matching_locator(&locator)
+                        let discovery_root = root.clone();
+                        match control_work(&mut signals, deadline, move || {
+                            discover(&discovery_root)
                         })
-                        .await?;
-                        return Ok(0);
-                    }
-                    let discovery_root = root.clone();
-                    match control_work(&mut signals, deadline, move || discover(&discovery_root))
                         .await?
-                    {
-                        Some(locator) => {
-                            target = Some(locator);
-                            continue;
+                        {
+                            Some(locator) => {
+                                target = Some(locator);
+                                continue;
+                            }
+                            None => return Ok(0),
                         }
-                        None => return Ok(0),
                     }
+                    wait_tick(&mut signals, deadline).await?;
                 }
-                wait_tick(&mut signals, deadline).await?;
             }
+            .await?;
+            // Under the launch lock with no owner discovered, none is live and
+            // none can start, so a dead owner's Rex socket can go.
+            if let Ok(Some(_launch)) = try_launch(&root) {
+                let discovery_root = root.clone();
+                let deadline = Instant::now() + CONTROL;
+                if let Ok(None) =
+                    control_work(&mut signals, deadline, move || discover(&discovery_root)).await
+                {
+                    rex::remove_left(&key(&root));
+                }
+            }
+            Ok(code)
         }
         .await;
-        if let (Ok(0), Some(key)) = (&result, &stopped) {
-            rex::remove_stale(key);
-        }
         match signals.last() {
             Some(signal) => Ok(128 + signal as i32),
             None => result,
