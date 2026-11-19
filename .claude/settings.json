@@ -1,16 +1,9 @@
 {
-  "sandbox": {
-    "excludedCommands": [
-      "container *",
-      "pinfold *",
-      "./target/debug/pinfold *",
-      "./target/release/pinfold *",
-      "codex *",
-      "labvm *",
-      "bash docs/archive/*/run-box-cases.sh *"
-    ],
-    "filesystem": {
-      "allowWrite": ["/private/tmp/pinfold-501"]
-    }
+  "sandbox": { "enabled": false },
+  "permissions": {
+    "deny": [
+      "Read(~/.codex/auth.json)",
+      "Read(~/.ssh/**)"
+    ]
   }
 }
