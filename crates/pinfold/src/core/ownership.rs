@@ -505,14 +505,20 @@ impl StartupControl {
 }
 
 /// A stop connection and the request bytes read from it so far.
+/// `acknowledged` counts the bytes of `stopping\n` written once the request
+/// matched.
 struct Reading {
     stream: UnixStream,
     bytes: Vec<u8>,
     deadline: tokio::time::Instant,
+    acknowledged: Option<usize>,
 }
 
-/// Every await is cancel safe: accepted connections and read bytes live in
-/// `reading`, so a dropped wait loses no request.
+const STOPPING: &[u8] = b"stopping\n";
+
+/// Every await is cancel safe: the accepted connection, the bytes read and
+/// the acknowledgement written live in `reading`, so a dropped wait loses
+/// no request.
 async fn receive_stop(
     listener: &UnixListener,
     generation: &str,
@@ -527,9 +533,24 @@ async fn receive_stop(
                     stream,
                     bytes: Vec::with_capacity(65),
                     deadline: tokio::time::Instant::now() + REQUEST_TIMEOUT,
+                    acknowledged: None,
                 })
             }
         };
+        if let Some(written) = current.acknowledged {
+            if written < STOPPING.len()
+                && let Ok(Ok(sent @ 1..)) = tokio::time::timeout_at(
+                    current.deadline,
+                    current.stream.write(&STOPPING[written..]),
+                )
+                .await
+            {
+                current.acknowledged = Some(written + sent);
+                continue;
+            }
+            // Written, or failed within the bound: stopping proceeds either way.
+            return Ok(reading.take().expect("matched request").stream);
+        }
         // The private project prefix asks for acceptance before the final
         // reply. Public box down keeps its existing 64-byte request.
         let project = current.bytes.first() == Some(&b'P');
@@ -545,16 +566,15 @@ async fn receive_stop(
             }
             continue;
         }
-        let Reading {
-            mut stream, bytes, ..
-        } = reading.take().expect("complete request");
-        if &bytes[usize::from(project)..] == generation.as_bytes() {
+        if &current.bytes[usize::from(project)..] == generation.as_bytes() {
             if project {
-                // Nine bytes fit a new socket's buffer; no await can drop the request here.
-                let _ = stream.try_write(b"stopping\n");
+                current.acknowledged = Some(0);
+                current.deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+                continue;
             }
-            return Ok(stream);
+            return Ok(reading.take().expect("matched request").stream);
         }
+        let mut stream = reading.take().expect("complete request").stream;
         let _ = tokio::time::timeout(REQUEST_TIMEOUT, stream.write_all(b"gone\n")).await;
     }
 }
