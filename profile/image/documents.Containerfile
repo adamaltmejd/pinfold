@@ -1,3 +1,22 @@
+# Builds on the default profile's image (base = "default").
+ARG TARGETARCH
+FROM localhost/pinfold/profile-default:latest AS base
+
+# Only the selected architecture's stage is built. Release archives stay
+# in build stages; final images copy the installed files.
+FROM base AS bun-arm64
+ADD --checksum=sha256:baa6bb36f51d6e58561e02bbea825038a9df454f673d6d776e8bbf86f8c7850e https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-aarch64.zip /tmp/bun-aarch64.zip
+
+FROM base AS bun-amd64
+ADD --checksum=sha256:bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-x64.zip /tmp/bun-x64.zip
+
+FROM bun-${TARGETARCH} AS bun-install
+RUN set -eux; \
+    export DEBIAN_FRONTEND=noninteractive; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends unzip; \
+    unzip -q /tmp/bun-*.zip -d /tmp/bun; \
+    install -m 0755 /tmp/bun/bun-linux-*/bun /usr/local/bin/bun
 
 FROM base AS anydoc-arm64
 ADD --checksum=sha256:ed71661425a9959009d39ba495dbc565cc27a27f4eb0c93336b89f217e5c56b2 https://registry.npmjs.org/@firecrawl/anydoc-linux-arm64-gnu/-/anydoc-linux-arm64-gnu-0.2.4.tgz /tmp/anydoc-aarch64.tgz
@@ -19,7 +38,7 @@ RUN set -eux; \
     tar -xzf /tmp/anydoc.tgz --strip-components=1 -C "${anydoc}/anydoc"; \
     tar -xzf /tmp/anydoc-*.tgz --strip-components=1 -C "${anydoc}/${native}"
 
-FROM agents AS documents
+FROM base AS documents
 COPY --from=bun-install /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=anydoc-install /opt/pinfold/anydoc /opt/pinfold/anydoc
 RUN set -eux; \
@@ -30,3 +49,6 @@ RUN set -eux; \
     printf '#!/bin/sh\nexec /usr/local/bin/bun /opt/pinfold/anydoc/node_modules/@firecrawl/anydoc/cli.js "$@"\n' > /usr/local/bin/anydoc; \
     chmod 0755 /usr/local/bin/anydoc; \
     chmod -R a+rX /opt/pinfold/anydoc
+
+# Every built-in recipe ends here, so this link's own installs are stripped too.
+RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} +

@@ -247,15 +247,26 @@ impl Config {
         let project_profile = project.profile.take();
         let profile_name = profile_name(project_profile.clone())?;
         let profile = Profile::load(&profile_name)?;
+        if project.base.is_some() {
+            return Err(invalid(
+                &terminal_text(&dir.join("pinfold.toml").to_string_lossy()),
+                "`base` is a profile key",
+            ));
+        }
         let top = project.over(Layer::from_env()?);
-        let profile_source = format!("profile {profile_name:?} pinfold.toml");
-        let profile_layer = Layer::parse(&profile.config, &profile_source)?;
-        if profile_layer.mounts.is_some() {
-            return Err(invalid(&profile_source, "`mounts` is a project key"));
+        // The chain's root first: each profile's keys replace its base's.
+        let mut merged = Layer::default();
+        for link in profile.links() {
+            let source = format!("profile {:?} pinfold.toml", link.name);
+            let layer = Layer::parse(&link.config, &source)?;
+            if layer.mounts.is_some() {
+                return Err(invalid(&source, "`mounts` is a project key"));
+            }
+            merged = merged.over(layer);
         }
         let containerfile = read_optional(&dir.join("Containerfile"))?
             .map(|bytes| (dir.join("Containerfile"), bytes));
-        let merged = profile_layer.over(top);
+        let merged = merged.over(top);
         if let Some(image) = &merged.image {
             if image.is_empty() {
                 return Err(invalid(
@@ -269,7 +280,7 @@ impl Config {
                     "image-source-conflict: image and project Containerfile cannot be combined",
                 ));
             }
-        } else if containerfile.is_none() && profile.containerfile.is_none() {
+        } else if containerfile.is_none() && profile.recipe().is_none() {
             return Err(invalid(
                 "configuration",
                 "image-source-missing: select an image or supply a Containerfile",
@@ -358,6 +369,8 @@ struct Layer {
     /// Read from the project's file only, by [`profile_name`]; a profile's
     /// own value is ignored.
     profile: Option<String>,
+    /// A profile's file only; core resolves the chain it names.
+    base: Option<String>,
     image: Option<String>,
     /// Checked whole against the project mount, so any other value is
     /// refused as `spec`.
@@ -410,6 +423,7 @@ impl Layer {
         });
         Ok(Layer {
             profile: None,
+            base: None,
             image: None,
             mounts: None,
             allow: override_value("PINFOLD_ALLOW")?.as_deref().map(split_list),

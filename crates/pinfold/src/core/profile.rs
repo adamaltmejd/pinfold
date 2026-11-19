@@ -1,20 +1,20 @@
 //! Profile lookup: the user's copy under the config dir, else the embedded
-//! profiles.
+//! profiles. A profile may name a `base`, applied beneath it.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::dirs;
 
-const BASE: &[u8] = include_bytes!("../../../../profile/image/base.Containerfile");
-const AGENTS: &[u8] = include_bytes!("../../../../profile/image/agents.Containerfile");
-const BUN: &[u8] = include_bytes!("../../../../profile/image/bun.Containerfile");
+const DEFAULT: &[u8] = include_bytes!("../../../../profile/image/default.Containerfile");
 const DOCUMENTS: &[u8] = include_bytes!("../../../../profile/image/documents.Containerfile");
-const FULL: &[u8] = include_bytes!("../../../../profile/image/full.Containerfile");
-const HARDEN: &[u8] = include_bytes!("../../../../profile/image/harden.Containerfile");
+const ADAM: &[u8] = include_bytes!("../../../../profile/image/adam.Containerfile");
 const CONFIG: &[u8] = include_bytes!("../../../../profile/pinfold.toml");
-const FULL_CONFIG: &[u8] = include_bytes!("../../../../profile/full/pinfold.toml");
+const DOCUMENTS_CONFIG: &[u8] = include_bytes!("../../../../profile/documents/pinfold.toml");
+const ADAM_CONFIG: &[u8] = include_bytes!("../../../../profile/adam/pinfold.toml");
 const PROJECT_GUIDANCE: &[u8] = include_bytes!("../../../../profile/project-guidance.md");
 const HOME: &[(&str, &[u8])] = &[
     (".pi/agent/APPEND_SYSTEM.md", PROJECT_GUIDANCE),
@@ -37,34 +37,37 @@ const HOME: &[(&str, &[u8])] = &[
         include_bytes!("../../../../profile/home/.codex/app-server-daemon/settings.json"),
     ),
 ];
-const OPERATING_CONTEXT: (&str, &[u8]) = (
-    "pi/extensions/operating-context.ts",
-    include_bytes!("../../../../profile/share/pi/extensions/operating-context.ts"),
-);
-const READ_DOCUMENTS: (&str, &[u8]) = (
-    "pi/skills/read-documents/SKILL.md",
-    include_bytes!("../../../../profile/share/pi/skills/read-documents/SKILL.md"),
-);
-const PI_PACKAGE: (&str, &[u8]) = (
-    "pi/package.json",
-    include_bytes!("../../../../profile/share/pi/package.json"),
-);
-const DEFAULT_SHARE: &[(&str, &[u8])] = &[PI_PACKAGE, OPERATING_CONTEXT];
-const DOCUMENTS_SHARE: &[(&str, &[u8])] = &[PI_PACKAGE, OPERATING_CONTEXT, READ_DOCUMENTS];
-const FULL_SHARE: &[(&str, &[u8])] = &[
+const DEFAULT_SHARE: &[(&str, &[u8])] = &[
     (
         "pi/package.json",
-        include_bytes!("../../../../profile/full/package.json"),
+        include_bytes!("../../../../profile/share/pi/package.json"),
     ),
-    OPERATING_CONTEXT,
-    READ_DOCUMENTS,
+    (
+        "pi/extensions/operating-context.ts",
+        include_bytes!("../../../../profile/share/pi/extensions/operating-context.ts"),
+    ),
 ];
+const DOCUMENTS_SHARE: &[(&str, &[u8])] = &[(
+    "pi/skills/read-documents/SKILL.md",
+    include_bytes!("../../../../profile/share/pi/skills/read-documents/SKILL.md"),
+)];
+const ADAM_SHARE: &[(&str, &[u8])] = &[(
+    "pi/package.json",
+    include_bytes!("../../../../profile/adam/package.json"),
+)];
 
-/// A profile's read-only shared files. Embedded files are materialized only
+/// One shared file held in memory: its path under `share/`, its bytes and
+/// whether it is executable.
+pub type ShareFile = (String, Vec<u8>, bool);
+
+/// A profile's read-only shared files. Held files are materialized only
 /// when a box starts; metadata lookup and copying do not populate the cache.
+#[derive(Clone)]
 pub enum Share {
     Directory(PathBuf),
-    Embedded(&'static [(&'static str, &'static [u8])]),
+    /// A built-in's files, or the files of a chain with more than one
+    /// share, merged by path.
+    Files(Vec<ShareFile>),
 }
 
 impl Share {
@@ -72,22 +75,64 @@ impl Share {
     pub fn path(&self) -> io::Result<PathBuf> {
         match self {
             Self::Directory(path) => Ok(path.clone()),
-            Self::Embedded(files) => Ok(dirs::cache_dir()?
+            Self::Files(files) => Ok(dirs::cache_dir()?
                 .join("profiles")
                 .join(super::sha256_hex(serde_json::to_vec(files)?))
                 .join("share")),
         }
     }
 
-    /// Install embedded files after the box has claimed its name.
+    /// Install held files after the box has claimed its name.
     pub fn materialize(&self) -> io::Result<()> {
-        if let Self::Embedded(files) = self {
-            dirs::install_dir(&self.path()?, |staging| {
-                write_files(files.iter().copied(), staging)
-            })?;
+        if let Self::Files(files) = self {
+            dirs::install_dir(&self.path()?, |staging| write_share(files, staging))?;
         }
         Ok(())
     }
+
+    /// Every file, read whole.
+    fn files(&self) -> io::Result<Vec<ShareFile>> {
+        let root = match self {
+            Self::Files(files) => return Ok(files.clone()),
+            Self::Directory(root) => root,
+        };
+        let mut found = Vec::new();
+        files(root, root, &mut found)?;
+        found
+            .into_iter()
+            .map(|path| {
+                let full = root.join(&path);
+                let name = path.to_str().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "path-not-utf8: share file {}",
+                            crate::formatting::terminal_text(&full.to_string_lossy())
+                        ),
+                    )
+                })?;
+                let executable = fs::metadata(&full)?.permissions().mode() & 0o111 != 0;
+                Ok((name.to_string(), fs::read(&full)?, executable))
+            })
+            .collect()
+    }
+}
+
+fn embedded(files: &[(&str, &[u8])]) -> Vec<ShareFile> {
+    files
+        .iter()
+        .map(|(path, contents)| (path.to_string(), contents.to_vec(), false))
+        .collect()
+}
+
+fn write_share(files: &[ShareFile], root: &Path) -> io::Result<()> {
+    write_files(files.iter().map(|(path, bytes, _)| (path, bytes)), root)?;
+    for (path, _, executable) in files {
+        if *executable {
+            fs::set_permissions(root.join(path), fs::Permissions::from_mode(0o755))?;
+        }
+    }
+    Ok(())
 }
 
 /// Write embedded files directly, also for `profile new`.
@@ -114,24 +159,72 @@ pub struct Seed {
     pub contents: Vec<u8>,
 }
 
-/// One profile, as much of it as pinfold uses.
+/// One profile, as much of it as pinfold uses. `containerfile` and
+/// `config` are this profile's own; `home` and `share` include its base's
+/// beneath its own.
 pub struct Profile {
     pub name: String,
     pub(crate) built_in: bool,
     pub containerfile: Option<Vec<u8>>,
-    /// The profile's `pinfold.toml`. Core never reads it; `profile new`
-    /// copies it.
+    /// The profile's `pinfold.toml`. Core reads only its `base`.
     pub config: Vec<u8>,
     pub home: Vec<Seed>,
     /// The `share/` directory mounted read-only at `/opt/pinfold/profile`.
     pub share: Option<Share>,
+    pub base: Option<Box<Profile>>,
 }
 
 impl Profile {
-    /// The profile named `name`. A user directory under
-    /// `~/.config/pinfold/profiles/<name>/` wins whole; only when no such
-    /// directory exists does a built-in name fall back to its embedded copy.
+    /// The profile named `name` with its base chain applied beneath it.
     pub fn load(name: &str) -> io::Result<Profile> {
+        Self::load_chain(name, &mut Vec::new())
+    }
+
+    fn load_chain(name: &str, above: &mut Vec<String>) -> io::Result<Profile> {
+        if above.iter().any(|link| link == name) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("base cycle back to profile {name:?}"),
+            ));
+        }
+        let mut profile = Self::link(name)?;
+        let Some(base) = base_name(&profile)? else {
+            return Ok(profile);
+        };
+        above.push(name.to_string());
+        let base = Self::load_chain(&base, above)
+            .map_err(|error| io::Error::new(error.kind(), format!("profile {name:?}: {error}")))?;
+        let mut seeds: BTreeMap<PathBuf, Seed> = BTreeMap::new();
+        for seed in base.home.iter().chain(&profile.home) {
+            seeds.insert(seed.path.clone(), seed.clone());
+        }
+        profile.home = seeds.into_values().collect();
+        // One contributing share keeps its own form: a user directory stays
+        // a live mount. Two or more are merged by path into a copy.
+        profile.share = match (base.share.as_ref(), profile.share.take()) {
+            (Some(lower), Some(upper)) => {
+                let mut files = BTreeMap::new();
+                for (path, bytes, executable) in lower.files()?.into_iter().chain(upper.files()?) {
+                    files.insert(path, (bytes, executable));
+                }
+                Some(Share::Files(
+                    files
+                        .into_iter()
+                        .map(|(path, (bytes, executable))| (path, bytes, executable))
+                        .collect(),
+                ))
+            }
+            (lower, upper) => upper.or_else(|| lower.cloned()),
+        };
+        profile.base = Some(Box::new(base));
+        Ok(profile)
+    }
+
+    /// The profile named `name` alone, without its base. A user directory
+    /// under `~/.config/pinfold/profiles/<name>/` wins whole; only when no
+    /// such directory exists does a built-in name fall back to its embedded
+    /// copy.
+    pub fn link(name: &str) -> io::Result<Profile> {
         check_name("profile", name)?;
         let root = dirs::config_dir()?.join("profiles").join(name);
         if root.is_dir() {
@@ -148,46 +241,76 @@ impl Profile {
         })
     }
 
-    /// A named built-in, even when a user's profile overrides it.
-    pub fn builtin(name: &str) -> io::Result<Profile> {
-        let (fragments, config, share): (&[&[u8]], &[u8], _) = match name {
-            "default" => (&[BASE, AGENTS, HARDEN], CONFIG, DEFAULT_SHARE),
-            "documents" => (
-                &[BASE, AGENTS, BUN, DOCUMENTS, HARDEN],
-                CONFIG,
-                DOCUMENTS_SHARE,
-            ),
-            "full" => (
-                &[BASE, AGENTS, BUN, DOCUMENTS, FULL, HARDEN],
-                FULL_CONFIG,
-                FULL_SHARE,
-            ),
+    /// A named built-in alone, even when a user's profile overrides it.
+    fn builtin(name: &str) -> io::Result<Profile> {
+        let (containerfile, config, home, share): (_, _, &[(&str, &[u8])], _) = match name {
+            "default" => (DEFAULT, CONFIG, HOME, DEFAULT_SHARE),
+            "documents" => (DOCUMENTS, DOCUMENTS_CONFIG, &[], DOCUMENTS_SHARE),
+            "adam" => (ADAM, ADAM_CONFIG, &[], ADAM_SHARE),
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("no built-in profile {name:?}; expected default, documents or full"),
+                    format!("no built-in profile {name:?}; expected default, documents or adam"),
                 ));
             }
         };
         Ok(Profile {
             name: name.to_string(),
             built_in: true,
-            containerfile: Some(fragments.concat()),
+            containerfile: Some(containerfile.to_vec()),
             config: config.to_vec(),
-            home: HOME
+            home: home
                 .iter()
                 .map(|(path, contents)| Seed {
                     path: PathBuf::from(path),
                     contents: contents.to_vec(),
                 })
                 .collect(),
-            share: Some(Share::Embedded(share)),
+            share: Some(Share::Files(embedded(share))),
+            base: None,
         })
     }
 
-    /// The stable ref of this profile's image.
+    /// The chain from its root up to this profile.
+    pub fn links(&self) -> Vec<&Profile> {
+        let mut links = vec![self];
+        while let Some(base) = &links.last().expect("one link").base {
+            links.push(base);
+        }
+        links.reverse();
+        links
+    }
+
+    /// The nearest profile in the chain with a Containerfile: this one, or
+    /// the base whose image a recipe-less profile uses.
+    pub fn recipe(&self) -> Option<&Profile> {
+        if self.containerfile.is_some() {
+            return Some(self);
+        }
+        self.base.as_deref().and_then(Profile::recipe)
+    }
+
+    /// The stable ref of this profile's own image.
     pub fn image_ref(&self) -> String {
         format!("localhost/pinfold/profile-{}:latest", self.name)
+    }
+}
+
+/// The `base` a profile's `pinfold.toml` names. Configuration checks the
+/// rest of the file.
+fn base_name(profile: &Profile) -> io::Result<Option<String>> {
+    let invalid = |message: String| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("profile {:?} pinfold.toml: {message}", profile.name),
+        )
+    };
+    let table: toml::Table =
+        toml::from_slice(&profile.config).map_err(|error| invalid(error.to_string()))?;
+    match table.get("base") {
+        None => Ok(None),
+        Some(toml::Value::String(base)) => Ok(Some(base.clone())),
+        Some(_) => Err(invalid("`base` must be a profile name".into())),
     }
 }
 
@@ -195,18 +318,16 @@ impl Profile {
 /// User overrides and extracted files do not enter this fingerprint.
 pub fn builtin_hash() -> io::Result<String> {
     Ok(super::sha256_hex(serde_json::to_vec(&(
-        BASE,
-        AGENTS,
-        BUN,
+        DEFAULT,
         DOCUMENTS,
-        FULL,
-        HARDEN,
+        ADAM,
         CONFIG,
-        FULL_CONFIG,
+        DOCUMENTS_CONFIG,
+        ADAM_CONFIG,
         HOME,
         DEFAULT_SHARE,
         DOCUMENTS_SHARE,
-        FULL_SHARE,
+        ADAM_SHARE,
     ))?))
 }
 
@@ -253,6 +374,7 @@ fn load_dir(name: &str, root: &Path) -> io::Result<Profile> {
         config,
         home,
         share: share.is_dir().then_some(Share::Directory(share)),
+        base: None,
     })
 }
 
@@ -297,6 +419,7 @@ pub fn check_name(what: &str, name: &str) -> io::Result<()> {
     ))
 }
 
+/// Write one profile's own files, without its base, for `profile new`.
 pub fn write_profile(source: &Profile, target: &Path) -> io::Result<()> {
     if let Some(bytes) = &source.containerfile {
         fs::write(target.join("Containerfile"), bytes)?;
@@ -318,7 +441,7 @@ pub fn write_profile(source: &Profile, target: &Path) -> io::Result<()> {
             }
             Ok(())
         }
-        Some(Share::Embedded(files)) => write_files(files.iter().copied(), &share),
+        Some(Share::Files(files)) => write_share(files, &share),
         None => Ok(()),
     }
 }

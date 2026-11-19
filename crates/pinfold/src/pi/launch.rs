@@ -328,7 +328,11 @@ pub(crate) fn resolve_image(config: &Config, project: &str) -> String {
     } else if config.containerfile.is_some() {
         format!("localhost/pinfold/project-{project}:latest")
     } else {
-        config.profile.image_ref()
+        config
+            .profile
+            .recipe()
+            .expect("config admitted a recipe")
+            .image_ref()
     }
 }
 
@@ -382,27 +386,6 @@ pub(crate) fn image_warnings_for(
             )),
         };
     }
-    let profile_build = format!("pinfold build --profile {}", config.profile.name);
-    let (base, build, containerfile) = match &config.containerfile {
-        Some((_, bytes)) => (
-            config
-                .profile
-                .containerfile
-                .as_ref()
-                .map(|_| config.profile.image_ref()),
-            "pinfold build",
-            bytes.as_slice(),
-        ),
-        None => (
-            None,
-            profile_build.as_str(),
-            config
-                .profile
-                .containerfile
-                .as_deref()
-                .expect("config admitted a recipe"),
-        ),
-    };
     let built = match resolved {
         Ok(built) => built,
         #[cfg(target_os = "macos")]
@@ -425,42 +408,71 @@ pub(crate) fn image_warnings_for(
             ));
         }
     };
-    let mut warnings = Vec::new();
-    if let Some(warning) = containerfile_warning(built, containerfile, build) {
-        warnings.push(warning);
+    // The selected image and the images it builds on, top first, each with
+    // its recipe: the project's, then each profile in the chain that has one.
+    let build = match &config.containerfile {
+        Some(_) => "pinfold build".to_string(),
+        None => format!("pinfold build --profile {}", config.profile.name),
+    };
+    let mut chain = Vec::new();
+    if let Some((_, bytes)) = &config.containerfile {
+        chain.push((Some(built.clone()), bytes.as_slice()));
     }
-    if let Some(base) = base {
-        let recorded = built
+    for link in config.profile.links().into_iter().rev() {
+        let Some(bytes) = &link.containerfile else {
+            continue;
+        };
+        let info = if chain.is_empty() {
+            Some(built.clone())
+        } else {
+            service().resolve_image(&link.image_ref())?.ok()
+        };
+        chain.push((info, bytes.as_slice()));
+    }
+    // From the root up: an image is outdated when its recipe changed, its
+    // recorded base is not the current base image, or that base is outdated.
+    let mut warnings = Vec::new();
+    let mut outdated = false;
+    for index in (0..chain.len()).rev() {
+        let Some(info) = &chain[index].0 else {
+            outdated = true;
+            continue;
+        };
+        let recorded = info
             .labels
             .get(clean::BASE_LABEL)
-            .filter(|digest| !digest.is_empty());
-        let current = service().resolve_image(&base)?.ok();
-        if let Some(profile) = &current
-            && let Some(bytes) = &config.profile.containerfile
-            && let Some(warning) = containerfile_warning(profile, bytes, &profile_build)
-        {
-            warnings.push(warning);
-        }
-        let current = current.as_ref().map(|image| image.id.as_str());
-        if recorded.map(String::as_str) != current {
+            .filter(|digest| !digest.is_empty())
+            .map(String::as_str);
+        let reason = if recipe_changed(info, chain[index].1) {
+            Some("has changed or unrecorded Containerfile inputs".to_string())
+        } else if let Some((base, _)) = chain.get(index + 1) {
+            let current = base.as_ref().map(|base| base.id.as_str());
+            if recorded != current {
+                Some(format!(
+                    "was built from image {}; its base is now {}",
+                    recorded.unwrap_or("(none)"),
+                    current.unwrap_or("(none)")
+                ))
+            } else {
+                outdated.then(|| "builds on an outdated image".to_string())
+            }
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
             warnings.push(format!(
-                "pinfold: image-outdated: project image {image} was built from profile image {}; the current profile image is {}; run `pinfold build`",
-                recorded.map_or("(none)", String::as_str),
-                current.unwrap_or("(none)")
+                "pinfold: image-outdated: image {} {reason}; run `{build}`",
+                info.reference
             ));
+            outdated = true;
         }
     }
     Ok(warnings)
 }
 
-fn containerfile_warning(image: &ImageInfo, bytes: &[u8], build: &str) -> Option<String> {
-    let expected = sha256_hex(bytes);
-    (image.labels.get(image::CONTAINERFILE_LABEL) != Some(&expected)).then(|| {
-        format!(
-            "pinfold: image-outdated: image {} has changed or unrecorded Containerfile inputs; run `{build}`",
-            image.reference
-        )
-    })
+/// Whether `image` lacks the recorded SHA-256 of `bytes`.
+fn recipe_changed(image: &ImageInfo, bytes: &[u8]) -> bool {
+    image.labels.get(image::CONTAINERFILE_LABEL) != Some(&sha256_hex(bytes))
 }
 
 pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> io::Result<Plan> {

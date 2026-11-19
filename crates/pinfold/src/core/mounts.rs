@@ -61,11 +61,14 @@ fn protected_paths(
     ];
     paths.extend(extra);
     if let Some(profile) = profile {
-        let dir = config.join("profiles").join(&profile.name);
-        for file in ["pinfold.toml", "Containerfile", "home", "share"] {
-            paths.push(dir.join(file));
+        // Every profile in the chain configures the box.
+        for link in profile.links() {
+            let dir = config.join("profiles").join(&link.name);
+            for file in ["pinfold.toml", "Containerfile", "home", "share"] {
+                paths.push(dir.join(file));
+            }
+            paths.push(dir);
         }
-        paths.push(dir);
         if let Some(share) = &profile.share {
             paths.push(share.path()?);
         }

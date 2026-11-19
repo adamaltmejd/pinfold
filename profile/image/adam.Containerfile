@@ -1,3 +1,6 @@
+# Builds on the documents profile's image (base = "documents").
+ARG TARGETARCH
+FROM localhost/pinfold/profile-documents:latest AS base
 
 FROM base AS fff-arm64
 ADD --checksum=sha256:702bd8fe5d861fb5016a4fa0e62545a0a3e802dcc6b7232a3d02e54f0f90187e https://registry.npmjs.org/@ff-labs/fff-bin-linux-arm64-gnu/-/fff-bin-linux-arm64-gnu-0.11.0.tgz /tmp/fff-bin-aarch64.tgz
@@ -30,7 +33,7 @@ RUN set -eux; \
     tar -xzf /tmp/ponytail.tgz --strip-components=1 -C /opt/pinfold/packages/ponytail; \
     chmod -R a+rX /opt/pinfold/packages/ponytail
 
-FROM documents AS full
+FROM base AS adam
 COPY --from=fff-install /opt/pinfold/packages/pi-fff /opt/pinfold/packages/pi-fff
 COPY --from=ponytail-install /opt/pinfold/packages/ponytail /opt/pinfold/packages/ponytail
 RUN set -eux; \
@@ -44,3 +47,6 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends gh; \
     rm -rf /var/lib/apt/lists/*
+
+# Every built-in recipe ends here, so this link's own installs are stripped too.
+RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} +

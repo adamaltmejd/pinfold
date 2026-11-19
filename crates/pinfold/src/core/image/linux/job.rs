@@ -501,17 +501,22 @@ fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<P
         &mut budget,
     )?;
     let context_bytes = budget.bytes;
-    // The project CLI resolved its selected profile before this snapshot.
-    // Keep that identity even if another publisher has since moved latest.
+    // A managed build's CLI resolved its base profile image before this
+    // snapshot. Keep that identity even if another publisher has since
+    // moved latest.
     let selected_base = request
         .labels
         .get(clean::BASE_LABEL)
         .filter(|base| !base.is_empty())
         .filter(|_| {
-            request
-                .labels
-                .get(clean::PROJECT_LABEL)
-                .is_some_and(|project| !project.is_empty())
+            [clean::PROJECT_LABEL, clean::PROFILE_LABEL]
+                .iter()
+                .any(|family| {
+                    request
+                        .labels
+                        .get(*family)
+                        .is_some_and(|source| !source.is_empty())
+                })
         })
         .map(|expected| {
             bases

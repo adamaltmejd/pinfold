@@ -1148,13 +1148,13 @@ fn resolve_profile(plan: &mut Plan, supplied: Option<Profile>) -> io::Result<Opt
         None => Profile::load(&name)?,
     };
     if plan.image.is_none() {
-        if profile.containerfile.is_none() {
+        let Some(recipe) = profile.recipe() else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "image-source-missing: profile has no Containerfile; select an image",
             ));
-        }
-        plan.image = Some(profile.image_ref());
+        };
+        plan.image = Some(recipe.image_ref());
     }
     if let Some(share) = &profile.share {
         plan.mounts.push(Mount {
