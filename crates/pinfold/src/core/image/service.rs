@@ -146,7 +146,8 @@ pub(crate) fn build(
         command.arg("--label").arg(format!("{key}={value}"));
     }
     command
-        .arg(request.context)
+        // A bare relative context such as `--json` would parse as an option.
+        .arg(std::path::absolute(request.context)?)
         .stdin(Stdio::null())
         .stdout(writer.try_clone()?)
         .stderr(writer);

@@ -1657,14 +1657,11 @@ fn image_build(args: &[String]) -> i32 {
         .map(String::as_str)
         .filter(|arg| !arg.starts_with("--"));
     let options = &args[usize::from(name.is_some())..];
-    let (json, result) = match parse_image_build(name, options) {
-        Ok((request, json)) => (json, image::build_image(request)),
-        // A malformed invocation still reports in the form it asked for.
-        Err(detail) => (
-            options.iter().any(|arg| arg == "--json"),
-            Err(ImageError::Refused(RefusalReason::Spec, detail)),
-        ),
-    };
+    // A malformed invocation still reports in the form it asked for.
+    let (json, parsed) = parse_image_build(name, options);
+    let result = parsed
+        .map_err(|detail| ImageError::Refused(RefusalReason::Spec, detail))
+        .and_then(image::build_image);
     let (line, code) = match result {
         Ok(built) if !json => {
             println!("Built {}", terminal_text(&built.latest));
@@ -1764,9 +1761,11 @@ fn image_rm(args: &[String], json: bool) -> io::Result<i32> {
     Ok(0)
 }
 
-fn parse_image_build(name: Option<&str>, args: &[String]) -> Result<(ImageRequest, bool), String> {
-    let name = name.ok_or("image build needs an image name")?.to_string();
+/// Returns whether `--json` appeared in an option position, even when the
+/// invocation is malformed, so an option's value is never read as the flag.
+fn parse_image_build(name: Option<&str>, args: &[String]) -> (bool, Result<ImageRequest, String>) {
     let mut json = false;
+    let mut error = None;
     let mut containerfile = None;
     let mut context = None;
     let mut labels = BTreeMap::new();
@@ -1774,40 +1773,52 @@ fn parse_image_build(name: Option<&str>, args: &[String]) -> Result<(ImageReques
     let mut allow = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--containerfile" => {
-                containerfile = Some(PathBuf::from(
-                    args.next().ok_or("--containerfile needs a path")?,
-                ));
+        let mut option = || -> Result<(), String> {
+            match arg.as_str() {
+                "--containerfile" => {
+                    containerfile = Some(PathBuf::from(
+                        args.next().ok_or("--containerfile needs a path")?,
+                    ));
+                }
+                "--context" => {
+                    context = Some(PathBuf::from(
+                        args.next().ok_or("--context needs a directory")?,
+                    ));
+                }
+                "--label" => {
+                    let (key, value) = args
+                        .next()
+                        .and_then(|label| label.split_once('='))
+                        .filter(|(key, _)| !key.is_empty())
+                        .ok_or("--label needs KEY=VALUE")?;
+                    labels.insert(key.to_string(), value.to_string());
+                }
+                "--no-cache" => cache = false,
+                "--allow" => allow.push(args.next().ok_or("--allow needs a host")?.clone()),
+                "--json" if !json => json = true,
+                option => return Err(format!("unknown image build option {option:?}")),
             }
-            "--context" => {
-                context = Some(PathBuf::from(
-                    args.next().ok_or("--context needs a directory")?,
-                ));
-            }
-            "--label" => {
-                let (key, value) = args
-                    .next()
-                    .and_then(|label| label.split_once('='))
-                    .filter(|(key, _)| !key.is_empty())
-                    .ok_or("--label needs KEY=VALUE")?;
-                labels.insert(key.to_string(), value.to_string());
-            }
-            "--no-cache" => cache = false,
-            "--allow" => allow.push(args.next().ok_or("--allow needs a host")?.clone()),
-            "--json" if !json => json = true,
-            option => return Err(format!("unknown image build option {option:?}")),
+            Ok(())
+        };
+        if let Err(problem) = option() {
+            error.get_or_insert(problem);
         }
     }
-    let request = ImageRequest {
-        name,
-        containerfile: containerfile.ok_or("image build needs --containerfile PATH")?,
-        context: context.ok_or("image build needs --context DIR")?,
-        labels,
-        cache,
-        allow,
-    };
-    Ok((request, json))
+    let request = (|| {
+        let name = name.ok_or("image build needs an image name")?.to_string();
+        if let Some(error) = error {
+            return Err(error);
+        }
+        Ok(ImageRequest {
+            name,
+            containerfile: containerfile.ok_or("image build needs --containerfile PATH")?,
+            context: context.ok_or("image build needs --context DIR")?,
+            labels,
+            cache,
+            allow,
+        })
+    })();
+    (json, request)
 }
 
 pub fn profile(args: &[String]) -> io::Result<i32> {

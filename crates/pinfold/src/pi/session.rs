@@ -470,7 +470,8 @@ pub(crate) fn project_status(root: &Path) -> io::Result<ProjectStatus> {
         .await;
         let mount = match result {
             Ok(Ok(Reply::Compatible { mount })) => Some(mount),
-            Ok(Ok(Reply::Error { reason, .. })) if reason == "config-changed" => None,
+            // The probe compares this caller's settings; the box still runs its own mount.
+            Ok(Ok(Reply::Error { reason, .. })) if reason == "config-changed" => locator.mount,
             Ok(Ok(Reply::Draining { generation }))
                 if Some(&generation) == locator.generation.as_ref() =>
             {
@@ -1003,11 +1004,11 @@ async fn setup_answer(message: String, signals: &mut Signals) -> io::Result<Opti
     if original.st_dev != opened.st_dev || original.st_ino != opened.st_ino {
         return Err(io::Error::other("terminal changed during project setup"));
     }
+    let _line_mode = LineMode::enter(&terminal)?;
     // SAFETY: this handle owns the nonblocking terminal descriptor.
     let reader = unsafe { tokio::io::unix::AsyncFd::register(terminal) }?;
     forward_diagnostics(message.into_bytes(), signals).await?;
-    // One byte per read: a noncanonical terminal can deliver a line in pieces,
-    // and input after the newline belongs to the next prompt or the guest.
+    // One byte per read: input after the newline belongs to the next prompt or the guest.
     let mut answer = Vec::new();
     loop {
         let mut byte = [0];
@@ -1028,6 +1029,35 @@ async fn setup_answer(message: String, signals: &mut Signals) -> io::Result<Opti
     let line =
         String::from_utf8(answer).map_err(|_| io::Error::other("terminal answer is not UTF-8"))?;
     Ok(Some(line.trim().to_owned()))
+}
+
+/// Canonical line mode for one prompt. Noncanonical MIN/TIME settings can
+/// return zero bytes without EOF or hold a line back. Handled signals return
+/// through the prompt, so the drop restores the caller's settings.
+struct LineMode(Option<nix::sys::termios::Termios>);
+impl LineMode {
+    fn enter(terminal: &File) -> io::Result<Self> {
+        use nix::sys::termios::{LocalFlags, SetArg, tcgetattr, tcsetattr};
+        let original = tcgetattr(terminal)?;
+        if original.local_flags.contains(LocalFlags::ICANON) {
+            return Ok(Self(None));
+        }
+        let mut line = original.clone();
+        line.local_flags.insert(LocalFlags::ICANON);
+        tcsetattr(terminal, SetArg::TCSANOW, &line)?;
+        Ok(Self(Some(original)))
+    }
+}
+impl Drop for LineMode {
+    fn drop(&mut self) {
+        if let Some(original) = &self.0 {
+            let _ = nix::sys::termios::tcsetattr(
+                io::stdin(),
+                nix::sys::termios::SetArg::TCSANOW,
+                original,
+            );
+        }
+    }
 }
 
 async fn confirm_setup(message: String, signals: &mut Signals) -> io::Result<bool> {
@@ -1137,7 +1167,9 @@ async fn run_setup_build(cwd: &Path, signals: &mut Signals) -> io::Result<()> {
             relay.abort();
             return Err(io::ErrorKind::Interrupted.into());
         }
-        _ = &mut relay => {}
+        relayed = &mut relay => relayed
+            .map_err(|_| io::Error::other("build output relay failed"))?
+            .map_err(|error| io::Error::other(format!("build output relay failed: {error}")))?,
     }
     if status.success() {
         Ok(())
