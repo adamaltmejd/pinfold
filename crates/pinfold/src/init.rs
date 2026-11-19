@@ -362,7 +362,8 @@ fn exec(args: &[String]) -> ! {
     let mut command = process::Command::new(program);
     command.args(args).env_remove(EXEC_METADATA);
     let mut restored = Vec::new();
-    for (key, value) in std::env::vars_os() {
+    // With `--box-env` the inherited environment is the image's, applied as is.
+    for (key, value) in std::env::vars_os().filter(|_| !fetch) {
         let Some(name) = key
             .to_str()
             .and_then(|key| key.strip_prefix(BOX_ENV_PREFIX))
@@ -441,17 +442,11 @@ fn session_exec() -> io::Result<()> {
         let _ = exec_wire::copy_stream(&mut &bridge, &mut File::from(stdout));
         let _ = drained.send(());
     })?;
-    // The image's environment, which Apple gives every exec, under the box's.
-    let mut vars: Vec<_> = std::env::vars_os().collect();
-    for (name, value) in box_env()? {
-        vars.retain(|(key, _)| *key != name);
-        vars.push((name, value));
-    }
     let (kind, payload) = exec_wire::read_frame(&mut connection)?;
     if kind != exec_wire::EXEC {
         return Err(io::Error::other("expected command frame"));
     }
-    let result = firecracker::exec(connection, &payload, vars, Some((departure.as_fd(), false)));
+    let result = firecracker::exec(connection, &payload, None, Some((departure.as_fd(), false)));
     let _ = drain.recv_timeout(Duration::from_secs(1));
     result
 }

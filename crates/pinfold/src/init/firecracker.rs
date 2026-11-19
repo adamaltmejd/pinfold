@@ -901,7 +901,7 @@ fn request(mut connection: UnixStream, env: &Env) -> io::Result<()> {
                 .expect("env lock")
                 .clone()
                 .unwrap_or_default();
-            exec(connection, &payload, vars, None)
+            exec(connection, &payload, Some(vars), None)
         }
         _ => write_frame(
             &mut connection,
@@ -924,10 +924,12 @@ pub(super) fn decode_env(payload: &[u8]) -> io::Result<Vec<(OsString, OsString)>
 /// Run one EXEC request in its own session through `init exec`, which sets
 /// `oom_score_adj` 1000, and relay its stdio until it exits and its output
 /// ends. Project commands stop their process group when their client departs.
+/// `vars` is the box's environment for the child; without it (Apple) the
+/// child keeps this process's environment and reads the box's from PID 1.
 pub(super) fn exec(
     connection: UnixStream,
     payload: &[u8],
-    vars: Vec<(OsString, OsString)>,
+    vars: Option<Vec<(OsString, OsString)>>,
     departure: Option<(BorrowedFd<'_>, bool)>,
 ) -> io::Result<()> {
     let mut fields = Fields(payload);
@@ -951,27 +953,35 @@ pub(super) fn exec(
         return Err(io::Error::other("an exec without argv"));
     };
 
-    // `init exec` restores the environment from these transport names, so
-    // a name that itself carries the prefix arrives exactly.
-    let transport = vars.into_iter().map(|(name, value)| {
-        let mut key = OsString::from(super::BOX_ENV_PREFIX);
-        key.push(name);
-        let hex: String = value
-            .as_bytes()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        (key, hex)
-    });
     // The child is a copy of the service, which holds the exec listener,
     // until its first execve; it stays non-dumpable until then (#158). The
     // init disk holding `/pinfold` is detached, but its magic link execs.
     let mut command = Command::new("/proc/self/exe");
+    command.args(["init", "exec"]);
+    match vars {
+        // `init exec` restores the environment from these transport names, so
+        // a name that itself carries the prefix arrives exactly.
+        Some(vars) => {
+            command
+                .env_clear()
+                .envs(vars.into_iter().map(|(name, value)| {
+                    let mut key = OsString::from(super::BOX_ENV_PREFIX);
+                    key.push(name);
+                    let hex: String = value
+                        .as_bytes()
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect();
+                    (key, hex)
+                }));
+        }
+        None => {
+            command.arg("--box-env");
+        }
+    }
     command
-        .args(["init", "exec", "--"])
+        .arg("--")
         .args(&argv)
-        .env_clear()
-        .envs(transport)
         .env(super::EXEC_METADATA, metadata.encode());
     if !project {
         command.current_dir(if workdir.is_empty() {
