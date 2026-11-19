@@ -34,6 +34,8 @@ occur with the host tools used on this Mac.
   config (`STARSHIP_CONFIG`), which enables `git_branch` and `git_status`.
 
 `run.sh` holds the runs in order. `tally.py` prints the tables below.
+The scripts append to the bundled `logs/*.jsonl`, so a replay must write to
+a fresh output directory.
 
 ## Host-only control: which observers replace the index
 
@@ -50,17 +52,23 @@ occur with the host tools used on this Mac.
 | `git log -1` | 0/20 |
 | `git diff --stat` | 2/20 |
 
-With `STARSHIP_LOG=trace`, one `starship prompt` in a repository with a
-modified file printed `main` and `!`. The trace lists one git process:
+Two separate starship invocations in a repository with a modified file,
+after the control runs. A plain `starship prompt` printed `main` and `!`.
+A second run with `STARSHIP_LOG=trace`, filtered to lines containing
+`Executing git command`, listed one git process:
 `GIT_OPTIONAL_LOCKS="0" git … -c core.fsmonitor= … for-each-ref … refs/heads/main`.
-No `git status` process appears in the trace.
+No `git status` process appears in that filtered trace.
 
 ## Case 1 baseline and agent-shaped variants
 
 Guest primes (`git status; git log -1`), host commits `hfile` and a line in
-`a`, and after the delay the guest commits `gfile`. Columns as in
-2026-11-12. "Commit exec at" is the time from the end of the host commit to
-the launch of the guest's commit exec.
+`a`, and after the delay the guest commits `gfile`. History loss means the
+host commit is no longer an ancestor of `main` (loss from `main`; the
+logged reflog of `main` still names `host` in all 60 loss trials). Content
+loss is as defined on 2026-11-12. The delay clock starts after the
+host's commit and one host `rev-parse`. "Commit exec at" is the time from
+that point to the launch of the guest's commit exec; for `waitvis1` it
+excludes the wait, which runs inside that exec.
 
 | Variant | Delay (s) | Trials | History loss | Content loss | Guest commit exit 0 | Commit exec at (s) |
 |---|---|---|---|---|---|---|
@@ -79,24 +87,28 @@ the launch of the guest's commit exec.
 | waitvis: execs of `git log -1 --format=%s` until it prints `host`, then a commit exec | 0 | 20 | 0 | 0 | 20 | 0.96 to 1.04 |
 | waitvis1: the same wait (`sleep 0.05` between tries) inside the commit exec | 0 | 20 | 0 | 0 | 20 | 0.00 |
 
-Loss trials look as on 2026-11-12: `main` is one parentless `guest` commit
-holding only `gfile`. In the `agent` variant the guest's status exec at
+In every loss trial the logged `main` had one commit, `guest`, and its
+tree held only `gfile`. In the `agent` variant the guest's status exec at
 delays 0 and 0.5 s printed `?? a`, `?? b`, `?? hfile`.
 
+Both wait variants compare only the commit subject with `host`, and both
+would go on to commit if the poll cap (100 execs, 200 tries) were reached.
 `waitvis` needed 13 to 17 `git log -1` execs before `host` appeared.
-`waitvis1` looped 15 or 16 times. No trial hit the cap (100 execs,
-200 tries). All 40 wait trials were clean: four commits in a line, all files,
-clean host status, `fsck` exit 0.
+`waitvis1` looped 15 or 16 times. No trial hit the cap. In all 40 wait
+trials the host commit was an ancestor of `main`, `main` had four commits,
+its tree held `a b gfile hfile`, `a` held the host line, host status was
+clean and `fsck` exited 0. This covers these 40 trials at delay 0 only.
 
 ## Case 4 with host observers, guest commits
 
 `c4.py MODE 3 30`. The observer loops on the host in the repository. The guest
 runs 30 iterations of
 `echo N >> mine; git status --porcelain; git add mine && git commit` in
-each of three repositories. Anomalous: a failed commit, or a status line
-other than `M mine` or `?? mine`. Damage carries forward within a
-repository, so "first anomalous" gives the iteration of the first damage
-per repository. In `status1` and `status5` the guest sleeps 0.7 s between
+each of three repositories. Iterations are numbered from 0. Anomalous: a
+non-zero exit of `git add mine && git commit`, or a status line other than
+`M mine` or `?? mine`. Anomalies carry forward across iterations within
+each repository, so the anomalous counts mostly count persistent state;
+"first anomalous" gives the first such iteration per repository. In `status1` and `status5` the guest sleeps 0.7 s between
 iterations, so the observer runs during the trial; other modes are
 unpaced.
 
@@ -112,20 +124,24 @@ that landed during the observer's command.
 | nolocks | `git --no-optional-locks status --porcelain`, 0.1 s | 0/90 | 0 | none | 90/90 | `a b mine` (3/3) | 4/18, 3/19, 2/20 |
 | ol0 | `GIT_OPTIONAL_LOCKS=0 git status --porcelain`, 0.1 s | 0/90 | 0 | none | 90/90 | `a b mine` (3/3) | 4/18, 4/19, 5/19 |
 | status1 | `git status --porcelain`, 1 s | 84/90 | 0 | 2, 2, 2 | 90/90 | `mine` (3/3) | 24/24, 24/24, 24/24 |
-| status5 | `git status --porcelain`, 5 s | 63/90 | 0 | 7, 7, 13 | 90/90 | `mine` (3/3) | 5/5, 5/5, 5/5 |
+| status5 | `git status --porcelain`, 5 s | 63/90 | 0 | 7, 7, 13 | 90/90 | `mine` (3/3) | 4/5, 5/5, 5/5 |
 | log | `git log -1`, 0.1 s | 0/90 | 0 | none | 90/90 | `a b mine` (3/3) | 3/19, 4/17, 4/18 |
 | diffstat | `git diff --stat`, 0.1 s | 86/90 | 0 | 1, 2, 1 | 90/90 | `mine` (3/3) | 16/18, 16/17, 16/18 |
 
-In the damaging modes the first anomalous iteration showed `D  a`, `D  b`,
-`D  mine`, `?? a`, `?? b` (in one `diffstat` repository only `?? a ?? b`).
-The guest commit in that iteration exited 0 and recorded `a` and `b` as
-deleted. Every later iteration showed `?? a ?? b`, some with `D  mine`.
-History stayed linear with one root; all 30 lines of `mine` were on
-`main`; host status afterwards was `?? a ?? b`; `fsck` exited 0. The one
-`hostpoll` refusal was an `index.lock: File exists` on the guest.
+What the logs hold for the damaging modes (`hostpoll`, `status1`,
+`status5`, `diffstat`): the guest's status in the first anomalous
+iteration was `D  a`, `D  b`, `D  mine`, `?? a`, `?? b`, `?? mine`, and in
+one `diffstat` repository `?? a`, `?? b`, `?? mine`. The add and commit in
+that iteration exited 0. Later anomalous iterations showed `?? a ?? b`, some
+with `D  mine` or `D  a D  b`. At the end, in all 12 repositories: the tree
+on `main` was `mine` only, `main` had one root commit, `git show main:mine`
+had 30 lines, host status was `?? a ?? b`, nothing was staged and `fsck`
+exited 0. The one `hostpoll` refusal was a guest
+`index.lock: File exists`.
 
-In `status5` the observer ran 5 times per repository and replaced the
-index each time; the first damage came at iteration 7, 7 and 13.
+In `status5` the inode changed in 14 of 15 observation windows; guest index
+writes landing in a window can contribute to that count. The first
+anomalous iterations were 7, 7 and 13.
 
 ## Reverse direction: guest observer, host commits
 
@@ -139,8 +155,11 @@ every 0.1 s.
 | guestpoll | 6/90 | 5 | 85/90 | `a b mine` (3/3) | 30, 30, 30 |
 
 Refusals were host `index.lock: File exists`. The other anomalies were
-`MM mine` in the iteration after a refusal (3 in total). The refused
-change was committed in the next iteration. No file or line was lost.
+`MM mine` in the iteration after a refusal (3 in total). At the end, in
+all 6 repositories: the tree on `main` was `a b mine`, `main` had one root
+commit, `git show main:mine` had 30 lines, host status was clean, nothing
+was staged and `fsck` exited 0. The contents of `a` and `b` were not
+checked.
 
 ## Zed
 
@@ -149,12 +168,9 @@ and no live Zed mode was run. Not measured; what was read:
 
 - `strings` on `/Applications/Zed.app/Contents/MacOS/zed` (1.29.2) shows,
   adjacent, `-c`, `core.fsmonitor=false`, `log.showSignature=false`,
-  `--no-optional-locks`, `--no-pager`, `core.hooksPath=/dev/null`.
-- On Zed's `main` branch, `crates/git/src/repository.rs`
-  `RealGitRepository::status` runs the git binary through
-  `GitBinary::build_command(&git_status_args(…))`. The body of
-  `build_command`, which adds `--no-optional-locks`, came from a page
-  summary, not a verbatim read. The 1.29.2 tag was not read.
+  `--no-optional-locks`, `--no-pager`, `core.hooksPath=/dev/null`. Which
+  git invocations use these strings was not established; the 1.29.2 source
+  was not read.
 
 ## Not tested
 

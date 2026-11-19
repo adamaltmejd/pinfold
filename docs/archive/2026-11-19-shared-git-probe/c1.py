@@ -57,6 +57,7 @@ for d in DELAYS:
         hrc, hout = h(repo, hc)
         gap = now() - tp
         H = rev(repo)
+        # The delay clock and seen_after start after this host rev-parse.
         t0 = now()
         time.sleep(d)
         ts = now() - t0
@@ -65,7 +66,8 @@ for d in DELAYS:
             # Two tool calls: a status exec, then a commit exec.
             pre_out = g(repo, "git status --porcelain")[1]
         elif V == "waitvis":
-            # Separate execs poll until the host commit is visible, then commit.
+            # Separate execs poll until the subject `host` is visible, then
+            # commit. At the cap the commit runs anyway.
             while polls < 100:
                 polls += 1
                 pre_out = g(repo, "git log -1 --format=%s")[1]
@@ -74,7 +76,8 @@ for d in DELAYS:
         seen = round(now() - t0, 3)
         gc = f"echo g > gfile; {GIT} add gfile; {GIT} commit -qm guest; echo commit_rc=$?"
         if V == "waitvis1":
-            # The same wait inside the commit exec.
+            # The same subject check inside the commit exec; seen_after excludes
+            # this wait. At the cap the commit runs anyway.
             gc = ("n=0; until [ \"$(git log -1 --format=%s 2>/dev/null)\" = host ] || [ $n -ge 200 ]; "
                   "do n=$((n+1)); sleep 0.05; done; echo polls=$n; " + gc)
         rc, gout = g(repo, PRE.get(V.split("-")[0], "") + gc)
