@@ -44,6 +44,7 @@ pub(crate) fn first_push(
     name: &str,
     init: &Path,
     root: &Path,
+    repository: bool,
     cancel: &std::sync::atomic::AtomicBool,
 ) {
     let Some(guest) = root.to_str() else { return };
@@ -56,9 +57,11 @@ pub(crate) fn first_push(
         )
     };
     let [_, disk] = state::disk_names(&project_id(root));
+    // Consumed even outside Git: a repository made later never gets a
+    // push into a disk already in use.
     match disk::first_push(&disk) {
-        Ok(true) => {}
-        Ok(false) => return,
+        Ok(true) if repository => {}
+        Ok(_) => return,
         Err(error) => return failed(&error.to_string()),
     }
     let Some(format) = git(root, &["rev-parse", "--show-object-format"], cancel) else {

@@ -353,7 +353,7 @@ pub(crate) fn fetch_cancellable(
         )?;
         if !reached.status.success() || !reached.stdout.is_empty() {
             return Err(CrossingError::Failed(format!(
-                "branch {branch:?} names {oid}, which the box did not send and {namespace}* does not reach"
+                "branch {branch:?} names {oid}, which is neither a verified bundle head nor reachable from {namespace}*"
             )));
         }
     }

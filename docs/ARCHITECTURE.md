@@ -1784,8 +1784,10 @@ whose box never came ready (Disks), they fail and start no box.
 **First start.** Project admission follows core readiness and completion
 of the initial Git synchronization. A new owner runs it, a join never
 does, and it acts once per project disk pinfold creates: pinfold writes
-`disks/NAME.unpushed` in its host state before it creates the disk, and
-removes it durably before anything crosses. A disk without that record,
+`disks/NAME.unpushed` in its host state once it creates the disk, removes
+it with the disk or a failed start's rollback, and removes it durably at
+the disk's first start before anything crosses, a project outside Git
+included, which then gets no push. A disk without that record,
 one older than it or already pushed, gets no automatic push, whatever
 the box does to it. Explicit crossing waits for this boundary and
 retains the box during transfer. Synchronization prints nothing. The box

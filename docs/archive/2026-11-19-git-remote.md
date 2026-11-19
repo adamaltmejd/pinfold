@@ -438,3 +438,28 @@ fresh build and private roots.
   unchanged.
 
 I removed everything I created.
+
+### Round 3
+
+Round 3 at b0a8114, three fixes.
+
+- **The first-push record outlived a non-Git first start.** The record
+  is now consumed at every disk project's first start, and the push runs
+  only when the project is Git-backed.
+  - macOS: an explicit disk in a folder outside Git started, then the
+    host ran `git init`, committed and made a branch. The next start's
+    box held only `box-file`, with no `.git`, and the host had no `box`
+    remote.
+  - Linux: a fresh Git project got its one push (`host/main`,
+    `host/side`). A later start added no new branch.
+- **A failed disk creation left a record.** The record is now written
+  only after `create_disk` succeeds, and startup rollback removes it.
+  - Linux: `pinfold box up` with a `20000G` disk failed with
+    `File too large (os error 27)`, exit 1.
+  - It left `t296-big-disk.unfilled`, which existed before this branch
+    and counts the disk as absent, but no `.unpushed`.
+- **The reach refusal text claimed too much.** It said "the box did not
+  send" a commit the pack may hold. It now reads: "which is neither a
+  verified bundle head nor reachable from refs/remotes/NAME/*".
+
+I removed everything I created on both machines.

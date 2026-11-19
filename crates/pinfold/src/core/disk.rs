@@ -105,7 +105,8 @@ impl Claimed {
             let result = runtime
                 .remove_disk(&disk.name)
                 .and_then(|()| unmark(&disk.name, UNCLEAN))
-                .and_then(|()| unmark(&disk.name, UNFILLED));
+                .and_then(|()| unmark(&disk.name, UNFILLED))
+                .and_then(|()| unmark(&disk.name, UNPUSHED));
             if let Err(error) = result {
                 crate::core::process::diagnostic(format_args!(
                     "startup cleanup: disk {:?}: {error}",
@@ -278,11 +279,12 @@ pub fn claim(
             }
             // Marked first, so a crash anywhere in the fill leaves the mark.
             mark(&disk.name, UNFILLED)?;
-            mark(&disk.name, UNPUSHED)?;
             if existing.contains(&disk.name) {
                 runtime.remove_disk(&disk.name)?;
             }
             runtime.create_disk(&disk.name, disk.bytes())?;
+            // After creation: a crash before it leaves a disk with no push.
+            mark(&disk.name, UNPUSHED)?;
             created.push(disk.clone());
         }
         check_cancel(cancel)?;
@@ -424,8 +426,9 @@ fn record_attachments(
 const UNCLEAN: &str = "unclean";
 /// Written before pinfold creates a disk; removed once its box is ready.
 const UNFILLED: &str = "unfilled";
-/// Written before pinfold creates a disk: it may get the project's
-/// automatic first push. Consumed before anything crosses into it.
+/// Written once pinfold creates a disk: it may get the project's
+/// automatic first push. Consumed at its first start, before anything
+/// crosses into it.
 const UNPUSHED: &str = "unpushed";
 
 /// Consume the disk's automatic first push, durably: whether it had one.
