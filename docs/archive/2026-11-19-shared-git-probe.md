@@ -34,8 +34,9 @@ occur with the host tools used on this Mac.
   config (`STARSHIP_CONFIG`), which enables `git_branch` and `git_status`.
 
 `run.sh` holds the runs in order. `tally.py` prints the tables below.
-The scripts append to the bundled `logs/*.jsonl`, so a replay must write to
-a fresh output directory.
+The scripts append to the bundled `logs/*.jsonl`, and `run.sh` hardcodes
+`logs/`. To replay, copy the script directory and start with an empty
+`logs/` directory.
 
 ## Host-only control: which observers replace the index
 
@@ -133,7 +134,7 @@ What the logs hold for the damaging modes (`hostpoll`, `status1`,
 iteration was `D  a`, `D  b`, `D  mine`, `?? a`, `?? b`, `?? mine`, and in
 one `diffstat` repository `?? a`, `?? b`, `?? mine`. The add and commit in
 that iteration exited 0. Later anomalous iterations showed `?? a ?? b`, some
-with `D  mine` or `D  a D  b`. At the end, in all 12 repositories: the tree
+with `D  mine`. At the end, in all 12 repositories: the tree
 on `main` was `mine` only, `main` had one root commit, `git show main:mine`
 had 30 lines, host status was `?? a ?? b`, nothing was staged and `fsck`
 exited 0. The one `hostpoll` refusal was a guest
