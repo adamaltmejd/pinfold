@@ -1891,6 +1891,7 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
     executor.block_on(async {
         let mut signals = Signals::with_hangup()?;
         let _executable = crate::update::working()?;
+        let mut stopped = None;
         let result = async {
             let cwd = state::canonical(&std::env::current_dir()?)?;
             let root = if cfg!(target_os = "macos") && read_locator(&cwd)?.is_some() {
@@ -1902,6 +1903,7 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                     Err(error) => return Err(error),
                 }
             };
+            stopped = Some(key(&root));
             let _maintenance = maintenance(&root, &mut signals).await?;
             let deadline = Instant::now() + CONTROL;
             let mut target: Option<Locator> = None;
@@ -1975,6 +1977,9 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
             }
         }
         .await;
+        if let (Ok(0), Some(key)) = (&result, &stopped) {
+            rex::remove_stale(key);
+        }
         match signals.last() {
             Some(signal) => Ok(128 + signal as i32),
             None => result,

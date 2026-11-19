@@ -421,6 +421,29 @@ impl HostSocket {
         Ok((Self { leaf, identity }, listener))
     }
 
+    /// Unlink a socket at `leaf` that refuses connections: its listener is
+    /// gone. A live listener's socket stays.
+    pub(crate) fn remove_stale(leaf: &str) -> io::Result<()> {
+        let Some((base, host)) = existing_host()? else {
+            return Ok(());
+        };
+        let leaf = OsStr::new(leaf);
+        check_socket(&host, leaf, true, false)?;
+        let Ok(identity) = socket_identity(&host, leaf) else {
+            return Ok(());
+        };
+        match std::os::unix::net::UnixStream::connect(base.join(leaf)) {
+            // A socket a new owner bound meanwhile has another identity.
+            Err(error)
+                if error.kind() == io::ErrorKind::ConnectionRefused
+                    && socket_identity(&host, leaf).ok() == Some(identity) =>
+            {
+                unlink_at(&host, leaf, 0)
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Unlink the socket only while it is still this bind's.
     pub(crate) fn remove(&self) -> io::Result<()> {
         let (_, host) = host()?;

@@ -48,12 +48,23 @@ fn leaf(key: &str) -> String {
     format!("{key}.rex")
 }
 
+/// Remove this project's socket left by a dead owner. A live one stays.
+pub(crate) fn remove_stale(key: &str) {
+    if cfg!(target_os = "macos") {
+        let _ = HostSocket::remove_stale(&leaf(key));
+    }
+}
+
 /// Print a start's outcome on stderr. An absent `rex` prints nothing.
+/// A start that set up no relay also removes a dead owner's socket.
 pub(crate) async fn report(
     status: Option<Status>,
     key: &str,
     signals: &mut Signals,
 ) -> io::Result<()> {
+    if !matches!(status, Some(Status::Relayed)) {
+        remove_stale(key);
+    }
     let lines = match status {
         Some(Status::Relayed) => vec![
             format!(
