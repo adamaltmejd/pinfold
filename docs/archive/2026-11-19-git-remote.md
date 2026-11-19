@@ -264,3 +264,125 @@ alias -> box/alias`, exit 0.
   with a hostile bundle, submodule recursion.
 - Guarantee 10's host-hook scenario (merge and checkouts after a fetch):
   unchanged mechanism, not rerun.
+
+## Review fixes
+
+Review of PR #346 at 7a61874. Each finding was checked against the code
+first. The same setup was used as above, rebuilt from the fixed tree:
+Linux on the dev VM (git 2.47.3) and macOS (git 2.56.1). `T` is the
+temporary root.
+
+1. **The inner fetch wrote host tags. Confirmed.** In plain git, the
+   inner fetch as crossing ran it, from a bundle that carried
+   `refs/tags/boxtag`, gave these results:
+   - with `fetch.prune` and `fetch.pruneTags`, it deleted the host's
+     `hosttag` and wrote `boxtag`;
+   - with `fetch.pruneTags` alone, it wrote `boxtag`;
+   - with `--no-prune --no-prune-tags`, it changed neither.
+
+   That fetch now pins both flags, and a bundle head that is not a
+   branch fails earlier anyway (5).
+
+   Linux: I drove the helper by hand with `GIT_CONFIG_COUNT` setting
+   both options, then sent `capabilities` and `list` for an honest box
+   commit. It answered `:object-format sha1`, the new commit and
+   `refs/heads/main`. `hosttag` was still there, the state was
+   unchanged, and the helper exited 0. A user's own
+   `git -c fetch.prune=true -c fetch.pruneTags=true fetch box` then
+   printed `- [deleted] (none) -> hosttag`. This is the outer fetch, now
+   listed as Not protected.
+2. **The first-start marker could be erased by the box. Confirmed.** The
+   attempt is now recorded on the host, in
+   `state/pinfold/disks/NAME.started`, before the object format or
+   branch name is sent. Creating or removing the disk clears the record.
+
+   On both platforms the box ran `rm -rf .git`, then the host created
+   branch `newer`. The next start's box showed only `b` and `h`, and
+   `git for-each-ref` answered `not a git repository`. Nothing was
+   pushed.
+3. **The helper trusted a URL from outside the configuration, and
+   symbolic refs under the remote. Confirmed.** On Linux:
+   - `.git/remotes/legacy` (`URL: pinfold::T/host`,
+     `Pull: refs/heads/*:refs/heads/legacy-*`) was refused:
+     `remote-url: set remote.legacy.url; …`, exit 128, state unchanged;
+   - `refs/remotes/box/evil` as a symbolic ref to `refs/heads/main` was
+     refused: `remote-refspec: refs/remotes/box/evil is a symbolic ref to
+     refs/heads/main; delete it`, exit 128, state unchanged.
+
+   A configuration that Git cannot read is now refused, with every exit
+   code except 0 and 1. That path was not reproduced.
+4. **Environment redirects were honoured. Confirmed for
+   `GIT_CONFIG`,** which makes the refspec gate read another file. On
+   Linux:
+   - `GIT_OBJECT_DIRECTORY=…` gave `remote-repository: unset
+     GIT_OBJECT_DIRECTORY …`, exit 128;
+   - `GIT_CONFIG=/dev/null` was refused the same way.
+
+   A linked worktree was refused before and still is: `worktree: .git
+   is not a directory; run pinfold from the main checkout`. The spec has
+   always refused a `GIT_DIR` other than ROOT's `.git`, so there was
+   nothing to break.
+5. **Bundle heads could reach host-only commits. Confirmed.** In plain
+   git, the old sequence (`bundle verify`, `index-pack --fix-thin
+   --fsck-objects`, the quarantined fetch) accepted a header naming a
+   host-only commit over an empty pack, all with exit 0.
+
+   Now the checks work as follows:
+   - every bundle head must be a listed branch at its listed id;
+   - every tip must be of type `commit`;
+   - a tip passes only if its offset lies inside the box's own pack
+     bytes, read from `git show-index`, or if `box/*` reaches it.
+
+   On Linux each case below exited 128 with the state unchanged:
+   - the stolen head over an empty pack: `branch "stolen" names 95c7…,
+     which the box did not send and refs/remotes/box/* does not reach`;
+   - an annotated tag object as a tip: `… is not a commit`;
+   - a complete bundle whose head `extra` is not listed: `the bundle's
+     heads differ from the box's branch listing`;
+   - a branch listed twice: `listing is malformed`.
+
+   All earlier hostile cases ran again with the same messages, and so
+   did the `alias` control.
+6. **A rollback could unlink a pack another fetch had adopted.
+   Confirmed by reading the code, not reproduced.** The code dates from
+   #194 (2026-10-24). Moves now run under an exclusive `flock` on
+   `objects/pack`. Two concurrent fetches of the same commits succeeded,
+   both against a running owner and against transient boxes, and
+   `fsck --connectivity-only` passed. In both runs the second fetch
+   waited for the first fetch's lease, so the race window itself was not
+   hit.
+7. **Pushes accepted other sources and echoed the box's stderr.
+   Confirmed.** On both platforms these were rejected with `only
+   branches can be pushed`:
+   - `refs/stash:refs/heads/st`;
+   - `hosttag:refs/heads/fromtag`;
+   - `main~0:refs/heads/expr`.
+
+   On Linux, with `refs/remotes/host/main.lock` held in the box, `git
+   push box main` printed only `pinfold: the box's git failed` and
+   `(the box refused the push)`. The push succeeded once the lock was
+   gone.
+8. **The recovery text was incomplete. Confirmed.** `sync-failed`, the
+   README and the skill now say to check `git remote get-url box` (or
+   add the remote) before `git push box BRANCH`.
+9. **Object format. Confirmed, and incomplete as briefed.** The box
+   repository now takes the host's format. A sha256 project then
+   failed `git fetch box` with `fatal: object 5fbeba7a… not found`,
+   because Git reads a helper's listing as SHA-1. The listing now starts
+   with `:object-format FORMAT`.
+
+   On both platforms, a sha256 host's box printed `sha256` and `git
+   fetch box` landed `box sha`. The sha1 projects fetched as before.
+10. **The first start needs the helper on PATH. Not confirmed.** The
+    first start runs no `git-remote-pinfold`: `git remote add` does not
+    invoke a helper. On both platforms, with no helper on PATH (`command
+    -v` printed `none`), the first start wrote `remote.box.*` and
+    checked out `host/main`. Nothing was changed.
+
+Not run:
+- a configuration that Git cannot read;
+- the kill cases, which were not rerun;
+- the 4 GiB limit, which was not rerun;
+- the migrate race itself (see 6).
+
+I removed everything I created on both machines.
