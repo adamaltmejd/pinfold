@@ -1,0 +1,67 @@
+PINFOLD_PROFILE=full
+
+## S1 share: box stages one hunk of two with git add -p and commits
+$ /Users/adam/code/pinfold/.claude/worktrees/agent-a43fe30a7346c6496/target/debug/pinfold -- sh -c sed -i "1s/.*/one/;20s/.*/twenty/" a && printf "y\nn\n" | git add -p a >/dev/null && git commit -qm box1 && git log -1 --format="%s %P"
+  out: box1 88e6f6f58928640e160e788646161f8955c327e2
+  err: pinfold: image-outdated: image localhost/pinfold/profile-full:latest has changed or unrecorded Containerfile inputs; run `pinfold build --profile full`
+  err: pinfold: git-optional-locks: GIT_OPTIONAL_LOCKS=0 is not set; host Git commands that refresh the index, such as status and diff, can make box commits record files as deleted.
+  exit: 0
+  warning: yes
+host: HEAD subject=box1 parent_is_H0=yes
+host: HEAD:a line1=one line20=20; worktree line20=twenty
+host: status= M a; fsck_rc=0
+host: launch record mounts:
+   {'guest': '/private/tmp/pfv.S8nq/share', 'host': '/private/tmp/pfv.S8nq/share', 'kind': 'share'}
+   {'guest': '/opt/pinfold/profile', 'host': '/private/tmp/pfv.S8nq/cache/pinfold/profiles/4fff5151b38e092315f39fdfd701f99a398e17f5daecad6b45d68678834a1b3a/share', 'kind': 'readonly'}
+
+## S2 warning with GIT_OPTIONAL_LOCKS=0 and =1
+$ /Users/adam/code/pinfold/.claude/worktrees/agent-a43fe30a7346c6496/target/debug/pinfold -- true
+  err: pinfold: image-outdated: image localhost/pinfold/profile-full:latest has changed or unrecorded Containerfile inputs; run `pinfold build --profile full`
+  exit: 0
+  warning: no
+$ /Users/adam/code/pinfold/.claude/worktrees/agent-a43fe30a7346c6496/target/debug/pinfold -- true
+  err: pinfold: image-outdated: image localhost/pinfold/profile-full:latest has changed or unrecorded Containerfile inputs; run `pinfold build --profile full`
+  err: pinfold: git-optional-locks: GIT_OPTIONAL_LOCKS=0 is not set; host Git commands that refresh the index, such as status and diff, can make box commits record files as deleted.
+  exit: 0
+  warning: yes
+
+## S3 host commit, then a box commit 3 s later, 5 times, kept box
+$ /Users/adam/code/pinfold/.claude/worktrees/agent-a43fe30a7346c6496/target/debug/pinfold start
+  err: pinfold: image-outdated: image localhost/pinfold/profile-full:latest has changed or unrecorded Containerfile inputs; run `pinfold build --profile full`
+  exit: 0
+iter 1: box exit=0 subject=box1 parent_is_host=yes b_lines=3 warning=0
+iter 2: box exit=0 subject=box2 parent_is_host=yes b_lines=5 warning=0
+iter 3: box exit=0 subject=box3 parent_is_host=yes b_lines=7 warning=0
+iter 4: box exit=0 subject=box4 parent_is_host=yes b_lines=9 warning=0
+iter 5: box exit=0 subject=box5 parent_is_host=yes b_lines=11 warning=0
+host: commits on main=12 status= fsck_rc=0
+
+## S4 linked worktree beneath the root commits
+$ /Users/adam/code/pinfold/.claude/worktrees/agent-a43fe30a7346c6496/target/debug/pinfold -- sh -c echo w > w && git add w && git commit -qm wtbox && git log -1 --format=%s
+  out: wtbox
+  exit: 0
+host: side subject=wtbox parent_is_start=yes main_unchanged=yes
+$ /Users/adam/code/pinfold/.claude/worktrees/agent-a43fe30a7346c6496/target/debug/pinfold stop
+  exit: 0
+
+## S5 disk project: no warning, host commit synced, box commit crosses by fetch
+  cfg: mounts = [{ host = ".", kind = "disk" }]
+$ /Users/adam/code/pinfold/.claude/worktrees/agent-a43fe30a7346c6496/target/debug/pinfold -- sh -c git log -1 --format=%s && echo d > d && git add d && git commit -qm diskbox
+  out: c0
+  err: pinfold: image-outdated: image localhost/pinfold/profile-full:latest has changed or unrecorded Containerfile inputs; run `pinfold build --profile full`
+  exit: 0
+  warning: no
+host: HEAD subject=c0 (box commit stays in the box)
+$ /Users/adam/code/pinfold/.claude/worktrees/agent-a43fe30a7346c6496/target/debug/pinfold fetch
+  out: Updated refs (box to host): 1
+  out:   pinfold/main  664f84d59b50fb6dfc377c3532d10f251b1e579d
+  err: pinfold: image-outdated: image localhost/pinfold/profile-full:latest has changed or unrecorded Containerfile inputs; run `pinfold build --profile full`
+  exit: 0
+host: pinfold/main subject=diskbox
+
+## cleanup
+  Removed pi-disk-7a29d51f94fb-home
+  Removed pi-disk-7a29d51f94fb-project
+  Removed pi-share-85f899e471f9-home
+  left: NAME	ALLOCATED	CAPACITY	STATE	ATTACHED	ORIGIN
+done

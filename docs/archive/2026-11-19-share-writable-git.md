@@ -55,13 +55,102 @@ were gone from `main` and untracked on the host. In repository 2 `mine` was
 gone from `main` too. The reflog of `main` held 33 to 37 entries. Nothing was
 staged and `fsck` exited 0 with dangling commits and blobs.
 
-Result: with optional locks off on the host, concurrent host and box
-commits still damage commits. Commits exit 0 and are then lost from the
-branch, and commits record tracked files as deleted. Only the reflog and
-dangling objects keep them.
+Result: with optional locks off on the host, concurrent host `git add`
+and `git commit` still damage commits. Commits exit 0 and are then lost
+from the branch, and commits record tracked files as deleted. The reflog
+held 35, 37 and 33 entries against 40, 39 and 38 commits in total, so some
+lost commits remain only as dangling objects. `GIT_OPTIONAL_LOCKS=0`
+covers host read commands such as `status` and `diff`; it does not make
+host commits safe against a committing box. The spec's Not protected text
+says so.
 
-## Not tested
+Not tested in this case:
 
-- Host commits paced the way a person commits (seconds or minutes apart).
+- A box committing every 0.1 s always lands inside the known window of
+  about 1 s after a host commit (case 1 of the earlier probe), so this
+  case cannot separate that window from host index writes.
+- Host commits paced the way a person commits, seconds or minutes apart.
 - Host commits with optional locks on, against a committing box.
 - Box loop paces other than 0.1 s, or a box that commits once.
+
+## Change
+
+Commit `6b0a740`. A share mounts the project folder writable, `.git`
+included. Removed: the generated read-only Git attachment and its private
+mount marker, its last position among Apple mounts, the session
+snapshot's generated Git mount, the owner's per-grant protection-layout
+recheck (`project.protection`), and every admission check that existed
+for protected `.git`: the `.git` file or symlink refusal, destination and
+source overlap with `.git`, overlapping-share exposure, the symlink and
+multiply-linked-file walks, and the destination inode comparison.
+`core/mounts.rs` went from 350 to 190 lines.
+
+Kept, because each still serves a share without the attachment: the
+exact-path `safe.directory` (Apple mount tops are root-owned in the
+guest), the `*` destination refusal, the plain-directory share source,
+protected-path overlap in both directions, init and forwarded-socket
+overlap, the plain-directory walk of destinations nested in a share,
+worktree topology reads, and the snapshot's `repository` comparison.
+
+Added: `pinfold -- CMD` on a share prints `git-optional-locks` and one
+line on stderr when the caller's environment does not hold
+`GIT_OPTIONAL_LOCKS=0`. The bounded wait for the host's HEAD in #334 was
+dropped by the owner before it was built.
+
+## Checks
+
+On arm64 macOS: `cargo fmt --check`, `cargo clippy --all-targets --locked
+-- -D warnings`, and the same Clippy for `--target
+x86_64-unknown-linux-musl` with a `zig cc -target x86_64-linux-musl`
+wrapper as ring's C compiler. All passed. On the dev VM, `cargo build
+--locked --target x86_64-unknown-linux-musl` of `6b0a740`.
+
+## Verification on macOS
+
+`verify-mac.sh` with the debug binary of `6b0a740`, Apple `container`
+1.7.1, private XDG config, state and cache roots, temp Git projects,
+`PINFOLD_CPUS=2 PINFOLD_MEMORY=1G`, no global Git config. The caller's
+shell set `PINFOLD_PROFILE=full`, so the existing
+`localhost/pinfold/profile-full:latest` ran and every command printed
+`image-outdated`. Output: `logs/verify-mac.log`.
+
+| Case | Observed |
+|---|---|
+| S1: box edits lines 1 and 20 of `a`, `printf 'y\nn\n' \| git add -p a`, `git commit` | exit 0. Host `HEAD` is `box1`, its parent the prior host commit; `HEAD:a` has line 1 changed and line 20 not; the working tree has both; host status ` M a`; `fsck` exit 0 |
+| S1: launch record | two mounts: the share (`kind: share`) and the profile files (`readonly`); no `.git` mount |
+| S1, S2: warning | unset: `pinfold: git-optional-locks: …` on stderr; `GIT_OPTIONAL_LOCKS=0`: none; `=1`: printed |
+| S3: kept box; host commit, 3 s, box `git commit -qam`, 5 times | 5/5 box commits exit 0 with the host commit as parent; 12 commits on `main`; host status clean; `fsck` exit 0; no warning |
+| S4: `git worktree add wt -b side`, box commit from `wt` | exit 0. `side` is `wtbox` with the starting commit as parent; `main` unchanged |
+| S5: disk project | box `git log -1` printed the host's `c0`; no warning; the box commit stayed off the host branch; `pinfold fetch` brought it as `pinfold/main` |
+
+Cleanup removed the three disks under the private state root and the
+roots. The first run's script parsed `disk list --json` wrongly and left
+its three disks; they were removed by recreating that run's state path
+and `disk rm`. No `pfv` or `pfs` box or directory remains.
+
+## Verification on Linux
+
+`verify-linux.sh` on the dev VM (Debian 13, x86_64, Firecracker), private
+XDG roots, a saved profile `pfl` `FROM debian:trixie-slim` with git and a
+system Git identity. A first run without that identity failed the box
+commit with Git's identity error; the profile was the cause. Output of
+the second run: `logs/verify-linux.log`.
+
+| Case | Observed |
+|---|---|
+| L1: disk project, box `git log -1` and commit | exit 0, printed `c0`, no warning; `pinfold fetch` brought `lbox` as `pinfold/main` |
+| L2: project configuration set to `share` | `spec: share mounts are unsupported on Linux`, exit 125 |
+| L3: `box up` spec with a share | `refused`, reason `spec`, `share mounts are unsupported on Linux`, exit 1 |
+
+Cleanup removed both disks, the private roots, the bundle, source and
+build, and `/tmp/pinfold-1000`, which was created during these runs. No
+Firecracker process remained.
+
+## Not run
+
+- The old binary as a control for S1 (its read-only `.git` refused box
+  commits by design).
+- A box commit within a second of a host commit, and host Git running
+  while the box commits, through the real binary: the probe above and the
+  earlier probe cover them.
+- Several boxes on one share; editors and GUI Git clients.
