@@ -21,15 +21,10 @@ use crate::pi::context::Context;
 use crate::pi::state::{self, project_id};
 
 /// `$1` is the project's guest path, `$2` the host's object format, `$3`
-/// the host's branch or empty. Creates the box's repository there, or exits
-/// [`REPOSITORY_EXISTS`] when `.git` exists.
+/// the host's branch or empty. Creates the box's repository there.
 const INIT_SCRIPT: &str = r#"
-[ -e "$1/.git" ] && exit 100
 exec git init -q --object-format="$2" ${3:+"--initial-branch=$3"} "$1"
 "#;
-
-/// [`INIT_SCRIPT`]'s exit code when the disk already holds a repository.
-const REPOSITORY_EXISTS: i32 = 100;
 
 /// `$1` is the project's new guest repository. Checks out the host's
 /// counterpart of its unborn branch, when the push brought one.
@@ -40,8 +35,8 @@ host=$(git rev-parse -q --verify "refs/remotes/host/${ref#refs/heads/}") || exit
 exec git merge -q --ff-only "$host"
 "#;
 
-/// The first start of a project disk (Git), recorded on the host before
-/// anything crosses: create the box's repository, add the host's `box`
+/// The first start of a project disk pinfold created (Git), whose host
+/// record it consumes before anything crosses: create the box's repository, add the host's `box`
 /// remote unless one exists, push the checkout's branches in and check out
 /// the host's branch. A failure is reported, never retried, and never stops
 /// the command.
@@ -61,7 +56,7 @@ pub(crate) fn first_push(
         )
     };
     let [_, disk] = state::disk_names(&project_id(root));
-    match disk::first_start(&disk) {
+    match disk::first_push(&disk) {
         Ok(true) => {}
         Ok(false) => return,
         Err(error) => return failed(&error.to_string()),
@@ -75,7 +70,6 @@ pub(crate) fn first_push(
         .unwrap_or_default();
     match in_box(name, init, INIT_SCRIPT, &[guest, &format, &branch], cancel) {
         Ok(()) => {}
-        Err((Some(REPOSITORY_EXISTS), _)) => return,
         Err((_, detail)) => return failed(&detail),
     }
     if git(root, &["config", "--get", "remote.box.url"], cancel).is_none()

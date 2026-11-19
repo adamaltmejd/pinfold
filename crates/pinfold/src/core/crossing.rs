@@ -177,6 +177,17 @@ pub(crate) fn fetch_cancellable(
         )));
     }
     check_args(repo, guest_repo, cancel)?;
+    // Every object id the box sends has REPO's hash width exactly.
+    let format = succeeded(git(repo, &["rev-parse", "--show-object-format"], cancel)?)?;
+    let width = match String::from_utf8_lossy(&format.stdout).trim() {
+        "sha1" => 40,
+        "sha256" => 64,
+        format => {
+            return Err(CrossingError::Failed(format!(
+                "unknown object format {format:?}"
+            )));
+        }
+    };
     let namespace = format!("refs/remotes/{remote}/");
     let held = String::from_utf8_lossy(
         &succeeded(git(
@@ -202,6 +213,7 @@ pub(crate) fn fetch_cancellable(
         &mut command,
         held.as_bytes(),
         &bundle.path,
+        width,
         guest_repo,
         cancel,
     )?;
@@ -228,6 +240,7 @@ pub(crate) fn fetch_cancellable(
     // Objects the box's pack itself carries, not bases `--fix-thin` copied
     // in from REPO: a head among them came from the box.
     let mut sent = HashSet::new();
+    let mut heads = Refs::new();
     let path = bundle.path.as_str();
     let bundle_len = fs::metadata(path)?.len();
     if bundle_len > 0 {
@@ -240,7 +253,7 @@ pub(crate) fn fetch_cancellable(
         succeeded(git(repo, &["bundle", "verify", "-q", path], cancel)?)?;
         // The listing is the box's whole claim; the bundle's heads repeat a
         // subset of it exactly.
-        let heads = bundle_heads(repo, path, cancel)?;
+        heads = bundle_heads(repo, path, width, cancel)?;
         if heads
             .iter()
             .any(|(branch, oid)| refs.get(branch) != Some(oid))
@@ -297,9 +310,10 @@ pub(crate) fn fetch_cancellable(
             cancel,
         )?)?;
     }
-    // Each tip is a commit, and one the box's pack carries or this
-    // remote's refs already reach: an object REPO holds otherwise is the
-    // host's, never the box's to name.
+    // Each tip is a commit: a bundle head the box's pack carries, whose
+    // connectivity the quarantined fetch checked, or one this remote's
+    // refs already reach. An object REPO holds otherwise is the host's,
+    // never the box's to name.
     let tips: String = refs.values().map(|oid| format!("{oid}\n")).collect();
     let types = succeeded(git_input(
         repo,
@@ -321,7 +335,7 @@ pub(crate) fn fetch_cancellable(
                 "branch {branch:?} names {oid}, which is not a commit"
             )));
         }
-        if sent.contains(oid) {
+        if heads.contains_key(branch) && sent.contains(oid) {
             continue;
         }
         let reached = git_input(
@@ -361,7 +375,7 @@ fn sent_objects(
     let hash = indexed
         .split_once('\t')
         .map(|(_, hash)| hash.trim())
-        .filter(|hash| object_id(hash))
+        .filter(|hash| object_id(hash, hash.len()))
         .ok_or_else(|| CrossingError::Failed(format!("index-pack printed {indexed:?}")))?;
     let mut show = git_command(repo);
     show.args([
@@ -470,6 +484,8 @@ fn box_status(code: Option<i32>, stderr: &str, guest_repo: &str) -> Result<(), C
 
 struct Receiver {
     file: File,
+    /// The repository's object id length in hex.
+    width: usize,
     listed: Vec<(String, String)>,
     line: Vec<u8>,
     listing: bool,
@@ -481,9 +497,10 @@ fn malformed_listing() -> CrossingError {
 }
 
 impl Receiver {
-    fn new(bundle: &str) -> io::Result<Self> {
+    fn new(bundle: &str, width: usize) -> io::Result<Self> {
         Ok(Self {
             file: File::create(bundle)?,
+            width,
             listed: Vec::new(),
             line: Vec::new(),
             listing: true,
@@ -520,7 +537,7 @@ impl Receiver {
                 let branch = name
                     .strip_prefix("refs/heads/")
                     .ok_or_else(malformed_listing)?;
-                if !object_id(oid) {
+                if !object_id(oid, self.width) {
                     return Err(malformed_listing());
                 }
                 self.listed.push((branch.to_owned(), oid.to_owned()));
@@ -554,6 +571,7 @@ fn receive(
     command: &mut Command,
     mut input: &[u8],
     bundle: &str,
+    width: usize,
     guest_repo: &str,
     cancel: &AtomicBool,
 ) -> Result<Vec<(String, String)>, CrossingError> {
@@ -573,7 +591,7 @@ fn receive(
     if let Some(pipe) = &stderr {
         super::pipe::nonblocking(pipe, "crossing")?;
     }
-    let mut receiver = Receiver::new(bundle)?;
+    let mut receiver = Receiver::new(bundle, width)?;
     let mut failed = None;
     let mut errors = Vec::new();
     let mut exited = None;
@@ -687,7 +705,12 @@ fn header(bundle: &str) -> Result<(bool, u64), CrossingError> {
 
 /// A bundle's branches, as git on the host reads them. Their names are
 /// the bundle's bytes, unchecked.
-fn bundle_heads(repo: &Path, path: &str, cancel: &AtomicBool) -> Result<Refs, CrossingError> {
+fn bundle_heads(
+    repo: &Path,
+    path: &str,
+    width: usize,
+    cancel: &AtomicBool,
+) -> Result<Refs, CrossingError> {
     let listed = succeeded(git_input(
         repo,
         &["bundle", "list-heads", path],
@@ -699,7 +722,7 @@ fn bundle_heads(repo: &Path, path: &str, cancel: &AtomicBool) -> Result<Refs, Cr
     for line in String::from_utf8_lossy(&listed.stdout).lines() {
         let branch = line
             .split_once(' ')
-            .filter(|(oid, _)| object_id(oid))
+            .filter(|(oid, _)| object_id(oid, width))
             .and_then(|(oid, name)| Some((oid, name.strip_prefix("refs/heads/")?)));
         let Some((oid, branch)) = branch else {
             return Err(CrossingError::Failed(format!(
@@ -716,9 +739,12 @@ fn bundle_heads(repo: &Path, path: &str, cancel: &AtomicBool) -> Result<Refs, Cr
     Ok(heads)
 }
 
-/// Whether `oid` is a full sha1 or sha256 object name.
-fn object_id(oid: &str) -> bool {
-    matches!(oid.len(), 40 | 64) && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
+/// Whether `oid` is a full object name of WIDTH hex digits, 40 (sha1)
+/// or 64 (sha256).
+fn object_id(oid: &str, width: usize) -> bool {
+    matches!(width, 40 | 64)
+        && oid.len() == width
+        && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn git(repo: &Path, args: &[&str], cancel: &AtomicBool) -> io::Result<Output> {

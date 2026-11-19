@@ -386,3 +386,55 @@ Not run:
 - the migrate race itself (see 6).
 
 I removed everything I created on both machines.
+
+### Re-review
+
+Re-review at ff4194a. Linux only, on the dev VM (git 2.47.3), with a
+fresh build and private roots.
+
+- **A listed tip in the pack but not a bundle head. Confirmed by
+  reading the code.** At ff4194a, a tip found in the box's pack skipped
+  the reach rule. The quarantined fetch checked connectivity only for
+  bundle heads. Now a tip passes as sent only if it is also a bundle
+  head; any other tip must be reached by `box/*`.
+  - Reproduction: a bundle with the complete head `extra2`, whose pack
+    also carried a commit with a missing tree, listed as `sneaky`. The
+    fetch printed `branch "sneaky" names 73ce…, which the box did not
+    send and refs/remotes/box/* does not reach`, exit 128, state
+    unchanged.
+  - Control: the same bundle, listing only `extra2`, landed
+    `box/extra2`.
+- **The first-push record is inverted.** pinfold writes
+  `disks/NAME.unpushed` before it creates a disk, and the first start
+  removes it durably (file removed, directory synced) before anything
+  crosses. The `.git` guard in the init script is deleted.
+  - A fresh disk got its push (`host/main`, `host/side`), and the
+    project's record was then gone.
+  - A later start pushed nothing: the new branch `later` did not appear.
+  - After the box ran `rm -rf .git` and the host made branch `newer`,
+    the next start still had no `.git`.
+  - The home disk's record stays until `disk rm`.
+- **Object ids must have the repository's width.** pinfold now reads
+  `rev-parse --show-object-format` before the listing.
+  - In the sha1 repository, a 64-hex id and a short id each gave
+    `listing is malformed`, exit 128, state unchanged. The 40-hex
+    `alias` control landed.
+  - In a sha256 repository, a 40-hex id was refused the same way, and
+    the 64-hex `alias` control landed.
+- **Earlier hostile cases.** These gave the same messages as before:
+  - the symref line;
+  - the names `a..b`, `x:y` and `a` ESC `[31mb` CR;
+  - the branch limit;
+  - the reach rule, from the listing alone and from a bundle head;
+  - the annotated tag tip;
+  - the unlisted head;
+  - fsck;
+  - the `.git` entry.
+
+  The missing-tree case landed in this run, but this was an ordering
+  artifact: the `extra2` control had just brought its tree onto the
+  host. Rerun with a tree the host lacked, it failed with `bad tree
+  object … did not send all necessary objects`, exit 128, state
+  unchanged.
+
+I removed everything I created.
