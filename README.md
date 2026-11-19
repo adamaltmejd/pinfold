@@ -244,7 +244,7 @@ metadata as data and never executes Git on the host for that project.
 Host and box Git at the same moment can lose commits or record files as
 deleted (see the threat model). Export `GIT_OPTIONAL_LOCKS=0` in the shell
 that runs `pinfold` and in host tools that poll `git status`; unless it is
-a Git false value, `pinfold -- CMD` warns `git-optional-locks` on stderr. It does not cover
+exactly `0`, `pinfold -- CMD` warns `git-optional-locks` on stderr. It does not cover
 host `git diff` or host commits while the box commits. There is no startup synchronization
 or crossing;
 `pinfold push` and `fetch` refuse as `share-no-crossing`. A share launch never

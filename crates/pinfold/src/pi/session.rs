@@ -1210,17 +1210,6 @@ pub(crate) fn start(args: &[String]) -> io::Result<i32> {
 }
 const OPTIONAL_LOCKS_WARNING: &str = "pinfold: git-optional-locks: host `git status` can refresh the index when optional locks are enabled, which can make box commits record files as deleted; set GIT_OPTIONAL_LOCKS=0.";
 
-/// Whether Git would read the caller's `GIT_OPTIONAL_LOCKS` as false.
-fn optional_locks_off() -> bool {
-    std::env::var("GIT_OPTIONAL_LOCKS").is_ok_and(|value| {
-        value.is_empty()
-            || ["false", "no", "off"]
-                .iter()
-                .any(|word| value.eq_ignore_ascii_case(word))
-            || value.parse::<i64>() == Ok(0)
-    })
-}
-
 fn client(args: Option<&[String]>) -> io::Result<i32> {
     let executor = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1303,7 +1292,7 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
             },
         };
         crate::update::notice("--");
-        if lease.share && !optional_locks_off() {
+        if lease.share && std::env::var_os("GIT_OPTIONAL_LOCKS").is_none_or(|value| value != "0") {
             // A failed write is not fatal, but a signal received during it is.
             let _ = forward_diagnostics(OPTIONAL_LOCKS_WARNING.as_bytes().to_vec(), &mut signals).await;
             if signals.last().is_some() {

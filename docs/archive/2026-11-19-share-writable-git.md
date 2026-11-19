@@ -202,11 +202,12 @@ Six findings from the review of PR #342 at `3e1db10`.
 4. `run.sh` names its box per run and removes only a box it created.
    `logs/env.log` and `logs/hc.jsonl` came from the earlier version, whose
    box was `pfs-hc1119`.
-5. The warning is silent for any Git false value (`0`, `false`, `no`,
-   `off` in any case, an empty value, or an integer equal to 0). Its
-   reason now reads: host `git status` can refresh the index when optional
-   locks are enabled. The spec says disk projects and `start` omit this
-   warning.
+5. The warning's reason now reads: host `git status` can refresh the
+   index when optional locks are enabled. The spec says disk projects and
+   `start` omit this warning. The trigger stays literal: the warning prints
+   unless `GIT_OPTIONAL_LOCKS` is exactly `0`. A first version silenced
+   every Git false value; the coordinator withdrew that part of the
+   finding, and it was reverted.
 6. `core::directory_entries` no longer passes the parent descriptor to its
    callback; its `borrow_raw` is gone.
 
@@ -236,13 +237,11 @@ The base did not run CMD either; it exited 1 at some later setup step,
 which was not traced. This run shows the fix's exit status, not the base
 dispatching CMD.
 
-Fix 5. Joins of a kept share box:
-
-| `GIT_OPTIONAL_LOCKS` | fixed | base |
-|---|---|---|
-| unset, `1` | shown | shown |
-| `0` | silent | silent |
-| `false`, `FALSE`, `no`, `off`, `Off` | silent | shown |
+Fix 5. The rows for the Git-false version in `logs/review-mac-fixed.log`
+are superseded. After the revert, `values-mac.sh` with the rebuilt binary,
+joins of a kept share box (`logs/values-mac.log`): unset, `1` and `false`
+showed the warning; `0` was silent. All exited 0. The base build showed the
+same. Its home disk and roots were removed.
 
 Fix 2. A non-Git share project kept by `pinfold start`, then on the host:
 

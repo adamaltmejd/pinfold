@@ -1,0 +1,5 @@
+GIT_OPTIONAL_LOCKS=UNSET: exit 0, warning shown
+GIT_OPTIONAL_LOCKS=1: exit 0, warning shown
+GIT_OPTIONAL_LOCKS=false: exit 0, warning shown
+GIT_OPTIONAL_LOCKS=0: exit 0, warning silent
+Removed pi-p-963f00a9f413-home
