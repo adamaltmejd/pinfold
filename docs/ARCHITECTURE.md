@@ -139,6 +139,13 @@ Not protected:
 - Configuration is keyed by the project id: the folder name, sanitised and
   cut to 32 bytes, and 12 hex digits of the canonical path's hash. Another
   repository placed at that path gets its configuration.
+- The Rex relay (pi layer, Rex) lets the box's Rex server reach the Mac Rex
+  app. Accepted: macOS notifications the guest raises;
+  clipboard writes while the guest's window is in front; following a link
+  from the box, where a click on a loopback link makes the app forward a
+  Mac loopback port into the box and open a guest-served page in the Mac
+  browser, outside the box proxy; and Rex's own enforcement, which can
+  change with a Rex build or a setting changed after the host is added.
 - Image recipes are caller-trusted software. Apple builds have unrestricted
   egress. Linux builds use the separate image-preparation role below.
 
@@ -1652,6 +1659,42 @@ project; executable replacement remains `update-busy`.
   same acknowledgement and wait. Observed command status
   retains completed-exec precedence. Teardown failure is reported as
   `teardown-failed` on stderr and in the run record.
+- **Rex (macOS):** `pinfold start` asks its owner for a Rex relay when
+  `REX_SESSION` is set and stdin, stdout and stderr are terminals; an owner
+  off macOS answers as if `rex` were absent. The owner checks, in order:
+  `rex --autostart=false version` succeeds in the box (exit status only);
+  `defaults read com.superlogical.rex rex.client.remoteControl` prints `0`.
+  It then runs `rex server run --listen
+  unix:///home/pi/.local/state/rex/run/server.sock` in the box and waits
+  until an exec of `pinfold init rex-dial` with closed stdin connects to
+  that socket. It reads the preference again, and only then binds
+  `<host directory>/<project key>.rex`, a host-only 0600 socket outside
+  the generation directory. Each helper, the readiness wait and each
+  preference read has a five-second bound; `start` waits up to 30 seconds
+  for the answer. Each connection gets its own exec of `pinfold init
+  rex-dial`, which copies bytes to the fixed guest socket. The owner copies
+  the connection through pipes itself. The host's end reaches the guest,
+  whose reply may follow for five seconds before the exec is ended; the
+  guest's end ends the connection. A repeated start reuses the relay while
+  its server exec runs; after that exec exits, the next start sets the
+  relay up again. `start` prints on stderr `pinfold start: rex: in the Rex
+  app, add unix://PATH once under Add Remote Host…` and `pinfold start:
+  rex: the host is reachable while this project's box runs.` Remote Control
+  on or unreadable, at either read, sets up nothing, closes a relay already
+  up, and prints one `rex-remote-control` line. A failed setup prints one
+  `rex-relay-failed` line. Without `rex` in the box, outside Rex or without
+  terminals, `start` behaves as without this feature and prints nothing
+  more. A first start's setup yields to stop, box exit, a signal and the
+  client leaving. Once the owner's shutdown has begun no relay exists:
+  pending setup is cancelled and new requests are refused, a setup that
+  finished meanwhile is not answered, and a start waiting on it gets the
+  draining answer. The relay closes, its execs end and its socket is
+  removed before teardown, including when that close is itself cancelled.
+  Owner death ends every connection and leaves a socket that refuses
+  connections; the guest server's exec ends with the orphan box. Only an
+  owner bootstrapping under the launch lock, or, on macOS, `stop` holding
+  the launch lock with no project locator left, removes a left socket. The relay never starts or selects
+  a box. pinfold never drives the Rex app.
 - **Admission:** joining and keeping never change running policy or
   credentials. Different host roots or effective startup configuration refuse
   as `config-changed`, naming differing fields. On a known profile mismatch
@@ -2023,6 +2066,7 @@ what the rewritten suite must show. Testing policy is in `AGENTS.md`.
 | 47 | A project's sessions share one box | Simultaneous first launches use one owner and generation. Independent clients run in distinct invoking directories. Killing or disconnecting a client sends TERM to its command group, then KILL after two seconds if needed, while the second session keeps working. Keep and crossing leases retain the box but not a departed command group. A terminal departure hangs up its guest terminal first. A process that leaves the command group, or for a terminal session ignores hangup after leaving it, may keep running; stop ends everything. Normal completion preserves background children, with output delivered for up to one second. Plain stdin EOF does not cancel a command. The final unkept departure ends the box. Bootstrap death and final departure racing join, keep and stop never admit two writable generations. Start retains a box without clients; repeated start and stop succeed. Different effective configuration or host roots refuse as config-changed without executing CMD; restoring each changed input joins the same generation. The original proxy policy still decides. A stale stop cannot end a replacement. Two share sessions edit the same host files. Host and box edits and commits permit joining; mount-kind changes refuse as `config-changed`. A gained root `.git` refuses as `config-changed` only while that owner lives; a later owner runs it as a Git project without host Git. Start creates no project disk or Git synchronization. Share crossing refuses before a lease or transient box. Stop ends box access and preserves host edits, including from the recorded main root without configuration after a hostile Git marker appears. |
 
 | 48 | A share confines direct writes to paths in its declared host directory | On Apple, ordinary shared-file edits reach the host, and a box `git add` and `git commit` land on the host's branch with the host's prior commit as parent and the staged tree, from the main checkout and from a linked worktree beneath the root. A share prints `git-optional-locks` on stderr unless the caller's `GIT_OPTIONAL_LOCKS` is exactly `0`; unset, `1` and `false` print it; a disk project omits it. Nonliteral Git ownership destinations refuse as `spec`. A share source that is not a plain directory, and a destination nested in a share that is not reached through plain directories, refuse as `spec`; corrected trees run. Guest traversal of outward symlinks cannot access an unmounted host fixture. Confinement is by path: A share file hard-linked to a file outside the share, Git objects from a local clone included, can be changed in place through the share. |
+| 49 | The Rex relay ends with its box generation and never reaches another box; `start` creates it only while Remote Control is off | macOS only. A start in a Rex pane on an image with `rex` prints the relay address, and a host `rex -S` lists and creates guest sessions through it. A second start reuses the socket. With a live owner, a connection held across `stop` ends, the socket is gone and a new connection is refused. After SIGKILL of the owner a held connection ends, no dial exec remains and connections are refused; a following `stop` leaves no socket, and a following start serves only the new generation's server. A start without the relay keeps a live owner's socket. Two concurrent starts share one server and socket. A `stop` during a first start's or a running owner's setup leaves no relay and prints no address for the stopped generation. A host client killed mid-stream leaves no dial exec. After the guest server is killed, the next start relays again. Without `REX_SESSION`, without terminals or without `rex` in the image, start prints nothing new and binds no socket. With Remote Control on, start prints `rex-remote-control` and binds no socket. |
 
 ## Code
 

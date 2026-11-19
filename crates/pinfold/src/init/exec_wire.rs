@@ -127,7 +127,10 @@ impl FrameWriter {
 pub(crate) fn copy_stream(input: &mut impl Read, output: &mut impl Write) -> io::Result<()> {
     let mut bytes = [0; 32 * 1024];
     loop {
-        let read = input.read(&mut bytes)?;
+        let read = match input.read(&mut bytes) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            read => read?,
+        };
         if read == 0 {
             return Ok(());
         }

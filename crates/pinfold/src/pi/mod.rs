@@ -4,6 +4,7 @@
 pub mod context;
 pub mod launch;
 pub mod remote;
+pub(crate) mod rex;
 pub mod state;
 
 pub(crate) mod session;

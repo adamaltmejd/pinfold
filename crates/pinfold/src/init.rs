@@ -48,6 +48,9 @@ mod session_io;
 /// Hex preserves arbitrary environment bytes through runtime JSON encoding.
 pub const BOX_ENV_PREFIX: &str = "PINFOLD_BOX_ENV_";
 
+/// The guest Rex server's socket. pinfold fixes it; guest output never names it.
+pub const REX_SOCKET: &str = "/home/pi/.local/state/rex/run/server.sock";
+
 /// Private exec metadata is removed before restoring caller-named variables.
 pub const EXEC_METADATA: &str = "PINFOLD_EXEC_METADATA";
 
@@ -167,6 +170,7 @@ pub fn run(args: &[String]) -> ! {
         Some("proxy-socket") => exit_with("proxy-socket", proxy_socket(&args[1..])),
         Some("receive") => exit_with("receive", receive(&args[1..])),
         Some("send") => exit_with("send", export::run(&args[1..])),
+        Some("rex-dial") => exit_with("rex-dial", rex_dial()),
         #[cfg(target_os = "linux")]
         Some("boot") => firecracker::boot(),
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -385,6 +389,26 @@ fn session_exec() -> io::Result<()> {
     let result = firecracker::exec(connection, &payload, vars, Some((departure.as_fd(), false)));
     let _ = drain.recv_timeout(Duration::from_secs(1));
     result
+}
+
+/// `init rex-dial`: copy stdio to and from the guest Rex server. The
+/// server's end of the stream ends the command. Plain read loops: with
+/// std's `io::copy` here, Rex handshakes stalled until the client timed out.
+fn rex_dial() -> io::Result<()> {
+    use std::fs::File;
+    let server = UnixStream::connect(REX_SOCKET)?;
+    let mut upload = server.try_clone()?;
+    let mut stdin = File::from(io::stdin().as_fd().try_clone_to_owned()?);
+    thread::Builder::new().spawn(move || {
+        // EOF half-closes; an error also ends the server's direction.
+        let how = match exec_wire::copy_stream(&mut stdin, &mut upload) {
+            Ok(()) => Shutdown::Write,
+            Err(_) => Shutdown::Both,
+        };
+        let _ = upload.shutdown(how);
+    })?;
+    let mut stdout = File::from(io::stdout().as_fd().try_clone_to_owned()?);
+    exec_wire::copy_stream(&mut &server, &mut stdout)
 }
 
 fn exit_with(verb: &str, result: io::Result<()>) -> ! {
