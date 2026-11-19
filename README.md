@@ -162,8 +162,9 @@ only differing fields. Stop the owner before applying those changes. Command
 metadata, recipe freshness and seed/shared-file contents do not affect
 comparison. Mount kind and canonical paths are startup configuration;
 working files, HEAD, refs, index and mtimes are not. Host and box edits and
-commits permit joining. A share that gains or loses its root `.git` refuses
-new grants as `config-changed` until stop. Joining does not reseed,
+commits permit joining. A share whose root `.git` appears, disappears or
+becomes a non-directory refuses new joins and starts as `config-changed`
+until stop; the owner checks it on every join. Joining does not reseed,
 synchronize Git or refresh login.
 
 Arguments after `--` pass literally to the command, including `--help`. Command exit codes
@@ -242,8 +243,8 @@ host's `.git`; a box commit is the host's commit. Pinfold reads share Git
 metadata as data and never executes Git on the host for that project.
 Host and box Git at the same moment can lose commits or record files as
 deleted (see the threat model). Export `GIT_OPTIONAL_LOCKS=0` in the shell
-that runs `pinfold` and in host tools that poll `git status`; otherwise
-`pinfold -- CMD` warns `git-optional-locks` on stderr. It does not cover
+that runs `pinfold` and in host tools that poll `git status`; unless it is
+a Git false value, `pinfold -- CMD` warns `git-optional-locks` on stderr. It does not cover
 host `git diff` or host commits while the box commits. There is no startup synchronization
 or crossing;
 `pinfold push` and `fetch` refuse as `share-no-crossing`. A share launch never

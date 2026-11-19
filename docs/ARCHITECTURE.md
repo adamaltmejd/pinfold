@@ -77,7 +77,9 @@ Not protected:
   deletion, corruption or concurrent edits. There is no conflict detection
   or atomic snapshot. Reads may be stale or internally inconsistent. Box Git
   reads can fail after host Git writes. No fixed visibility or recovery delay
-  is guaranteed. A failed write may still damage a file.
+  is guaranteed. A failed write may still damage a file. A share file
+  hard-linked to a file outside the share, Git objects from a local clone
+  included, can be changed in place through the share.
 - Host execution or interpretation of box-written files is outside
   containment. This includes hooks and hook managers, build and package
   scripts, editor tasks and extensions, shell integrations, and Git
@@ -1592,8 +1594,9 @@ project; executable replacement remains `update-busy`.
   main root’s `.git` refuse. Disk projects retain host-Git verification.
   The box stages and commits in the shared `.git` with ordinary Git.
   `pinfold -- CMD` on a share prints `git-optional-locks` and a one-line
-  reason on stderr when the caller's environment lacks `GIT_OPTIONAL_LOCKS=0`.
-  Disk projects and `pinfold start` print nothing.
+  reason on stderr unless the caller's `GIT_OPTIONAL_LOCKS` is a Git false
+  value (`0`, `false`, `no` or `off`, any case). Disk projects and
+  `pinfold start` omit this warning.
 - **Lifetime:** one detached owner serves a canonical project host-wide,
   independently of HOME and XDG roots. A session ends when its command returns
   or its client disconnects. A departed session's command group is asked to
@@ -1646,10 +1649,11 @@ project; executable replacement remains `update-busy`.
   configuration. Shared-file contents, HEAD, refs, index contents and mtimes
   are excluded. Host and box edits and commits do not cause `config-changed`.
   Client resolution and owner re-resolution compare against the owner’s
-  in-memory snapshot. A share whose root `.git` appears or disappears during
-  its owner's lifetime refuses new grants as `config-changed` while that
-  owner lives; after stop, the next owner treats the folder by its current
-  marker.
+  in-memory snapshot. For a share, the owner also checks the root `.git`
+  marker without following it, on every Probe and immediately before every
+  Join or Keep grant: a marker that appeared, disappeared or is not a plain
+  directory refuses as `config-changed` (`repository`) while that owner
+  lives. After stop, the next owner treats the folder by its current marker.
   A project admission frame is at most 16 MiB. Malformed, unsupported or
   oversized private messages fail as `session-protocol`; their contents are
   never reported. Unavailable ownership refuses as `owner-unavailable`;
@@ -1960,7 +1964,7 @@ what the rewritten suite must show. Testing policy is in `AGENTS.md`.
 
 | 47 | A project's sessions share one box | Simultaneous first launches use one owner and generation. Independent clients run in distinct invoking directories. Killing or disconnecting a client sends TERM to its command group, then KILL after two seconds if needed, while the second session keeps working. Keep and crossing leases retain the box but not a departed command group. A terminal departure hangs up its guest terminal first. A process that leaves the command group, or for a terminal session ignores hangup after leaving it, may keep running; stop ends everything. Normal completion preserves background children, with output delivered for up to one second. Plain stdin EOF does not cancel a command. The final unkept departure ends the box. Bootstrap death and final departure racing join, keep and stop never admit two writable generations. Start retains a box without clients; repeated start and stop succeed. Different effective configuration or host roots refuse as config-changed without executing CMD; restoring each changed input joins the same generation. The original proxy policy still decides. A stale stop cannot end a replacement. Two share sessions edit the same host files. Host and box edits and commits permit joining; mount-kind changes refuse as `config-changed`. A gained root `.git` refuses as `config-changed` only while that owner lives; a later owner runs it as a Git project without host Git. Start creates no project disk or Git synchronization. Share crossing refuses before a lease or transient box. Stop ends box access and preserves host edits, including from the recorded main root without configuration after a hostile Git marker appears. |
 
-| 48 | A share confines direct writes to its declared host directory | On Apple, ordinary shared-file edits reach the host, and a box `git add` and `git commit` land on the host's branch with the host's prior commit as parent and the staged tree, from the main checkout and from a linked worktree beneath the root. A share without `GIT_OPTIONAL_LOCKS=0` in the caller's environment prints `git-optional-locks` on stderr; with it, and for a disk project, nothing is printed. Nonliteral Git ownership destinations refuse as `spec`. A share source that is not a plain directory, and a destination nested in a share that is not reached through plain directories, refuse as `spec`; corrected trees run. Guest traversal of outward symlinks cannot access an unmounted host fixture. |
+| 48 | A share confines direct writes to paths in its declared host directory | On Apple, ordinary shared-file edits reach the host, and a box `git add` and `git commit` land on the host's branch with the host's prior commit as parent and the staged tree, from the main checkout and from a linked worktree beneath the root. A share prints `git-optional-locks` on stderr when the caller's `GIT_OPTIONAL_LOCKS` is unset or `1`, and not when it is `0`, `false`, `no` or `off`; a disk project omits it. Nonliteral Git ownership destinations refuse as `spec`. A share source that is not a plain directory, and a destination nested in a share that is not reached through plain directories, refuse as `spec`; corrected trees run. Guest traversal of outward symlinks cannot access an unmounted host fixture. Confinement is by path: A share file hard-linked to a file outside the share, Git objects from a local clone included, can be changed in place through the share. |
 
 ## Code
 

@@ -949,7 +949,7 @@ pub(crate) fn remove_socket(path: &Path) -> io::Result<()> {
 fn entries(directory: &File) -> io::Result<Vec<std::ffi::OsString>> {
     let mut names = Vec::new();
     let copy = directory_at(directory, OsStr::new(".")).map_err(failure)?;
-    crate::core::directory_entries(copy.into(), |_, leaf| {
+    crate::core::directory_entries(copy.into(), |leaf| {
         names.push(leaf.to_owned());
         Ok(())
     })

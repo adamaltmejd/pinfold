@@ -1208,7 +1208,18 @@ pub(crate) fn start(args: &[String]) -> io::Result<i32> {
     }
     client(None)
 }
-const OPTIONAL_LOCKS_WARNING: &str = "pinfold: git-optional-locks: GIT_OPTIONAL_LOCKS=0 is not set, so host `git status` rewrites the index and can make box commits record files as deleted.";
+const OPTIONAL_LOCKS_WARNING: &str = "pinfold: git-optional-locks: host `git status` can refresh the index when optional locks are enabled, which can make box commits record files as deleted; set GIT_OPTIONAL_LOCKS=0.";
+
+/// Whether Git would read the caller's `GIT_OPTIONAL_LOCKS` as false.
+fn optional_locks_off() -> bool {
+    std::env::var("GIT_OPTIONAL_LOCKS").is_ok_and(|value| {
+        value.is_empty()
+            || ["false", "no", "off"]
+                .iter()
+                .any(|word| value.eq_ignore_ascii_case(word))
+            || value.parse::<i64>() == Ok(0)
+    })
+}
 
 fn client(args: Option<&[String]>) -> io::Result<i32> {
     let executor = tokio::runtime::Builder::new_current_thread()
@@ -1292,8 +1303,12 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
             },
         };
         crate::update::notice("--");
-        if lease.share && std::env::var_os("GIT_OPTIONAL_LOCKS").is_none_or(|value| value != "0") {
+        if lease.share && !optional_locks_off() {
+            // A failed write is not fatal, but a signal received during it is.
             let _ = forward_diagnostics(OPTIONAL_LOCKS_WARNING.as_bytes().to_vec(), &mut signals).await;
+            if signals.last().is_some() {
+                return finish_client(lease, Ok(125), None, &mut signals).await;
+            }
         }
         let argv = args.expect("join has a command").to_vec();
         let name = lease.name.clone();
@@ -1640,7 +1655,7 @@ async fn serve(
                         let _ = wire::write_reply(&mut stream, Reply::Compatible { mount: snapshot.project_mount() }).await;
                         continue;
                     }
-                    let fields = match &request {
+                    let mut fields = match &request {
                         Request::Join { snapshot: candidate, .. } | Request::Keep { snapshot: candidate, .. } => snapshot.differences(candidate),
                         Request::Probe { roots, .. } | Request::Borrow { roots, .. } => snapshot.roots.differences(roots),
                         _ => unreachable!(),
@@ -1650,6 +1665,9 @@ async fn serve(
                     {
                         let _ = wire::write_reply(&mut stream, Reply::Error { reason: "share-no-crossing".into(), fields: vec![] }).await;
                         continue;
+                    }
+                    if fields.is_empty() && matches!(request, Request::Probe { .. } | Request::Join { .. } | Request::Keep { .. }) {
+                        fields = snapshot.repository_differences(root);
                     }
                     if !fields.is_empty() { let _ = wire::write_reply(&mut stream, Reply::Error { reason: "config-changed".into(), fields }).await; continue; }
                     match request {

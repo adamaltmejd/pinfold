@@ -1,0 +1,54 @@
+binary: fixed (working tree on 3e1db10); PINFOLD_PROFILE=full
+
+## Fix 1: SIGTERM during a blocked warning write
+start exit: 0
+timing 0: warning after 0.46 s: pinfold: git-optional-locks: host `git s..., exit 0
+timing 1: warning after 0.49 s: pinfold: git-optional-locks: host `git s..., exit 0
+timing 2: warning after 0.51 s: pinfold: git-optional-locks: host `git s..., exit 0
+trial 0: pipe held 65536 bytes, SIGTERM at 1.01 s, exit 143, CMD ran: no
+trial 1: pipe held 65536 bytes, SIGTERM at 1.01 s, exit 143, CMD ran: no
+trial 2: pipe held 65536 bytes, SIGTERM at 1.01 s, exit 143, CMD ran: no
+stop exit: 0
+
+## Fix 5: warning by GIT_OPTIONAL_LOCKS value
+GIT_OPTIONAL_LOCKS=UNSET: exit 0, warning shown
+GIT_OPTIONAL_LOCKS=1: exit 0, warning shown
+GIT_OPTIONAL_LOCKS=0: exit 0, warning silent
+GIT_OPTIONAL_LOCKS=false: exit 0, warning silent
+GIT_OPTIONAL_LOCKS=FALSE: exit 0, warning silent
+GIT_OPTIONAL_LOCKS=no: exit 0, warning silent
+GIT_OPTIONAL_LOCKS=off: exit 0, warning silent
+GIT_OPTIONAL_LOCKS=Off: exit 0, warning silent
+  text: pinfold: git-optional-locks: host `git status` can refresh the index when optional locks are enabled, which can make box commits record files as deleted; set GIT_OPTIONAL_LOCKS=0.
+
+## Fix 2: .git appears while a non-Git share owner runs
+$ /Users/adam/code/pinfold/.claude/worktrees/agent-a43fe30a7346c6496/target/debug/pinfold start
+  exit: 0
+host: .git is a symlink
+$ /Users/adam/code/pinfold/.claude/worktrees/agent-a43fe30a7346c6496/target/debug/pinfold -- true
+  err: pinfold: config-changed: The project settings have changed. Check `pinfold config` and retry with the original settings. Differing settings: repository.
+  exit: 125
+$ /Users/adam/code/pinfold/.claude/worktrees/agent-a43fe30a7346c6496/target/debug/pinfold start
+  err: pinfold start: config-changed: The project settings have changed. Check `pinfold config` and retry with the original settings. Differing settings: repository.
+  exit: 125
+host: git init
+$ /Users/adam/code/pinfold/.claude/worktrees/agent-a43fe30a7346c6496/target/debug/pinfold -- true
+  err: pinfold: config-changed: The project settings have changed. Check `pinfold config` and retry with the original settings. Differing settings: repository.
+  exit: 125
+$ /Users/adam/code/pinfold/.claude/worktrees/agent-a43fe30a7346c6496/target/debug/pinfold start
+  err: pinfold start: config-changed: The project settings have changed. Check `pinfold config` and retry with the original settings. Differing settings: repository.
+  exit: 125
+$ /Users/adam/code/pinfold/.claude/worktrees/agent-a43fe30a7346c6496/target/debug/pinfold stop
+  exit: 0
+$ /Users/adam/code/pinfold/.claude/worktrees/agent-a43fe30a7346c6496/target/debug/pinfold -- sh -c echo after-stop
+  out: after-stop
+  err: pinfold: git-optional-locks: host `git status` can refresh the index when optional locks are enabled, which can make box commits record files as deleted; set GIT_OPTIONAL_LOCKS=0.
+  exit: 0
+$ /Users/adam/code/pinfold/.claude/worktrees/agent-a43fe30a7346c6496/target/debug/pinfold stop
+  exit: 0
+
+## cleanup
+  Removed pi-nogit-9e2291ac307e-home
+  Removed pi-sig-125af51c8c39-home
+  left: NAME	ALLOCATED	CAPACITY	STATE	ATTACHED	ORIGIN
+done

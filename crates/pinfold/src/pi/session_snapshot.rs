@@ -393,6 +393,19 @@ impl Snapshot {
         self.project_mount == ProjectMount::Share
     }
 
+    /// The owner rechecks a share's root Git marker without following it,
+    /// since both snapshots can predate a `.git` that appears later.
+    pub(crate) fn repository_differences(&self, root: &Path) -> Vec<String> {
+        if !self.is_share()
+            || crate::pi::context::share_repository(root)
+                .is_ok_and(|present| present == self.repository)
+        {
+            Vec::new()
+        } else {
+            vec!["repository".into()]
+        }
+    }
+
     pub(crate) fn differences(&self, candidate: &Self) -> Vec<String> {
         let mut fields = self.roots.differences(&candidate.roots);
         for (different, field) in [

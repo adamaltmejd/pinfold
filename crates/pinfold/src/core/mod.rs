@@ -31,7 +31,7 @@ use sha2::{Digest, Sha256};
 /// Visit names through an owned directory descriptor without following paths.
 pub(crate) fn directory_entries(
     directory: std::os::fd::OwnedFd,
-    mut inspect: impl FnMut(std::os::fd::BorrowedFd<'_>, &std::ffi::OsStr) -> io::Result<()>,
+    mut inspect: impl FnMut(&std::ffi::OsStr) -> io::Result<()>,
 ) -> io::Result<()> {
     use std::os::fd::{AsRawFd, IntoRawFd};
     use std::os::unix::ffi::OsStrExt;
@@ -42,9 +42,8 @@ pub(crate) fn directory_entries(
             unsafe { nix::libc::closedir(self.0) };
         }
     }
-    let raw = directory.as_raw_fd();
     // SAFETY: fdopendir takes ownership only on success.
-    let pointer = unsafe { nix::libc::fdopendir(raw) };
+    let pointer = unsafe { nix::libc::fdopendir(directory.as_raw_fd()) };
     if pointer.is_null() {
         return Err(io::Error::last_os_error());
     }
@@ -65,11 +64,7 @@ pub(crate) fn directory_entries(
         // SAFETY: readdir returned a valid entry with a terminated d_name.
         let leaf = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
         if leaf != b"." && leaf != b".." {
-            // SAFETY: the stream owns raw through this callback.
-            inspect(
-                unsafe { std::os::fd::BorrowedFd::borrow_raw(raw) },
-                std::ffi::OsStr::from_bytes(leaf),
-            )?;
+            inspect(std::ffi::OsStr::from_bytes(leaf))?;
         }
     }
 }

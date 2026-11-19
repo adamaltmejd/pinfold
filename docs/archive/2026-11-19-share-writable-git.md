@@ -182,3 +182,79 @@ share project with the variable unset:
 `pinfold: git-optional-locks: GIT_OPTIONAL_LOCKS=0 is not set, so host
 `git status` rewrites the index and can make box commits record files as
 deleted.`, exit 0. Its home disk and roots were removed.
+
+## Review fixes (2026-11-19)
+
+Six findings from the review of PR #342 at `3e1db10`.
+
+1. A signal received while the `git-optional-locks` warning is written is
+   no longer discarded. The client leaves its lease and returns 128+n
+   before CMD is dispatched. A failed write without a signal stays
+   nonfatal.
+2. The owner again checks a share's root `.git` marker without following
+   it, against its snapshot's `repository`, on every Probe and immediately
+   before every Join or Keep grant. A marker that appeared, disappeared or
+   is not a plain directory refuses as `config-changed` (`repository`).
+   This needs no generated mount. Spec and README say so.
+3. Guarantee 48 is path confinement. It and Not protected now say a share
+   file hard-linked to a file outside the share, Git objects from a local
+   clone included, can be changed in place through the share.
+4. `run.sh` names its box per run and removes only a box it created.
+   `logs/env.log` and `logs/hc.jsonl` came from the earlier version, whose
+   box was `pfs-hc1119`.
+5. The warning is silent for any Git false value (`0`, `false`, `no`,
+   `off` in any case, an empty value, or an integer equal to 0). Its
+   reason now reads: host `git status` can refresh the index when optional
+   locks are enabled. The spec says disk projects and `start` omit this
+   warning.
+6. `core::directory_entries` no longer passes the parent descriptor to its
+   callback; its `borrow_raw` is gone.
+
+Checks: `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D
+warnings`, and the same Clippy for `x86_64-unknown-linux-musl` with zig as
+ring's C compiler. All passed.
+
+### Mac cases
+
+`review-mac.sh` and `sigterm.py`, run once with the fixed binary and once
+with a base build of `3e1db10` as the control. Private XDG roots, temp
+projects, the caller's `PINFOLD_PROFILE=full`. Logs:
+`logs/review-mac-fixed.log`, `logs/review-mac-base.log`.
+
+Fix 1. A Git share project kept by `pinfold start`, so a join writes
+nothing to stderr before the warning. Three joins with a read stderr put
+the warning at 0.46 to 0.51 s. Then three joins of `touch ran-N` with
+stderr a pipe filled to 65,536 bytes and never read, SIGTERM 0.5 s after
+the latest measured warning time, inside the write's one-second deadline.
+
+| Binary | Exit | CMD ran |
+|---|---|---|
+| fixed | 143, 143, 143 | no, no, no |
+| base | 1, 1, 1 | no, no, no |
+
+The base did not run CMD either; it exited 1 at some later setup step,
+which was not traced. This run shows the fix's exit status, not the base
+dispatching CMD.
+
+Fix 5. Joins of a kept share box:
+
+| `GIT_OPTIONAL_LOCKS` | fixed | base |
+|---|---|---|
+| unset, `1` | shown | shown |
+| `0` | silent | silent |
+| `false`, `FALSE`, `no`, `off`, `Off` | silent | shown |
+
+Fix 2. A non-Git share project kept by `pinfold start`, then on the host:
+
+| Step | fixed | base |
+|---|---|---|
+| `.git` a symlink to a missing path; `-- true`, then `start` | `config-changed`, `repository`, exit 125 (both) | `worktree: .git is not a directory`, exit 125 (both) |
+| `.git` replaced by `git init`; `-- true`, then `start` | `config-changed`, `repository`, exit 125 (both) | `config-changed`, `repository`, exit 125 (both) |
+| `stop`, then `-- sh -c 'echo after-stop'` | stop exit 0; the next owner runs it, exit 0 | same |
+
+The symlink case reaches the owner's Probe before client discovery, so it
+shows the owner check. The window between a client's snapshot and its Join
+was not forced; the same check runs there.
+
+Cleanup removed the four home disks and the private roots. No box, owner
+process or `/tmp/pfr.*` directory remained.
