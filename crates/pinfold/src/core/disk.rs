@@ -105,8 +105,7 @@ impl Claimed {
             let result = runtime
                 .remove_disk(&disk.name)
                 .and_then(|()| unmark(&disk.name, UNCLEAN))
-                .and_then(|()| unmark(&disk.name, UNFILLED))
-                .and_then(|()| unmark(&disk.name, UNPUSHED));
+                .and_then(|()| unmark(&disk.name, UNFILLED));
             if let Err(error) = result {
                 crate::core::process::diagnostic(format_args!(
                     "startup cleanup: disk {:?}: {error}",
@@ -283,8 +282,6 @@ pub fn claim(
                 runtime.remove_disk(&disk.name)?;
             }
             runtime.create_disk(&disk.name, disk.bytes())?;
-            // After creation: a crash before it leaves a disk with no push.
-            mark(&disk.name, UNPUSHED)?;
             created.push(disk.clone());
         }
         check_cancel(cancel)?;
@@ -426,22 +423,6 @@ fn record_attachments(
 const UNCLEAN: &str = "unclean";
 /// Written before pinfold creates a disk; removed once its box is ready.
 const UNFILLED: &str = "unfilled";
-/// Written once pinfold creates a disk: it may get the project's
-/// automatic first push. Consumed at its first start, before anything
-/// crosses into it.
-const UNPUSHED: &str = "unpushed";
-
-/// Consume the disk's automatic first push, durably: whether it had one.
-/// A disk without the record, older than it or already pushed, has none,
-/// and nothing in the box can grant one.
-pub fn first_push(name: &str) -> io::Result<bool> {
-    if !marked(name, UNPUSHED)? {
-        return Ok(false);
-    }
-    unmark(name, UNPUSHED)?;
-    File::open(dirs::state_dir()?.join("disks"))?.sync_all()?;
-    Ok(true)
-}
 
 fn marker(name: &str, kind: &str) -> io::Result<PathBuf> {
     Ok(dirs::state_dir()?
@@ -623,6 +604,5 @@ pub fn remove(runtime: &dyn Runtime, name: &str) -> io::Result<Removal> {
     }
     unmark(name, UNCLEAN)?;
     unmark(name, UNFILLED)?;
-    unmark(name, UNPUSHED)?;
     Ok(Removal::Removed { existed })
 }

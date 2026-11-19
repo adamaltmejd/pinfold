@@ -35,8 +35,7 @@ host=$(git rev-parse -q --verify "refs/remotes/host/${ref#refs/heads/}") || exit
 exec git merge -q --ff-only "$host"
 "#;
 
-/// The first start of a project disk pinfold created (Git), whose host
-/// record it consumes before anything crosses: create the box's repository, add the host's `box`
+/// The start that created a Git project's disk (Git): create the box's repository, add the host's `box`
 /// remote unless one exists, push the checkout's branches in and check out
 /// the host's branch. A failure is reported, never retried, and never stops
 /// the command.
@@ -44,7 +43,6 @@ pub(crate) fn first_push(
     name: &str,
     init: &Path,
     root: &Path,
-    repository: bool,
     cancel: &std::sync::atomic::AtomicBool,
 ) {
     let Some(guest) = root.to_str() else { return };
@@ -56,14 +54,6 @@ pub(crate) fn first_push(
             terminal_text(guest)
         )
     };
-    let [_, disk] = state::disk_names(&project_id(root));
-    // Consumed even outside Git: a repository made later never gets a
-    // push into a disk already in use.
-    match disk::first_push(&disk) {
-        Ok(true) if repository => {}
-        Ok(_) => return,
-        Err(error) => return failed(&error.to_string()),
-    }
     let Some(format) = git(root, &["rev-parse", "--show-object-format"], cancel) else {
         return failed("the host's object format could not be read");
     };

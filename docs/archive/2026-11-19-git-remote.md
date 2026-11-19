@@ -463,3 +463,26 @@ Round 3 at b0a8114, three fixes.
   verified bundle head nor reachable from refs/remotes/NAME/*".
 
 I removed everything I created on both machines.
+
+### Round 4
+
+Round 4, after merging origin/main (#345). The host record is deleted.
+`Box::up` now reports the disks it created, and the owner pushes only
+when this start's `up` created the project disk of a Git project. A
+crash or failure between creation and the push leaves a disk with no
+push, the closed failure. Round 4's second finding (rollback before
+writing the record) goes away with the record.
+
+macOS, with the merged binary:
+- Smoke: a fresh Git disk project's first start had `host/main` and
+  `host/side`. After a box commit, `git fetch box` landed `box one` at
+  `box/main`, and `start` and `stop` exited 0.
+- A project disk first created by `pinfold box up` (`ready`, then
+  `down`) and then used by its Git project: no `.git`, no `box`
+  remote.
+- A disk first used outside Git, then `git init` and a commit on the
+  host: no `.git` in the box, no `box` remote.
+
+Linux was not rerun for round 4: the path is the same on both
+platforms, and the code paths are not platform-specific. I removed
+everything I created.

@@ -1518,9 +1518,12 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         locator.publish()?;
         let sync_cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = sync_cancel.clone();
-        let (name, sync_root, sync_init, repository, disk) = (plan.name.clone(), root.clone(), init.clone(), resolved.config.repository, resolved.config.mount == crate::config::ProjectMount::Disk);
+        // Only a Git project's disk this start created gets the push.
+        let [_, project_disk] = state::disk_names(&state::project_id(&root));
+        let fresh = resolved.config.repository && resolved.config.mount == crate::config::ProjectMount::Disk && box_.created.contains(&project_disk);
+        let (name, sync_root, sync_init) = (plan.name.clone(), root.clone(), init.clone());
         let mut syncing = tokio::task::spawn_blocking(move || {
-            if disk { launch::first_push(&name, &sync_init, &sync_root, repository, &worker_cancel); }
+            if fresh { launch::first_push(&name, &sync_init, &sync_root, &worker_cancel); }
         });
         let stopped = loop { tokio::select! {
             biased;
