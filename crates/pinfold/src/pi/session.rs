@@ -1004,7 +1004,6 @@ async fn setup_answer(message: String, signals: &mut Signals) -> io::Result<Opti
     if original.st_dev != opened.st_dev || original.st_ino != opened.st_ino {
         return Err(io::Error::other("terminal changed during project setup"));
     }
-    let _line_mode = LineMode::enter(&terminal)?;
     // SAFETY: this handle owns the nonblocking terminal descriptor.
     let reader = unsafe { tokio::io::unix::AsyncFd::register(terminal) }?;
     forward_diagnostics(message.into_bytes(), signals).await?;
@@ -1029,35 +1028,6 @@ async fn setup_answer(message: String, signals: &mut Signals) -> io::Result<Opti
     let line =
         String::from_utf8(answer).map_err(|_| io::Error::other("terminal answer is not UTF-8"))?;
     Ok(Some(line.trim().to_owned()))
-}
-
-/// Canonical line mode for one prompt. Noncanonical MIN/TIME settings can
-/// return zero bytes without EOF or hold a line back. Handled signals return
-/// through the prompt, so the drop restores the caller's settings.
-struct LineMode(Option<nix::sys::termios::Termios>);
-impl LineMode {
-    fn enter(terminal: &File) -> io::Result<Self> {
-        use nix::sys::termios::{LocalFlags, SetArg, tcgetattr, tcsetattr};
-        let original = tcgetattr(terminal)?;
-        if original.local_flags.contains(LocalFlags::ICANON) {
-            return Ok(Self(None));
-        }
-        let mut line = original.clone();
-        line.local_flags.insert(LocalFlags::ICANON);
-        tcsetattr(terminal, SetArg::TCSANOW, &line)?;
-        Ok(Self(Some(original)))
-    }
-}
-impl Drop for LineMode {
-    fn drop(&mut self) {
-        if let Some(original) = &self.0 {
-            let _ = nix::sys::termios::tcsetattr(
-                io::stdin(),
-                nix::sys::termios::SetArg::TCSANOW,
-                original,
-            );
-        }
-    }
 }
 
 async fn confirm_setup(message: String, signals: &mut Signals) -> io::Result<bool> {
@@ -1252,8 +1222,12 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
             }
             Ok(current)
         };
+        // Prompts read lines; a noncanonical terminal is treated as redirected.
         let interactive = args.is_some() && io::stdin().is_terminal()
-            && io::stdout().is_terminal() && io::stderr().is_terminal();
+            && io::stdout().is_terminal() && io::stderr().is_terminal()
+            && nix::sys::termios::tcgetattr(io::stdin()).is_ok_and(|settings| {
+                settings.local_flags.contains(nix::sys::termios::LocalFlags::ICANON)
+            });
         let mut admitted = admit(&root, &candidate, intent, &mut signals, &executable).await;
         if let Some(command) = args.and_then(|args| args.first())
             && interactive

@@ -1019,11 +1019,11 @@ Explicit images resolve locally. A project launch never pulls or imports an
 image itself; a confirmed managed build can pull its recipe's external base.
 A project recipe typically `FROM`s the profile image.
 
-- When starting a new box with stdin, stdout and stderr on terminals,
+- When starting a new box with interactive I/O (Configuration),
   `pinfold -- CMD` offers to build a missing managed image. Confirmation
   runs the selected recipe once and retries admission with the original
   argv. Declining exits 125. A failed build exits without running CMD. A missing explicit image names
-  the image and requires local preparation. With redirected I/O a missing
+  the image and requires local preparation. Without interactive I/O a missing
   managed image refuses and names the build command.
   `pinfold build` builds the selected recipe. An explicit image refuses as
   `image-no-recipe`.
@@ -1773,15 +1773,17 @@ A project's configuration is
 `~/.config/pinfold/projects/<id>/pinfold.toml` under the XDG rules, where
 `<id>` is the project's state id (pi layer, State). The project's image
 recipe, when it has one, is `Containerfile` beside it. Nothing in the
-project folder configures pinfold. When the file is missing and stdin, stdout
-and stderr are terminals, `-- CMD` offers a profile, initially `default`.
+project folder configures pinfold. Setup I/O is interactive when stdin,
+stdout and stderr are terminals and stdin's is already in canonical mode;
+pinfold never changes its mode for a prompt. When the file is missing and
+I/O is interactive, `-- CMD` offers a profile, initially `default`.
 A set `PINFOLD_PROFILE` selects the profile and is identified in the prompt.
 Setup identifies whether the selected profile is bundled or user-defined,
 names the project root and describes the platform's mount. Confirmation saves the
 profile and mount and continues with the original command and arguments.
 Refusal or EOF before confirmation exits 125 without creating the file.
 If another caller creates the file while the prompt is open, this launch
-refuses and leaves that file in place. With redirected I/O, `-- CMD` refuses
+refuses and leaves that file in place. Without interactive I/O, `-- CMD` refuses
 as `no-config` and leaves stdin untouched. `start`, `push`, `fetch`, `build`
 and `config` also refuse as `no-config`. The diagnostic names the interactive
 `pinfold -- pi` and `pinfold -- sh` setup commands.
