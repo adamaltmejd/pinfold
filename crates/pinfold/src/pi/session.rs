@@ -1545,7 +1545,24 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
                 }}
             }
         };
+        let relay = rex::Rex::new(&plan.name, init.clone(), &key(&root));
+        // A first start's Rex setup yields to stop, box exit, a signal or the client leaving.
+        let (stopped, status) = if stopped.is_none() && matches!(intent, Intent::KeepRex) {
+            let request = relay.request();
+            // One `ended` across heartbeats: a stop request half read is never dropped.
+            let ended = box_.ended();
+            tokio::pin!(request, ended);
+            loop { tokio::select! {
+                biased;
+                _ = received.recv() => break (Some(Ok(Shutdown::Signal)), None),
+                reason = &mut ended => break (Some(reason), None),
+                _ = signals.recv() => break (Some(Ok(Shutdown::Signal)), None),
+                _ = heartbeat.tick() => { let _ = wire::write_reply(&mut writer, Reply::Starting {}).await; },
+                status = &mut request => break (None, status),
+            }}
+        } else { (stopped, None) };
         if let Some(reason) = stopped {
+            relay.close().await;
             let _ = wire::write_reply(&mut writer, Reply::Draining { generation: box_.run_id.clone() }).await;
             sync_cancel.store(true, Ordering::SeqCst);
             if sync_pending { let _ = syncing.await; }
@@ -1567,16 +1584,6 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let mut leases = BTreeMap::new();
         let keep = !matches!(intent, Intent::Join);
         redirect_stderr()?;
-        let relay = rex::Rex::new(&plan.name, init.clone(), &key(&root));
-        let status = if matches!(intent, Intent::KeepRex) {
-            let request = relay.request();
-            tokio::pin!(request);
-            loop { tokio::select! {
-                biased;
-                status = &mut request => break status,
-                _ = heartbeat.tick() => { let _ = wire::write_reply(&mut writer, Reply::Starting {}).await; },
-            }}
-        } else { None };
         // Commit before acknowledgement, including when that acknowledgement is lost.
         let reply = if keep { Reply::Kept { name: plan.name.clone(), generation: box_.run_id.clone(), rex: status } }
             else { Reply::Admitted { name: plan.name.clone(), generation: box_.run_id.clone() } };
@@ -2014,16 +2021,14 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                 }
             }
             .await?;
-            // Under the launch lock with no owner discovered, none is live and
-            // none can start, so a dead owner's Rex socket can go.
-            if let Ok(Some(_launch)) = try_launch(&root) {
-                let discovery_root = root.clone();
-                let deadline = Instant::now() + CONTROL;
-                if let Ok(None) =
-                    control_work(&mut signals, deadline, move || discover(&discovery_root)).await
-                {
-                    rex::remove_left(&key(&root));
-                }
+            // An owner publishes its locator before its relay and removes it
+            // after. Under the launch lock with no locator, no owner holds a
+            // relay and none can start, so a dead owner's Rex socket can go.
+            if cfg!(target_os = "macos")
+                && let Ok(Some(_launch)) = try_launch(&root)
+                && matches!(read_locator(&root), Ok(None))
+            {
+                rex::remove_left(&key(&root));
             }
             Ok(code)
         }

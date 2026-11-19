@@ -110,6 +110,15 @@ struct Relay {
     accept: tokio::task::JoinHandle<()>,
 }
 
+/// Every drop, a cancelled `shut` included, stops the accept task and
+/// unlinks the socket.
+impl Drop for Relay {
+    fn drop(&mut self) {
+        let _ = self.stop.send(true);
+        let _ = self.socket.remove();
+    }
+}
+
 impl Rex {
     /// Called by a new owner while it holds the launch lock, so a socket a
     /// dead owner left is removed here.
@@ -134,12 +143,14 @@ impl Rex {
         let mut closing = self.closing.subscribe();
         let work = async {
             let mut state = self.state.lock().await;
-            state.request().await
+            let status = state.request().await;
+            // Setup that finished as shutdown began is not answered.
+            (!*self.closing.borrow()).then_some(status)
         };
         tokio::select! {
             biased;
             _ = closed(&mut closing) => None,
-            status = work => Some(status),
+            status = work => status,
         }
     }
 
@@ -289,7 +300,6 @@ impl State {
         };
         let _ = relay.stop.send(true);
         let _ = (&mut relay.accept).await;
-        let _ = relay.socket.remove();
     }
 }
 
