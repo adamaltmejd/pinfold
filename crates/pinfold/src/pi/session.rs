@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Read};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
@@ -61,16 +61,59 @@ fn is_output_failure(error: &io::Error) -> bool {
 fn protocol() -> io::Error {
     io::Error::other("session-protocol")
 }
-fn changed(fields: Vec<String>) -> io::Error {
-    io::Error::other(format!("config-changed: {}", fields.join(", ")))
+fn changed(fields: &[String], explanation: &str) -> io::Error {
+    io::Error::other(format!(
+        "config-changed: {explanation} Differing settings: {}.",
+        fields.join(", ")
+    ))
+}
+fn join_changed(fields: &[String], locator: &Locator, config: &crate::config::Config) -> io::Error {
+    let requested = &config.profile.name;
+    if fields.iter().any(|field| field == "profile")
+        && let Some(running) = running_profile(locator)
+        && running != *requested
+    {
+        let override_set = std::env::var_os("PINFOLD_PROFILE").is_some();
+        let source = if override_set {
+            "PINFOLD_PROFILE"
+        } else if config.project_profile.is_some() {
+            "The project configuration"
+        } else {
+            "The default configuration"
+        };
+        let saved = config
+            .project_profile
+            .as_deref()
+            .unwrap_or(crate::config::DEFAULT_PROFILE);
+        let hint = if override_set && saved == running {
+            "Run `unset PINFOLD_PROFILE` to use the project profile and retry.".to_owned()
+        } else {
+            format!(
+                "To request the running profile, retry with `PINFOLD_PROFILE={running}` before `pinfold`."
+            )
+        };
+        return changed(
+            fields,
+            &format!(
+                "The running box uses profile {running:?}. {source} selects {requested:?}. {hint}"
+            ),
+        );
+    }
+    changed(
+        fields,
+        "This command requests different settings from the running box. Restore the original settings to join it, or finish active sessions and run `pinfold stop` before retrying with the new settings.",
+    )
 }
 fn reply_error(reply: Reply) -> io::Error {
     match reply {
-        Reply::Error { reason, fields } if reason == "config-changed" => changed(fields),
+        Reply::Error { reason, fields } if reason == "config-changed" => changed(
+            &fields,
+            "The project settings have changed. Check `pinfold config` and retry with the original settings.",
+        ),
         Reply::Error { reason, .. } if reason == "session-protocol" => protocol(),
-        Reply::Error { reason, .. } if reason == "share-no-crossing" => {
-            io::Error::other("share-no-crossing: shares have no project crossing")
-        }
+        Reply::Error { reason, .. } if reason == "share-no-crossing" => io::Error::other(
+            "share-no-crossing: edits in this shared project are already visible on the host and in the box",
+        ),
         Reply::Error { reason, .. } if reason == "stopped" => {
             io::Error::other("stopped during startup")
         }
@@ -160,7 +203,7 @@ fn read_locator(root: &Path) -> io::Result<Option<Locator>> {
     };
     let mut file = match File::options()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(host.join(format!("{}.project", key(root))))
     {
         Ok(file) => file,
@@ -355,12 +398,12 @@ async fn exchange(
         .map_err(|_| unavailable_at("reply"))?;
     Ok((stream, reply))
 }
-async fn probe(
+async fn probe_reply(
     root: &Path,
     locator: &Locator,
     signals: &mut Signals,
     deadline: Instant,
-) -> io::Result<Option<crate::config::ProjectMount>> {
+) -> io::Result<Reply> {
     let (_, reply) = exchange(
         locator,
         Request::Probe {
@@ -372,6 +415,16 @@ async fn probe(
         deadline,
     )
     .await?;
+    Ok(reply)
+}
+
+async fn probe(
+    root: &Path,
+    locator: &Locator,
+    signals: &mut Signals,
+    deadline: Instant,
+) -> io::Result<Option<crate::config::ProjectMount>> {
+    let reply = probe_reply(root, locator, signals, deadline).await?;
     match reply {
         Reply::Compatible { mount } => Ok(Some(mount)),
         Reply::Draining { generation } if Some(&generation) == locator.generation.as_ref() => {
@@ -379,6 +432,65 @@ async fn probe(
         }
         other => Err(reply_error(other)),
     }
+}
+
+fn running_profile(locator: &Locator) -> Option<String> {
+    runs::launch_profile(locator.generation.as_deref()?, &locator.name)
+}
+
+pub(crate) enum ProjectStatus {
+    Stopped,
+    Starting,
+    Running {
+        profile: Option<String>,
+        mount: Option<ProjectMount>,
+    },
+    Stopping,
+    Unavailable,
+}
+
+/// Observe the existing owner without admitting a client or recovering stale state.
+pub(crate) fn project_status(root: &Path) -> io::Result<ProjectStatus> {
+    let locator = match read_locator(root)? {
+        Some(locator) if locator.generation.is_some() => locator,
+        _ if ownership::lock_alive(&launch_key(root))? => return Ok(ProjectStatus::Starting),
+        Some(_) => return Ok(ProjectStatus::Unavailable),
+        None => return Ok(ProjectStatus::Stopped),
+    };
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    executor.block_on(async {
+        let mut signals = Signals::with_hangup()?;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let result = timeout_at(
+            deadline,
+            probe_reply(root, &locator, &mut signals, deadline),
+        )
+        .await;
+        let mount = match result {
+            Ok(Ok(Reply::Compatible { mount })) => Some(mount),
+            // The probe compares this caller's settings; the box still runs its own mount.
+            Ok(Ok(Reply::Error { reason, .. })) if reason == "config-changed" => locator.mount,
+            Ok(Ok(Reply::Draining { generation }))
+                if Some(&generation) == locator.generation.as_ref() =>
+            {
+                return Ok(ProjectStatus::Stopping);
+            }
+            // The owner publishes its generation before it finishes the initial disk sync.
+            Ok(Err(_))
+                if ownership::lock_alive(&launch_key(root))?
+                    && ownership::name_alive(&locator.name)? =>
+            {
+                return Ok(ProjectStatus::Starting);
+            }
+            _ => return Ok(ProjectStatus::Unavailable),
+        };
+        Ok(ProjectStatus::Running {
+            profile: running_profile(&locator),
+            mount,
+        })
+    })
 }
 
 // Linux shares must refuse before first-owner locks or orphan cleanup can write.
@@ -605,6 +717,9 @@ async fn admit(
                     wait_name_owned(&locator.name, signals).await?;
                     drop(launch);
                     continue;
+                }
+                Reply::Error { reason, fields } if reason == "config-changed" => {
+                    return Err(join_changed(&fields, &locator, &config));
                 }
                 other => return Err(reply_error(other)),
             }
@@ -878,9 +993,198 @@ pub(crate) async fn forward_diagnostics(bytes: Vec<u8>, signals: &mut Signals) -
     }
 }
 
+async fn setup_answer(message: String, signals: &mut Signals) -> io::Result<Option<String>> {
+    // Reopen stdin's terminal so nonblocking reads leave its shared flags alone.
+    let terminal = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_NOFOLLOW)
+        .open(nix::unistd::ttyname(io::stdin())?)?;
+    let original = nix::sys::stat::fstat(io::stdin())?;
+    let opened = nix::sys::stat::fstat(&terminal)?;
+    if original.st_dev != opened.st_dev || original.st_ino != opened.st_ino {
+        return Err(io::Error::other("terminal changed during project setup"));
+    }
+    // SAFETY: this handle owns the nonblocking terminal descriptor.
+    let reader = unsafe { tokio::io::unix::AsyncFd::register(terminal) }?;
+    forward_diagnostics(message.into_bytes(), signals).await?;
+    // One byte per read: input after the newline belongs to the next prompt or the guest.
+    let mut answer = Vec::new();
+    loop {
+        let mut byte = [0];
+        let count = tokio::select! {
+            biased;
+            _ = signals.recv() => return Err(io::ErrorKind::Interrupted.into()),
+            result = reader.async_io(tokio::io::Interest::READABLE, |mut tty| tty.read(&mut byte)) => result?,
+        };
+        match byte[0] {
+            _ if count == 0 => return Ok(None),
+            b'\n' => break,
+            _ if answer.len() >= 4096 => {
+                return Err(io::Error::other("terminal answer is too long"));
+            }
+            byte => answer.push(byte),
+        }
+    }
+    let line =
+        String::from_utf8(answer).map_err(|_| io::Error::other("terminal answer is not UTF-8"))?;
+    Ok(Some(line.trim().to_owned()))
+}
+
+async fn confirm_setup(message: String, signals: &mut Signals) -> io::Result<bool> {
+    Ok(setup_answer(format!("{message} [Y/n]"), signals)
+        .await?
+        .is_some_and(|answer| {
+            answer.is_empty()
+                || answer.eq_ignore_ascii_case("y")
+                || answer.eq_ignore_ascii_case("yes")
+        }))
+}
+
+async fn confirm_first_run(
+    root: &Path,
+    command: &str,
+    signals: &mut Signals,
+) -> io::Result<Option<String>> {
+    let forced = crate::config::override_value("PINFOLD_PROFILE")?;
+    let name = if let Some(name) = &forced {
+        name.clone()
+    } else {
+        let Some(name) = setup_answer(
+            "Choose a profile (default, documents, full, or a saved profile) [default]".into(),
+            signals,
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        if name.is_empty() {
+            "default".into()
+        } else {
+            name
+        }
+    };
+    let profile = crate::core::profile::Profile::load(&name)?;
+    let source = if profile.built_in {
+        "bundled profile"
+    } else {
+        "saved user profile"
+    };
+    let selected_by = if forced.is_some() {
+        ", selected by PINFOLD_PROFILE"
+    } else {
+        ""
+    };
+    let path = terminal_text(&root.to_string_lossy());
+    let command = terminal_text(command);
+    let mount = match ProjectMount::default_kind() {
+        ProjectMount::Share => {
+            format!(
+                "The box can edit files in {path}. A top-level .git present when the box starts is read-only."
+            )
+        }
+        ProjectMount::Disk => format!(
+            "The box uses an isolated project disk for {path}. Host files stay separate from edits in the box."
+        ),
+    };
+    forward_diagnostics(
+        format!("Using {name} ({source}{selected_by}).").into_bytes(),
+        signals,
+    )
+    .await?;
+    forward_diagnostics(mount.into_bytes(), signals).await?;
+    Ok(
+        confirm_setup(format!("Save these settings and run {command}?"), signals)
+            .await?
+            .then_some(name),
+    )
+}
+
+fn missing_image(result: &io::Result<Option<Lease>>) -> Option<&launch::MissingManagedImage> {
+    result.as_ref().err()?.get_ref()?.downcast_ref()
+}
+
+async fn run_setup_build(cwd: &Path, signals: &mut Signals) -> io::Result<()> {
+    use crate::core::process::AsyncCommandGuard;
+    use nix::sys::signal::{Signal, killpg};
+    use nix::unistd::Pid;
+    let mut command = tokio::process::Command::new(std::env::current_exe()?);
+    command
+        .arg("build")
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    command.as_std_mut().process_group(0);
+    let mut child = command.kill_on_drop(true).spawn_guarded()?;
+    let group = Pid::from_raw(child.id().expect("just spawned") as i32);
+    // The build's group is in the background, where `stty tostop` would stop
+    // its terminal writes. This foreground client writes them instead.
+    let mut relay = tokio::spawn(relay_output(child.stderr.take().expect("piped stderr")));
+    let status = tokio::select! {
+        biased;
+        _ = signals.recv() => {
+            // TERM lets the Linux builder retire its VM on cancellation.
+            let _ = killpg(group, Signal::SIGTERM);
+            child.wait().await?;
+            relay.abort();
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        status = child.wait() => status?,
+    };
+    tokio::select! {
+        biased;
+        _ = signals.recv() => {
+            relay.abort();
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        relayed = &mut relay => relayed
+            .map_err(|_| io::Error::other("build output relay failed"))?
+            .map_err(|error| io::Error::other(format!("build output relay failed: {error}")))?,
+    }
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(
+            "the image build failed; the project command did not start",
+        ))
+    }
+}
+
+async fn relay_output(mut source: tokio::process::ChildStderr) -> io::Result<()> {
+    use tokio::io::{AsyncReadExt, Interest, unix::AsyncFd};
+    let relay = crate::core::process::StdioRelay::new(2, false)?;
+    // SAFETY: the relay owns its pipe endpoint until `into_inner`.
+    let mut sink = unsafe { AsyncFd::register_with_interest(relay, Interest::WRITABLE) }?;
+    let mut bytes = [0; 8192];
+    loop {
+        let count = source.read(&mut bytes).await?;
+        if count == 0 {
+            break;
+        }
+        let mut rest = &bytes[..count];
+        while !rest.is_empty() {
+            let written = sink
+                .async_io_mut(Interest::WRITABLE, |relay| io::Write::write(relay, rest))
+                .await?;
+            if written == 0 {
+                return Err(io::ErrorKind::WriteZero.into());
+            }
+            rest = &rest[written..];
+        }
+    }
+    let mut relay = sink.into_inner();
+    relay.close();
+    while !relay.finished()? {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Ok(())
+}
+
 pub(crate) fn run(args: &[String]) -> io::Result<i32> {
     if args.first().is_none_or(String::is_empty) {
-        return Err(cli::usage("--", "expected a nonempty command after --"));
+        return Err(io::Error::other(
+            "expected a command after --. Try `pinfold -- sh` or `pinfold -- pi`.",
+        ));
     }
     client(Some(args))
 }
@@ -896,6 +1200,7 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
         .build()?;
     executor.block_on(async {
         let mut signals = Signals::with_hangup()?;
+        let label = if args.is_some() { "pinfold" } else { "pinfold start" };
         let result = async {
         let executable = close_only(crate::update::working()?);
         let cwd = state::canonical(&std::env::current_dir()?)?;
@@ -909,15 +1214,61 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
         };
         check_linux_mount(&root)?;
         launch::utf8(&root, "project root")?;
-        let admitted = admit(&root, &candidate, if args.is_some() { Intent::Join } else { Intent::Keep }, &mut signals, &executable).await;
+        let intent = if args.is_some() { Intent::Join } else { Intent::Keep };
+        let discover = || -> io::Result<Context> {
+            let current = Context::discover(&cwd)?;
+            if current.root != root {
+                return Err(io::Error::other("git-discovery: project root changed"));
+            }
+            Ok(current)
+        };
+        // Prompts read lines; a noncanonical terminal is treated as redirected.
+        let interactive = args.is_some() && io::stdin().is_terminal()
+            && io::stdout().is_terminal() && io::stderr().is_terminal()
+            && nix::sys::termios::tcgetattr(io::stdin()).is_ok_and(|settings| {
+                settings.local_flags.contains(nix::sys::termios::LocalFlags::ICANON)
+            });
+        let mut admitted = admit(&root, &candidate, intent, &mut signals, &executable).await;
+        if let Some(command) = args.and_then(|args| args.first())
+            && interactive
+            && admitted.as_ref().err().and_then(io::Error::get_ref)
+                .is_some_and(|cause| cause.is::<crate::config::NoConfig>())
+        {
+            // Admission has released its locks. Validate the invoking worktree before
+            // offering the share, then rediscover it after the user answers.
+            discover()?;
+            let Some(profile) = confirm_first_run(&root, command, &mut signals).await? else {
+                return Ok(125);
+            };
+            let candidate = Ok(discover()?);
+            if !crate::config::create(&root, Some(&profile))?.1 {
+                return Err(io::Error::other("project configuration appeared during setup; run the command again"));
+            }
+            admitted = admit(&root, &candidate, intent, &mut signals, &executable).await;
+        }
+        if interactive && let Some(missing) = missing_image(&admitted) {
+            discover()?.check_worktree(missing.mount)?;
+            let message = format!("The project image {} is missing. Build it now?", missing.reference);
+            if !confirm_setup(message, &mut signals).await? {
+                return Ok(125);
+            }
+            let candidate = Ok(discover()?);
+            let checked = admit(&root, &candidate, intent, &mut signals, &executable).await;
+            admitted = if missing_image(&checked) == Some(missing) {
+                run_setup_build(&cwd, &mut signals).await?;
+                let candidate = Ok(discover()?);
+                admit(&root, &candidate, intent, &mut signals, &executable).await
+            } else {
+                checked
+            };
+        }
         let mut lease = match admitted {
             Ok(Some(lease)) => lease,
             Ok(None) => { crate::update::notice("start"); clean::maintain(); return Ok(0); },
             Err(_error) if signals.last().is_some() => return Ok(128 + signals.last().expect("received signal") as i32),
             Err(error) => {
                 if !is_output_failure(&error) {
-                    let verb = if args.is_some() { "--" } else { "start" };
-                    let report = format!("pinfold {verb}: {error}");
+                    let report = format!("{label}: {error}");
                     let _ = forward_diagnostics(report.into_bytes(), &mut signals).await;
                     if let Some(signal) = signals.last() { return Ok(128 + signal as i32); }
                 }
@@ -960,8 +1311,7 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
         match result {
             Ok(code) => Ok(code),
             Err(error) => {
-                let verb = if args.is_some() { "--" } else { "start" };
-                let _ = forward_diagnostics(format!("pinfold {verb}: {error}").into_bytes(), &mut signals).await;
+                let _ = forward_diagnostics(format!("{label}: {error}").into_bytes(), &mut signals).await;
                 Ok(signals.last().map_or(125, |signal| 128 + signal as i32))
             }
         }

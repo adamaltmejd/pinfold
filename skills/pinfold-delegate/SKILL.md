@@ -59,12 +59,12 @@ refused as `disk-in-use`: wait for the first call to exit.
 ## Bring the work back
 
 ```sh
-pinfold fetch
+pinfold fetch --json
 git log --oneline HEAD..pinfold/delegate/<topic>
 git diff HEAD...pinfold/delegate/<topic>
 ```
 
-`pinfold fetch` prints one JSON line naming the `pinfold/*` refs; the
+`pinfold fetch --json` prints one JSON line naming the `pinfold/*` refs; the
 box's branches land as `refs/remotes/pinfold/*`. Read the whole diff
 before merging, and merge the commit id you read, not the ref name: a
 later fetch can move it. Merging, signing and pushing are yours and the user's.

@@ -93,7 +93,7 @@ pub(crate) fn lock_alive(key: &str) -> io::Result<bool> {
     check_private(&metadata, metadata.is_dir(), "directory")?;
     let file = match File::options()
         .read(true)
-        .custom_flags(nix::libc::O_NOFOLLOW)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
         .open(path(key, "lock")?)
     {
         Ok(file) => file,

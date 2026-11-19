@@ -20,36 +20,156 @@ use crate::dirs;
 use crate::formatting::terminal_text;
 use crate::pi::launch::utf8;
 
-/// One line per verb from the CLI table in docs/ARCHITECTURE.md but `init`,
-/// which only the box runs, plus the options that answer before a verb is chosen: the syntax, three or more
-/// spaces, the description. Printed on stdout by `--help`, on stderr for a
-/// malformed invocation, and one line at a time by [`syntax`].
-pub const USAGE: &str = "\
-pinfold -- CMD [args…]           start or join a project session
-pinfold start                   keep this project's box
-pinfold stop                    stop its observed box
-pinfold push                     this checkout's branches into its box as refs/remotes/host/*
-pinfold fetch                    its box's branches into refs/remotes/pinfold/*
-pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this project's image, or a profile's; prints the ref
-pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]…   a caller's image from its own context; one JSON line
-pinfold image rm NAME            retire a caller image name; one JSON line
-pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
-pinfold clean [--dry-run] [--unused AGE]   reclaim unused disk space
-pinfold doctor                   runtime, kernel, image, artifacts, config, disk use
-pinfold artifacts                pinned host helper and infrastructure as JSON
-pinfold apparmor-profile         the AppArmor profile for this executable (Linux)
-pinfold update [--check]         check for a release, or download and install it
-pinfold config [ROOT]            effective configuration and project facts as JSON
-pinfold config edit              create this project's configuration file if missing, and open it in $VISUAL or $EDITOR
-pinfold box …                    the process interface
-pinfold disk list [--json]       list managed disks
-pinfold disk rm NAME|--all [--json]   remove unattached disks
-pinfold disk export NAME DEST [--image IMAGE] [--json]   copy an unattached disk into a new directory
-pinfold --version                print the version
-pinfold --help                   print this usage";
+pub fn print_intro() {
+    if let Err(error) = project_intro() {
+        println!(
+            "Project details unavailable. {}",
+            terminal_text(&error.to_string())
+        );
+    }
+    println!("\nRun a command    pinfold -- CMD\nAll commands     pinfold --help");
+}
 
-/// The process interface's verbs, which the table above does not spell out.
-const BOX_USAGE: &str = "\
+fn project_intro() -> io::Result<()> {
+    use crate::pi::session::{ProjectStatus, project_status};
+
+    let context = crate::pi::context::Context::discover(&std::env::current_dir()?)?;
+    let root = &context.root;
+    println!("Project   {}", terminal_text(&root.to_string_lossy()));
+    let status = project_status(root);
+    match &status {
+        Ok(ProjectStatus::Stopped) => println!("Box       stopped"),
+        Ok(ProjectStatus::Starting) => println!("Box       starting"),
+        Ok(ProjectStatus::Stopping) => println!("Box       stopping"),
+        Ok(ProjectStatus::Running { profile, mount }) => {
+            match profile {
+                Some(profile) => {
+                    println!("Box       running with profile {}", terminal_text(profile))
+                }
+                None => println!("Box       running"),
+            }
+            if let Some(mount) = mount {
+                println!("Box files {}", project_files(*mount));
+            }
+        }
+        Ok(ProjectStatus::Unavailable) | Err(_) => println!("Box       status unavailable"),
+    }
+    if matches!(status, Ok(ProjectStatus::Running { .. })) {
+        println!("\nThe next launch uses these settings.");
+    }
+    let (config, preview) = match Config::load(root) {
+        Ok(config) => (config, false),
+        Err(error)
+            if error
+                .get_ref()
+                .is_some_and(|e| e.is::<crate::config::NoConfig>()) =>
+        {
+            println!("\nNo project configuration yet. These are the proposed settings.");
+            (Config::first_run_preview(root)?, true)
+        }
+        Err(error) => return Err(error),
+    };
+    check_report_mount(&context, config.mount)?;
+    config.check_host_paths(root)?;
+    println!("Profile   {}", profile_description(&config));
+    let saved = config
+        .project_profile
+        .as_deref()
+        .unwrap_or(crate::config::DEFAULT_PROFILE);
+    if !preview && saved != config.profile.name {
+        println!(
+            "          Project selects {} without PINFOLD_PROFILE.",
+            terminal_text(saved)
+        );
+    }
+    println!("Files     {}", project_files(config.mount));
+    let image = crate::pi::launch::resolve_image(&config, &crate::pi::state::project_id(root));
+    println!("Image     {}", terminal_text(&image));
+    if preview {
+        if std::env::var_os("PINFOLD_PROFILE").is_some() {
+            println!("\nIn a terminal, confirm these settings to save them.");
+        } else {
+            println!("\nIn a terminal, choose a profile and confirm the settings to save them.");
+        }
+        if config.image.is_some() {
+            println!("This profile uses an explicit image. It must already be available locally.");
+        } else {
+            println!("Pinfold will offer to build the image if it is missing.");
+        }
+    } else {
+        println!(
+            "Settings  {}",
+            terminal_text(&config.path.to_string_lossy())
+        );
+    }
+    Ok(())
+}
+
+fn project_files(mount: crate::config::ProjectMount) -> &'static str {
+    match mount {
+        crate::config::ProjectMount::Share => "Shared with the box. Edits appear on your Mac.",
+        crate::config::ProjectMount::Disk => {
+            "Stored on a private project disk. Use push and fetch to transfer branches."
+        }
+    }
+}
+
+pub fn print_help() {
+    println!(
+        "Usage: pinfold -- CMD [args…]
+       pinfold COMMAND [options]
+
+Project
+  -- CMD          Run a command in the project box
+  config          Show the project folder, profile, mount and image
+  config edit     Open the project settings in your editor
+  build           Build or rebuild the selected image
+  start           Keep the box running between commands
+  stop            Shut down the project box
+
+Disk projects
+  push            Send host branches into the box
+  fetch           Bring guest branches back to the host
+
+Maintenance
+  doctor          Check the runtime, project setup and disk use
+  clean           Reclaim unused storage
+  update          Check for or install a release
+
+Advanced
+  profile new     Copy a profile for customization
+  image           Build or remove a named image
+  disk            List, export or remove managed disks
+  box             Control boxes through the process interface"
+    );
+    #[cfg(target_os = "linux")]
+    println!("  apparmor-profile  Print the AppArmor policy for installation");
+    println!(
+        "
+Run pinfold COMMAND --help for options. Use --version to show the version."
+    );
+}
+
+const SYNTAX: &str = "\
+pinfold init
+pinfold -- CMD [args…]
+pinfold start
+pinfold stop
+pinfold push [--json]
+pinfold fetch [--json]
+pinfold build [--profile NAME] [--no-cache] [--allow HOST]…
+pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]… [--json]
+pinfold image rm NAME [--json]
+pinfold profile new NAME [--from PROFILE]
+pinfold clean [--dry-run] [--unused AGE]
+pinfold doctor [--artifacts] [--json]
+pinfold apparmor-profile
+pinfold update [--check]
+pinfold config [ROOT] [--json]
+pinfold config edit
+pinfold disk list [--json]
+pinfold disk rm NAME|--all [--json]
+pinfold disk export NAME DEST [--image IMAGE] [--json]
 pinfold box up < spec.json
 pinfold box exec BOX [--tty] -- argv…
 pinfold box stat BOX
@@ -62,7 +182,11 @@ pinfold box fetch BOX --repo GUEST_REPO --into REPO";
 
 pub fn report(verb: &str, result: io::Result<i32>) -> i32 {
     result.unwrap_or_else(|error| {
-        let _ = writeln!(io::stderr(), "pinfold {verb}: {error}");
+        if verb == "--" {
+            let _ = writeln!(io::stderr(), "pinfold: {error}");
+        } else {
+            let _ = writeln!(io::stderr(), "pinfold {verb}: {error}");
+        }
         if matches!(verb, "--" | "start" | "stop" | "__project-owner") {
             125
         } else {
@@ -79,20 +203,14 @@ pub(crate) fn usage(verb: &str, message: &str) -> io::Error {
     )
 }
 
-/// `verb`'s syntax: [`BOX_USAGE`] for box, else its [`USAGE`] lines up to the
-/// three-space gap. The one place [`usage`] and [`help`] read a syntax line.
 fn syntax(verb: &str) -> String {
-    match verb {
-        "box" => return BOX_USAGE.to_string(),
-        "init" => return "pinfold init".to_string(),
-        _ => {}
-    }
-    let prefix = format!("pinfold {verb} ");
-    USAGE
+    let prefix = format!("pinfold {verb}");
+    SYNTAX
         .lines()
-        .chain(BOX_USAGE.lines())
-        .filter(|line| line.starts_with(&prefix) || *line == prefix.trim_end())
-        .filter_map(|line| line.split("   ").next())
+        .filter(|line| {
+            line.strip_prefix(&prefix)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -135,7 +253,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
 
 fn up(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
-        return Err(usage("box", "up takes no arguments"));
+        return Err(usage("box up", "up takes no arguments"));
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -355,29 +473,34 @@ pub(crate) fn crossing_report(
 fn parse_fetch(args: &[String]) -> io::Result<(String, String, String)> {
     let (name, mut rest) = match args {
         [name, rest @ ..] if !name.starts_with('-') => (name.clone(), rest),
-        _ => return Err(usage("box", "fetch needs a box name")),
+        _ => return Err(usage("box fetch", "fetch needs a box name")),
     };
     let (mut repo, mut into) = (None, None);
     while let [option, value, tail @ ..] = rest {
         let slot = match option.as_str() {
             "--repo" => &mut repo,
             "--into" => &mut into,
-            _ => return Err(usage("box", &format!("unknown fetch option {option:?}"))),
+            _ => {
+                return Err(usage(
+                    "box fetch",
+                    &format!("unknown fetch option {option:?}"),
+                ));
+            }
         };
         if slot.replace(value.clone()).is_some() {
-            return Err(usage("box", &format!("fetch takes {option} once")));
+            return Err(usage("box fetch", &format!("fetch takes {option} once")));
         }
         rest = tail;
     }
     if let [option] = rest {
         return Err(usage(
-            "box",
+            "box fetch",
             &format!("fetch option {option:?} needs a value"),
         ));
     }
     match (repo, into) {
         (Some(repo), Some(into)) => Ok((name, repo, into)),
-        _ => Err(usage("box", "fetch needs --repo and --into")),
+        _ => Err(usage("box fetch", "fetch needs --repo and --into")),
     }
 }
 
@@ -446,7 +569,7 @@ fn list(args: &[String]) -> io::Result<i32> {
 
 fn prune(args: &[String]) -> io::Result<i32> {
     if !args.is_empty() {
-        return Err(usage("box", "prune takes no arguments"));
+        return Err(usage("box prune", "prune takes no arguments"));
     }
     let runtime = runtime();
     let boxes = match clean::boxes(runtime) {
@@ -473,9 +596,9 @@ fn prune(args: &[String]) -> io::Result<i32> {
 
 fn inspect(args: &[String]) -> io::Result<i32> {
     let [run_id] = args else {
-        return Err(usage("box", "inspect needs exactly one run id"));
+        return Err(usage("box inspect", "inspect needs exactly one run id"));
     };
-    let run_id = parse_run_id(run_id)?;
+    let run_id = parse_run_id("box inspect", run_id)?;
     answer("inspect", run_id, runs::inspect(run_id)?)
 }
 
@@ -483,9 +606,9 @@ fn inspect(args: &[String]) -> io::Result<i32> {
 /// egress log. Every argument is checked before any path is built.
 fn events(args: &[String]) -> io::Result<i32> {
     let Some((run_id, options)) = args.split_first() else {
-        return Err(usage("box", "events needs a run id"));
+        return Err(usage("box events", "events needs a run id"));
     };
-    let run_id = parse_run_id(run_id)?;
+    let run_id = parse_run_id("box events", run_id)?;
     let mut limit = runs::MAX_EVENTS;
     let mut after = None;
     let mut options = options.iter();
@@ -497,28 +620,35 @@ fn events(args: &[String]) -> io::Result<i32> {
                     .parse()
                     .ok()
                     .filter(|limit| (1..=runs::MAX_EVENTS).contains(limit))
-                    .ok_or_else(|| usage("box", &format!("--limit {value:?} is not 1 to 100")))?;
+                    .ok_or_else(|| {
+                        usage("box events", &format!("--limit {value:?} is not 1 to 100"))
+                    })?;
             }
             ("--after", Some(value)) => {
                 after = Some(runs::Cursor::parse(run_id, value).ok_or_else(|| {
                     usage(
-                        "box",
+                        "box events",
                         &format!("--after {value:?} is not a cursor of this run"),
                     )
                 })?);
             }
-            _ => return Err(usage("box", &format!("unknown events option {option:?}"))),
+            _ => {
+                return Err(usage(
+                    "box events",
+                    &format!("unknown events option {option:?}"),
+                ));
+            }
         }
     }
     answer("events", run_id, runs::events(run_id, limit, after)?)
 }
 
-fn parse_run_id(run_id: &str) -> io::Result<&str> {
+fn parse_run_id<'a>(verb: &str, run_id: &'a str) -> io::Result<&'a str> {
     if runs::valid_id(run_id) {
         Ok(run_id)
     } else {
         Err(usage(
-            "box",
+            verb,
             &format!("run id {run_id:?} is not 64 lowercase hex characters"),
         ))
     }
@@ -665,6 +795,9 @@ pub fn disk(args: &[String]) -> io::Result<i32> {
             Ok(status)
         }
         [verb, name] if verb == "rm" => remove_disk(runtime, name, json),
+        [verb, ..] if matches!(verb.as_str(), "list" | "export" | "rm") => {
+            Err(usage(&format!("disk {verb}"), "invalid arguments"))
+        }
         _ => Err(usage(
             "disk",
             "expected list, rm NAME|--all, or export NAME DEST [--image IMAGE], with optional --json",
@@ -985,107 +1118,174 @@ fn parse_age(value: &str) -> io::Result<Duration> {
 /// `pinfold doctor`: print one report of what project commands depend on and
 /// what state it is in. Reads only: nothing is created, downloaded or fixed.
 pub fn doctor(args: &[String]) -> io::Result<i32> {
-    if !args.is_empty() {
-        return Err(usage("doctor", "doctor takes no arguments"));
+    let mut json = false;
+    let mut only_pins = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" if !json => json = true,
+            "--artifacts" if !only_pins => only_pins = true,
+            _ => return Err(usage("doctor", &format!("unexpected argument {arg:?}"))),
+        }
     }
+    if only_pins {
+        let pins = artifacts::pins()?;
+        if json {
+            println!("{}", serde_json::to_string(&pins)?);
+        } else {
+            for pin in pins {
+                let status = if pin.cached { "cached" } else { "not cached" };
+                println!("{}  {}  ({status})", pin.name, pin.version);
+                println!("  {}", terminal_text(&pin.path.to_string_lossy()));
+            }
+        }
+        return Ok(0);
+    }
+
     let cwd = std::env::current_dir()?;
-    // Host diagnostics run anywhere; a project that cannot be configured
-    // is one finding among them.
+    let mut findings = Vec::new();
     let project = project_config(&cwd).and_then(|(root, config)| {
         config.check_host_paths(&root)?;
         Ok((root, config))
     });
-
-    println!(
-        "pinfold doctor: {}",
-        terminal_text(
-            &project
-                .as_ref()
-                .map_or(&cwd, |(root, _)| root)
-                .to_string_lossy()
-        )
-    );
-
+    let root = project.as_ref().map_or(&cwd, |(root, _)| root);
     let runtime = runtime();
-    println!("runtime: {}", runtime.describe());
-    match runtime.version() {
-        Ok(version) => println!("  version: {version}"),
-        Err(error) => println!("  version: unavailable: {error}"),
-    }
-    let runtime_ready = match runtime.preflight() {
-        Ok(_) => {
-            println!("  preflight: ok");
-            true
-        }
+    let version = runtime
+        .version()
+        .map_err(|e| findings.push(format!("Runtime version: {e}")))
+        .ok();
+    let ready = match runtime.preflight() {
+        Ok(()) => true,
         Err(error) => {
-            println!("  preflight: {error}");
+            findings.push(format!("Runtime: {error}"));
             #[cfg(target_os = "linux")]
-            for requirement in crate::core::runtime::firecracker::preflight::host_requirements() {
-                println!("  {requirement}");
-            }
+            findings.extend(crate::core::runtime::firecracker::preflight::host_requirements());
             false
         }
     };
-
-    match nix::sys::utsname::uname() {
-        Ok(uname) => println!(
-            "kernel: {} {}",
-            uname.sysname().to_string_lossy(),
-            uname.release().to_string_lossy()
-        ),
-        Err(error) => println!("kernel: unavailable: {error}"),
-    }
-
-    if let Ok((root, config)) = &project {
-        let image = crate::pi::launch::resolve_image(config, &crate::pi::state::project_id(root));
-        println!("image: {image}");
-        if runtime_ready || cfg!(target_os = "linux") {
-            match crate::pi::launch::ensure_image(config, &image) {
-                Ok(()) => println!("  exists"),
-                Err(error) => println!("  {error}"),
-            }
-        } else {
-            println!("  unavailable: runtime check failed");
-        }
-    }
-
-    match pins_json() {
-        Ok(pins) => println!("artifacts: {pins}"),
-        Err(error) => println!("artifacts: unavailable: {error}"),
-    }
-
+    let kernel = nix::sys::utsname::uname()
+        .map(|uname| {
+            format!(
+                "{} {}",
+                uname.sysname().to_string_lossy(),
+                uname.release().to_string_lossy()
+            )
+        })
+        .map_err(|e| findings.push(format!("Kernel: {e}")))
+        .ok();
+    let pins = artifacts::pins()
+        .map_err(|e| findings.push(format!("Artifacts: {e}")))
+        .ok();
+    let mut image = None;
+    let mut configuration = None;
     match &project {
-        Ok((root, config)) => println!("config: {}", config_report(root, config)?),
-        Err(error) => println!("config: {error}"),
+        Ok((root, config)) => {
+            let reference =
+                crate::pi::launch::resolve_image(config, &crate::pi::state::project_id(root));
+            let resolved = (ready || cfg!(target_os = "linux"))
+                .then(|| image::service().resolve_image(&reference));
+            let warnings = match &resolved {
+                Some(Ok(found)) => crate::pi::launch::image_warnings_for(config, &reference, found),
+                Some(Err(error)) => Err(io::Error::other(error.to_string())),
+                None => Ok(Vec::new()),
+            };
+            match warnings {
+                Ok(warnings) => findings.extend(warnings),
+                Err(error) => findings.push(format!("Image: {error}")),
+            }
+            image = Some(reference);
+            if json {
+                configuration = Some(config_report(root, config, resolved.as_ref())?);
+            }
+        }
+        Err(error) => findings.push(error.to_string()),
     }
 
-    println!("disk:");
-    if !runtime_ready && !cfg!(target_os = "linux") {
-        println!("  unavailable: runtime check failed");
+    let disk = if ready || cfg!(target_os = "linux") {
+        CleanPlan::measure(runtime, None)
+            .map_err(|e| findings.push(format!("Disk usage: {e}")))
+            .ok()
+    } else {
+        None
+    };
+    if let Some(plan) = &disk
+        && plan.total() > 20 << 30
+    {
+        findings.push(format!(
+            "Pinfold uses {}. Run `pinfold clean --dry-run` to inspect reclaimable space.",
+            human_size(plan.total())
+        ));
+    }
+    if json {
+        // `json!` panics on a path that is not UTF-8.
+        let pins = serde_json::to_value(&pins)?;
+        let what = if project.is_ok() {
+            "project root"
+        } else {
+            "working directory"
+        };
+        let disk = match &disk {
+            Some(plan) => Some(serde_json::json!({
+                "automatic_bytes": plan.automatic_bytes, "run_bytes": plan.run_bytes,
+                "build_cache_bytes": plan.build_cache_bytes, "project_state_bytes": plan.project_state,
+                "disk_bytes": plan.disk_bytes, "moved": serde_json::to_value(&plan.moved)?
+            })),
+            None => None,
+        };
+        println!(
+            "{}",
+            serde_json::json!({
+                "root": utf8(root, what)?, "runtime": runtime.describe(), "runtime_ready": ready,
+                "version": version, "kernel": kernel, "config": configuration, "image": image,
+                "artifacts": pins, "findings": findings, "disk": disk
+            })
+        );
         return Ok(0);
     }
-    match CleanPlan::measure(runtime, None) {
-        Ok(plan) => {
-            plan.print();
-            let total = plan.total();
-            if total > 20 << 30 {
-                println!(
-                    "  {} is over 20 GiB; run `pinfold clean`",
-                    human_size(total)
-                );
-            }
+
+    if findings.is_empty() {
+        println!("No issues found.");
+    } else {
+        for finding in findings {
+            println!("- {}", terminal_text(&finding));
         }
-        Err(error) => println!("  unavailable: {error}"),
+    }
+    println!("\nProject  {}", terminal_text(&root.to_string_lossy()));
+    println!(
+        "Runtime  {} ({})",
+        runtime.describe(),
+        terminal_text(version.as_deref().unwrap_or("version unknown"))
+    );
+    if let Some(kernel) = kernel {
+        println!("Kernel   {}", terminal_text(&kernel));
+    }
+    if let Ok((_, config)) = &project {
+        println!("Profile  {}", profile_description(config));
+    }
+    if let Some(image) = image {
+        println!("Image    {}", terminal_text(&image));
+    }
+    if let Some(plan) = disk {
+        println!("Disk usage");
+        plan.print();
     }
     Ok(0)
 }
 
-pub fn artifacts(args: &[String]) -> io::Result<i32> {
-    if !args.is_empty() {
-        return Err(usage("artifacts", "artifacts takes no arguments"));
-    }
-    println!("{}", pins_json()?);
-    Ok(0)
+fn profile_description(config: &Config) -> String {
+    let source = if config.profile.built_in {
+        "bundled"
+    } else {
+        "saved profile"
+    };
+    let selection = if std::env::var_os("PINFOLD_PROFILE").is_some() {
+        ", selected by PINFOLD_PROFILE"
+    } else {
+        ""
+    };
+    format!(
+        "{} ({source}{selection})",
+        terminal_text(&config.profile.name)
+    )
 }
 
 /// An unconfined profile that grants only `userns`, named for and attached
@@ -1120,35 +1320,79 @@ pub fn apparmor_profile(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
-fn pins_json() -> io::Result<serde_json::Value> {
-    serde_json::to_value(artifacts::pins()?).map_err(io::Error::other)
-}
-
 fn project_config(cwd: &Path) -> io::Result<(PathBuf, Config)> {
     let context = crate::pi::context::Context::discover(cwd)?;
     let config = Config::load(&context.root)?;
-    if config.mount == crate::config::ProjectMount::Share {
-        context.verify(config.mount)?;
-    } else {
-        context.check_worktree(config.mount)?;
-    }
+    check_report_mount(&context, config.mount)?;
     Ok((context.root, config))
+}
+
+fn check_report_mount(
+    context: &crate::pi::context::Context,
+    mount: crate::config::ProjectMount,
+) -> io::Result<()> {
+    match mount {
+        crate::config::ProjectMount::Share => context.verify(mount),
+        crate::config::ProjectMount::Disk => context.check_worktree(mount),
+    }
 }
 
 /// Read-only: do not materialize profiles or record project state.
 pub fn config(args: &[String]) -> io::Result<i32> {
-    let (root, config) = match args {
-        [edit] if edit == "edit" => return config_edit(),
-        [] => project_config(&std::env::current_dir()?)?,
-        [root] => project_config(Path::new(root))?,
-        _ => {
-            return Err(usage(
-                "config",
-                "config takes `edit` or at most one project root",
-            ));
+    if args.first().is_some_and(|a| a == "edit") {
+        return if args.len() == 1 {
+            config_edit()
+        } else {
+            Err(usage("config edit", "edit takes no arguments"))
+        };
+    }
+    let mut json = false;
+    let mut path = None;
+    for arg in args {
+        match arg.as_str() {
+            "--json" if !json => json = true,
+            arg if arg != "--json" && path.is_none() => path = Some(Path::new(arg)),
+            _ => {
+                return Err(usage(
+                    "config",
+                    "expected one optional project root and --json",
+                ));
+            }
         }
+    }
+    let (root, config) = match path {
+        Some(path) => project_config(path)?,
+        None => project_config(&std::env::current_dir()?)?,
     };
-    println!("{}", config_report(&root, &config)?);
+    let reference = crate::pi::launch::resolve_image(&config, &crate::pi::state::project_id(&root));
+    let resolved = image::service().resolve_image(&reference);
+    let report = config_report(&root, &config, Some(&resolved))?;
+    if json {
+        println!("{report}");
+        return Ok(0);
+    }
+    println!("Project   {}", terminal_text(&root.to_string_lossy()));
+    println!("Files     {}", project_files(config.mount));
+    println!("Profile   {}", profile_description(&config));
+    let availability = match report["image_built"].as_bool() {
+        Some(true) => "available locally",
+        Some(false) => "missing",
+        None => "availability unknown",
+    };
+    println!(
+        "Image     {} ({availability})",
+        terminal_text(report["image"].as_str().expect("image reference"))
+    );
+    if let Some(error) = report["image_error"].as_str() {
+        println!("          {}", terminal_text(error));
+    }
+    println!(
+        "Settings  {}",
+        terminal_text(&config.path.to_string_lossy())
+    );
+    if path.is_none() {
+        println!("\nEdit these settings with `pinfold config edit`.");
+    }
     Ok(0)
 }
 
@@ -1163,8 +1407,9 @@ fn config_edit() -> io::Result<i32> {
             .unwrap_or(crate::config::ProjectMount::Share);
         project.check_worktree(mount)?;
     }
-    let path = crate::config::create(&project.root)?;
-    eprintln!("pinfold config: {}", terminal_text(&path.to_string_lossy()));
+    let (path, created) = crate::config::create(&project.root, None)?;
+    let action = if created { "Created" } else { "Opening" };
+    eprintln!("{action} {}", terminal_text(&path.to_string_lossy()));
     let editor = ["VISUAL", "EDITOR"]
         .into_iter()
         .filter_map(std::env::var_os)
@@ -1179,16 +1424,33 @@ fn config_edit() -> io::Result<i32> {
         .arg("sh")
         .arg(&path)
         .status_guarded()?;
-    Ok(exit_code(status))
+    let code = exit_code(status);
+    if code != 0 {
+        eprintln!(
+            "pinfold: editor exited with status {code}. Open the file above directly or set VISUAL to a working editor and rerun `pinfold config edit`."
+        );
+    }
+    Ok(code)
 }
 
-fn config_report(root: &Path, config: &Config) -> io::Result<serde_json::Value> {
+/// `resolved` is the lookup of the config's image, or `None` when it was skipped.
+fn config_report(
+    root: &Path,
+    config: &Config,
+    resolved: Option<&io::Result<Result<image::ImageInfo, String>>>,
+) -> io::Result<serde_json::Value> {
     let project = crate::pi::state::project_id(root);
     let [home_disk, project_disk] = crate::pi::state::disk_names(&project);
     let image = crate::pi::launch::resolve_image(config, &project);
-    let (image_built, image_error) = match image::service().resolve_image(&image) {
-        Ok(resolved) => (Some(resolved.is_ok()), None),
-        Err(error) => (None, Some(error.to_string())),
+    let (image_built, image_error) = match resolved {
+        None => (None, None),
+        Some(Ok(Ok(_))) => (Some(true), None),
+        #[cfg(target_os = "macos")]
+        Some(Ok(Err(message))) if !message.starts_with("Error: image not found: ") => {
+            (None, Some(message.clone()))
+        }
+        Some(Ok(Err(_))) => (Some(false), None),
+        Some(Err(error)) => (None, Some(error.to_string())),
     };
     Ok(serde_json::json!({
         "root": utf8(root, "project root")?,
@@ -1216,7 +1478,7 @@ fn parse_exec(args: &[String]) -> io::Result<(String, bool, Vec<String>)> {
     let mut args = args.iter();
     let name = args
         .next()
-        .ok_or_else(|| usage("box", "exec needs a box name"))?
+        .ok_or_else(|| usage("box exec", "exec needs a box name"))?
         .clone();
     let mut tty = false;
     loop {
@@ -1224,14 +1486,17 @@ fn parse_exec(args: &[String]) -> io::Result<(String, bool, Vec<String>)> {
             Some("--") => break,
             Some("--tty") => tty = true,
             Some(option) => {
-                return Err(usage("box", &format!("unknown exec option {option:?}")));
+                return Err(usage(
+                    "box exec",
+                    &format!("unknown exec option {option:?}"),
+                ));
             }
-            None => return Err(usage("box", "exec needs `-- argv`")),
+            None => return Err(usage("box exec", "exec needs `-- argv`")),
         }
     }
     let argv: Vec<String> = args.cloned().collect();
     if argv.is_empty() {
-        return Err(usage("box", "exec needs a command after `--`"));
+        return Err(usage("box exec", "exec needs a command after `--`"));
     }
     Ok((name, tty, argv))
 }
@@ -1239,7 +1504,10 @@ fn parse_exec(args: &[String]) -> io::Result<(String, bool, Vec<String>)> {
 fn single_name(args: &[String], verb: &str) -> io::Result<String> {
     match args {
         [name] => Ok(name.clone()),
-        _ => Err(usage("box", &format!("{verb} needs exactly one box name"))),
+        _ => Err(usage(
+            &format!("box {verb}"),
+            &format!("{verb} needs exactly one box name"),
+        )),
     }
 }
 
@@ -1248,18 +1516,21 @@ fn parse_labels(args: &[String]) -> io::Result<Vec<(String, Option<String>)>> {
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         if arg != "--label" {
-            return Err(usage("box", "list takes only --label k=v or --label k"));
+            return Err(usage(
+                "box list",
+                "list takes only --label k=v or --label k",
+            ));
         }
         let label = args
             .next()
-            .ok_or_else(|| usage("box", "--label needs k=v or k"))?;
+            .ok_or_else(|| usage("box list", "--label needs k=v or k"))?;
         match label.split_once('=') {
             Some((key, value)) => filters.push((key.to_string(), Some(value.to_string()))),
             None => filters.push((label.to_string(), None)),
         }
     }
     if filters.is_empty() {
-        return Err(usage("box", "list needs at least one --label"));
+        return Err(usage("box list", "list needs at least one --label"));
     }
     Ok(filters)
 }
@@ -1371,7 +1642,10 @@ pub fn build(args: &[String]) -> io::Result<i32> {
 pub fn image(args: &[String]) -> io::Result<i32> {
     match args.first().map(String::as_str) {
         Some("build") => Ok(image_build(&args[1..])),
-        Some("rm") => image_rm(&args[1..]),
+        Some("rm") => {
+            let json = args.last().is_some_and(|arg| arg == "--json");
+            image_rm(&args[1..args.len() - usize::from(json)], json)
+        }
         Some(verb) => Err(usage("image", &format!("unknown image verb {verb:?}"))),
         None => Err(usage("image", "an image verb is required")),
     }
@@ -1382,10 +1656,17 @@ fn image_build(args: &[String]) -> i32 {
         .first()
         .map(String::as_str)
         .filter(|arg| !arg.starts_with("--"));
-    let result = parse_image_build(name, &args[usize::from(name.is_some())..])
+    let options = &args[usize::from(name.is_some())..];
+    // A malformed invocation still reports in the form it asked for.
+    let (json, parsed) = parse_image_build(name, options);
+    let result = parsed
         .map_err(|detail| ImageError::Refused(RefusalReason::Spec, detail))
         .and_then(image::build_image);
     let (line, code) = match result {
+        Ok(built) if !json => {
+            println!("Built {}", terminal_text(&built.latest));
+            return 0;
+        }
         Ok(built) => (
             serde_json::json!({
                 "event": "built",
@@ -1398,20 +1679,47 @@ fn image_build(args: &[String]) -> i32 {
             }),
             0,
         ),
+        Err(ImageError::Failed(output)) if !json => {
+            eprintln!("pinfold image build: build failed");
+            for line in output.lines() {
+                eprintln!("{}", terminal_text(line));
+            }
+            return 1;
+        }
         Err(ImageError::Failed(output)) => (
             serde_json::json!({ "event": "failed", "image": name, "log": output.lines().collect::<Vec<_>>() }),
             1,
         ),
         Err(ImageError::Refused(reason, detail)) => {
-            return refused("image", name, reason, &detail);
+            return image_refused(json, "build", name, reason, &detail);
         }
     };
     println!("{line}");
     code
 }
 
-fn image_rm(args: &[String]) -> io::Result<i32> {
-    let refused = |name, detail: String| refused("image", name, RefusalReason::Spec, &detail);
+fn image_refused(
+    json: bool,
+    verb: &str,
+    name: Option<&str>,
+    reason: RefusalReason,
+    detail: &str,
+) -> i32 {
+    if json {
+        return refused("image", name, reason, detail);
+    }
+    let reason = serde_json::json!(reason);
+    eprintln!(
+        "pinfold image {verb}: {}: {}",
+        reason.as_str().unwrap_or("refused"),
+        terminal_text(detail)
+    );
+    1
+}
+
+fn image_rm(args: &[String], json: bool) -> io::Result<i32> {
+    let refused =
+        |name, detail: String| image_refused(json, "rm", name, RefusalReason::Spec, &detail);
     let name = args.first().map(String::as_str);
     let Some(name) = name.filter(|arg| !arg.starts_with("--")) else {
         return Ok(refused(name, "image rm needs an image name".to_string()));
@@ -1426,6 +1734,21 @@ fn image_rm(args: &[String]) -> io::Result<i32> {
         return Ok(refused(Some(name), error.to_string()));
     }
     let removed = clean::remove_images(image::service(), name)?;
+    if !json {
+        if removed.ids.is_empty() && removed.in_use.is_empty() {
+            println!("No local image named {name}.");
+        }
+        for id in removed.ids {
+            println!("Removed {name} tags from {}", terminal_text(&id));
+        }
+        for id in removed.in_use {
+            println!(
+                "Kept the last tag on {} because a box uses it.",
+                terminal_text(&id)
+            );
+        }
+        return Ok(0);
+    }
     println!(
         "{}",
         serde_json::json!({
@@ -1438,8 +1761,11 @@ fn image_rm(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
-fn parse_image_build(name: Option<&str>, args: &[String]) -> Result<ImageRequest, String> {
-    let name = name.ok_or("image build needs an image name")?.to_string();
+/// Returns whether `--json` appeared in an option position, even when the
+/// invocation is malformed, so an option's value is never read as the flag.
+fn parse_image_build(name: Option<&str>, args: &[String]) -> (bool, Result<ImageRequest, String>) {
+    let mut json = false;
+    let mut error = None;
     let mut containerfile = None;
     let mut context = None;
     let mut labels = BTreeMap::new();
@@ -1447,38 +1773,52 @@ fn parse_image_build(name: Option<&str>, args: &[String]) -> Result<ImageRequest
     let mut allow = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--containerfile" => {
-                containerfile = Some(PathBuf::from(
-                    args.next().ok_or("--containerfile needs a path")?,
-                ));
+        let mut option = || -> Result<(), String> {
+            match arg.as_str() {
+                "--containerfile" => {
+                    containerfile = Some(PathBuf::from(
+                        args.next().ok_or("--containerfile needs a path")?,
+                    ));
+                }
+                "--context" => {
+                    context = Some(PathBuf::from(
+                        args.next().ok_or("--context needs a directory")?,
+                    ));
+                }
+                "--label" => {
+                    let (key, value) = args
+                        .next()
+                        .and_then(|label| label.split_once('='))
+                        .filter(|(key, _)| !key.is_empty())
+                        .ok_or("--label needs KEY=VALUE")?;
+                    labels.insert(key.to_string(), value.to_string());
+                }
+                "--no-cache" => cache = false,
+                "--allow" => allow.push(args.next().ok_or("--allow needs a host")?.clone()),
+                "--json" if !json => json = true,
+                option => return Err(format!("unknown image build option {option:?}")),
             }
-            "--context" => {
-                context = Some(PathBuf::from(
-                    args.next().ok_or("--context needs a directory")?,
-                ));
-            }
-            "--label" => {
-                let (key, value) = args
-                    .next()
-                    .and_then(|label| label.split_once('='))
-                    .filter(|(key, _)| !key.is_empty())
-                    .ok_or("--label needs KEY=VALUE")?;
-                labels.insert(key.to_string(), value.to_string());
-            }
-            "--no-cache" => cache = false,
-            "--allow" => allow.push(args.next().ok_or("--allow needs a host")?.clone()),
-            option => return Err(format!("unknown image build option {option:?}")),
+            Ok(())
+        };
+        if let Err(problem) = option() {
+            error.get_or_insert(problem);
         }
     }
-    Ok(ImageRequest {
-        name,
-        containerfile: containerfile.ok_or("image build needs --containerfile PATH")?,
-        context: context.ok_or("image build needs --context DIR")?,
-        labels,
-        cache,
-        allow,
-    })
+    let request = (|| {
+        let name = name.ok_or("image build needs an image name")?.to_string();
+        if let Some(error) = error {
+            return Err(error);
+        }
+        Ok(ImageRequest {
+            name,
+            containerfile: containerfile.ok_or("image build needs --containerfile PATH")?,
+            context: context.ok_or("image build needs --context DIR")?,
+            labels,
+            cache,
+            allow,
+        })
+    })();
+    (json, request)
 }
 
 pub fn profile(args: &[String]) -> io::Result<i32> {

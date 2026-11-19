@@ -86,7 +86,7 @@ PY
 "$binary" build --profile default
 image=$(
   "$binary" image build "$image_name" \
-    --containerfile "$script_dir/connect-tls.Containerfile" --context "$script_dir" |
+    --containerfile "$script_dir/connect-tls.Containerfile" --context "$script_dir" --json |
     python3 -c 'import json,sys; print(json.load(sys.stdin)["ref"])'
 )
 # The first box downloads the pinned VMM and kernel. Start one here, with

@@ -201,7 +201,8 @@ impl Sockets {
 
     pub fn open(generation: &str) -> io::Result<Self> {
         let leaf = generation_name(generation)?;
-        let (base, host) = host()?;
+        let (base, host) =
+            existing_host()?.ok_or_else(|| failure("missing host socket directory"))?;
         let directory = directory_at(&host, OsStr::new(&leaf)).map_err(failure)?;
         check(&directory, true)?;
         let vsock = directory_at(&directory, OsStr::new("v")).map_err(failure)?;
