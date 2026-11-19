@@ -1001,7 +1001,16 @@ pub(crate) async fn forward_diagnostics(bytes: Vec<u8>, signals: &mut Signals) -
     if bytes.is_empty() {
         return Ok(());
     }
-    let mut escaped = terminal_text(&String::from_utf8_lossy(&bytes)).into_bytes();
+    // The owner's stderr arrives as lines; only their contents are escaped.
+    let text = String::from_utf8_lossy(&bytes);
+    let mut escaped = text
+        .strip_suffix('\n')
+        .unwrap_or(&text)
+        .split('\n')
+        .map(terminal_text)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .into_bytes();
     escaped.push(b'\n');
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = cancel.clone();
