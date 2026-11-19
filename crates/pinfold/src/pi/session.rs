@@ -1208,7 +1208,7 @@ pub(crate) fn start(args: &[String]) -> io::Result<i32> {
     }
     client(None)
 }
-const OPTIONAL_LOCKS_WARNING: &str = "pinfold: git-optional-locks: GIT_OPTIONAL_LOCKS=0 is not set; host Git commands that refresh the index, such as status and diff, can make box commits record files as deleted.";
+const OPTIONAL_LOCKS_WARNING: &str = "pinfold: git-optional-locks: GIT_OPTIONAL_LOCKS=0 is not set, so host `git status` rewrites the index and can make box commits record files as deleted.";
 
 fn client(args: Option<&[String]>) -> io::Result<i32> {
     let executor = tokio::runtime::Builder::new_current_thread()

@@ -88,9 +88,9 @@ Not protected:
 - Host and box Git in one share. A host Git command that rewrites the index
   (`git status`, `git diff`, `git add`, `git commit`) while the box uses Git
   can make a box commit record other files as deleted and exit 0.
-  `GIT_OPTIONAL_LOCKS=0` stops host `git status` and `git diff` from
-  rewriting the index; host commits while the box commits still drop
-  commits from the branch and record files as deleted. A box commit within
+  `GIT_OPTIONAL_LOCKS=0` stops host `git status` from rewriting the index.
+  Host `git diff` still rewrites it, and host commits while the box commits
+  still drop commits from the branch and record files as deleted. A box commit within
   about a second of a host commit can drop the host commit from the branch.
   Lost commits survive only in the reflog or as dangling objects, if at all.
 - There is no cross-box coordination. A box-created nested `.git` can change

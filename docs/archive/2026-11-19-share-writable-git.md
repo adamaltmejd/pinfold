@@ -154,3 +154,31 @@ Firecracker process remained.
   while the box commits, through the real binary: the probe above and the
   earlier probe cover them.
 - Several boxes on one share; editors and GUI Git clients.
+- The gained-`.git` `config-changed` refusal, and the kept admission
+  refusals after the `prepare` rewrite (plain-directory share source,
+  nested destination through a symlink, `*` destination).
+
+## Host-only control: what GIT_OPTIONAL_LOCKS=0 covers
+
+The spec draft said the variable keeps host `git diff` from rewriting the
+index; the earlier probe measured it only with `git status`. `ctl.sh`, no
+box: a fresh repository per command, 20 runs of `sleep 1.1; touch a; CMD`,
+counting runs after which `.git/index` had a new inode. The sleep keeps
+the index entry from being racily clean. `logs/ctl.log`.
+
+| Command | Index replaced |
+|---|---|
+| `git diff --stat` | 20/20 |
+| `GIT_OPTIONAL_LOCKS=0 git diff --stat` | 20/20 |
+| `git --no-optional-locks diff --stat` | 20/20 |
+| `git diff` | 20/20 |
+| `GIT_OPTIONAL_LOCKS=0 git diff` | 20/20 |
+| `git status --porcelain` | 20/20 |
+| `GIT_OPTIONAL_LOCKS=0 git status --porcelain` | 0/20 |
+
+The variable covers `git status` only. The spec, README and warning were
+narrowed to say so. The reworded warning through the rebuilt binary, a
+share project with the variable unset:
+`pinfold: git-optional-locks: GIT_OPTIONAL_LOCKS=0 is not set, so host
+`git status` rewrites the index and can make box commits record files as
+deleted.`, exit 0. Its home disk and roots were removed.

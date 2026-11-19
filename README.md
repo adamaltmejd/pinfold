@@ -242,9 +242,9 @@ host's `.git`; a box commit is the host's commit. Pinfold reads share Git
 metadata as data and never executes Git on the host for that project.
 Host and box Git at the same moment can lose commits or record files as
 deleted (see the threat model). Export `GIT_OPTIONAL_LOCKS=0` in the shell
-that runs `pinfold`, and in host tools that poll Git; otherwise
-`pinfold -- CMD` warns `git-optional-locks` on stderr. Avoid committing on
-the host while the box commits. There is no startup synchronization
+that runs `pinfold` and in host tools that poll `git status`; otherwise
+`pinfold -- CMD` warns `git-optional-locks` on stderr. It does not cover
+host `git diff` or host commits while the box commits. There is no startup synchronization
 or crossing;
 `pinfold push` and `fetch` refuse as `share-no-crossing`. A share launch never
 deletes an old project disk or copies it back. To select disk behavior on
