@@ -7,6 +7,7 @@ use crate::init::exec_wire::{
     EXEC, EXIT, FAILED, RESIZE, STDERR, STDIN, STDIN_END, STDOUT, write_frame,
 };
 use nix::libc;
+use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::ffi::OsStrExt;
@@ -17,6 +18,17 @@ use std::time::{Duration, Instant};
 pub(crate) fn put(payload: &mut Vec<u8>, bytes: &[u8]) {
     payload.extend((bytes.len() as u32).to_be_bytes());
     payload.extend(bytes);
+}
+
+/// An ENV frame's payload.
+pub(crate) fn env_payload(vars: &[(OsString, OsString)]) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend((vars.len() as u32).to_be_bytes());
+    for (name, value) in vars {
+        put(&mut payload, name.as_bytes());
+        put(&mut payload, value.as_bytes());
+    }
+    payload
 }
 
 /// Run `argv` in the box and relay stdio until it exits:

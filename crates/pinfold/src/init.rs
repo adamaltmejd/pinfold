@@ -44,9 +44,14 @@ mod session;
 #[path = "init/session_io.rs"]
 mod session_io;
 
-/// Guest values travel under names the host runtime does not interpret.
-/// Hex preserves arbitrary environment bytes through runtime JSON encoding.
+/// The exec service hands box values to `init exec` under these names, so a
+/// box name equal to [`EXEC_METADATA`] still arrives. Hex keeps every byte.
 pub const BOX_ENV_PREFIX: &str = "PINFOLD_BOX_ENV_";
+
+/// The abstract socket on which Apple's PID 1 serves the box's environment.
+/// It has no file, and PID 1 holds the name from before ready.
+#[cfg(target_os = "linux")]
+const ENV_SOCKET: &[u8] = b"pinfold-env";
 
 /// The guest Rex server's socket. pinfold fixes it; guest output never names it.
 pub const REX_SOCKET: &str = "/home/pi/.local/state/rex/run/server.sock";
@@ -208,6 +213,14 @@ pub fn run(args: &[String]) -> ! {
     unsafe { nix::sys::signal::signal(Signal::SIGCHLD, SigHandler::SigIgn) }
         .expect("ignore SIGCHLD");
 
+    // The host sends the box's environment on stdin before anything runs in
+    // the box; nothing is passed to the runtime. Ready means it is served.
+    #[cfg(target_os = "linux")]
+    if let Err(error) = serve_env() {
+        eprintln!("pinfold init: box environment: {error}");
+        process::exit(1)
+    }
+
     if let Some(target) = args.first() {
         let target = PathBuf::from(target);
         // Ready is reported after the relay listens, so a caller that sees
@@ -226,13 +239,65 @@ pub fn run(args: &[String]) -> ! {
     process::exit(0);
 }
 
-/// `init exec -- ARGV...`: raise this process's `oom_score_adj` to 1000 and
-/// become ARGV.
+/// Read the ENV frame from stdin and serve it to each connection on
+/// [`ENV_SOCKET`].
+#[cfg(target_os = "linux")]
+fn serve_env() -> io::Result<()> {
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr, UnixListener};
+    let (kind, payload) = exec_wire::read_frame(&mut io::stdin().lock())?;
+    if kind != exec_wire::ENV {
+        return Err(io::Error::other(format!("expected ENV, got frame {kind}")));
+    }
+    firecracker::decode_env(&payload)?;
+    let listener = UnixListener::bind_addr(&SocketAddr::from_abstract_name(ENV_SOCKET)?)?;
+    let payload = std::sync::Arc::new(payload);
+    thread::Builder::new().spawn(move || {
+        loop {
+            let Ok((mut client, _)) = listener.accept() else {
+                back_off();
+                continue;
+            };
+            // A thread per client: one that never reads stalls only itself.
+            let payload = payload.clone();
+            let _ = thread::Builder::new()
+                .spawn(move || exec_wire::write_frame(&mut client, exec_wire::ENV, &payload));
+        }
+    })?;
+    Ok(())
+}
+
+/// The box's environment, from Apple's PID 1.
+#[cfg(target_os = "linux")]
+fn box_env() -> io::Result<Vec<(OsString, OsString)>> {
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::SocketAddr;
+    let mut server = UnixStream::connect_addr(&SocketAddr::from_abstract_name(ENV_SOCKET)?)?;
+    match exec_wire::read_frame(&mut server)? {
+        (exec_wire::ENV, payload) => firecracker::decode_env(&payload),
+        (kind, _) => Err(io::Error::other(format!("expected ENV, got frame {kind}"))),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn box_env() -> io::Result<Vec<(OsString, OsString)>> {
+    Err(io::Error::other(
+        "the box environment requires the guest kernel",
+    ))
+}
+
+/// `init exec [--box-env] -- ARGV...`: raise this process's `oom_score_adj`
+/// to 1000 and become ARGV. With `--box-env` (Apple), the box's environment
+/// comes from PID 1; otherwise from the exec service's transport names.
 fn exec(args: &[String]) -> ! {
+    let (fetch, args) = match args {
+        [flag, args @ ..] if flag == "--box-env" => (true, args),
+        args => (false, args),
+    };
     let (program, args) = match args {
         [separator, program, args @ ..] if separator == "--" => (program, args),
         _ => {
-            eprintln!("pinfold init exec: usage: pinfold init exec -- argv...");
+            eprintln!("pinfold init exec: usage: pinfold init exec [--box-env] -- argv...");
             process::exit(1);
         }
     };
@@ -297,7 +362,8 @@ fn exec(args: &[String]) -> ! {
     let mut command = process::Command::new(program);
     command.args(args).env_remove(EXEC_METADATA);
     let mut restored = Vec::new();
-    for (key, value) in std::env::vars_os() {
+    // With `--box-env` the inherited environment is the image's, applied as is.
+    for (key, value) in std::env::vars_os().filter(|_| !fetch) {
         let Some(name) = key
             .to_str()
             .and_then(|key| key.strip_prefix(BOX_ENV_PREFIX))
@@ -316,7 +382,16 @@ fn exec(args: &[String]) -> ! {
                 process::exit(setup_code);
             }
         };
-        restored.push((name.to_string(), OsString::from_vec(decoded)));
+        restored.push((OsString::from(name), OsString::from_vec(decoded)));
+    }
+    if fetch {
+        match box_env() {
+            Ok(vars) => restored.extend(vars),
+            Err(error) => {
+                eprintln!("pinfold init exec: box environment: {error}");
+                process::exit(setup_code);
+            }
+        }
     }
     // Restore after removing every transport name: a guest variable may
     // itself start with the prefix and must survive that removal pass.
@@ -367,26 +442,11 @@ fn session_exec() -> io::Result<()> {
         let _ = exec_wire::copy_stream(&mut &bridge, &mut File::from(stdout));
         let _ = drained.send(());
     })?;
-    let mut vars: Vec<_> = std::env::vars_os()
-        .filter(|(key, _)| !key.as_bytes().starts_with(BOX_ENV_PREFIX.as_bytes()))
-        .collect();
-    for (key, value) in std::env::vars_os() {
-        if let Some(name) = key
-            .to_str()
-            .and_then(|key| key.strip_prefix(BOX_ENV_PREFIX))
-        {
-            vars.retain(|(key, _)| key != name);
-            vars.push((
-                OsString::from(name),
-                OsString::from_vec(decode_hex(value.as_bytes())?),
-            ));
-        }
-    }
     let (kind, payload) = exec_wire::read_frame(&mut connection)?;
     if kind != exec_wire::EXEC {
         return Err(io::Error::other("expected command frame"));
     }
-    let result = firecracker::exec(connection, &payload, vars, Some((departure.as_fd(), false)));
+    let result = firecracker::exec(connection, &payload, None, Some((departure.as_fd(), false)));
     let _ = drain.recv_timeout(Duration::from_secs(1));
     result
 }

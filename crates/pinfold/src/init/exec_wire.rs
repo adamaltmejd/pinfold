@@ -10,6 +10,8 @@ pub const RESIZE: u8 = b'w';
 pub const STDOUT: u8 = b'o';
 pub const STDERR: u8 = b'r';
 pub const EXIT: u8 = b'x';
+/// The box's environment: count u32, then each name and value.
+pub const ENV: u8 = b'V';
 
 /// A frame's payload limit: argv and env together stay far below it.
 const FRAME_MAX: usize = 64 << 20;

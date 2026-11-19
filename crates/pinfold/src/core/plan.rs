@@ -667,6 +667,12 @@ impl Plan {
                     "env name {name:?} must match [A-Za-z_][A-Za-z0-9_]*"
                 )));
             }
+            // No execve accepts it; the message names only the variable.
+            if let Env::Exact(value) = value
+                && value.contains('\0')
+            {
+                return Err(invalid(format!("env {name} must not hold a NUL byte")));
+            }
             if let Env::From { from } = value
                 && values
                 && std::env::var_os(from).is_none()

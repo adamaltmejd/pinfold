@@ -1212,12 +1212,11 @@ fn home_disk(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
                 .count()
         })
     else {
-        return Err(refuse(format!("$HOME={} is not on a disk", home.display())));
+        return Err(refuse("HOME is not on a disk".into()));
     };
     if disk.readonly {
         return Err(refuse(format!(
-            "$HOME={} is on the read-only disk {}",
-            home.display(),
+            "HOME is on the read-only disk {}",
             disk.guest.display()
         )));
     }
@@ -1227,8 +1226,7 @@ fn home_disk(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
         .any(|component| !matches!(component, Component::Normal(_)))
     {
         return Err(refuse(format!(
-            "$HOME={} is not a plain path under {}",
-            home.display(),
+            "HOME is not a plain path under {}",
             disk.guest.display()
         )));
     }
