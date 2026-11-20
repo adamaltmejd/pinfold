@@ -1,4 +1,5 @@
-//! Host release checks and replacement of the installed executable.
+//! Host release checks, replacement of the installed executable, and the
+//! Git remote helper's link beside it.
 
 use crate::core::process::CommandGuard;
 
@@ -154,7 +155,7 @@ fn loaded_version(path: &Path) -> io::Result<()> {
 }
 
 fn executable_lock(mode: FlockArg) -> io::Result<(PathBuf, Flock<File>)> {
-    let path = fs::canonicalize(std::env::current_exe()?)?;
+    let path = installed()?;
     let file = File::open(&path)?;
     let lock = Flock::lock(file, mode).map_err(|(_, error)| {
         if error == nix::errno::Errno::EAGAIN {
@@ -188,7 +189,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
         println!("pinfold {release} is available (installed: {VERSION}). Run `pinfold update`.");
         return Ok(0);
     }
-    let path = fs::canonicalize(std::env::current_exe()?)?;
+    let path = installed()?;
     if development(&path) {
         return Err(io::Error::other(
             "development-build: install a release binary outside the Cargo target directory first",
@@ -212,11 +213,70 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     let result = install(&release, &path, &staging);
     let _ = fs::remove_dir_all(&staging);
     result?;
+    // Linux names the replaced inode `… (deleted)` now; pass the path.
+    let _ = link_helper(&path);
     println!(
         "Updated pinfold {VERSION} to {release} at {}.",
         terminal_text(&path.to_string_lossy())
     );
     Ok(0)
+}
+
+/// The name Git runs a `pinfold::` remote's helper by (Git).
+const HELPER: &str = "git-remote-pinfold";
+
+/// The installed executable, resolved as `update` replaces it.
+pub(crate) fn installed() -> io::Result<PathBuf> {
+    fs::canonicalize(std::env::current_exe()?)
+}
+
+/// Create `git-remote-pinfold` beside EXE, a relative link to it, when
+/// nothing is at that path. An existing file or link, even a wrong or
+/// dangling one, is left alone.
+pub(crate) fn link_helper(exe: &Path) -> io::Result<()> {
+    let name = exe
+        .file_name()
+        .ok_or_else(|| io::Error::other("executable has no name"))?;
+    match std::os::unix::fs::symlink(name, exe.with_file_name(HELPER)) {
+        Err(error) if error.kind() != io::ErrorKind::AlreadyExists => Err(error),
+        _ => Ok(()),
+    }
+}
+
+/// The first `git-remote-pinfold` on PATH that Git could run.
+pub(crate) fn helper_on_path() -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(HELPER))
+        .find(|path| {
+            fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.mode() & 0o111 != 0)
+        })
+}
+
+/// What to do when no helper is on PATH: link one beside EXE by hand, or,
+/// when that path is taken, say so. No `-f`: `ln` would write inside a
+/// directory found there.
+pub(crate) fn link_remedy(exe: &Path) -> String {
+    let link = exe.with_file_name(HELPER);
+    let word = |path: &Path| {
+        crate::pi::remote::shell_word(&path.to_string_lossy())
+            .unwrap_or_else(|| terminal_text(&path.to_string_lossy()))
+    };
+    if fs::symlink_metadata(&link).is_err() {
+        // A path no shell word can carry, or not UTF-8, gets no command.
+        let shell = |path: &Path| path.to_str().and_then(crate::pi::remote::shell_word);
+        match (shell(exe), shell(&link)) {
+            (Some(exe), Some(link)) => format!("run `ln -s {exe} {link}`"),
+            _ => format!("link {HELPER} to pinfold in a directory on PATH"),
+        }
+    } else if fs::canonicalize(&link).is_ok_and(|target| target == exe) {
+        format!(
+            "{} links to pinfold but its directory is not on PATH",
+            word(&link)
+        )
+    } else {
+        format!("{} is taken by something other than pinfold", word(&link))
+    }
 }
 
 fn install(release: &str, path: &Path, staging: &Path) -> io::Result<()> {

@@ -153,7 +153,7 @@ Project
   stop            Shut down the project box
 
 Disk projects
-  git push box    Send a host branch into the box as host/*
+  git push box    Send host branches (as host/*) and tags into the box
                   In the box: git switch -c BRANCH host/BRANCH
   git fetch box   Bring guest branches back as box/*
                   Once first: git remote add box pinfold::ROOT
@@ -1141,6 +1141,9 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
             if json {
                 configuration = Some(config_report(root, config, resolved.as_ref())?);
             }
+            if config.mount == crate::config::ProjectMount::Disk {
+                findings.extend(helper_finding());
+            }
         }
         Err(error) => findings.push(error.to_string()),
     }
@@ -1214,6 +1217,25 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         plan.print();
     }
     Ok(0)
+}
+
+/// A disk project's Git remote needs `git-remote-pinfold` on PATH, and
+/// Git runs whichever pinfold that one resolves to.
+fn helper_finding() -> Option<String> {
+    let exe = crate::update::installed().ok()?;
+    let Some(helper) = crate::update::helper_on_path() else {
+        return Some(format!(
+            "Git remote: no git-remote-pinfold on PATH; {}",
+            crate::update::link_remedy(&exe)
+        ));
+    };
+    (fs::canonicalize(&helper).ok()? != exe).then(|| {
+        format!(
+            "Git remote: {} is not this pinfold ({})",
+            helper.to_string_lossy(),
+            exe.to_string_lossy()
+        )
+    })
 }
 
 fn profile_description(config: &Config) -> String {

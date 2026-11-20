@@ -65,7 +65,27 @@ pub fn run(args: &[String]) -> io::Result<i32> {
                 fetched = Some(landing);
                 send(&mut output, &listing)?;
             }
-            "list for-push" => send(&mut output, "\n")?,
+            "list for-push" => {
+                // Only Git's push plan reads this; `fetched` stays empty, so
+                // nothing listed here can land. Any failure but a signal
+                // lists nothing and the push goes ahead: the push crosses
+                // again and reports whatever still stands in its way.
+                let pushed =
+                    match launch::cross(guard, |runtime, init, name, root, guest, cancel| {
+                        crossing::pushed_cancellable(runtime, init, name, root, guest, cancel)
+                    }) {
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                            return Err(error);
+                        }
+                        crossed => crossed.ok().and_then(Result::ok).unwrap_or_default(),
+                    };
+                let mut listing = format!(":object-format {}\n", object_format()?);
+                for (name, oid) in &pushed {
+                    listing.push_str(&format!("{oid} {name}\n"));
+                }
+                listing.push('\n');
+                send(&mut output, &listing)?;
+            }
             line if line.starts_with("fetch ") => {
                 while !read_line(&mut input)?.is_empty() {}
                 if let Some(fetched) = &fetched {
@@ -95,9 +115,11 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     }
 }
 
-/// Answer each `push SRC:DST` line: a branch DST lands in the box's
-/// `refs/remotes/host/*`, every one in one transaction. The host reads
-/// nothing from the box but whether it succeeded.
+/// Answer each `push SRC:DST` line: a branch lands in the box's
+/// `refs/remotes/host/*` and a tag in its `refs/tags/*`, every one in one
+/// transaction. A tag the box holds at another object needs `+`, or the
+/// whole push fails. The host reads nothing from the box but its exit
+/// status.
 fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<String> {
     let cancel = AtomicBool::new(false);
     let repo = Path::new(".");
@@ -105,26 +127,37 @@ fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Re
     let mut report = String::new();
     for line in batch {
         let spec = &line["push ".len()..];
+        let forced = spec.starts_with('+');
         let spec = spec.strip_prefix('+').unwrap_or(spec);
         let (source, destination) = spec.split_once(':').unwrap_or(("", spec));
-        let target = format!(
-            "refs/remotes/host/{}",
-            destination.strip_prefix("refs/heads/").unwrap_or_default()
-        );
-        // Git names a pushed ref by its full name, so a stash, a tag or a
-        // commit expression mapped to a branch is not a host branch.
-        if !source.starts_with("refs/heads/")
-            || !crossing::valid_ref(repo, source, &cancel)?
-            || !destination.starts_with("refs/heads/")
-            || !crossing::valid_ref(repo, &target, &cancel)?
+        // Git names a pushed ref by its full name, so a stash or a commit
+        // expression is neither a host branch nor a host tag.
+        let target = if source.starts_with("refs/heads/")
+            && let Some(branch) = destination.strip_prefix("refs/heads/")
         {
+            Some(format!("refs/remotes/host/{branch}"))
+        } else if source.starts_with("refs/tags/") && destination.starts_with("refs/tags/") {
+            Some(destination.to_string())
+        } else {
+            None
+        };
+        let valid = match &target {
+            Some(target) => {
+                crossing::valid_ref(repo, source, &cancel)?
+                    && crossing::valid_ref(repo, target, &cancel)?
+            }
+            None => false,
+        };
+        let Some(target) = target.filter(|_| valid) else {
             report.push_str(&format!(
-                "error {destination} only branches can be pushed\n"
+                "error {destination} only a branch to a branch or a tag to a tag can be pushed\n"
             ));
             continue;
-        }
+        };
+        // A branch always moves `host/BRANCH`; a tag keeps Git's rule.
+        let force = forced || target.starts_with("refs/remotes/");
+        refspecs.push(format!("{}{source}:{target}", if force { "+" } else { "" }));
         sources.push(source.to_string());
-        refspecs.push(format!("+{source}:{target}"));
         accepted.push(destination.to_string());
     }
     if !accepted.is_empty() {
@@ -136,10 +169,16 @@ fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Re
         if let Err(error) = &pushed {
             eprintln!("pinfold: {}", describe(error));
         }
+        let reason = match &pushed {
+            Err(CrossingError::Failed(detail)) if detail == crossing::TAG_EXISTS_DETAIL => {
+                crossing::TAG_EXISTS_DETAIL
+            }
+            _ => "the box refused the push",
+        };
         for destination in accepted {
             report.push_str(&match &pushed {
                 Ok(()) => format!("ok {destination}\n"),
-                Err(_) => format!("error {destination} the box refused the push\n"),
+                Err(_) => format!("error {destination} {reason}\n"),
             });
         }
     }
@@ -152,17 +191,23 @@ pub(crate) fn pinfold_url(root: &Path) -> String {
     url_word(&format!("pinfold::{}", root.to_string_lossy()))
 }
 
-/// URL as one POSIX shell word: unquoted when every character is plain,
-/// else single-quoted. A URL holding a control character cannot be printed
-/// as pasteable text, so the placeholder `pinfold::ROOT` stands in.
+/// URL as one shell word; the placeholder `pinfold::ROOT` stands in for
+/// one that cannot be.
 fn url_word(url: &str) -> String {
+    shell_word(url).unwrap_or_else(|| "pinfold::ROOT".to_string())
+}
+
+/// TEXT as one POSIX shell word: unquoted when every character is plain,
+/// else single-quoted. Text holding a control character cannot be printed
+/// as pasteable text: `None`.
+pub(crate) fn shell_word(text: &str) -> Option<String> {
     let plain = |ch: char| ch.is_ascii_alphanumeric() || "/._+:@%=,-".contains(ch);
-    if url.chars().any(char::is_control) {
-        "pinfold::ROOT".to_string()
-    } else if url.chars().all(plain) {
-        url.to_string()
+    if text.chars().any(char::is_control) {
+        None
+    } else if text.chars().all(plain) {
+        Some(text.to_string())
     } else {
-        format!("'{}'", url.replace('\'', r"'\''"))
+        Some(format!("'{}'", text.replace('\'', r"'\''")))
     }
 }
 
