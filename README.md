@@ -113,7 +113,7 @@ choose the profile and confirm the settings. If your shell sets
 different one. On macOS you also choose how the box sees the folder:
 share it (the default), so the box edits it and its Git metadata, or use
 an isolated project disk, which starts empty; in a Git project, `git push
-box` and `git fetch box` move branches. Linux always uses a project disk. If the selected
+box` and `git fetch box` move branches and tags. Linux always uses a project disk. If the selected
 managed image is missing, Pinfold offers to build it and then starts your
 command. A build needs network access. An explicit `image` must already
 be available locally. Rebuild with `pinfold build` if a later launch
@@ -277,13 +277,18 @@ send it in. After the first start has created the disk:
 ```sh
 git remote add box pinfold::"$(pwd -P)"   # once, at the project root
 git push box main                         # a host branch into the box as host/main
-git fetch box                             # guest branches as box/*, to merge
+git fetch box                             # guest branches as box/*, to merge, and new tags
 ```
 
 Crossing never touches a working tree. The first push into a disk
 without a repository creates an empty one there. To check a branch out,
 run `git switch -c main host/main` in the box. Pushed tags (`--tags`,
-`push.followTags`) land as the box's own tags; a box tag never comes back.
+`push.followTags`) land as the box's own tags. `git fetch box` brings
+the box's tags on fetched commits back as yours, and `--tags` brings
+all. A fetch never changes or deletes a tag you have; a box tag by that
+name, in any case, stays in the box, and so does one with a non-ASCII
+name. A fetched tag is yours to publish, and one named
+like a branch makes `git push box BRANCH` ambiguous until you delete it.
 
 Every byte from the box is checked before Git sees a ref, but the
 remote ends at refs: `git pull box`, a refspec on the command line

@@ -1,6 +1,6 @@
 //! The branch crossing (Disks, Crossing): `push` moves host branches and
-//! tags into a live box's repository, and `fetch` the box's branches out,
-//! as bundles. The box's side runs in the box as the box user. Neither
+//! tags into a live box's repository, and `fetch` the box's branches and
+//! tags out, as bundles. The box's side runs in the box as the box user. Neither
 //! touches a working tree, and nothing from the box runs on the host: the
 //! host only verifies a bundle and indexes its objects with fsck into a
 //! quarantine. Git, through the remote helper, writes the refs.
@@ -30,8 +30,8 @@ use crate::formatting::terminal_text;
 /// A fetched bundle larger than this is refused as `limit`.
 const LIMIT: u64 = 4 << 30;
 
-/// A box listing or bundling more branches than this fails the fetch.
-const BRANCHES: usize = 4096;
+/// A box listing more refs than this fails the fetch.
+const REFS: usize = 4096;
 
 /// The box script's exit code for a GUEST_REPO that is not a repository,
 /// which the host reports as `spec`.
@@ -85,21 +85,31 @@ git -C "$repo" fetch -q --atomic --no-tags --no-write-fetch-head --no-prune --no
 "#;
 
 /// `$1` is GUEST_REPO; stdin holds the commits the host already has, one
-/// per line, read whole before any output. Prints every branch as
-/// `OID REF`, an empty line, then a bundle of what the host lacks, or
-/// nothing when it lacks nothing. A branch whose tip the host holds is left
-/// out of the bundle by git, so the listing names it.
+/// per line, read whole before any output. Prints every branch, and every
+/// tag at a commit or at a tag of a commit, as `OID REF`, an empty line,
+/// then a bundle of what the host lacks, or nothing when it lacks nothing.
+/// A branch or lightweight tag whose commit the host holds is left out of
+/// the bundle by git, so the listing names it; an annotated tag's object
+/// is always bundled.
 const FETCH_SCRIPT: &str = r#"
 repo=$1
 git -C "$repo" rev-parse --git-dir >/dev/null || exit 64
 held=$(git -C "$repo" cat-file --batch-check='%(objectname) %(objecttype)' |
   sed -n 's/^\([0-9a-f]*\) commit$/^\1/p') || exit
+tags=$(git -C "$repo" for-each-ref --format='%(objectname) %(refname) %(objecttype)%(*objecttype)' refs/tags/) || exit
+tags=$(printf '%s\n' "$tags" | sed -n '/ \(tag\)\{0,1\}commit$/p')
 git -C "$repo" for-each-ref --format='%(objectname) %(refname)' refs/heads/ || exit
+[ -z "$tags" ] || printf '%s\n' "$tags" | sed 's/ [a-z]*$//'
 echo
 # Full names, unchecked for ambiguity: `bundle create` drops a name a tag
 # also matches.
-revs() { git -C "$repo" for-each-ref --format='%(refname)' refs/heads/; printf '%s\n' $held; }
-[ -n "$(revs | git -C "$repo" rev-list -n1 --stdin)" ] || exit 0
+revs() {
+  git -C "$repo" for-each-ref --format='%(refname)' refs/heads/
+  [ -z "$tags" ] || printf '%s\n' "$tags" | sed 's/^[^ ]* \([^ ]*\) .*$/\1/'
+  printf '%s\n' $held
+}
+[ -n "$(revs | git -C "$repo" rev-list -n1 --stdin)" ] ||
+  printf '%s\n' "$tags" | grep -q ' tagcommit$' || exit 0
 revs | exec git -C "$repo" -c core.warnAmbiguousRefs=false bundle create -q - --stdin
 "#;
 
@@ -123,7 +133,7 @@ impl From<io::Error> for CrossingError {
     }
 }
 
-/// Branches by name, without `refs/heads/`, and their commits.
+/// Full ref names and their object ids.
 pub type Refs = BTreeMap<String, String>;
 
 /// Bundle REPO's SOURCES and fetch them in the box with REFSPECS, whose
@@ -266,10 +276,13 @@ fn object_width(repo: &Path, cancel: &AtomicBool) -> Result<usize, CrossingError
     }
 }
 
-/// The box's checked branches, their objects held in a quarantine inside
-/// REPO's object store until [`Fetched::land`] moves them in.
+/// The box's checked branches and tags, and every host tag at its own id,
+/// their objects held in a quarantine inside REPO's object store until
+/// [`Fetched::land`] moves them in.
 pub(crate) struct Fetched {
     pub(crate) refs: Refs,
+    /// Each new annotated tag's commit, which Git needs to follow it.
+    pub(crate) peeled: Refs,
     quarantine: Quarantine,
 }
 
@@ -318,38 +331,51 @@ pub(crate) fn fetch_cancellable(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let bundle = Bundle::new()?;
-    let listed: Vec<(String, String)> = receive(
+    let listed = receive(
         &mut command,
         held.as_bytes(),
         Some(&bundle.path),
         width,
-        &["refs/heads/"],
+        &["refs/heads/", "refs/tags/"],
         guest_repo,
         cancel,
-    )?
-    .into_iter()
-    .map(|(name, oid)| (name["refs/heads/".len()..].to_owned(), oid))
-    .collect();
-    for (branch, _) in &listed {
-        check_branch(repo, &namespace, branch, cancel)?;
-    }
-
-    // The box's listing and bundle are untrusted. Every branch name passes
-    // check-ref-format under the namespace before git sees it in a refspec
-    // or a ref update. A bundled head lands at a commit the bundle carries,
-    // which index-pack checks with fsck, or one the host already holds
-    // connected: fetch's own connectivity check covers a head whose
-    // objects are already here. A listed branch the bundle leaves out lands
-    // only at a commit this remote's refs already reach. Every object the
-    // box sends lands in a quarantine first, so a rejected bundle leaves
-    // none of its bytes in REPO.
-    let quarantine = Quarantine::new(repo, cancel)?;
+    )?;
+    // The host's own tags, read after the box's stream so a slow box widens
+    // no window. A box tag the host has, by name ignoring case, is never
+    // listed: loose refs are files, and on a case-insensitive file system
+    // Git would write the host's. Nor is a non-ASCII one, which could match
+    // a host name through Unicode normalization. Listing every host tag
+    // back at its own id leaves Git none to move or prune.
+    let host_tags = host_refs(repo, "refs/tags/", cancel)?;
+    let host_names: HashSet<String> = host_tags.keys().map(|name| name.to_lowercase()).collect();
+    let kept_out = |name: &str| {
+        name.starts_with("refs/tags/")
+            && (!name.is_ascii() || host_names.contains(&name.to_lowercase()))
+    };
     let mut refs = Refs::new();
-    for (branch, oid) in &listed {
-        if refs.insert(branch.clone(), oid.clone()).is_some() {
+    for (name, oid) in listed {
+        if let Some(branch) = name.strip_prefix("refs/heads/") {
+            check_branch(repo, &namespace, branch, cancel)?;
+        } else if !host_tags.contains_key(&name) && !valid_ref(repo, &name, cancel)? {
+            // Left out; a bundle head naming it fails below.
+            continue;
+        }
+        if refs.insert(name, oid).is_some() {
             return Err(malformed_listing());
         }
     }
+
+    // The box's listing and bundle are untrusted. Every branch name passes
+    // check-ref-format under the namespace, and every new tag name as
+    // itself, before git sees it in a refspec or a ref update. A bundled
+    // head lands at an object the bundle carries, which index-pack checks
+    // with fsck, or one the host already holds connected: fetch's own
+    // connectivity check covers a head whose objects are already here. A
+    // listed branch or lightweight tag the bundle leaves out lands only at
+    // a commit this remote's refs already reach. Every object the box sends
+    // lands in a quarantine first, so a rejected bundle leaves none of its
+    // bytes in REPO.
+    let quarantine = Quarantine::new(repo, cancel)?;
     // Objects the box's pack itself carries, not bases `--fix-thin` copied
     // in from REPO: a head among them came from the box.
     let mut sent = HashSet::new();
@@ -367,18 +393,12 @@ pub(crate) fn fetch_cancellable(
         // The listing is the box's whole claim; the bundle's heads repeat a
         // subset of it exactly.
         heads = bundle_heads(repo, path, width, cancel)?;
-        if heads
-            .iter()
-            .any(|(branch, oid)| refs.get(branch) != Some(oid))
-        {
+        if heads.iter().any(|(name, oid)| refs.get(name) != Some(oid)) {
             return Err(CrossingError::Failed(
-                "the bundle's heads differ from the box's branch listing".into(),
+                "the bundle's heads differ from the box's listing".into(),
             ));
         }
-        let wanted: String = heads
-            .keys()
-            .map(|branch| format!("refs/heads/{branch}\n"))
-            .collect();
+        let wanted: String = heads.keys().map(|name| format!("{name}\n")).collect();
         // Older host git (Ubuntu 24.04's 2.43) ignores fetch.fsckObjects
         // when it fetches from a bundle, so pinfold indexes the bundle's
         // pack with fsck itself. The fetch then finds every object here and
@@ -423,40 +443,20 @@ pub(crate) fn fetch_cancellable(
             cancel,
         )?)?;
     }
-    // Each tip is a commit: a bundle head the box's pack carries, whose
-    // connectivity the quarantined fetch checked, or one this remote's
-    // refs already reach. An object REPO holds otherwise is the host's,
-    // never the box's to name.
-    let tips: String = refs.values().map(|oid| format!("{oid}\n")).collect();
-    let types = succeeded(git_input(
-        repo,
-        &["cat-file", "--batch-check=%(objecttype)"],
-        tips.as_bytes(),
-        &quarantine.env(),
-        cancel,
-    )?)?;
-    let types = String::from_utf8_lossy(&types.stdout);
-    let types: Vec<&str> = types.lines().collect();
-    if types.len() != refs.len() {
-        return Err(CrossingError::Failed(
-            "git on the host misread the box's tips".into(),
-        ));
-    }
-    for ((branch, oid), kind) in refs.iter().zip(types) {
-        if kind != "commit" {
-            return Err(CrossingError::Failed(format!(
-                "branch {branch:?} names {oid}, which is not a commit"
-            )));
-        }
-        if heads.contains_key(branch) && sent.contains(oid) {
-            continue;
-        }
+    // Each commit a ref lands at is a bundle head the box's pack carries,
+    // whose connectivity the quarantined fetch checked, or one this
+    // remote's refs already reach; an annotated tag is a bundle head the
+    // pack carries, peeling on the host to such a commit. An object REPO
+    // holds otherwise is the host's, never the box's to name. A bundle
+    // head that fails fails the fetch; a tag outside the bundle that fails
+    // is left out.
+    let reached = |commit: &str| -> Result<bool, CrossingError> {
         let reached = git_input(
             repo,
             &[
                 "rev-list",
                 "-n1",
-                oid,
+                commit,
                 "--not",
                 &format!("--glob={namespace}*"),
             ],
@@ -464,14 +464,80 @@ pub(crate) fn fetch_cancellable(
             &quarantine.env(),
             cancel,
         )?;
-        if !reached.status.success() || !reached.stdout.is_empty() {
-            return Err(CrossingError::Failed(format!(
-                "branch {branch:?} names {oid}, which is neither a verified bundle head nor reachable from {namespace}*"
-            )));
+        Ok(reached.status.success() && reached.stdout.is_empty())
+    };
+    let tips: String = refs.values().map(|oid| format!("{oid}\n")).collect();
+    let types = batch_check(
+        repo,
+        "%(objecttype)",
+        &tips,
+        refs.len(),
+        &quarantine,
+        cancel,
+    )?;
+    let mut checked = Refs::new();
+    let mut annotated = Vec::new();
+    for ((name, oid), kind) in refs.iter().zip(types) {
+        let head = heads.contains_key(name);
+        let carried = head && sent.contains(oid);
+        if let Some(branch) = name.strip_prefix("refs/heads/") {
+            if kind != "commit" {
+                return Err(CrossingError::Failed(format!(
+                    "branch {branch:?} names {oid}, which is not a commit"
+                )));
+            }
+            if !carried && !reached(oid)? {
+                return Err(CrossingError::Failed(format!(
+                    "branch {branch:?} names {oid}, which is neither a verified bundle head nor reachable from {namespace}*"
+                )));
+            }
+        } else if !head && kept_out(name) {
+            continue;
+        } else if kind == "tag" && carried {
+            annotated.push((name, oid));
+            continue;
+        } else if !(kind == "commit" && (carried || reached(oid)?)) {
+            if head {
+                return Err(bad_tag(name, oid));
+            }
+            continue;
+        }
+        checked.insert(name.clone(), oid.clone());
+    }
+    let tags: String = annotated
+        .iter()
+        .map(|(_, oid)| format!("{oid}^{{}}\n"))
+        .collect();
+    let commits = batch_check(
+        repo,
+        "%(objectname) %(objecttype)",
+        &tags,
+        annotated.len(),
+        &quarantine,
+        cancel,
+    )?;
+    let mut peeled = Refs::new();
+    for ((name, oid), line) in annotated.into_iter().zip(commits) {
+        let commit = line
+            .strip_suffix(" commit")
+            .filter(|commit| object_id(commit, width));
+        match commit {
+            Some(commit) if sent.contains(commit) || reached(commit)? => {
+                checked.insert(name.clone(), oid.clone());
+                peeled.insert(name.clone(), commit.to_owned());
+            }
+            _ => return Err(bad_tag(name, oid)),
         }
     }
+    checked.retain(|name, _| !kept_out(name));
+    peeled.retain(|name, _| checked.contains_key(name));
+    checked.extend(host_tags);
 
-    Ok(Fetched { refs, quarantine })
+    Ok(Fetched {
+        refs: checked,
+        peeled,
+        quarantine,
+    })
 }
 
 /// The objects at offsets inside the box's own SENT_LEN pack bytes, read
@@ -559,7 +625,56 @@ pub(crate) fn valid_ref(repo: &Path, name: &str, cancel: &AtomicBool) -> io::Res
 }
 
 fn too_many() -> CrossingError {
-    CrossingError::Failed(format!("the box has more than {BRANCHES} branches"))
+    CrossingError::Failed(format!("the box lists more than {REFS} refs"))
+}
+
+fn bad_tag(name: &str, oid: &str) -> CrossingError {
+    CrossingError::Failed(format!(
+        "tag {name:?} names {oid}, which is neither a verified bundle head peeling to a commit nor a commit reachable from the remote's refs"
+    ))
+}
+
+/// One `cat-file --batch-check=FORMAT` line for each of the COUNT lines
+/// of INPUT, read through the quarantine.
+fn batch_check(
+    repo: &Path,
+    format: &str,
+    input: &str,
+    count: usize,
+    quarantine: &Quarantine,
+    cancel: &AtomicBool,
+) -> Result<Vec<String>, CrossingError> {
+    let output = succeeded(git_input(
+        repo,
+        &["cat-file", &format!("--batch-check={format}")],
+        input.as_bytes(),
+        &quarantine.env(),
+        cancel,
+    )?)?;
+    let lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    if lines.len() != count {
+        return Err(CrossingError::Failed(
+            "git on the host misread the box's tips".into(),
+        ));
+    }
+    Ok(lines)
+}
+
+/// REPO's refs under PREFIX and their ids.
+fn host_refs(repo: &Path, prefix: &str, cancel: &AtomicBool) -> Result<Refs, CrossingError> {
+    let listed = succeeded(git(
+        repo,
+        &["for-each-ref", "--format=%(objectname) %(refname)", prefix],
+        cancel,
+    )?)?;
+    Ok(String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .map(|(oid, name)| (name.to_owned(), oid.to_owned()))
+        .collect())
 }
 
 fn spec(detail: String) -> CrossingError {
@@ -610,7 +725,7 @@ struct Receiver {
 }
 
 fn malformed_listing() -> CrossingError {
-    CrossingError::Failed("the box's branch listing is malformed".into())
+    CrossingError::Failed("the box's listing is malformed".into())
 }
 
 impl Receiver {
@@ -651,7 +766,7 @@ impl Receiver {
             if line.is_empty() {
                 self.listing = false;
             } else {
-                if self.listed.len() == BRANCHES {
+                if self.listed.len() == REFS {
                     return Err(too_many());
                 }
                 let line = std::str::from_utf8(line).map_err(|_| malformed_listing())?;
@@ -776,11 +891,13 @@ fn receive(
             && ((stdout.is_none() && stderr.is_none()) || time.elapsed() >= Duration::from_secs(1))
         {
             let status = child.finish()?;
+            // A rejected listing closes the pipe, so the box's git then fails
+            // on it; the rejection is the cause.
+            if let Some(error) = failed {
+                return Err(error);
+            }
             box_status(status.code(), &String::from_utf8_lossy(&errors), guest_repo)?;
-            return match failed {
-                Some(error) => Err(error),
-                None => receiver.finish(),
-            };
+            return receiver.finish();
         }
         let mut fds = Vec::new();
         if let Some(pipe) = &stdin {
@@ -830,8 +947,8 @@ fn header(bundle: &str) -> Result<(bool, u64), CrossingError> {
     }
 }
 
-/// A bundle's branches, as git on the host reads them. Their names are
-/// the bundle's bytes, unchecked.
+/// A bundle's branches and tags by full name, as git on the host reads
+/// them. Their names are the bundle's bytes, unchecked.
 fn bundle_heads(
     repo: &Path,
     path: &str,
@@ -847,19 +964,19 @@ fn bundle_heads(
     )?)?;
     let mut heads = Refs::new();
     for line in String::from_utf8_lossy(&listed.stdout).lines() {
-        let branch = line
-            .split_once(' ')
-            .filter(|(oid, _)| object_id(oid, width))
-            .and_then(|(oid, name)| Some((oid, name.strip_prefix("refs/heads/")?)));
-        let Some((oid, branch)) = branch else {
+        let head = line.split_once(' ').filter(|(oid, name)| {
+            object_id(oid, width)
+                && (name.starts_with("refs/heads/") || name.starts_with("refs/tags/"))
+        });
+        let Some((oid, name)) = head else {
             return Err(CrossingError::Failed(format!(
-                "the bundle names a head that is not a branch: {}",
+                "the bundle names a head that is not a branch or tag: {}",
                 terminal_text(line)
             )));
         };
-        if heads.insert(branch.to_owned(), oid.to_owned()).is_some() {
+        if heads.insert(name.to_owned(), oid.to_owned()).is_some() {
             return Err(CrossingError::Failed(format!(
-                "the bundle names branch {branch:?} twice"
+                "the bundle names {name:?} twice"
             )));
         }
     }
