@@ -107,7 +107,7 @@ Use `pinfold -- sh` for a shell. Anything after `--` is the command and
 its arguments. Bare `pinfold --` exits with a usage error.
 
 On the first interactive run, of `pinfold -- CMD` or `pinfold start`,
-choose the profile and confirm the project folder. If your shell sets
+choose the profile and confirm the settings. If your shell sets
 `PINFOLD_PROFILE`, that selects the profile. Unset it to choose a
 different one. On macOS you also choose how the box sees the folder:
 share it (the default), so the box edits it and its Git metadata, or use
@@ -117,8 +117,8 @@ managed image is missing, Pinfold offers to build it and then starts your
 command. A build needs network access. An explicit `image` must already
 be available locally. Rebuild with `pinfold build` if a later launch
 reports `image-outdated`. Before saving, setup shows the settings file it
-will write and the lines it will hold. A project with that file starts
-without questions.
+will write and the lines it will hold. A project with that file gets no setup
+questions.
 
 Run `pinfold config` to see which folder, profile and image the project uses.
 Run `pinfold` to see the box status and project settings. Before setup it
