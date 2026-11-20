@@ -53,7 +53,7 @@ mounts = [{ host = ".", kind = "share" }]
 # Profile to use (default, documents, adam, or a saved profile):
 # profile = "default"
 # Local image to run instead of the profile's (not with a Containerfile beside this file):
-# image = "localhost/my-image:latest"
+# image = "localhost/pinfold/image-my-image:latest"
 # Hosts the box may reach; replaces the default list:
 # allow = ["api.anthropic.com", "github.com"]
 # Host services the box reaches through the proxy, by name:
@@ -215,7 +215,7 @@ profile = "default"
 
 # Optional settings: uncomment a line to set it.
 # Local image to run instead of the profile's (not with a Containerfile beside this file):
-# image = "localhost/my-image:latest"
+# image = "localhost/pinfold/image-my-image:latest"
 # Hosts the box may reach; replaces the default list:
 # allow = ["api.anthropic.com", "github.com"]
 # HTTP services on this machine the box may reach as http://NAME:
