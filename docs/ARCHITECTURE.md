@@ -267,17 +267,6 @@ SIGTERM. If the owner dies, the
 socket dies and the box has no way out (fails closed); `box prune` removes
 leftovers host-wide. A detached project owner uses the same lifecycle.
 
-### Box user
-
-The box user is named `pinfold`. pinfold writes `passwd` and `group`
-entries for the host uid and gid to `/var/lib/extrausers`, with a literal
-`HOME` as the home (else `/`) and `/bin/bash` as the shell. On Linux PID 1
-writes them in the root overlay before it becomes read-only. On Apple,
-whose init cannot write the root, the runtime mounts them read-only from
-the box's state dir, unless a mount or disk overlaps that path. A uid-0
-box gets none. Built-in images read them (Images); in another image the uid
-may have no name. The name is not a control.
-
 ### Process interface
 
 ```
@@ -489,8 +478,7 @@ The box spec `up` reads from stdin:
   configure the host runtime client. A `from` value never reaches argv,
   the runtime's records or a file pinfold writes. A literal `HOME` is also
   the path that places generated mounts (Pi login), so it appears in
-  their mount arguments and the launch record, and the box user's home
-  (Box user);
+  their mount arguments and the launch record;
   multiline values remain intact. The runtime executable is found on the
   host's `PATH`, never the spec's.
 - A label key starting with `dev.pinfold.` is refused as `spec`, naming
@@ -1234,11 +1222,9 @@ with `build` and caller images with `image build`. The old Podman store,
 old derived-root cache and managed agent disks are left untouched.
 
 Built-in images use `debian:trixie-slim` and strip setuid/setgid bits.
-They read `/var/lib/extrausers` (`libnss-extrausers`): users after
-`/etc/passwd`, groups before `/etc/group`, so the box user and its group
-are `pinfold` (Box user). The
-interactive Bash prompt in `/etc/bash.bashrc` is `pinfold:\w\$ `; a
-`~/.bashrc` setting `PS1` wins.
+As a convenience, `default` names uids 501 and 1000 `pinfold` and sets the
+interactive Bash prompt `pinfold:\w\$ `, which a `~/.bashrc` `PS1` overrides;
+other uids have no account name.
 
 | Profile | Tools |
 |---|---|

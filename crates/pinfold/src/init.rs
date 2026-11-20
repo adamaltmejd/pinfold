@@ -44,35 +44,6 @@ mod session;
 #[path = "init/session_io.rs"]
 mod session_io;
 
-// The macOS build of the standalone init has no caller.
-/// Where `libnss-extrausers`, in built-in images, looks up accounts.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub const ACCOUNT_DIR: &str = "/var/lib/extrausers";
-
-/// The files for [`ACCOUNT_DIR`] naming the box user `pinfold` at `uid` and
-/// `gid`, with `home` as its home. None for root, whose image entry stands.
-/// A home that cannot be a passwd field becomes `/`.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub fn account(uid: u32, gid: u32, home: &[u8]) -> Option<[(&'static str, Vec<u8>); 2]> {
-    if uid == 0 {
-        return None;
-    }
-    let home = if home.starts_with(b"/") && !home.iter().any(|byte| matches!(byte, b':' | b'\n')) {
-        home
-    } else {
-        b"/"
-    };
-    let mut passwd = format!("pinfold:x:{uid}:{gid}:pinfold:").into_bytes();
-    passwd.extend_from_slice(home);
-    passwd.extend_from_slice(b":/bin/bash\n");
-    let group = if gid == 0 {
-        Vec::new()
-    } else {
-        format!("pinfold:x:{gid}:\n").into_bytes()
-    };
-    Some([("passwd", passwd), ("group", group)])
-}
-
 /// The exec service hands box values to `init exec` under these names, so a
 /// box name equal to [`EXEC_METADATA`] still arrives. Hex keeps every byte.
 pub const BOX_ENV_PREFIX: &str = "PINFOLD_BOX_ENV_";

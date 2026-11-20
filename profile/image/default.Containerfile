@@ -1,24 +1,29 @@
 ARG TARGETARCH
 FROM debian:trixie-slim AS base
 
-# pinfold names the box user in /var/lib/extrausers. Groups are looked up
-# there first, so a gid the image already names is still pinfold's. Users
-# are not: libnss-extrausers 0.6 answers uid 0 with its own first entry.
 RUN set -eux; \
     export DEBIAN_FRONTEND=noninteractive; \
     apt-get update; \
     apt-get upgrade -y; \
     apt-get install -y --no-install-recommends \
-        ca-certificates curl git ripgrep fd-find jq less procps libnss-extrausers; \
+        ca-certificates curl git ripgrep fd-find jq less procps; \
     ln -s /usr/bin/fdfind /usr/local/bin/fd; \
-    sed -i -E -e 's/^(passwd:[[:space:]]+files)$/\1 extrausers/' \
-        -e 's/^(group:[[:space:]]+)files$/\1extrausers files/' /etc/nsswitch.conf; \
-    grep -Eq '^passwd:[[:space:]]+files extrausers$' /etc/nsswitch.conf; \
-    grep -Eq '^group:[[:space:]]+extrausers files$' /etc/nsswitch.conf; \
-    printf '%s\n' "PS1='pinfold:\\w\\\$ '" >> /etc/bash.bashrc; \
     git config --system user.name pi; \
     git config --system user.email pi@pinfold.invalid; \
     rm -rf /var/lib/apt/lists/*
+
+# Box work runs as the host uid. Name the usual ones, 501:20 (macOS) and
+# 1000:1000 (Linux), pinfold; getpwuid finds each by uid. The prompt omits
+# \u, so any other uid gets no "I have no name!".
+RUN set -eu; \
+    for account in 501:20 1000:1000; do \
+        uid=${account%:*}; gid=${account#*:}; \
+        if ! getent passwd "$uid" >/dev/null; then \
+            echo "pinfold:x:$uid:$gid:pinfold:/home/pi:/bin/bash" >> /etc/passwd; \
+        fi; \
+    done; \
+    if ! getent group 1000 >/dev/null; then echo 'pinfold:x:1000:' >> /etc/group; fi; \
+    printf '%s\n' "PS1='pinfold:\\w\\\$ '" >> /etc/bash.bashrc
 
 # Agents are resolved and installed only here; profiles built on this
 # image inherit them. Each build passes a new PINFOLD_AGENT_RESOLVE, so the
