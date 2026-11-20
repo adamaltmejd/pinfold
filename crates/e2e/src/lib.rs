@@ -152,19 +152,27 @@ struct Roots {
 impl Roots {
     fn command(&self) -> Command {
         let mut command = Command::new(pinfold());
-        for (name, _) in std::env::vars_os() {
-            if name
-                .to_str()
-                .is_some_and(|name| name.starts_with("PINFOLD_"))
-            {
-                command.env_remove(name);
-            }
-        }
+        self.apply(&mut command);
+        command
+    }
+
+    /// These roots and no inherited `PINFOLD_*`, for pinfold itself or a
+    /// command that runs it, as host `git` runs the remote helper.
+    fn apply(&self, command: &mut Command) {
+        remove_vars(command, "PINFOLD_");
         command
             .env("XDG_CONFIG_HOME", &self.config)
             .env("XDG_STATE_HOME", &self.state)
             .env("XDG_CACHE_HOME", &self.cache);
-        command
+    }
+}
+
+/// Remove every inherited variable whose name starts with `prefix`.
+fn remove_vars(command: &mut Command, prefix: &str) {
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(|name| name.starts_with(prefix)) {
+            command.env_remove(name);
+        }
     }
 }
 
@@ -218,6 +226,11 @@ impl TestEnv {
     /// The `XDG_STATE_HOME` this test's commands use.
     pub fn state_home(&self) -> &Path {
         &self.roots.state
+    }
+
+    /// The `XDG_CONFIG_HOME` this test's commands use.
+    pub fn config_home(&self) -> &Path {
+        &self.roots.config
     }
 
     /// `pinfold` with this test's roots and no inherited `PINFOLD_*`.
@@ -362,6 +375,168 @@ impl Drop for TestEnv {
         } else {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+}
+
+/// A throwaway project folder holding a Git repository, run as a user runs
+/// it: `pinfold` in its root with a non-terminal stdin, and host `git` with
+/// `git-remote-pinfold` on PATH and none of the user's Git configuration.
+/// Dropping it runs `pinfold stop` there; declare it after its [`TestEnv`],
+/// whose drop then removes the project's disks.
+pub struct Project<'a> {
+    env: &'a TestEnv,
+    root: PathBuf,
+    config_dir: PathBuf,
+}
+
+impl<'a> Project<'a> {
+    /// `git init` a new folder `name` in the test's directory, then create
+    /// its configuration with `config edit`, as on a first run: a share on
+    /// macOS, a disk on Linux.
+    pub fn new(env: &'a TestEnv, name: &str) -> Project<'a> {
+        let root = env.root().join(name);
+        fs::create_dir(&root).unwrap_or_else(|error| panic!("create {}: {error}", root.display()));
+        host_git_setup(env);
+        let init = run(git_command(env, &root).args(["init", "-q"]), COMMAND);
+        assert_eq!(init.code, 0, "git init: {init:?}");
+        let projects = env.config_home().join("pinfold/projects");
+        let before = dir_names(&projects);
+        let edit = run(
+            pinfold_command(env, &root).args(["config", "edit"]),
+            COMMAND,
+        );
+        assert_eq!(edit.code, 0, "config edit: {edit:?}");
+        let new: Vec<String> = dir_names(&projects)
+            .into_iter()
+            .filter(|name| !before.contains(name))
+            .collect();
+        assert_eq!(
+            new.len(),
+            1,
+            "config edit's new project directories: {new:?}"
+        );
+        Project {
+            env,
+            config_dir: projects.join(&new[0]),
+            root,
+        }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The project's configuration directory, the one `config edit` made
+    /// under the config root.
+    pub fn config_dir(&self) -> &Path {
+        &self.config_dir
+    }
+
+    /// `pinfold ARGS` in the project's root, with `VISUAL=true` so `config
+    /// edit` exits at once.
+    pub fn pinfold(&self, args: &[&str]) -> Exec {
+        run(pinfold_command(self.env, &self.root).args(args), COMMAND)
+    }
+
+    /// Host `git ARGS` in the project's root.
+    pub fn git(&self, args: &[&str]) -> Exec {
+        run(git_command(self.env, &self.root).args(args), COMMAND)
+    }
+}
+
+impl Drop for Project<'_> {
+    fn drop(&mut self) {
+        let mut stop = pinfold_command(self.env, &self.root);
+        stop.arg("stop");
+        if let Err(error) = in_drop(move || match run(&mut stop, COMMAND) {
+            out if out.code == 0 => Ok(()),
+            out => Err(format!("{out:?}")),
+        }) {
+            eprintln!("e2e: pinfold stop in {}: {error}", self.root.display());
+            self.env.roots.keep.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// The test's throwaway Git configuration and its `git-remote-pinfold`
+/// link, made once per test.
+fn host_git_setup(env: &TestEnv) {
+    let bin = env.root().join("bin");
+    if bin.exists() {
+        return;
+    }
+    fs::create_dir(&bin).unwrap();
+    std::os::unix::fs::symlink(pinfold(), bin.join("git-remote-pinfold")).unwrap();
+    fs::write(
+        env.root().join("gitconfig"),
+        "[user]\n\tname = e2e\n\temail = e2e@example.invalid\n\
+         [init]\n\tdefaultBranch = main\n\
+         [commit]\n\tgpgSign = false\n[tag]\n\tgpgSign = false\n\
+         [gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n",
+    )
+    .unwrap();
+    fs::write(env.root().join("gitconfig-system"), "").unwrap();
+}
+
+fn pinfold_command(env: &TestEnv, root: &Path) -> Command {
+    let mut command = env.command();
+    host_git_env(env, &mut command);
+    command.current_dir(root).env("VISUAL", "true");
+    command
+}
+
+fn git_command(env: &TestEnv, root: &Path) -> Command {
+    let mut command = Command::new("git");
+    host_git_env(env, &mut command);
+    env.roots.apply(&mut command);
+    command.current_dir(root);
+    command
+}
+
+/// Host Git with the test's configuration only, and the test's helper link
+/// first on PATH.
+fn host_git_env(env: &TestEnv, command: &mut Command) {
+    remove_vars(command, "GIT_");
+    let mut path = vec![env.root().join("bin")];
+    path.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    command
+        .env("GIT_CONFIG_GLOBAL", env.root().join("gitconfig"))
+        .env("GIT_CONFIG_SYSTEM", env.root().join("gitconfig-system"))
+        .env("PATH", std::env::join_paths(path).expect("a PATH"));
+}
+
+/// Every path under `dir`, sorted, with its length and mtime, read without
+/// following symlinks; none when `dir` is missing. Two equal trees hold the
+/// same entries, unchanged as far as their metadata shows.
+pub fn tree(dir: &Path) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => panic!("read {}: {error}", dir.display()),
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let path = entry.unwrap().path();
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        found.push((path.clone(), metadata.len(), metadata.modified().unwrap()));
+        if metadata.is_dir() {
+            found.extend(tree(&path));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The names in a directory; none when it is missing.
+fn dir_names(dir: &Path) -> Vec<String> {
+    match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => panic!("read {}: {error}", dir.display()),
     }
 }
 
